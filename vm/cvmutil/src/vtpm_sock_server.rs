@@ -8,14 +8,31 @@ use std::io::{BufReader, BufWriter};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::vtpm_helper::create_tpm_engine_helper;
 use tpm::tpm_helper::TpmEngineHelper;
+
+/// Setup Ctrl+C signal handler to allow graceful shutdown
+fn setup_signal_handler() -> Arc<AtomicBool> {
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+
+    ctrlc::set_handler(move || {
+        tracing::info!("Received Ctrl+C signal, shutting down TPM socket server...");
+        r.store(false, Ordering::SeqCst);
+    }).expect("Error setting Ctrl+C handler");
+
+    running
+}
 
 /// Start a TPM socket server using vTPM blob as backing state
 pub fn start_tpm_socket_server(vtpm_blob_path: &str, bind_addr: &str) {
     tracing::info!("Starting TPM socket server using vTPM blob: {}", vtpm_blob_path);
     tracing::info!("Binding to address: {}", bind_addr);
+
+    // Setup signal handler for graceful shutdown
+    let running = setup_signal_handler();
 
     // Parse the bind address to extract host and port
     let (host, data_port) = parse_bind_address(bind_addr);
@@ -55,6 +72,12 @@ pub fn start_tpm_socket_server(vtpm_blob_path: &str, bind_addr: &str) {
     let ctrl_listener = TcpListener::bind(&ctrl_addr)
         .expect(&format!("Failed to bind to control address: {}", ctrl_addr));
     
+    // Set non-blocking mode for graceful shutdown
+    data_listener.set_nonblocking(true)
+        .expect("Failed to set data listener to non-blocking");
+    ctrl_listener.set_nonblocking(true)
+        .expect("Failed to set control listener to non-blocking");
+
     tracing::info!("TPM socket server listening on data port: {}", data_addr);
     tracing::info!("TPM socket server listening on control port: {}", ctrl_addr);
     tracing::info!("Use with: export TPM2TOOLS_TCTI=\"mssim:host={},port={}\"", host, data_port);
@@ -62,30 +85,48 @@ pub fn start_tpm_socket_server(vtpm_blob_path: &str, bind_addr: &str) {
 
     // Start control socket handler in a separate thread
     let ctrl_tpm_engine = Arc::clone(&tpm_engine);
-    thread::spawn(move || {
-        handle_control_socket(ctrl_listener, ctrl_tpm_engine);
+    let ctrl_running = running.clone();
+    let ctrl_handle = thread::spawn(move || {
+        handle_control_socket(ctrl_listener, ctrl_tpm_engine, ctrl_running);
     });
 
     // Handle data connections in the main thread
-    for stream in data_listener.incoming() {
-        match stream {  
-            Ok(stream) => {
+    while running.load(Ordering::SeqCst) {
+        match data_listener.accept() {
+            Ok((stream, _)) => {
                 let peer_addr = stream.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
                 tracing::info!("New data connection from: {}", peer_addr);
                 
                 let tpm_engine_clone = Arc::clone(&tpm_engine);
                 let nv_accessor_clone = Arc::clone(&nv_accessor);
+                let client_running = running.clone();
                 
                 // Handle each connection in a separate thread
                 thread::spawn(move || {
-                    handle_tpm_data_client(stream, tpm_engine_clone, nv_accessor_clone);
+                    handle_tpm_data_client(stream, tpm_engine_clone, nv_accessor_clone, client_running);
                 });
             }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // Non-blocking accept returned no connection, sleep briefly and continue
+                thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
             Err(e) => {
-                tracing::error!("Failed to accept data connection: {}", e);
+                if running.load(Ordering::SeqCst) {
+                    tracing::error!("Failed to accept data connection: {}", e);
+                }
             }
         }
     }
+
+    tracing::info!("Shutting down TPM socket server...");
+
+    // Wait for control thread to finish
+    if let Err(e) = ctrl_handle.join() {
+        tracing::warn!("Error joining control thread: {:?}", e);
+    }
+
+    tracing::info!("TPM socket server stopped");
 }
 
 /// Parse bind address like "localhost:2321" into (host, port)
@@ -105,29 +146,41 @@ fn parse_bind_address(bind_addr: &str) -> (String, u16) {
 fn handle_control_socket(
     listener: TcpListener,
     tpm_engine: Arc<Mutex<TpmEngineHelper>>,
+    running: Arc<AtomicBool>,
 ) {
     tracing::info!("Control socket handler started");
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
+    while running.load(Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((stream, _)) => {
                 let tpm_engine_clone = Arc::clone(&tpm_engine);
+                let client_running = running.clone();
                 
                 thread::spawn(move || {
-                    handle_control_client(stream, tpm_engine_clone);
+                    handle_control_client(stream, tpm_engine_clone, client_running);
                 });
             }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // Non-blocking accept returned no connection, sleep briefly and continue
+                thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
             Err(e) => {
-                tracing::error!("Failed to accept control connection: {}", e);
+                if running.load(Ordering::SeqCst) {
+                    tracing::error!("Failed to accept control connection: {}", e);
+                }
             }
         }
     }
+
+    tracing::info!("Control socket handler stopped");
 }
 
 /// Handle a single control client connection
 fn handle_control_client(
     mut stream: TcpStream,
     tpm_engine: Arc<Mutex<TpmEngineHelper>>,
+    running: Arc<AtomicBool>,
 ) {
     let peer_addr = stream.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
     tracing::debug!("Control client connected from: {}", peer_addr);
@@ -135,7 +188,11 @@ fn handle_control_client(
     let mut reader = BufReader::new(&stream);
     let mut writer = BufWriter::new(&stream);
 
-    loop {
+    // Set read timeout for graceful shutdown
+    stream.set_read_timeout(Some(std::time::Duration::from_millis(500)))
+        .unwrap_or_else(|e| tracing::warn!("Failed to set read timeout: {}", e));
+
+    while running.load(Ordering::SeqCst) {
         match read_control_command(&mut reader) {
             Ok(command) => {
                 tracing::debug!("Received control command: {:?}", command);
@@ -150,8 +207,14 @@ fn handle_control_client(
                     break;
                 }
             }
+            Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                // Read timeout, continue loop to check running flag
+                continue;
+            }
             Err(e) => {
-                tracing::debug!("Control client disconnected or read error: {}", e);
+                if running.load(Ordering::SeqCst) {
+                    tracing::debug!("Control client disconnected or read error: {}", e);
+                }
                 break;
             }
         }
@@ -316,6 +379,7 @@ fn handle_tpm_data_client(
     stream: TcpStream,
     tpm_engine: Arc<Mutex<TpmEngineHelper>>,
     _nv_accessor: Arc<Mutex<impl std::any::Any + Send>>,
+    running: Arc<AtomicBool>,
 ) {
     use std::io::Write;
     let peer_addr = stream.peer_addr().unwrap_or_else(|_| "unknown".parse().unwrap());
@@ -324,12 +388,22 @@ fn handle_tpm_data_client(
     let mut reader = BufReader::new(&stream);
     let mut writer = BufWriter::new(&stream);
 
+    // Set read timeout for graceful shutdown
+    stream.set_read_timeout(Some(std::time::Duration::from_millis(500)))
+        .unwrap_or_else(|e| tracing::warn!("Failed to set read timeout: {}", e));
+
     let max_cmd = INTERNAL_MAX_CMD; // internal engine limit
-    loop {
+    while running.load(Ordering::SeqCst) {
         let cmd_code = match read_u32(&mut reader) {
             Ok(v) => v,
+            Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                // Read timeout, continue loop to check running flag
+                continue;
+            }
             Err(e) => {
-                tracing::debug!("Client {} disconnected (read cmd): {}", peer_addr, e);
+                if running.load(Ordering::SeqCst) {
+                    tracing::debug!("Client {} disconnected (read cmd): {}", peer_addr, e);
+                }
                 break;
             }
         };
@@ -403,6 +477,10 @@ fn handle_tpm_data_client(
             }
         }
 
+        if !running.load(Ordering::SeqCst) {
+            break;
+        }
+
         // Trailing status (always 0) after a handled interface command (except unknown/early failure)
         write_u32(&mut writer, 0);
         if let Err(e) = writer.flush() {
@@ -465,6 +543,7 @@ fn process_tpm_command(
     command_buffer[..command.len()].copy_from_slice(command);
     
     tracing::trace!("Executing TPM command with engine...");
+    tracing::trace!("Command (hex): {:02x?}", &command_buffer[..command.len()]);
     
     // Submit the command to the TPM engine
     let result = vtpm_engine_helper.tpm_engine.execute_command(
@@ -479,7 +558,17 @@ fn process_tpm_command(
             if response_size == 0 {
                 return Err("TPM returned zero-length response".into());
             }
+
+             if response_size < 10 {
+                return Err("TPM returned fatal response".into());
+            }
             
+            // response code are in bytes 6-9 of the response
+            let response_code = u32::from_be_bytes(
+                vtpm_engine_helper.reply_buffer[6..10].try_into().unwrap(),
+            );
+            tracing::debug!("TPM response code: 0x{:08x}", response_code);
+
             if response_size > 4096 {
                 return Err(format!("TPM response too large: {}", response_size).into());
             }

@@ -469,6 +469,23 @@ fn export_vtpm_srk_pub(mut tpm_engine_helper: TpmEngineHelper, srk_out_path: &st
                 .write_all(&srk_pub)
                 .expect("failed to write to file");
 
+            // Calculate and print the SRK name (algorithm ID + hash)
+            let mut hasher = Sha256::new();
+            hasher.update(response.out_public.public_area.serialize());
+            let public_area_hash = hasher.finalize();
+            tracing::trace!("SRK public area SHA256 hash: {:x}", public_area_hash);
+            let algorithm_id = response.out_public.public_area.name_alg;
+            let mut srk_name = vec![0u8; 2 + public_area_hash.len()];
+            srk_name[0] = (algorithm_id.0.get() >> 8) as u8;
+            srk_name[1] = (algorithm_id.0.get() & 0xFF) as u8;
+            srk_name[2..].copy_from_slice(&public_area_hash);
+
+            let srk_name_hex = srk_name
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>();
+            tracing::info!("SRK name: {}", srk_name_hex);
+
             // Compute SHA256 hash of the public area
             let mut hasher = Sha256::new();
             hasher.update(response.out_public.public_area.serialize());

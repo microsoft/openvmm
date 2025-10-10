@@ -22,6 +22,7 @@ clap = { workspace = true, features = ["derive"] }
 sha2.workspace = true
 base64.workspace = true
 openssl.workspace = true
+ctrlc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
