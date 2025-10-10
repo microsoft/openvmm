@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::api;
 use super::fs;
 use super::macros::file_information_classes;
 use crate::SetAttributes;
@@ -431,7 +430,7 @@ pub fn is_symlink(attributes: ntdef::ULONG, reparse_tag: ntdef::ULONG) -> bool {
     attributes & winnt::FILE_ATTRIBUTE_REPARSE_POINT != 0
         && (reparse_tag == winnt::IO_REPARSE_TAG_SYMLINK
             || reparse_tag == winnt::IO_REPARSE_TAG_MOUNT_POINT
-            || reparse_tag == api::IO_REPARSE_TAG_LX_SYMLINK)
+            || reparse_tag == FileSystem::IO_REPARSE_TAG_LX_SYMLINK as u32)
 }
 
 // Convert an NTSTATUS into an lx::Result.
@@ -573,7 +572,7 @@ pub fn file_info_to_stat(
     let mut stat = fs::get_lx_attr(
         fs_context,
         &mut information.stat,
-        api::LX_UTIL_FS_CALLER_HAS_TRAVERSE_PRIVILEGE,
+        fs::LX_UTIL_FS_CALLER_HAS_TRAVERSE_PRIVILEGE,
         block_size,
         options.default_uid,
         options.default_gid,
@@ -595,7 +594,7 @@ pub fn file_info_to_stat(
     if let Some(symlink_len) = information.symlink_len {
         stat.file_size = symlink_len as u64;
     } else if information.is_app_execution_alias {
-        stat.file_size = api::LX_UTIL_PE_HEADER_SIZE as u64;
+        stat.file_size = fs::LX_UTIL_PE_HEADER_SIZE as u64;
     }
     Ok(stat)
 }
@@ -965,7 +964,7 @@ pub fn set_attr_check_kill_priv(
     let old_attr = state.get_attributes_by_handle(handle)?;
 
     // If the file has no mode or no set-user-ID or set-group-ID bits, nothing to be done.
-    if old_attr.stat.LxFlags & api::LX_FILE_METADATA_HAS_MODE == 0
+    if old_attr.stat.LxFlags & FileSystem::LX_FILE_METADATA_HAS_MODE == 0
         || old_attr.stat.LxMode & (lx::S_ISUID | lx::S_ISGID) == 0
     {
         return Ok(());

@@ -1,77 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![expect(non_snake_case, dead_code)]
+#![expect(non_snake_case)]
 
 use std::os::windows::prelude::*;
 use winapi::shared::ntdef;
-use windows::Win32::Storage::FileSystem;
-
-// NT constants missing from ntapi.
-pub const LX_FILE_METADATA_HAS_UID: ntdef::ULONG = 0x1;
-pub const LX_FILE_METADATA_HAS_GID: ntdef::ULONG = 0x2;
-pub const LX_FILE_METADATA_HAS_MODE: ntdef::ULONG = 0x4;
-pub const IO_REPARSE_TAG_LX_SYMLINK: ntdef::ULONG = 0xA000001D;
-pub const FILE_CS_FLAG_CASE_SENSITIVE_DIR: ntdef::ULONG = 0x1;
-
-// Fallback modes.
-pub const LX_DRVFS_DISABLE_NONE: ntdef::ULONG = 0;
-
-// Flags for converting attributes.
-pub const LX_UTIL_FS_CALLER_HAS_TRAVERSE_PRIVILEGE: ntdef::ULONG = 0x1;
 
 // Flags for listing extended attributes.
 pub const LX_UTIL_XATTR_LIST_CASE_SENSITIVE_DIR: ntdef::ULONG = 0x1;
-
-// Size of PE header signature.
-pub const LX_UTIL_PE_HEADER_SIZE: ntdef::ULONG = 2;
-
-#[expect(non_snake_case)]
-#[repr(C)]
-pub struct FILE_ID_64_EXTD_DIR_INFORMATION {
-    pub NextEntryOffset: u32,
-    pub FileIndex: u32,
-    pub CreationTime: i64,
-    pub LastAccessTime: i64,
-    pub LastWriteTime: i64,
-    pub ChangeTime: i64,
-    pub EndOfFile: i64,
-    pub AllocationSize: i64,
-    pub FileAttributes: u32,
-    pub FileNameLength: u32,
-    pub EaSize: u32,
-    pub ReparsePointTag: u32,
-    pub FileId: i64,
-    pub FileName: [u16; 1],
-}
-
-#[expect(non_snake_case)]
-#[repr(C)]
-pub struct FILE_ID_ALL_EXTD_DIR_INFORMATION {
-    pub NextEntryOffset: u32,
-    pub FileIndex: u32,
-    pub CreationTime: i64,
-    pub LastAccessTime: i64,
-    pub LastWriteTime: i64,
-    pub ChangeTime: i64,
-    pub EndOfFile: i64,
-    pub AllocationSize: i64,
-    pub FileAttributes: u32,
-    pub FileNameLength: u32,
-    pub EaSize: u32,
-    pub ReparsePointTag: u32,
-    pub FileId: i64,
-    pub FileId128: FileSystem::FILE_ID_128,
-    pub FileName: [u16; 1],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct SymlinkData {
-    version: u32,
-    // 12 bytes to make this struct the same size as REPARSE_DATA_BUFFER
-    target: [u8; 12],
-}
 
 #[repr(C)]
 pub struct LX_UTIL_BUFFER {

@@ -8,17 +8,19 @@
 mod macros;
 
 pub(crate) mod api;
-pub(crate) mod fs;
+mod fs;
 pub(crate) mod path;
 mod readdir;
 mod symlink;
 mod util;
+mod xattr;
 
 use super::PathExt;
 use super::SetAttributes;
 use ::windows::Wdk::Storage::FileSystem;
 use ::windows::Wdk::System::SystemServices;
 use ::windows::Win32::Foundation;
+use ::windows::Win32::System::SystemServices as W32Ss;
 use ntapi::ntioapi;
 use pal::windows;
 use parking_lot::Mutex;
@@ -558,7 +560,6 @@ impl LxVolume {
         }
 
         let system = name.as_bytes().starts_with(b"system.");
-        let name = util::create_ansi_string(name)?;
         let desired_access = if system {
             winnt::FILE_READ_ATTRIBUTES
         } else {
@@ -567,31 +568,11 @@ impl LxVolume {
 
         let file = self.open_file(path, desired_access, 0)?;
 
-        // Set the buffer to NULL if no value buffer is provided, to query the attribute's size.
-        let mut value = if let Some(value) = value {
-            api::LX_UTIL_BUFFER {
-                Buffer: value.as_mut_ptr().cast::<ffi::c_void>(),
-                Size: value.len(),
-                Flags: 0,
-            }
+        let name = name.to_str().ok_or(lx::Error::EINVAL)?;
+        if system {
+            xattr::get_system(&file, name, value)
         } else {
-            api::LX_UTIL_BUFFER::default()
-        };
-
-        unsafe {
-            if system {
-                util::check_lx_error_size(api::LxUtilXattrGetSystem(
-                    file.as_raw_handle(),
-                    name.as_ref(),
-                    &mut value,
-                ))
-            } else {
-                util::check_lx_error_size(api::LxUtilXattrGet(
-                    file.as_raw_handle(),
-                    name.as_ref(),
-                    &mut value,
-                ))
-            }
+            xattr::get(&file, name, value)
         }
     }
 
@@ -741,7 +722,7 @@ impl LxVolume {
             });
 
             let info = FileSystem::FILE_CASE_SENSITIVE_INFORMATION {
-                Flags: api::FILE_CS_FLAG_CASE_SENSITIVE_DIR,
+                Flags: W32Ss::FILE_CS_FLAG_CASE_SENSITIVE_DIR,
             };
 
             util::set_information_file(&handle, &info)?;
@@ -1070,7 +1051,7 @@ impl LxVolume {
 
         let info = self.state.get_attributes(Some(&self.root), dir, None)?;
         // If the parent doesn't have explicit mode metadata, it can't have the set-group-id bit.
-        if info.stat.LxFlags & api::LX_FILE_METADATA_HAS_MODE != 0 {
+        if info.stat.LxFlags & FileSystem::LX_FILE_METADATA_HAS_MODE != 0 {
             util::determine_creation_info(info.stat.LxMode, info.stat.LxGid, mode, gid);
         }
 
@@ -1114,7 +1095,7 @@ impl LxVolume {
         // If the target is an LX symlink, create an LX symlink. Otherwise the file type should
         // match the target.
         if info.FileAttributes & winnt::FILE_ATTRIBUTE_REPARSE_POINT != 0
-            && info.ReparseTag == api::IO_REPARSE_TAG_LX_SYMLINK
+            && info.ReparseTag == FileSystem::IO_REPARSE_TAG_LX_SYMLINK as u32
         {
             SymlinkType::Lx
         } else if info.FileAttributes & winnt::FILE_ATTRIBUTE_DIRECTORY != 0 {
