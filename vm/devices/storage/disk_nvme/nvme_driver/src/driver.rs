@@ -206,7 +206,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         let mut this = Self::new_disabled(driver_source, cpu_count, device, bounce_buffer)
             .instrument(tracing::info_span!("nvme_new_disabled", pci_id))
             .await?;
-
         match this
             .enable(cpu_count as u16)
             .instrument(tracing::info_span!("nvme_enable", pci_id))
@@ -1227,7 +1226,7 @@ pub mod save_restore {
     #[mesh(package = "nvme_driver")]
     pub struct AerHandlerSavedState {
         #[mesh(1)]
-        pub last_aen: Option<u32>, // Saved AEN as u32 for clarity.
+        pub last_aen: Option<u32>,
         #[mesh(2)]
         pub await_aen_cid: Option<u16>,
     }

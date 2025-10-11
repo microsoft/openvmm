@@ -684,8 +684,14 @@ impl AerHandler for AdminAerHandler {
             && completion.cid == await_aen_cid
             && !self.failed
         {
-            self.failed = completion.status.status() != 0;
             self.await_aen_cid = None;
+
+            // If error, cleanup and stop processing AENs.
+            if (completion.status.status() != 0) {
+                self.failed = true;
+                self.last_aen = None;
+                return;
+            }
             // Complete the AEN or pend it.
             let aen = AsynchronousEventRequestDw0::from_bits(completion.dw0);
             if let Some(send_aen) = self.send_aen.take() {
