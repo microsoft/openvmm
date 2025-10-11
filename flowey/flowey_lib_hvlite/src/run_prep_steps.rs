@@ -40,6 +40,38 @@ impl SimpleFlowNode for Node {
                 let prep_steps = rt.read(prep_steps);
                 let env = rt.read(env);
 
+                if matches!(rt.platform(), FlowPlatform::Windows) {
+                    // Shutdown and remove any running VMs that might be using the disk
+                    // generated during a previous test run.
+                    let vms = powershell_builder::PowerShellBuilder::new()
+                        .cmdlet("Get-VM")
+                        .finish()
+                        .build()
+                        .output()?;
+                    log::info!(
+                        "removing any existing VMs: {}",
+                        String::from_utf8_lossy(&vms.stdout)
+                    );
+
+                    powershell_builder::PowerShellBuilder::new()
+                        .cmdlet("Get-VM")
+                        .pipeline()
+                        .cmdlet("Stop-VM")
+                        .flag("TurnOff")
+                        .finish()
+                        .build()
+                        .output()?;
+
+                    powershell_builder::PowerShellBuilder::new()
+                        .cmdlet("Get-VM")
+                        .pipeline()
+                        .cmdlet("Remove-VM")
+                        .flag("Force")
+                        .finish()
+                        .build()
+                        .output()?;
+                }
+
                 let sh = xshell::Shell::new()?;
                 let binary_path = match prep_steps {
                     PrepStepsOutput::WindowsBin { exe, .. } => exe,
