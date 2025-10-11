@@ -484,11 +484,12 @@ impl HyperVVM {
     }
 
     /// Sets the VM firmware command line.
-    pub async fn set_vm_firmware_command_line(
+    pub async fn set_vm_firmware_command_line<S: AsRef<str>>(
         &self,
-        openhcl_command_line: &str,
+        openhcl_command_line: S,
     ) -> anyhow::Result<()> {
-        powershell::run_set_vm_command_line(&self.vmid, &self.ps_mod, openhcl_command_line).await
+        powershell::run_set_vm_command_line(&self.vmid, &self.ps_mod, openhcl_command_line.as_ref())
+            .await
     }
 
     /// Enable VMBusRelay
@@ -514,6 +515,32 @@ impl HyperVVM {
     /// Get the VM's guest state file
     pub async fn get_guest_state_file(&self) -> anyhow::Result<PathBuf> {
         powershell::run_get_guest_state_file(&self.vmid, &self.ps_mod).await
+    }
+
+    /// Add an NVMe device to the Hyper-V VM. (Microsoft-internal)
+    ///
+    /// TODO FUTURE: Abstract this out such that it can take an identifier for a
+    /// device, rather than a set of VHD paths (at that point it could be used
+    /// on real hardware). Such work could leverage NVMe DDA, which is availabe
+    /// outside of the Microsoft-internal environment (but then you have to have
+    /// spare NVMe devices on the system where you're running this).
+    /// Tracked by #2151.
+    pub async fn add_nvme_device<P: AsRef<Path>>(
+        &self,
+        instance_id: Option<&Guid>,
+        target_vtl: u32,
+        vhd_paths: &[P],
+    ) -> anyhow::Result<()> {
+        powershell::run_add_nvme(&self.vmid, instance_id, target_vtl, vhd_paths).await
+    }
+
+    /// Set the VTL2 settings in the `Base` namespace (fixed settings, storage
+    /// settings, etc).
+    pub async fn set_base_vtl2_settings(
+        &self,
+        settings: &vtl2_settings_proto::Vtl2Settings,
+    ) -> anyhow::Result<()> {
+        powershell::run_set_base_vtl2_settings(&self.vmid, &self.ps_mod, settings).await
     }
 }
 

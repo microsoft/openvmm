@@ -16,6 +16,7 @@ use powershell_builder::PowerShellBuilder;
 use serde::Deserialize;
 use serde::Serialize;
 use std::ffi::OsStr;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -1091,4 +1092,111 @@ pub async fn run_get_guest_state_file(vmid: &Guid, ps_mod: &Path) -> anyhow::Res
     .context("get_guest_state_file")?;
 
     Ok(PathBuf::from(output))
+}
+
+/// Queries whether the host supports Hyper-V NVMe storage for VMs.
+///
+/// This is true if there are Microsoft-internal utilities installed on the
+/// host that support this feature.
+/// FUTURE: If sufficient environments exist, we can do this using DDA'd NVMe
+/// devices.
+pub async fn run_check_vm_host_supports_hyperv_storage() -> anyhow::Result<bool> {
+    let output: String = run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Test-Path")
+            .arg(
+                "Path",
+                "c:\\OpenVMMCI\\MicrosoftInternalTestHelpers\\MicrosoftInternalTestHelpers.psm1",
+            )
+            .next()
+            .cmdlet("Import-Module")
+            .positional(
+                "c:\\OpenVMMCI\\MicrosoftInternalTestHelpers\\MicrosoftInternalTestHelpers.psm1",
+            )
+            .next()
+            .cmdlet("Test-MicrosoftInternalVmNvmeStorage")
+            .finish()
+            .build(),
+    )
+    .await
+    .context("run_check_vm_host_supports_hyperv_storage")?;
+
+    Ok(output.trim().eq_ignore_ascii_case("true"))
+}
+
+/// Adds an NVMe device to the VM using Microsoft-internal utilities.
+///
+/// TODO FUTURE: Check that the resource is successfully added to the VM. e.g.
+/// if there is a signature issue, it seems that this call completes yet there
+/// was an error.
+pub async fn run_add_nvme<P: AsRef<Path>>(
+    vmid: &Guid,
+    instance_id: Option<&Guid>,
+    target_vtl: u32,
+    disk_paths: &[P],
+) -> anyhow::Result<()> {
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(
+                "c:\\OpenVMMCI\\MicrosoftInternalTestHelpers\\MicrosoftInternalTestHelpers.psm1",
+            )
+            .next()
+            .cmdlet("Add-MicrosoftInternalVmNvmeStorage")
+            .arg("VmId", vmid)
+            .arg("TargetVtl", target_vtl)
+            .arg(
+                "DiskPaths",
+                ps::Array::new(
+                    disk_paths
+                        .iter()
+                        .map(|p| p.as_ref().to_str().expect("path can be converted to &str")),
+                ),
+            )
+            .arg_opt("Vsid", instance_id)
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("run_add_nvme")
+}
+
+/// Sets the VTL2 settings for a VM that exist in the `Base` namespace.
+///
+/// This should include the fixed VTL2 settings, as well as any storage
+/// settings.
+///
+/// TODO FUTURE: Detect if the settings should be in `json` or `protobuf` format
+/// based on what is already there (or let the caller specify explicitly so that
+/// we can test the handling of both deserializers).
+pub async fn run_set_base_vtl2_settings(
+    vmid: &Guid,
+    ps_mod: &Path,
+    vtl2_settings: &vtl2_settings_proto::Vtl2Settings,
+) -> anyhow::Result<()> {
+    // Pass the settings via a file to avoid challenges escaping the string across
+    // the command line.
+    let mut tempfile = tempfile::NamedTempFile::new().context("creating tempfile")?;
+    tempfile
+        .write_all(serde_json::to_string(vtl2_settings)?.as_bytes())
+        .context("writing settings to tempfile")?;
+
+    tracing::debug!(?tempfile, ?vtl2_settings, ?vmid, "set base vtl2 settings");
+
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Set-Vtl2Settings")
+            .arg("VmId", vmid)
+            .arg("SettingsFile", tempfile.path())
+            .arg("Namespace", "Base")
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("set_base_vtl2_settings")
 }

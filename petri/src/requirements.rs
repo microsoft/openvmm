@@ -63,6 +63,8 @@ pub struct HostContext {
     pub vendor: Vendor,
     /// Execution environment
     pub execution_environment: ExecutionEnvironment,
+    /// Whether the host supports NVMe storage using Hyper-V as the VMM
+    pub supports_hyperv_nvme_storage: bool,
 }
 
 impl HostContext {
@@ -140,6 +142,21 @@ impl HostContext {
             }
         };
 
+        let supports_hyperv_nvme_storage = {
+            #[cfg(windows)]
+            {
+                crate::vm::hyperv::powershell::run_check_vm_host_supports_hyperv_storage()
+                    .await
+                    .unwrap_or(false) // Assume false if we can't query
+            }
+            #[cfg(not(windows))]
+            {
+                // Not checked for non-Windows platforms, so just assume that the feature
+                // is supported.
+                true
+            }
+        };
+
         Self {
             vm_host_info,
             vendor,
@@ -148,6 +165,7 @@ impl HostContext {
             } else {
                 ExecutionEnvironment::Baremetal
             },
+            supports_hyperv_nvme_storage,
         }
     }
 }
@@ -158,6 +176,8 @@ pub enum TestRequirement {
     ExecutionEnvironment(ExecutionEnvironment),
     /// Vendor requirement.
     Vendor(Vendor),
+    /// Supports NVMe storage requirement.
+    SupportsNvmeStorage,
     /// Isolation requirement.
     Isolation(IsolationType),
     /// Logical AND of two requirements.
@@ -174,6 +194,7 @@ impl TestRequirement {
         match self {
             TestRequirement::ExecutionEnvironment(env) => context.execution_environment == *env,
             TestRequirement::Vendor(vendor) => context.vendor == *vendor,
+            TestRequirement::SupportsNvmeStorage => context.supports_hyperv_nvme_storage,
             TestRequirement::Isolation(isolation_type) => {
                 if let Some(vm_host_info) = &context.vm_host_info {
                     match isolation_type {
