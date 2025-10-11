@@ -40,7 +40,8 @@ impl SimpleFlowNode for Node {
                 let prep_steps = rt.read(prep_steps);
                 let env = rt.read(env);
 
-                if matches!(rt.platform(), FlowPlatform::Windows) {
+                #[cfg(windows)]
+                {
                     // Shutdown and remove any running VMs that might be using the disk
                     // generated during a previous test run.
                     let vms = powershell_builder::PowerShellBuilder::new()
