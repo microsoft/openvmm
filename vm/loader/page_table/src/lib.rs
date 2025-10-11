@@ -3,6 +3,7 @@
 
 //! Methods to construct page tables.
 
+#![no_std]
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 

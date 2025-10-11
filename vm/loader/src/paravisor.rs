@@ -35,6 +35,9 @@ use memory_range::MemoryRange;
 use page_table::aarch64::Arm64PageSize;
 use page_table::aarch64::MemoryAttributeEl1;
 use page_table::aarch64::MemoryAttributeIndirectionEl1;
+use page_table::x64::PAGE_TABLE_MAX_BYTES;
+use page_table::x64::PAGE_TABLE_MAX_COUNT;
+use page_table::x64::PageTable;
 use page_table::x64::PageTableBuilder;
 use page_table::x64::X64_LARGE_PAGE_SIZE;
 use page_table::x64::align_up_to_large_page_size;
@@ -413,7 +416,6 @@ where
     } else {
         memory_size
     };
-
     let page_table_base_page_count = 5;
     let page_table_dynamic_page_count = {
         // Double the count to allow for simpler reconstruction.
@@ -438,7 +440,7 @@ where
     tracing::debug!(page_table_region_start, page_table_region_size);
 
     let mut page_table_builder = PageTableBuilder::new(page_table_region_start)
-        .with_mapped_region(memory_start_address, page_table_mapping_size);
+        .with_mapped_region(memory_start_address, memory_size);
 
     if let Some((local_map_start, size)) = local_map {
         page_table_builder = page_table_builder.with_local_map(local_map_start, size);
@@ -454,12 +456,18 @@ where
         _ => {}
     }
 
-    let page_table = page_table_builder.build();
+    let mut page_table_work_buffer: Vec<PageTable> =
+        vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
+    let mut page_table: Vec<u8> = vec![0 as u8; PAGE_TABLE_MAX_BYTES];
+
+    let page_table = page_table_builder.build(
+        page_table_work_buffer.as_mut_slice(),
+        page_table.as_mut_slice(),
+    );
 
     assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     let page_table_page_base = page_table_region_start / HV_PAGE_SIZE;
     assert!(page_table.len() as u64 <= page_table_region_size);
-
     let offset = offset;
 
     if with_relocation {
@@ -547,7 +555,7 @@ where
         page_table_page_count,
         "underhill-page-tables",
         BootPageAcceptance::Exclusive,
-        &page_table,
+        page_table,
     )?;
 
     // Set selectors and control registers
@@ -1217,12 +1225,13 @@ where
         MemoryAttributeEl1::Device_nGnRnE,
         MemoryAttributeEl1::Device_nGnRnE,
     ]);
+    let mut page_tables: Vec<u8> = vec![0; page_table_region_size as usize];
     let page_tables = page_table::aarch64::build_identity_page_tables_aarch64(
         page_table_region_start,
         memory_start_address,
         memory_size,
         memory_attribute_indirection,
-        page_table_region_size as usize,
+        page_tables.as_mut_slice(),
     );
     assert!((page_tables.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     let page_table_page_base = page_table_region_start / HV_PAGE_SIZE;
@@ -1256,7 +1265,7 @@ where
         page_table_page_count,
         "underhill-page-tables",
         BootPageAcceptance::Exclusive,
-        &page_tables,
+        page_tables,
     )?;
 
     tracing::trace!("Importing register state");
