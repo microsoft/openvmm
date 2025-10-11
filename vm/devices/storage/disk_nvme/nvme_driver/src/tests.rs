@@ -41,7 +41,7 @@ use zerocopy::IntoBytes;
 #[should_panic(expected = "assertion `left == right` failed: cid sequence number mismatch:")]
 async fn test_nvme_command_fault(driver: DefaultDriver) {
     let mut output_cmd = Command::new_zeroed();
-    output_cmd.cdw0.set_cid(0);
+    output_cmd.cdw0.set_cid(1); // AER will have cid 0.
 
     test_nvme_fault_injection(
         driver,
@@ -369,10 +369,12 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
         .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
         .await
         .unwrap();
+
     let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
     let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
         .await
         .unwrap();
+
     let namespace = driver.namespace(1).await.unwrap();
 
     // Act: Write 1024 bytes of data to disk starting at LBA 1.
