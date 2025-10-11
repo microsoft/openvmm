@@ -685,7 +685,7 @@ impl PetriVmConfigSetupCore<'_> {
 
                 let mut cmdline = command_line.clone();
 
-                append_cmdline(&mut cmdline, format!("panic=-1 reboot=triple"));
+                append_cmdline(&mut cmdline, "panic=-1 reboot=triple");
                 append_log_params_to_cmdline(&mut cmdline);
 
                 let isolated = match self.firmware {
