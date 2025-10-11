@@ -12,6 +12,8 @@ use crate::RequestError;
 use crate::driver::save_restore::IoQueueSavedState;
 use crate::queue_pair::AdminAerHandler;
 use crate::queue_pair::Issuer;
+use crate::queue_pair::MAX_CQ_ENTRIES;
+use crate::queue_pair::MAX_SQ_ENTRIES;
 use crate::queue_pair::NoOpAerHandler;
 use crate::queue_pair::QueuePair;
 use crate::queue_pair::admin_cmd;
@@ -301,10 +303,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // device bugs where differing sizes might be a less common scenario
         //
         // Namely: using differing sizes revealed a bug in the initial NvmeDirectV2 implementation
-        let admin_len = std::cmp::min(
-            crate::queue_pair::MAX_SQ_ENTRIES,
-            crate::queue_pair::MAX_CQ_ENTRIES,
-        );
+        let admin_len = std::cmp::min(MAX_SQ_ENTRIES, MAX_CQ_ENTRIES);
         let admin_sqes = admin_len;
         let admin_cqes = admin_len;
 
@@ -451,10 +450,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 anyhow::bail!("bad device behavior. mqes cannot be 0");
             }
 
-            let io_cqsize =
-                (crate::queue_pair::MAX_CQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
-            let io_sqsize =
-                (crate::queue_pair::MAX_SQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
+            let io_cqsize = (MAX_CQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
+            let io_sqsize = (MAX_SQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
 
             // Some hardware (such as ASAP) require that the sq and cq have the same size.
             io_cqsize.min(io_sqsize)

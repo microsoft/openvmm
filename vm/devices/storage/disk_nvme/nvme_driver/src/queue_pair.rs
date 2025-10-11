@@ -46,6 +46,18 @@ use zerocopy::FromZeros;
 
 /// Value for unused PRP entries, to catch/mitigate buffer size mismatches.
 const INVALID_PAGE_ADDR: u64 = !(PAGE_SIZE as u64 - 1);
+/// Maximum SQ size in entries.
+pub const MAX_SQ_ENTRIES: u16 = (PAGE_SIZE / 64) as u16;
+/// Maximum CQ size in entries.
+pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16;
+/// Submission Queue size in bytes.
+const SQ_SIZE: usize = PAGE_SIZE;
+/// Completion Queue size in bytes.
+const CQ_SIZE: usize = PAGE_SIZE;
+/// Number of pages per queue if bounce buffering.
+const PER_QUEUE_PAGES_BOUNCE_BUFFER: usize = 128;
+/// Number of pages per queue if not bounce buffering.
+const PER_QUEUE_PAGES_NO_BOUNCE_BUFFER: usize = 64;
 
 #[derive(Inspect)]
 pub(crate) struct QueuePair<T: AerHandler> {
@@ -163,19 +175,6 @@ impl PendingCommands {
         })
     }
 }
-
-/// Maximum SQ size in entries.
-pub const MAX_SQ_ENTRIES: u16 = (PAGE_SIZE / 64) as u16;
-/// Maximum CQ size in entries.
-pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16;
-/// Submission Queue size in bytes.
-const SQ_SIZE: usize = PAGE_SIZE;
-/// Completion Queue size in bytes.
-const CQ_SIZE: usize = PAGE_SIZE;
-/// Number of pages per queue if bounce buffering.
-const PER_QUEUE_PAGES_BOUNCE_BUFFER: usize = 128;
-/// Number of pages per queue if not bounce buffering.
-const PER_QUEUE_PAGES_NO_BOUNCE_BUFFER: usize = 64;
 
 impl<T: AerHandler> QueuePair<T> {
     pub fn new(
