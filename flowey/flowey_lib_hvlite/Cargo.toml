@@ -10,6 +10,7 @@ rust-version.workspace = true
 flowey.workspace = true
 flowey_lib_common.workspace = true
 
+powershell_builder.workspace = true
 vmm_test_images = { workspace = true, features = ["serde"] }
 igvmfilegen_config.workspace = true
 
