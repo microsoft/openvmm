@@ -1096,7 +1096,7 @@ pub async fn run_get_guest_state_file(vmid: &Guid, ps_mod: &Path) -> anyhow::Res
 
 /// Queries whether the host supports Hyper-V NVMe storage for VMs.
 ///
-/// This is true if there are Microsoft-internal utilties installed on the
+/// This is true if there are Microsoft-internal utilities installed on the
 /// host that support this feature.
 /// FUTURE: If sufficient environments exist, we can do this using DDA'd NVMe
 /// devices.
@@ -1106,12 +1106,12 @@ pub async fn run_check_vm_host_supports_hyperv_storage() -> anyhow::Result<bool>
             .cmdlet("Test-Path")
             .arg(
                 "Path",
-                "c:\\OpenvmmCI\\MicrosoftInternalTestHelpers\\MicrosoftInternalTestHelpers.psm1",
+                "c:\\OpenVMMCI\\MicrosoftInternalTestHelpers\\MicrosoftInternalTestHelpers.psm1",
             )
             .next()
             .cmdlet("Import-Module")
             .positional(
-                "c:\\OpenvmmCI\\MicrosoftInternalTestHelpers\\MicrosoftInternalTestHelpers.psm1",
+                "c:\\OpenVMMCI\\MicrosoftInternalTestHelpers\\MicrosoftInternalTestHelpers.psm1",
             )
             .next()
             .cmdlet("Test-MicrosoftInternalVmNvmeStorage")
@@ -1124,15 +1124,12 @@ pub async fn run_check_vm_host_supports_hyperv_storage() -> anyhow::Result<bool>
     Ok(output.trim().eq_ignore_ascii_case("true"))
 }
 
-/// Queries whether the host supports Hyper-V NVMe storage for VMs.
+/// Adds an NVMe device to the VM using Microsoft-internal utilities.
 ///
-/// This is true if there are Microsoft-internal utilties installed on the
-/// host that support this feature.
-///
-/// TODO: Check that the resource is successfully added to the VM.
-/// e.g. if there is a signature issue, it seems that this call completes
-/// yet there was an error.
-pub async fn run_configure_microsoft_internal_nvme_storage<P: AsRef<Path>>(
+/// TODO FUTURE: Check that the resource is successfully added to the VM. e.g.
+/// if there is a signature issue, it seems that this call completes yet there
+/// was an error.
+pub async fn run_add_nvme<P: AsRef<Path>>(
     vmid: &Guid,
     instance_id: Option<&Guid>,
     target_vtl: u32,
@@ -1142,7 +1139,7 @@ pub async fn run_configure_microsoft_internal_nvme_storage<P: AsRef<Path>>(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(
-                "c:\\OpenvmmCI\\MicrosoftInternalTestHelpers\\MicrosoftInternalTestHelpers.psm1",
+                "c:\\OpenVMMCI\\MicrosoftInternalTestHelpers\\MicrosoftInternalTestHelpers.psm1",
             )
             .next()
             .cmdlet("Add-MicrosoftInternalVmNvmeStorage")
@@ -1153,7 +1150,7 @@ pub async fn run_configure_microsoft_internal_nvme_storage<P: AsRef<Path>>(
                 ps::Array::new(
                     disk_paths
                         .iter()
-                        .map(|p| p.as_ref().to_str().expect("path is valid &str")),
+                        .map(|p| p.as_ref().to_str().expect("path can be converted to &str")),
                 ),
             )
             .arg_opt("Vsid", instance_id)
@@ -1162,20 +1159,30 @@ pub async fn run_configure_microsoft_internal_nvme_storage<P: AsRef<Path>>(
     )
     .await
     .map(|_| ())
-    .context("run_configure_microsoft_internal_nvme_storage")
+    .context("run_add_nvme")
 }
 
+/// Sets the VTL2 settings for a VM that exist in the `Base` namespace.
+///
+/// This should include the fixed VTL2 settings, as well as any storage
+/// settings.
+///
+/// TODO FUTURE: Detect if the settings should be in `json` or `protobuf` format
+/// based on what is already there (or let the caller specify explicitly so that
+/// we can test the handling of both deserializers).
 pub async fn run_set_base_vtl2_settings(
     vmid: &Guid,
     ps_mod: &Path,
     vtl2_settings: &vtl2_settings_proto::Vtl2Settings,
 ) -> anyhow::Result<()> {
+    // Pass the settings via a file to avoid challenges escaping the string across
+    // the command line.
     let mut tempfile = tempfile::NamedTempFile::new().context("creating tempfile")?;
     tempfile
         .write_all(serde_json::to_string(vtl2_settings)?.as_bytes())
         .context("writing settings to tempfile")?;
 
-    tracing::info!(?tempfile, ?vtl2_settings, ?vmid, "set base vtl2 settings");
+    tracing::debug!(?tempfile, ?vtl2_settings, ?vmid, "set base vtl2 settings");
 
     run_host_cmd(
         PowerShellBuilder::new()

@@ -489,17 +489,11 @@ function Set-Vtl2Settings {
     $options = New-Object Microsoft.Management.Infrastructure.Options.CimOperationOptions
     $options.SetCustomOption("ClientName", $ClientName, $false)
 
-    Write-Host "aaaa"
-
     # Parameter - VmId
     $p1 = [Microsoft.Management.Infrastructure.CimMethodParameter]::Create("VmId", $VmId.ToString(), [Microsoft.Management.Infrastructure.cimtype]::String, [Microsoft.Management.Infrastructure.CimFlags]::In)
 
-    Write-Host "bbbb"
-
     # Parameter - Namespace
     $p2 = [Microsoft.Management.Infrastructure.CimMethodParameter]::Create("Namespace", $Namespace, [Microsoft.Management.Infrastructure.cimtype]::String, [Microsoft.Management.Infrastructure.CimFlags]::In)
-
-    Write-Host "cccc"
 
     # Parameter - Settings
     # The input is a byte buffer with the size prepended.

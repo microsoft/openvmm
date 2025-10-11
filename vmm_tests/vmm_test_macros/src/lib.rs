@@ -826,7 +826,7 @@ fn build_requirements(config: &Config, name: &str) -> Option<TokenStream> {
     let is_nvme = matches!(
         config.firmware,
         Firmware::OpenhclUefi(OpenhclUefiOptions { nvme: true, .. }, _)
-    ) || name.contains("add_openhcl_nvme_storage");
+    ) || name.contains("add_nvme_device");
     if is_hyperv && is_nvme {
         let hyperv_nvme_requirement_expr =
             quote!(::petri::requirements::TestRequirement::SupportsNvmeStorage);

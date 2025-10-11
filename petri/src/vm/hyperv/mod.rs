@@ -70,14 +70,21 @@ pub struct HyperVPetriRuntime {
     is_isolated: bool,
 }
 
+/// Additional configuration for a Hyper-V VM.
 pub struct HyperVPetriConfig {
+    /// VTL2 settings to configure on the VM before petri powers it on.
     pub initial_vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
 }
 
 impl HyperVPetriRuntime {
-    pub async fn add_openhcl_nvme_storage<P: AsRef<Path>>(
+    /// Adds an NVMe device to the VM, with a set of NVMe namespaces. Each
+    /// namespace is backed by one of the supplied VHDs. The namespaces will be
+    /// added in-order. That is, the first entry in the list of `vhd_paths` will
+    /// have `nsid` `1`, the second entry will have `nsid` `2`, and so on.
+    pub async fn add_nvme_device<P: AsRef<Path>>(
         &self,
         instance_id: Option<&guid::Guid>,
+        target_vtl: u32,
         vhd_paths: &[P],
     ) -> anyhow::Result<()> {
         for vhd_path in vhd_paths {
@@ -86,10 +93,12 @@ impl HyperVPetriRuntime {
         }
 
         self.vm
-            .add_openhcl_nvme_storage(instance_id, vhd_paths)
+            .add_nvme_device(instance_id, target_vtl, vhd_paths)
             .await
     }
 
+    /// Set the VTL2 settings in the `Base` namespace (fixed settings, storage
+    /// settings, etc).
     pub async fn set_base_vtl2_settings(
         &self,
         settings: &vtl2_settings_proto::Vtl2Settings,
@@ -519,7 +528,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
             hyperv_serial_log_task(driver.clone(), serial_pipe_path, serial_log_file),
         ));
 
-        // todo mattkur
         let initial_vtl2_settings = if let Some(f) = modify_vmm_config {
             f(HyperVPetriConfig {
                 initial_vtl2_settings: None,
@@ -659,7 +667,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
 }
 
 /// The type of access to grant the VM for a file.
-#[expect(missing_docs)]
+#[allow(missing_docs)]
 enum VmFileAccess {
     Read,
     FullControl,

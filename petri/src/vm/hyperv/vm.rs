@@ -517,20 +517,25 @@ impl HyperVVM {
         powershell::run_get_guest_state_file(&self.vmid, &self.ps_mod).await
     }
 
-    pub async fn add_openhcl_nvme_storage<P: AsRef<Path>>(
+    /// Add an NVMe device to the Hyper-V VM. (Microsoft-internal)
+    ///
+    /// TODO FUTURE: Abstract this out such that it can take an identifier for a
+    /// device, rather than a set of VHD paths (at that point it could be used
+    /// on real hardware). Such work could leverage NVMe DDA, which is availabe
+    /// outside of the Microsoft-internal environment (but then you have to have
+    /// spare NVMe devices on the system where you're running this).
+    /// Tracked by #2151.
+    pub async fn add_nvme_device<P: AsRef<Path>>(
         &self,
         instance_id: Option<&Guid>,
+        target_vtl: u32,
         vhd_paths: &[P],
     ) -> anyhow::Result<()> {
-        powershell::run_configure_microsoft_internal_nvme_storage(
-            &self.vmid,
-            instance_id,
-            2,
-            vhd_paths,
-        )
-        .await
+        powershell::run_add_nvme(&self.vmid, instance_id, target_vtl, vhd_paths).await
     }
 
+    /// Set the VTL2 settings in the `Base` namespace (fixed settings, storage
+    /// settings, etc).
     pub async fn set_base_vtl2_settings(
         &self,
         settings: &vtl2_settings_proto::Vtl2Settings,

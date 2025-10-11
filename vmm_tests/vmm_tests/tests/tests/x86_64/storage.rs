@@ -628,9 +628,7 @@ async fn openhcl_linux_storvsp_dvd_nvme(
 
 #[cfg(windows)]
 #[hyperv_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
-pub async fn add_openhcl_nvme_storage(
-    config: PetriVmBuilder<HyperVPetriBackend>,
-) -> anyhow::Result<()> {
+pub async fn add_nvme_device(config: PetriVmBuilder<HyperVPetriBackend>) -> anyhow::Result<()> {
     let vtl0_instance_id = Guid::new_random();
     let vtl2_instance_id = Guid::new_random();
     const VHD_SIZE: u64 = 200 * 1024 * 1024; // 200 MiB
@@ -653,6 +651,8 @@ pub async fn add_openhcl_nvme_storage(
     let initial_vtl2_settings = Vtl2Settings {
         version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
         dynamic: Some(vtl2_settings_proto::Vtl2SettingsDynamic {
+            // You can't add a _controller_ at runtime, so make sure to add it
+            // here before the test powers on the VM.
             storage_controllers: vec![
                 Vtl2StorageControllerBuilder::scsi()
                     .with_instance_id(vtl0_instance_id)
@@ -687,7 +687,7 @@ pub async fn add_openhcl_nvme_storage(
     // for test simplicity.
 
     vm.backend()
-        .add_openhcl_nvme_storage(Some(&vtl2_instance_id), &[vhd_path.to_str().unwrap()])
+        .add_nvme_device(Some(&vtl2_instance_id), 2, &[vhd_path.to_str().unwrap()])
         .await?;
 
     vtl2_settings.dynamic.as_mut().unwrap().storage_controllers[0]
