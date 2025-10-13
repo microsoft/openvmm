@@ -716,8 +716,15 @@ impl<T: DeviceBacking> ManaQueue<T> {
         }
     }
 
-    fn trace_tx_error(&mut self, cqe_params: CqeParams, tx_oob: ManaTxCompOob, done_length: usize) {
-        tracelimit::error_ratelimited!(
+    fn trace_tx(
+        &mut self,
+        tracing_level: tracing::Level,
+        cqe_params: CqeParams,
+        tx_oob: ManaTxCompOob,
+        done_length: usize,
+    ) {
+        tracelimit::event_ratelimited!(
+            tracing_level,
             cqe_type = tx_oob.cqe_hdr.cqe_type(),
             vendor_err = tx_oob.cqe_hdr.vendor_err(),
             wq_number = cqe_params.wq_number(),
@@ -730,10 +737,11 @@ impl<T: DeviceBacking> ManaQueue<T> {
         );
 
         let wqe_offset = tx_oob.offsets.tx_wqe_offset();
-        self.trace_tx_wqe_from_offset(wqe_offset);
+        self.trace_tx_wqe_from_offset(tracing_level, wqe_offset);
 
         if let Some(packet) = self.posted_tx.front() {
-            tracelimit::error_ratelimited!(
+            tracelimit::event_ratelimited!(
+                tracing_level,
                 id = packet.id.0,
                 wqe_len = packet.wqe_len,
                 bounced_len_with_padding = packet.bounced_len_with_padding,
@@ -742,7 +750,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
         }
     }
 
-    fn trace_tx_wqe_from_offset(&mut self, wqe_offset: u32) {
+    fn trace_tx_wqe_from_offset(&mut self, tracing_level: tracing::Level, wqe_offset: u32) {
         let header_size = size_of::<WqeHeader>(); // 8 bytes
         let s_oob_size = size_of::<ManaTxShortOob>(); // 8 bytes
         let size = header_size + s_oob_size;
@@ -756,7 +764,8 @@ impl<T: DeviceBacking> ManaQueue<T> {
             }
         };
 
-        tracelimit::error_ratelimited!(
+        tracelimit::event_ratelimited!(
+            tracing_level,
             last_vbytes = wqe_header.last_vbytes,
             num_sgl_entries = wqe_header.params.num_sgl_entries(),
             inline_client_oob_size = wqe_header.params.inline_client_oob_size(),
@@ -772,7 +781,8 @@ impl<T: DeviceBacking> ManaQueue<T> {
         let tx_s_oob = ManaTxShortOob::read_from_prefix(bytes);
         match tx_s_oob {
             Ok((tx_s_oob, _)) => {
-                tracelimit::error_ratelimited!(
+                tracelimit::event_ratelimited!(
+                    tracing_level,
                     pkt_fmt = tx_s_oob.pkt_fmt(),
                     is_outer_ipv4 = tx_s_oob.is_outer_ipv4(),
                     is_outer_ipv6 = tx_s_oob.is_outer_ipv6(),
@@ -1020,7 +1030,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         // CQE_TX_GDMA_ERR is how the Hardware indicates that it has disabled the queue.
                         self.stats.tx_errors.increment();
                         self.stats.tx_stuck.increment();
-                        self.trace_tx_error(cqe.params, tx_oob, done.len());
+                        self.trace_tx(tracing::Level::ERROR, cqe.params, tx_oob, done.len());
                         // Return a TryRestart error to indicate that the queue needs to be restarted.
                         return Err(TxError::TryRestart(anyhow::anyhow!("TX GDMA error")));
                     }
@@ -1028,7 +1038,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         // Invalid OOB means the metadata didn't match how the Hardware parsed the packet.
                         // This is somewhat common, usually due to Encapsulation, and only the affects the specific packet.
                         self.stats.tx_errors.increment();
-                        self.trace_tx_error(cqe.params, tx_oob, done.len());
+                        self.trace_tx(tracing::Level::WARN, cqe.params, tx_oob, done.len());
                     }
                     ty => {
                         tracelimit::error_ratelimited!(
