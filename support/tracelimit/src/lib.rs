@@ -384,7 +384,7 @@ macro_rules! event_ratelimited {
                 $crate::event_ratelimited_static!(level: DEBUG, period: $period, limit: $limit, $($rest)*);
             }
             $crate::tracing::Level::TRACE => {
-                $crate::event_ratelimited_static!(level: TRACE, period: $period, limit: $($rest)*);
+                $crate::event_ratelimited_static!(level: TRACE, period: $period, limit: $limit, $($rest)*);
             }
         }
     };

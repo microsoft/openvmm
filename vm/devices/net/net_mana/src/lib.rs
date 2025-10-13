@@ -1608,7 +1608,7 @@ mod tests {
             len: packet_len,
             ..Default::default()
         };
-        let expected_num_recieved_packets = 1;
+        let expected_num_received_packets = 1;
         let (data_to_send, tx_segments) =
             build_tx_segments(packet_len, num_segments, tx_metadata.clone());
 
@@ -1618,7 +1618,7 @@ mod tests {
             packet_len,
             tx_segments,
             data_to_send,
-            expected_num_recieved_packets,
+            expected_num_received_packets,
         )
         .await;
     }
@@ -1660,7 +1660,7 @@ mod tests {
         packet_len: usize,
         tx_segments: Vec<TxSegment>,
         data_to_send: Vec<u8>,
-        expected_num_recieved_packets: usize,
+        expected_num_received_packets: usize,
     ) -> QueueStats {
         let tx_id = 1;
         let pages = 256; // 1MB
@@ -1721,13 +1721,13 @@ mod tests {
             rx_packets_n += queues[0].rx_poll(&mut rx_packets[rx_packets_n..]).unwrap();
             // GDMA Errors generate a TryReturn error, ignored here.
             tx_done_n += queues[0].tx_poll(&mut tx_done[tx_done_n..]).unwrap_or(0);
-            if expected_num_recieved_packets == 0 {
+            if expected_num_received_packets == 0 {
                 break;
             }
         }
-        assert_eq!(rx_packets_n, expected_num_recieved_packets);
+        assert_eq!(rx_packets_n, expected_num_received_packets);
 
-        if expected_num_recieved_packets == 0 {
+        if expected_num_received_packets == 0 {
             // If no packets were received, exit.
             let stats = get_queue_stats(queues[0].queue_stats());
             drop(queues);
@@ -1790,7 +1790,7 @@ mod tests {
     #[async_test]
     async fn test_valid_packet(driver: DefaultDriver) {
         let tx_id = 1;
-        let expected_num_recieved_packets = 1;
+        let expected_num_received_packets = 1;
         let num_segments = 1;
         let packet_len = 1138;
         let metadata = net_backend::TxMetadata {
@@ -1808,7 +1808,7 @@ mod tests {
             packet_len,
             tx_segments,
             data_to_send,
-            expected_num_recieved_packets,
+            expected_num_received_packets,
         )
         .await;
 
@@ -1821,7 +1821,7 @@ mod tests {
     #[async_test]
     async fn test_tx_error_handling(driver: DefaultDriver) {
         let tx_id = 1;
-        let expected_num_recieved_packets = 0;
+        let expected_num_received_packets = 0;
         let num_segments = 1;
         let packet_len = 1138;
         // LSO Enabled, but sending insufficient number of segments.
@@ -1841,7 +1841,7 @@ mod tests {
             packet_len,
             tx_segments,
             data_to_send,
-            expected_num_recieved_packets,
+            expected_num_received_packets,
         )
         .await;
 
