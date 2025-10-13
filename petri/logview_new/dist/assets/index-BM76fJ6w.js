@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 (function(){const dl=document.createElement("link").relList;if(dl&&dl.supports&&dl.supports("modulepreload"))return;for(const X of document.querySelectorAll('link[rel="modulepreload"]'))o(X);new MutationObserver(X=>{for(const W of X)if(W.type==="childList")for(const hl of W.addedNodes)hl.tagName==="LINK"&&hl.rel==="modulepreload"&&o(hl)}).observe(document,{childList:!0,subtree:!0});function ll(X){const W={};return X.integrity&&(W.integrity=X.integrity),X.referrerPolicy&&(W.referrerPolicy=X.referrerPolicy),X.crossOrigin==="use-credentials"?W.credentials="include":X.crossOrigin==="anonymous"?W.credentials="omit":W.credentials="same-origin",W}function o(X){if(X.ep)return;X.ep=!0;const W=ll(X);fetch(X.href,W)}})();function A1(r){return r&&r.__esModule&&Object.prototype.hasOwnProperty.call(r,"default")?r.default:r}var ai={exports:{}},ge={};/**
  * @license React
  * react-jsx-runtime.production.js
