@@ -49,6 +49,3 @@ flowey-persist
 
 # Node.js dependencies and artifacts
 node_modules/
-npm-debug.log*
-.npm
-*.tgz
