@@ -15,7 +15,8 @@ use crate::platform::hyperv::arch::hypercall::HvCall;
 // avoiding inline for debuggability in release builds
 #[inline(never)]
 #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
-pub unsafe fn invoke_hypercall_vtl(control: hvdef::hypercall::Control) {
+// SAFETY: The caller must ensure that the hypercall is invoked in a context where it is safe to do so
+unsafe fn invoke_hypercall_vtl(control: hvdef::hypercall::Control) {
     // SAFETY: the caller guarantees the safety of this operation.
     unsafe {
         core::arch::asm! {

@@ -39,7 +39,7 @@ impl HvcallPage {
     fn address(&self) -> u64 {
         let addr = self.buffer.as_ptr() as u64;
         // These should be page-aligned
-        assert!(addr % HV_PAGE_SIZE == 0);
+        assert!(addr.is_multiple_of(HV_PAGE_SIZE));
         addr
     }
 }
