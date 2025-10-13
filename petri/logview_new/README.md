@@ -102,3 +102,15 @@ npm run build
   - You can run `npm run preview` to verify the production build locally.
 
 Note: This is a temporary requirement and will be automated in the future.
+
+## Recommended: Prettier Setup for Consistent Formatting
+
+To ensure consistent code formatting, it is recommended to install the
+[Prettier](https://prettier.io/) extension in your code editor (such as VS
+Code).
+
+For VS Code users, add the following to your settings to automatically format files on save:
+
+```json
+"editor.defaultFormatter": "esbenp.prettier-vscode"
+```
