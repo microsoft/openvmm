@@ -41,9 +41,9 @@ impl SimpleFlowNode for Node {
                 let env = rt.read(env);
 
                 #[cfg(windows)]
-                {
+                if !matches!(rt.backend(), FlowBackend::Local) {
                     // Shutdown and remove any running VMs that might be using the disk
-                    // generated during a previous test run.
+                    // generated during a previous test run. (CI only)
                     let vms = powershell_builder::PowerShellBuilder::new()
                         .cmdlet("Get-VM")
                         .finish()
