@@ -172,13 +172,6 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
                         features.set_mtrr(true);
                         result.edx = features.into();
                     }
-                    CpuidFunction::ExtendedVersionAndFeatures => {
-                        let mut features = cpuid::ExtendedVersionAndFeaturesEdx::from(result.edx);
-                        features.set_mce(true);
-                        features.set_mca(true);
-                        features.set_mtrr(true);
-                        result.edx = features.into();
-                    }
                     _ => {}
                 }
 
