@@ -100,9 +100,7 @@ fn handle_ak_cert<E: TpmEngine>(
         if attempt > 0 {
             println!(
                 "AK certificate mismatch; retrying after {} ms ({}/{})…",
-                AK_CERT_RETRY_DELAY_MS,
-                attempt,
-                retry_attempts
+                AK_CERT_RETRY_DELAY_MS, attempt, retry_attempts
             );
             thread::sleep(Duration::from_millis(AK_CERT_RETRY_DELAY_MS));
         }
@@ -305,9 +303,7 @@ where
                     }
                     Ok(n) => n,
                     Err(_) => {
-                        return ArgsOutcome::Error(format!(
-                            "invalid retry count '{value}'"
-                        ));
+                        return ArgsOutcome::Error(format!("invalid retry count '{value}'"));
                     }
                 };
                 config.ak_cert_retry_attempts = retries;
@@ -398,9 +394,7 @@ fn print_usage() {
     println!("  --ak-cert                 Read the AK certificate NV index");
     println!("      --expected-data <utf8>   Compare AK certificate to provided UTF-8 data");
     println!("      --expected-data-hex <0x..> Compare AK certificate to provided hex data");
-    println!(
-        "      --retry <times>          Retry AK certificate comparison up to <times> times"
-    );
+    println!("      --retry <times>          Retry AK certificate comparison up to <times> times");
     println!("  --report                  Write guest input and read the attestation report");
     println!(
         "  --user-data <text>        Provide UTF-8 user data for --report (max {} bytes)",

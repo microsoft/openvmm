@@ -20,7 +20,7 @@ tracing.workspace = true
 zerocopy.workspace = true
 getrandom.workspace = true
 
-[dev-dependencies]
+[target.'cfg(target_arch = "x86_64")'.dev-dependencies]
 ms-tpm-20-ref = { workspace = true, features = ["vendored"] }
 
 [lints]
