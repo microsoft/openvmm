@@ -369,12 +369,10 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
         .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
         .await
         .unwrap();
-
     let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
     let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
         .await
         .unwrap();
-
     let namespace = driver.namespace(1).await.unwrap();
 
     // Act: Write 1024 bytes of data to disk starting at LBA 1.
