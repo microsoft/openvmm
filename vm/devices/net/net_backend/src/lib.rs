@@ -21,6 +21,7 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::InspectMut;
+use inspect_counters::Counter;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use null::NullEndpoint;
@@ -144,6 +145,12 @@ pub enum TxError {
     #[error("unrecoverable error. {0}")]
     Fatal(#[source] anyhow::Error),
 }
+pub trait BackendQueueStats {
+    fn rx_errors(&self) -> Counter;
+    fn tx_errors(&self) -> Counter;
+    fn rx_packets(&self) -> Counter;
+    fn tx_packets(&self) -> Counter;
+}
 
 /// A trait for sending and receiving network packets.
 #[async_trait]
@@ -172,6 +179,11 @@ pub trait Queue: Send + InspectMut {
 
     /// Get the buffer access.
     fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess>;
+
+    /// Get queue statistics
+    fn queue_stats(&self) -> Option<&dyn BackendQueueStats> {
+        None // Default implementation - not all queues implement stats
+    }
 }
 
 /// A trait for providing access to guest memory buffers.
