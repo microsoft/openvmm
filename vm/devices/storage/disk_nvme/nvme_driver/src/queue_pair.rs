@@ -687,7 +687,7 @@ impl AerHandler for AdminAerHandler {
             self.await_aen_cid = None;
 
             // If error, cleanup and stop processing AENs.
-            if (completion.status.status() != 0) {
+            if completion.status.status() != 0 {
                 self.failed = true;
                 self.last_aen = None;
                 return;
