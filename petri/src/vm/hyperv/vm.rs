@@ -368,8 +368,12 @@ impl HyperVVM {
         // guest unexpectedly restarts. This command may fail if the VM is
         // transitioning between states. In that case, the VM will be shut off
         // and destroyed later if necessary.
-        _ = powershell::run_set_turn_off_on_guest_restart(&self.vmid, &self.ps_mod, !allow_reset)
-            .await;
+        if let Err(e) =
+            powershell::run_set_turn_off_on_guest_restart(&self.vmid, &self.ps_mod, !allow_reset)
+                .await
+        {
+            tracing::warn!("failed to set turn off on guest restart: {e:#}");
+        }
 
         let (halt_reason, timestamp) = self.wait_for_some(Self::halt_event).await?;
         if halt_reason == PetriHaltReason::Reset {

@@ -13,7 +13,7 @@ function Get-MsvmComputerSystem
     )
 
     $vmid = $Vm.Id
-    $msvmComputerSystem = Get-CimInstance -namespace $ROOT_HYPER_V_NAMESPACE -query "select * from msvm_ComputerSystem where Name = '$vmid'"
+    $msvmComputerSystem = Get-CimInstance -namespace $ROOT_HYPER_V_NAMESPACE -query "select * from Msvm_ComputerSystem where Name = '$vmid'"
 
     if (-not $msvmComputerSystem)
     {
