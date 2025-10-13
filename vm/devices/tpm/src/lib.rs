@@ -307,8 +307,6 @@ pub enum TpmErrorKind {
         #[source]
         error: Box<dyn std::error::Error + Send + Sync>,
     },
-    #[error("failed to clear platform hierarchy")]
-    ClearPlatformHierarchy(#[source] TpmHelperError),
     #[error("failed to set pcr banks")]
     SetPcrBanks(#[source] TpmHelperError),
 }
