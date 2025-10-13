@@ -55,9 +55,9 @@ hvlite_ttrpc_vmservice.workspace = true
 mesh_rpc.workspace = true
 
 tempfile.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 pipette_client.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["std"] }
 
 [lints]
 workspace = true

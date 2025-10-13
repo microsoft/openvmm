@@ -25,7 +25,7 @@ object = { workspace = true, features = ["read_core", "elf", "std"] }
 mbrman.workspace = true
 rayon.workspace = true
 serde_json = { workspace = true, features = ["std"]}
-serde.workspace = true
+serde = { workspace = true, features = ["std"] }
 toml_edit = { workspace = true, features = ["serde"] }
 walkdir.workspace = true
 which.workspace = true
