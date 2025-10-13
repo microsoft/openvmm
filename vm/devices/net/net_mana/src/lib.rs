@@ -1575,27 +1575,27 @@ mod tests {
     /// ensures that packets can be sent and received.
     #[async_test]
     async fn test_endpoint_direct_dma(driver: DefaultDriver) {
-        test_default_packet_send(driver, GuestDmaMode::DirectDma, 1138, 1).await;
+        send_test_packet(driver, GuestDmaMode::DirectDma, 1138, 1).await;
     }
 
     #[async_test]
     async fn test_endpoint_bounce_buffer(driver: DefaultDriver) {
-        test_default_packet_send(driver, GuestDmaMode::BounceBuffer, 1138, 1).await;
+        send_test_packet(driver, GuestDmaMode::BounceBuffer, 1138, 1).await;
     }
 
     #[async_test]
     async fn test_segment_coalescing(driver: DefaultDriver) {
         // 34 segments of 60 bytes each == 2040
-        test_default_packet_send(driver, GuestDmaMode::DirectDma, 2040, 34).await;
+        send_test_packet(driver, GuestDmaMode::DirectDma, 2040, 34).await;
     }
 
     #[async_test]
     async fn test_segment_coalescing_many(driver: DefaultDriver) {
         // 128 segments of 16 bytes each == 2048
-        test_default_packet_send(driver, GuestDmaMode::DirectDma, 2048, 128).await;
+        send_test_packet(driver, GuestDmaMode::DirectDma, 2048, 128).await;
     }
 
-    async fn test_default_packet_send(
+    async fn send_test_packet(
         driver: DefaultDriver,
         dma_mode: GuestDmaMode,
         packet_len: usize,
@@ -1800,14 +1800,14 @@ mod tests {
             ..Default::default()
         };
 
-        let (sent_data, tx_segments) = build_tx_segments(packet_len, num_segments, metadata);
+        let (data_to_send, tx_segments) = build_tx_segments(packet_len, num_segments, metadata);
 
         let stats = test_endpoint(
             driver,
             GuestDmaMode::DirectDma,
             packet_len,
             tx_segments,
-            sent_data,
+            data_to_send,
             expected_num_recieved_packets,
         )
         .await;
@@ -1822,9 +1822,9 @@ mod tests {
     async fn test_tx_error_handling(driver: DefaultDriver) {
         let tx_id = 1;
         let expected_num_recieved_packets = 0;
-        // Invalid segment count for LSO, causes CQE_TX_GDMA_ERR
         let num_segments = 1;
         let packet_len = 1138;
+        // LSO Enabled, but sending insufficient number of segments.
         let metadata = net_backend::TxMetadata {
             id: TxId(tx_id),
             segment_count: num_segments,
@@ -1833,14 +1833,14 @@ mod tests {
             ..Default::default()
         };
 
-        let (sent_data, tx_segments) = build_tx_segments(packet_len, num_segments, metadata);
+        let (data_to_send, tx_segments) = build_tx_segments(packet_len, num_segments, metadata);
 
         let stats = test_endpoint(
             driver,
             GuestDmaMode::DirectDma,
             packet_len,
             tx_segments,
-            sent_data,
+            data_to_send,
             expected_num_recieved_packets,
         )
         .await;
