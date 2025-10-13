@@ -319,6 +319,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         )
         .context("failed to create admin queue pair")?;
 
+        let admin_sqes = admin.sq_entries();
+        let admin_cqes = admin.cq_entries();
+
         let admin = worker.admin.insert(admin);
 
         // Register the admin queue with the controller.
@@ -445,6 +448,13 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
             let io_cqsize = (QueuePair::MAX_CQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
             let io_sqsize = (QueuePair::MAX_SQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
+
+            tracing::debug!(
+                io_cqsize,
+                io_sqsize,
+                hw_size = worker.registers.cap.mqes_z(),
+                "io queue sizes"
+            );
 
             // Some hardware (such as ASAP) require that the sq and cq have the same size.
             io_cqsize.min(io_sqsize)
@@ -624,7 +634,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             admin: None, // Updated below.
             identify: Some(Arc::new(
                 spec::IdentifyController::read_from_bytes(saved_state.identify_ctrl.as_bytes())
-                    .map_err(|_| RestoreError::InvalidData)?, // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+                    .map_err(|_| RestoreError::InvalidData)?,
             )),
             driver: driver.clone(),
             io_issuers,
@@ -947,6 +957,9 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             self.bounce_buffer,
         )
         .map_err(|err| DeviceError::IoQueuePairCreationFailure(err, qid))?;
+
+        assert_eq!(queue.sq_entries(), queue.cq_entries());
+        state.qsize = queue.sq_entries();
 
         let io_sq_addr = queue.sq_addr();
         let io_cq_addr = queue.cq_addr();
