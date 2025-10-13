@@ -30,7 +30,6 @@ use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::kmsg_log_task;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::vm::append_cmdline;
-use crate::vm::append_log_params_to_cmdline;
 use anyhow::Context;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
@@ -387,8 +386,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
             OpenHclConfig {
                 vtl2_nvme_boot: _, // TODO, see #1649.
                 vmbus_redirect,
-                command_line,
-                log_levels,
+                command_line: _,
+                log_levels: _,
             },
         )) = &openhcl_config
         {
@@ -412,17 +411,9 @@ impl PetriVmmBackend for HyperVPetriBackend {
             )
             .await?;
 
-            let mut command_line = command_line.clone();
-            if let Some(log_levels) = log_levels {
-                append_cmdline(&mut command_line, log_levels);
-            } else {
-                append_log_params_to_cmdline(&mut command_line);
-            }
+            let command_line = openhcl_config.as_ref().unwrap().1.command_line();
 
-            vm.set_vm_firmware_command_line(
-                &command_line.expect("should have command line because of log levels"),
-            )
-            .await?;
+            vm.set_vm_firmware_command_line(&command_line).await?;
 
             vm.set_vmbus_redirect(*vmbus_redirect).await?;
 

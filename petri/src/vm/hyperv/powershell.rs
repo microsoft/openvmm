@@ -502,7 +502,7 @@ pub async fn run_set_openhcl_firmware(
 pub async fn run_set_vm_command_line(
     vmid: &Guid,
     ps_mod: &Path,
-    command_line: &impl AsRef<str>,
+    command_line: impl AsRef<str>,
 ) -> anyhow::Result<()> {
     run_host_cmd(
         PowerShellBuilder::new()

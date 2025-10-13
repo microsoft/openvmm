@@ -30,7 +30,6 @@ use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openvmm::BOOT_NVME_INSTANCE;
 use crate::openvmm::memdiff_vmgs;
 use crate::vm::append_cmdline;
-use crate::vm::append_log_params_to_cmdline;
 use crate::vtl2_settings::ControllerType;
 use crate::vtl2_settings::Vtl2LunBuilder;
 use crate::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
@@ -680,18 +679,13 @@ impl PetriVmConfigSetupCore<'_> {
                 let OpenHclConfig {
                     vtl2_nvme_boot: _, // load_boot_disk
                     vmbus_redirect: _, // config_openhcl_vmbus_devices
-                    command_line,
-                    log_levels,
+                    command_line: _,
+                    log_levels: _,
                 } = openhcl_config;
 
-                let mut cmdline = command_line.clone();
+                let mut cmdline = Some(openhcl_config.command_line());
 
                 append_cmdline(&mut cmdline, "panic=-1 reboot=triple");
-                if let Some(log_levels) = log_levels {
-                    append_cmdline(&mut cmdline, log_levels);
-                } else {
-                    append_log_params_to_cmdline(&mut cmdline);
-                }
 
                 let isolated = match self.firmware {
                     Firmware::OpenhclLinuxDirect { .. } => {

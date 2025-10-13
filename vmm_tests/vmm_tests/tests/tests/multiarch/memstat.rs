@@ -396,7 +396,7 @@ pub(crate) async fn idle_test<T: PetriVmmBackend>(
                 dynamic_memory_range: None,
             }
         })
-        .with_custom_openhcl_log_levels(&"") // Test framework will set verbose log levels. Override those for stability in these tests.
+        .with_custom_openhcl_log_levels("") // Test framework will set verbose log levels. Override those for stability in these tests.
         .run()
         .await;
 
