@@ -250,7 +250,7 @@ impl StripedDisk {
         let sector_size = devices[0].sector_size();
         let sector_count = devices[0].sector_count();
         let read_only = devices[0].is_read_only();
-        let chunk_size_in_bytes = chunk_size_in_bytes.unwrap_or(CHUNK_SIZE_128K);
+        let chunk_size_in_bytes = chunk_size_in_bytes.filter(|&chunk_size| chunk_size != 0).unwrap_or(CHUNK_SIZE_128K);
         if !chunk_size_in_bytes.is_multiple_of(sector_size) {
             return Err(NewDeviceError::InvalidChunkSize(
                 chunk_size_in_bytes,
