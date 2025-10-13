@@ -20,10 +20,10 @@ use memory_range::MemoryRange;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
 
-#[cfg(feature = "nightly")]
+#[cfg(nightly)]
 use crate::context::InterruptPlatformTrait;
 use crate::context::MsrPlatformTrait;
-#[cfg(feature = "nightly")]
+#[cfg(nightly)]
 use crate::context::SecureInterceptPlatformTrait;
 use crate::context::VirtualProcessorPlatformTrait;
 use crate::context::VpExecToken;
@@ -36,7 +36,7 @@ use crate::platform::hyperv::ctx::vtl_transform;
 use crate::tmkdefs::TmkError;
 use crate::tmkdefs::TmkResult;
 
-#[cfg(feature = "nightly")]
+#[cfg(nightly)]
 impl SecureInterceptPlatformTrait for HvTestCtx {
     /// Configure the Secure Interrupt Message Page (SIMP) and the first
     /// SynIC interrupt (SINT0) so that the hypervisor can vector
@@ -67,7 +67,7 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
     }
 }
 
-#[cfg(feature = "nightly")]
+#[cfg(nightly)]
 impl InterruptPlatformTrait for HvTestCtx {
     /// Install an interrupt handler for the supplied vector on x86-64.
     fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn()) -> TmkResult<()> {

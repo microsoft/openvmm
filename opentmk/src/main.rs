@@ -3,7 +3,7 @@
 
 // UNSAFETY: This crate contains unsafe code to perform low-level operations such as managing memory, handling interrupts, and invoking hypercalls.
 #![expect(unsafe_code)]
-#![cfg_attr(feature = "nightly", feature(abi_x86_interrupt))]
+#![cfg_attr(nightly, feature(abi_x86_interrupt))]
 #![doc = include_str!("../README.md")]
 #![cfg_attr(all(not(test), target_os = "uefi"), no_main)]
 #![cfg_attr(all(not(test), target_os = "uefi"), no_std)]

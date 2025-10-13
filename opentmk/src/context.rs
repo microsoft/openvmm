@@ -15,7 +15,7 @@ use hvdef::Vtl;
 
 use crate::tmkdefs::TmkResult;
 
-#[cfg(feature = "nightly")]
+#[cfg(nightly)]
 /// Trait for platforms that support secure-world intercepts.
 pub trait SecureInterceptPlatformTrait {
     /// Installs a secure-world intercept for the given interrupt.
@@ -28,7 +28,7 @@ pub trait SecureInterceptPlatformTrait {
     fn setup_secure_intercept(&mut self, interrupt_idx: u8) -> TmkResult<()>;
 }
 
-#[cfg(feature = "nightly")]
+#[cfg(nightly)]
 /// Trait for platforms that support Interrupts.
 pub trait InterruptPlatformTrait {
     /// Associates an interrupt vector with a handler inside the

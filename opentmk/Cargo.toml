@@ -6,11 +6,6 @@ name = "opentmk"
 edition.workspace = true
 rust-version.workspace = true
 
-[features]
-default = []
-nightly = ["x86_64-nightly"]
-x86_64-nightly = ["x86_64/nightly"]
-
 [dependencies]
 bitfield-struct.workspace = true
 cfg-if.workspace  = true
