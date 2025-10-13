@@ -532,14 +532,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         ))
     }
 
-    /// Sets the command line parameters passed to OpenHCL related to logging. If not
-    /// specified, the default log levels will be used. See [`OpenHclConfig::default`].
-    pub fn with_custom_openhcl_log_levels(mut self, levels: impl Into<String>) -> Self {
+    /// Sets the command line parameters passed to OpenHCL related to logging.
+    pub fn with_openhcl_log_levels(mut self, levels: OpenHclLogConfig) -> Self {
         self.config
             .firmware
             .openhcl_config_mut()
             .expect("OpenHCL firmware is required to set custom OpenHCL log levels.")
-            .log_levels = levels.into();
+            .log_levels = levels;
         self
     }
 
@@ -1179,6 +1178,21 @@ impl Default for UefiConfig {
     }
 }
 
+/// Control the logging configuration of OpenHCL for this VM.
+#[derive(Debug, Clone)]
+pub enum OpenHclLogConfig {
+    /// Use the default log levels used by petri tests. This will forward
+    /// `OPENVMM_LOG` and `OPENVMM_SHOW_SPANS` from the environment if they are
+    /// set, otherwise it will use `debug` and `true` respectively
+    TestDefault,
+    /// Use the built-in default log levels of OpenHCL (e.g. don't pass
+    /// OPENVMM_LOG or OPENVMM_SHOW_SPANS)
+    BuiltInDefault,
+    /// Use the provided custom log levels (e.g.
+    /// `OPENVMM_LOG=info,disk_nvme=debug OPENVMM_SHOW_SPANS=true`)
+    Custom(String),
+}
+
 /// OpenHCL configuration
 #[derive(Debug, Clone)]
 pub struct OpenHclConfig {
@@ -1192,12 +1206,9 @@ pub struct OpenHclConfig {
     /// directly.
     pub command_line: Option<String>,
     /// Command line parameters that control OpenHCL logging behavior. Separate
-    /// from [`command_line`] so that petri can decide to use default log
-    /// levels. These log levels can also be overridden globally with
-    /// environment variables. See [`OpenHclConfig::default`]. VM backends
-    /// should use [`OpenHclConfig::command_line()`] rather than reading this
-    /// directly.
-    pub log_levels: String,
+    /// from `command_line` so that petri can decide to use default log
+    /// levels.
+    pub log_levels: OpenHclLogConfig,
 }
 
 impl OpenHclConfig {
@@ -1205,34 +1216,45 @@ impl OpenHclConfig {
     /// the command line and log levels.
     pub fn command_line(&self) -> String {
         let mut cmdline = self.command_line.clone();
-        append_cmdline(&mut cmdline, &self.log_levels);
-        cmdline.expect("command line should not be empty")
+        match &self.log_levels {
+            OpenHclLogConfig::TestDefault => {
+                let default_log_levels = {
+                    // Forward OPENVMM_LOG and OPENVMM_SHOW_SPANS to OpenHCL if they're set.
+                    let openhcl_tracing = if let Ok(x) =
+                        std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG"))
+                    {
+                        format!("OPENVMM_LOG={x}")
+                    } else {
+                        "OPENVMM_LOG=debug".to_owned()
+                    };
+                    let openhcl_show_spans = if let Ok(x) = std::env::var("OPENVMM_SHOW_SPANS") {
+                        format!("OPENVMM_SHOW_SPANS={x}")
+                    } else {
+                        "OPENVMM_SHOW_SPANS=true".to_owned()
+                    };
+                    format!("{openhcl_tracing} {openhcl_show_spans}")
+                };
+                append_cmdline(&mut cmdline, &default_log_levels);
+            }
+            OpenHclLogConfig::BuiltInDefault => {
+                // do nothing, use whatever the built-in default is
+            }
+            OpenHclLogConfig::Custom(levels) => {
+                append_cmdline(&mut cmdline, levels);
+            }
+        }
+
+        cmdline.unwrap_or_default()
     }
 }
 
 impl Default for OpenHclConfig {
     fn default() -> Self {
-        let default_log_levels = {
-            // Forward OPENVMM_LOG and OPENVMM_SHOW_SPANS to OpenHCL if they're set.
-            let openhcl_tracing = if let Ok(x) =
-                std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG"))
-            {
-                format!("OPENVMM_LOG={x}")
-            } else {
-                "OPENVMM_LOG=debug".to_owned()
-            };
-            let openhcl_show_spans = if let Ok(x) = std::env::var("OPENVMM_SHOW_SPANS") {
-                format!("OPENVMM_SHOW_SPANS={x}")
-            } else {
-                "OPENVMM_SHOW_SPANS=true".to_owned()
-            };
-            format!("{openhcl_tracing} {openhcl_show_spans}")
-        };
         Self {
             vtl2_nvme_boot: false,
             vmbus_redirect: false,
             command_line: None,
-            log_levels: default_log_levels,
+            log_levels: OpenHclLogConfig::TestDefault,
         }
     }
 }
