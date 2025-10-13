@@ -30,6 +30,7 @@ use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openvmm::BOOT_NVME_INSTANCE;
 use crate::openvmm::memdiff_vmgs;
 use crate::vm::append_cmdline;
+use crate::vm::append_log_params_to_cmdline;
 use crate::vtl2_settings::ControllerType;
 use crate::vtl2_settings::Vtl2LunBuilder;
 use crate::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
@@ -587,19 +588,6 @@ impl PetriVmConfigSetupCore<'_> {
     }
 
     fn load_firmware(&self) -> anyhow::Result<LoadMode> {
-        // Forward OPENVMM_LOG and OPENVMM_SHOW_SPANS to OpenHCL if they're set.
-        let openhcl_tracing =
-            if let Ok(x) = std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG")) {
-                format!("OPENVMM_LOG={x}")
-            } else {
-                "OPENVMM_LOG=debug".to_owned()
-            };
-        let openhcl_show_spans = if let Ok(x) = std::env::var("OPENVMM_SHOW_SPANS") {
-            format!("OPENVMM_SHOW_SPANS={x}")
-        } else {
-            "OPENVMM_SHOW_SPANS=true".to_owned()
-        };
-
         Ok(match (self.arch, &self.firmware) {
             (MachineArch::X86_64, Firmware::LinuxDirect { kernel, initrd }) => {
                 let kernel = File::open(kernel.clone())
@@ -693,14 +681,17 @@ impl PetriVmConfigSetupCore<'_> {
                     vtl2_nvme_boot: _, // load_boot_disk
                     vmbus_redirect: _, // config_openhcl_vmbus_devices
                     command_line,
+                    log_levels,
                 } = openhcl_config;
 
                 let mut cmdline = command_line.clone();
 
-                append_cmdline(
-                    &mut cmdline,
-                    format!("panic=-1 reboot=triple {openhcl_tracing} {openhcl_show_spans}"),
-                );
+                append_cmdline(&mut cmdline, "panic=-1 reboot=triple");
+                if let Some(log_levels) = log_levels {
+                    append_cmdline(&mut cmdline, log_levels);
+                } else {
+                    append_log_params_to_cmdline(&mut cmdline);
+                }
 
                 let isolated = match self.firmware {
                     Firmware::OpenhclLinuxDirect { .. } => {
