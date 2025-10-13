@@ -510,8 +510,8 @@ rusqlite = "0.37"
 rustc-hash = "2.1.1"
 rustyline = "17"
 seccompiler = "0.5"
-serde = "1.0.185"
-serde_json = "1.0"
+serde = { version = "1.0.185", default-features = false }
+serde_json = { version = "1.0", default-features = false }
 serde_yaml = "0.9"
 sha2 = { version = "0.10.8", default-features = false }
 shell-words = "1.1"

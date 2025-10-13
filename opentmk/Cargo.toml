@@ -22,8 +22,8 @@ log.workspace = true
 memory_range.workspace = true
 minimal_rt.workspace = true
 spin.workspace = true
-serde = { version = "1.0", default-features = false, features = ["derive"]}
-serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+serde = { workspace = true, features = ["derive"]}
+serde_json = { workspace = true, features = ["alloc"] }
 thiserror.workspace = true
 uefi = { workspace = true, features = ["alloc"] }
 x86_64 = { workspace = true, features = ["instructions"] }
