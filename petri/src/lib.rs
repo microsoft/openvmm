@@ -76,7 +76,7 @@ pub async fn run_host_cmd(mut cmd: Command) -> Result<String, CommandError> {
     cmd.stderr(Stdio::piped()).stdin(Stdio::null());
 
     let cmd_debug = format!("{cmd:?}");
-    ::tracing::debug!(cmd = cmd_debug, "executing command");
+    ::tracing::trace!(cmd = cmd_debug, "executing command");
 
     let start = Timestamp::now();
     let output = blocking::unblock(move || cmd.output()).await?;
@@ -84,7 +84,7 @@ pub async fn run_host_cmd(mut cmd: Command) -> Result<String, CommandError> {
 
     let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
-    ::tracing::debug!(
+    ::tracing::trace!(
         cmd = cmd_debug,
         stdout_str,
         stderr_str,
