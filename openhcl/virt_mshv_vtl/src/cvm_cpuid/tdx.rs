@@ -163,6 +163,7 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
                 let mut result = Self::cpuid(leaf.0, subleaf);
 
                 // Apply TDX specific fixups.
+                #[expect(clippy::single_match)] // More may come later
                 match leaf {
                     // Always tell the guest that MCE, MCA, and MTRR are supported.
                     CpuidFunction::VersionAndFeatures => {
