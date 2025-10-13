@@ -310,8 +310,6 @@ pub enum TpmErrorKind {
         #[source]
         error: Box<dyn std::error::Error + Send + Sync>,
     },
-    #[error("failed to clear platform hierarchy")]
-    ClearPlatformHierarchy(#[source] tpm_lib::Error),
     #[error("failed to set pcr banks")]
     SetPcrBanks(#[source] tpm_lib::Error),
 }
@@ -625,19 +623,6 @@ impl Tpm {
                 );
             }
         }
-
-        // clear tpm hierarchy control
-        self.tpm_engine_helper
-            .hierarchy_control(TPM20_RH_PLATFORM, TPM20_RH_PLATFORM, false)
-            .map_err(|error| tpm_lib::Error::TpmCommandError {
-                command_debug_info: CommandDebugInfo {
-                    command_code: CommandCodeEnum::HierarchyControl,
-                    auth_handle: Some(TPM20_RH_PLATFORM),
-                    nv_index: None,
-                },
-                error,
-            })
-            .map_err(TpmErrorKind::ClearPlatformHierarchy)?;
 
         self.flush_pending_nvram()
             .await

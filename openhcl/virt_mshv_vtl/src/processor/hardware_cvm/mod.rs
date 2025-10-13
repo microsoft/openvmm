@@ -1604,10 +1604,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     pub(crate) fn cvm_cpuid_result(&mut self, vtl: GuestVtl, leaf: u32, subleaf: u32) -> [u32; 4] {
         // Get the base fixed values.
         let [mut eax, mut ebx, mut ecx, mut edx] =
-            self.partition.cpuid_result(leaf, subleaf, &[0, 0, 0, 0]);
+            self.partition.cpuid.result(leaf, subleaf, &[0, 0, 0, 0]);
 
         // Apply fixups. These must be runtime changes only, for parts of cpuid
-        // that are dynamic (either beccause it's a function of the current VP's
+        // that are dynamic (either because it's a function of the current VP's
         // identity or the current VP or partition state).
         //
         // We rely on the cpuid set being accurate during partition startup,
@@ -1646,51 +1646,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 }
                 _ => {}
             },
-            CpuidFunction::ProcessorTopologyDefinition
-                if self.partition.caps.vendor.is_amd_compatible() =>
-            {
-                let apic_id = self.inner.vp_info.apic_id;
-                let vps_per_socket = self.cvm_partition().vps_per_socket;
-                eax = cpuid::ProcessorTopologyDefinitionEax::from(eax)
-                    .with_extended_apic_id(apic_id)
-                    .into();
-
-                let topology_ebx = cpuid::ProcessorTopologyDefinitionEbx::from(ebx);
-                let mut new_unit_id = apic_id & (vps_per_socket - 1);
-
-                if topology_ebx.threads_per_compute_unit() > 0 {
-                    new_unit_id /= 2;
-                }
-
-                ebx = topology_ebx.with_compute_unit_id(new_unit_id as u8).into();
-
-                // TODO SNP: Ideally we would use the actual value of this property from the host, but
-                // we currently have no way of obtaining it. 1 is the default value for all current VMs.
-                let amd_nodes_per_socket = 1u32;
-
-                let node_id = apic_id
-                    >> (vps_per_socket
-                        .trailing_zeros()
-                        .saturating_sub(amd_nodes_per_socket.trailing_zeros()));
-                // TODO: just set this part statically.
-                let nodes_per_processor = amd_nodes_per_socket - 1;
-
-                ecx = cpuid::ProcessorTopologyDefinitionEcx::from(ecx)
-                    .with_node_id(node_id as u8)
-                    .with_nodes_per_processor(nodes_per_processor as u8)
-                    .into();
-            }
-            CpuidFunction::ExtendedSevFeatures
-                if self.partition.caps.vendor.is_amd_compatible() =>
-            {
-                // SEV features are not exposed to lower VTLs at this time.
-                //
-                // TODO: set this in cvm_cpuid.
-                eax = 0;
-                ebx = 0;
-                ecx = 0;
-                edx = 0;
-            }
             CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION) => {
                 // If VSM has been revoked (or just isn't available) then don't
                 // recommend the use of TLB flush hypercalls. They are only needed
@@ -1700,12 +1655,21 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     *self.cvm_partition().guest_vsm.read(),
                     GuestVsmState::NotPlatformSupported
                 ) {
-                    // The only bit we care about here is within the first 32 bits,
-                    // so just truncating is fine.
-                    let eax_bit = hvdef::HvEnlightenmentInformation::new()
-                        .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
-                        .into_bits() as u32;
-                    eax &= !eax_bit;
+                    [eax, ebx, ecx, edx] =
+                        hvdef::HvEnlightenmentInformation::from_cpuid([eax, ebx, ecx, edx])
+                            .with_use_hypercall_for_remote_flush_and_local_flush_entire(false)
+                            .into_cpuid();
+                }
+            }
+            CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES) => {
+                // Update the VSM access privilege if it's been revoked by UEFI.
+                if matches!(
+                    *self.cvm_partition().guest_vsm.read(),
+                    GuestVsmState::NotPlatformSupported
+                ) {
+                    let mut features = hvdef::HvFeatures::from_cpuid([eax, ebx, ecx, edx]);
+                    features.set_privileges(features.privileges().with_access_vsm(false));
+                    [eax, ebx, ecx, edx] = features.into_cpuid();
                 }
             }
 

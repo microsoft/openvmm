@@ -125,7 +125,7 @@ fn parse_string_attr(input: ParseStream<'_>) -> syn::Result<LitStr> {
 fn parse_wrapped_attr<T: Parse>(input: ParseStream<'_>) -> syn::Result<T> {
     let _: syn::token::Eq = input.parse()?;
     let lit: LitStr = input.parse()?;
-    return lit.parse();
+    lit.parse()
 }
 
 fn parse_wrapped_attr_with<T>(

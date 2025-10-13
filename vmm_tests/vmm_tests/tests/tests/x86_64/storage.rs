@@ -29,6 +29,7 @@ use petri::vtl2_settings::build_vtl2_storage_backing_physical_devices;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use scsidisk_resources::SimpleScsiDvdRequest;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
 use storvsp_resources::ScsiControllerHandle;
@@ -71,6 +72,8 @@ pub(crate) fn new_test_vtl2_nvme_device(
 
 #[derive(Debug, Clone)]
 struct ExpectedGuestDevice {
+    controller_guid: Guid,
+    lun: u32,
     disk_size_sectors: usize,
     #[expect(dead_code)] // Only used in logging via `Debug` trait
     friendly_name: String,
@@ -87,72 +90,63 @@ async fn test_storage_linux(
     agent: &PipetteClient,
     expected_devices: Vec<ExpectedGuestDevice>,
 ) -> anyhow::Result<()> {
-    #[derive(Debug)]
-    // Helper struct for things this test discovers about the device...
-    struct ExpectedGuestDeviceData {
-        #[expect(dead_code)] // Only used in logging via `Debug` trait
-        d: ExpectedGuestDevice,
-        discovered_guest_path: String,
-    }
-
     let sh = agent.unix_shell();
+
+    let all_disks = cmd!(sh, "sh -c 'ls -ld /sys/block/sd*'").read().await?;
+    tracing::info!(?all_disks, "All disks");
 
     // Check that the correct devices are found in the VTL0 guest.
     // The test framework adds additional devices (pipette, cloud-init, etc), so
     // just check that the expected devices are indeed found.
-    //
-    // TODO: Verify VMBUS instance ID, LUN, etc.
-    let devices = cmd!(sh, "sh -c 'ls -d /sys/block/sd*'").read().await?;
-
-    let mut reported_sizes = Vec::new();
-    for device in devices.lines() {
-        let device_info_command =
-            format!("echo /dev/$(basename {device}) $(cat /sys/block/$(basename {device})/size)");
-        let line = cmd!(sh, "sh -c {device_info_command}")
+    let mut device_paths = Vec::new();
+    for d in &expected_devices {
+        let list_sdx_cmd = format!(
+            "ls -d /sys/bus/vmbus/devices/{}/host*/target*/*:0:0:{}/block/sd*",
+            d.controller_guid, d.lun
+        );
+        let devices = cmd!(sh, "sh -c {list_sdx_cmd}").read().await?;
+        let mut devices_iter = devices.lines();
+        let dev = devices_iter.next().ok_or(anyhow::anyhow!(
+            "Couldn't find device for controller {:#} lun {}",
+            d.controller_guid,
+            d.lun
+        ))?;
+        if devices_iter.next().is_some() {
+            anyhow::bail!(
+                "More than 1 device for controller {:#} lun {}",
+                d.controller_guid,
+                d.lun
+            );
+        }
+        let dev = dev
+            .rsplit('/')
+            .next()
+            .ok_or(anyhow::anyhow!("Couldn't parse device name from {dev}"))?;
+        let sectors = cmd!(sh, "cat /sys/block/{dev}/size")
             .read()
             .await?
-            .split_ascii_whitespace()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>();
+            .trim_end()
+            .parse::<usize>()
+            .context(format!(
+                "Failed to parse size of device for controller {:#} lun {}",
+                d.controller_guid, d.lun
+            ))?;
+        if sectors != d.disk_size_sectors {
+            anyhow::bail!(
+                "Unexpected size (in sectors) for device for controller {:#} lun {}: expected {}, got {}",
+                d.controller_guid,
+                d.lun,
+                d.disk_size_sectors,
+                sectors
+            );
+        }
 
-        let size = line[1].parse::<usize>().context("failed to parse size")?;
-
-        reported_sizes.push((line[0].clone(), size));
+        device_paths.push(format!("/dev/{dev}"));
     }
 
-    let found_devices = expected_devices
-        .iter()
-        .map(|d| {
-            match reported_sizes
-                .iter()
-                .position(|(_device, sectors)| *sectors == d.disk_size_sectors)
-            {
-                Some(idx) => ExpectedGuestDeviceData {
-                    d: d.clone(),
-                    discovered_guest_path: reported_sizes[idx].0.clone(),
-                },
-                None => {
-                    // In the future, this could be more elegant by returning `Result` here and
-                    // using `try_collect` instead of `collect` below. For now, just bail
-                    // on the first non-found device (if any).
-                    //
-                    // See https://doc.rust-lang.org/std/iter/trait.Iterator.html#method.try_collect
-                    tracing::error!(?d, "couldn't find drive with expected sector count");
-                    panic!("couldn't find drive with expected sector count");
-                }
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let identical_devices: Vec<(&ExpectedGuestDeviceData, &ExpectedGuestDeviceData)> =
-        found_devices
-            .iter()
-            .zip(found_devices.iter().skip(1))
-            .filter(|(left, right)| left.discovered_guest_path == right.discovered_guest_path)
-            .collect();
-    if !identical_devices.is_empty() {
-        tracing::error!(?identical_devices, "found identical devices");
-        assert!(identical_devices.is_empty());
+    // Check duplicates
+    if device_paths.iter().collect::<HashSet<_>>().len() != device_paths.len() {
+        anyhow::bail!("Found duplicate device paths: {device_paths:?}");
     }
 
     // Do IO to all devices. Generate a file with random contents so that we
@@ -165,31 +159,30 @@ async fn test_storage_linux(
     // - `iflag=fullblock` is needed to ensure that `dd` reads the full
     //   amount of data requested, otherwise it may read less and exit
     //   early.
-    for device in found_devices {
+    for device in &device_paths {
         tracing::info!(?device, "Performing IO tests");
+        cmd!(sh, "dd if=/dev/urandom of=/tmp/random_data bs=1M count=100")
+            .run()
+            .await?;
+
         cmd!(
             sh,
-            "sh -c 'dd if=/dev/urandom of=/tmp/random_data bs=1M count=100'"
+            "dd if=/tmp/random_data of={device} bs=1M count=100 oflag=direct conv=fsync"
         )
         .run()
         .await?;
 
-        let write_to_device_cmd = format!(
-            "dd if=/tmp/random_data of={} bs=1M count=100 oflag=direct conv=fsync",
-            device.discovered_guest_path
-        );
-        cmd!(sh, "sh -c {write_to_device_cmd}").run().await?;
+        cmd!(
+            sh,
+            "dd if={device} of=/tmp/verify_data bs=1M count=100 iflag=direct,fullblock"
+        )
+        .run()
+        .await?;
 
-        let read_from_device_cmd = format!(
-            "dd if={} of=/tmp/verify_data bs=1M count=100 iflag=direct,fullblock",
-            device.discovered_guest_path
-        );
-        cmd!(sh, "sh -c {read_from_device_cmd}").run().await?;
-
-        let diff_out = cmd!(sh, "sh -c 'diff -s /tmp/random_data /tmp/verify_data'")
+        cmd!(sh, "cmp -s /tmp/random_data /tmp/verify_data")
             .read()
-            .await?;
-        assert!(diff_out.contains("are identical"), "data mismatch");
+            .await
+            .with_context(|| format!("Read and written data differs for device {device}"))?;
 
         cmd!(sh, "rm -f /tmp/random_data /tmp/verify_data")
             .run()
@@ -203,7 +196,7 @@ async fn test_storage_linux(
 /// vmbus relay. This should expose two disks to VTL0 via vmbus.
 #[openvmm_test(
     openhcl_linux_direct_x64,
-    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))
+    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
@@ -301,10 +294,14 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
         &agent,
         vec![
             ExpectedGuestDevice {
+                controller_guid: scsi_instance,
+                lun: vtl0_scsi_lun,
                 disk_size_sectors: SCSI_DISK_SECTORS as usize,
                 friendly_name: "scsi".to_string(),
             },
             ExpectedGuestDevice {
+                controller_guid: scsi_instance,
+                lun: vtl0_nvme_lun,
                 disk_size_sectors: NVME_DISK_SECTORS as usize,
                 friendly_name: "nvme".to_string(),
             },
@@ -321,7 +318,7 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
 /// Test an OpenHCL Linux Stripe VM with two SCSI disk assigned to VTL2 via NVMe Emulator
 #[openvmm_test(
     openhcl_linux_direct_x64,
-    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))
+    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn openhcl_linux_stripe_storvsp(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -397,6 +394,8 @@ async fn openhcl_linux_stripe_storvsp(
     test_storage_linux(
         &agent,
         vec![ExpectedGuestDevice {
+            controller_guid: scsi_instance,
+            lun: vtl0_nvme_lun,
             disk_size_sectors: (NVME_DISK_SECTORS * NUMBER_OF_STRIPE_DEVICES) as usize,
             friendly_name: "striped-nvme".to_string(),
         }],
@@ -414,7 +413,7 @@ async fn openhcl_linux_stripe_storvsp(
 /// drive, then add and remove media.
 #[openvmm_test(
     openhcl_linux_direct_x64,
-    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))
+    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn openhcl_linux_storvsp_dvd(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -547,7 +546,7 @@ async fn openhcl_linux_storvsp_dvd(
 /// backing, and vmbus relay. This should expose a DVD to VTL0 via vmbus.
 #[openvmm_test(
     openhcl_linux_direct_x64,
-    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))
+    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn openhcl_linux_storvsp_dvd_nvme(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
