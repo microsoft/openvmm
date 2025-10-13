@@ -971,7 +971,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_x86,
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
-                needs_prep_run: false,
+                needs_prep_run: true,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -993,7 +993,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_x86,
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
-                needs_prep_run: false,
+                needs_prep_run: true,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,

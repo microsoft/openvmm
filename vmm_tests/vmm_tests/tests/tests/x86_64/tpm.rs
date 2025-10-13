@@ -452,9 +452,8 @@ async fn tpm_test_platform_hierarchy_disabled(
 // TODO: Enable linux test when agent is supported.
 #[openvmm_test(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
-    // openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
 )]
-async fn vbs_attestation_with_agent(
+async fn vbs_attestation_with_agent_windows(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,),
 ) -> anyhow::Result<()> {

@@ -1920,7 +1920,12 @@ jobs:
       run: flowey.exe e 15 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
     - name: install vmm tests deps (windows)
-      run: flowey.exe e 15 flowey_lib_hvlite::install_vmm_tests_deps 0
+      run: |-
+        flowey.exe e 15 flowey_lib_hvlite::install_vmm_tests_deps 0
+        flowey.exe e 15 flowey_core::pipeline::artifact::resolve 6
+      shell: bash
+    - name: running vmm_test prep_steps
+      run: flowey.exe e 15 flowey_lib_hvlite::run_prep_steps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
@@ -2475,7 +2480,12 @@ jobs:
       run: flowey.exe e 17 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
     - name: install vmm tests deps (windows)
-      run: flowey.exe e 17 flowey_lib_hvlite::install_vmm_tests_deps 0
+      run: |-
+        flowey.exe e 17 flowey_lib_hvlite::install_vmm_tests_deps 0
+        flowey.exe e 17 flowey_core::pipeline::artifact::resolve 6
+      shell: bash
+    - name: running vmm_test prep_steps
+      run: flowey.exe e 17 flowey_lib_hvlite::run_prep_steps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
