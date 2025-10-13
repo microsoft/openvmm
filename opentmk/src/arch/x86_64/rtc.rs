@@ -52,8 +52,9 @@ impl DateTime {
     /// Converts the DateTime to seconds since the Unix epoch (1970-01-01T00:00:00Z).
     pub fn unix_epoch_sec(&self) -> u64 {
         // Check if a year is a leap year
-        let is_leap_year =
-            |year: u64| -> bool { (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400) };
+        let is_leap_year = |year: u64| -> bool {
+            (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
+        };
 
         // Define days in each month (0-indexed array)
         let days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];

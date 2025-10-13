@@ -23,4 +23,5 @@ pub mod tests;
 pub mod tmk_assert;
 pub mod tmk_logger;
 pub mod tmkdefs;
+#[cfg(target_os = "uefi")]
 mod uefi;
