@@ -16,7 +16,14 @@ on:
     - main
     - release/*
     types:
+    - opened
+    - synchronize
+    - reopened
+    - ready_for_review
     - labeled
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   job0:
     name: xtask fmt (windows)
