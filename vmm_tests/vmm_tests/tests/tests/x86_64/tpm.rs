@@ -9,13 +9,9 @@ use petri::ResolvedArtifact;
 use petri::ShutdownKind;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
-use petri_artifact_resolver_openvmm_known_paths::get_repo_root;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64;
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::OnceLock;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
 
@@ -67,54 +63,6 @@ fn configure_ak_cert_retry_vm(
         })
 }
 
-fn prepped_windows_2025_disk_path() -> anyhow::Result<PathBuf> {
-    let images_dir = std::env::var("VMM_TEST_IMAGES")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("images"));
-    let images_dir = if images_dir.is_absolute() {
-        images_dir
-    } else {
-        get_repo_root()?.join(images_dir)
-    };
-
-    let base_filename = petri_artifacts_vmm_test::artifacts::test_vhd::
-        GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::FILENAME;
-    let prepped_filename = base_filename.replace(".vhd", "-prepped.vhd");
-    Ok(images_dir.join(prepped_filename))
-}
-
-fn ensure_windows_2025_prepped_vhd() -> anyhow::Result<()> {
-    static PREP_ONCE: OnceLock<()> = OnceLock::new();
-
-    PREP_ONCE.get_or_try_init(|| {
-        let prepped_path = prepped_windows_2025_disk_path()?;
-        if prepped_path.exists() {
-            return Ok(());
-        }
-
-        let status = Command::new("cargo")
-            .current_dir(get_repo_root()?)
-            .args(["run", "-p", "prep_steps"])
-            .status()
-            .context("failed to execute `cargo run -p prep_steps`")?;
-
-        if !status.success() {
-            anyhow::bail!("prep_steps exited with status {status}");
-        }
-
-        if !prepped_path.exists() {
-            anyhow::bail!(
-                "prep_steps completed but prepped VHD not found at {}",
-                prepped_path.display()
-            );
-        }
-
-        Ok(())
-    })?;
-
-    Ok(())
-}
-
 /// Basic boot tests with TPM enabled.
 #[openvmm_test(
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -152,16 +100,11 @@ async fn tpm_ak_cert_persisted_linux(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_LINUX_X64>,),
 ) -> anyhow::Result<()> {
-    ensure!(
-        config.os_flavor() == OsFlavor::Linux,
-        "test invoked with unexpected guest flavor"
-    );
-
     // First boot - AK cert request will be served by GED.
     // Second boot - Ak cert request will be bypassed by GED.
     let config = configure_ak_cert_persisted_vm(config);
     // TODO: with_expect_reset shouldn't be needed once with_tpm() is backend-agnostic.
-    let (mut vm, mut agent) = config.with_expect_reset().run().await?;
+    let (vm, agent) = config.with_expect_reset().run().await?;
 
     let (linux_artifact,) = extra_deps;
     let host_binary = linux_artifact.get();
@@ -201,18 +144,13 @@ async fn tpm_ak_cert_persisted_windows(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,),
 ) -> anyhow::Result<()> {
-    ensure!(
-        config.os_flavor() == OsFlavor::Windows,
-        "test invoked with unexpected guest flavor"
-    );
-
     let config = configure_ak_cert_persisted_vm(config);
-    let (mut vm, mut agent) = config.run().await?;
+    let (mut vm, agent) = config.run().await?;
 
     // First boot - AK cert request will be served by GED.
     // Second boot - Ak cert request will be bypassed by GED.
     agent.reboot().await?;
-    let mut agent = vm.wait_for_reset().await?;
+    let agent = vm.wait_for_reset().await?;
 
     let (windows_artifact,) = extra_deps;
     let host_binary = windows_artifact.get();
@@ -254,14 +192,9 @@ async fn tpm_ak_cert_retry_linux(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_LINUX_X64>,),
 ) -> anyhow::Result<()> {
-    ensure!(
-        config.os_flavor() == OsFlavor::Linux,
-        "test invoked with unexpected guest flavor"
-    );
-
     let config = configure_ak_cert_retry_vm(config);
     // TODO: with_expect_reset shouldn't be needed once with_tpm() is backend-agnostic.
-    let (mut vm, mut agent) = config.with_expect_reset().run().await?;
+    let (vm, agent) = config.with_expect_reset().run().await?;
 
     let (linux_artifact,) = extra_deps;
     let host_binary = linux_artifact.get();
@@ -316,13 +249,8 @@ async fn tpm_ak_cert_retry_windows(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,),
 ) -> anyhow::Result<()> {
-    ensure!(
-        config.os_flavor() == OsFlavor::Windows,
-        "test invoked with unexpected guest flavor"
-    );
-
     let config = configure_ak_cert_retry_vm(config);
-    let (mut vm, mut agent) = config.run().await?;
+    let (mut vm, agent) = config.run().await?;
 
     let (windows_artifact,) = extra_deps;
     let host_binary = windows_artifact.get();
@@ -350,7 +278,7 @@ async fn tpm_ak_cert_retry_windows(
     }
 
     agent.reboot().await?;
-    let mut agent = vm.wait_for_reset().await?;
+    let agent = vm.wait_for_reset().await?;
 
     let expected_hex = expected_ak_cert_hex();
     let sh = agent.windows_shell();
@@ -457,8 +385,6 @@ async fn vbs_attestation_with_agent_windows(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,),
 ) -> anyhow::Result<()> {
-    ensure_windows_2025_prepped_vhd()?;
-
     let os_flavor = config.os_flavor();
     let (tpm_guest_tests_artifact,) = extra_deps;
     let tpm_guest_tests_host_path = tpm_guest_tests_artifact.get();
