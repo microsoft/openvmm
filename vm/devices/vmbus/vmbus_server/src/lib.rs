@@ -866,7 +866,7 @@ impl ServerTask {
         // revoked before being dropped.
         if let Some(channel) = self.inner.channels.get(&id.offer_id) {
             if channel.seq == id.seq {
-                tracing::info!(?id.offer_id, "revoking channel");
+                tracing::info!(?id.offer_id, key = %channel.key, "revoking channel");
                 self.inner.channels.remove(&id.offer_id);
                 self.server
                     .with_notifier(&mut self.inner)
@@ -957,13 +957,14 @@ impl ServerTask {
 
         match &mut channel.state {
             ChannelState::Closing => {
+                tracing::debug!(?offer_id, key = %channel.key, "closing channel");
                 channel.state = ChannelState::Closed;
                 self.server
                     .with_notifier(&mut self.inner)
                     .close_complete(offer_id);
             }
             _ => {
-                tracing::error!(?offer_id, "invalid close channel response");
+                tracing::error!(?offer_id, key = %channel.key, "invalid close channel response");
             }
         };
     }
@@ -1155,6 +1156,7 @@ impl ServerTask {
     }
 
     fn handle_tl_connect_result(&mut self, result: HvsockConnectResult) {
+        tracing::debug!(?result, "hvsock connect result");
         assert_ne!(self.inner.hvsock_requests, 0);
         self.inner.hvsock_requests -= 1;
 
@@ -1507,6 +1509,7 @@ impl Notifier for ServerTaskInner {
         let response = match action {
             channels::Action::Open(open_params, version) => {
                 let seq = channel.seq;
+                let key = channel.key;
                 match self.open_channel(offer_id, &open_params) {
                     Ok((channel, interrupt)) => handle(
                         offer_id,
@@ -1524,6 +1527,7 @@ impl Notifier for ServerTaskInner {
                         tracelimit::error_ratelimited!(
                             err = err.as_ref() as &dyn std::error::Error,
                             ?offer_id,
+                            %key,
                             "could not open channel",
                         );
 
@@ -1722,6 +1726,7 @@ impl Notifier for ServerTaskInner {
     }
 
     fn notify_hvsock(&mut self, request: &HvsockConnectRequest) {
+        tracing::debug!(?request, "received hvsock connect request");
         self.hvsock_requests += 1;
         self.hvsock_send.send(*request);
     }
@@ -1946,6 +1951,7 @@ impl ServerTaskInner {
                 .new_guest_message_port(self.redirect_vtl, new_target.vp, new_target.sint)
                 .inspect_err(|err| {
                     tracing::error!(
+                        key = %channel.key,
                         ?err,
                         ?self.redirect_vtl,
                         ?new_target,
@@ -1963,6 +1969,7 @@ impl ServerTaskInner {
             // ignore it and just send to the old vp.
             if let Err(err) = message_port.set_target_vp(new_target.vp) {
                 tracing::error!(
+                    key = %channel.key,
                     ?err,
                     ?self.redirect_vtl,
                     ?new_target,
