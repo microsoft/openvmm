@@ -929,8 +929,8 @@ impl SimpleFlowNode for Node {
 
             let junit_xml = results.map(ctx, |r| r.junit_xml);
             let published_results = ctx.reqv(|v| {
-                flowey_lib_common::publish_test_results::Request::PublishVmmTestResultsLocal(
-                    flowey_lib_common::publish_test_results::PublishVmmTestResultsLocal {
+                flowey_lib_common::publish_test_results::Request::PublishJunitXml(
+                    flowey_lib_common::publish_test_results::PublishJunitXml {
                         junit_xml,
                         test_label,
                         output_dir: Some(ReadVar::from_static(test_content_dir)),

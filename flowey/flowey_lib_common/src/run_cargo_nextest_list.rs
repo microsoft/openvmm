@@ -27,11 +27,11 @@ flowey_request! {
         /// Additional env vars set when executing the tests.
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
         /// Output directory for the nextest list output file
-        pub output_dir: ReadVar<Option<PathBuf>>,
+        pub output_dir: ReadVar<PathBuf>,
         /// Wait for specified side-effects to resolve
         pub pre_run_deps: Vec<ReadVar<SideEffect>>,
         /// Final path to nextest list output file
-        pub output_file: WriteVar<Option<PathBuf>>,
+        pub output_file: WriteVar<PathBuf>,
     }
 }
 
@@ -90,11 +90,6 @@ impl SimpleFlowNode for Node {
                 let cmd = rt.read(cmd);
                 let output_dir = rt.read(output_dir);
 
-                if output_dir.is_none() {
-                    rt.write(output_file, &None);
-                    return Ok(());
-                }
-
                 let (status, stdout) =
                     run_command(&cmd, &working_dir, /* capture_stdout: */ true)?;
 
@@ -111,12 +106,12 @@ impl SimpleFlowNode for Node {
 
                 let json_value = get_nextest_list_output_from_stdout(stdout)?;
 
-                let final_path = output_dir.unwrap().join("nextest_list_output.json");
+                let final_path = output_dir.join("nextest_list_output.json");
                 let mut file = fs_err::File::create(&final_path)?;
                 file.write_all(serde_json::to_string_pretty(&json_value)?.as_bytes())?;
                 file.flush()?;
 
-                rt.write(output_file, &Some(final_path.to_path_buf()));
+                rt.write(output_file, &final_path.to_path_buf());
 
                 Ok(())
             }

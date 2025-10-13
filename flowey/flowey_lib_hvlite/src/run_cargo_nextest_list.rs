@@ -24,11 +24,11 @@ flowey_request! {
         /// Additional env vars set when executing the tests.
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
         /// Output directory for the nextest list output file
-        pub output_dir: ReadVar<Option<PathBuf>>,
+        pub output_dir: ReadVar<PathBuf>,
         /// Wait for specified side-effects to resolve
         pub pre_run_deps: Vec<ReadVar<SideEffect>>,
         /// Final path to nextest list output file
-        pub output_file: WriteVar<Option<PathBuf>>,
+        pub output_file: WriteVar<PathBuf>,
     }
 }
 

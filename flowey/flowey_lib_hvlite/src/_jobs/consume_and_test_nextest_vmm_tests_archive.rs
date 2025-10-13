@@ -212,7 +212,6 @@ impl SimpleFlowNode for Node {
         let test_log_path = test_log_path.depending_on(ctx, &results);
 
         let junit_xml = results.map(ctx, |r| r.junit_xml);
-        let output_dir = junit_xml.map(ctx, |p| p.map(|p| p.parent().unwrap().to_path_buf()));
         let archive_file = nextest_vmm_tests_archive.map(ctx, |x| x.archive_file);
         let nextest_list_json = ctx.reqv(|v| crate::run_cargo_nextest_list::Request {
             archive_file,
@@ -223,46 +222,59 @@ impl SimpleFlowNode for Node {
             nextest_profile: nextest_profile.as_str().to_owned(),
             nextest_filter_expr: nextest_filter_expr.clone(),
             extra_env: Some(extra_env),
-            output_dir,
+            output_dir: test_log_path.clone(),
             pre_run_deps: vec![],
             output_file: v,
         });
 
-        let reported_results = ctx.reqv(|v| {
-            flowey_lib_common::publish_test_results::Request::PublishVmmTestResultsCi(
-                flowey_lib_common::publish_test_results::PublishVmmTestResultsCi {
+        let mut side_effects = Vec::new();
+
+        // Publish JUnit XML
+        side_effects.push(ctx.reqv(|v| {
+            flowey_lib_common::publish_test_results::Request::PublishJunitXml(
+                flowey_lib_common::publish_test_results::PublishJunitXml {
                     junit_xml,
-                    test_label: junit_test_label,
-                    attachments: BTreeMap::from([
-                        (
-                            "logs".to_string(),
-                            (
-                                flowey_lib_common::publish_test_results::Attachments::Logs(
-                                    test_log_path,
-                                ),
-                                false,
-                            ),
-                        ),
-                        (
-                            "nextest-list".to_string(),
-                            (
-                                flowey_lib_common::publish_test_results::Attachments::NextestListJson(
-                                    nextest_list_json,
-                                ),
-                                false,
-                            ),
-                        ),
-                    ]),
-                    junit_xml_output_dir,
-                    nextest_list_json_output_dir,
-                    test_results_full_output_dir,
+                    test_label: junit_test_label.clone(),
+                    output_dir: Some(junit_xml_output_dir),
                     done: v,
                 },
             )
-        });
+        }));
+
+        // Publish test logs
+        side_effects.push(ctx.reqv(|v| {
+            flowey_lib_common::publish_test_results::Request::PublishTestLogs(
+                flowey_lib_common::publish_test_results::PublishTestLogs {
+                    test_label: junit_test_label.clone(),
+                    attachments: BTreeMap::from([(
+                        "logs".to_string(),
+                        (
+                            flowey_lib_common::publish_test_results::Attachments::Logs(
+                                test_log_path,
+                            ),
+                            false,
+                        ),
+                    )]),
+                    output_dir: test_results_full_output_dir,
+                    done: v,
+                },
+            )
+        }));
+
+        // Publish nextest-list.json
+        side_effects.push(ctx.reqv(|v| {
+            flowey_lib_common::publish_test_results::Request::PublishNextestListJson(
+                flowey_lib_common::publish_test_results::PublishNextestListJson {
+                    nextest_list_json,
+                    test_label: junit_test_label,
+                    output_dir: nextest_list_json_output_dir,
+                    done: v,
+                },
+            )
+        }));
 
         ctx.emit_rust_step("report test results to overall pipeline status", |ctx| {
-            reported_results.claim(ctx);
+            side_effects.claim(ctx);
             done.claim(ctx);
 
             let results = results.clone().claim(ctx);

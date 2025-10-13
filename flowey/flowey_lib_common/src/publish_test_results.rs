@@ -20,7 +20,7 @@ pub enum Attachments {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct PublishUnitTestResults {
+pub struct PublishJunitXml {
     /// Path to a junit.xml file
     ///
     /// HACK: this is an optional since `flowey` doesn't (yet?) have any way
@@ -37,13 +37,8 @@ pub struct PublishUnitTestResults {
     pub done: WriteVar<SideEffect>,
 }
 
-pub type PublishVmmTestResultsLocal = PublishUnitTestResults;
-
 #[derive(Serialize, Deserialize)]
-pub struct PublishVmmTestResultsCi {
-    pub junit_xml: ReadVar<Option<PathBuf>>,
-    /// Brief string used when publishing the test.
-    /// Must be unique to the pipeline.
+pub struct PublishTestLogs {
     pub test_label: String,
     /// Additional files or directories to upload.
     ///
@@ -52,21 +47,26 @@ pub struct PublishVmmTestResultsCi {
     /// these attachments will not be uploaded as distinct artifacts and
     /// will instead be uploaded via the JUnit integration.
     pub attachments: BTreeMap<String, (Attachments, bool)>,
-    /// Copy the junit xml file to the provided directory.
-    pub junit_xml_output_dir: ReadVar<PathBuf>,
-    /// Copy the nextest-list.json to the provided directory.
-    pub nextest_list_json_output_dir: ReadVar<PathBuf>,
-    /// Copy full test results (all logs, dumps, etc) to the provided directory.
-    pub test_results_full_output_dir: ReadVar<PathBuf>,
+    pub output_dir: ReadVar<PathBuf>,
+    /// Side-effect confirming that the publish has succeeded
+    pub done: WriteVar<SideEffect>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PublishNextestListJson {
+    /// Path to a nextest-list.json file
+    pub nextest_list_json: ReadVar<PathBuf>,
+    pub test_label: String,
+    pub output_dir: ReadVar<PathBuf>,
     /// Side-effect confirming that the publish has succeeded
     pub done: WriteVar<SideEffect>,
 }
 
 flowey_request! {
     pub enum Request {
-        PublishUnitTestResults(PublishUnitTestResults),
-        PublishVmmTestResultsLocal(PublishVmmTestResultsLocal),
-        PublishVmmTestResultsCi(PublishVmmTestResultsCi),
+        PublishJunitXml(PublishJunitXml),
+        PublishTestLogs(PublishTestLogs),
+        PublishNextestListJson(PublishNextestListJson),
     }
 }
 
@@ -84,187 +84,161 @@ impl FlowNode for Node {
         let mut resolve_side_effects = Vec::new();
 
         for req in requests {
-            let (
-                junit_xml,
-                label,
-                attachments,
-                junit_xml_output_dir,
-                nextest_list_json_output_dir,
-                test_results_full_output_dir,
-                done,
-            ) = match req {
-                Request::PublishUnitTestResults(PublishUnitTestResults {
+            match req {
+                Request::PublishJunitXml(PublishJunitXml {
                     junit_xml,
-                    test_label,
+                    test_label: label,
                     output_dir,
                     done,
-                }) => (
-                    junit_xml,
-                    test_label,
-                    BTreeMap::new(),
-                    None,
-                    None,
-                    output_dir,
-                    done,
-                ),
-                Request::PublishVmmTestResultsLocal(PublishVmmTestResultsLocal {
-                    junit_xml,
-                    test_label,
-                    output_dir,
-                    done,
-                }) => (
-                    junit_xml,
-                    test_label,
-                    BTreeMap::new(),
-                    None,
-                    None,
-                    output_dir,
-                    done,
-                ),
-                Request::PublishVmmTestResultsCi(PublishVmmTestResultsCi {
-                    junit_xml,
-                    test_label,
-                    attachments,
-                    junit_xml_output_dir,
-                    nextest_list_json_output_dir,
-                    test_results_full_output_dir,
-                    done,
-                }) => (
-                    junit_xml,
-                    test_label,
-                    attachments,
-                    Some(junit_xml_output_dir),
-                    Some(nextest_list_json_output_dir),
-                    Some(test_results_full_output_dir),
-                    done,
-                ),
-            };
+                }) => {
+                    resolve_side_effects.push(done);
 
-            resolve_side_effects.push(done);
+                    let step_name =
+                        format!("copy test results to artifact directory: {label} (JUnit XML)");
+                    let artifact_name = format!("{label}-junit-xml");
 
-            let step_name = format!("copy test results to artifact directory: {label} (JUnit XML)");
-            let artifact_name = format!("{label}-junit-xml");
+                    let has_junit_xml = junit_xml.map(ctx, |p| p.is_some());
+                    let junit_xml = junit_xml.map(ctx, |p| p.unwrap_or_default());
 
-            let has_junit_xml = junit_xml.map(ctx, |p| p.is_some());
-            let junit_xml = junit_xml.map(ctx, |p| p.unwrap_or_default());
-
-            match ctx.backend() {
-                // Since ADO supports native JUnit test result publishing,
-                // we don't need to copy the XML file to an artifact directory.
-                FlowBackend::Ado => {
-                    use_side_effects.push(ctx.reqv(|v| {
-                        crate::ado_task_publish_test_results::Request {
-                            step_name,
-                            format:
-                                crate::ado_task_publish_test_results::AdoTestResultsFormat::JUnit,
-                            results_file: junit_xml,
-                            test_title: label.clone(),
-                            condition: Some(has_junit_xml),
-                            done: v,
+                    match ctx.backend() {
+                        FlowBackend::Ado => {
+                            use_side_effects.push(ctx.reqv(|v| {
+                                crate::ado_task_publish_test_results::Request {
+                                    step_name,
+                                    format: crate::ado_task_publish_test_results::AdoTestResultsFormat::JUnit,
+                                    results_file: junit_xml,
+                                    test_title: label.clone(),
+                                    condition: Some(has_junit_xml),
+                                    done: v,
+                                }
+                            }));
                         }
-                    }));
+                        FlowBackend::Github | FlowBackend::Local => {
+                            if let Some(junit_xml_dst) = output_dir {
+                                use_side_effects.push(ctx.emit_rust_step(step_name, move |ctx| {
+                                    let output_dir = junit_xml_dst.claim(ctx);
+                                    let has_junit_xml = has_junit_xml.claim(ctx);
+                                    let junit_xml = junit_xml.claim(ctx);
+
+                                    move |rt| {
+                                        let output_dir = rt.read(output_dir);
+                                        let has_junit_xml = rt.read(has_junit_xml);
+                                        let junit_xml = rt.read(junit_xml);
+
+                                        if has_junit_xml {
+                                            fs_err::copy(
+                                                junit_xml,
+                                                output_dir.join(format!("{artifact_name}.xml")),
+                                            )?;
+                                        }
+
+                                        Ok(())
+                                    }
+                                }));
+                            } else {
+                                use_side_effects.push(has_junit_xml.into_side_effect());
+                                use_side_effects.push(junit_xml.into_side_effect());
+                            }
+                        }
+                    }
                 }
-                FlowBackend::Github | FlowBackend::Local => {
-                    // Copy the junit XML into the "light" results directory if one
-                    // was provided. This covers both GitHub and local runs.
-                    if let Some(junit_xml_dst) = junit_xml_output_dir {
+                Request::PublishTestLogs(PublishTestLogs {
+                    test_label: label,
+                    attachments,
+                    output_dir,
+                    done,
+                }) => {
+                    resolve_side_effects.push(done);
+
+                    for (attachment_label, (attachment_kind, publish_on_ado)) in attachments {
+                        let step_name = format!(
+                            "copy attachments to artifacts directory: {label} ({attachment_label})"
+                        );
+                        let mut artifact_name = format!("{label}-{attachment_label}");
+                        let attachment_path_opt = match &attachment_kind {
+                            Attachments::Logs(p) => p.clone().map(ctx, Some),
+                            Attachments::NextestListJson(p) => {
+                                artifact_name += ".json";
+                                p.clone()
+                            }
+                        };
+
+                        let attachment_exists = attachment_path_opt.map(ctx, |opt| {
+                            opt.as_ref()
+                                .map(|p| {
+                                    p.exists()
+                                        && (p.is_file()
+                                            || p.read_dir()
+                                                .expect("failed to read attachment dir")
+                                                .next()
+                                                .is_some())
+                                })
+                                .unwrap_or(false)
+                        });
+
+                        if matches!(ctx.backend(), FlowBackend::Ado) && !publish_on_ado {
+                            use_side_effects.push(attachment_exists.into_side_effect());
+                            use_side_effects.push(attachment_path_opt.into_side_effect());
+                            continue;
+                        }
+
+                        let output_dir_clone = output_dir.clone();
                         use_side_effects.push(ctx.emit_rust_step(step_name, move |ctx| {
-                            let output_dir = junit_xml_dst.claim(ctx);
-                            let has_junit_xml = has_junit_xml.claim(ctx);
-                            let junit_xml = junit_xml.claim(ctx);
+                            let output_dir = output_dir_clone.claim(ctx);
+                            let attachment_exists = attachment_exists.claim(ctx);
+                            let attachment_path_opt = attachment_path_opt.claim(ctx);
 
                             move |rt| {
                                 let output_dir = rt.read(output_dir);
-                                let has_junit_xml = rt.read(has_junit_xml);
-                                let junit_xml = rt.read(junit_xml);
+                                let attachment_exists = rt.read(attachment_exists);
+                                let attachment_path_opt = rt.read(attachment_path_opt);
 
-                                if has_junit_xml {
-                                    fs_err::copy(
-                                        junit_xml,
-                                        output_dir.join(format!("{artifact_name}.xml")),
-                                    )?;
+                                if attachment_exists {
+                                    if let Some(attachment_path) = attachment_path_opt {
+                                        if attachment_path.is_dir() {
+                                            copy_dir_all(
+                                                attachment_path,
+                                                output_dir.join(artifact_name),
+                                            )?;
+                                        } else {
+                                            fs_err::copy(
+                                                attachment_path,
+                                                output_dir.join(artifact_name),
+                                            )?;
+                                        }
+                                    }
                                 }
 
                                 Ok(())
                             }
                         }));
-                    } else {
-                        use_side_effects.push(has_junit_xml.into_side_effect());
-                        use_side_effects.push(junit_xml.into_side_effect());
                     }
                 }
-            }
+                Request::PublishNextestListJson(PublishNextestListJson {
+                    nextest_list_json,
+                    test_label: label,
+                    output_dir,
+                    done,
+                }) => {
+                    resolve_side_effects.push(done);
 
-            for (attachment_label, (attachment_kind, publish_on_ado)) in attachments {
-                let step_name = format!(
-                    "copy attachments to artifacts directory: {label} ({attachment_label})"
-                );
-                let mut artifact_name = format!("{label}-{attachment_label}");
-                let attachment_path_opt = match &attachment_kind {
-                    Attachments::Logs(p) => p.clone().map(ctx, Some),
-                    Attachments::NextestListJson(p) => {
-                        artifact_name += ".json";
-                        p.clone()
-                    }
-                };
+                    let step_name =
+                        format!("copy nextest-list.json to artifact directory: {label}");
+                    let artifact_name = format!("{label}-nextest-list.json");
 
-                let attachment_exists = attachment_path_opt.map(ctx, |opt| {
-                    opt.as_ref()
-                        .map(|p| {
-                            p.exists()
-                                && (p.is_file()
-                                    || p.read_dir()
-                                        .expect("failed to read attachment dir")
-                                        .next()
-                                        .is_some())
-                        })
-                        .unwrap_or(false)
-                });
-
-                if matches!(ctx.backend(), FlowBackend::Ado) && !publish_on_ado {
-                    use_side_effects.push(attachment_exists.into_side_effect());
-                    use_side_effects.push(attachment_path_opt.into_side_effect());
-                    continue;
-                }
-
-                // Decide which output directory to use based on the attachment kind.
-                let maybe_output_dir = match &attachment_kind {
-                    Attachments::Logs(_) => test_results_full_output_dir.clone(),
-                    Attachments::NextestListJson(_) => nextest_list_json_output_dir.clone(),
-                };
-
-                if let Some(output_dir) = maybe_output_dir {
                     use_side_effects.push(ctx.emit_rust_step(step_name, move |ctx| {
                         let output_dir = output_dir.claim(ctx);
-                        let attachment_exists = attachment_exists.claim(ctx);
-                        let attachment_path_opt = attachment_path_opt.claim(ctx);
+                        let nextest_list_json = nextest_list_json.claim(ctx);
 
                         move |rt| {
                             let output_dir = rt.read(output_dir);
-                            let attachment_exists = rt.read(attachment_exists);
-                            let attachment_path_opt = rt.read(attachment_path_opt);
+                            let nextest_list_json = rt.read(nextest_list_json);
 
-                            if attachment_exists {
-                                if let Some(attachment_path) = attachment_path_opt {
-                                    if attachment_path.is_dir() {
-                                        copy_dir_all(
-                                            attachment_path,
-                                            output_dir.join(artifact_name),
-                                        )?;
-                                    } else {
-                                        fs_err::copy(
-                                            attachment_path,
-                                            output_dir.join(artifact_name),
-                                        )?;
-                                    }
-                                }
-                            }
+                            fs_err::copy(nextest_list_json, output_dir.join(artifact_name))?;
 
                             Ok(())
                         }
                     }));
-                } else {
-                    use_side_effects.push(attachment_exists.into_side_effect());
                 }
             }
         }
