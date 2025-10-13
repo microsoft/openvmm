@@ -160,7 +160,16 @@ async fn nvme_relay(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), a
 async fn nvme_relay_shared_pool(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
-    nvme_relay_test_core(config, "OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1", None).await
+    nvme_relay_test_core(
+        config,
+        "OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1",
+        Some(ExpectedNvmeDeviceProperties {
+            save_restore_supported: false, // No private pool, so no save/restore of memory.
+            qsize: 64,                     // No private pool, so we can only get 1 page for the SQ.
+            nvme_keepalive: false,
+        }),
+    )
+    .await
 }
 
 /// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
