@@ -1050,16 +1050,11 @@ impl IntoPipeline for CheckinGatesCli {
                         dep_artifact_dirs: resolve_vmm_tests_artifacts(ctx),
                         test_artifacts,
                         fail_job_on_test_fail: true,
-                        artifact_dirs:
-                            flowey_lib_common::publish_test_results::VmmTestResultsArtifacts {
-                                junit_xml: Some(ctx.publish_artifact(pub_vmm_tests_junit_xml)),
-                                nextest_list_json: Some(
-                                    ctx.publish_artifact(pub_vmm_tests_nextest_list_json),
-                                ),
-                                test_results_full: Some(
-                                    ctx.publish_artifact(pub_vmm_tests_results_full),
-                                ),
-                            },
+                        junit_xml_output_dir: ctx.publish_artifact(pub_vmm_tests_junit_xml),
+                        nextest_list_json_output_dir: ctx
+                            .publish_artifact(pub_vmm_tests_nextest_list_json),
+                        test_results_full_output_dir: ctx
+                            .publish_artifact(pub_vmm_tests_results_full),
                         needs_prep_run,
                         done: ctx.new_done_handle(),
                     }

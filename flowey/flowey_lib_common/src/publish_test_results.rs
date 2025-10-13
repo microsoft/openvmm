@@ -20,40 +20,53 @@ pub enum Attachments {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct VmmTestResultsArtifacts {
-    /// Path to junit.xml
-    pub junit_xml: Option<ReadVar<PathBuf>>,
-    /// Path to nextest-list.json
-    pub nextest_list_json: Option<ReadVar<PathBuf>>,
-    /// Full test results (all logs, dumps, etc)
-    pub test_results_full: Option<ReadVar<PathBuf>>,
+pub struct PublishUnitTestResults {
+    /// Path to a junit.xml file
+    ///
+    /// HACK: this is an optional since `flowey` doesn't (yet?) have any way
+    /// to perform conditional-requests, and there are instances where nodes
+    /// will only conditionally output JUnit XML.
+    ///
+    /// To keep making forward progress, I've tweaked this node to accept an
+    /// optional... but this ain't great.
+    pub junit_xml: ReadVar<Option<PathBuf>>,
+    pub test_label: String,
+    /// Copy full test results (all logs, dumps, etc) to the provided directory.
+    pub output_dir: Option<ReadVar<PathBuf>>,
+    /// Side-effect confirming that the publish has succeeded
+    pub done: WriteVar<SideEffect>,
+}
+
+pub type PublishVmmTestResultsLocal = PublishUnitTestResults;
+
+#[derive(Serialize, Deserialize)]
+pub struct PublishVmmTestResultsCi {
+    pub junit_xml: ReadVar<Option<PathBuf>>,
+    /// Brief string used when publishing the test.
+    /// Must be unique to the pipeline.
+    pub test_label: String,
+    /// Additional files or directories to upload.
+    ///
+    /// The boolean indicates whether the attachment is referenced in the
+    /// JUnit XML file. On backends with native JUnit attachment support,
+    /// these attachments will not be uploaded as distinct artifacts and
+    /// will instead be uploaded via the JUnit integration.
+    pub attachments: BTreeMap<String, (Attachments, bool)>,
+    /// Copy the junit xml file to the provided directory.
+    pub junit_xml_output_dir: ReadVar<PathBuf>,
+    /// Copy the nextest-list.json to the provided directory.
+    pub nextest_list_json_output_dir: ReadVar<PathBuf>,
+    /// Copy full test results (all logs, dumps, etc) to the provided directory.
+    pub test_results_full_output_dir: ReadVar<PathBuf>,
+    /// Side-effect confirming that the publish has succeeded
+    pub done: WriteVar<SideEffect>,
 }
 
 flowey_request! {
-    pub struct Request {
-        /// Path to a junit.xml file
-        ///
-        /// HACK: this is an optional since `flowey` doesn't (yet?) have any way
-        /// to perform conditional-requests, and there are instances where nodes
-        /// will only conditionally output JUnit XML.
-        ///
-        /// To keep making forward progress, I've tweaked this node to accept an
-        /// optional... but this ain't great.
-        pub junit_xml: ReadVar<Option<PathBuf>>,
-        /// Brief string used when publishing the test.
-        /// Must be unique to the pipeline.
-        pub test_label: String,
-        /// Additional files or directories to upload.
-        ///
-        /// The boolean indicates whether the attachment is referenced in the
-        /// JUnit XML file. On backends with native JUnit attachment support,
-        /// these attachments will not be uploaded as distinct artifacts and
-        /// will instead be uploaded via the JUnit integration.
-        pub attachments: BTreeMap<String, (Attachments, bool)>,
-        /// Copy the xml file and attachments to the provided directory.
-        pub output_dirs: VmmTestResultsArtifacts,
-        /// Side-effect confirming that the publish has succeeded
-        pub done: WriteVar<SideEffect>,
+    pub enum Request {
+        PublishUnitTestResults(PublishUnitTestResults),
+        PublishVmmTestResultsLocal(PublishVmmTestResultsLocal),
+        PublishVmmTestResultsCi(PublishVmmTestResultsCi),
     }
 }
 
@@ -70,14 +83,63 @@ impl FlowNode for Node {
         let mut use_side_effects = Vec::new();
         let mut resolve_side_effects = Vec::new();
 
-        for Request {
-            junit_xml,
-            test_label: label,
-            attachments,
-            output_dirs,
-            done,
-        } in requests
-        {
+        for req in requests {
+            let (
+                junit_xml,
+                label,
+                attachments,
+                junit_xml_output_dir,
+                nextest_list_json_output_dir,
+                test_results_full_output_dir,
+                done,
+            ) = match req {
+                Request::PublishUnitTestResults(PublishUnitTestResults {
+                    junit_xml,
+                    test_label,
+                    output_dir,
+                    done,
+                }) => (
+                    junit_xml,
+                    test_label,
+                    BTreeMap::new(),
+                    None,
+                    None,
+                    output_dir,
+                    done,
+                ),
+                Request::PublishVmmTestResultsLocal(PublishVmmTestResultsLocal {
+                    junit_xml,
+                    test_label,
+                    output_dir,
+                    done,
+                }) => (
+                    junit_xml,
+                    test_label,
+                    BTreeMap::new(),
+                    None,
+                    None,
+                    output_dir,
+                    done,
+                ),
+                Request::PublishVmmTestResultsCi(PublishVmmTestResultsCi {
+                    junit_xml,
+                    test_label,
+                    attachments,
+                    junit_xml_output_dir,
+                    nextest_list_json_output_dir,
+                    test_results_full_output_dir,
+                    done,
+                }) => (
+                    junit_xml,
+                    test_label,
+                    attachments,
+                    Some(junit_xml_output_dir),
+                    Some(nextest_list_json_output_dir),
+                    Some(test_results_full_output_dir),
+                    done,
+                ),
+            };
+
             resolve_side_effects.push(done);
 
             let step_name = format!("copy test results to artifact directory: {label} (JUnit XML)");
@@ -105,7 +167,7 @@ impl FlowNode for Node {
                 FlowBackend::Github | FlowBackend::Local => {
                     // Copy the junit XML into the "light" results directory if one
                     // was provided. This covers both GitHub and local runs.
-                    if let Some(junit_xml_dst) = output_dirs.junit_xml {
+                    if let Some(junit_xml_dst) = junit_xml_output_dir {
                         use_side_effects.push(ctx.emit_rust_step(step_name, move |ctx| {
                             let output_dir = junit_xml_dst.claim(ctx);
                             let has_junit_xml = has_junit_xml.claim(ctx);
@@ -167,8 +229,8 @@ impl FlowNode for Node {
 
                 // Decide which output directory to use based on the attachment kind.
                 let maybe_output_dir = match &attachment_kind {
-                    Attachments::Logs(_) => output_dirs.test_results_full.clone(),
-                    Attachments::NextestListJson(_) => output_dirs.nextest_list_json.clone(),
+                    Attachments::Logs(_) => test_results_full_output_dir.clone(),
+                    Attachments::NextestListJson(_) => nextest_list_json_output_dir.clone(),
                 };
 
                 if let Some(output_dir) = maybe_output_dir {
