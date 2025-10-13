@@ -17,7 +17,7 @@ Navigate to the project directory and install all required packages:
 
 ```powershell
 # Navigate to the logview_new directory
-cd d:\openvmm-petri-development\petri\logview_new
+cd .\petri\logview_new
 
 # Install all dependencies
 npm install
@@ -28,6 +28,7 @@ npm install
 After installation, you should have the following key dependencies:
 
 **Runtime Dependencies:**
+
 - `react` & `react-dom` - React framework
 - `react-router-dom` - Client-side routing
 - `@tanstack/react-query` - Data fetching and caching
@@ -35,6 +36,7 @@ After installation, you should have the following key dependencies:
 - `@tanstack/react-virtual` - Virtual scrolling
 
 **Development Dependencies:**
+
 - `typescript` - TypeScript compiler
 - `vite` - Build tool and dev server
 - `@vitejs/plugin-react` - Vite React plugin
@@ -62,7 +64,11 @@ npx eslint .
 ```
 logview_new/
 ├── src/
-│   └── main.tsx          # Application entry point
+│   ├── main.tsx          # Application entry point
+│   ├── style/            # All CSS and global styles (CSS, PostCSS, or other style assets)
+│   │   └── ...           # e.g. globals.css, themes, component styles
+│   └── table_defs/       # Column definitions for tables used across the app
+│       └── ...           # e.g. logsColumns.ts, eventsColumns.ts, devicesColumns.ts
 ├── index.html            # HTML template
 ├── package.json          # Dependencies and scripts
 ├── tsconfig.json         # TypeScript configuration
@@ -80,26 +86,19 @@ logview_new/
 2. **TypeScript errors**: Make sure both `tsconfig.json` and `tsconfig.node.json` are present
 3. **Port already in use**: The dev server uses port 3000 by default. You can change this in `vite.config.ts`
 
-### Fresh Installation
+## Important: Build Before Pushing / Merging (Temporary Feature)
 
-If you encounter persistent issues, try a fresh installation:
+Please run a production build before pushing or opening a merge request to
+ensure the front-end assets are up to date.
 
 ```powershell
-# Remove node_modules and package-lock.json
-Remove-Item -Recurse -Force node_modules
-Remove-Item package-lock.json
-
-# Reinstall dependencies
-npm install
+npm run build
 ```
 
-## Development
+- Where the output goes:
+  - The build artifacts will be written to the `assets/` folder at the project
+    root (e.g. `logview_new/assets/`).
 
-This project uses:
-- **React 19** with TypeScript
-- **Vite** for fast development and building
-- **ESLint** for code quality and consistency
-- **React Router** for navigation
-- **TanStack Query** for data management
+  - You can run `npm run preview` to verify the production build locally.
 
-The application is configured to serve from `/openvmm-petri-website/dist/` in production (see `vite.config.ts`).
+Note: This is a temporary requirement and will be automated in the future.
