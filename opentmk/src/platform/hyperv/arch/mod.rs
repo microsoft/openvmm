@@ -6,10 +6,10 @@
 pub mod hypercall;
 
 cfg_if::cfg_if!(
-    if #[cfg(target_arch = "x86_64")] {
+    if #[cfg(target_arch = "x86_64")] { // xtask-fmt allow-target-arch sys-crate
         mod x86_64;
         pub use x86_64::*;
-    } else if #[cfg(target_arch = "aarch64")] {
+    } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
         mod aarch64;
         pub use aarch64::*;
     } else {

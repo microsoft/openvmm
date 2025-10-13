@@ -17,7 +17,7 @@ static FAULT_CALLED: Mutex<bool> = Mutex::new(false);
 // Without inline the compiler may optimize away the call and the VTL switch may
 // distort the architectural registers
 #[inline(never)]
-#[cfg(target_arch = "x86_64")]
+#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
 fn violate_reg_rule() {
     // SAFETY: we are writing to a valid MSR
     unsafe {

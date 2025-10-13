@@ -48,7 +48,7 @@ macro_rules! create_function_with_restore {
     };
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
 /// Get the length of the first instruction at the given target address.
 /// Prints each instruction read for debugging purposes till it can decode no more.
 pub fn get_first_ip_len(target: u64) -> usize {

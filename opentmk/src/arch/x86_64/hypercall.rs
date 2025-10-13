@@ -3,6 +3,7 @@
 
 //! Hypercall interface for x86_64 architecture.
 
+// UNSAFETY: This module contains unsafe code to perform low-level operations such as managing the hypercall page access
 #![expect(unsafe_code)]
 
 use core::ptr::addr_of;

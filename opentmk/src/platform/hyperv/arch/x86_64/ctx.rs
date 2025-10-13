@@ -8,7 +8,7 @@ use alloc::boxed::Box;
 use core::alloc::Layout;
 use core::arch::asm;
 use core::ops::Range;
-#[cfg(target_arch = "x86_64")]
+#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
 use hvdef::hypercall::InitialVpContextX64;
 
 use hvdef::AlignedU128;

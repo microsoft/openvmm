@@ -3,6 +3,7 @@
 
 //! Hypercall infrastructure.
 
+// UNSAFETY: This module contains unsafe code to perform low-level operations such as invoking hypercalls
 #![expect(unsafe_code)]
 
 use core::mem::size_of;

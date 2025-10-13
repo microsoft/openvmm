@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+// UNSAFETY: This module contains unsafe code to perform low-level operations such as invoking hypercalls
 #![expect(unsafe_code)]
 
 use core::arch::asm;
@@ -13,7 +14,6 @@ use crate::platform::hyperv::arch::hypercall::HvCall;
 
 // avoiding inline for debuggability in release builds
 #[inline(never)]
-// The 
 #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
 pub unsafe fn invoke_hypercall_vtl(control: hvdef::hypercall::Control) {
     // SAFETY: the caller guarantees the safety of this operation.

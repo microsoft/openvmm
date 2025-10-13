@@ -14,7 +14,7 @@ x86_64-nightly = ["x86_64/nightly"]
 [dependencies]
 bitfield-struct.workspace = true
 cfg-if.workspace  = true
-hvdef = {workspace = true}
+hvdef.workspace = true
 iced-x86 = { workspace = true, features = ["decoder", "nasm", "no_std"]}
 lazy_static = { workspace = true, features = ["spin_no_std"] }
 linked_list_allocator.workspace = true
