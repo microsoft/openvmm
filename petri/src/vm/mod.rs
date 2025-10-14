@@ -13,7 +13,6 @@ use crate::PetriTestParams;
 use crate::ShutdownKind;
 use crate::disk_image::AgentImage;
 use crate::openhcl_diag::OpenHclDiagHandler;
-use anyhow::Context;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use mesh::CancelContext;
