@@ -1316,7 +1316,11 @@ async fn new_underhill_vm(
     // interrupt delivery. 
     let use_posted_redirection = match isolation {
         #[cfg(guest_arch = "x86_64")]
-        virt::IsolationType::Tdx => enlightenment_info.posted_interrupt_redirection_support(),
+        virt::IsolationType::Tdx => {
+            let supported = enlightenment_info.posted_interrupt_redirection_support();
+            tracing::info!(CVM_ALLOWED, supported, "Posted interrupt redirection");
+            supported
+        }
         _ => false,
     };
 
