@@ -358,8 +358,8 @@ macro_rules! event_ratelimited_static {
 ///
 /// Examples:
 /// ```
+/// use tracing::Level;
 /// use tracelimit::event_ratelimited;
-/// event_ratelimited!("simple message");
 /// event_ratelimited!(Level::ERROR, period: 1000, limit: 5, "custome period and limit");
 /// event_ratelimited!(Level::WARN, period: 10000, "custom period only");
 /// event_ratelimited!(Level::INFO, limit: 50, "custom limit only");
