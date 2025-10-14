@@ -100,9 +100,9 @@ async fn tpm_ak_cert_persisted_linux(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_LINUX_X64>,),
 ) -> anyhow::Result<()> {
+    let config = configure_ak_cert_persisted_vm(config);
     // First boot - AK cert request will be served by GED.
     // Second boot - Ak cert request will be bypassed by GED.
-    let config = configure_ak_cert_persisted_vm(config);
     // TODO: with_expect_reset shouldn't be needed once with_tpm() is backend-agnostic.
     let (vm, agent) = config.with_expect_reset().run().await?;
 
@@ -145,9 +145,9 @@ async fn tpm_ak_cert_persisted_windows(
     extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,),
 ) -> anyhow::Result<()> {
     let config = configure_ak_cert_persisted_vm(config);
+    // First boot - AK cert request will be served by GED
     let (mut vm, agent) = config.run().await?;
 
-    // First boot - AK cert request will be served by GED.
     // Second boot - Ak cert request will be bypassed by GED.
     agent.reboot().await?;
     let agent = vm.wait_for_reset().await?;
@@ -184,7 +184,6 @@ async fn tpm_ak_cert_persisted_windows(
 }
 
 /// Test AK cert retry logic on Linux.
-// #[cfg_attr(target_os = "windows", ignore = "requires Linux guest tooling")]
 #[openvmm_test(
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64]
 )]
@@ -193,6 +192,8 @@ async fn tpm_ak_cert_retry_linux(
     extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_LINUX_X64>,),
 ) -> anyhow::Result<()> {
     let config = configure_ak_cert_retry_vm(config);
+    // First boot - expect no AK cert from GED
+    // Second boot - expect get AK cert from GED on the second attempts
     // TODO: with_expect_reset shouldn't be needed once with_tpm() is backend-agnostic.
     let (vm, agent) = config.with_expect_reset().run().await?;
 
@@ -209,12 +210,13 @@ async fn tpm_ak_cert_retry_linux(
     let sh = agent.unix_shell();
     cmd!(sh, "chmod +x {guest_binary_path}").run().await?;
 
-    let first_attempt = cmd!(sh, "{guest_binary_path}")
+    // The read attempt is expected to fail and trigger an AK cert renewal request.
+    let attempt = cmd!(sh, "{guest_binary_path}")
         .args(["--ak-cert"])
         .read()
         .await;
     assert!(
-        first_attempt.is_err(),
+        attempt.is_err(),
         "AK certificate read unexpectedly succeeded"
     );
 
@@ -263,25 +265,23 @@ async fn tpm_ak_cert_retry_windows(
         .await
         .context("failed to copy tpm_guest_tests.exe into the guest")?;
 
-    {
-        let sh = agent.windows_shell();
-        let output = cmd!(sh, "{guest_binary_path}")
-            .args(["--ak-cert"])
-            .read()
-            .await
-            .context("failed to execute tpm_guest_tests.exe inside the guest")?;
+    let sh = agent.windows_shell();
 
-        ensure!(
-            output.contains("AK certificate data"),
-            "tpm_guest_tests.exe --ak-cert did not report AK certificate data: {output}",
-        );
-    }
+    // At this point, two AK cert requests are made. One is during tpm
+    // initialization, another one is during boot triggering by a NV read (Windows-specific).
+    // Both requests are expected to fail due to the GED configuration.
 
-    agent.reboot().await?;
-    let agent = vm.wait_for_reset().await?;
+    // The read attempt is expected to fail and trigger an AK cert renewal request.
+    let attempt = cmd!(sh, "{guest_binary_path}")
+        .args(["--ak-cert"])
+        .read()
+        .await;
+    assert!(
+        attempt.is_err(),
+        "AK certificate read unexpectedly succeeded"
+    );
 
     let expected_hex = expected_ak_cert_hex();
-    let sh = agent.windows_shell();
     let output = cmd!(sh, "{guest_binary_path}")
         .args([
             "--ak-cert",

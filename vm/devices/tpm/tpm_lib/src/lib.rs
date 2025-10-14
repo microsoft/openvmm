@@ -147,7 +147,7 @@ pub struct CommandDebugInfo {
 }
 
 /// Top-level error produced by TPM helper routines.
-#[expect(missing_docs, enum_variant_names)] // self-explanatory fields
+#[expect(missing_docs, clippy::enum_variant_names)] // self-explanatory fields
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("TPM command error - command code: {:?}, auth handle: {:#x?}, nv index: {:#x?}",
@@ -1943,8 +1943,8 @@ mod tests {
     use ms_tpm_20_ref::DynResult;
     use ms_tpm_20_ref::MsTpm20RefPlatform;
     use std::time::Instant;
-    use tpm_protocol::tpm20proto::AlgId;
-    use tpm_protocol::tpm20proto::TPM20_HT_PERSISTENT;
+    use tpm_protocol::AlgId;
+    use tpm_protocol::TPM20_HT_PERSISTENT;
 
     impl TpmEngine for MsTpm20RefPlatform {
         fn execute_command(
@@ -3450,7 +3450,6 @@ mod tests {
             panic!()
         }
     }
-
     struct TpmtSensitive {
         /// TPMI_ALG_PUBLIC
         sensitive_type: AlgId,
