@@ -13,7 +13,6 @@ use crate::PetriTestParams;
 use crate::ShutdownKind;
 use crate::disk_image::AgentImage;
 use crate::openhcl_diag::OpenHclDiagHandler;
-use anyhow::Context;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use mesh::CancelContext;
@@ -233,8 +232,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// event (if configured). Does not configure and start pipette. Should
     /// only be used for testing platforms that pipette does not support.
     pub async fn run_without_agent(self) -> anyhow::Result<PetriVm<T>> {
-        let (vm, _) = self.run_core(false).await?;
-        Ok(vm)
+        self.run_core().await
     }
 
     /// Build and run the VM, then wait for the VM to emit the expected boot
@@ -243,14 +241,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         assert!(self.config.agent_image.is_some());
         assert!(self.config.agent_image.as_ref().unwrap().contains_pipette());
 
-        let (vm, agent) = self.run_core(true).await?;
-        Ok((vm, agent.unwrap()))
+        let mut vm = self.run_core().await?;
+        let client = vm.wait_for_agent().await?;
+        Ok((vm, client))
     }
 
-    async fn run_core(
-        self,
-        with_agent: bool,
-    ) -> anyhow::Result<(PetriVm<T>, Option<PipetteClient>)> {
+    async fn run_core(self) -> anyhow::Result<PetriVm<T>> {
         let arch = self.config.arch;
         let expect_reset = self.expect_reset();
 
@@ -279,20 +275,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
         vm.wait_for_expected_boot_event().await?;
 
-        let client = if with_agent {
-            Some(vm.wait_for_agent().await?)
-        } else {
-            None
-        };
-
-        if with_agent {
-            let result = vm.set_console_loglevel(3).await;
-            if result.is_err() {
-                tracing::warn!("failed to set console loglevel: {}", result.unwrap_err());
-            }
-        }
-
-        Ok((vm, client))
+        Ok(vm)
     }
 
     fn expect_reset(&self) -> bool {
@@ -742,12 +725,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// Wait for the VM to reset and pipette to connect.
     pub async fn wait_for_reset(&mut self) -> anyhow::Result<PipetteClient> {
         self.wait_for_reset_no_agent().await?;
-        let client = self.wait_for_agent().await?;
-        let result = self.set_console_loglevel(3).await;
-        if result.is_err() {
-            tracing::warn!("failed to set console loglevel: {}", result.unwrap_err());
-        }
-        Ok(client)
+        self.wait_for_agent().await
     }
 
     async fn wait_for_reset_core(&mut self) -> anyhow::Result<()> {
@@ -972,22 +950,6 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         } else {
             anyhow::bail!("VM is not configured with OpenHCL")
         }
-    }
-
-    async fn set_console_loglevel(&self, level: u8) -> anyhow::Result<()> {
-        let diag = self
-            .openhcl_diag()
-            .context("failed to open VTL2 diagnostic channel")?;
-        diag.kmsg().await?;
-        let res = diag
-            .run_vtl2_command("dmesg", &["-n", &level.to_string()])
-            .await?;
-
-        if !res.exit_status.success() {
-            anyhow::bail!("failed to set console loglevel: {:?}", res);
-        }
-
-        Ok(())
     }
 
     /// Get the path to the VM's guest state file
