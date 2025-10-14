@@ -10,5 +10,7 @@ edition.workspace = true
 tpm_lib.workspace = true
 tpm_protocol.workspace = true
 
+parking_lot.workspace = true
+
 [lints]
 workspace = true

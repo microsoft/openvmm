@@ -1937,9 +1937,7 @@ fn export_rsa_public(public: &Tpm2bPublic) -> Result<TpmRsa2kPublic, TpmHelperUt
     })
 }
 
-// The test depends on `ms_tpm_20_ref` that currently only works for x86_64 platforms.
-#[cfg(target_arch = "x86_64")]
-#[cfg(test)]
+#[cfg(all(test, feature = "test_tpm"))]
 mod tests {
     use super::*;
     use ms_tpm_20_ref::DynResult;

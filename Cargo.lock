@@ -7461,6 +7461,7 @@ dependencies = [
 name = "tpm_guest_tests"
 version = "0.0.0"
 dependencies = [
+ "parking_lot",
  "tpm_lib",
  "tpm_protocol",
 ]

@@ -4,6 +4,7 @@
 // UNSAFETY: Windows FFI
 #![cfg_attr(windows, expect(unsafe_code))]
 
+use parking_lot::Mutex;
 #[cfg(unix)]
 use std::fs::OpenOptions;
 use std::io;
@@ -11,7 +12,6 @@ use std::io;
 use std::io::Read;
 #[cfg(unix)]
 use std::io::Write;
-use std::sync::Mutex;
 
 use tpm_lib::TpmEngine;
 use tpm_lib::TpmEngineError;
@@ -27,9 +27,6 @@ use tpm_lib::TpmEngineHelper;
 /// Windows notes:
 ///   Uses TBS (TPM Base Services). Link with tbs.dll (implicit).
 ///   Requires the tbs development headers at build time only for reference; here we redefine what is needed.
-///
-/// This is a minimal example; production code should add timeouts, command size limits, and stronger error mapping.
-
 pub struct Tpm {
     inner: Inner,
 }
@@ -228,8 +225,13 @@ impl WindowsTpm {
         };
 
         let mut handle: u32 = 0;
-        let rc =
-            unsafe { win_ffi::Tbsi_Context_Create(&params2 as *const _, &mut handle as *mut _) };
+        // SAFETY: Make an FFI call.
+        let rc = unsafe {
+            win_ffi::Tbsi_Context_Create(
+                std::ptr::from_ref(&params2),
+                std::ptr::from_mut(&mut handle),
+            )
+        };
         if rc == win_ffi::TBS_SUCCESS {
             return Ok(WindowsTpm {
                 handle,
@@ -245,10 +247,9 @@ impl WindowsTpm {
                 ),
             ));
         }
-        Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Tbsi_Context_Create failed rc=0x{rc:08x}"),
-        ))
+        Err(io::Error::other(format!(
+            "Tbsi_Context_Create failed rc=0x{rc:08x}"
+        )))
     }
 
     fn transmit(&self, command: &[u8]) -> io::Result<Vec<u8>> {
@@ -258,9 +259,10 @@ impl WindowsTpm {
                 "Command too large",
             ));
         }
-        let _g = self.lock.lock().unwrap();
+        let _g = self.lock.lock();
         let mut buf = vec![0u8; 8192];
         let mut out_len: u32 = buf.len() as u32;
+        // SAFETY: Make an FFI call.
         let rc = unsafe {
             win_ffi::Tbsip_Submit_Command(
                 self.handle,
@@ -269,14 +271,13 @@ impl WindowsTpm {
                 command.as_ptr(),
                 command.len() as u32,
                 buf.as_mut_ptr(),
-                &mut out_len as *mut u32,
+                std::ptr::from_mut::<u32>(&mut out_len),
             )
         };
         if rc != win_ffi::TBS_SUCCESS {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Tbsip_Submit_Command failed: 0x{rc:08x}"),
-            ));
+            return Err(io::Error::other(format!(
+                "Tbsip_Submit_Command failed: 0x{rc:08x}"
+            )));
         }
         buf.truncate(out_len as usize);
         if buf.len() < 10 {
@@ -302,6 +303,7 @@ impl WindowsTpm {
 #[cfg(windows)]
 impl Drop for WindowsTpm {
     fn drop(&mut self) {
+        // SAFETY: Make an FFI call.
         unsafe { win_ffi::Tbsip_Context_Close(self.handle) };
     }
 }

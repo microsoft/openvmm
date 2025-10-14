@@ -149,7 +149,7 @@ fn handle_report<E: TpmEngine>(
         "Writing {} bytes of guest attestation input to NV index {NV_INDEX_GUEST_INPUT:#x}…",
         payload.len()
     );
-    helper.nv_write(TPM20_RH_OWNER, None, NV_INDEX_GUEST_INPUT, &payload)?;
+    helper.nv_write(TPM20_RH_OWNER, None, NV_INDEX_GUEST_INPUT, payload)?;
 
     let guest_data = read_nv_index(helper, NV_INDEX_GUEST_INPUT)?;
     print_nv_summary("Guest attestation input", &guest_data);
@@ -369,7 +369,7 @@ fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
     let trimmed = value.trim();
     let hex = trimmed.strip_prefix("0x").unwrap_or(trimmed);
 
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err("hex data must contain an even number of characters".into());
     }
 

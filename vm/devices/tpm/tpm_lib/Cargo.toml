@@ -7,8 +7,8 @@ rust-version.workspace = true
 edition.workspace = true
 
 [features]
-default = []
-tpm = []
+# Use this feature to enable tests.
+test_tpm = []
 
 [dependencies]
 tpm_protocol.workspace = true
