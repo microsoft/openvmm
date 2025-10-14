@@ -2180,6 +2180,7 @@ pub mod protocol {
 
     // === Pcr Allocate === //
 
+    /// Represents a selection of PCRs for allocation.
     #[repr(C)]
     #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct PcrSelection {
