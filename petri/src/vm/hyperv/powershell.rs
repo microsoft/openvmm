@@ -16,6 +16,7 @@ use powershell_builder::PowerShellBuilder;
 use serde::Deserialize;
 use serde::Serialize;
 use std::ffi::OsStr;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -373,7 +374,7 @@ pub async fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::
 /// Runs Add-VMScsiController with the given arguments.
 ///
 /// Returns the controller number.
-pub async fn run_add_vm_scsi_controller(vmid: &Guid) -> anyhow::Result<u32> {
+pub async fn run_add_vm_scsi_controller(vmid: &Guid) -> anyhow::Result<(u32, Guid)> {
     let output = run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
@@ -382,14 +383,26 @@ pub async fn run_add_vm_scsi_controller(vmid: &Guid) -> anyhow::Result<u32> {
             .cmdlet("Add-VMScsiController")
             .flag("Passthru")
             .pipeline()
-            .cmdlet("Select-Object")
-            .arg("ExpandProperty", "ControllerNumber")
+            .cmdlet("Get-VmScsiControllerProperties")
             .finish()
             .build(),
     )
     .await
     .context("add_vm_scsi_controller")?;
-    Ok(output.trim().parse::<u32>()?)
+
+    let mut out = output.trim().split(',');
+    let controller_number = out
+        .next()
+        .context("no output")?
+        .parse::<u32>()
+        .context("invalid controller number")?;
+    let vsid = out
+        .next()
+        .context("no vsid")?
+        .parse::<Guid>()
+        .context("vsid not a guid")?;
+
+    Ok((controller_number, vsid))
 }
 
 /// Sets the target VTL for a SCSI controller.
@@ -1091,4 +1104,43 @@ pub async fn run_get_guest_state_file(vmid: &Guid, ps_mod: &Path) -> anyhow::Res
     .context("get_guest_state_file")?;
 
     Ok(PathBuf::from(output))
+}
+
+/// Sets the VTL2 settings (in the `Base` namespace) for a VM.
+///
+/// This should include the fixed VTL2 settings, as well as any storage
+/// settings.
+///
+/// TODO FUTURE: Detect if the settings should be in `json` or `protobuf` format
+/// based on what is already there (or let the caller specify explicitly so that
+/// we can test the handling of both deserializers).
+pub async fn run_set_base_vtl2_settings(
+    vmid: &Guid,
+    ps_mod: &Path,
+    vtl2_settings: &vtl2_settings_proto::Vtl2Settings,
+) -> anyhow::Result<()> {
+    // Pass the settings via a file to avoid challenges escaping the string across
+    // the command line.
+    let mut tempfile = tempfile::NamedTempFile::new().context("creating tempfile")?;
+    tempfile
+        .write_all(serde_json::to_string(vtl2_settings)?.as_bytes())
+        .context("writing settings to tempfile")?;
+
+    tracing::trace!(?tempfile, ?vtl2_settings, ?vmid, "set base vtl2 settings");
+
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Set-Vtl2Settings")
+            .arg("VmId", vmid)
+            .arg("SettingsFile", tempfile.path())
+            .arg("Namespace", "Base")
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("set_base_vtl2_settings")
 }

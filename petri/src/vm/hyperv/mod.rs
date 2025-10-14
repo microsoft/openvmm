@@ -67,11 +67,42 @@ pub struct HyperVPetriRuntime {
 
     is_openhcl: bool,
     is_isolated: bool,
+
+    vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
+}
+
+/// Additional configuration for a Hyper-V VM.
+pub struct HyperVPetriConfig {
+    /// VTL2 settings to configure on the VM before petri powers it on.
+    initial_vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
+}
+
+impl HyperVPetriConfig {
+    /// Add custom VTL 2 settings.
+    // TODO: At some point we want to replace uses of this with nicer with_disk,
+    // with_nic, etc. methods. And unify this with the same function definition
+    // as the openvmm backend.
+    pub fn with_custom_vtl2_settings(
+        mut self,
+        f: impl FnOnce(&mut vtl2_settings_proto::Vtl2Settings),
+    ) -> Self {
+        if self.initial_vtl2_settings.is_none() {
+            self.initial_vtl2_settings = Some(vtl2_settings_proto::Vtl2Settings {
+                version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
+                fixed: None,
+                dynamic: Some(Default::default()),
+                namespace_settings: Default::default(),
+            });
+        }
+
+        f(self.initial_vtl2_settings.as_mut().unwrap());
+        self
+    }
 }
 
 #[async_trait]
 impl PetriVmmBackend for HyperVPetriBackend {
-    type VmmConfig = ();
+    type VmmConfig = HyperVPetriConfig;
     type VmRuntime = HyperVPetriRuntime;
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
@@ -94,10 +125,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
         modify_vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
         resources: &PetriVmResources,
     ) -> anyhow::Result<Self::VmRuntime> {
-        if modify_vmm_config.is_some() {
-            panic!("specified modify_vmm_config, but that is not supported for hyperv");
-        }
-
         let PetriVmConfig {
             name,
             arch,
@@ -313,7 +340,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             BootDeviceType::Ide => Some((powershell::ControllerType::Ide, 0)),
             BootDeviceType::Scsi => Some((
                 powershell::ControllerType::Scsi,
-                vm.add_scsi_controller(0).await?,
+                vm.add_scsi_controller(0).await?.0,
             )),
             BootDeviceType::Nvme => todo!("NVMe boot device not yet supported for Hyper-V"),
         } {
@@ -370,7 +397,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     vm.set_imc(&imc_hive).await?;
                 }
 
-                let controller_number = vm.add_scsi_controller(0).await?;
+                let controller_number = vm.add_scsi_controller(0).await?.0;
                 vm.add_vhd(
                     &agent_disk_path,
                     powershell::ControllerType::Scsi,
@@ -423,7 +450,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 if build_and_persist_agent_image(&agent_image, &agent_disk_path)
                     .context("vtl2 agent disk")?
                 {
-                    let controller_number = vm.add_scsi_controller(2).await?;
+                    let controller_number = vm.add_scsi_controller(2).await?.0;
                     vm.add_vhd(
                         &agent_disk_path,
                         powershell::ControllerType::Scsi,
@@ -493,6 +520,22 @@ impl PetriVmmBackend for HyperVPetriBackend {
             hyperv_serial_log_task(driver.clone(), serial_pipe_path, serial_log_file),
         ));
 
+        // TODO: If OpenHCL is being used, then translate storage through it.
+        // (requires changes above where VHDs are added)
+        let initial_vtl2_settings = if let Some(modify_vmm_config) = modify_vmm_config {
+            modify_vmm_config(HyperVPetriConfig {
+                initial_vtl2_settings: None,
+            })
+            .initial_vtl2_settings
+        } else {
+            None
+        };
+
+        if let Some(settings) = &initial_vtl2_settings {
+            tracing::debug!(?settings, "initial VTL2 settings");
+            vm.set_base_vtl2_settings(settings).await?;
+        }
+
         vm.start().await?;
 
         Ok(HyperVPetriRuntime {
@@ -502,7 +545,62 @@ impl PetriVmmBackend for HyperVPetriBackend {
             driver: driver.clone(),
             is_openhcl: openhcl_config.is_some(),
             is_isolated: firmware.isolation().is_some(),
+            vtl2_settings: initial_vtl2_settings,
         })
+    }
+}
+
+impl HyperVPetriRuntime {
+    /// Gets the VTL2 settings in the `Base` namespace.
+    ///
+    /// TODO: For now, this is just a copy of whatever was last set via petri.
+    /// The function signature (`async`, return `Result`) is to allow for
+    /// future changes to actually query the VM for the current settings.
+    pub async fn get_base_vtl2_settings(
+        &self,
+    ) -> anyhow::Result<Option<vtl2_settings_proto::Vtl2Settings>> {
+        Ok(self.vtl2_settings.clone())
+    }
+
+    /// Set the VTL2 settings in the `Base` namespace (fixed settings, storage
+    /// settings, etc).
+    pub async fn set_base_vtl2_settings(
+        &mut self,
+        settings: &vtl2_settings_proto::Vtl2Settings,
+    ) -> anyhow::Result<()> {
+        let r = self.vm.set_base_vtl2_settings(settings).await;
+        if r.is_ok() {
+            self.vtl2_settings = Some(settings.clone());
+        }
+        r
+    }
+
+    /// Adds a new SCSI controller to the VM, targeting the specified VTL.
+    /// Returns the controller number and VSID of the new controller.
+    pub async fn add_scsi_controller(
+        &mut self,
+        target_vtl: u32,
+    ) -> anyhow::Result<(u32, guid::Guid)> {
+        self.vm.add_scsi_controller(target_vtl).await
+    }
+
+    /// Adds a VHD with the optionally specified location (a.k.a LUN) to the
+    /// optionally specified controller.
+    pub async fn add_vhd(
+        &mut self,
+        vhd: impl AsRef<Path>,
+        controller_type: powershell::ControllerType,
+        controller_location: Option<u32>,
+        controller_number: Option<u32>,
+    ) -> anyhow::Result<()> {
+        self.vm
+            .add_vhd(
+                vhd.as_ref(),
+                controller_type,
+                controller_location,
+                controller_number,
+            )
+            .await
     }
 }
 

@@ -9284,6 +9284,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "disk_backend_resources",
+ "disk_vhd1",
  "futures",
  "get_resources",
  "guid",

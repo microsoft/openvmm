@@ -261,8 +261,8 @@ impl HyperVVM {
     }
 
     /// Add a SCSI controller
-    pub async fn add_scsi_controller(&mut self, target_vtl: u32) -> anyhow::Result<u32> {
-        let controller_number = powershell::run_add_vm_scsi_controller(&self.vmid).await?;
+    pub async fn add_scsi_controller(&mut self, target_vtl: u32) -> anyhow::Result<(u32, Guid)> {
+        let (controller_number, vsid) = powershell::run_add_vm_scsi_controller(&self.vmid).await?;
         if target_vtl != 0 {
             powershell::run_set_vm_scsi_controller_target_vtl(
                 &self.ps_mod,
@@ -272,7 +272,7 @@ impl HyperVVM {
             )
             .await?;
         }
-        Ok(controller_number)
+        Ok((controller_number, vsid))
     }
 
     /// Add a VHD
@@ -523,6 +523,15 @@ impl HyperVVM {
     /// Get the VM's guest state file
     pub async fn get_guest_state_file(&self) -> anyhow::Result<PathBuf> {
         powershell::run_get_guest_state_file(&self.vmid, &self.ps_mod).await
+    }
+
+    /// Set the VTL2 settings in the `Base` namespace (fixed settings, storage
+    /// settings, etc).
+    pub async fn set_base_vtl2_settings(
+        &self,
+        settings: &vtl2_settings_proto::Vtl2Settings,
+    ) -> anyhow::Result<()> {
+        powershell::run_set_base_vtl2_settings(&self.vmid, &self.ps_mod, settings).await
     }
 }
 
