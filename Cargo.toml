@@ -46,7 +46,10 @@ members = [
   "petri/petri-tool",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
-  "vm/vmgs/vmgstool", "vm/devices/tpm/tpm_guest_tests", "vm/devices/tpm/tpm_protocol", "vm/devices/tpm/tpm_lib",
+  "vm/vmgs/vmgstool",
+  "vm/devices/tpm/tpm_guest_tests",
+  "vm/devices/tpm/tpm_protocol",
+  "vm/devices/tpm/tpm_lib",
 ]
 exclude = [
   "xsync",
