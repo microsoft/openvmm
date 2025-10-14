@@ -1,23 +1,28 @@
 # Code Review Metrics
 
-This workflow tracks code reviewer activity to help identify who is reviewing code and encourage broader participation.
+Automated workflow that tracks code review activity in the OpenVMM repository.
 
-## What It Does
+## What It Tracks
 
-- Tracks who is reviewing code and how many reviews each person does
-- Identifies contributors who submit code but don't participate in reviews
-- Runs automatically every Monday at midnight UTC
+- **Active Reviewers**: Who is reviewing code and their review counts
+- **Review Volume**: Number of reviews given and PRs reviewed per person
+- **Review Gaps**: Contributors who submit PRs but don't participate in reviews
+- **Participation Rate**: Percentage of contributors who also review code
 
-## Usage
+## Schedule
 
-**Automatic:** Reports generated weekly and saved as GitHub Actions artifacts
+- **Automatic**: Runs weekly on Mondays at midnight UTC
+- **Manual**: Trigger via Actions → Code Review Metrics → Run workflow
 
-**Manual:** Go to Actions → Code Review Metrics → Run workflow (default 30 days, configurable)
+## Configuration
 
-## Reports Include
+Manual runs can specify a custom analysis period (default: 30 days).
 
-- Active reviewers with review counts and PRs reviewed
+## Output
+
+Reports include:
+- Reviewer activity table with review counts
 - Contributors not participating in reviews
-- Review participation statistics
+- Key insights and participation statistics
 
-Reports are available in the GitHub Actions artifacts section with 90-day retention.
+Artifacts are retained for 90 days in GitHub Actions.
