@@ -645,6 +645,7 @@ enum Req {
 pub trait AerHandler: Send + Sync + 'static {
     /// Given a completion command, if the command pertains to a pending AEN,
     /// process it.
+    #[inline]
     fn handle_completion(&mut self, _completion: &nvme_spec::Completion) {}
     /// Handle a request from the driver to get the most-recent undelivered AEN
     /// or wait for the next one.
@@ -748,8 +749,17 @@ impl AerHandler for AdminAerHandler {
     }
 }
 
+/// No-op AER handler. Should be only used for IO queues.
 pub struct NoOpAerHandler;
-impl AerHandler for NoOpAerHandler {}
+impl AerHandler for NoOpAerHandler {
+    fn handle_aen_request(&mut self, _rpc: Rpc<(), AsynchronousEventRequestDw0>) {
+        panic!("no-op aer handler should never receive an aen request. This is likely a bug in the driver.");
+    }
+
+    fn update_awaiting_cid(&mut self, _cid: u16) {
+        panic!("no-op aer handler should never be passed a cid to await. This is likely a bug in the driver.");
+    }
+}
 
 #[derive(Inspect)]
 struct QueueHandler<T: AerHandler> {
