@@ -1874,24 +1874,6 @@ fn append_cmdline(cmd: &mut Option<String>, add_cmd: impl AsRef<str>) {
     }
 }
 
-fn append_log_params_to_cmdline(cmd: &mut Option<String>) {
-    // Forward OPENVMM_LOG and OPENVMM_SHOW_SPANS to OpenHCL if they're set.
-    let openhcl_tracing =
-        if let Ok(x) = std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG")) {
-            format!("OPENVMM_LOG={x}")
-        } else {
-            "OPENVMM_LOG=debug".to_owned()
-        };
-    let openhcl_show_spans = if let Ok(x) = std::env::var("OPENVMM_SHOW_SPANS") {
-        format!("OPENVMM_SHOW_SPANS={x}")
-    } else {
-        "OPENVMM_SHOW_SPANS=true".to_owned()
-    };
-
-    append_cmdline(cmd, openhcl_tracing);
-    append_cmdline(cmd, openhcl_show_spans);
-}
-
 async fn save_inspect(
     name: &str,
     inspect: std::pin::Pin<Box<dyn Future<Output = anyhow::Result<inspect::Node>> + Send>>,

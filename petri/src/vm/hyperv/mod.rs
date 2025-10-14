@@ -30,7 +30,6 @@ use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::kmsg_log_task;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::vm::append_cmdline;
-use crate::vm::append_log_params_to_cmdline;
 use anyhow::Context;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;

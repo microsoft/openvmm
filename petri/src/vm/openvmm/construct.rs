@@ -30,7 +30,6 @@ use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openvmm::BOOT_NVME_INSTANCE;
 use crate::openvmm::memdiff_vmgs;
 use crate::vm::append_cmdline;
-use crate::vm::append_log_params_to_cmdline;
 use crate::vtl2_settings::ControllerType;
 use crate::vtl2_settings::Vtl2LunBuilder;
 use crate::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
