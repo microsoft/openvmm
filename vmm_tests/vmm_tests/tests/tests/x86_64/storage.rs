@@ -601,6 +601,8 @@ async fn openhcl_linux_storvsp_dvd_nvme(
         .run()
         .await?;
 
+    tracing::info!("VM is running, issuing read to dvd drive");
+
     let b = agent
         .read_file("/dev/sr0")
         .await
@@ -613,6 +615,8 @@ async fn openhcl_linux_storvsp_dvd_nvme(
         b.len()
     );
     assert_eq!(b[..], bytes[..], "content mismatch");
+
+    tracing::info!("read complete and verified, powering off VM");
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
