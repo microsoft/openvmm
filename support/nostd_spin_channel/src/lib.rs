@@ -19,7 +19,7 @@ use thiserror::Error;
 
 /// An unbounded channel implementation with priority send capability.
 /// This implementation works in no_std environments using spin-rs.
-/// It uses a VecDeque as the underlying buffer
+/// It uses a VecDeque as the underlying buffer.
 pub struct Channel<T> {
     inner: Arc<ChannelInner<T>>,
 }

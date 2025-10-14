@@ -6,7 +6,7 @@
 macro_rules! create_function_with_restore {
     ($func_name:ident, $symbol:ident) => {
         #[inline(never)]
-        // avoiding inline for debuggability in release builds
+        // avoiding inline for debuggability in release builds.
         fn $func_name() {
             // SAFETY: we are calling a function pointer and restoring all registers.
             unsafe {

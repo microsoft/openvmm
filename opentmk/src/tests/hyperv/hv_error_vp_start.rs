@@ -14,7 +14,7 @@ pub fn exec<T>(ctx: &mut T)
 where
     T: VtlPlatformTrait + VirtualProcessorPlatformTrait<T>,
 {
-    // Skiping VTL setup for now to test the negitive case
+    // Skipping VTL setup for now to test the negative case
 
     let vp_count = ctx.get_vp_count();
     tmk_assert!(vp_count.is_ok(), "get_vp_count should succeed");

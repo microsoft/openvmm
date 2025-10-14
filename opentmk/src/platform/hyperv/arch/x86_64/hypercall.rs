@@ -12,13 +12,13 @@ use zerocopy::IntoBytes;
 
 use crate::platform::hyperv::arch::hypercall::HvCall;
 
-// avoiding inline for debuggability in release builds
+// avoiding inline for debuggability in release builds.
 #[inline(never)]
 #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
 /// Invokes a hypercall specifically for switching to a VTL context.
 ///
 ///  # Safety
-///  The caller must ensure that the hypercall is invoked in a context where it is safe to do so
+///  The caller must ensure that the hypercall is invoked in a context where it is safe to do so.
 unsafe fn invoke_hypercall_vtl(control: hvdef::hypercall::Control) {
     // SAFETY: the caller guarantees the safety of this operation.
     unsafe {
@@ -189,7 +189,7 @@ impl HvCall {
         Ok(context)
     }
 
-    // avoiding inline for debuggability in release builds
+    // avoiding inline for debuggability in release builds.
     #[inline(never)]
     /// Invokes the VtlCall hypercall.
     pub(crate) fn vtl_call() {
@@ -200,7 +200,7 @@ impl HvCall {
         unsafe { invoke_hypercall_vtl(control) };
     }
 
-    // avoiding inline for debuggability in release builds
+    // avoiding inline for debuggability in release builds.
     #[inline(never)]
     /// Invokes the VtlReturn hypercall.
     pub(crate) fn vtl_return() {

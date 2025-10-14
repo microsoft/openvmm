@@ -26,7 +26,7 @@ static MUTEX: Mutex<()> = Mutex::new(());
 fn no_op() {}
 
 fn common_handler(_stack_frame: InterruptStackFrame, interrupt: u8) {
-    // SAFETY: Handlers are initilizaed to no_op and only set via set_handler which is
+    // SAFETY: Handlers are initialized to no_op and only set via set_handler which is
     // protected by a mutex.
     unsafe {
         HANDLERS[interrupt as usize]();
