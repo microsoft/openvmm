@@ -252,7 +252,7 @@ async fn tpm_ak_cert_retry_windows(
     extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,),
 ) -> anyhow::Result<()> {
     let config = configure_ak_cert_retry_vm(config);
-    let (mut vm, agent) = config.run().await?;
+    let (vm, agent) = config.run().await?;
 
     let (windows_artifact,) = extra_deps;
     let host_binary = windows_artifact.get();

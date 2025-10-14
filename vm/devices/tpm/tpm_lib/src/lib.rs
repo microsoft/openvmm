@@ -1937,14 +1937,16 @@ fn export_rsa_public(public: &Tpm2bPublic) -> Result<TpmRsa2kPublic, TpmHelperUt
     })
 }
 
+// The test depends on `ms_tpm_20_ref` that currently only works for x86_64 platforms.
+#[cfg(target_arch = "x86_64")]
 #[cfg(test)]
 mod tests {
     use super::*;
     use ms_tpm_20_ref::DynResult;
     use ms_tpm_20_ref::MsTpm20RefPlatform;
     use std::time::Instant;
-    use tpm_protocol::AlgId;
-    use tpm_protocol::TPM20_HT_PERSISTENT;
+    use tpm_protocol::tpm20proto::AlgId;
+    use tpm_protocol::tpm20proto::TPM20_HT_PERSISTENT;
 
     impl TpmEngine for MsTpm20RefPlatform {
         fn execute_command(
