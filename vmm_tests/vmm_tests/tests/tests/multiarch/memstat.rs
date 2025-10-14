@@ -7,6 +7,7 @@ use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::IsolationType;
 use petri::MemoryConfig;
+use petri::OpenHclLogConfig;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
@@ -396,6 +397,7 @@ pub(crate) async fn idle_test<T: PetriVmmBackend>(
                 dynamic_memory_range: None,
             }
         })
+        .with_openhcl_log_levels(OpenHclLogConfig::BuiltInDefault)
         .run()
         .await;
 
