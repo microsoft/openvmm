@@ -95,7 +95,7 @@ async fn kvp_ic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<(
 /// Test the timesync IC.
 #[openvmm_test(
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    uefi_x64(vhd(ubuntu_2204_server_x64)),
+    uefi_x64(vhd(ubuntu_2504_server_x64)),
     uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     linux_direct_x64

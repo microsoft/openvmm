@@ -85,14 +85,12 @@ impl IntoPipeline for CheckinGatesCli {
                         .gh_set_name("[flowey] OpenVMM PR");
                 }
                 PipelineConfig::PrRelease => {
-                    // This workflow is triggered when a specific label is added to a PR.
+                    // This workflow is triggered when a specific label is present on a PR.
+                    let mut triggers = GhPrTriggers::new_draftable();
+                    triggers.branches = branches;
+                    triggers.types.push("labeled".into());
                     pipeline
-                        .gh_set_pr_triggers(GhPrTriggers {
-                            branches,
-                            types: vec!["labeled".into()],
-                            auto_cancel: false,
-                            exclude_branches: vec![],
-                        })
+                        .gh_set_pr_triggers(triggers)
                         .gh_set_name("[flowey] OpenVMM Release PR");
                 }
             }
@@ -914,7 +912,8 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
-            KnownTestArtifacts::Ubuntu2204ServerX64Vhd,
+            KnownTestArtifacts::Ubuntu2404ServerX64Vhd,
+            KnownTestArtifacts::Ubuntu2504ServerX64Vhd,
             KnownTestArtifacts::VmgsWithBootEntry,
         ];
 
@@ -922,7 +921,7 @@ impl IntoPipeline for CheckinGatesCli {
         let cvm_x64_test_artifacts = vec![
             KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
-            KnownTestArtifacts::Ubuntu2404ServerX64Vhd,
+            KnownTestArtifacts::Ubuntu2504ServerX64Vhd,
         ];
 
         let mut vmm_tests_results_artifacts = vec![];

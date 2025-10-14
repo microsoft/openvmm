@@ -364,8 +364,17 @@ impl HyperVVM {
 
     /// Wait for the VM to stop
     pub async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
-        powershell::run_set_turn_off_on_guest_restart(&self.vmid, &self.ps_mod, !allow_reset)
-            .await?;
+        // If we aren't expecting a restart, tell the VM to turn off if the
+        // guest unexpectedly restarts. This command may fail if the VM is
+        // transitioning between states. In that case, the VM will be shut off
+        // and destroyed later if necessary.
+        if let Err(e) =
+            powershell::run_set_turn_off_on_guest_restart(&self.vmid, &self.ps_mod, !allow_reset)
+                .await
+        {
+            tracing::warn!("failed to set turn off on guest restart: {e:#}");
+        }
+
         let (halt_reason, timestamp) = self.wait_for_some(Self::halt_event).await?;
         if halt_reason == PetriHaltReason::Reset {
             self.last_start_time = Some(timestamp.checked_add(Duration::from_millis(1))?);
@@ -486,7 +495,7 @@ impl HyperVVM {
     /// Sets the VM firmware command line.
     pub async fn set_vm_firmware_command_line(
         &self,
-        openhcl_command_line: &str,
+        openhcl_command_line: impl AsRef<str>,
     ) -> anyhow::Result<()> {
         powershell::run_set_vm_command_line(&self.vmid, &self.ps_mod, openhcl_command_line).await
     }

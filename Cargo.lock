@@ -1950,6 +1950,7 @@ dependencies = [
  "igvmfilegen_config",
  "log",
  "quick-xml",
+ "powershell_builder",
  "serde",
  "serde_json",
  "target-lexicon",
@@ -3060,6 +3061,7 @@ dependencies = [
  "pal_async",
  "pci_bus",
  "pci_core",
+ "pcie",
  "range_map_vec",
  "scsi_core",
  "scsidisk",
@@ -5505,6 +5507,21 @@ dependencies = [
  "pci_core",
  "vm_resource",
  "vmcore",
+]
+
+[[package]]
+name = "pcie"
+version = "0.0.0"
+dependencies = [
+ "chipset_device",
+ "inspect",
+ "pal_async",
+ "pci_bus",
+ "pci_core",
+ "tracelimit",
+ "tracing",
+ "vmcore",
+ "zerocopy 0.8.25",
 ]
 
 [[package]]

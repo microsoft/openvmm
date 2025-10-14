@@ -242,9 +242,13 @@ async fn node_from_environment() -> anyhow::Result<Option<NodeResult>> {
 /// send.send(String::from("message for new process"));
 /// # })
 /// ```
+#[derive(Inspect)]
 pub struct Mesh {
+    #[inspect(rename = "name")]
     mesh_name: String,
+    #[inspect(flatten, send = "MeshRequest::Inspect")]
     request: mesh::Sender<MeshRequest>,
+    #[inspect(skip)]
     task: Task<()>,
 }
 
@@ -371,12 +375,6 @@ struct NewHostParams {
     config: ProcessConfig,
     recv: mesh::local_node::Port,
     request_send: mesh::Sender<HostRequest>,
-}
-
-impl Inspect for Mesh {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.request.send(MeshRequest::Inspect(req.defer()));
-    }
 }
 
 impl Mesh {
@@ -547,10 +545,10 @@ impl MeshInner {
                                                         host.pid,
                                                     ),
                                                 })
-                                                .merge(inspect::adhoc(|req| {
-                                                    host.send
-                                                        .send(HostRequest::Inspect(req.defer()));
-                                                }));
+                                                .merge(inspect::send(
+                                                    &host.send,
+                                                    HostRequest::Inspect,
+                                                ));
                                         }),
                                     );
                                 }

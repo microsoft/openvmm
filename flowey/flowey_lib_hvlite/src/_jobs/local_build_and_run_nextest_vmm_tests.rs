@@ -335,11 +335,9 @@ impl SimpleFlowNode for Node {
                             artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
                             artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd);
                         }
-                        if ubuntu && (tdx || snp || hyperv_vbs) {
-                            artifacts.push(KnownTestArtifacts::Ubuntu2404ServerX64Vhd);
-                        }
                         if ubuntu {
-                            artifacts.push(KnownTestArtifacts::Ubuntu2204ServerX64Vhd);
+                            artifacts.push(KnownTestArtifacts::Ubuntu2404ServerX64Vhd);
+                            artifacts.push(KnownTestArtifacts::Ubuntu2504ServerX64Vhd);
                         }
                         if windows && uefi {
                             artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);

@@ -25,9 +25,9 @@ use vmm_test_macros::vmm_test_no_agent;
     openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY]
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY]
 )]
 async fn default_boot(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -52,9 +52,9 @@ async fn default_boot(
     openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY]
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY]
 )]
 async fn clear_vmgs<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -80,9 +80,9 @@ async fn clear_vmgs<T: PetriVmmBackend>(
     openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY]
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY]
 )]
 async fn invalid_boot_entries<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -102,9 +102,9 @@ async fn invalid_boot_entries<T: PetriVmmBackend>(
 
 /// Test vmgstool create command
 #[vmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGSTOOL_NATIVE],
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE],
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGSTOOL_NATIVE]
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE]
 )]
 async fn vmgstool_create<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -141,9 +141,9 @@ async fn vmgstool_create<T: PetriVmmBackend>(
 /// Test vmgstool remove-boot-entries command to make sure it removes the
 /// invalid boot entries and the vm boots.
 #[vmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGSTOOL_NATIVE, VMGS_WITH_BOOT_ENTRY],
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE, VMGS_WITH_BOOT_ENTRY],
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGSTOOL_NATIVE, VMGS_WITH_BOOT_ENTRY],
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGSTOOL_NATIVE, VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE, VMGS_WITH_BOOT_ENTRY],
 )]
 async fn vmgstool_remove_boot_entries<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -187,7 +187,7 @@ const TEST_GSP_BY_ID: [u8; 32] = [
 
 /// Test vmgstool encryption
 #[openvmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGSTOOL_NATIVE],
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
 )]
 async fn vmgstool_encryption<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -316,7 +316,7 @@ async fn run_vmgstool_verification(
 
 /// Test vmgstool encryption
 #[openvmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGSTOOL_NATIVE],
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGSTOOL_NATIVE],
 )]
 async fn vmgstool_update_key<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
