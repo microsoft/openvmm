@@ -303,7 +303,6 @@ macro_rules! info_ratelimited {
 /// - `limit: <count>` - maximum events per period
 ///
 /// `level` is required and must be a compile-time literal identifier (ERROR, WARN, INFO, DEBUG, TRACE).
-/// ```
 #[macro_export]
 macro_rules! event_ratelimited_static {
     // With both period and limit and level
