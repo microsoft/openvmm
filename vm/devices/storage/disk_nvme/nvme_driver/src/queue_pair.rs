@@ -753,11 +753,15 @@ impl AerHandler for AdminAerHandler {
 pub struct NoOpAerHandler;
 impl AerHandler for NoOpAerHandler {
     fn handle_aen_request(&mut self, _rpc: Rpc<(), AsynchronousEventRequestDw0>) {
-        panic!("no-op aer handler should never receive an aen request. This is likely a bug in the driver.");
+        panic!(
+            "no-op aer handler should never receive an aen request. This is likely a bug in the driver."
+        );
     }
 
     fn update_awaiting_cid(&mut self, _cid: u16) {
-        panic!("no-op aer handler should never be passed a cid to await. This is likely a bug in the driver.");
+        panic!(
+            "no-op aer handler should never be passed a cid to await. This is likely a bug in the driver."
+        );
     }
 }
 
