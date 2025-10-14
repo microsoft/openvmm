@@ -179,7 +179,7 @@ impl UnixTpm {
     }
 
     fn transmit(&self, command: &[u8]) -> io::Result<Vec<u8>> {
-        let mut f = self.file.lock().unwrap();
+        let mut f = self.file.lock();
 
         // Write full command
         f.write_all(command)?;

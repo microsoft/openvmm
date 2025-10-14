@@ -199,8 +199,6 @@ chipset_device_fuzz = { path = "vm/chipset_device_fuzz" }
 chipset_device_resources = { path = "vm/chipset_device_resources" }
 cvm_tracing = { path = "vm/cvm_tracing" }
 chipset = { path = "vm/devices/chipset" }
-tpm_protocol = { path = "vm/devices/tpm/tpm_protocol" }
-tpm_lib = { path = "vm/devices/tpm/tpm_lib" }
 chipset_legacy = { path = "vm/devices/chipset_legacy" }
 chipset_resources = { path = "vm/devices/chipset_resources" }
 firmware_pcat = { path = "vm/devices/firmware/firmware_pcat" }
@@ -309,6 +307,8 @@ serial_pl011 = { path = "vm/devices/serial/serial_pl011" }
 serial_pl011_resources = { path = "vm/devices/serial/serial_pl011_resources" }
 serial_socket = { path = "vm/devices/serial/serial_socket" }
 tpm_device = { path = "vm/devices/tpm/tpm_device" }
+tpm_lib = { path = "vm/devices/tpm/tpm_lib" }
+tpm_protocol = { path = "vm/devices/tpm/tpm_protocol" }
 tpm_resources = { path = "vm/devices/tpm_resources" }
 mcr_resources = { path = "vm/devices/mcr_resources" }
 uidevices = { path = "vm/devices/uidevices" }
