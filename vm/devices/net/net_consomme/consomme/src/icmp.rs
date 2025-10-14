@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 // UNSAFETY: needed to cast the socket buffer to `MaybeUninit`.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use super::Access;
 use super::Client;
@@ -13,7 +13,6 @@ use crate::ChecksumState;
 use crate::Ipv4Addresses;
 
 use inspect::Inspect;
-use inspect::InspectMut;
 use inspect_counters::Counter;
 use pal_async::interest::InterestSlot;
 use pal_async::interest::PollEvents;
@@ -63,7 +62,7 @@ impl Inspect for Icmp {
     }
 }
 
-#[derive(InspectMut)]
+#[derive(Inspect)]
 struct IcmpConnection {
     #[inspect(skip)]
     socket: PolledSocket<Socket>,
@@ -78,12 +77,6 @@ struct Stats {
     tx_dropped: Counter,
     tx_errors: Counter,
     rx_packets: Counter,
-}
-
-impl Inspect for IcmpConnection {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        req.respond();
-    }
 }
 
 impl IcmpConnection {
@@ -146,7 +139,7 @@ impl IcmpConnection {
         let socket = self.socket.get();
         let dest = SocketAddr::new(IpAddr::V4(dest), 0);
         socket.set_ttl_v4(hop_limit as u32)?;
-        socket.send_to(buffer, &(dest.into()))?;
+        socket.send_to(buffer, &dest.into())?;
         Ok(())
     }
 }
@@ -225,7 +218,7 @@ impl<T: Client> Access<'_, T> {
 
     fn bind<A: Into<Ipv4Addr>>(socket: &mut Socket, addr: A) -> std::io::Result<()> {
         let addr = SocketAddr::new(IpAddr::V4(addr.into()), 0);
-        socket.bind(&(addr.into()))?;
+        socket.bind(&addr.into())?;
         Ok(())
     }
 }
