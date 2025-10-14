@@ -903,7 +903,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             .unwrap(); // Ok to unwrap, we've validated the gpns above.
 
         for range in ranges {
-            self.apply_protections(range, target_vtl, protections, GpnSource::GuestMemory)
+            self.apply_protections(range, target_vtl, protections)
                 .unwrap();
         }
 
