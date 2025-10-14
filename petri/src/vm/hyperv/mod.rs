@@ -420,7 +420,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
             OpenHclConfig {
                 vtl2_nvme_boot: _, // TODO, see #1649.
                 vmbus_redirect,
-                command_line,
+                command_line: _,
+                log_levels: _,
             },
         )) = &openhcl_config
         {
@@ -444,11 +445,9 @@ impl PetriVmmBackend for HyperVPetriBackend {
             )
             .await?;
 
-            let mut command_line = command_line.clone();
-            append_log_params_to_cmdline(&mut command_line);
+            let command_line = openhcl_config.as_ref().unwrap().1.command_line();
 
-            vm.set_vm_firmware_command_line(command_line.unwrap())
-                .await?;
+            vm.set_vm_firmware_command_line(&command_line).await?;
 
             vm.set_vmbus_redirect(*vmbus_redirect).await?;
 

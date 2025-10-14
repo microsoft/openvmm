@@ -117,7 +117,7 @@ async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
 ) -> anyhow::Result<()> {
     openhcl_servicing_core(
         config,
-        "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off", // disable sidecar until #1345 is fixed
+        "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         igvm_file,
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,
@@ -137,7 +137,7 @@ async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
 ) -> anyhow::Result<()> {
     openhcl_servicing_core(
         config.with_vmbus_redirect(true), // Need this to attach the NVMe device
-        "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off", // disable sidecar until #1345 is fixed
+        "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         igvm_file,
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,
@@ -374,7 +374,7 @@ async fn create_keepalive_test_config(
 
     config
         .with_vmbus_redirect(true)
-        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off") // disable sidecar until #1345 is fixed
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
         .modify_backend(move |b| {
             b.with_custom_config(|c| {
                 // Add a fault controller to test the nvme controller functionality

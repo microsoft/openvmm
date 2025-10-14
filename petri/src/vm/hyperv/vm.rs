@@ -484,9 +484,9 @@ impl HyperVVM {
     }
 
     /// Sets the VM firmware command line.
-    pub async fn set_vm_firmware_command_line<S: AsRef<str>>(
+    pub async fn set_vm_firmware_command_line(
         &self,
-        openhcl_command_line: S,
+        openhcl_command_line: impl AsRef<str>,
     ) -> anyhow::Result<()> {
         powershell::run_set_vm_command_line(&self.vmid, &self.ps_mod, openhcl_command_line.as_ref())
             .await

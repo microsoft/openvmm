@@ -680,13 +680,13 @@ impl PetriVmConfigSetupCore<'_> {
                 let OpenHclConfig {
                     vtl2_nvme_boot: _, // load_boot_disk
                     vmbus_redirect: _, // config_openhcl_vmbus_devices
-                    command_line,
+                    command_line: _,
+                    log_levels: _,
                 } = openhcl_config;
 
-                let mut cmdline = command_line.clone();
+                let mut cmdline = Some(openhcl_config.command_line());
 
                 append_cmdline(&mut cmdline, "panic=-1 reboot=triple");
-                append_log_params_to_cmdline(&mut cmdline);
 
                 let isolated = match self.firmware {
                     Firmware::OpenhclLinuxDirect { .. } => {
