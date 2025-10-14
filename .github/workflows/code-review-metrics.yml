@@ -42,7 +42,11 @@ jobs:
             sudo apt update
             sudo apt install gh -y
           fi
+      - name: Set up GitHub CLI
+        uses: github/gh-cli-action@v2
 
+      - name: Collect Code Review Metrics
+        run: |
           # Authenticate with GitHub CLI
           echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
 
