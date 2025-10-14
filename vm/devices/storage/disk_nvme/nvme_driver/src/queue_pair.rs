@@ -641,7 +641,7 @@ enum Req {
 
 /// Functionality for an AER handler. The default implementation
 /// represents a NoOp handler with functions on the critical path compiled out
-/// for efficiency and should be used for IO Queues. 
+/// for efficiency and should be used for IO Queues.
 pub trait AerHandler: Send + Sync + 'static {
     /// Given a completion command, if the command pertains to a pending AEN,
     /// process it.
