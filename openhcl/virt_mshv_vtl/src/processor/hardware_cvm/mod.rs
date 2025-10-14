@@ -929,7 +929,14 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         let mut masks = vec![0u64; mask_index + 1];
         masks[mask_index] = 1u64 << bit_position;
         let valid_masks = 1u64 << mask_index;
-        let redirected_processor = ProcessorSet::from_processor_masks(valid_masks, &masks)?;
+        let redirected_processor = match ProcessorSet::from_processor_masks(valid_masks, &masks) {
+            Some(set) => set,
+            None => {
+                // Undo interrupt vector mapping in VTL2 and fallback to proxy interrupt delivery
+                self.vp.partition.hcl.map_redirected_device_interrupt(vector, first_apic_id, false);
+                return None; // Fall back to proxy delivery
+            }
+        };
 
         // Issue HvCallRetargetDeviceInterrupt hypercall with posted interrupt redirection enabled
         let result = self.vp.partition.hcl.retarget_device_interrupt(
