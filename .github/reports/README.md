@@ -7,7 +7,6 @@ This workflow tracks code reviewer activity to help identify who is reviewing co
 - Tracks who is reviewing code and how many reviews each person does
 - Identifies contributors who submit code but don't participate in reviews
 - Runs automatically every Monday at midnight UTC
-- Excludes bot accounts from analysis
 
 ## Usage
 
