@@ -14,14 +14,17 @@ use crate::IsolationType;
 use crate::NoPetriVmInspector;
 use crate::OpenHclConfig;
 use crate::OpenHclServicingFlags;
+use crate::PetriDiskType;
 use crate::PetriHaltReason;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmRuntime;
+use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::SecureBootTemplate;
 use crate::ShutdownKind;
 use crate::UefiConfig;
+use crate::VmmQuirks;
 use crate::disk_image::AgentImage;
 use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::kmsg_log_task;
@@ -38,7 +41,6 @@ use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
-use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_common::tags::GuestQuirksInner;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
@@ -48,8 +50,10 @@ use pipette_client::PipetteClient;
 use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 use vm::HyperVVM;
+use vmgs_resources::GuestStateEncryptionPolicy;
 
 /// The Hyper-V Petri backend
 pub struct HyperVPetriBackend {}
@@ -76,8 +80,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
             && !(firmware.is_pcat() && arch == MachineArch::Aarch64)
     }
 
-    fn select_quirks(quirks: GuestQuirks) -> GuestQuirksInner {
-        quirks.hyperv
+    fn quirks(firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks) {
+        (firmware.quirks().hyperv, VmmQuirks::default())
     }
 
     fn new(_resolver: &ArtifactResolver<'_>) -> Self {
@@ -103,14 +107,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
             agent_image,
             openhcl_agent_image,
             boot_device_type,
-            vmgs: _, // TODO
+            vmgs,
         } = config;
 
-        let PetriVmResources {
-            driver,
-            output_dir: _,
-            log_source,
-        } = resources;
+        let PetriVmResources { driver, log_source } = resources;
 
         let temp_dir = tempfile::tempdir()?;
 
@@ -179,6 +179,64 @@ impl PetriVmmBackend for HyperVPetriBackend {
             ),
         };
 
+        let vmgs_path = {
+            let _lifetime_cli = match &vmgs {
+                PetriVmgsResource::Disk(_) => "DISK",
+                PetriVmgsResource::ReprovisionOnFailure(_) => "REPROVISION_ON_FAILURE",
+                PetriVmgsResource::Reprovision(_) => "REPROVISION",
+                PetriVmgsResource::Ephemeral => "EPHEMERAL",
+            };
+
+            let (disk, encryption) = match vmgs {
+                PetriVmgsResource::Disk(vmgs)
+                | PetriVmgsResource::ReprovisionOnFailure(vmgs)
+                | PetriVmgsResource::Reprovision(vmgs) => (Some(vmgs.disk), vmgs.encryption_policy),
+                PetriVmgsResource::Ephemeral => (None, GuestStateEncryptionPolicy::None(true)),
+            };
+
+            let _strict = encryption.is_strict();
+
+            let encryption_cli = match encryption {
+                GuestStateEncryptionPolicy::Auto => "AUTO",
+                GuestStateEncryptionPolicy::None(_) => "NONE",
+                GuestStateEncryptionPolicy::GspById(_) => "GSP_BY_ID",
+                GuestStateEncryptionPolicy::GspKey(_) => "GSP_KEY",
+            };
+
+            // TODO: Error for non-OpenHCL Hyper-V VMs if not supported
+            // TODO: Use WMI interfaces when possible
+            if let Some((_, config)) = openhcl_config.as_mut() {
+                // TODO: Re-enable when added to OpenHCL command line
+                // append_cmdline(
+                //     &mut config.command_line,
+                //     format!("HCL_GUEST_STATE_LIFETIME={lifetime_cli}"),
+                // );
+                append_cmdline(
+                    &mut config.command_line,
+                    format!("HCL_GUEST_STATE_ENCRYPTION_POLICY={encryption_cli}"),
+                );
+                // TODO: Re-enable when added to OpenHCL command line
+                // if strict {
+                //     append_cmdline(
+                //         &mut config.command_line,
+                //         format!("HCL_STRICT_ENCRYPTION_POLICY=1"),
+                //     );
+                // }
+            };
+
+            match disk {
+                None | Some(PetriDiskType::Memory) => None,
+                Some(PetriDiskType::Differencing(parent_path)) => {
+                    let diff_disk_path = temp_dir
+                        .path()
+                        .join(parent_path.file_name().context("path has no filename")?);
+                    make_temp_diff_disk(&diff_disk_path, &parent_path).await?;
+                    Some(diff_disk_path)
+                }
+                Some(PetriDiskType::Persistent(path)) => Some(path),
+            }
+        };
+
         let mut log_tasks = Vec::new();
 
         let mut vm = HyperVVM::new(
@@ -186,6 +244,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             generation,
             guest_state_isolation_type,
             memory.startup_bytes,
+            vmgs_path.as_deref(),
             log_source.log_file("hyperv")?,
             driver.clone(),
         )
@@ -274,13 +333,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                         .to_string_lossy()
                 ));
 
-                {
-                    let path = diff_disk_path.clone();
-                    let parent_path = vhd.to_path_buf();
-                    tracing::debug!(?path, ?parent_path, "creating differencing vhd");
-                    blocking::unblock(move || disk_vhdmp::Vhd::create_diff(&path, &parent_path))
-                        .await?;
-                }
+                make_temp_diff_disk(&diff_disk_path, vhd).await?;
 
                 vm.add_vhd(
                     &diff_disk_path,
@@ -301,6 +354,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             {
                 if agent_image.contains_pipette()
                     && matches!(firmware.os_flavor(), OsFlavor::Windows)
+                    && firmware.isolation().is_none()
                 {
                     // Make a file for the IMC hive. It's not guaranteed to be at a fixed
                     // location at runtime.
@@ -332,7 +386,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
             OpenHclConfig {
                 vtl2_nvme_boot: _, // TODO, see #1649.
                 vmbus_redirect,
-                command_line,
+                command_line: _,
+                log_levels: _,
             },
         )) = &openhcl_config
         {
@@ -356,9 +411,9 @@ impl PetriVmmBackend for HyperVPetriBackend {
             )
             .await?;
 
-            if let Some(command_line) = command_line {
-                vm.set_vm_firmware_command_line(command_line).await?;
-            }
+            let command_line = openhcl_config.as_ref().unwrap().1.command_line();
+
+            vm.set_vm_firmware_command_line(&command_line).await?;
 
             vm.set_vmbus_redirect(*vmbus_redirect).await?;
 
@@ -537,8 +592,28 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         self.vm.restart_openhcl(flags).await
     }
 
+    async fn save_openhcl(
+        &mut self,
+        _new_openhcl: &ResolvedArtifact,
+        _flags: OpenHclServicingFlags,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("saving OpenHCL firmware separately is not yet supported on Hyper-V");
+    }
+
+    async fn restore_openhcl(&mut self) -> anyhow::Result<()> {
+        anyhow::bail!("restoring OpenHCL firmware separately is not yet supported on Hyper-V");
+    }
+
     fn take_framebuffer_access(&mut self) -> Option<vm::HyperVFramebufferAccess> {
         (!self.is_isolated).then(|| self.vm.get_framebuffer_access())
+    }
+
+    async fn reset(&mut self) -> anyhow::Result<()> {
+        self.vm.reset().await
+    }
+
+    async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
+        Ok(Some(self.vm.get_guest_state_file().await?))
     }
 }
 
@@ -616,4 +691,15 @@ async fn hyperv_serial_log_task(
             }
         }
     }
+}
+
+async fn make_temp_diff_disk(
+    path: impl AsRef<Path>,
+    parent_path: impl AsRef<Path>,
+) -> anyhow::Result<()> {
+    let path = path.as_ref().to_path_buf();
+    let parent_path = parent_path.as_ref().to_path_buf();
+    tracing::debug!(?path, ?parent_path, "creating differencing vhd");
+    blocking::unblock(move || disk_vhdmp::Vhd::create_diff(&path, &parent_path)).await?;
+    Ok(())
 }

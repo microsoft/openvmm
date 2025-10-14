@@ -85,14 +85,12 @@ impl IntoPipeline for CheckinGatesCli {
                         .gh_set_name("[flowey] OpenVMM PR");
                 }
                 PipelineConfig::PrRelease => {
-                    // This workflow is triggered when a specific label is added to a PR.
+                    // This workflow is triggered when a specific label is present on a PR.
+                    let mut triggers = GhPrTriggers::new_draftable();
+                    triggers.branches = branches;
+                    triggers.types.push("labeled".into());
                     pipeline
-                        .gh_set_pr_triggers(GhPrTriggers {
-                            branches,
-                            types: vec!["labeled".into()],
-                            auto_cancel: false,
-                            exclude_branches: vec![],
-                        })
+                        .gh_set_pr_triggers(triggers)
                         .gh_set_name("[flowey] OpenVMM Release PR");
                 }
             }
@@ -252,6 +250,12 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_tmk_vmm, use_tmk_vmm) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-tmk_vmm"));
 
+            let (pub_prep_steps, use_prep_steps) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-prep_steps"));
+
+            let (pub_vmgstool, use_vmgstool) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgstool"));
+
             // filter off interesting artifacts required by the VMM tests job
             match arch {
                 CommonArch::X86_64 => {
@@ -261,12 +265,15 @@ impl IntoPipeline for CheckinGatesCli {
                     vmm_tests_artifacts_windows_x86.use_pipette_windows =
                         Some(use_pipette_windows.clone());
                     vmm_tests_artifacts_windows_x86.use_tmk_vmm = Some(use_tmk_vmm.clone());
+                    vmm_tests_artifacts_windows_x86.use_prep_steps = Some(use_prep_steps.clone());
+                    vmm_tests_artifacts_windows_x86.use_vmgstool = Some(use_vmgstool.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_windows_aarch64.use_openvmm = Some(use_openvmm.clone());
                     vmm_tests_artifacts_windows_aarch64.use_pipette_windows =
                         Some(use_pipette_windows.clone());
                     vmm_tests_artifacts_windows_aarch64.use_tmk_vmm = Some(use_tmk_vmm.clone());
+                    vmm_tests_artifacts_windows_aarch64.use_vmgstool = Some(use_vmgstool.clone());
                 }
             }
             // emit a job for artifacts which _are not_ in the VMM tests "hot
@@ -276,8 +283,6 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-igvmfilegen"));
             let (pub_vmgs_lib, _use_vmgs_lib) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgs_lib"));
-            let (pub_vmgstool, _use_vmgstool) =
-                pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgstool"));
             let (pub_hypestv, _use_hypestv) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-hypestv"));
             let (pub_ohcldiag_dev, _use_ohcldiag_dev) =
@@ -292,15 +297,6 @@ impl IntoPipeline for CheckinGatesCli {
                 .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
                     FlowPlatform::Windows,
                 ))
-                .dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::WindowsMsvc,
-                    },
-                    profile: CommonProfile::from_release(release),
-                    with_crypto: true,
-                    vmgstool: ctx.publish_typed_artifact(pub_vmgstool),
-                })
                 .dep_on(|ctx| flowey_lib_hvlite::build_hypestv::Request {
                     target: CommonTriple::Common {
                         arch,
@@ -384,6 +380,24 @@ impl IntoPipeline for CheckinGatesCli {
                     unstable_whp: true, // The ARM64 CI runner supports the unstable WHP interface
                     profile: CommonProfile::from_release(release),
                     tmk_vmm: ctx.publish_typed_artifact(pub_tmk_vmm),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_prep_steps::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    prep_steps: ctx.publish_typed_artifact(pub_prep_steps),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    with_crypto: true,
+                    with_test_helpers: true,
+                    vmgstool: ctx.publish_typed_artifact(pub_vmgstool),
                 });
 
             // Hang building the windows VMM tests off this big windows job.
@@ -493,6 +507,7 @@ impl IntoPipeline for CheckinGatesCli {
                     },
                     profile: CommonProfile::from_release(release),
                     with_crypto: true,
+                    with_test_helpers: true,
                     vmgstool: ctx.publish_typed_artifact(pub_vmgstool),
                 })
                 .dep_on(|ctx| flowey_lib_hvlite::build_and_test_vmgs_lib::Request {
@@ -884,26 +899,29 @@ impl IntoPipeline for CheckinGatesCli {
             resolve_vmm_tests_artifacts: vmm_tests_artifact_builders::ResolveVmmTestsDepArtifacts,
             nextest_filter_expr: String,
             test_artifacts: Vec<KnownTestArtifacts>,
+            needs_prep_run: bool,
         }
 
         // standard VM-based CI machines should be able to run all tests except
         // those that require special hardware features (tdx/snp) or need to be
         // run on a baremetal host (hyper-v vbs doesn't seem to work nested)
-        let standard_filter =
-            "all() & !test(tdx) & !test(snp) & !(test(vbs) & test(hyperv))".to_string();
+        let standard_filter = "all()".to_string();
         let standard_x64_test_artifacts = vec![
             KnownTestArtifacts::FreeBsd13_2X64Vhd,
             KnownTestArtifacts::FreeBsd13_2X64Iso,
             KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
-            KnownTestArtifacts::Ubuntu2204ServerX64Vhd,
+            KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
+            KnownTestArtifacts::Ubuntu2404ServerX64Vhd,
+            KnownTestArtifacts::Ubuntu2504ServerX64Vhd,
             KnownTestArtifacts::VmgsWithBootEntry,
         ];
 
         let cvm_filter = |arch| format!("test({arch}) + (test(vbs) & test(hyperv))");
         let cvm_x64_test_artifacts = vec![
+            KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
-            KnownTestArtifacts::Ubuntu2404ServerX64Vhd,
+            KnownTestArtifacts::Ubuntu2504ServerX64Vhd,
         ];
 
         for VmmTestJobParams {
@@ -915,6 +933,7 @@ impl IntoPipeline for CheckinGatesCli {
             resolve_vmm_tests_artifacts,
             nextest_filter_expr,
             test_artifacts,
+            needs_prep_run,
         } in [
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -925,6 +944,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_x86,
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
+                needs_prep_run: false,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -935,6 +955,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_tdx_x86,
                 nextest_filter_expr: cvm_filter("tdx"),
                 test_artifacts: cvm_x64_test_artifacts.clone(),
+                needs_prep_run: true,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -945,6 +966,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_x86,
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
+                needs_prep_run: false,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -955,6 +977,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_snp_x86,
                 nextest_filter_expr: cvm_filter("snp"),
                 test_artifacts: cvm_x64_test_artifacts,
+                needs_prep_run: true,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -966,6 +989,7 @@ impl IntoPipeline for CheckinGatesCli {
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
                 nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
                 test_artifacts: standard_x64_test_artifacts,
+                needs_prep_run: false,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -980,6 +1004,7 @@ impl IntoPipeline for CheckinGatesCli {
                     KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx,
                     KnownTestArtifacts::VmgsWithBootEntry,
                 ],
+                needs_prep_run: false,
             },
         ] {
             let test_label = format!("{label}-vmm-tests");
@@ -1012,6 +1037,7 @@ impl IntoPipeline for CheckinGatesCli {
                         test_artifacts,
                         fail_job_on_test_fail: true,
                         artifact_dir: pub_vmm_tests_results.map(|x| ctx.publish_artifact(x)),
+                        needs_prep_run,
                         done: ctx.new_done_handle(),
                     }
                 });
@@ -1024,7 +1050,12 @@ impl IntoPipeline for CheckinGatesCli {
                 })
             }
 
-            all_jobs.push(vmm_tests_run_job.finish());
+            // ARM VMM tests currently are hitting a UEFI bug that causes them to randomly fail.
+            // For now to unblock other devs don't require them to pass in PRs.
+            // TODO: Remove this if
+            if arch != FlowArch::Aarch64 {
+                all_jobs.push(vmm_tests_run_job.finish());
+            }
         }
 
         // test the flowey local backend by running cargo xflowey build-igvm on x64
@@ -1096,8 +1127,10 @@ mod vmm_tests_artifact_builders {
     use flowey_lib_hvlite::build_guest_test_uefi::GuestTestUefiOutput;
     use flowey_lib_hvlite::build_openvmm::OpenvmmOutput;
     use flowey_lib_hvlite::build_pipette::PipetteOutput;
+    use flowey_lib_hvlite::build_prep_steps::PrepStepsOutput;
     use flowey_lib_hvlite::build_tmk_vmm::TmkVmmOutput;
     use flowey_lib_hvlite::build_tmks::TmksOutput;
+    use flowey_lib_hvlite::build_vmgstool::VmgstoolOutput;
 
     pub type ResolveVmmTestsDepArtifacts =
         Box<dyn Fn(&mut PipelineJobCtx<'_>) -> VmmTestsDepArtifacts>;
@@ -1143,6 +1176,8 @@ mod vmm_tests_artifact_builders {
                 // not currently required, since OpenHCL tests cannot be run on OpenVMM on linux
                 artifact_dir_openhcl_igvm_files: None,
                 tmk_vmm_linux_musl: None,
+                prep_steps: None,
+                vmgstool: None,
             }))
         }
     }
@@ -1153,6 +1188,8 @@ mod vmm_tests_artifact_builders {
         pub use_openvmm: Option<UseTypedArtifact<OpenvmmOutput>>,
         pub use_pipette_windows: Option<UseTypedArtifact<PipetteOutput>>,
         pub use_tmk_vmm: Option<UseTypedArtifact<TmkVmmOutput>>,
+        pub use_prep_steps: Option<UseTypedArtifact<PrepStepsOutput>>,
+        pub use_vmgstool: Option<UseTypedArtifact<VmgstoolOutput>>,
         // linux build machine
         pub use_openhcl_igvm_files: Option<UseArtifact>,
         pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
@@ -1173,6 +1210,8 @@ mod vmm_tests_artifact_builders {
                 use_tmk_vmm,
                 use_tmk_vmm_linux_musl,
                 use_tmks,
+                use_prep_steps,
+                use_vmgstool,
             } = self;
 
             let use_openvmm = use_openvmm.ok_or("openvmm")?;
@@ -1183,6 +1222,8 @@ mod vmm_tests_artifact_builders {
             let use_tmk_vmm = use_tmk_vmm.ok_or("tmk_vmm")?;
             let use_tmk_vmm_linux_musl = use_tmk_vmm_linux_musl.ok_or("tmk_vmm_linux_musl")?;
             let use_tmks = use_tmks.ok_or("tmks")?;
+            let use_prep_steps = use_prep_steps.ok_or("prep_steps")?;
+            let use_vmgstool = use_vmgstool.ok_or("vmgstool")?;
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
                 openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
@@ -1193,6 +1234,8 @@ mod vmm_tests_artifact_builders {
                 tmk_vmm: Some(ctx.use_typed_artifact(&use_tmk_vmm)),
                 tmk_vmm_linux_musl: Some(ctx.use_typed_artifact(&use_tmk_vmm_linux_musl)),
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),
+                prep_steps: Some(ctx.use_typed_artifact(&use_prep_steps)),
+                vmgstool: Some(ctx.use_typed_artifact(&use_vmgstool)),
             }))
         }
     }
@@ -1203,6 +1246,7 @@ mod vmm_tests_artifact_builders {
         pub use_openvmm: Option<UseTypedArtifact<OpenvmmOutput>>,
         pub use_pipette_windows: Option<UseTypedArtifact<PipetteOutput>>,
         pub use_tmk_vmm: Option<UseTypedArtifact<TmkVmmOutput>>,
+        pub use_vmgstool: Option<UseTypedArtifact<VmgstoolOutput>>,
         // linux build machine
         pub use_openhcl_igvm_files: Option<UseArtifact>,
         pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
@@ -1223,6 +1267,7 @@ mod vmm_tests_artifact_builders {
                 use_tmk_vmm,
                 use_tmk_vmm_linux_musl,
                 use_tmks,
+                use_vmgstool,
             } = self;
 
             let use_openvmm = use_openvmm.ok_or("openvmm")?;
@@ -1233,6 +1278,7 @@ mod vmm_tests_artifact_builders {
             let use_tmk_vmm = use_tmk_vmm.ok_or("tmk_vmm")?;
             let use_tmk_vmm_linux_musl = use_tmk_vmm_linux_musl.ok_or("tmk_vmm_linux_musl")?;
             let use_tmks = use_tmks.ok_or("tmks")?;
+            let use_vmgstool = use_vmgstool.ok_or("vmgstool")?;
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
                 openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
@@ -1243,6 +1289,8 @@ mod vmm_tests_artifact_builders {
                 tmk_vmm: Some(ctx.use_typed_artifact(&use_tmk_vmm)),
                 tmk_vmm_linux_musl: Some(ctx.use_typed_artifact(&use_tmk_vmm_linux_musl)),
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),
+                prep_steps: None,
+                vmgstool: Some(ctx.use_typed_artifact(&use_vmgstool)),
             }))
         }
     }

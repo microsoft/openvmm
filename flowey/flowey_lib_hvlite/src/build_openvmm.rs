@@ -7,6 +7,7 @@ use crate::download_lxutil::LxutilArch;
 use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
+use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -115,17 +116,19 @@ impl FlowNode for Node {
                 out_name: "openvmm".into(),
                 crate_type: flowey_lib_common::run_cargo_build::CargoCrateType::Bin,
                 profile: profile.into(),
-                features: features
-                    .into_iter()
-                    .map(|f| {
-                        match f {
-                            OpenvmmFeature::Gdb => "gdb",
-                            OpenvmmFeature::Tpm => "tpm",
-                            OpenvmmFeature::UnstableWhp => "unstable_whp",
-                        }
-                        .into()
-                    })
-                    .collect(),
+                features: CargoFeatureSet::Specific(
+                    features
+                        .into_iter()
+                        .map(|f| {
+                            match f {
+                                OpenvmmFeature::Gdb => "gdb",
+                                OpenvmmFeature::Tpm => "tpm",
+                                OpenvmmFeature::UnstableWhp => "unstable_whp",
+                            }
+                            .into()
+                        })
+                        .collect(),
+                ),
                 target: target.as_triple(),
                 no_split_dbg_info: false,
                 extra_env: None,

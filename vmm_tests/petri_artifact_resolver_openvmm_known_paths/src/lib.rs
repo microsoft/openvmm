@@ -69,9 +69,10 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64 => get_test_artifact_path(KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd),
             _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64 => get_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd),
             _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 => get_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd),
+            _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED => get_prepped_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd),
             _ if id == test_vhd::FREE_BSD_13_2_X64 => get_test_artifact_path(KnownTestArtifacts::FreeBsd13_2X64Vhd),
-            _ if id == test_vhd::UBUNTU_2204_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2204ServerX64Vhd),
             _ if id == test_vhd::UBUNTU_2404_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2404ServerX64Vhd),
+            _ if id == test_vhd::UBUNTU_2504_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2504ServerX64Vhd),
             _ if id == test_vhd::UBUNTU_2404_SERVER_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd),
             _ if id == test_vhd::WINDOWS_11_ENTERPRISE_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx),
 
@@ -84,6 +85,8 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == tmks::TMK_VMM_LINUX_AARCH64_MUSL => tmk_vmm_paravisor_path(MachineArch::Aarch64),
             _ if id == tmks::SIMPLE_TMK_X64 => simple_tmk_path(MachineArch::X86_64),
             _ if id == tmks::SIMPLE_TMK_AARCH64 => simple_tmk_path(MachineArch::Aarch64),
+
+            _ if id == VMGSTOOL_NATIVE => vmgstool_native_executable_path(),
 
             _ => anyhow::bail!("no support for given artifact type"),
         }
@@ -139,6 +142,21 @@ fn get_test_artifact_path(artifact: KnownTestArtifacts) -> Result<PathBuf, anyho
                 &artifact.name(),
             ],
             description: "test artifact",
+        },
+    )
+}
+
+fn get_prepped_test_artifact_path(artifact: KnownTestArtifacts) -> Result<PathBuf, anyhow::Error> {
+    let images_dir = std::env::var("VMM_TEST_IMAGES");
+    let full_path = Path::new(images_dir.as_deref().unwrap_or("images"));
+    let prepped_filename = artifact.filename().replace(".vhd", "-prepped.vhd");
+
+    get_path(
+        full_path,
+        prepped_filename,
+        MissingCommand::Run {
+            description: "prepped test image",
+            package: "prep_steps",
         },
     )
 }
@@ -201,7 +219,7 @@ fn pipette_path(arch: MachineArch, os_flavor: PipetteFlavor) -> anyhow::Result<P
     unreachable!()
 }
 
-/// Path to the output location of the hvlite executable.
+/// Path to the output location of the openvmm executable.
 fn openvmm_native_executable_path() -> anyhow::Result<PathBuf> {
     get_output_executable_path("openvmm")
 }
@@ -209,6 +227,11 @@ fn openvmm_native_executable_path() -> anyhow::Result<PathBuf> {
 /// Path to the output location of the tmk_vmm executable.
 fn tmk_vmm_native_executable_path() -> anyhow::Result<PathBuf> {
     get_output_executable_path("tmk_vmm")
+}
+
+/// Path to the output location of the vmgstool executable.
+fn vmgstool_native_executable_path() -> anyhow::Result<PathBuf> {
+    get_output_executable_path("vmgstool")
 }
 
 fn tmk_vmm_paravisor_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
@@ -541,6 +564,11 @@ pub enum MissingCommand<'a> {
         package: &'a str,
         target: Option<&'a str>,
     },
+    /// A `cargo run` invocation.
+    Run {
+        description: &'a str,
+        package: &'a str,
+    },
     /// A `cargo xtask` invocation.
     Xtask {
         description: &'a str,
@@ -564,6 +592,14 @@ impl MissingCommand<'_> {
                 "Failed to find {package} binary. Run `cargo build {target_args}-p {package}` to build it.",
                 target_args =
                     target.map_or(String::new(), |target| format!("--target {} ", target)),
+            ),
+            MissingCommand::Run {
+                description,
+                package,
+            } => anyhow::bail!(
+                "Failed to find {}. Run `cargo run -p {}` to create it.",
+                description,
+                package
             ),
             MissingCommand::Xtask {
                 description,

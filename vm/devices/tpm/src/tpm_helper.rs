@@ -1146,43 +1146,6 @@ impl TpmEngineHelper {
         }
     }
 
-    /// Helper function to send HierarchyControl command.
-    ///
-    /// # Arguments
-    /// * `auth_handle`: The authorization handle used in the command.
-    /// * `hierarchy`: The hierarchy to control.
-    /// * `state`: Enable the target hierarchy or not.
-    ///
-    pub fn hierarchy_control(
-        &mut self,
-        auth_handle: ReservedHandle,
-        hierarchy: ReservedHandle,
-        state: bool,
-    ) -> Result<(), TpmCommandError> {
-        use tpm20proto::protocol::HierarchyControlCmd;
-
-        let session_tag = SessionTagEnum::Sessions;
-        let mut cmd = HierarchyControlCmd::new(
-            session_tag.into(),
-            auth_handle,
-            CmdAuth::new(TPM20_RS_PW, 0, 0, 0),
-            hierarchy,
-            state,
-        );
-
-        self.tpm_engine
-            .execute_command(cmd.as_mut_bytes(), &mut self.reply_buffer)
-            .map_err(TpmCommandError::TpmExecuteCommand)?;
-
-        match HierarchyControlCmd::base_validate_reply(&self.reply_buffer, session_tag) {
-            Err(error) => Err(TpmCommandError::InvalidResponse(error))?,
-            Ok((res, false)) => Err(TpmCommandError::TpmCommandFailed {
-                response_code: res.header.response_code.get(),
-            })?,
-            Ok((_res, true)) => Ok(()),
-        }
-    }
-
     /// Helper function to send ClearControl command.
     ///
     /// # Arguments
@@ -3412,29 +3375,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_hierarchy_control() {
-        let mut tpm_engine_helper = create_tpm_engine_helper();
-        restart_tpm_engine(&mut tpm_engine_helper, false, true);
-
-        // Positive test
-        let auth_handle = TPM20_RH_PLATFORM;
-        let result = tpm_engine_helper.hierarchy_control(auth_handle, TPM20_RH_PLATFORM, false);
-        assert!(result.is_ok());
-
-        // Negative test
-        let invalid_auth_handle = ReservedHandle(0.into());
-        let result =
-            tpm_engine_helper.hierarchy_control(invalid_auth_handle, TPM20_RH_PLATFORM, false);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        if let TpmCommandError::TpmCommandFailed { response_code } = err {
-            assert_ne!(response_code, ResponseCode::Success as u32);
-        } else {
-            panic!()
-        }
-    }
-
     struct TpmtSensitive {
         /// TPMI_ALG_PUBLIC
         sensitive_type: AlgId,
@@ -3701,6 +3641,7 @@ mod tests {
             _ek_pub_modulus: &[u8],
             _ek_pub_exponent: &[u8],
             _guest_input: &[u8],
+            _is_attestation_report: bool,
         ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
             Ok(Vec::new())
         }

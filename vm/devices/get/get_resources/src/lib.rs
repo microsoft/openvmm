@@ -89,6 +89,8 @@ pub mod ged {
         pub no_persistent_secrets: bool,
         /// Test configuration for IGVM Attest message.
         pub igvm_attest_test_config: Option<IgvmAttestTestConfig>,
+        /// Send the test seed for GspById requests
+        pub test_gsp_by_id: bool,
     }
 
     /// The firmware and chipset configuration for the guest.

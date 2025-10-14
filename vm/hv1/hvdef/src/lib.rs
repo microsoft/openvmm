@@ -176,6 +176,7 @@ impl HvFeatures {
 }
 
 #[bitfield(u128)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvEnlightenmentInformation {
     pub use_hypercall_for_address_space_switch: bool,
     pub use_hypercall_for_local_flush: bool,
@@ -208,6 +209,16 @@ pub struct HvEnlightenmentInformation {
     #[bits(25)]
     _reserved1: u32,
     _reserved2: u32,
+}
+
+impl HvEnlightenmentInformation {
+    pub fn from_cpuid(cpuid: [u32; 4]) -> Self {
+        zerocopy::transmute!(cpuid)
+    }
+
+    pub fn into_cpuid(self) -> [u32; 4] {
+        zerocopy::transmute!(self)
+    }
 }
 
 #[bitfield(u128)]
@@ -3022,7 +3033,7 @@ impl MessagePayload for HvX64HaltMessage {}
 pub struct HvArm64ResetInterceptMessage {
     pub header: HvArm64InterceptMessageHeader,
     pub reset_type: HvArm64ResetType,
-    pub padding: u32,
+    pub reset_code: u32,
 }
 
 impl MessagePayload for HvArm64ResetInterceptMessage {}
@@ -3032,6 +3043,8 @@ open_enum! {
     pub enum HvArm64ResetType: u32 {
         POWER_OFF = 0,
         REBOOT = 1,
+        SYSTEM_RESET = 2,
+        HIBERNATE = 3,
     }
 }
 

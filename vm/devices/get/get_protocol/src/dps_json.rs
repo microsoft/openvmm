@@ -123,11 +123,11 @@ pub enum GuestStateEncryptionPolicy {
     /// strict encryption policy is enabled. Fails if the data cannot be
     /// encrypted.
     GspById,
-    /// Require GspKey.
+    /// Prefer (or require, if strict) GspKey.
     ///
-    /// VMs will be created as or migrated to GspKey. Fails if GspKey is
-    /// not available. Strict encryption policy has no effect here since
-    /// GspKey is currently the most secure policy.
+    /// VMs will be created as or migrated to GspKey. GspById encryption will
+    /// be used if GspKey is unavailable unless strict encryption policy is
+    /// enabled. Fails if the data cannot be encrypted.
     GspKey,
     /// Use hardware sealing
     // TODO: update this doc comment once hardware sealing is implemented
@@ -141,9 +141,8 @@ pub enum GuestStateEncryptionPolicy {
 pub struct ManagementVtlFeatures {
     pub strict_encryption_policy: bool,
     pub _reserved1: bool,
-    pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
-    #[bits(60)]
+    #[bits(61)]
     pub _reserved2: u64,
 }
 

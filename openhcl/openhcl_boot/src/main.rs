@@ -8,6 +8,13 @@
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: Interacting with low level hardware and bootloader primitives.
 #![expect(unsafe_code)]
+// Allow the allocator api when compiling with `RUSTFLAGS="--cfg nightly"`. This
+// is used for some miri tests for testing the bump allocator.
+//
+// Do not use a normal feature, as that shows errors with rust-analyzer since
+// most people are using stable and enable all features. We could remove this
+// once the allocator_api feature is stable.
+#![cfg_attr(nightly, feature(allocator_api))]
 
 mod arch;
 mod boot_logger;
@@ -19,6 +26,8 @@ mod memory;
 mod rt;
 mod sidecar;
 mod single_threaded;
+
+extern crate alloc;
 
 use crate::arch::setup_vtl2_memory;
 use crate::arch::setup_vtl2_vp;
@@ -67,16 +76,32 @@ impl From<core::fmt::Error> for CommandLineTooLong {
     }
 }
 
-/// Read and setup the underhill kernel command line into the specified buffer.
-fn build_kernel_command_line(
-    params: &ShimParams,
-    cmdline: &mut ArrayString<COMMAND_LINE_SIZE>,
-    partition_info: &PartitionInfo,
+struct BuildKernelCommandLineParams<'a> {
+    params: &'a ShimParams,
+    cmdline: &'a mut ArrayString<COMMAND_LINE_SIZE>,
+    partition_info: &'a PartitionInfo,
     can_trust_host: bool,
     is_confidential_debug: bool,
-    sidecar: Option<&SidecarConfig<'_>>,
+    sidecar: Option<&'a SidecarConfig<'a>>,
     vtl2_pool_supported: bool,
+    disable_keep_alive: bool,
+}
+
+/// Read and setup the underhill kernel command line into the specified buffer.
+fn build_kernel_command_line(
+    fn_params: BuildKernelCommandLineParams<'_>,
 ) -> Result<(), CommandLineTooLong> {
+    let BuildKernelCommandLineParams {
+        params,
+        cmdline,
+        partition_info,
+        can_trust_host,
+        is_confidential_debug,
+        sidecar,
+        vtl2_pool_supported,
+        disable_keep_alive,
+    } = fn_params;
+
     // For reference:
     // https://www.kernel.org/doc/html/v5.15/admin-guide/kernel-parameters.html
     const KERNEL_PARAMETERS: &[&str] = &[
@@ -266,7 +291,7 @@ fn build_kernel_command_line(
 
     // Only when explicitly supported by Host.
     // TODO: Move from command line to device tree when stabilized.
-    if partition_info.nvme_keepalive && vtl2_pool_supported {
+    if partition_info.nvme_keepalive && vtl2_pool_supported && !disable_keep_alive {
         write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=1 ")?;
     }
 
@@ -624,15 +649,16 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     let address_space: &AddressSpaceManager = address_space;
 
     let mut cmdline = off_stack!(ArrayString<COMMAND_LINE_SIZE>, ArrayString::new_const());
-    build_kernel_command_line(
-        &p,
-        &mut cmdline,
+    build_kernel_command_line(BuildKernelCommandLineParams {
+        params: &p,
+        cmdline: &mut cmdline,
         partition_info,
         can_trust_host,
         is_confidential_debug,
-        sidecar.as_ref(),
-        address_space.has_vtl2_pool(),
-    )
+        sidecar: sidecar.as_ref(),
+        vtl2_pool_supported: address_space.has_vtl2_pool(),
+        disable_keep_alive: partition_info.boot_options.disable_nvme_keep_alive,
+    })
     .unwrap();
 
     let mut fdt = off_stack!(Fdt, zeroed());

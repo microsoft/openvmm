@@ -13,17 +13,17 @@ function Get-MsvmComputerSystem
     )
 
     $vmid = $Vm.Id
-    $msvm_ComputerSystem = Get-CimInstance -namespace $ROOT_HYPER_V_NAMESPACE -query "select * from Msvm_ComputerSystem where Name = '$vmid'"
+    $msvmComputerSystem = Get-CimInstance -namespace $ROOT_HYPER_V_NAMESPACE -query "select * from Msvm_ComputerSystem where Name = '$vmid'"
 
-    if (-not $msvm_ComputerSystem)
+    if (-not $msvmComputerSystem)
     {
         throw "Unable to find a virtual machine with id $vmid."
     }
 
-    $msvm_ComputerSystem
+    $msvmComputerSystem
 }
 
-function Get-Vssd
+function Get-VmSystemSettings
 {
     [CmdletBinding()]
     Param (
@@ -75,7 +75,7 @@ function Set-InitialMachineConfiguration
         [string] $ImcHive
     )
 
-    $msvm_ComputerSystem = Get-MsvmComputerSystem $Vm
+    $msvmComputerSystem = Get-MsvmComputerSystem $Vm
 
     $imcHiveData = Get-Content -Encoding Byte $ImcHive
     $length = [System.BitConverter]::GetBytes([int32]$imcHiveData.Length + 4)
@@ -87,9 +87,9 @@ function Set-InitialMachineConfiguration
 
     $vmms = Get-Vmms
     $vmms | Invoke-CimMethod -name "SetInitialMachineConfigurationData" -Arguments @{
-        "TargetSystem" = $msvm_ComputerSystem;
+        "TargetSystem" = $msvmComputerSystem;
         "ImcData" = [byte[]]$imcData
-    }
+    } | Trace-CimMethodExecution -MethodName "SetInitialMachineConfigurationData" -CimInstance $vmms
 }
 
 function Set-VmSystemSettings {
@@ -102,7 +102,7 @@ function Set-VmSystemSettings {
     $vmms = Get-Vmms
     $vmms | Invoke-CimMethod -Name "ModifySystemSettings" -Arguments @{
         "SystemSettings" = ($Vssd | ConvertTo-CimEmbeddedString)
-    }
+    } | Trace-CimMethodExecution -MethodName "ModifySystemSettings" -CimInstance $vmms
 }
 
 function Set-VmResourceSettings {
@@ -115,7 +115,7 @@ function Set-VmResourceSettings {
     $vmms = Get-Vmms
     $vmms | Invoke-CimMethod -Name "ModifyResourceSettings" -Arguments @{
         "ResourceSettings" = @($Rasd | ConvertTo-CimEmbeddedString)
-    }
+    } | Trace-CimMethodExecution -MethodName "ModifyResourceSettings" -CimInstance $vmms
 }
 
 function Set-OpenHCLFirmware
@@ -132,7 +132,7 @@ function Set-OpenHCLFirmware
         [switch] $IncreaseVtl2Memory
     )
 
-    $vssd = Get-Vssd $Vm
+    $vssd = Get-VmSystemSettings $Vm
     # Enable OpenHCL by feature
     $vssd.GuestFeatureSet = 0x00000201
     # Set the OpenHCL image file path
@@ -163,7 +163,7 @@ function Set-VmCommandLine
         [string] $CommandLine
     )
 
-    $vssd = Get-Vssd $Vm
+    $vssd = Get-VmSystemSettings $Vm
     $vssd.FirmwareParameters = [System.Text.Encoding]::UTF8.GetBytes($CommandLine)
     Set-VmSystemSettings $vssd
 }
@@ -177,7 +177,7 @@ function Get-VmCommandLine
         $Vm
     )
 
-    $vssd = Get-Vssd $Vm
+    $vssd = Get-VmSystemSettings $Vm
     [System.Text.Encoding]::UTF8.GetString($vssd.FirmwareParameters)
 }
 
@@ -196,7 +196,7 @@ function Set-VmScsiControllerTargetVtl
         [int] $TargetVtl
     )
 
-    $vssd = Get-Vssd $Vm
+    $vssd = Get-VmSystemSettings $Vm
     $rasds = $vssd | Get-CimAssociatedInstance -ResultClassName "Msvm_ResourceAllocationSettingData" | Where-Object { $_.ResourceSubType -eq "Microsoft:Hyper-V:Synthetic SCSI Controller" }
     $rasd = $rasds[$ControllerNumber]
     $rasd.TargetVtl = $TargetVtl
@@ -215,7 +215,7 @@ function Set-VMBusRedirect
         [bool] $Enable
     )
 
-    $vssd = Get-Vssd $Vm
+    $vssd = Get-VmSystemSettings $Vm
     $vssd | ForEach-Object {
             $_.VMBusMessageRedirection = [int]$Enable
             $_
@@ -427,7 +427,7 @@ function Get-VmScreenshot
         TargetSystem = $vmcs
         WidthPixels = $x
         HeightPixels = $y
-    }
+    } | Trace-CimMethodExecution -MethodName "GetVirtualSystemThumbnailImage" -CimInstance $vmms
 
     [IO.File]::WriteAllBytes($Path, $image.ImageData)
 
@@ -445,7 +445,23 @@ function Set-TurnOffOnGuestRestart
         [bool] $Enable
     )
 
-    $vssd = Get-Vssd $Vm
+    $vssd = Get-VmSystemSettings $Vm
     $vssd.TurnOffOnGuestRestart = $Enable
     Set-VmSystemSettings $vssd
+}
+
+function Get-GuestStateFile
+{
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm
+    )
+
+    $vssd = Get-VmSystemSettings $Vm
+    $guestStateDataRoot = $vssd.GuestStateDataRoot
+    $guestStateFile = $vssd.GuestStateFile
+    
+    return "$guestStateDataRoot\$guestStateFile"
 }

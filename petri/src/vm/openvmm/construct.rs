@@ -10,7 +10,7 @@ use super::PARAVISOR_BOOT_NVME_INSTANCE;
 use super::PetriVmConfigOpenVmm;
 use super::PetriVmResourcesOpenVmm;
 use super::SCSI_INSTANCE;
-use super::memdiff_disk_from_artifact;
+use super::memdiff_disk;
 use crate::BootDeviceType;
 use crate::Firmware;
 use crate::IsolationType;
@@ -28,8 +28,12 @@ use crate::UefiConfig;
 use crate::UefiGuest;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openvmm::BOOT_NVME_INSTANCE;
-use crate::openvmm::memdiff_vmgs_from_artifact;
+use crate::openvmm::memdiff_vmgs;
 use crate::vm::append_cmdline;
+use crate::vtl2_settings::ControllerType;
+use crate::vtl2_settings::Vtl2LunBuilder;
+use crate::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
+use crate::vtl2_settings::Vtl2StorageControllerBuilder;
 use anyhow::Context;
 use framebuffer::FRAMEBUFFER_SIZE;
 use framebuffer::Framebuffer;
@@ -38,7 +42,6 @@ use fs_err::File;
 use futures::StreamExt;
 use get_resources::crash::GuestCrashDeviceHandle;
 use get_resources::ged::FirmwareEvent;
-use guid::Guid;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
@@ -92,6 +95,7 @@ use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_serial_resources::VmbusSerialDeviceHandle;
 use vmbus_serial_resources::VmbusSerialPort;
+use vmgs_resources::GuestStateEncryptionPolicy;
 use vtl2_settings_proto::Vtl2Settings;
 
 impl PetriVmConfigOpenVmm {
@@ -113,11 +117,7 @@ impl PetriVmConfigOpenVmm {
             boot_device_type,
         } = petri_vm_config;
 
-        let PetriVmResources {
-            driver,
-            output_dir,
-            log_source,
-        } = resources;
+        let PetriVmResources { driver, log_source } = resources;
 
         let setup = PetriVmConfigSetupCore {
             arch,
@@ -371,7 +371,7 @@ impl PetriVmConfigOpenVmm {
         let vmgs = if firmware.is_openhcl() {
             None
         } else {
-            Some(memdiff_vmgs_from_artifact(&vmgs)?)
+            Some(memdiff_vmgs(&vmgs)?)
         };
 
         let config = Config {
@@ -478,7 +478,7 @@ impl PetriVmConfigOpenVmm {
                 vtl2_pipette_listener,
                 linux_direct_serial_agent,
                 driver: driver.clone(),
-                output_dir: output_dir.to_owned(),
+                output_dir: log_source.output_dir().to_owned(),
                 agent_image,
                 openhcl_agent_image,
                 openvmm_path: openvmm_path.clone(),
@@ -587,19 +587,6 @@ impl PetriVmConfigSetupCore<'_> {
     }
 
     fn load_firmware(&self) -> anyhow::Result<LoadMode> {
-        // Forward OPENVMM_LOG and OPENVMM_SHOW_SPANS to OpenHCL if they're set.
-        let openhcl_tracing =
-            if let Ok(x) = std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG")) {
-                format!("OPENVMM_LOG={x}")
-            } else {
-                "OPENVMM_LOG=debug".to_owned()
-            };
-        let openhcl_show_spans = if let Ok(x) = std::env::var("OPENVMM_SHOW_SPANS") {
-            format!("OPENVMM_SHOW_SPANS={x}")
-        } else {
-            "OPENVMM_SHOW_SPANS=true".to_owned()
-        };
-
         Ok(match (self.arch, &self.firmware) {
             (MachineArch::X86_64, Firmware::LinuxDirect { kernel, initrd }) => {
                 let kernel = File::open(kernel.clone())
@@ -692,15 +679,13 @@ impl PetriVmConfigSetupCore<'_> {
                 let OpenHclConfig {
                     vtl2_nvme_boot: _, // load_boot_disk
                     vmbus_redirect: _, // config_openhcl_vmbus_devices
-                    command_line,
+                    command_line: _,
+                    log_levels: _,
                 } = openhcl_config;
 
-                let mut cmdline = command_line.clone();
+                let mut cmdline = Some(openhcl_config.command_line());
 
-                append_cmdline(
-                    &mut cmdline,
-                    &format!("panic=-1 reboot=triple {openhcl_tracing} {openhcl_show_spans}"),
-                );
+                append_cmdline(&mut cmdline, "panic=-1 reboot=triple");
 
                 let isolated = match self.firmware {
                     Firmware::OpenhclLinuxDirect { .. } => {
@@ -776,14 +761,14 @@ impl PetriVmConfigSetupCore<'_> {
             Firmware::Pcat { guest, .. } | Firmware::OpenhclPcat { guest, .. } => {
                 let disk_path = guest.artifact();
                 match guest {
-                    PcatGuest::Vhd(_) => Media::Disk(memdiff_disk_from_artifact(disk_path)?),
+                    PcatGuest::Vhd(_) => Media::Disk(memdiff_disk(disk_path.as_ref())?),
                     PcatGuest::Iso(_) => Media::Dvd(open_disk_type(disk_path.as_ref(), true)?),
                 }
             }
             Firmware::Uefi { guest, .. } | Firmware::OpenhclUefi { guest, .. } => {
                 let disk_path = guest.artifact();
-                Media::Disk(memdiff_disk_from_artifact(
-                    disk_path.expect("not uefi guest none"),
+                Media::Disk(memdiff_disk(
+                    disk_path.expect("not uefi guest none").as_ref(),
                 )?)
             }
         };
@@ -819,34 +804,20 @@ impl PetriVmConfigSetupCore<'_> {
                     .as_mut()
                     .unwrap()
                     .storage_controllers
-                    .push(vtl2_settings_proto::StorageController {
-                        instance_id: SCSI_INSTANCE.to_string(),
-                        protocol: vtl2_settings_proto::storage_controller::StorageProtocol::Scsi
-                            .into(),
-                        luns: vec![vtl2_settings_proto::Lun {
-                            location: BOOT_NVME_LUN,
-                            device_id: Guid::new_random().to_string(),
-                            vendor_id: "OpenVMM".to_string(),
-                            product_id: "Disk".to_string(),
-                            product_revision_level: "1.0".to_string(),
-                            serial_number: "0".to_string(),
-                            model_number: "1".to_string(),
-                            physical_devices: Some(vtl2_settings_proto::PhysicalDevices {
-                                r#type: vtl2_settings_proto::physical_devices::BackingType::Single
-                                    .into(),
-                                device: Some(vtl2_settings_proto::PhysicalDevice {
-                                    device_type:
-                                        vtl2_settings_proto::physical_device::DeviceType::Nvme
-                                            .into(),
-                                    device_path: PARAVISOR_BOOT_NVME_INSTANCE.to_string(),
-                                    sub_device_path: BOOT_NVME_NSID,
-                                }),
-                                devices: Vec::new(),
-                            }),
-                            ..Default::default()
-                        }],
-                        io_queue_depth: None,
-                    }),
+                    .push(
+                        Vtl2StorageControllerBuilder::scsi()
+                            .with_instance_id(SCSI_INSTANCE)
+                            .add_lun(
+                                Vtl2LunBuilder::disk()
+                                    .with_location(BOOT_NVME_LUN)
+                                    .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                                        ControllerType::Nvme,
+                                        PARAVISOR_BOOT_NVME_INSTANCE,
+                                        BOOT_NVME_NSID,
+                                    )),
+                            )
+                            .build(),
+                    ),
             }
         } else {
             match self.boot_device_type {
@@ -990,6 +961,11 @@ impl PetriVmConfigSetupCore<'_> {
             _ => anyhow::bail!("not a supported openhcl firmware config"),
         };
 
+        let test_gsp_by_id = self
+            .vmgs
+            .disk()
+            .is_some_and(|x| matches!(x.encryption_policy, GuestStateEncryptionPolicy::GspById(_)));
+
         // Save the GED handle to add later after configuration is complete.
         let ged = get_resources::ged::GuestEmulationDeviceHandle {
             firmware: get_resources::ged::GuestFirmwareConfig::Uefi {
@@ -1003,7 +979,7 @@ impl PetriVmConfigSetupCore<'_> {
             com2: true,
             vmbus_redirection: *vmbus_redirect,
             vtl2_settings: None, // Will be added at startup to allow tests to modify
-            vmgs: memdiff_vmgs_from_artifact(self.vmgs)?,
+            vmgs: memdiff_vmgs(self.vmgs)?,
             framebuffer: framebuffer.then(|| SharedFramebufferHandle.into_resource()),
             guest_request_recv,
             enable_tpm: false,
@@ -1019,8 +995,9 @@ impl PetriVmConfigSetupCore<'_> {
                 None => get_resources::ged::GuestSecureBootTemplateType::None,
             },
             enable_battery: false,
-            no_persistent_secrets: true,
+            no_persistent_secrets: !test_gsp_by_id,
             igvm_attest_test_config: None,
+            test_gsp_by_id,
         };
 
         Ok((ged, guest_request_send))
