@@ -233,16 +233,12 @@ impl Vmgs {
     ) -> Result<Self, Error> {
         let (active_header, active_header_index) = Self::open_header(&mut storage).await?;
 
-        // clear the reprovisioned marker after successfully opening the vmgs
-        // without being requested to reprovision.
-        let clear_reprovisioned = active_header.markers.reprovisioned();
-
         let mut vmgs =
             Self::finish_open(storage, active_header, active_header_index, logger).await?;
 
-        if clear_reprovisioned {
-            vmgs.set_reprovisioned(false).await?;
-        }
+        // clear the reprovisioned marker after successfully opening the vmgs
+        // without being requested to reprovision.
+        vmgs.set_reprovisioned(false).await?;
 
         Ok(vmgs)
     }
@@ -277,7 +273,7 @@ impl Vmgs {
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Vmgs, Error> {
         let version = active_header.version;
-        let (encryption_algorithm, encrypted_metadata_keys, datastore_key_count) =
+        let (encryption_algorithm, encrypted_metadata_keys, datastore_key_count, reprovisioned) =
             if version >= VMGS_VERSION_3_0 {
                 let encryption_algorithm =
                     if active_header.encryption_algorithm == EncryptionAlgorithm::AES_GCM {
@@ -302,12 +298,14 @@ impl Vmgs {
                     encryption_algorithm,
                     active_header.metadata_keys,
                     datastore_key_count,
+                    active_header.markers.reprovisioned(),
                 )
             } else {
                 (
                     EncryptionAlgorithm::NONE,
                     [VmgsEncryptionKey::new_zeroed(); 2],
                     0,
+                    false,
                 )
             };
 
@@ -347,12 +345,12 @@ impl Vmgs {
             datastore_keys: [VmgsDatastoreKey::new_zeroed(); 2],
             metadata_key: VmgsDatastoreKey::new_zeroed(),
             encrypted_metadata_keys,
+            reprovisioned,
 
             #[cfg(feature = "inspect")]
             stats: Default::default(),
 
             logger,
-            reprovisioned: active_header.markers.reprovisioned(),
         })
     }
 
@@ -1516,9 +1514,12 @@ impl Vmgs {
     }
 
     async fn set_reprovisioned(&mut self, value: bool) -> Result<(), Error> {
-        self.reprovisioned = value;
-        let mut new_header = self.prepare_new_header(&self.fcbs[&FileId::FILE_TABLE]);
-        self.update_header(&mut new_header).await?;
+        if self.reprovisioned != value {
+            tracing::info!(reprovisioned = value, "update vmgs marker");
+            self.reprovisioned = value;
+            let mut new_header = self.prepare_new_header(&self.fcbs[&FileId::FILE_TABLE]);
+            self.update_header(&mut new_header).await?;
+        }
         Ok(())
     }
 }
