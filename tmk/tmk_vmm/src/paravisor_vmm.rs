@@ -33,6 +33,7 @@ impl RunContext<'_> {
             no_sidecar_hotplug: false,
             use_mmio_hypercalls: false,
             intercept_debug_exceptions: false,
+            use_posted_redirection: false,
         };
         let p = virt_mshv_vtl::UhProtoPartition::new(params, |_| self.state.driver.clone())?;
 
