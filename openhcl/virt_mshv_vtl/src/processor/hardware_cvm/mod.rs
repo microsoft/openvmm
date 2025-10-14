@@ -2130,6 +2130,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     ) -> bool {
         let send_intercept = self.cvm_is_protected_register_write(vtl, reg, value);
         if send_intercept {
+            tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
+                ?vtl,
+                ?reg,
+                "received protected register write, sending intercept"
+            );
             let message_state = B::intercept_message_state(self, vtl, false);
 
             self.send_intercept_message(
@@ -2187,6 +2193,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             };
 
             if send_intercept {
+                tracelimit::warn_ratelimited!(
+                    CVM_ALLOWED,
+                    ?vtl,
+                    ?msr,
+                    "received protected msr write, sending intercept"
+                );
                 let message_state = B::intercept_message_state(self, vtl, false);
 
                 self.send_intercept_message(
@@ -2235,6 +2247,16 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             };
 
             if send_intercept {
+                tracelimit::warn_ratelimited!(
+                    CVM_ALLOWED,
+                    ?vtl,
+                    port_number,
+                    is_read,
+                    access_size,
+                    string_access,
+                    rep_access,
+                    "received protected io port access, sending intercept"
+                );
                 let message_state = B::intercept_message_state(self, vtl, true);
 
                 self.send_intercept_message(
