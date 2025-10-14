@@ -34,9 +34,6 @@ jobs:
           start_date=$(date -d "$days days ago" +%Y-%m-%d)
           echo "start_date=$start_date" >> $GITHUB_OUTPUT
 
-      - name: Set up GitHub CLI
-        uses: github/gh-cli-action@v2
-
       - name: Collect Code Review Metrics
         run: |
           # Authenticate with GitHub CLI
