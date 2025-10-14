@@ -9286,6 +9286,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "disk_backend_resources",
+ "disk_vhd1",
  "futures",
  "get_resources",
  "guid",
@@ -9320,6 +9321,7 @@ dependencies = [
  "vm_resource",
  "vmgs_resources",
  "vmm_test_macros",
+ "vtl2_settings_proto",
  "zerocopy 0.8.25",
 ]
 

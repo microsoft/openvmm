@@ -627,6 +627,19 @@ pub fn openvmm_test(
         .into()
 }
 
+/// Same options as `vmm_test`, but only for Hyper-V tests
+#[proc_macro_attribute]
+pub fn hyperv_test(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let args = parse_macro_input!(attr as Args);
+    let item = parse_macro_input!(item as ItemFn);
+    make_vmm_test(args, item, Some(Vmm::HyperV), true)
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
+}
+
 /// Same options as `vmm_test`, but only for OpenVMM tests and without using pipette in VTL0.
 #[proc_macro_attribute]
 pub fn openvmm_test_no_agent(
@@ -806,6 +819,25 @@ fn build_requirements(config: &Config, name: &str) -> Option<TokenStream> {
                 )
             )),
             None => Some(hyperv_vbs_requirement_expr),
+        };
+    }
+
+    // Special case for NVMe tests on Hyper-V
+    let is_nvme = matches!(
+        config.firmware,
+        Firmware::OpenhclUefi(OpenhclUefiOptions { nvme: true, .. }, _)
+    ) || name.contains("add_nvme_device");
+    if is_hyperv && is_nvme {
+        let hyperv_nvme_requirement_expr =
+            quote!(::petri::requirements::TestRequirement::SupportsNvmeStorage);
+        requirement_expr = match requirement_expr {
+            Some(existing) => Some(quote!(
+                ::petri::requirements::TestRequirement::And(
+                    Box::new(#existing),
+                    Box::new(#hyperv_nvme_requirement_expr)
+                )
+            )),
+            None => Some(hyperv_nvme_requirement_expr),
         };
     }
 
