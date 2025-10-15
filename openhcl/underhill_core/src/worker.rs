@@ -2269,6 +2269,7 @@ async fn new_underhill_vm(
                     partition: Arc::downgrade(&partition),
                 })),
                 time_source: Box::new(rtc_time_source.new_linked_clock()),
+                log_level: None, // TODO: make configurable
             })
         }
         FirmwareType::None => {}

@@ -10,12 +10,83 @@ use crate::service::diagnostics::parser::EntryParseError;
 use crate::service::diagnostics::parser::parse_entry;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
+use inspect::Inspect;
+use mesh::payload::Protobuf;
+use mesh::payload::oneof::DescribeOneof;
+use mesh::payload::protofile::FieldDescriptor;
+use mesh::payload::protofile::FieldType;
+use mesh::payload::protofile::MessageDescription;
+use mesh::payload::protofile::MessageDescriptor;
+use mesh::payload::protofile::OneofDescriptor;
+use mesh::payload::protofile::TopLevelDescriptor;
 use thiserror::Error;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerInfo;
 use uefi_specs::hyperv::advanced_logger::SIG_HEADER;
+use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
+use uefi_specs::hyperv::debug_level::DEBUG_INFO;
+use uefi_specs::hyperv::debug_level::DEBUG_WARN;
 
 /// Maximum allowed size of the log buffer
 pub const MAX_LOG_BUFFER_SIZE: u32 = 0x400000; // 4MB
+
+/// Log level configurations with associated filter masks
+#[derive(Inspect, Debug, Clone, Copy, PartialEq, Eq, Protobuf)]
+#[inspect(external_tag)]
+pub enum LogLevel {
+    /// ERROR and WARN
+    #[mesh(1)]
+    Default(u32),
+    /// ERROR, WARN and INFO  
+    #[mesh(2)]
+    Info(u32),
+    /// All levels
+    #[mesh(3)]
+    Full,
+}
+
+impl LogLevel {
+    /// Create default log level configuration
+    pub const fn default() -> Self {
+        LogLevel::Default(DEBUG_ERROR | DEBUG_WARN)
+    }
+
+    /// Create info log level configuration
+    pub const fn _info() -> Self {
+        LogLevel::Info(DEBUG_ERROR | DEBUG_WARN | DEBUG_INFO)
+    }
+
+    /// Create full log level configuration
+    pub const fn _full() -> Self {
+        LogLevel::Full
+    }
+
+    /// Checks if a raw debug level should be logged based
+    /// on this log level configuration
+    pub fn should_log(&self, raw_debug_level: u32) -> bool {
+        match self {
+            LogLevel::Default(mask) | LogLevel::Info(mask) => (raw_debug_level & mask) != 0,
+            LogLevel::Full => true,
+        }
+    }
+}
+
+impl DescribeOneof for LogLevel {
+    const DESCRIPTION: MessageDescription<'static> = {
+        const ONEOF_DESCRIPTOR: OneofDescriptor<'static> = OneofDescriptor::new(
+            "LogLevel",
+            &[
+                FieldDescriptor::new("", FieldType::builtin("uint32"), "default", 1),
+                FieldDescriptor::new("", FieldType::builtin("uint32"), "info", 2),
+                FieldDescriptor::new("", FieldType::builtin("bool"), "full", 3),
+            ],
+        );
+        const TLD: TopLevelDescriptor<'static> = TopLevelDescriptor::message(
+            "firmware.uefi.diagnostics",
+            &MessageDescriptor::new("LogLevel", "", &[], &[ONEOF_DESCRIPTOR], &[]),
+        );
+        MessageDescription::Internal(&TLD)
+    };
+}
 
 /// Errors that occur during processing
 #[derive(Debug, Error)]
@@ -62,6 +133,7 @@ pub fn process_diagnostics_internal<F>(
     has_processed_before: &mut bool,
     allow_reprocess: bool,
     gm: &GuestMemory,
+    log_level: LogLevel,
     log_handler: F,
 ) -> Result<(), ProcessingError>
 where
@@ -131,13 +203,17 @@ where
     gm.read_at(buffer_start_addr as u64, &mut buffer_data)?;
 
     // Process the buffer
-    process_buffer(&buffer_data, log_handler)?;
+    process_buffer(&buffer_data, log_level, log_handler)?;
 
     Ok(())
 }
 
 /// Process the log buffer and emit completed log entries
-fn process_buffer<F>(buffer_data: &[u8], mut log_handler: F) -> Result<(), ProcessingError>
+fn process_buffer<F>(
+    buffer_data: &[u8],
+    log_level: LogLevel,
+    mut log_handler: F,
+) -> Result<(), ProcessingError>
 where
     F: FnMut(EfiDiagnosticsLog<'_>, u32),
 {
@@ -149,7 +225,9 @@ where
         let entry = parse_entry(buffer_slice)?;
 
         // Process the entry through the accumulator
-        if let Some((log, raw_debug_level)) = accumulator.process_entry(&entry)? {
+        if let Some((log, raw_debug_level)) = accumulator.process_entry(&entry)?
+            && log_level.should_log(raw_debug_level)
+        {
             log_handler(log, raw_debug_level);
         }
 
@@ -162,7 +240,9 @@ where
     }
 
     // Process any remaining accumulated message
-    if let Some((log, raw_debug_level)) = accumulator.finalize_remaining() {
+    if let Some((log, raw_debug_level)) = accumulator.finalize_remaining()
+        && log_level.should_log(raw_debug_level)
+    {
         log_handler(log, raw_debug_level);
     }
 

@@ -19,6 +19,7 @@ use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use closeable_mutex::CloseableMutex;
 use cvm_tracing::CVM_ALLOWED;
 use firmware_uefi::UefiCommandSet;
+use firmware_uefi::service::diagnostics::LogLevel;
 use framebuffer::Framebuffer;
 use framebuffer::FramebufferDevice;
 use framebuffer::FramebufferLocalControl;
@@ -608,6 +609,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             watchdog_recv,
             vsm_config,
             time_source,
+            log_level,
         }) = deps_hyperv_firmware_uefi
         {
             builder
@@ -637,6 +639,7 @@ impl<'a> BaseChipsetBuilder<'a> {
                         },
                         vsm_config,
                         time_source,
+                        log_level,
                     };
 
                     firmware_uefi::UefiDevice::new(runtime_deps, config, foundation.is_restoring)
@@ -1333,6 +1336,8 @@ pub mod options {
             pub vsm_config: Option<Box<dyn firmware_uefi::platform::nvram::VsmConfig>>,
             /// Time source
             pub time_source: Box<dyn InspectableLocalClock>,
+            /// Configured log level
+            pub log_level: Option<LogLevel>,
         }
 
         /// Hyper-V specific framebuffer device

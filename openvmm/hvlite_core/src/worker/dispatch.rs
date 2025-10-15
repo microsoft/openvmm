@@ -1192,6 +1192,7 @@ impl InitializedVm {
                     time_source: Box::new(local_clock::SystemTimeClock::new(
                         LocalClockDelta::from_millis(cfg.rtc_delta_milliseconds),
                     )),
+                    log_level: None, // TODO: make configurable
                 })
             }
             #[cfg(guest_arch = "x86_64")]
