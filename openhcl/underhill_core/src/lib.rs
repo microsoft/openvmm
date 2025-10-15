@@ -325,6 +325,7 @@ async fn launch_workers(
         gdbstub: opt.gdbstub,
         hide_isolation: opt.hide_isolation,
         nvme_keep_alive: opt.nvme_keep_alive,
+        mana_keep_alive: opt.mana_keep_alive,
         nvme_always_flr: opt.nvme_always_flr,
         test_configuration: opt.test_configuration,
         disable_uefi_frontpage: opt.disable_uefi_frontpage,
