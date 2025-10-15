@@ -398,6 +398,11 @@ pub fn list(handle: &OwnedHandle, buffer: Option<&mut [u8]>, flags: i32) -> lx::
                 break;
             }
 
+            if ea_info.NextEntryOffset as usize > ea_slice.len() {
+                // Malformed EA list.
+                return Err(lx::Error::EIO);
+            }
+
             ea_slice = &ea_slice[ea_info.NextEntryOffset as usize..];
         }
     }
@@ -416,7 +421,29 @@ pub fn list(handle: &OwnedHandle, buffer: Option<&mut [u8]>, flags: i32) -> lx::
         buffer[..eas.len()].copy_from_slice(&eas);
     }
 
-    println!("{:?}", eas);
-
     Ok(eas.len())
+}
+
+/// Remove an extended attribute from a file.
+pub fn remove(handle: &OwnedHandle, name: &str) -> lx::Result<()> {
+    if !check_exists(handle, name)? {
+        return Err(lx::Error::ENODATA);
+    }
+
+    let mut buf = vec![
+        0u8;
+        size_of::<FileSystem::FILE_FULL_EA_INFORMATION>()
+            + LX_UTIL_XATTR_NAME_PREFIX_LENGTH
+            + name.len()
+            + 1
+    ];
+
+    let name_len = set_name(
+        name,
+        &mut buf[offset_of!(FileSystem::FILE_FULL_EA_INFORMATION, EaName)..],
+    )?;
+    buf[offset_of!(FileSystem::FILE_FULL_EA_INFORMATION, EaNameLength)] = name_len as u8;
+
+    // To remove an extended attribute, set it with a zero value length.
+    set_ea(handle, &buf)
 }
