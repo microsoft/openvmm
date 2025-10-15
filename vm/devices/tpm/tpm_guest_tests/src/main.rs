@@ -5,19 +5,35 @@
 //! Supports reading the AK certificate NV index and producing attestation reports with
 //! optional user-provided payloads.
 
+mod report;
 mod tpm;
 
-use std::env;
 use std::error::Error;
+use std::io;
 use std::thread;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use clap::Args;
+use clap::Parser;
+use clap::Subcommand;
+use serde_json::Value;
+use zerocopy::FromBytes;
+
 use tpm_lib::TpmEngine;
 use tpm_lib::TpmEngineHelper;
 use tpm_protocol::tpm20proto::TPM20_RH_OWNER;
 
+use report::IGVM_ATTEST_REQUEST_VERSION_1;
+use report::IGVM_ATTESTATION_SIGNATURE;
+use report::IGVM_ATTESTATION_VERSION;
+use report::IGVM_REQUEST_BASE_SIZE;
+use report::IGVM_REQUEST_DATA_OFFSET;
+use report::IGVM_REQUEST_DATA_SIZE;
+use report::IGVM_REQUEST_TYPE_AK_CERT;
+use report::IgvmAttestRequestData;
+use report::IgvmAttestRequestHeader;
 use tpm::Tpm;
 
 const NV_INDEX_AK_CERT: u32 = tpm_protocol::TPM_NV_INDEX_AIK_CERT;
@@ -37,42 +53,87 @@ struct Config {
     ak_cert_retry_attempts: u32,
     report: bool,
     user_data: Option<Vec<u8>>,
+    show_runtime_claims: bool,
 }
 
-enum ArgsOutcome {
-    Config(Config),
-    Help,
-    Error(String),
+#[derive(Parser, Debug)]
+#[command(
+    name = "tpm_guest_tests",
+    about = "Guest attestation TPM helper utility",
+    version,
+    long_about = None,
+    disable_help_subcommand = true
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Read the AK certificate NV index
+    #[command(name = "ak_cert")]
+    AkCert(AkCertArgs),
+    /// Write guest input and read the attestation report
+    #[command(name = "report")]
+    Report(ReportArgs),
+}
+
+#[derive(Args, Debug, Default)]
+struct AkCertArgs {
+    /// Expected AK certificate contents (UTF-8)
+    #[arg(long, value_name = "UTF8", conflicts_with = "expected_data_hex")]
+    expected_data: Option<String>,
+
+    /// Expected AK certificate contents (hex)
+    #[arg(long, value_name = "HEX", conflicts_with = "expected_data")]
+    expected_data_hex: Option<String>,
+
+    /// Retry AK certificate comparison up to COUNT times
+    #[arg(long, value_name = "COUNT", value_parser = clap::value_parser!(u32).range(1..))]
+    retry: Option<u32>,
+}
+
+#[derive(Args, Debug, Default)]
+struct ReportArgs {
+    /// Guest attestation input payload (UTF-8)
+    #[arg(long, value_name = "TEXT", conflicts_with = "user_data_hex")]
+    user_data: Option<String>,
+
+    /// Guest attestation input payload (hex)
+    #[arg(long, value_name = "HEX", conflicts_with = "user_data")]
+    user_data_hex: Option<String>,
+
+    /// Decode and pretty-print runtime claims from attestation report
+    #[arg(long)]
+    show_runtime_claims: bool,
 }
 
 fn main() {
-    match parse_args(env::args()) {
-        ArgsOutcome::Help => {
-            print_usage();
-        }
-        ArgsOutcome::Error(message) => {
+    let cli = Cli::parse();
+    let config = match config_from_cli(cli) {
+        Ok(config) => config,
+        Err(message) => {
             eprintln!("error: {message}");
-            eprintln!();
-            print_usage();
             std::process::exit(1);
         }
-        ArgsOutcome::Config(config) => {
-            if let Err(err) = run(&config) {
-                eprintln!("error: {}", err);
-                let mut source = err.source();
-                while let Some(inner) = source {
-                    eprintln!("caused by: {}", inner);
-                    source = inner.source();
-                }
-                std::process::exit(1);
-            }
+    };
+
+    if let Err(err) = run(&config) {
+        eprintln!("error: {}", err);
+        let mut source = err.source();
+        while let Some(inner) = source {
+            eprintln!("caused by: {}", inner);
+            source = inner.source();
         }
+        std::process::exit(1);
     }
 }
 
 fn run(config: &Config) -> Result<(), Box<dyn Error>> {
     println!("Connecting to physical TPM device…");
-    let tpm = Tpm::open_default()?;
+
+    let tpm = Tpm::open()?;
     let mut helper = tpm.into_engine_helper();
 
     if config.ak_cert {
@@ -85,7 +146,10 @@ fn run(config: &Config) -> Result<(), Box<dyn Error>> {
 
     if config.report {
         let payload = build_guest_input_payload(config.user_data.as_deref())?;
-        handle_report(&mut helper, &payload)?;
+        let att_report = handle_report(&mut helper, &payload)?;
+        if config.show_runtime_claims {
+            print_runtime_claims(&att_report)?;
+        }
     }
 
     Ok(())
@@ -139,10 +203,52 @@ fn handle_ak_cert<E: TpmEngine>(
     unreachable!("loop must exit via success or error");
 }
 
+fn config_from_cli(cli: Cli) -> Result<Config, String> {
+    let mut config = Config::default();
+
+    match cli.command {
+        Command::AkCert(args) => {
+            config.ak_cert = true;
+
+            if let Some(data) = args.expected_data {
+                config.ak_cert_expected = Some(data.into_bytes());
+            }
+
+            if let Some(hex) = args.expected_data_hex {
+                let bytes =
+                    parse_hex_bytes(&hex).map_err(|e| format!("--expected-data-hex: {e}"))?;
+                config.ak_cert_expected = Some(bytes);
+            }
+
+            if let Some(retry) = args.retry {
+                if config.ak_cert_expected.is_none() {
+                    return Err("--retry requires expected AK certificate data".into());
+                }
+                config.ak_cert_retry_attempts = retry;
+            }
+        }
+        Command::Report(args) => {
+            config.report = true;
+            config.show_runtime_claims = args.show_runtime_claims;
+
+            if let Some(data) = args.user_data {
+                config.user_data = Some(data.into_bytes());
+            }
+
+            if let Some(hex) = args.user_data_hex {
+                let bytes = parse_hex_bytes(&hex).map_err(|e| format!("--user-data-hex: {e}"))?;
+                config.user_data = Some(bytes);
+            }
+        }
+    }
+
+    Ok(config)
+}
+
 fn handle_report<E: TpmEngine>(
     helper: &mut TpmEngineHelper<E>,
     payload: &[u8],
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Vec<u8>, Box<dyn Error>> {
     ensure_guest_input_index(helper)?;
 
     println!(
@@ -168,7 +274,175 @@ fn handle_report<E: TpmEngine>(
 
     print_nv_summary("Attestation report", &att_report);
 
+    Ok(att_report)
+}
+
+fn print_runtime_claims(attestation_report: &[u8]) -> Result<(), Box<dyn Error>> {
+    match runtime_claims_json(attestation_report)? {
+        Some(json) => {
+            let pretty = serde_json::to_string_pretty(&json)?;
+            println!("Runtime claims JSON:");
+            println!("{pretty}");
+        }
+        None => println!("Runtime claims: <empty>"),
+    }
+
     Ok(())
+}
+
+fn runtime_claims_json(attestation_report: &[u8]) -> Result<Option<Value>, Box<dyn Error>> {
+    if attestation_report.len() < IGVM_REQUEST_BASE_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "attestation report length {} is smaller than base request size {}",
+                attestation_report.len(),
+                IGVM_REQUEST_BASE_SIZE
+            ),
+        )
+        .into());
+    }
+
+    let (header, _) =
+        IgvmAttestRequestHeader::read_from_prefix(attestation_report).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "failed to read attestation report header",
+            )
+        })?;
+
+    if header.version != IGVM_ATTESTATION_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unexpected header version {}", header.version),
+        )
+        .into());
+    }
+
+    if header.signature != IGVM_ATTESTATION_SIGNATURE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unexpected attestation signature {:#x}", header.signature),
+        )
+        .into());
+    }
+
+    if header.request_type != IGVM_REQUEST_TYPE_AK_CERT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "unexpected attestation request type {}",
+                header.request_type
+            ),
+        )
+        .into());
+    }
+
+    let report_size = usize::try_from(header.report_size).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "reported attestation size does not fit platform usize",
+        )
+    })?;
+    if report_size < IGVM_REQUEST_BASE_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "reported attestation size {report_size} smaller than base request {}",
+                IGVM_REQUEST_BASE_SIZE
+            ),
+        )
+        .into());
+    }
+    if report_size > attestation_report.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "attestation report claims {report_size} bytes but only {} bytes provided",
+                attestation_report.len()
+            ),
+        )
+        .into());
+    }
+
+    let request_data_end = IGVM_REQUEST_DATA_OFFSET + IGVM_REQUEST_DATA_SIZE;
+    if request_data_end > attestation_report.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "attestation report truncated before request data",
+        )
+        .into());
+    }
+
+    let (request_data, _) = IgvmAttestRequestData::read_from_prefix(
+        &attestation_report[IGVM_REQUEST_DATA_OFFSET..request_data_end],
+    )
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to read attestation request data",
+        )
+    })?;
+
+    if request_data.version != IGVM_ATTEST_REQUEST_VERSION_1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "unexpected attestation request version {}",
+                request_data.version
+            ),
+        )
+        .into());
+    }
+
+    let runtime_claims_len = request_data.variable_data_size as usize;
+    if runtime_claims_len == 0 {
+        return Ok(None);
+    }
+
+    let expected_data_size = IGVM_REQUEST_DATA_SIZE + runtime_claims_len;
+    if request_data.data_size as usize != expected_data_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "attestation request data size mismatch",
+        )
+        .into());
+    }
+
+    let runtime_start = IGVM_REQUEST_BASE_SIZE;
+    if runtime_start + runtime_claims_len != report_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "runtime claims extend beyond attestation report",
+        )
+        .into());
+    }
+
+    if runtime_start + runtime_claims_len > attestation_report.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "attestation report buffer {} shorter than claimed runtime data {}",
+                attestation_report.len(),
+                runtime_claims_len
+            ),
+        )
+        .into());
+    }
+
+    let runtime_bytes = &attestation_report[runtime_start..runtime_start + runtime_claims_len];
+    if runtime_bytes.is_empty() {
+        return Ok(None);
+    }
+
+    let json = serde_json::from_slice::<Value>(runtime_bytes).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to parse runtime claims JSON: {err}"),
+        )
+    })?;
+
+    Ok(Some(json))
 }
 
 fn ensure_guest_input_index<E: TpmEngine>(
@@ -237,134 +511,6 @@ fn build_guest_input_payload(user_data: Option<&[u8]>) -> Result<Vec<u8>, Box<dy
     }
 }
 
-fn parse_args<I>(args: I) -> ArgsOutcome
-where
-    I: IntoIterator<Item = String>,
-{
-    let mut iter = args.into_iter();
-    // Skip program name
-    iter.next();
-
-    let mut iter = iter.peekable();
-    let mut config = Config::default();
-
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--ak-cert" => {
-                config.ak_cert = true;
-            }
-            "--report" => {
-                config.report = true;
-            }
-            "--expected-data" => {
-                if config.ak_cert_expected.is_some() {
-                    return ArgsOutcome::Error(
-                        "--expected-data or --expected-data-hex specified multiple times".into(),
-                    );
-                }
-                let value = match iter.next() {
-                    Some(v) => v.into_bytes(),
-                    None => {
-                        return ArgsOutcome::Error("--expected-data requires an argument".into());
-                    }
-                };
-                config.ak_cert_expected = Some(value);
-            }
-            "--expected-data-hex" => {
-                if config.ak_cert_expected.is_some() {
-                    return ArgsOutcome::Error(
-                        "--expected-data or --expected-data-hex specified multiple times".into(),
-                    );
-                }
-                let value = match iter.next() {
-                    Some(v) => v,
-                    None => {
-                        return ArgsOutcome::Error(
-                            "--expected-data-hex requires an argument".into(),
-                        );
-                    }
-                };
-                match parse_hex_bytes(&value) {
-                    Ok(bytes) => config.ak_cert_expected = Some(bytes),
-                    Err(e) => return ArgsOutcome::Error(e),
-                }
-            }
-            "--retry" => {
-                if config.ak_cert_retry_attempts != 0 {
-                    return ArgsOutcome::Error("--retry specified multiple times".into());
-                }
-                let value = match iter.next() {
-                    Some(v) => v,
-                    None => return ArgsOutcome::Error("--retry requires an argument".into()),
-                };
-                let retries = match value.parse::<u32>() {
-                    Ok(0) => {
-                        return ArgsOutcome::Error("--retry requires a positive integer".into());
-                    }
-                    Ok(n) => n,
-                    Err(_) => {
-                        return ArgsOutcome::Error(format!("invalid retry count '{value}'"));
-                    }
-                };
-                config.ak_cert_retry_attempts = retries;
-            }
-            "--user-data" => {
-                if config.user_data.is_some() {
-                    return ArgsOutcome::Error("--user-data specified multiple times".into());
-                }
-                let value = match iter.next() {
-                    Some(v) => v.into_bytes(),
-                    None => return ArgsOutcome::Error("--user-data requires an argument".into()),
-                };
-                config.user_data = Some(value);
-            }
-            "--user-data-hex" => {
-                if config.user_data.is_some() {
-                    return ArgsOutcome::Error(
-                        "--user-data or --user-data-hex specified multiple times".into(),
-                    );
-                }
-                let value = match iter.next() {
-                    Some(v) => v,
-                    None => {
-                        return ArgsOutcome::Error("--user-data-hex requires an argument".into());
-                    }
-                };
-                match parse_hex_bytes(&value) {
-                    Ok(bytes) => config.user_data = Some(bytes),
-                    Err(e) => return ArgsOutcome::Error(e),
-                }
-            }
-            "--help" | "-h" => return ArgsOutcome::Help,
-            other => {
-                return ArgsOutcome::Error(format!("unrecognized argument '{other}'"));
-            }
-        }
-    }
-
-    if config.user_data.is_some() && !config.report {
-        return ArgsOutcome::Error("--user-data requires --report".into());
-    }
-
-    if config.ak_cert_expected.is_some() && !config.ak_cert {
-        return ArgsOutcome::Error("--expected-data requires --ak-cert".into());
-    }
-
-    if config.ak_cert_retry_attempts > 0 && !config.ak_cert {
-        return ArgsOutcome::Error("--retry requires --ak-cert".into());
-    }
-
-    if config.ak_cert_retry_attempts > 0 && config.ak_cert_expected.is_none() {
-        return ArgsOutcome::Error("--retry requires expected AK certificate data".into());
-    }
-
-    if !config.ak_cert && !config.report {
-        return ArgsOutcome::Error("no action specified".into());
-    }
-
-    ArgsOutcome::Config(config)
-}
-
 fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
     let trimmed = value.trim();
     let hex = trimmed.strip_prefix("0x").unwrap_or(trimmed);
@@ -386,25 +532,6 @@ fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
     }
 
     Ok(bytes)
-}
-
-fn print_usage() {
-    println!("Usage: tpm_guest_tests [OPTIONS]\n");
-    println!("Options:");
-    println!("  --ak-cert                 Read the AK certificate NV index");
-    println!("      --expected-data <utf8>   Compare AK certificate to provided UTF-8 data");
-    println!("      --expected-data-hex <0x..> Compare AK certificate to provided hex data");
-    println!("      --retry <times>          Retry AK certificate comparison up to <times> times");
-    println!("  --report                  Write guest input and read the attestation report");
-    println!(
-        "  --user-data <text>        Provide UTF-8 user data for --report (max {} bytes)",
-        GUEST_INPUT_SIZE
-    );
-    println!(
-        "  --user-data-hex <hex>     Provide hex-encoded user data for --report (max {} bytes)",
-        GUEST_INPUT_SIZE
-    );
-    println!("  -h, --help                Show this help message");
 }
 
 fn print_nv_summary(label: &str, data: &[u8]) {
@@ -443,5 +570,112 @@ fn hexdump(data: &[u8], limit: usize) {
             print!("   ");
         }
         println!(" |{}|", ascii);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::report::IgvmAttestRequestBase;
+    use clap::Parser;
+    use serde_json::json;
+    use zerocopy::IntoBytes;
+
+    #[test]
+    fn runtime_claims_json_parses_version1() {
+        let runtime_json = serde_json::to_vec(&json!({
+            "keys": [],
+            "vm-configuration": {
+                "currentTime": 1_704_000_000,
+                "rootCertThumbprint": "thumbprint",
+                "consoleEnabled": true,
+                "secureBoot": true,
+                "tpmEnabled": true,
+                "tpmPersisted": false,
+                "filteredVpciDevicesAllowed": true,
+                "vmUniqueId": "vm_id",
+            },
+            "user-data": "deadbeef",
+        }))
+        .expect("serialize runtime claims");
+
+        let mut request = IgvmAttestRequestBase::default();
+        request.header.signature = IGVM_ATTESTATION_SIGNATURE;
+        request.header.version = IGVM_ATTESTATION_VERSION;
+        request.header.report_size = (IGVM_REQUEST_BASE_SIZE + runtime_json.len()) as u32;
+        request.header.request_type = IGVM_REQUEST_TYPE_AK_CERT;
+        request.request_data.data_size = (IGVM_REQUEST_DATA_SIZE + runtime_json.len()) as u32;
+        request.request_data.version = IGVM_ATTEST_REQUEST_VERSION_1;
+        request.request_data.variable_data_size = runtime_json.len() as u32;
+
+        let mut buffer = Vec::from(request.as_bytes());
+        buffer.extend_from_slice(&runtime_json);
+
+        let parsed = runtime_claims_json(&buffer)
+            .expect("parse runtime claims")
+            .expect("claims present");
+
+        assert_eq!(parsed["vm-configuration"]["vmUniqueId"], "vm_id");
+        assert_eq!(parsed["user-data"], "deadbeef");
+    }
+
+    #[test]
+    fn runtime_claims_json_parses_unsupported_version() {
+        let mut runtime_json = serde_json::to_vec(&json!({
+            "keys": [],
+            "vm-configuration": {
+                "currentTime": 1_704_000_000,
+                "rootCertThumbprint": "thumbprint",
+                "consoleEnabled": true,
+                "secureBoot": true,
+                "tpmEnabled": true,
+                "tpmPersisted": false,
+                "filteredVpciDevicesAllowed": true,
+                "vmUniqueId": "vm_id",
+            },
+            "user-data": "deadbeef",
+        }))
+        .expect("serialize runtime claims");
+        runtime_json.extend_from_slice(&[0, 0]);
+
+        let mut request = IgvmAttestRequestBase::default();
+        request.header.signature = IGVM_ATTESTATION_SIGNATURE;
+        request.header.version = IGVM_ATTESTATION_VERSION;
+        request.header.report_size = (IGVM_REQUEST_BASE_SIZE + runtime_json.len()) as u32;
+        request.header.request_type = IGVM_REQUEST_TYPE_AK_CERT;
+        request.request_data.data_size = (IGVM_REQUEST_DATA_SIZE + runtime_json.len()) as u32;
+        request.request_data.version = IGVM_ATTEST_REQUEST_VERSION_1 + 1;
+        request.request_data.variable_data_size = runtime_json.len() as u32;
+
+        let mut buffer = Vec::from(request.as_bytes());
+        buffer.extend_from_slice(&runtime_json);
+
+        runtime_claims_json(&buffer).expect_err("parsing unsupported version should fail");
+    }
+
+    #[test]
+    fn cli_requires_action() {
+        assert!(Cli::try_parse_from(["tpm_guest_tests"]).is_err());
+    }
+
+    #[test]
+    fn cli_retry_requires_expected_data() {
+        let cli =
+            Cli::try_parse_from(["tpm_guest_tests", "ak_cert", "--retry", "2"]).expect("parse CLI");
+        let err = config_from_cli(cli).expect_err("retry should require expected data");
+        assert!(err.contains("--retry"));
+    }
+
+    #[test]
+    fn cli_expected_data_hex_parses() {
+        let cli = Cli::try_parse_from([
+            "tpm_guest_tests",
+            "ak_cert",
+            "--expected-data-hex",
+            "0x4142",
+        ])
+        .expect("parse CLI");
+        let config = config_from_cli(cli).expect("build config");
+        assert_eq!(config.ak_cert_expected.as_deref(), Some(&b"AB"[..]));
     }
 }

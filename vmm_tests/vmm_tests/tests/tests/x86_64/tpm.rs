@@ -92,7 +92,6 @@ async fn boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
 }
 
 /// Test AK cert is persistent across boots on Linux.
-// #[cfg_attr(target_os = "windows", ignore = "requires Linux guest tooling")]
 #[openvmm_test(
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64]
 )]
@@ -121,7 +120,7 @@ async fn tpm_ak_cert_persisted_linux(
 
     let expected_hex = expected_ak_cert_hex();
     let output = cmd!(sh, "{guest_binary_path}")
-        .args(["--ak-cert", "--expected-data-hex", expected_hex.as_str()])
+        .args(["ak_cert", "--expected-data-hex", expected_hex.as_str()])
         .read()
         .await?;
 
@@ -167,7 +166,7 @@ async fn tpm_ak_cert_persisted_windows(
     let expected_hex = expected_ak_cert_hex();
 
     let output = cmd!(sh, "{guest_binary_path}")
-        .args(["--ak-cert", "--expected-data-hex", expected_hex.as_str()])
+        .args(["ak_cert", "--expected-data-hex", expected_hex.as_str()])
         .read()
         .await
         .context("failed to execute tpm_guest_tests.exe inside the guest")?;
@@ -212,7 +211,7 @@ async fn tpm_ak_cert_retry_linux(
 
     // The read attempt is expected to fail and trigger an AK cert renewal request.
     let attempt = cmd!(sh, "{guest_binary_path}")
-        .args(["--ak-cert"])
+        .args(["ak_cert"])
         .read()
         .await;
     assert!(
@@ -223,7 +222,7 @@ async fn tpm_ak_cert_retry_linux(
     let expected_hex = expected_ak_cert_hex();
     let output = cmd!(sh, "{guest_binary_path}")
         .args([
-            "--ak-cert",
+            "ak_cert",
             "--expected-data-hex",
             expected_hex.as_str(),
             "--retry",
@@ -273,7 +272,7 @@ async fn tpm_ak_cert_retry_windows(
 
     // The read attempt is expected to fail and trigger an AK cert renewal request.
     let attempt = cmd!(sh, "{guest_binary_path}")
-        .args(["--ak-cert"])
+        .args(["ak_cert"])
         .read()
         .await;
     assert!(
@@ -284,7 +283,7 @@ async fn tpm_ak_cert_retry_windows(
     let expected_hex = expected_ak_cert_hex();
     let output = cmd!(sh, "{guest_binary_path}")
         .args([
-            "--ak-cert",
+            "ak_cert",
             "--expected-data-hex",
             expected_hex.as_str(),
             "--retry",
@@ -306,7 +305,6 @@ async fn tpm_ak_cert_retry_windows(
 }
 
 /// VBS boot test with attestation enabled
-// TODO: Add in-guest tests to retrieve and verify the report.
 #[openvmm_test_no_agent(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
     // openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))
@@ -408,7 +406,7 @@ async fn vbs_attestation_with_agent_windows(
 
             let sh = agent.windows_shell();
             let output = cmd!(sh, "C:\\tpm_guest_tests.exe")
-                .args(["--ak-cert"])
+                .args(["ak_cert"])
                 .read()
                 .await
                 .context("failed to execute tpm_guest_tests.exe inside the guest")?;
@@ -416,6 +414,21 @@ async fn vbs_attestation_with_agent_windows(
             assert!(
                 output.contains("AK certificate data"),
                 "tpm_guest_tests.exe --ak-cert did not report AK certificate data: {output}",
+            );
+
+            let report_output = cmd!(sh, "C:\\tpm_guest_tests.exe")
+                .args(["report", "--show-runtime-claims"])
+                .read()
+                .await
+                .context("failed to execute tpm_guest_tests.exe --report inside the guest")?;
+
+            ensure!(
+                report_output.contains("Runtime claims JSON"),
+                format!("{report_output}")
+            );
+            ensure!(
+                report_output.contains("\"vmUniqueId\""),
+                format!("{report_output}")
             );
 
             (vm, agent)

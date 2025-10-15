@@ -1811,7 +1811,7 @@ mod save_restore {
     }
 }
 
-#[cfg(all(test, feature = "tpm"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ak_cert::RequestAkCert;
@@ -1823,7 +1823,6 @@ mod tests {
     use tpm_protocol::tpm20proto::TpmaNvBits;
     use tpm_resources::TpmRegisterLayout;
     use vmcore::non_volatile_store::EphemeralNonVolatileStore;
-
     struct TestRequestAkCertHelper;
 
     #[async_trait::async_trait]

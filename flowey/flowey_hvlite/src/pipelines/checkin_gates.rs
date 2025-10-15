@@ -485,8 +485,6 @@ impl IntoPipeline for CheckinGatesCli {
                         Some(use_guest_test_uefi.clone());
                     vmm_tests_artifacts_windows_x86.use_tmks = Some(use_tmks.clone());
                     vmm_tests_artifacts_linux_x86.use_tmks = Some(use_tmks.clone());
-                    vmm_tests_artifacts_linux_x86.use_tpm_guest_tests_linux =
-                        Some(use_tpm_guest_tests.clone());
                     vmm_tests_artifacts_windows_x86.use_tpm_guest_tests_linux =
                         Some(use_tpm_guest_tests.clone());
                 }
@@ -973,7 +971,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_x86,
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
-                needs_prep_run: true,
+                needs_prep_run: false,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -995,7 +993,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_x86,
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
-                needs_prep_run: true,
+                needs_prep_run: false,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1176,7 +1174,6 @@ mod vmm_tests_artifact_builders {
         // any machine
         pub use_guest_test_uefi: Option<UseTypedArtifact<GuestTestUefiOutput>>,
         pub use_tmks: Option<UseTypedArtifact<TmksOutput>>,
-        pub use_tpm_guest_tests_linux: Option<UseTypedArtifact<TpmGuestTestsOutput>>,
     }
 
     impl VmmTestsArtifactsBuilderLinuxX86 {
@@ -1188,7 +1185,6 @@ mod vmm_tests_artifact_builders {
                 use_pipette_linux_musl,
                 use_tmk_vmm,
                 use_tmks,
-                use_tpm_guest_tests_linux,
             } = self;
 
             let use_guest_test_uefi = use_guest_test_uefi.ok_or("guest_test_uefi")?;
@@ -1197,8 +1193,6 @@ mod vmm_tests_artifact_builders {
             let use_pipette_windows = use_pipette_windows.ok_or("pipette_windows")?;
             let use_tmk_vmm = use_tmk_vmm.ok_or("tmk_vmm")?;
             let use_tmks = use_tmks.ok_or("tmks")?;
-            let use_tpm_guest_tests_linux =
-                use_tpm_guest_tests_linux.ok_or("tpm_guest_tests_linux")?;
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
                 openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
@@ -1213,7 +1207,7 @@ mod vmm_tests_artifact_builders {
                 prep_steps: None,
                 vmgstool: None,
                 tpm_guest_tests_windows: None,
-                tpm_guest_tests_linux: Some(ctx.use_typed_artifact(&use_tpm_guest_tests_linux)),
+                tpm_guest_tests_linux: None,
             }))
         }
     }

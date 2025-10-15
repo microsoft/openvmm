@@ -7461,9 +7461,12 @@ dependencies = [
 name = "tpm_guest_tests"
 version = "0.0.0"
 dependencies = [
+ "clap",
  "parking_lot",
+ "serde_json",
  "tpm_lib",
  "tpm_protocol",
+ "zerocopy 0.8.25",
 ]
 
 [[package]]
