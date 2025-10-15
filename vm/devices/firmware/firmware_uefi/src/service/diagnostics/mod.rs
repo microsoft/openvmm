@@ -15,6 +15,7 @@
 pub use formatting::EfiDiagnosticsLog;
 pub use formatting::log_diagnostic_ratelimited;
 pub use formatting::log_diagnostic_unrestricted;
+pub use processor::LogLevel;
 pub use processor::ProcessingError;
 
 use crate::UefiDevice;
@@ -36,14 +37,17 @@ pub struct DiagnosticsServices {
     gpa: Option<u32>,
     /// Flag indicating if guest-initiated processing has occurred before
     has_guest_processed_before: bool,
+    /// Log level used for filtering
+    log_level: LogLevel,
 }
 
 impl DiagnosticsServices {
     /// Create a new instance of the diagnostics services
-    pub fn new() -> DiagnosticsServices {
+    pub fn new(log_level: LogLevel) -> DiagnosticsServices {
         DiagnosticsServices {
             gpa: None,
             has_guest_processed_before: false,
+            log_level,
         }
     }
 
@@ -66,11 +70,13 @@ impl DiagnosticsServices {
     /// # Arguments
     /// * `allow_reprocess` - If true, allows processing even if already processed for guest
     /// * `gm` - Guest memory to read diagnostics from
+    /// * `log_level` - Log level for filtering
     /// * `log_handler` - Function to handle each parsed log entry
     fn process_diagnostics<F>(
         &mut self,
         allow_reprocess: bool,
         gm: &GuestMemory,
+        log_level: LogLevel,
         log_handler: F,
     ) -> Result<(), ProcessingError>
     where
@@ -82,6 +88,7 @@ impl DiagnosticsServices {
             &mut self.has_guest_processed_before,
             allow_reprocess,
             gm,
+            log_level,
             log_handler,
         )
     }
@@ -95,11 +102,18 @@ impl UefiDevice {
     ///
     /// # Arguments
     /// * `allow_reprocess` - If true, allows processing even if already processed for guest
+    /// * `log_level` - Log level for filtering
     /// * `limit` - Maximum number of logs to process per period, or `None` for no limit
-    pub(crate) fn process_diagnostics(&mut self, allow_reprocess: bool, limit: Option<u32>) {
+    pub(crate) fn process_diagnostics(
+        &mut self,
+        allow_reprocess: bool,
+        log_level: LogLevel,
+        limit: Option<u32>,
+    ) {
         if let Err(error) = self.service.diagnostics.process_diagnostics(
             allow_reprocess,
             &self.gm,
+            log_level,
             |log, raw_debug_level| match limit {
                 Some(limit) => log_diagnostic_ratelimited(log, raw_debug_level, limit),
                 None => log_diagnostic_unrestricted(log, raw_debug_level),
@@ -120,6 +134,7 @@ mod save_restore {
     use vmcore::save_restore::SaveRestore;
 
     mod state {
+        use crate::service::diagnostics::LogLevel;
         use mesh::payload::Protobuf;
         use vmcore::save_restore::SavedStateRoot;
 
@@ -130,6 +145,8 @@ mod save_restore {
             pub gpa: Option<u32>,
             #[mesh(2)]
             pub did_flush: bool,
+            #[mesh(3)]
+            pub log_level: LogLevel,
         }
     }
 
@@ -140,13 +157,19 @@ mod save_restore {
             Ok(state::SavedState {
                 gpa: self.gpa,
                 did_flush: self.has_guest_processed_before,
+                log_level: self.log_level,
             })
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            let state::SavedState { gpa, did_flush } = state;
+            let state::SavedState {
+                gpa,
+                did_flush,
+                log_level,
+            } = state;
             self.gpa = gpa;
             self.has_guest_processed_before = did_flush;
+            self.log_level = log_level;
             Ok(())
         }
     }
