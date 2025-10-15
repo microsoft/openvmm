@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// UNSAFETY: Calling into lxutil external dll.
+// UNSAFETY: Calling Windows API.
 #![expect(unsafe_code)]
 #![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
