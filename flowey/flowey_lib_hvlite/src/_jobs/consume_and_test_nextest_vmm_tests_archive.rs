@@ -231,46 +231,32 @@ impl SimpleFlowNode for Node {
 
         // Publish JUnit XML
         side_effects.push(ctx.reqv(|v| {
-            flowey_lib_common::publish_test_results::Request::PublishJunitXml(
-                flowey_lib_common::publish_test_results::PublishJunitXml {
-                    junit_xml,
-                    test_label: junit_test_label.clone(),
-                    output_dir: Some(junit_xml_output_dir),
-                    done: v,
-                },
-            )
+            flowey_lib_common::publish_test_results::Request::PublishJunitXml {
+                junit_xml,
+                test_label: junit_test_label.clone(),
+                output_dir: Some(junit_xml_output_dir),
+                done: v,
+            }
         }));
 
         // Publish test logs
         side_effects.push(ctx.reqv(|v| {
-            flowey_lib_common::publish_test_results::Request::PublishTestLogs(
-                flowey_lib_common::publish_test_results::PublishTestLogs {
-                    test_label: junit_test_label.clone(),
-                    attachments: BTreeMap::from([(
-                        "logs".to_string(),
-                        (
-                            flowey_lib_common::publish_test_results::Attachments::Logs(
-                                test_log_path,
-                            ),
-                            false,
-                        ),
-                    )]),
-                    output_dir: test_results_full_output_dir,
-                    done: v,
-                },
-            )
+            flowey_lib_common::publish_test_results::Request::PublishTestLogs {
+                test_label: junit_test_label.clone(),
+                attachments: BTreeMap::from([("logs".to_string(), (test_log_path, false))]),
+                output_dir: test_results_full_output_dir,
+                done: v,
+            }
         }));
 
         // Publish nextest-list.json
         side_effects.push(ctx.reqv(|v| {
-            flowey_lib_common::publish_test_results::Request::PublishNextestListJson(
-                flowey_lib_common::publish_test_results::PublishNextestListJson {
-                    nextest_list_json,
-                    test_label: junit_test_label,
-                    output_dir: nextest_list_json_output_dir,
-                    done: v,
-                },
-            )
+            flowey_lib_common::publish_test_results::Request::PublishNextestListJson {
+                nextest_list_json,
+                test_label: junit_test_label,
+                output_dir: nextest_list_json_output_dir,
+                done: v,
+            }
         }));
 
         ctx.emit_rust_step("report test results to overall pipeline status", |ctx| {

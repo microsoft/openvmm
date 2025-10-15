@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Run cargo-nextest tests.
+//! Run cargo-nextest list.
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 

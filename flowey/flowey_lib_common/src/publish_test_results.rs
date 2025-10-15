@@ -13,60 +13,45 @@ use crate::_util::copy_dir_all;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
-#[derive(Serialize, Deserialize)]
-pub enum Attachments {
-    Logs(ReadVar<PathBuf>),
-    NextestListJson(ReadVar<Option<PathBuf>>),
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct PublishJunitXml {
-    /// Path to a junit.xml file
-    ///
-    /// HACK: this is an optional since `flowey` doesn't (yet?) have any way
-    /// to perform conditional-requests, and there are instances where nodes
-    /// will only conditionally output JUnit XML.
-    ///
-    /// To keep making forward progress, I've tweaked this node to accept an
-    /// optional... but this ain't great.
-    pub junit_xml: ReadVar<Option<PathBuf>>,
-    pub test_label: String,
-    /// Copy full test results (all logs, dumps, etc) to the provided directory.
-    pub output_dir: Option<ReadVar<PathBuf>>,
-    /// Side-effect confirming that the publish has succeeded
-    pub done: WriteVar<SideEffect>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct PublishTestLogs {
-    pub test_label: String,
-    /// Additional files or directories to upload.
-    ///
-    /// The boolean indicates whether the attachment is referenced in the
-    /// JUnit XML file. On backends with native JUnit attachment support,
-    /// these attachments will not be uploaded as distinct artifacts and
-    /// will instead be uploaded via the JUnit integration.
-    pub attachments: BTreeMap<String, (Attachments, bool)>,
-    pub output_dir: ReadVar<PathBuf>,
-    /// Side-effect confirming that the publish has succeeded
-    pub done: WriteVar<SideEffect>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct PublishNextestListJson {
-    /// Path to a nextest-list.json file
-    pub nextest_list_json: ReadVar<PathBuf>,
-    pub test_label: String,
-    pub output_dir: ReadVar<PathBuf>,
-    /// Side-effect confirming that the publish has succeeded
-    pub done: WriteVar<SideEffect>,
-}
-
 flowey_request! {
     pub enum Request {
-        PublishJunitXml(PublishJunitXml),
-        PublishTestLogs(PublishTestLogs),
-        PublishNextestListJson(PublishNextestListJson),
+        /// Path to a junit.xml file
+        ///
+        /// HACK: this is an optional since `flowey` doesn't (yet?) have any way
+        /// to perform conditional-requests, and there are instances where nodes
+        /// will only conditionally output JUnit XML.
+        ///
+        /// To keep making forward progress, I've tweaked this node to accept an
+        /// optional... but this ain't great.
+        PublishJunitXml {
+            junit_xml: ReadVar<Option<PathBuf>>,
+            test_label: String,
+            /// Copy full test results (all logs, dumps, etc) to the provided directory.
+            output_dir: Option<ReadVar<PathBuf>>,
+            /// Side-effect confirming that the publish has succeeded
+            done: WriteVar<SideEffect>,
+        },
+        PublishTestLogs {
+            test_label: String,
+            /// Additional files or directories to upload.
+            ///
+            /// The boolean indicates whether the attachment is referenced in the
+            /// JUnit XML file. On backends with native JUnit attachment support,
+            /// these attachments will not be uploaded as distinct artifacts and
+            /// will instead be uploaded via the JUnit integration.
+            attachments: BTreeMap<String, (ReadVar<PathBuf>, bool)>,
+            output_dir: ReadVar<PathBuf>,
+            /// Side-effect confirming that the publish has succeeded
+            done: WriteVar<SideEffect>,
+        },
+        PublishNextestListJson {
+            /// Path to a nextest-list.json file
+            nextest_list_json: ReadVar<PathBuf>,
+            test_label: String,
+            output_dir: ReadVar<PathBuf>,
+            /// Side-effect confirming that the publish has succeeded
+            done: WriteVar<SideEffect>,
+        },
     }
 }
 
@@ -85,12 +70,12 @@ impl FlowNode for Node {
 
         for req in requests {
             match req {
-                Request::PublishJunitXml(PublishJunitXml {
+                Request::PublishJunitXml {
                     junit_xml,
                     test_label: label,
                     output_dir,
                     done,
-                }) => {
+                } => {
                     resolve_side_effects.push(done);
 
                     let step_name =
@@ -142,84 +127,118 @@ impl FlowNode for Node {
                         }
                     }
                 }
-                Request::PublishTestLogs(PublishTestLogs {
+                Request::PublishTestLogs {
                     test_label: label,
                     attachments,
                     output_dir,
                     done,
-                }) => {
+                } => {
                     resolve_side_effects.push(done);
 
-                    for (attachment_label, (attachment_kind, publish_on_ado)) in attachments {
-                        let step_name = format!(
-                            "copy attachments to artifacts directory: {label} ({attachment_label})"
-                        );
-                        let mut artifact_name = format!("{label}-{attachment_label}");
-                        let attachment_path_opt = match &attachment_kind {
-                            Attachments::Logs(p) => p.clone().map(ctx, Some),
-                            Attachments::NextestListJson(p) => {
-                                artifact_name += ".json";
-                                p.clone()
-                            }
-                        };
+                    for (attachment_label, (attachment_path, publish_on_ado)) in attachments {
+                        let step_name =
+                            format!("publish test results: {label} ({attachment_label})");
+                        let artifact_name = format!("{label}-{attachment_label}");
 
-                        let attachment_exists = attachment_path_opt.map(ctx, |opt| {
-                            opt.as_ref()
-                                .map(|p| {
-                                    p.exists()
-                                        && (p.is_file()
-                                            || p.read_dir()
-                                                .expect("failed to read attachment dir")
-                                                .next()
-                                                .is_some())
-                                })
-                                .unwrap_or(false)
+                        let attachment_exists = attachment_path.map(ctx, |p| {
+                            p.exists()
+                                && (p.is_file()
+                                    || p.read_dir()
+                                        .expect("failed to read attachment dir")
+                                        .next()
+                                        .is_some())
+                        });
+                        let attachment_path_string = attachment_path.map(ctx, |p| {
+                            p.absolute().expect("invalid path").display().to_string()
                         });
 
-                        if matches!(ctx.backend(), FlowBackend::Ado) && !publish_on_ado {
-                            use_side_effects.push(attachment_exists.into_side_effect());
-                            use_side_effects.push(attachment_path_opt.into_side_effect());
-                            continue;
-                        }
+                        match ctx.backend() {
+                            FlowBackend::Ado => {
+                                if publish_on_ado {
+                                    let (published_read, published_write) = ctx.new_var();
+                                    use_side_effects.push(published_read);
 
-                        let output_dir_clone = output_dir.clone();
-                        use_side_effects.push(ctx.emit_rust_step(step_name, move |ctx| {
-                            let output_dir = output_dir_clone.claim(ctx);
-                            let attachment_exists = attachment_exists.claim(ctx);
-                            let attachment_path_opt = attachment_path_opt.claim(ctx);
+                                    // Note: usually flowey's built-in artifact publishing API
+                                    // should be used instead of this, but here we need to
+                                    // manually upload the artifact now so that we can overwrite the artifact name.
+                                    ctx.emit_ado_step_with_condition(
+                                        step_name.clone(),
+                                        attachment_exists,
+                                        |ctx| {
+                                            published_write.claim(ctx);
+                                            let attachment_path_string =
+                                                attachment_path_string.claim(ctx);
+                                            move |rt| {
+                                                let path_var = rt
+                                                    .get_var(attachment_path_string)
+                                                    .as_raw_var_name();
+                                                // Artifact name includes the JobAttempt to
+                                                // differentiate between artifacts that were
+                                                // generated when rerunning failed jobs.
+                                                format!(
+                                                    r#"
+                                            - publish: $({path_var})
+                                              artifact: {artifact_name}-$({})
+                                            "#,
+                                                    AdoRuntimeVar::SYSTEM__JOB_ATTEMPT
+                                                        .as_raw_var_name()
+                                                )
+                                            }
+                                        },
+                                    );
+                                } else {
+                                    use_side_effects.push(attachment_exists.into_side_effect());
+                                    use_side_effects
+                                        .push(attachment_path_string.into_side_effect());
+                                }
+                            }
+                            FlowBackend::Github => {
+                                // Note: usually flowey's built-in artifact publishing API should be used instead of this,
+                                // but here we need to manually upload the artifact so that we can attach a condition.
+                                use_side_effects.push(
+                                    ctx.emit_gh_step(
+                                        step_name.clone(),
+                                        "actions/upload-artifact@v4",
+                                    )
+                                    .condition(attachment_exists)
+                                    .with("name", artifact_name)
+                                    .with("path", attachment_path_string)
+                                    .finish(ctx),
+                                );
+                            }
+                            FlowBackend::Local => {
+                                use_side_effects.push(ctx.emit_rust_step(step_name, |ctx| {
+                                    let output_dir = output_dir.clone().claim(ctx);
+                                    let attachment_exists = attachment_exists.claim(ctx);
+                                    let attachment_path = attachment_path.claim(ctx);
 
-                            move |rt| {
-                                let output_dir = rt.read(output_dir);
-                                let attachment_exists = rt.read(attachment_exists);
-                                let attachment_path_opt = rt.read(attachment_path_opt);
+                                    move |rt| {
+                                        let output_dir = rt.read(output_dir);
+                                        let attachment_exists = rt.read(attachment_exists);
+                                        let attachment_path = rt.read(attachment_path);
 
-                                if attachment_exists {
-                                    if let Some(attachment_path) = attachment_path_opt {
-                                        if attachment_path.is_dir() {
+                                        if attachment_exists {
                                             copy_dir_all(
                                                 attachment_path,
                                                 output_dir.join(artifact_name),
                                             )?;
-                                        } else {
-                                            fs_err::copy(
-                                                attachment_path,
-                                                output_dir.join(artifact_name),
-                                            )?;
                                         }
-                                    }
-                                }
 
-                                Ok(())
+                                        Ok(())
+                                    }
+                                }));
+
+                                use_side_effects.push(attachment_path_string.into_side_effect());
                             }
-                        }));
+                        }
                     }
                 }
-                Request::PublishNextestListJson(PublishNextestListJson {
+                Request::PublishNextestListJson {
                     nextest_list_json,
                     test_label: label,
                     output_dir,
                     done,
-                }) => {
+                } => {
                     resolve_side_effects.push(done);
 
                     let step_name =

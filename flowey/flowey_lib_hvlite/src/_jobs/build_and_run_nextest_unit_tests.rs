@@ -65,16 +65,15 @@ impl SimpleFlowNode for Node {
         let mut side_effects = Vec::new();
 
         let junit_xml = results.map(ctx, |r| r.junit_xml);
-        let reported_results = ctx.reqv(|v| {
-            flowey_lib_common::publish_test_results::Request::PublishJunitXml(
-                flowey_lib_common::publish_test_results::PublishJunitXml {
+        let reported_results =
+            ctx.reqv(
+                |v| flowey_lib_common::publish_test_results::Request::PublishJunitXml {
                     junit_xml,
                     test_label: junit_test_label,
                     output_dir: artifact_dir,
                     done: v,
                 },
-            )
-        });
+            );
 
         side_effects.push(reported_results);
 

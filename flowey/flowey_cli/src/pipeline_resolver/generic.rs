@@ -47,10 +47,16 @@ pub struct ResolvedPipeline {
 }
 
 #[derive(Debug, Clone)]
-pub struct ResolvedJobArtifact {
+pub struct ResolvedPublishedArtifact {
     pub flowey_var: String,
     pub name: String,
     pub force_upload: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedUsedArtifact {
+    pub flowey_var: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -77,9 +83,9 @@ pub struct ResolvedPipelineJob {
 
     pub parameters_used: Vec<ResolvedJobUseParameter>,
     // correspond to injected download nodes at the start of the job
-    pub artifacts_used: Vec<ResolvedJobArtifact>,
+    pub artifacts_used: Vec<ResolvedUsedArtifact>,
     // correspond to injected publish nodes at the end of the job
-    pub artifacts_published: Vec<ResolvedJobArtifact>,
+    pub artifacts_published: Vec<ResolvedPublishedArtifact>,
 }
 
 pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> {
@@ -187,7 +193,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
             .into_iter()
             .map(|a| {
                 let artifact_meta = artifacts.iter().find(|meta| meta.name == a).unwrap();
-                ResolvedJobArtifact {
+                ResolvedPublishedArtifact {
                     flowey_var:
                         flowey_core::pipeline::internal::consistent_artifact_runtime_var_name(
                             &a, false,
@@ -199,12 +205,11 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
             .collect();
         let artifacts_used: Vec<_> = artifacts_used
             .into_iter()
-            .map(|a| ResolvedJobArtifact {
+            .map(|a| ResolvedUsedArtifact {
                 flowey_var: flowey_core::pipeline::internal::consistent_artifact_runtime_var_name(
                     &a, true,
                 ),
                 name: a,
-                force_upload: false,
             })
             .collect();
         let parameters_used: Vec<_> = parameters_used
