@@ -153,7 +153,6 @@ function filterRuns(
       : runs.filter((run) => run.metadata.ghBranch === branchFilter);
   const terms = searchFilter.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (terms.length === 0) return branchFiltered;
-  console.log("Filtering with terms:", terms);
   return branchFiltered.filter((run) => {
     // Search in run name, status, branch, PR, and PR title
     const status = run.metadata.petriFailed === 0 ? "passed" : "failed";
