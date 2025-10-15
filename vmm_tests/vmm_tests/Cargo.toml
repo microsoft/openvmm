@@ -42,6 +42,7 @@ mesh.workspace = true
 pal.workspace = true
 pal_async.workspace = true
 unix_socket.workspace = true
+vmgs_resources.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true

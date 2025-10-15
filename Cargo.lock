@@ -1949,6 +1949,7 @@ dependencies = [
  "fs-err",
  "igvmfilegen_config",
  "log",
+ "powershell_builder",
  "serde",
  "serde_json",
  "target-lexicon",
@@ -2397,6 +2398,7 @@ dependencies = [
  "slab",
  "task_control",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "vm_resource",
  "vmcore",
@@ -3059,6 +3061,7 @@ dependencies = [
  "pal_async",
  "pci_bus",
  "pci_core",
+ "pcie",
  "range_map_vec",
  "scsi_core",
  "scsidisk",
@@ -4422,6 +4425,7 @@ dependencies = [
  "futures-concurrency",
  "guestmem",
  "inspect",
+ "inspect_counters",
  "memory_range",
  "mesh",
  "net_backend_resources",
@@ -5543,6 +5547,21 @@ dependencies = [
  "pci_core",
  "vm_resource",
  "vmcore",
+]
+
+[[package]]
+name = "pcie"
+version = "0.0.0"
+dependencies = [
+ "chipset_device",
+ "inspect",
+ "pal_async",
+ "pci_bus",
+ "pci_core",
+ "tracelimit",
+ "tracing",
+ "vmcore",
+ "zerocopy 0.8.25",
 ]
 
 [[package]]
@@ -9350,6 +9369,7 @@ dependencies = [
  "unix_socket",
  "virtio_resources",
  "vm_resource",
+ "vmgs_resources",
  "vmm_test_macros",
  "zerocopy 0.8.25",
 ]

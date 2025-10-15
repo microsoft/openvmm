@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::ffi::OsStr;
 use std::path::Path;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 /// Hyper-V VM Generation
@@ -121,6 +122,9 @@ pub struct HyperVNewVMArgs<'a> {
     pub path: Option<&'a Path>,
     /// Specifies the path to a virtual hard disk file.
     pub vhd_path: Option<&'a Path>,
+    /// Specifies the path to the guest state file for the virtual machine
+    /// being created.
+    pub source_guest_state_path: Option<&'a Path>,
 }
 
 /// Runs New-VM with the given arguments.
@@ -134,6 +138,7 @@ pub async fn run_new_vm(args: HyperVNewVMArgs<'_>) -> anyhow::Result<Guid> {
             .arg_opt("MemoryStartupBytes", args.memory_startup_bytes)
             .arg_opt("Path", args.path)
             .arg_opt("VHDPath", args.vhd_path)
+            .arg_opt("SourceGuestStatePath", args.source_guest_state_path)
             .flag("Force")
             .pipeline()
             .cmdlet("Select-Object")
@@ -497,7 +502,7 @@ pub async fn run_set_openhcl_firmware(
 pub async fn run_set_vm_command_line(
     vmid: &Guid,
     ps_mod: &Path,
-    command_line: &str,
+    command_line: impl AsRef<str>,
 ) -> anyhow::Result<()> {
     run_host_cmd(
         PowerShellBuilder::new()
@@ -508,7 +513,7 @@ pub async fn run_set_vm_command_line(
             .arg("Id", vmid)
             .pipeline()
             .cmdlet("Set-VmCommandLine")
-            .arg("CommandLine", command_line)
+            .arg("CommandLine", command_line.as_ref())
             .finish()
             .build(),
     )
@@ -1066,4 +1071,24 @@ pub async fn run_get_vm_host() -> anyhow::Result<HyperVGetVmHost> {
 
     serde_json::from_str::<HyperVGetVmHost>(&output)
         .map_err(|e| anyhow::anyhow!("failed to parse HyperVGetVmHost: {}", e))
+}
+
+/// Runs Get-GuestStateFile with the given arguments.
+pub async fn run_get_guest_state_file(vmid: &Guid, ps_mod: &Path) -> anyhow::Result<PathBuf> {
+    let output = run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Get-GuestStateFile")
+            .finish()
+            .build(),
+    )
+    .await
+    .context("get_guest_state_file")?;
+
+    Ok(PathBuf::from(output))
 }

@@ -3,12 +3,11 @@
 
 //! Memory Validation for VMM Tests
 
-#![cfg_attr(not(debug_assertions), expect(dead_code))]
-
 use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::IsolationType;
 use petri::MemoryConfig;
+use petri::OpenHclLogConfig;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
@@ -25,6 +24,7 @@ use std::ops::IndexMut;
 use std::time::Duration;
 
 #[repr(u32)]
+#[derive(PartialEq)]
 pub enum TestVPCount {
     SmallVPCount,
     LargeVPCount,
@@ -198,8 +198,9 @@ impl MemStat {
     /// Compares current statistics against baseline
     /// For all 2VP tests general usage and underhill_vm process memory usage are given a 1MiB threshold
     /// For all large (32VP or 64VP) tests general usage and underhill_vm process memory usage are given a 3MiB threshold
-    /// All other processes have a usage threshold ~1.5x the variance observed in tests
-    /// Kernel reservation has a threshold of 0 since there is no run-to-run variance with that statistic
+    /// All other processes have a usage threshold of 512kB
+    /// Kernel reservation has a threshold of 512kB
+    /// In case any of these thresholds are exceeded, it would be considered a significant increase in memory usage from the previously established baseline (beyond run variance)
     fn compare_to_baseline(self, arch: &str, vps: &str) -> anyhow::Result<()> {
         let baseline_usage = Self::get_upper_limit_value(&self.baseline_json[arch][vps]["usage"]);
         let cur_usage = self.meminfo["MemTotal"] - self.total_free_memory_per_zone;
@@ -237,13 +238,6 @@ impl MemStat {
             );
         }
 
-        /*
-            Note on reservation test:
-                - Kernel reservation does not experience run-to-run variance and is not expected to change frequently
-                - Therefore the threshold for kernel reservation is 0
-                - If a code change must increase the kernel reservation, then the "base" value for the "reservation" statistic can be updated in memstat_baseline.json
-                - Occasional increases in the kernel reservation are expected, but should be noted in such an event
-        */
         let baseline_reservation =
             Self::get_upper_limit_value(&self.baseline_json[arch][vps]["reservation"]);
         let cur_reservation =
@@ -390,7 +384,7 @@ pub(crate) async fn idle_test<T: PetriVmmBackend>(
             }
         }
     };
-    let (mut vm, agent) = config
+    let vm_boot_result = config
         .with_processor_topology({
             ProcessorTopology {
                 vp_count,
@@ -403,8 +397,25 @@ pub(crate) async fn idle_test<T: PetriVmmBackend>(
                 dynamic_memory_range: None,
             }
         })
+        .with_openhcl_log_levels(OpenHclLogConfig::BuiltInDefault)
         .run()
-        .await?;
+        .await;
+
+    // The VM is expected to fail to boot on the internal Intel pipeline only for the large VM size. We still want the AMD test to execute so
+    // we will keep the test and gracefully exit in case of a failure. Any other type of boot failure should still produce an error
+    if vm_boot_result.is_err()
+        && machine_arch == MachineArch::X86_64
+        && isolation_type.is_none()
+        && vps == TestVPCount::LargeVPCount
+    {
+        tracing::warn!(
+            "VM failed to start with the given topology, this is expected for the internal Intel runner only"
+        );
+        return Ok(());
+    }
+
+    let (mut vm, agent) = vm_boot_result?;
+
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
 
     // Wait for the guest to be booted

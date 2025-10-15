@@ -51,20 +51,28 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     openvmm_linux_direct_x64,
     openvmm_openhcl_linux_direct_x64,
     openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_pcat_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_pcat_x64(vhd(ubuntu_2404_server_x64)),
+    openvmm_pcat_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_uefi_x64(vhd(ubuntu_2404_server_x64)),
+    openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))
 )]
 async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config.run().await?;
@@ -78,10 +86,6 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
     openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
     openvmm_pcat_x64(iso(freebsd_13_2_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
-    // hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2404_server_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2404_server_x64))
 )]
 async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
@@ -95,20 +99,24 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     openvmm_linux_direct_x64,
     openvmm_openhcl_linux_direct_x64,
     openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_pcat_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_pcat_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))
 )]
 async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let is_openhcl = config.is_openhcl();
@@ -134,10 +142,6 @@ async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 // Basic vp "heavy" boot test without agent with 16 VPs and 2 NUMA nodes.
 #[vmm_test_no_agent(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
-    // hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2404_server_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2404_server_x64))
 )]
 async fn boot_no_agent_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let mut vm = config
@@ -155,9 +159,13 @@ async fn boot_no_agent_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> a
 
 /// Basic boot test with a single VP.
 #[vmm_test(
+    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn boot_single_proc<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
@@ -176,10 +184,6 @@ async fn boot_single_proc<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyh
 /// Basic boot test without agent and with a single VP.
 #[vmm_test_no_agent(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
-    // hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2404_server_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2404_server_x64))
 )]
 async fn boot_no_agent_single_proc<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -203,7 +207,7 @@ async fn boot_no_agent_single_proc<T: PetriVmmBackend>(
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     // TODO: Linux image is missing VPCI driver in its initrd
     // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    // openvmm_uefi_x64(vhd(ubuntu_2204_server_x64))
+    // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn boot_nvme<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config
@@ -223,7 +227,7 @@ async fn boot_nvme<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     // openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     // TODO: Linux image is missing VPCI driver in its initrd
-    // openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    // openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config
@@ -238,22 +242,26 @@ async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> 
 }
 
 /// Validate we can reboot a VM and reconnect to pipette.
-// TODO: Reenable guests that use the framebuffer once #74 is fixed.
+// TODO: Reenable openvmm guests that use the framebuffer once #74 is fixed.
 #[vmm_test(
     openvmm_linux_direct_x64,
     openvmm_openhcl_linux_direct_x64,
     // openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openvmm_pcat_x64(vhd(ubuntu_2204_server_x64)),
+    // openvmm_pcat_x64(vhd(ubuntu_2504_server_x64)),
     // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     // openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
     // openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    // openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))
 )]
 async fn reboot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), anyhow::Error> {
     let (mut vm, agent) = config.run().await?;
@@ -269,10 +277,6 @@ async fn reboot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), any
 /// Basic reboot test without agent
 #[vmm_test_no_agent(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
-    // hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2404_server_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2404_server_x64))
 )]
 async fn reboot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
@@ -364,17 +368,17 @@ async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
 #[vmm_test(
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config.with_secure_boot().run().await?;
@@ -388,17 +392,17 @@ async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
 #[vmm_test_no_agent(
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     // hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     // hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     // hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // hyperv_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    // hyperv_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn secure_boot_mismatched_template<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -471,17 +475,12 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
     Ok(())
 }
 
-// We can't get a VTL 2 pipette with release build CVM debugging restrictions,
-// so only run these tests in debug builds.
-#[cfg(debug_assertions)]
 #[vmm_test(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_small<T: PetriVmmBackend>(
+async fn memory_validation_gp_small<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     _: (),
     driver: pal_async::DefaultDriver,
@@ -501,11 +500,50 @@ async fn memory_validation_small<T: PetriVmmBackend>(
 #[vmm_test(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_large<T: PetriVmmBackend>(
+async fn memory_validation_cvm_small<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    _: (),
+    driver: pal_async::DefaultDriver,
+) -> anyhow::Result<()> {
+    memstat::idle_test(
+        config,
+        memstat::TestVPCount::SmallVPCount,
+        memstat::WaitPeriodSec::ShortWait,
+        driver,
+    )
+    .await
+}
+
+#[vmm_test(
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn memory_validation_gp_heavy<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    _: (),
+    driver: pal_async::DefaultDriver,
+) -> anyhow::Result<()> {
+    memstat::idle_test(
+        config,
+        memstat::TestVPCount::LargeVPCount,
+        memstat::WaitPeriodSec::LongWait,
+        driver,
+    )
+    .await
+}
+
+// We can't get a VTL 2 pipette with release build CVM debugging restrictions,
+// so only run these tests in debug builds.
+#[cfg(debug_assertions)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn memory_validation_cvm_heavy<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     _: (),
     driver: pal_async::DefaultDriver,

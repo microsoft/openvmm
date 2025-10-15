@@ -328,7 +328,10 @@ async fn launch_workers(
         nvme_always_flr: opt.nvme_always_flr,
         test_configuration: opt.test_configuration,
         disable_uefi_frontpage: opt.disable_uefi_frontpage,
+        default_boot_always_attempt: opt.default_boot_always_attempt,
+        guest_state_lifetime: opt.guest_state_lifetime,
         guest_state_encryption_policy: opt.guest_state_encryption_policy,
+        strict_encryption_policy: opt.strict_encryption_policy,
         attempt_ak_cert_callback: opt.attempt_ak_cert_callback,
         enable_vpci_relay: opt.enable_vpci_relay,
     };
@@ -545,8 +548,8 @@ async fn run_control(
                             .sensitivity_child("uhdiag", SensitivityLevel::Safe, |req| {
                                 inspect_internal::inspect_internal_diagnostics(
                                     req,
-                                    diag_reinspect_send.clone(),
-                                    driver.clone(),
+                                    &diag_reinspect_send,
+                                    &driver,
                                 )
                             });
 

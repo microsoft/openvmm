@@ -13,8 +13,8 @@ use vmm_test_macros::vmm_test;
 // Test for vmbus relay
 // TODO: VBS isolation was failing and other targets too
 #[vmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))
 )]
@@ -33,11 +33,11 @@ async fn vmbus_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
 /// properties via the agent.
 #[vmm_test(
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
 )]
@@ -78,10 +78,10 @@ async fn vmbus_relay_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> any
 
 /// MNF guest support: capture and print recursive listing of vmbus drivers.
 /// TODO: add entries for CVM guests once MNF support in CVMs is added. Tracked by  #1940
-/// TODO: investigate flakiness for openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)). Tracked by: #2100
+/// TODO: investigate flakiness for openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)). Tracked by: #2100
 #[openvmm_test(
     openvmm_openhcl_linux_direct_x64,
-    // openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    // openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn validate_mnf_usage_in_guest(
     config: PetriVmBuilder<OpenVmmPetriBackend>,

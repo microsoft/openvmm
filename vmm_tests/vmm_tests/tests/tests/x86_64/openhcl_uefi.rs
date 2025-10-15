@@ -13,9 +13,26 @@ use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
 use vmm_test_macros::vmm_test_no_agent;
 
+struct ExpectedNvmeDeviceProperties {
+    save_restore_supported: bool,
+    qsize: u64,
+    nvme_keepalive: bool,
+}
+
+/// Helper to run a scenario where we boot an OpenHCL UEFI VM with a NVME
+/// disk assigned to VTL2.
+///
+/// Validates that the VTL2 NVMe driver is working as expected by comparing
+/// the inspect properties of the NVMe device against the supplied expected
+/// properties.
+///
+/// If `props` is `None`, then we skip validating the properties. (This is useful
+/// at this moment for while we finish developing NVMe keepalive, which is needed
+/// to get the devices to work as expected.)
 async fn nvme_relay_test_core(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     openhcl_cmdline: &str,
+    props: Option<ExpectedNvmeDeviceProperties>,
 ) -> Result<(), anyhow::Error> {
     let (vm, agent) = config
         .with_openhcl_command_line(openhcl_cmdline)
@@ -27,6 +44,101 @@ async fn nvme_relay_test_core(
         .run()
         .await?;
 
+    let devices = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
+    tracing::info!(devices = %devices.json(), "NVMe devices");
+
+    let devices: serde_json::Value = serde_json::from_str(&format!("{}", devices.json()))?;
+
+    /*
+    {
+        "718b:00:00.0": {
+            "driver": {
+                "driver": {
+                    "admin": {
+                        ...
+                    },
+                    "bounce_buffer": false,
+                    "device": {
+                        "dma_client": {
+                            "backing": {
+                                "type": "locked_memory"
+                            },
+                            "params": {
+                                "allocation_visibility": "private",
+                                "device_name": "nvme_718b:00:00.0",
+                                "lower_vtl_policy": "any",
+                                "persistent_allocations": false
+                            }
+                        },
+                        "interrupts": {
+                            "0": {
+                                "target_cpu": 0
+                            }
+                        },
+                        "pci_id": "718b:00:00.0"
+                    },
+                    "device_id": "718b:00:00.0",
+                    "identify": {
+                        ...
+                    },
+                    "io": {
+                        ...
+                    },
+                    "io_issuers": {
+                        ...
+                    },
+                    "max_io_queues": 1,
+                    "nvme_keepalive": false,
+                    "qsize": 64,
+                    "registers": {
+                        ...
+                    }
+                },
+                "pci_id": "718b:00:00.0"
+            },
+            "pci_id": "718b:00:00.0",
+            "save_restore_supported": false,
+            "vp_count": 1
+        }
+    }
+    */
+
+    // If just one device is returned, then this will be a `Value::Object`, where the
+    // key is the single PCI ID of the device.
+    //
+    // TODO (future PR): Fix this up with support for multiple devices when this code is used
+    // in more complicated tests.
+    let found_device_id = devices
+        .as_object()
+        .expect("devices object")
+        .keys()
+        .next()
+        .expect("device id");
+
+    // The PCI id is generated from the VMBUS instance guid for vpci devices.
+    // See `PARAVISOR_BOOT_NVME_INSTANCE`.
+    assert_eq!(found_device_id, "718b:00:00.0");
+    if let Some(props) = &props {
+        assert_eq!(
+            devices[found_device_id]["driver"]["driver"]["qsize"]
+                .as_u64()
+                .expect("qsize"),
+            props.qsize
+        );
+        assert_eq!(
+            devices[found_device_id]["driver"]["driver"]["nvme_keepalive"]
+                .as_bool()
+                .expect("nvme_keepalive"),
+            props.nvme_keepalive
+        );
+        assert_eq!(
+            devices[found_device_id]["save_restore_supported"]
+                .as_bool()
+                .expect("save_restore_supported"),
+            props.save_restore_supported
+        );
+    }
+
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
 
@@ -35,32 +147,50 @@ async fn nvme_relay_test_core(
 
 /// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
-    nvme_relay_test_core(config, "").await
+    nvme_relay_test_core(config, "", None).await
 }
 
 /// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
 ///
 /// Use the shared pool override to test the shared pool dma path.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay_shared_pool(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
-    nvme_relay_test_core(config, "OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1").await
+    nvme_relay_test_core(
+        config,
+        "OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1",
+        Some(ExpectedNvmeDeviceProperties {
+            save_restore_supported: false, // No private pool, so no save/restore of memory.
+            qsize: 64,                     // After #2061 goes in, this should be 256.
+            nvme_keepalive: false,
+        }),
+    )
+    .await
 }
 
 /// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
 ///
 /// Use the private pool override to test the private pool dma path.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay_private_pool(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
     // Number of pages to reserve as a private pool.
-    nvme_relay_test_core(config, "OPENHCL_ENABLE_VTL2_GPA_POOL=512").await
+    nvme_relay_test_core(
+        config,
+        "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
+        Some(ExpectedNvmeDeviceProperties {
+            save_restore_supported: true,
+            qsize: 64,
+            nvme_keepalive: false,
+        }),
+    )
+    .await
 }
 
 /// Boot the UEFI firmware, with a VTL2 range automatically configured by

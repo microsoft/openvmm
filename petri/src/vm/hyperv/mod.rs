@@ -14,10 +14,13 @@ use crate::IsolationType;
 use crate::NoPetriVmInspector;
 use crate::OpenHclConfig;
 use crate::OpenHclServicingFlags;
+use crate::PetriDiskType;
 use crate::PetriHaltReason;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmRuntime;
+use crate::PetriVmgsDisk;
+use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::SecureBootTemplate;
 use crate::ShutdownKind;
@@ -48,8 +51,10 @@ use pipette_client::PipetteClient;
 use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 use vm::HyperVVM;
+use vmgs_resources::GuestStateEncryptionPolicy;
 
 /// The Hyper-V Petri backend
 pub struct HyperVPetriBackend {}
@@ -103,7 +108,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             agent_image,
             openhcl_agent_image,
             boot_device_type,
-            vmgs: _, // TODO
+            vmgs,
         } = config;
 
         let PetriVmResources { driver, log_source } = resources;
@@ -175,6 +180,67 @@ impl PetriVmmBackend for HyperVPetriBackend {
             ),
         };
 
+        let vmgs_path = {
+            // TODO: add support for configuring the TPM in Hyper-V
+            // For now, use a persistent vmgs, since Ubuntu VMs with TPM
+            // try to install a boot entry and reboot.
+            let vmgs = match vmgs {
+                PetriVmgsResource::Ephemeral => PetriVmgsResource::Disk(PetriVmgsDisk::default()),
+                vmgs => vmgs,
+            };
+
+            let lifetime_cli = match &vmgs {
+                PetriVmgsResource::Disk(_) => "DEFAULT",
+                PetriVmgsResource::ReprovisionOnFailure(_) => "REPROVISION_ON_FAILURE",
+                PetriVmgsResource::Reprovision(_) => "REPROVISION",
+                PetriVmgsResource::Ephemeral => "EPHEMERAL",
+            };
+
+            let (disk, encryption) = match vmgs {
+                PetriVmgsResource::Disk(vmgs)
+                | PetriVmgsResource::ReprovisionOnFailure(vmgs)
+                | PetriVmgsResource::Reprovision(vmgs) => (Some(vmgs.disk), vmgs.encryption_policy),
+                PetriVmgsResource::Ephemeral => (None, GuestStateEncryptionPolicy::None(true)),
+            };
+
+            let strict = encryption.is_strict();
+
+            let encryption_cli = match encryption {
+                GuestStateEncryptionPolicy::Auto => "AUTO",
+                GuestStateEncryptionPolicy::None(_) => "NONE",
+                GuestStateEncryptionPolicy::GspById(_) => "GSP_BY_ID",
+                GuestStateEncryptionPolicy::GspKey(_) => "GSP_KEY",
+            };
+
+            // TODO: Error for non-OpenHCL Hyper-V VMs if not supported
+            // TODO: Use WMI interfaces when possible
+            if let Some((_, config)) = openhcl_config.as_mut() {
+                append_cmdline(
+                    &mut config.command_line,
+                    format!("HCL_GUEST_STATE_LIFETIME={lifetime_cli}"),
+                );
+                append_cmdline(
+                    &mut config.command_line,
+                    format!("HCL_GUEST_STATE_ENCRYPTION_POLICY={encryption_cli}"),
+                );
+                if strict {
+                    append_cmdline(&mut config.command_line, "HCL_STRICT_ENCRYPTION_POLICY=1");
+                }
+            };
+
+            match disk {
+                None | Some(PetriDiskType::Memory) => None,
+                Some(PetriDiskType::Differencing(parent_path)) => {
+                    let diff_disk_path = temp_dir
+                        .path()
+                        .join(parent_path.file_name().context("path has no filename")?);
+                    make_temp_diff_disk(&diff_disk_path, &parent_path).await?;
+                    Some(diff_disk_path)
+                }
+                Some(PetriDiskType::Persistent(path)) => Some(path),
+            }
+        };
+
         let mut log_tasks = Vec::new();
 
         let mut vm = HyperVVM::new(
@@ -182,6 +248,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             generation,
             guest_state_isolation_type,
             memory.startup_bytes,
+            vmgs_path.as_deref(),
             log_source.log_file("hyperv")?,
             driver.clone(),
         )
@@ -221,6 +288,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             secure_boot_enabled,
             secure_boot_template,
             disable_frontpage,
+            default_boot_always_attempt,
         }) = uefi_config
         {
             vm.set_secure_boot(
@@ -240,6 +308,15 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 // TODO: Disable frontpage for non-OpenHCL Hyper-V VMs
                 if let Some((_, config)) = openhcl_config.as_mut() {
                     append_cmdline(&mut config.command_line, "OPENHCL_DISABLE_UEFI_FRONTPAGE=1");
+                };
+            }
+
+            if *default_boot_always_attempt {
+                if let Some((_, config)) = openhcl_config.as_mut() {
+                    append_cmdline(
+                        &mut config.command_line,
+                        "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=1",
+                    );
                 };
             }
         }
@@ -270,13 +347,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                         .to_string_lossy()
                 ));
 
-                {
-                    let path = diff_disk_path.clone();
-                    let parent_path = vhd.to_path_buf();
-                    tracing::debug!(?path, ?parent_path, "creating differencing vhd");
-                    blocking::unblock(move || disk_vhdmp::Vhd::create_diff(&path, &parent_path))
-                        .await?;
-                }
+                make_temp_diff_disk(&diff_disk_path, vhd).await?;
 
                 vm.add_vhd(
                     &diff_disk_path,
@@ -329,7 +400,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
             OpenHclConfig {
                 vtl2_nvme_boot: _, // TODO, see #1649.
                 vmbus_redirect,
-                command_line,
+                command_line: _,
+                log_levels: _,
             },
         )) = &openhcl_config
         {
@@ -353,9 +425,9 @@ impl PetriVmmBackend for HyperVPetriBackend {
             )
             .await?;
 
-            if let Some(command_line) = command_line {
-                vm.set_vm_firmware_command_line(command_line).await?;
-            }
+            let command_line = openhcl_config.as_ref().unwrap().1.command_line();
+
+            vm.set_vm_firmware_command_line(&command_line).await?;
 
             vm.set_vmbus_redirect(*vmbus_redirect).await?;
 
@@ -553,6 +625,10 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     async fn reset(&mut self) -> anyhow::Result<()> {
         self.vm.reset().await
     }
+
+    async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
+        Ok(Some(self.vm.get_guest_state_file().await?))
+    }
 }
 
 fn acl_read_for_vm(path: &Path, id: Option<guid::Guid>) -> anyhow::Result<()> {
@@ -629,4 +705,15 @@ async fn hyperv_serial_log_task(
             }
         }
     }
+}
+
+async fn make_temp_diff_disk(
+    path: impl AsRef<Path>,
+    parent_path: impl AsRef<Path>,
+) -> anyhow::Result<()> {
+    let path = path.as_ref().to_path_buf();
+    let parent_path = parent_path.as_ref().to_path_buf();
+    tracing::debug!(?path, ?parent_path, "creating differencing vhd");
+    blocking::unblock(move || disk_vhdmp::Vhd::create_diff(&path, &parent_path)).await?;
+    Ok(())
 }

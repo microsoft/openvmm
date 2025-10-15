@@ -88,7 +88,7 @@ async fn openhcl_servicing_core<T: PetriVmmBackend>(
 /// N.B. These Hyper-V tests fail in CI for x64. Tracked by #1652.
 #[vmm_test(
     openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64],
-    //hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[LATEST_STANDARD_X64],
+    //hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64]
 )]
 async fn basic_servicing<T: PetriVmmBackend>(
@@ -117,7 +117,7 @@ async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
 ) -> anyhow::Result<()> {
     openhcl_servicing_core(
         config,
-        "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off", // disable sidecar until #1345 is fixed
+        "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         igvm_file,
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,
@@ -130,14 +130,14 @@ async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
 
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64))[LATEST_STANDARD_X64])]
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64])]
 async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
     openhcl_servicing_core(
         config.with_vmbus_redirect(true), // Need this to attach the NVMe device
-        "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off", // disable sidecar until #1345 is fixed
+        "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         igvm_file,
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,
@@ -374,7 +374,7 @@ async fn create_keepalive_test_config(
 
     config
         .with_vmbus_redirect(true)
-        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off") // disable sidecar until #1345 is fixed
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
         .modify_backend(move |b| {
             b.with_custom_config(|c| {
                 // Add a fault controller to test the nvme controller functionality
