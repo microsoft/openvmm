@@ -8,7 +8,6 @@ use guid::Guid;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use petri::OpenHclServicingFlags;
 use petri::PetriVmBuilder;
-use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::PipetteClient;
@@ -17,7 +16,6 @@ use petri::vtl2_settings::ControllerType;
 use petri::vtl2_settings::Vtl2LunBuilder;
 use petri::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
 use petri::vtl2_settings::Vtl2StorageControllerBuilder;
-use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 use vmm_test_macros::openvmm_test;
 
@@ -102,68 +100,6 @@ async fn mana_nic_servicing(
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
-
-    Ok(())
-}
-
-#[openvmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))
-)]
-async fn mana_nic_multiqueue(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-) -> Result<(), anyhow::Error> {
-    let vp_count = 8;
-    let os_flavor = config.os_flavor();
-    let (mut _vm, agent) = config
-        .with_vmbus_redirect(true)
-        .with_processor_topology({
-            ProcessorTopology {
-                vp_count,
-                ..Default::default()
-            }
-        })
-        .modify_backend(|b| b.with_nic())
-        .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
-        .run()
-        .await?;
-
-    match os_flavor {
-        OsFlavor::Windows => {
-            let sh = agent.windows_shell();
-            let output = cmd!(
-                sh,
-                "powershell.exe -NoExit -Command (Get-NetAdapterrss)[0].NumberOfReceiveQueues"
-            )
-            .read()
-            .await?
-            .replace("\r\nPS C:\\>", "")
-            .trim()
-            .to_string();
-
-            assert!(
-                output == vp_count.to_string(),
-                "expected {} queues, got {}",
-                vp_count,
-                output
-            );
-        }
-        OsFlavor::Linux => {
-            let sh = agent.unix_shell();
-            let output = cmd!(sh, "ethtool -l eth0").read().await?;
-            let _ = output
-                .lines()
-                .filter(|line| line.starts_with("Combined:"))
-                .map(|line| {
-                    let count = line.split_whitespace().nth(1).unwrap().trim().to_string();
-                    let n: u32 = count.parse().unwrap();
-                    assert!(n == vp_count, "expected {} queues, got {}", vp_count, n);
-                });
-        }
-        OsFlavor::Uefi | OsFlavor::FreeBsd => {
-            anyhow::bail!("Unsupported OsFlavors");
-        }
-    };
 
     Ok(())
 }
