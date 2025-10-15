@@ -59,6 +59,22 @@ use vmgs_resources::GuestStateEncryptionPolicy;
 /// The Hyper-V Petri backend
 pub struct HyperVPetriBackend {}
 
+/// Represents a SCSI Controller addeded to a VM.
+#[derive(Debug)]
+pub struct HyperVScsiController {
+    /// An identifier provided by the test to identify this controller.
+    pub test_id: String,
+
+    /// The controller number assigned by Hyper-V.
+    pub controller_number: u32,
+
+    /// The target VTL this controller is mapped to (supplied by test).
+    pub target_vtl: u32,
+
+    /// The VSID assigned by Hyper-V for this controller.
+    pub vsid: guid::Guid,
+}
+
 /// Resources needed at runtime for a Hyper-V Petri VM
 pub struct HyperVPetriRuntime {
     vm: HyperVVM,
@@ -69,13 +85,27 @@ pub struct HyperVPetriRuntime {
     is_openhcl: bool,
     is_isolated: bool,
 
+    /// Last VTL2 settings set on this VM.
     vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
+
+    /// Test-added SCSI controllers.
+    /// TODO (future PR): push this into `PetriVmConfig` and use in
+    /// openvmm as well.
+    additional_scsi_controllers: Vec<HyperVScsiController>,
 }
 
 /// Additional configuration for a Hyper-V VM.
+#[derive(Default, Debug)]
 pub struct HyperVPetriConfig {
     /// VTL2 settings to configure on the VM before petri powers it on.
     initial_vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
+
+    /// Test-added SCSI controllers (targeting specific VTLs).
+    /// A tuple if test-identifier and targetvtl. Test-identifier
+    /// is used so that the test can find a specific controller, if that
+    /// is important to the test. These are resolved into a list of
+    /// [`HyperVScsiController`] objects stored in the runtime.
+    additional_scsi_controllers: Vec<(String, u32)>,
 }
 
 impl HyperVPetriConfig {
@@ -97,6 +127,13 @@ impl HyperVPetriConfig {
         }
 
         f(self.initial_vtl2_settings.as_mut().unwrap());
+        self
+    }
+
+    /// Add an additional SCSI controller to the VM.
+    /// Will be added before the VM starts.
+    pub fn with_additional_scsi_controller(mut self, test_id: String, target_vtl: u32) -> Self {
+        self.additional_scsi_controllers.push((test_id, target_vtl));
         self
     }
 }
@@ -534,20 +571,30 @@ impl PetriVmmBackend for HyperVPetriBackend {
             hyperv_serial_log_task(driver.clone(), serial_pipe_path, serial_log_file),
         ));
 
+        let mut added_controllers = Vec::new();
+        let mut vtl2_settings = None;
+
         // TODO: If OpenHCL is being used, then translate storage through it.
         // (requires changes above where VHDs are added)
-        let initial_vtl2_settings = if let Some(modify_vmm_config) = modify_vmm_config {
-            modify_vmm_config(HyperVPetriConfig {
-                initial_vtl2_settings: None,
-            })
-            .initial_vtl2_settings
-        } else {
-            None
-        };
+        if let Some(modify_vmm_config) = modify_vmm_config {
+            let config = modify_vmm_config(HyperVPetriConfig::default());
 
-        if let Some(settings) = &initial_vtl2_settings {
-            tracing::debug!(?settings, "initial VTL2 settings");
-            vm.set_base_vtl2_settings(settings).await?;
+            tracing::debug!(?config, "additional hyper-v config");
+
+            for (test_id, target_vtl) in config.additional_scsi_controllers {
+                let (controller_number, vsid) = vm.add_scsi_controller(target_vtl).await?;
+                added_controllers.push(HyperVScsiController {
+                    test_id,
+                    controller_number,
+                    target_vtl,
+                    vsid,
+                });
+            }
+
+            if let Some(settings) = &config.initial_vtl2_settings {
+                vm.set_base_vtl2_settings(settings).await?;
+                vtl2_settings = Some(settings.clone());
+            }
         }
 
         vm.start().await?;
@@ -559,7 +606,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
             driver: driver.clone(),
             is_openhcl: openhcl_config.is_some(),
             is_isolated: firmware.isolation().is_some(),
-            vtl2_settings: initial_vtl2_settings,
+            additional_scsi_controllers: added_controllers,
+            vtl2_settings,
         })
     }
 }
@@ -576,6 +624,12 @@ impl HyperVPetriRuntime {
         Ok(self.vtl2_settings.clone())
     }
 
+    /// Get the list of additional SCSI controllers added to this VM (those
+    /// configured to be added by the test, as opposed to the petri framework).
+    pub fn get_additional_scsi_controllers(&self) -> &[HyperVScsiController] {
+        &self.additional_scsi_controllers
+    }
+
     /// Set the VTL2 settings in the `Base` namespace (fixed settings, storage
     /// settings, etc).
     pub async fn set_base_vtl2_settings(
@@ -587,15 +641,6 @@ impl HyperVPetriRuntime {
             self.vtl2_settings = Some(settings.clone());
         }
         r
-    }
-
-    /// Adds a new SCSI controller to the VM, targeting the specified VTL.
-    /// Returns the controller number and VSID of the new controller.
-    pub async fn add_scsi_controller(
-        &mut self,
-        target_vtl: u32,
-    ) -> anyhow::Result<(u32, guid::Guid)> {
-        self.vm.add_scsi_controller(target_vtl).await
     }
 
     /// Adds a VHD with the optionally specified location (a.k.a LUN) to the

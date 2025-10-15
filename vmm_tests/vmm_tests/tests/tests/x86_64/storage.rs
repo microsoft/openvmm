@@ -330,6 +330,7 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
     const SCSI_DISK_SECTORS: u64 = 0x4_0000;
     const SECTOR_SIZE: u64 = 512;
     const EXPECTED_SCSI_DISK_SIZE_BYTES: u64 = SCSI_DISK_SECTORS * SECTOR_SIZE;
+    const CONTROLLER_TEST_ID: &str = "scsi-controller";
 
     // Assumptions made by test infra & routines:
     //
@@ -348,6 +349,14 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
 
     disk_vhd1::Vhd1Disk::make_fixed(vhd.as_file_mut()).context("make fixed")?;
 
+    // Close a handle to the file without deleting it.
+    // TODO: delete the VHD file after this test.
+    // (n.b. can't keep the file open because Hyper-V will need to open it).
+    let vhd_path = {
+        let (file, path) = vhd.keep().context("persist vtl2 vhd")?;
+        path
+    };
+
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(move |b| {
@@ -359,14 +368,23 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
                         .build(),
                 );
             })
+            .with_additional_scsi_controller(CONTROLLER_TEST_ID.to_string(), 2)
         })
         .run()
         .await?;
 
-    let (vtl2_controller_num, vtl2_vsid) = vm.backend().add_scsi_controller(2).await?;
+    let (vtl2_controller_num, vtl2_vsid) = vm
+        .backend()
+        .get_additional_scsi_controllers()
+        .iter()
+        .filter(|c| c.test_id == CONTROLLER_TEST_ID)
+        .map(|c| (c.controller_number, c.vsid))
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("couldn't find additional scsi controller"))?;
+
     vm.backend()
         .add_vhd(
-            vhd.path(),
+            vhd_path,
             petri::hyperv::powershell::ControllerType::Scsi,
             Some(vtl2_lun),
             Some(vtl2_controller_num),
