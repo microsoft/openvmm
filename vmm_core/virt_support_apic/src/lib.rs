@@ -123,6 +123,7 @@ struct Stats {
     eoi_level: Counter,
     spurious_eoi: Counter,
     lazy_eoi: Counter,
+    lint1: Counter,
     interrupt: Counter,
     nmi: Counter,
     extint: Counter,
@@ -230,7 +231,8 @@ struct WorkFlags {
     sipi_vector: u8,
     extint: bool,
     nmi: bool,
-    #[bits(20)]
+    lint1: bool,
+    #[bits(19)]
     _rsvd: u32,
 }
 
@@ -440,13 +442,23 @@ impl LocalApicSet {
                     // Don't know how to manage remote IRR.
                     return;
                 }
-                slot.request_interrupt(
-                    DeliveryMode(lvt.delivery_mode()),
-                    lvt.vector(),
-                    lvt.trigger_mode_level(),
-                    false,
-                    wake,
-                );
+                if lint_index == 1 {
+                    slot.request_lint1(
+                        DeliveryMode(lvt.delivery_mode()),
+                        lvt.vector(),
+                        lvt.trigger_mode_level(),
+                        false,
+                        wake,
+                    );
+                } else {
+                    slot.request_interrupt(
+                        DeliveryMode(lvt.delivery_mode()),
+                        lvt.vector(),
+                        lvt.trigger_mode_level(),
+                        false,
+                        wake,
+                    );
+                }
             }
         }
     }
@@ -1223,6 +1235,38 @@ impl SharedState {
             _ => false,
         }
     }
+
+    /// Returns true if the VP should be woken up to scan the APIC.
+    #[must_use]
+    fn request_lint1(
+        &self,
+        software_enabled: bool,
+        delivery_mode: DeliveryMode,
+        vector: u8,
+        level_triggered: bool,
+        auto_eoi: bool,
+    ) -> bool {
+        match delivery_mode {
+            DeliveryMode::NMI => {
+                let old = self
+                    .work
+                    .fetch_update(Ordering::Release, Ordering::Relaxed, |w| {
+                        Some(WorkFlags::from(w).with_lint1(true).into())
+                    })
+                    .unwrap();
+                old == 0
+            }
+            _ => {
+                return self.request_interrupt(
+                    software_enabled,
+                    delivery_mode,
+                    vector,
+                    level_triggered,
+                    auto_eoi,
+                );
+            }
+        }
+    }
 }
 
 impl MutableGlobalState {
@@ -1283,6 +1327,29 @@ impl ApicSlot {
             }
         }
     }
+
+    fn request_lint1(
+        &self,
+        delivery_mode: DeliveryMode,
+        vector: u8,
+        level_triggered: bool,
+        auto_eoi: bool,
+        wake: impl FnOnce(VpIndex),
+    ) {
+        if let Some(shared) = &self.shared {
+            if self.hardware_enabled
+                && shared.request_lint1(
+                    self.software_enabled,
+                    delivery_mode,
+                    vector,
+                    level_triggered,
+                    auto_eoi,
+                )
+            {
+                wake(shared.vp_index);
+            }
+        }
+    }
 }
 
 /// Work to do as a result of [`LocalApic::scan`] or [`LocalApic::flush`].
@@ -1305,6 +1372,8 @@ pub struct ApicWork {
     pub extint: bool,
     /// An NMI was requested.
     pub nmi: bool,
+    /// LINT1 was requested.
+    pub lint1: bool,
     /// A fixed interrupt was requested.
     ///
     /// Call [`LocalApic::acknowledge_interrupt`] after it has been injected.
@@ -1573,6 +1642,10 @@ impl LocalApic {
         if work.nmi() {
             self.stats.nmi.increment();
             r.nmi = true;
+        }
+        if work.lint1() {
+            self.stats.lint1.increment();
+            r.lint1 = true;
         }
         if work.extint() {
             self.stats.extint.increment();
