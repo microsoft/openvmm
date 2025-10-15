@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use crate::windows::util;
 use std::mem::{size_of, size_of_val};
 use std::os::windows::io::AsRawHandle;
@@ -16,6 +19,9 @@ const LX_UTIL_XATTR_NAME_MAX: usize = u16::MAX as usize - LX_UTIL_XATTR_NAME_PRE
 const LX_UTILP_XATTR_QUERY_RESTART_SCAN: i32 = 0x1;
 const LX_UTILP_XATTR_QUERY_RETURN_SINGLE_ENTRY: i32 = 0x2;
 
+/// Magic header value "laex" (little-endian "axel") used to identify Linux extended attributes
+/// stored in Windows EA (Extended Attributes). This helps distinguish Linux xattrs from
+/// native Windows EAs.
 const LX_UTILP_EA_VALUE_HEADER: u32 =
     ('a' as u32) | ('e' as u32) << 8 | ('x' as u32) << 16 | ('l' as u32) << 24;
 const LX_UTILP_EA_VALUE_HEADER_SIZE: usize = size_of_val(&LX_UTILP_EA_VALUE_HEADER);
@@ -89,6 +95,10 @@ fn set_case_sensitive(handle: &OwnedHandle, value: &[u8], flags: i32) -> lx::Res
 
 /// Read an extended attribute in the system namespace.
 pub fn get_system(handle: &OwnedHandle, name: &str, value: Option<&mut [u8]>) -> lx::Result<usize> {
+    if name.is_empty() {
+        return Err(lx::Error::EINVAL);
+    }
+
     if is_case_sensitive_attribute(name) {
         if let Some(value) = value {
             if value.is_empty() {
@@ -111,7 +121,15 @@ pub fn get_system(handle: &OwnedHandle, name: &str, value: Option<&mut [u8]>) ->
 /// Copy the Linux EA attribute prefix and the specified name into the start of the provided buffer.
 fn set_name(name: &str, buffer: &mut [u8]) -> lx::Result<usize> {
     let name_bytes = name.as_bytes();
-    assert!(name_bytes.len() < LX_UTIL_XATTR_NAME_MAX);
+
+    if name_bytes.len() >= LX_UTIL_XATTR_NAME_MAX {
+        return Err(lx::Error::ERANGE);
+    }
+
+    let total_required = LX_UTIL_XATTR_NAME_PREFIX_LENGTH + name_bytes.len() + 1;
+    if buffer.len() < total_required {
+        return Err(lx::Error::ERANGE);
+    }
 
     buffer[..LX_UTIL_XATTR_NAME_PREFIX_LENGTH]
         .copy_from_slice(LX_UTIL_XATTR_NAME_PREFIX.as_bytes());
@@ -210,6 +228,10 @@ fn query_ea(
 
 /// Read an extended attribute.
 pub fn get(handle: &OwnedHandle, name: &str, value: Option<&mut [u8]>) -> lx::Result<usize> {
+    if name.is_empty() {
+        return Err(lx::Error::EINVAL);
+    }
+
     // Because of the prefix, the size limit for names is smaller than normal Linux.
     if name.len() > LX_UTIL_XATTR_NAME_MAX {
         return Err(lx::Error::ERANGE);
@@ -245,7 +267,13 @@ pub fn get(handle: &OwnedHandle, name: &str, value: Option<&mut [u8]>) -> lx::Re
             + ea_info.ea_name_length as usize
             + LX_UTILP_EA_VALUE_HEADER_SIZE
             + 1;
-        value[..ea_value_len].copy_from_slice(&ea[ea_value_start..ea_value_start + ea_value_len]);
+
+        let ea_value_end = ea_value_start + ea_value_len;
+        if ea_value_end > ea.len() {
+            return Err(lx::Error::EIO);
+        }
+
+        value[..ea_value_len].copy_from_slice(&ea[ea_value_start..ea_value_end]);
     }
 
     Ok(ea_value_len)
@@ -296,6 +324,14 @@ fn set_ea(handle: &OwnedHandle, buffer: &[u8]) -> lx::Result<()> {
 
 /// Sets a linux extended attribute on a file.
 pub fn set(handle: &OwnedHandle, name: &str, value: &[u8], flags: i32) -> lx::Result<()> {
+    if name.is_empty() {
+        return Err(lx::Error::EINVAL);
+    }
+
+    if flags != 0 && flags & !(LX_XATTR_CREATE | LX_XATTR_REPLACE) != 0 {
+        return Err(lx::Error::EINVAL);
+    }
+
     // Because of the prefix, the size limit for names is smaller than normal Linux.
     if name.len() > LX_UTIL_XATTR_NAME_MAX || value.len() > LX_UTILP_MAX_EA_VALUE_SIZE {
         return Err(lx::Error::ERANGE);
