@@ -221,7 +221,7 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
 async fn mana_nic_multiqueue(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
-    let vp_count = 6;
+    let vp_count = 8;
     let os_flavor = config.os_flavor();
     let (mut _vm, agent) = config
         .with_vmbus_redirect(true)
@@ -250,16 +250,33 @@ async fn mana_nic_multiqueue(
             .parse()
             .unwrap();
 
-            let cores: u32 = cmd!(
-                sh,
-                "powershell.exe -NoExit -Command (Get-CimInstance -ClassName Win32_Processor).NumberOfCores"
-            )
-            .read()
-            .await?
-            .replace("\r\nPS C:\\>", "")
-            .trim()
-            .parse()
-            .unwrap();
+            let cores: u32 = {
+                let cores_output = cmd!(
+                    sh,
+                    "powershell.exe -NoExit -Command (Get-CimInstance -ClassName Win32_Processor).NumberOfCores"
+                )
+                .read()
+                .await?;
+
+                let mut sum: u32 = 0;
+                for raw_line in cores_output.lines() {
+                    let line = raw_line.trim();
+                    // Stop when the PowerShell prompt appears.
+                    if line.contains("PS C:\\") {
+                        break;
+                    }
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    if let Ok(n) = line.parse::<u32>() {
+                        sum = sum.saturating_add(n);
+                        continue;
+                    }
+                }
+
+                sum
+            };
 
             assert!(
                 queue_count == cores,
