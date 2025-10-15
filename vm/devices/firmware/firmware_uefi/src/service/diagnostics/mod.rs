@@ -11,8 +11,6 @@
 //! Advanced Logger package, whose relevant types are defined in the Hyper-V
 //! specification within the uefi_specs crate.
 
-#![warn(missing_docs)]
-
 // Re-export public types from submodules
 pub use formatting::EfiDiagnosticsLog;
 pub use formatting::log_diagnostic_ratelimited;
