@@ -39,6 +39,7 @@ use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_LINUX_DIRECT_X64;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_STANDARD_AARCH64;
+use pipette_client::PipetteClient;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
@@ -360,12 +361,40 @@ async fn apply_fault_with_keepalive(
     mut fault_start_updater: CellUpdater<bool>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
+    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
+
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+
+    // Make sure the disk showed up.
+    cmd!(sh, "ls /dev/sda").run().await?;
+
+    fault_start_updater.set(true).await;
+    vm.restart_openhcl(
+        igvm_file.clone(),
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    Ok(())
+}
+
+async fn create_keepalive_test_config(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    fault_configuration: FaultConfiguration,
+) -> Result<(petri::PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
     let vtl0_nvme_lun = 1;
     let vtl2_nsid = 37; // Pick any namespace ID as long as it doesn't conflict with other namespaces in the controller
     let scsi_instance = Guid::new_random();
 
-    let (mut vm, agent) = config
+    config
         .with_vmbus_redirect(true)
         .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
         .modify_backend(move |b| {
@@ -410,26 +439,5 @@ async fn apply_fault_with_keepalive(
             })
         })
         .run()
-        .await?;
-
-    agent.ping().await?;
-    let sh = agent.unix_shell();
-
-    // Make sure the disk showed up.
-    cmd!(sh, "ls /dev/sda").run().await?;
-
-    fault_start_updater.set(true).await;
-    vm.restart_openhcl(
-        igvm_file.clone(),
-        OpenHclServicingFlags {
-            enable_nvme_keepalive: true,
-            ..Default::default()
-        },
-    )
-    .await?;
-
-    fault_start_updater.set(false).await;
-    agent.ping().await?;
-
-    Ok(())
+        .await
 }
