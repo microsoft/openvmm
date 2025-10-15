@@ -448,7 +448,7 @@ fn runtime_claims_json(attestation_report: &[u8]) -> Result<Option<Value>, Box<d
 fn ensure_guest_input_index<E: TpmEngine>(
     helper: &mut TpmEngineHelper<E>,
 ) -> Result<(), Box<dyn Error>> {
-    if helper.find_nv_index(NV_INDEX_GUEST_INPUT)?.is_some() {
+    if helper.nv_read_public(NV_INDEX_GUEST_INPUT).is_ok() {
         return Ok(());
     };
 
@@ -473,10 +473,11 @@ fn read_nv_index<E: TpmEngine>(
     helper: &mut TpmEngineHelper<E>,
     nv_index: u32,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
-    let Some(res) = helper.find_nv_index(nv_index)? else {
+    let Ok(res) = helper.nv_read_public(nv_index) else {
         // nv index may not exist before guest makes a request
         return Err(format!("NV index {nv_index:#x} not found").into());
     };
+
     let nv_index_size = res.nv_public.nv_public.data_size.get();
     let mut buffer = vec![0u8; nv_index_size as usize];
     helper.nv_read(TPM20_RH_OWNER, nv_index, nv_index_size, &mut buffer)?;

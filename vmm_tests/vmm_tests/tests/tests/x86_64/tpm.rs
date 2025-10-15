@@ -375,71 +375,73 @@ async fn tpm_test_platform_hierarchy_disabled(
 }
 
 /// VBS attestation test with agent
-// TODO: Enable linux test when agent is supported.
-#[openvmm_test(
-    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
-)]
-async fn vbs_attestation_with_agent_windows(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-    extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,),
-) -> anyhow::Result<()> {
-    let os_flavor = config.os_flavor();
-    let (tpm_guest_tests_artifact,) = extra_deps;
-    let tpm_guest_tests_host_path = tpm_guest_tests_artifact.get();
-    let config = config
-        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-        .modify_backend(|b| b.with_tpm().with_tpm_state_persistence());
+// TODO: Enable when prep run dependency is supported for openvmm-based vbs tests and
+// remove `vbs_boot_with_attestation` test.
+// TODO: Support linux test when agent support is available  
+// #[openvmm_test(
+//     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+// )]
+// async fn vbs_attestation_with_agent_windows(
+//     config: PetriVmBuilder<OpenVmmPetriBackend>,
+//     extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,),
+// ) -> anyhow::Result<()> {
+//     let os_flavor = config.os_flavor();
+//     let (tpm_guest_tests_artifact,) = extra_deps;
+//     let tpm_guest_tests_host_path = tpm_guest_tests_artifact.get();
+//     let config = config
+//         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+//         .modify_backend(|b| b.with_tpm().with_tpm_state_persistence());
 
-    let (vm, agent) = match os_flavor {
-        OsFlavor::Windows => {
-            let (vm, agent) = config.run().await?;
+//     let (vm, agent) = match os_flavor {
+//         OsFlavor::Windows => {
+//             let (vm, agent) = config.run().await?;
 
-            let tpm_guest_tests_bytes =
-                std::fs::read(tpm_guest_tests_host_path).with_context(|| {
-                    format!("failed to read {}", tpm_guest_tests_host_path.display())
-                })?;
+//             let tpm_guest_tests_bytes =
+//                 std::fs::read(tpm_guest_tests_host_path).with_context(|| {
+//                     format!("failed to read {}", tpm_guest_tests_host_path.display())
+//                 })?;
 
-            agent
-                .write_file("C:\\tpm_guest_tests.exe", tpm_guest_tests_bytes.as_slice())
-                .await
-                .context("failed to copy tpm_guest_tests.exe into the guest")?;
+//             agent
+//                 .write_file("C:\\tpm_guest_tests.exe", tpm_guest_tests_bytes.as_slice())
+//                 .await
+//                 .context("failed to copy tpm_guest_tests.exe into the guest")?;
 
-            let sh = agent.windows_shell();
-            let output = cmd!(sh, "C:\\tpm_guest_tests.exe")
-                .args(["ak_cert"])
-                .read()
-                .await
-                .context("failed to execute tpm_guest_tests.exe inside the guest")?;
+//             let sh = agent.windows_shell();
+//             let output = cmd!(sh, "C:\\tpm_guest_tests.exe")
+//                 .args(["ak_cert"])
+//                 .read()
+//                 .await
+//                 .context("failed to execute tpm_guest_tests.exe inside the guest")?;
 
-            assert!(
-                output.contains("AK certificate data"),
-                "tpm_guest_tests.exe --ak-cert did not report AK certificate data: {output}",
-            );
+//             assert!(
+//                 output.contains("AK certificate data"),
+//                 "tpm_guest_tests.exe --ak-cert did not report AK certificate data: {output}",
+//             );
 
-            let report_output = cmd!(sh, "C:\\tpm_guest_tests.exe")
-                .args(["report", "--show-runtime-claims"])
-                .read()
-                .await
-                .context("failed to execute tpm_guest_tests.exe --report inside the guest")?;
+//             let report_output = cmd!(sh, "C:\\tpm_guest_tests.exe")
+//                 .args(["report", "--show-runtime-claims"])
+//                 .read()
+//                 .await
+//                 .context("failed to execute tpm_guest_tests.exe --report inside the guest")?;
 
-            ensure!(
-                report_output.contains("Runtime claims JSON"),
-                format!("{report_output}")
-            );
-            ensure!(
-                report_output.contains("\"vmUniqueId\""),
-                format!("{report_output}")
-            );
+//             ensure!(
+//                 report_output.contains("Runtime claims JSON"),
+//                 format!("{report_output}")
+//             );
+//             ensure!(
+//                 report_output.contains("\"vmUniqueId\""),
+//                 format!("{report_output}")
+//             );
 
-            (vm, agent)
-        }
-        OsFlavor::Linux => {
-            unreachable!()
-        }
-        _ => unreachable!(),
-    };
+//             (vm, agent)
+//         }
+//         OsFlavor::Linux => {
+//             unreachable!()
+//         }
+//         _ => unreachable!(),
+//     };
 
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-    Ok(())
-}
+//     agent.power_off().await?;
+//     vm.wait_for_clean_teardown().await?;
+//     Ok(())
+// }

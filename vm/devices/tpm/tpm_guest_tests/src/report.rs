@@ -19,69 +19,34 @@ pub const IGVM_ATTEST_REQUEST_VERSION_1: u32 = 1;
 pub const IGVM_REQUEST_TYPE_AK_CERT: u32 = 2;
 
 #[repr(C)]
-#[derive(Clone, Copy, IntoBytes, FromBytes, Immutable)]
-pub(crate) struct IgvmAttestRequestHeader {
-    pub(crate) signature: u32,
-    pub(crate) version: u32,
-    pub(crate) report_size: u32,
-    pub(crate) request_type: u32,
-    pub(crate) status: u32,
-    pub(crate) reserved: [u32; 3],
+#[derive(Clone, Copy, IntoBytes, FromBytes, Immutable, Default)]
+pub struct IgvmAttestRequestHeader {
+    pub signature: u32,
+    pub version: u32,
+    pub report_size: u32,
+    pub request_type: u32,
+    pub status: u32,
+    pub reserved: [u32; 3],
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, IntoBytes, FromBytes, Immutable)]
-pub(crate) struct IgvmAttestRequestData {
-    pub(crate) data_size: u32,
-    pub(crate) version: u32,
-    pub(crate) report_type: u32,
-    pub(crate) report_data_hash_type: u32,
-    pub(crate) variable_data_size: u32,
+#[derive(Clone, Copy, IntoBytes, FromBytes, Immutable, Default)]
+pub struct IgvmAttestRequestData {
+    pub data_size: u32,
+    pub version: u32,
+    pub report_type: u32,
+    pub report_data_hash_type: u32,
+    pub variable_data_size: u32,
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, IntoBytes, FromBytes, Immutable)]
-pub(crate) struct IgvmAttestRequestBase {
-    pub(crate) header: IgvmAttestRequestHeader,
-    pub(crate) attestation_report: [u8; IGVM_ATTESTATION_REPORT_SIZE_MAX],
-    pub(crate) request_data: IgvmAttestRequestData,
+#[derive(Clone, Copy, IntoBytes, FromBytes, Immutable, Default)]
+pub struct IgvmAttestRequestBase {
+    pub header: IgvmAttestRequestHeader,
+    pub attestation_report: [u8; IGVM_ATTESTATION_REPORT_SIZE_MAX],
+    pub request_data: IgvmAttestRequestData,
 }
 
-pub(crate) const IGVM_REQUEST_DATA_SIZE: usize = size_of::<IgvmAttestRequestData>();
-pub(crate) const IGVM_REQUEST_BASE_SIZE: usize = size_of::<IgvmAttestRequestBase>();
-pub(crate) const IGVM_REQUEST_DATA_OFFSET: usize = IGVM_REQUEST_BASE_SIZE - IGVM_REQUEST_DATA_SIZE;
-
-impl Default for IgvmAttestRequestHeader {
-    fn default() -> Self {
-        Self {
-            signature: 0,
-            version: 0,
-            report_size: 0,
-            request_type: 0,
-            status: 0,
-            reserved: [0; 3],
-        }
-    }
-}
-
-impl Default for IgvmAttestRequestData {
-    fn default() -> Self {
-        Self {
-            data_size: 0,
-            version: 0,
-            report_type: 0,
-            report_data_hash_type: 0,
-            variable_data_size: 0,
-        }
-    }
-}
-
-impl Default for IgvmAttestRequestBase {
-    fn default() -> Self {
-        Self {
-            header: IgvmAttestRequestHeader::default(),
-            attestation_report: [0u8; IGVM_ATTESTATION_REPORT_SIZE_MAX],
-            request_data: IgvmAttestRequestData::default(),
-        }
-    }
-}
+pub const IGVM_REQUEST_DATA_SIZE: usize = size_of::<IgvmAttestRequestData>();
+pub const IGVM_REQUEST_BASE_SIZE: usize = size_of::<IgvmAttestRequestBase>();
+pub const IGVM_REQUEST_DATA_OFFSET: usize = IGVM_REQUEST_BASE_SIZE - IGVM_REQUEST_DATA_SIZE;
