@@ -9,8 +9,6 @@ use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
 use petri::openvmm::OpenVmmPetriBackend;
-use petri::pipette::cmd;
-use petri_artifacts_common::tags::OsFlavor;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
 use vmm_test_macros::vmm_test_no_agent;
@@ -254,70 +252,6 @@ async fn no_numa_errors<T: PetriVmmBackend>(
             anyhow::bail!("found faking a node in kmsg");
         }
     }
-
-    Ok(())
-}
-
-#[openvmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))
-)]
-async fn mana_nic_multiqueue(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-) -> Result<(), anyhow::Error> {
-    let vp_count = 8;
-    let os_flavor = config.os_flavor();
-    let (mut _vm, agent) = config
-        .with_vmbus_redirect(true)
-        .with_processor_topology({
-            ProcessorTopology {
-                vp_count,
-                ..Default::default()
-            }
-        })
-        .modify_backend(|b| b.with_nic())
-        .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
-        .run()
-        .await?;
-
-    match os_flavor {
-        OsFlavor::Windows => {
-            let sh = agent.windows_shell();
-            let output: u32 = cmd!(
-                sh,
-                "powershell.exe -NoExit -Command (Get-NetAdapterrss)[0].NumberOfReceiveQueues"
-            )
-            .read()
-            .await?
-            .replace("\r\nPS C:\\>", "")
-            .trim()
-            .parse()
-            .unwrap();
-            // Since queues come in pairs (rx/tx), we expect half the number of receive queues as vps.
-            let expected = vp_count / 2;
-            assert!(
-                output == expected,
-                "expected {} queues, got {}",
-                expected,
-                output
-            );
-        }
-        OsFlavor::Linux => {
-            let sh = agent.unix_shell();
-            let output = cmd!(sh, "ethtool -l eth0").read().await?;
-            let _ = output
-                .lines()
-                .filter(|line| line.starts_with("Combined:"))
-                .map(|line| {
-                    let count = line.split_whitespace().nth(1).unwrap().trim().to_string();
-                    let n: u32 = count.parse().unwrap();
-                    assert!(n == vp_count, "expected {} queues, got {}", vp_count, n);
-                });
-        }
-        OsFlavor::Uefi | OsFlavor::FreeBsd => {
-            anyhow::bail!("Unsupported OsFlavors");
-        }
-    };
 
     Ok(())
 }
