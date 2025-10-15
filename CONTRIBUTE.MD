@@ -16,5 +16,5 @@ We strongly suggest asking for feedback before starting to work on a new feature
 functionality, etc. so that we can provide feedback and discuss how we can 
 collaborate on this and support contributors. 
 
-To engage with project maintainers contributors can reach out through 
+To engage with project maintainers, contributors can reach out through 
 [GitHub issues](https://github.com/microsoft/openvmm/issues/new?template=Blank+issue).
