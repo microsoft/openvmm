@@ -179,6 +179,7 @@ impl HyperVVM {
         for event in powershell::hyperv_event_logs(Some(&self.vmid), start_time).await? {
             self.log_winevent(&event);
             if self.last_log_flushed.is_none_or(|t| t < event.time_created) {
+                // add 1ms to avoid duplicate log entries
                 self.last_log_flushed =
                     Some(event.time_created.checked_add(Duration::from_millis(1))?);
             }
@@ -388,6 +389,7 @@ impl HyperVVM {
 
         let (halt_reason, timestamp) = self.wait_for_some(Self::halt_event).await?;
         if halt_reason == PetriHaltReason::Reset {
+            // add 1ms to avoid getting the same event again
             self.last_start_time = Some(timestamp.checked_add(Duration::from_millis(1))?);
         }
         Ok(halt_reason)
@@ -407,7 +409,12 @@ impl HyperVVM {
 
         if event.is_some_and(|e| e.id == powershell::MSVM_VMMS_VM_TERMINATE_ERROR) {
             tracing::error!("hyper-v worker process crashed");
-            let start_time = Timestamp::now().checked_sub(Duration::from_secs(30))?;
+            // Get 5 seconds of non-vm-specific hyper-v logs preceding the crash
+            const COLLECT_HYPERV_CRASH_LOGS_SECONDS: u64 = 5;
+            let start_time = event
+                .unwrap()
+                .time_created
+                .checked_sub(Duration::from_secs(COLLECT_HYPERV_CRASH_LOGS_SECONDS))?;
             for event in powershell::hyperv_event_logs(None, &start_time).await? {
                 self.log_winevent(&event);
             }
