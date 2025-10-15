@@ -465,16 +465,6 @@ pub fn check_lx_error(result: i32) -> lx::Result<()> {
     }
 }
 
-// Checks if a size is negative, and if so returns it as an error; otherwise, returns the positive
-// value.
-pub fn check_lx_error_size(result: isize) -> lx::Result<usize> {
-    if result < 0 {
-        Err(lx::Error::from_lx(-result as i32))
-    } else {
-        Ok(result as usize)
-    }
-}
-
 // Convert a DOS path to an NT path depending on whether the root is set.
 #[expect(clippy::join_absolute_paths)] // https://github.com/rust-lang/rust-clippy/issues/12244
 pub fn dos_to_nt_path(

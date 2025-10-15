@@ -22,7 +22,6 @@ use ::windows::Wdk::System::SystemServices;
 use ::windows::Win32::Foundation;
 use ::windows::Win32::System::SystemServices as W32Ss;
 use ntapi::ntioapi;
-use pal::windows;
 use parking_lot::Mutex;
 use std::ffi;
 use std::mem;
@@ -485,7 +484,7 @@ impl LxVolume {
         }
 
         let system = name.as_bytes().starts_with(b"system.");
-        let name = util::create_ansi_string(name)?;
+        let name = name.to_str().ok_or(lx::Error::EINVAL)?;
         let desired_access = if system {
             winnt::FILE_WRITE_ATTRIBUTES
         } else if flags != 0 {
@@ -496,28 +495,11 @@ impl LxVolume {
         };
 
         let file = self.open_file(path, desired_access, 0)?;
-        let value = api::LX_UTIL_BUFFER {
-            Buffer: value.as_ptr() as *mut ffi::c_void,
-            Size: value.len(),
-            Flags: 0,
-        };
 
-        unsafe {
-            if system {
-                util::check_lx_error(api::LxUtilXattrSetSystem(
-                    file.as_raw_handle(),
-                    name.as_ref(),
-                    &value,
-                    flags,
-                ))
-            } else {
-                util::check_lx_error(api::LxUtilXattrSet(
-                    file.as_raw_handle(),
-                    name.as_ref(),
-                    &value,
-                    flags,
-                ))
-            }
+        if system {
+            xattr::set_system(&file, name, value, flags)
+        } else {
+            xattr::set(&file, name, value, flags)
         }
     }
 
@@ -605,58 +587,33 @@ impl LxVolume {
             return Err(lx::Error::ENOTSUP);
         }
 
-        // Set the list pointer to NULL if no list buffer was provided, to query the size.
-        let mut list_local: *const u8 = ptr::null();
-        let list_ptr = if list.is_some() {
-            &mut list_local as *mut _
-        } else {
-            ptr::null_mut()
-        };
-
         let mut desired_access = winnt::FILE_READ_EA;
         if self.supports_case_sensitive_dir() {
             desired_access |= winnt::FILE_READ_ATTRIBUTES;
         }
 
         let file = self.open_file(path, desired_access, 0)?;
-        unsafe {
-            let mut flags = 0;
+        let mut flags = 0;
 
-            // If the file system supports case sensitive directories, and this is a directory,
-            // include the "system.wsl_case_sensitive" attribute in the list.
-            if self.supports_case_sensitive_dir() {
-                let result = util::query_information_file::<
-                    SystemServices::FILE_ATTRIBUTE_TAG_INFORMATION,
-                >(&file);
+        // If the file system supports case sensitive directories, and this is a directory,
+        // include the "system.wsl_case_sensitive" attribute in the list.
+        if self.supports_case_sensitive_dir() {
+            let result = util::query_information_file::<
+                SystemServices::FILE_ATTRIBUTE_TAG_INFORMATION,
+            >(&file);
 
-                if let Ok(info) = result {
-                    if info.FileAttributes & winnt::FILE_ATTRIBUTE_DIRECTORY != 0
-                        && !util::is_symlink(info.FileAttributes, info.ReparseTag)
-                    {
-                        flags |= api::LX_UTIL_XATTR_LIST_CASE_SENSITIVE_DIR;
-                    }
+            if let Ok(info) = result {
+                if info.FileAttributes & winnt::FILE_ATTRIBUTE_DIRECTORY != 0
+                    && !util::is_symlink(info.FileAttributes, info.ReparseTag)
+                {
+                    flags |= xattr::LX_UTIL_XATTR_LIST_CASE_SENSITIVE_DIR;
                 }
             }
-
-            let size = util::check_lx_error_size(api::LxUtilXattrList(
-                file.as_raw_handle(),
-                flags,
-                list_ptr,
-            ))?;
-
-            // If the list should be returned, copy it into the output buffer.
-            if !list_local.is_null() {
-                let list_local = windows::RtlHeapBuffer::from_raw(list_local.cast_mut(), size);
-                let list = list.unwrap();
-                if size > list.len() {
-                    return Err(lx::Error::ERANGE);
-                }
-
-                list[..size].copy_from_slice(&list_local);
-            }
-
-            Ok(size)
         }
+
+        let size = xattr::list(&file, list, flags)?;
+
+        Ok(size)
     }
 
     pub fn remove_xattr(&self, path: &Path, name: &lx::LxStr) -> lx::Result<()> {

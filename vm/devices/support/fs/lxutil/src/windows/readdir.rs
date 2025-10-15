@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::api;
 use super::fs;
 use super::macros::impl_directory_information;
 use super::util;
