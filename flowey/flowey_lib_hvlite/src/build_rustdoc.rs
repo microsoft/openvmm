@@ -55,7 +55,7 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let side_effects = vec![ctx.reqv(crate::install_openvmm_rust_build_essential::Request)];
+        let side_effects = [ctx.reqv(crate::install_openvmm_rust_build_essential::Request)];
 
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
