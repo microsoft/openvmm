@@ -2281,6 +2281,11 @@ impl SendBuffer {
     }
 }
 
+struct PendingControlMessages {
+    control_messages: Vec<ControlMessage>,
+    total_len: usize,
+}
+
 impl<T: RingMem> NetChannel<T> {
     /// Process a single RNDIS message.
     fn handle_rndis_message(
@@ -2291,6 +2296,7 @@ impl<T: RingMem> NetChannel<T> {
         message_type: u32,
         mut reader: PacketReader<'_>,
         segments: &mut Vec<TxSegment>,
+        control_messages: &mut PendingControlMessages,
     ) -> Result<bool, WorkerError> {
         let is_packet = match message_type {
             rndisprot::MESSAGE_TYPE_PACKET_MSG => {
@@ -2305,7 +2311,7 @@ impl<T: RingMem> NetChannel<T> {
             }
             rndisprot::MESSAGE_TYPE_HALT_MSG => false,
             n => {
-                let control = state
+                let _control = state
                     .primary
                     .as_mut()
                     .ok_or(WorkerError::NotSupportedOnSubChannel(n))?;
@@ -2320,11 +2326,12 @@ impl<T: RingMem> NetChannel<T> {
                 }
                 // Do not let the queue get too large--the guest should not be
                 // sending very many control messages at a time.
-                if CONTROL_MESSAGE_MAX_QUEUED_BYTES - control.control_messages_len < reader.len() {
+                if CONTROL_MESSAGE_MAX_QUEUED_BYTES - control_messages.total_len < reader.len() {
                     return Err(WorkerError::TooManyControlMessages);
                 }
-                control.control_messages_len += reader.len();
-                control.control_messages.push_back(ControlMessage {
+
+                control_messages.total_len += reader.len();
+                control_messages.control_messages.push(ControlMessage {
                     message_type,
                     data: reader.read_all()?.into(),
                 });
@@ -5266,10 +5273,28 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 PacketData::RndisPacket(_) => {
                     assert!(data.tx_segments.is_empty());
                     let id = state.free_tx_packets.pop().unwrap();
-                    let result: Result<usize, WorkerError> =
-                        self.handle_rndis(buffers, id, state, &packet, &mut data.tx_segments);
+                    let mut control_messages = PendingControlMessages {
+                        total_len: 0,
+                        control_messages: Vec::new(),
+                    };
+                    let result: Result<usize, WorkerError> = self.handle_rndis(
+                        buffers,
+                        id,
+                        state,
+                        &packet,
+                        &mut data.tx_segments,
+                        &mut control_messages,
+                    );
                     let num_packets = match result {
-                        Ok(num_packets) => num_packets,
+                        Ok(num_packets) => {
+                            // Add control messages to primary channel state control message queue.
+                            let control = state.primary.as_mut().unwrap();
+                            control.control_messages_len += control_messages.total_len;
+                            control
+                                .control_messages
+                                .extend(control_messages.control_messages);
+                            num_packets
+                        }
                         Err(err) => {
                             tracelimit::error_ratelimited!(
                                 err = &err as &dyn std::error::Error,
@@ -5445,6 +5470,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         state: &mut ActiveState,
         packet: &Packet<'_>,
         segments: &mut Vec<TxSegment>,
+        control_messages: &mut PendingControlMessages,
     ) -> Result<usize, WorkerError> {
         let mut num_packets = 0;
         let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
@@ -5477,6 +5503,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 header.message_type,
                 this_reader,
                 segments,
+                control_messages,
             )? {
                 num_packets += 1;
             }
