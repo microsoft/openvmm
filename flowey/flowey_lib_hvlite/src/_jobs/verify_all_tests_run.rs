@@ -55,9 +55,9 @@ impl SimpleFlowNode for Node {
         let parse = ctx.emit_rust_step(
             "parse and analyze junit logs and nextest list output",
             |ctx| {
-                // This step takes all of the junit XML files (i.e. the tests that were run) and the nextest list output (i.e. the tests that were built)
-                // and verifies that the set of all tests that were built is the same as the set of all tests that were run.
-                // If these sets were to differ it would be because a test was built but not run, which indicates a test gap.
+                // This step takes all of the junit XML files (i.e. the tests that were run) and the nextest list (with the --include-ignored flag)
+                // command output (i.e. all the tests that were built) and verifies that the set of all tests that were built is the same as the set
+                // of all tests that were run. If these sets were to differ it would be because a test was built but not run, which indicates a test gap.
                 // We have automation in the test run step that will automatically skip tests that are not meant to run on a given host because the host does
                 // not meet the test case requirements. For example, TDX/SNP tests are skipped on non-compatible hardware.
                 let artifacts: Vec<_> = test_artifacts

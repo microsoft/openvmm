@@ -24,6 +24,8 @@ flowey_request! {
         pub nextest_profile: String,
         /// Nextest test filter expression
         pub nextest_filter_expr: Option<String>,
+        /// Whether to include ignored tests in the list output
+        pub run_ignored: bool,
         /// Additional env vars set when executing the tests.
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
         /// Output directory for the nextest list output file
@@ -54,6 +56,7 @@ impl SimpleFlowNode for Node {
             config_file,
             nextest_profile,
             nextest_filter_expr,
+            run_ignored,
             extra_env,
             output_dir,
             pre_run_deps,
@@ -74,6 +77,7 @@ impl SimpleFlowNode for Node {
             config_file,
             nextest_profile,
             nextest_filter_expr,
+            run_ignored,
             extra_env,
             command: v,
         });

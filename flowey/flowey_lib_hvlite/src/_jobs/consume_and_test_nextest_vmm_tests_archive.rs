@@ -213,6 +213,7 @@ impl SimpleFlowNode for Node {
 
         let junit_xml = results.map(ctx, |r| r.junit_xml);
         let archive_file = nextest_vmm_tests_archive.map(ctx, |x| x.archive_file);
+        // Run_ignored option is set to true so that we can dump all the tests that were built, instead of just the ones that were run.
         let nextest_list_json = ctx.reqv(|v| crate::run_cargo_nextest_list::Request {
             archive_file,
             nextest_bin: None,
@@ -221,6 +222,7 @@ impl SimpleFlowNode for Node {
             config_file: None,
             nextest_profile: nextest_profile.as_str().to_owned(),
             nextest_filter_expr: nextest_filter_expr.clone(),
+            run_ignored: true,
             extra_env: Some(extra_env),
             output_dir: test_log_path.clone(),
             pre_run_deps: vec![],
