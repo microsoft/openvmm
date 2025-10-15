@@ -388,8 +388,8 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
         scsi_instance.to_string()
     );
 
-    let a = storage_controllers.get_mut(0).unwrap();
-    a.luns.push(
+    let controller = storage_controllers.get_mut(0).unwrap();
+    controller.luns.push(
         Vtl2LunBuilder::disk()
             .with_location(vtl0_scsi_lun)
             .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(

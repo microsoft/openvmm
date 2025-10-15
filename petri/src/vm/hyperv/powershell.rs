@@ -377,6 +377,9 @@ pub async fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::
 pub async fn run_add_vm_scsi_controller(vmid: &Guid) -> anyhow::Result<(u32, Guid)> {
     let output = run_host_cmd(
         PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
             .pipeline()
