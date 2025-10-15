@@ -221,7 +221,7 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
 async fn mana_nic_multiqueue(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
-    let vp_count = 8;
+    let vp_count = 6;
     let os_flavor = config.os_flavor();
     let (mut _vm, agent) = config
         .with_vmbus_redirect(true)
@@ -239,7 +239,7 @@ async fn mana_nic_multiqueue(
     match os_flavor {
         OsFlavor::Windows => {
             let sh = agent.windows_shell();
-            let output: u32 = cmd!(
+            let queue_count: u32 = cmd!(
                 sh,
                 "powershell.exe -NoExit -Command (Get-NetAdapterrss)[0].NumberOfReceiveQueues"
             )
@@ -249,13 +249,23 @@ async fn mana_nic_multiqueue(
             .trim()
             .parse()
             .unwrap();
-            // Since queues come in pairs (rx/tx), we expect half the number of receive queues as vps.
-            let expected = vp_count / 2;
+
+            let cores: u32 = cmd!(
+                sh,
+                "powershell.exe -NoExit -Command (Get-CimInstance -ClassName Win32_Processor).NumberOfCores"
+            )
+            .read()
+            .await?
+            .replace("\r\nPS C:\\>", "")
+            .trim()
+            .parse()
+            .unwrap();
+
             assert!(
-                output == expected,
+                queue_count == cores,
                 "expected {} queues, got {}",
-                expected,
-                output
+                cores,
+                queue_count
             );
         }
         OsFlavor::Linux => {
