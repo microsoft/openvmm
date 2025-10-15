@@ -1,0 +1,273 @@
+import React, { useState, useEffect, useRef, useLayoutEffect } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import {
+  flexRender,
+  type Row,
+  type ColumnDef,
+  type SortingState,
+  useReactTable,
+  getCoreRowModel,
+  getSortedRowModel,
+  getFilteredRowModel,
+} from "@tanstack/react-table";
+import "./styles/virtualized_table.css";
+
+export interface VirtualizedTableProps<TData extends object> {
+  data: TData[];
+  columns: ColumnDef<TData, any>[];
+  sorting: SortingState;
+  onSortingChange: (
+    updater: SortingState | ((old: SortingState) => SortingState)
+  ) => void;
+  columnWidthMap: Record<string, number>;
+  estimatedRowHeight?: number; // default 50
+  overscan?: number; // default 10
+  /** Derive a className for a given row (virtual wrapper div). */
+  getRowClassName?: (row: Row<TData>) => string;
+  /** Handle row click events */
+  onRowClick?: (row: Row<TData>, event: React.MouseEvent) => void;
+  /** If provided, the virtualizer will scroll this row index into view (center aligned). */
+  scrollToIndex?: number | null;
+}
+
+function defaultInferRowClass(row: Row<any>): string {
+  const failed = row?.original?.metadata?.petriFailed;
+  if (typeof failed === "number") {
+    return failed > 0 ? "failed-row" : "passed-row";
+  }
+  return "passed-row";
+}
+
+export function VirtualizedTable<TData extends object>({
+  data,
+  columns,
+  sorting,
+  onSortingChange,
+  columnWidthMap,
+  estimatedRowHeight = 100,
+  overscan = 20,
+  getRowClassName,
+  onRowClick,
+  scrollToIndex,
+}: VirtualizedTableProps<TData>): React.JSX.Element {
+  const table = useReactTable({
+    data,
+    columns,
+    state: {
+      sorting,
+    },
+    onSortingChange,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    enableSorting: true,
+    enableSortingRemoval: false,
+    debugTable: false,
+  });
+
+  const { rows } = table.getRowModel();
+
+  const tableContainerRef = useRef<HTMLDivElement>(null);
+  const headerWrapperRef = useRef<HTMLDivElement>(null);
+  const [headerHeight, setHeaderHeight] = useState(0);
+
+  useLayoutEffect(() => {
+    const el = headerWrapperRef.current;
+    if (!el) return;
+    const measure = () => setHeaderHeight(el.getBoundingClientRect().height);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => tableContainerRef.current,
+    estimateSize: () => estimatedRowHeight,
+    overscan,
+    measureElement:
+      typeof window !== "undefined" &&
+      navigator.userAgent.indexOf("Firefox") === -1
+        ? (element) => element?.getBoundingClientRect().height
+        : undefined,
+  });
+
+  // Force recompute when data/rows change (e.g., during filtering/searching).
+  // This ensures the virtualizer knows about new heights if the data changes.
+  useEffect(() => {
+    rowVirtualizer.calculateRange();
+    rowVirtualizer.getVirtualItems().forEach((virtualRow) => {
+      const el = document.querySelector(`[data-index="${virtualRow.index}"]`);
+      if (el) {
+        rowVirtualizer.measureElement(el);
+      }
+    });
+  }, [rows.length, data, rowVirtualizer]);
+
+  // Scroll to a requested index (center align) whenever scrollToIndex changes.
+  useEffect(() => {
+    if (scrollToIndex == null) return;
+    if (scrollToIndex < 0 || scrollToIndex >= rows.length) return;
+    try {
+      rowVirtualizer.scrollToIndex(scrollToIndex, { align: "center" });
+    } catch {
+      /* no-op */
+    }
+  }, [scrollToIndex, rowVirtualizer, rows.length]);
+
+  return (
+    <div className="table">
+      <div
+        ref={headerWrapperRef}
+        style={{
+          position: "sticky",
+          top: "4rem",
+          zIndex: 999,
+          boxShadow: "0 1px 0 rgba(0,0,0,0.08)",
+        }}
+      >
+        <table
+          className="common-advanced-table"
+          style={{ tableLayout: "fixed", width: "100%" }}
+        >
+          <thead>
+            {table.getHeaderGroups().map((headerGroup) => (
+              <tr key={headerGroup.id}>
+                {headerGroup.headers.map((header) => {
+                  const effectiveWidthMap = columnWidthMap;
+                  const w = effectiveWidthMap[header.column.id];
+                  return (
+                    <th
+                      key={header.id}
+                      className={header.column.getCanSort() ? "sortable" : ""}
+                      onClick={header.column.getToggleSortingHandler()}
+                      style={{
+                        padding: "6px 8px",
+                        fontWeight: 600,
+                        fontSize: "0.8rem",
+                        letterSpacing: "0.5px",
+                        textTransform: "uppercase",
+                        cursor: header.column.getCanSort()
+                          ? "pointer"
+                          : "default",
+                        background: "white",
+                        boxSizing: "border-box",
+                        ...(w ? { width: w, minWidth: w, maxWidth: w } : {}),
+                      }}
+                    >
+                      <div
+                        className="common-advanced-table-header-content"
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "4px",
+                        }}
+                      >
+                        {header.isPlaceholder
+                          ? null
+                          : flexRender(
+                              header.column.columnDef.header,
+                              header.getContext()
+                            )}
+                        {header.column.getCanSort() && (
+                          <span className="sort-indicator">
+                            {{
+                              asc: "↑",
+                              desc: "↓",
+                            }[header.column.getIsSorted() as string] ?? "⇅"}
+                          </span>
+                        )}
+                      </div>
+                    </th>
+                  );
+                })}
+              </tr>
+            ))}
+          </thead>
+        </table>
+      </div>
+      <div
+        style={{
+          position: "sticky",
+          top: `calc(4rem + ${headerHeight}px)`,
+          zIndex: 998,
+          background: "white",
+        }}
+      >
+        <div
+          ref={tableContainerRef}
+          className="virtualized-table-body"
+          style={{
+            height: `calc(100vh - 4rem - ${headerHeight}px)`,
+          }}
+        >
+          <div
+            style={{
+              height: `${rowVirtualizer.getTotalSize()}px`,
+              width: "100%",
+              position: "relative",
+            }}
+          >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const row = rows[virtualRow.index] as Row<TData>;
+              return (
+                <div
+                  key={row.id}
+                  data-index={virtualRow.index}
+                  ref={rowVirtualizer.measureElement}
+                  className={`virtualized-table-row ${getRowClassName ? getRowClassName(row) : defaultInferRowClass(row)}`}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    transform: `translateY(${virtualRow.start}px)`,
+                    cursor: onRowClick ? "pointer" : "default",
+                  }}
+                  onClick={
+                    onRowClick ? (event) => onRowClick(row, event) : undefined
+                  }
+                >
+                  <table
+                    className="common-advanced-table"
+                    style={{ margin: 0, tableLayout: "fixed", width: "100%" }}
+                  >
+                    <tbody>
+                      <tr>
+                        {row.getVisibleCells().map((cell) => {
+                          const effectiveWidthMap = columnWidthMap;
+                          const w = effectiveWidthMap[cell.column.id];
+                          return (
+                            <td
+                              key={cell.id}
+                              style={{
+                                boxSizing: "border-box",
+                                ...(w
+                                  ? { width: w, minWidth: w, maxWidth: w }
+                                  : {}),
+                              }}
+                            >
+                              {flexRender(
+                                cell.column.columnDef.cell,
+                                cell.getContext()
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
