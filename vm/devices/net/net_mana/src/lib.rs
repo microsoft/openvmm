@@ -964,8 +964,8 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         return Err(TxError::TryRestart(anyhow::anyhow!("GDMA error")));
                     }
                     CQE_TX_INVALID_OOB => {
-                        // Invalid OOB means the metadata didn't match how the Hardware parsed the packet.
-                        // This is somewhat common, usually due to Encapsulation, and only the affects the specific packet.
+                        // Invalid OOB means the metadata didn't match how the hardware parsed the packet.
+                        // This is somewhat common, usually due to Encapsulation, and only affects the specific packet.
                         self.stats.tx_errors += 1;
                         self.trace_tx(tracing::Level::WARN, cqe.params, tx_oob, done.len());
                     }
