@@ -353,7 +353,7 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
     // TODO: delete the VHD file after this test.
     // (n.b. can't keep the file open because Hyper-V will need to open it).
     let vhd_path = {
-        let (file, path) = vhd.keep().context("persist vtl2 vhd")?;
+        let (_, path) = vhd.keep().context("persist vtl2 vhd")?;
         path
     };
 
