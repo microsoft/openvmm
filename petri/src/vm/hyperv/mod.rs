@@ -19,6 +19,7 @@ use crate::PetriHaltReason;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmRuntime;
+use crate::PetriVmgsDisk;
 use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::SecureBootTemplate;
@@ -207,8 +208,16 @@ impl PetriVmmBackend for HyperVPetriBackend {
         };
 
         let vmgs_path = {
-            let _lifetime_cli = match &vmgs {
-                PetriVmgsResource::Disk(_) => "DISK",
+            // TODO: add support for configuring the TPM in Hyper-V
+            // For now, use a persistent vmgs, since Ubuntu VMs with TPM
+            // try to install a boot entry and reboot.
+            let vmgs = match vmgs {
+                PetriVmgsResource::Ephemeral => PetriVmgsResource::Disk(PetriVmgsDisk::default()),
+                vmgs => vmgs,
+            };
+
+            let lifetime_cli = match &vmgs {
+                PetriVmgsResource::Disk(_) => "DEFAULT",
                 PetriVmgsResource::ReprovisionOnFailure(_) => "REPROVISION_ON_FAILURE",
                 PetriVmgsResource::Reprovision(_) => "REPROVISION",
                 PetriVmgsResource::Ephemeral => "EPHEMERAL",
@@ -221,7 +230,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 PetriVmgsResource::Ephemeral => (None, GuestStateEncryptionPolicy::None(true)),
             };
 
-            let _strict = encryption.is_strict();
+            let strict = encryption.is_strict();
 
             let encryption_cli = match encryption {
                 GuestStateEncryptionPolicy::Auto => "AUTO",
@@ -233,22 +242,17 @@ impl PetriVmmBackend for HyperVPetriBackend {
             // TODO: Error for non-OpenHCL Hyper-V VMs if not supported
             // TODO: Use WMI interfaces when possible
             if let Some((_, config)) = openhcl_config.as_mut() {
-                // TODO: Re-enable when added to OpenHCL command line
-                // append_cmdline(
-                //     &mut config.command_line,
-                //     format!("HCL_GUEST_STATE_LIFETIME={lifetime_cli}"),
-                // );
+                append_cmdline(
+                    &mut config.command_line,
+                    format!("HCL_GUEST_STATE_LIFETIME={lifetime_cli}"),
+                );
                 append_cmdline(
                     &mut config.command_line,
                     format!("HCL_GUEST_STATE_ENCRYPTION_POLICY={encryption_cli}"),
                 );
-                // TODO: Re-enable when added to OpenHCL command line
-                // if strict {
-                //     append_cmdline(
-                //         &mut config.command_line,
-                //         format!("HCL_STRICT_ENCRYPTION_POLICY=1"),
-                //     );
-                // }
+                if strict {
+                    append_cmdline(&mut config.command_line, "HCL_STRICT_ENCRYPTION_POLICY=1");
+                }
             };
 
             match disk {
@@ -311,6 +315,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             secure_boot_enabled,
             secure_boot_template,
             disable_frontpage,
+            default_boot_always_attempt,
         }) = uefi_config
         {
             vm.set_secure_boot(
@@ -330,6 +335,15 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 // TODO: Disable frontpage for non-OpenHCL Hyper-V VMs
                 if let Some((_, config)) = openhcl_config.as_mut() {
                     append_cmdline(&mut config.command_line, "OPENHCL_DISABLE_UEFI_FRONTPAGE=1");
+                };
+            }
+
+            if *default_boot_always_attempt {
+                if let Some((_, config)) = openhcl_config.as_mut() {
+                    append_cmdline(
+                        &mut config.command_line,
+                        "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=1",
+                    );
                 };
             }
         }

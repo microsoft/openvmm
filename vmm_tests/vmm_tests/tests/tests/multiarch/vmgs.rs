@@ -6,7 +6,6 @@ use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
-use petri::openvmm::OpenVmmPetriBackend;
 use petri::run_host_cmd;
 use petri_artifacts_common::tags::IsVmgsTool;
 use petri_artifacts_vmm_test::artifacts::VMGSTOOL_NATIVE;
@@ -21,22 +20,26 @@ use vmm_test_macros::vmm_test_no_agent;
 
 /// Verify that UEFI default boots even if invalid boot entries exist
 /// when `default_boot_always_attempt` is enabled.
-#[openvmm_test(
+#[vmm_test(
     openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY]
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY]
 )]
-async fn default_boot(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
+async fn default_boot<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
     (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),
 ) -> Result<(), anyhow::Error> {
     let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .with_initial_vmgs(initial_vmgs)
-        .modify_backend(|b| b.with_default_boot_always_attempt(true))
+        .with_default_boot_always_attempt(true)
         .run()
         .await?;
 
@@ -54,7 +57,11 @@ async fn default_boot(
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY]
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY]
 )]
 async fn clear_vmgs<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -82,7 +89,11 @@ async fn clear_vmgs<T: PetriVmmBackend>(
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY]
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY]
 )]
 async fn invalid_boot_entries<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,

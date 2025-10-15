@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use self::bnic_defs::CQE_TX_GDMA_ERR;
 use self::bnic_defs::CQE_TX_OKAY;
 use self::bnic_defs::MANA_CQE_COMPLETION;
 use self::bnic_defs::ManaCommandCode;
@@ -560,6 +561,30 @@ impl TxRxTask {
             meta.offload_tcp_segmentation = true;
         }
 
+        // With LSO, the first SGE is the header and the rest are the payload.
+        // For LSO, the requirements by the GDMA hardware are:
+        // - The first SGE must be the header and must be <= 256 bytes.
+        // - There should be at least two SGEs.
+        // Possible test improvement: Disable the Queue to mimick the hardware behavior.
+        if meta.offload_tcp_segmentation {
+            if sqe.sgl().len() < 2 {
+                tracelimit::error_ratelimited!(
+                    sgl_count = sqe.sgl().len(),
+                    "LSO enabled, but only one SGE"
+                );
+                self.post_tx_completion_error();
+                return Ok(());
+            }
+            if sge0.size > 256 {
+                tracelimit::error_ratelimited!(
+                    sge0_size = sge0.size,
+                    "LSO enabled and SGE[0] size > 256 bytes"
+                );
+                self.post_tx_completion_error();
+                return Ok(());
+            }
+        }
+
         let tx_segments = &mut self.tx_segment_buffer;
         tx_segments.clear();
         tx_segments.push(TxSegment {
@@ -580,6 +605,20 @@ impl TxRxTask {
             self.post_tx_completion();
         }
         Ok(())
+    }
+
+    // Possible test improvement: provide proper OOB data for the GDMA error.
+    fn post_tx_completion_error(&mut self) {
+        let tx_oob = ManaTxCompOob {
+            cqe_hdr: ManaCqeHeader::new()
+                .with_client_type(MANA_CQE_COMPLETION)
+                .with_cqe_type(CQE_TX_GDMA_ERR),
+            tx_data_offset: 0,
+            offsets: ManaTxCompOobOffsets::new(),
+            reserved: [0; 12],
+        };
+        self.queues
+            .post_cq(self.sq_cq_id, tx_oob.as_bytes(), self.sq_id, true);
     }
 
     fn post_tx_completion(&mut self) {
