@@ -230,7 +230,7 @@ impl OpenRequest {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Protobuf)]
+#[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Protobuf, Inspect)]
 /// The identifying IDs for a channel offer.
 #[mesh(package = "vmbus")]
 pub struct OfferKey {
@@ -252,6 +252,16 @@ impl Display for OfferKey {
             "{{{}}}-{{{}}}-{}",
             self.interface_id, self.instance_id, self.subchannel_index
         )
+    }
+}
+
+impl From<&protocol::OfferChannel> for OfferKey {
+    fn from(offer: &protocol::OfferChannel) -> Self {
+        Self {
+            interface_id: offer.interface_id,
+            instance_id: offer.instance_id,
+            subchannel_index: offer.subchannel_index,
+        }
     }
 }
 

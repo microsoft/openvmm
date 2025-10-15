@@ -7,6 +7,7 @@ use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
+use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
@@ -32,6 +33,7 @@ flowey_request! {
         pub target: CommonTriple,
         pub profile: CommonProfile,
         pub with_crypto: bool,
+        pub with_test_helpers: bool,
         pub vmgstool: WriteVar<VmgstoolOutput>,
     }
 }
@@ -51,6 +53,7 @@ impl SimpleFlowNode for Node {
             target,
             profile,
             with_crypto,
+            with_test_helpers,
             vmgstool,
         } = request;
 
@@ -65,20 +68,24 @@ impl SimpleFlowNode for Node {
             }));
         }
 
+        let mut features = Vec::new();
+        if with_crypto {
+            match target.as_triple().operating_system {
+                target_lexicon::OperatingSystem::Windows => features.push("encryption_win".into()),
+                target_lexicon::OperatingSystem::Linux => features.push("encryption_ossl".into()),
+                _ => unreachable!(),
+            };
+        }
+        if with_test_helpers {
+            features.push("test_helpers".into());
+        }
+
         let output = ctx.reqv(|v| crate::run_cargo_build::Request {
             crate_name: "vmgstool".into(),
             out_name: "vmgstool".into(),
             crate_type: CargoCrateType::Bin,
             profile: profile.into(),
-            features: if with_crypto {
-                match target.as_triple().operating_system {
-                    target_lexicon::OperatingSystem::Windows => ["encryption_win".into()].into(),
-                    target_lexicon::OperatingSystem::Linux => ["encryption_ossl".into()].into(),
-                    _ => unreachable!(),
-                }
-            } else {
-                [].into()
-            },
+            features: CargoFeatureSet::Specific(features),
             target: target.as_triple(),
             no_split_dbg_info: false,
             extra_env: None,

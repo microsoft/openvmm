@@ -103,6 +103,23 @@ pub enum RestoreError {
     InvalidData,
 }
 
+#[derive(Debug, Error)]
+pub enum DeviceError {
+    #[error("no more io queues available, reached maximum {0}")]
+    NoMoreIoQueues(u16),
+    #[error("failed to map interrupt")]
+    InterruptMapFailure(#[source] anyhow::Error),
+    #[error("failed to create io queue pair {1}")]
+    IoQueuePairCreationFailure(#[source] anyhow::Error, u16),
+    #[error("failed to create io completion queue {1}")]
+    IoCompletionQueueFailure(#[source] anyhow::Error, u16),
+    #[error("failed to create io submission queue {1}")]
+    IoSubmissionQueueFailure(#[source] anyhow::Error, u16),
+    // Other device related errors
+    #[error(transparent)]
+    Other(anyhow::Error),
+}
+
 #[derive(Inspect)]
 struct IoQueue {
     queue: QueuePair,
@@ -873,12 +890,27 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     .find_map(|(i, issuer)| issuer.get().map(|issuer| (i, issuer)))
                     .unwrap();
 
-                tracing::error!(
-                    cpu,
-                    fallback_cpu,
-                    error = err.as_ref() as &dyn std::error::Error,
-                    "failed to create io queue, falling back"
-                );
+                // Log the error as informational only when there is a lack of
+                // hardware resources from the device.
+                match err {
+                    DeviceError::NoMoreIoQueues(_) => {
+                        tracing::info!(
+                            cpu,
+                            fallback_cpu,
+                            error = &err as &dyn std::error::Error,
+                            "failed to create io queue, falling back"
+                        );
+                    }
+                    _ => {
+                        tracing::error!(
+                            cpu,
+                            fallback_cpu,
+                            error = &err as &dyn std::error::Error,
+                            "failed to create io queue, falling back"
+                        );
+                    }
+                }
+
                 fallback.clone()
             }
         };
@@ -893,9 +925,9 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         &mut self,
         state: &mut WorkerState,
         cpu: u32,
-    ) -> anyhow::Result<IoIssuer> {
+    ) -> Result<IoIssuer, DeviceError> {
         if self.io.len() >= state.max_io_queues as usize {
-            anyhow::bail!("no more io queues available");
+            return Err(DeviceError::NoMoreIoQueues(state.max_io_queues));
         }
 
         let qid = self.io.len() as u16 + 1;
@@ -907,7 +939,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         let interrupt = self
             .device
             .map_interrupt(iv.into(), cpu)
-            .context("failed to map interrupt")?;
+            .map_err(DeviceError::InterruptMapFailure)?;
 
         let queue = QueuePair::new(
             self.driver.clone(),
@@ -919,7 +951,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             self.registers.clone(),
             self.bounce_buffer,
         )
-        .with_context(|| format!("failed to create io queue pair {qid}"))?;
+        .map_err(|err| DeviceError::IoQueuePairCreationFailure(err, qid))?;
 
         let io_sq_addr = queue.sq_addr();
         let io_cq_addr = queue.cq_addr();
@@ -948,7 +980,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     ..admin_cmd(spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE)
                 })
                 .await
-                .with_context(|| format!("failed to create io completion queue {qid}"))?;
+                .map_err(|err| DeviceError::IoCompletionQueueFailure(err.into(), qid))?;
 
             created_completion_queue = true;
 
@@ -966,7 +998,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     ..admin_cmd(spec::AdminOpcode::CREATE_IO_SUBMISSION_QUEUE)
                 })
                 .await
-                .with_context(|| format!("failed to create io submission queue {qid}"))?;
+                .map_err(|err| DeviceError::IoSubmissionQueueFailure(err.into(), qid))?;
 
             Ok(())
         };
@@ -988,7 +1020,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             }
             let io = self.io.pop().unwrap();
             io.queue.shutdown().await;
-            return Err(err);
+            return Err(DeviceError::Other(err));
         }
 
         Ok(IoIssuer {

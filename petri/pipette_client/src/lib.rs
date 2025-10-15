@@ -117,6 +117,7 @@ impl PipetteClient {
     }
 
     async fn shutdown(&self, shutdown_type: pipette_protocol::ShutdownType) -> anyhow::Result<()> {
+        tracing::debug!(?shutdown_type, "sending shutdown request to guest");
         let r = self.send.call(
             PipetteRequest::Shutdown,
             pipette_protocol::ShutdownRequest { shutdown_type },

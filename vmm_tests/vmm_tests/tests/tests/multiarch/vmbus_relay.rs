@@ -4,24 +4,23 @@
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
-use petri::ShutdownKind;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use std::str::FromStr;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
-use vmm_test_macros::vmm_test_no_agent;
 
 // Test for vmbus relay
 // TODO: VBS isolation was failing and other targets too
-#[vmm_test_no_agent(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64))
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))
 )]
-#[cfg_attr(not(windows), expect(dead_code))]
 async fn vmbus_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    let mut vm = config.with_vmbus_redirect(true).run_without_agent().await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    let (vm, agent) = config.with_vmbus_redirect(true).run().await?;
+    agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
@@ -34,11 +33,13 @@ async fn vmbus_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
 /// properties via the agent.
 #[vmm_test(
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
 )]
 async fn vmbus_relay_force_mnf<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -53,53 +54,34 @@ async fn vmbus_relay_force_mnf<T: PetriVmmBackend>(
     Ok(())
 }
 
-// Test for vmbus relay, with MNF enabled via cmdline on TDX.
-//
-// TODO: Shortened test name to make it work on Hyper-V, but it should use the
-// full name once petri is fixed.
-#[vmm_test_no_agent(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
-)]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn vmbr_force_mnf_no_agent<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-) -> anyhow::Result<()> {
-    let mut vm = config
-        .with_vmbus_redirect(true)
-        .with_openhcl_command_line("OPENHCL_VMBUS_ENABLE_MNF=1")
-        .run_without_agent()
-        .await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
-    vm.wait_for_clean_teardown().await?;
-    Ok(())
-}
-
 // Test for vmbus relay
 // TODO: VBS isolation was failing and other targets too
-#[vmm_test_no_agent(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64))
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn vmbus_relay_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    let mut vm = config
+    let (vm, agent) = config
         .with_vmbus_redirect(true)
         .with_processor_topology(ProcessorTopology {
             vp_count: 16,
+            vps_per_socket: Some(8),
             ..Default::default()
         })
-        .run_without_agent()
+        .run()
         .await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
 
 /// MNF guest support: capture and print recursive listing of vmbus drivers.
 /// TODO: add entries for CVM guests once MNF support in CVMs is added. Tracked by  #1940
+/// TODO: investigate flakiness for openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)). Tracked by: #2100
 #[openvmm_test(
     openvmm_openhcl_linux_direct_x64,
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    // openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn validate_mnf_usage_in_guest(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
