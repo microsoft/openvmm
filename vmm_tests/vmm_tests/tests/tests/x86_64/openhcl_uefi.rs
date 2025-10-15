@@ -165,7 +165,7 @@ async fn nvme_relay_shared_pool(
         "OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1",
         Some(ExpectedNvmeDeviceProperties {
             save_restore_supported: false, // No private pool, so no save/restore of memory.
-            qsize: 64,                     // After #2061 goes in, this should be 256.
+            qsize: 256,
             nvme_keepalive: false,
         }),
     )
