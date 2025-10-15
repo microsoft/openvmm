@@ -541,4 +541,6 @@ function Set-Vtl2Settings {
     $cimSession = New-CimSession
     $cimSession.InvokeMethod("root\virtualization\v2", $guestManagement, "SetManagementVtlSettings", $params, $options) |
     Trace-CimMethodExecution -CimInstance $guestManagement -MethodName "SetManagementVtlSettings" | Out-Null
+
+    $cimSession | Remove-CimSession | Out-Null
 }

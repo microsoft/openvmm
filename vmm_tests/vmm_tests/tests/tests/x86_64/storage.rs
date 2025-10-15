@@ -18,6 +18,7 @@ use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use petri::PetriVmBuilder;
+#[cfg(windows)]
 use petri::hyperv::HyperVPetriBackend;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::PipetteClient;
@@ -37,6 +38,7 @@ use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
 use vm_resource::IntoResource;
+#[cfg(windows)]
 use vmm_test_macros::hyperv_test;
 use vmm_test_macros::openvmm_test;
 
@@ -317,8 +319,9 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
     Ok(())
 }
 
-/// Test an linux VM with a SCSI disk assigned to VTL2 and
+/// Test a Linux VM with a SCSI disk assigned to VTL2 and
 /// vmbus relay. This should expose one disk to VTL0 via vmbus.
+#[cfg(windows)]
 #[hyperv_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<(), anyhow::Error> {
     let vtl2_lun = 5;
@@ -353,15 +356,6 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
                     Vtl2StorageControllerBuilder::scsi()
                         .with_instance_id(scsi_instance)
                         .with_protocol(ControllerType::Scsi)
-                        .add_lun(
-                            Vtl2LunBuilder::disk()
-                                .with_location(vtl0_scsi_lun)
-                                .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                                    ControllerType::Scsi,
-                                    scsi_instance,
-                                    vtl2_lun,
-                                )),
-                        )
                         .build(),
                 );
             })
