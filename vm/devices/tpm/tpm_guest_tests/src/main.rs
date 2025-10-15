@@ -170,7 +170,16 @@ fn handle_ak_cert<E: TpmEngine>(
         }
 
         println!("Reading AK certificate from NV index {NV_INDEX_AK_CERT:#x}…");
-        let data = read_nv_index(helper, NV_INDEX_AK_CERT)?;
+        let data = match read_nv_index(helper, NV_INDEX_AK_CERT) {
+            Ok(data) => data,
+            Err(err) => {
+                if attempt == retry_attempts {
+                    return Err(format!("Failed to read AK certificate: {err}").into());
+                }
+                // Allow retry on failure
+                continue;
+            }
+        };
 
         if data.len() > MAX_NV_READ_SIZE {
             return Err(format!(
