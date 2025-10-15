@@ -56,7 +56,7 @@ pub mod service;
 #[cfg(not(feature = "fuzzing"))]
 mod service;
 
-use crate::service::diagnostics::LogLevel;
+pub use crate::service::diagnostics::LogLevel;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;

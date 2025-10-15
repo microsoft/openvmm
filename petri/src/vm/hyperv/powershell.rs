@@ -722,14 +722,14 @@ const HYPERV_VMMS_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Admin";
 
 /// Get Hyper-V event logs for a VM
 pub async fn hyperv_event_logs(
-    vmid: &Guid,
+    vmid: Option<&Guid>,
     start_time: &Timestamp,
 ) -> anyhow::Result<Vec<WinEvent>> {
-    let vmid = vmid.to_string();
+    let vmid = vmid.map(|id| id.to_string());
     run_get_winevent(
         &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
         Some(start_time),
-        Some(&vmid),
+        vmid.as_deref(),
         &[],
     )
     .await
@@ -801,8 +801,10 @@ pub const MSVM_TRIPLE_FAULT_INVALID_VP_REGISTER_ERROR: u32 = 18550;
 pub const MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR: u32 = 18560;
 /// The vm was hibernated successfully.
 pub const MSVM_GUEST_HIBERNATE_SUCCESS: u32 = 18608;
+/// The vm has quit unexpectedly (the worker process terminated).
+pub const MSVM_VMMS_VM_TERMINATE_ERROR: u32 = 14070;
 
-const HALT_EVENT_IDS: [u32; 12] = [
+const HALT_EVENT_IDS: [u32; 13] = [
     MSVM_HOST_STOP_SUCCESS,
     MSVM_HOST_SHUTDOWN_SUCCESS,
     MSVM_GUEST_SHUTDOWN_SUCCESS,
@@ -815,6 +817,7 @@ const HALT_EVENT_IDS: [u32; 12] = [
     MSVM_TRIPLE_FAULT_INVALID_VP_REGISTER_ERROR,
     MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR,
     MSVM_GUEST_HIBERNATE_SUCCESS,
+    MSVM_VMMS_VM_TERMINATE_ERROR,
 ];
 
 /// Get Hyper-V halt event logs for a VM
