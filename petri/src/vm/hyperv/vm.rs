@@ -262,7 +262,8 @@ impl HyperVVM {
 
     /// Add a SCSI controller
     pub async fn add_scsi_controller(&mut self, target_vtl: u32) -> anyhow::Result<(u32, Guid)> {
-        let (controller_number, vsid) = powershell::run_add_vm_scsi_controller(&self.vmid).await?;
+        let (controller_number, vsid) =
+            powershell::run_add_vm_scsi_controller(&self.ps_mod, &self.vmid).await?;
         if target_vtl != 0 {
             powershell::run_set_vm_scsi_controller_target_vtl(
                 &self.ps_mod,

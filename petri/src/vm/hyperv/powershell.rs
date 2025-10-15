@@ -373,8 +373,8 @@ pub async fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::
 
 /// Runs Add-VMScsiController with the given arguments.
 ///
-/// Returns the controller number.
-pub async fn run_add_vm_scsi_controller(vmid: &Guid) -> anyhow::Result<(u32, Guid)> {
+/// Returns the controller number and controller instance guid.
+pub async fn run_add_vm_scsi_controller(ps_mod: &Path, vmid: &Guid) -> anyhow::Result<(u32, Guid)> {
     let output = run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
