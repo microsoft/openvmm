@@ -64,7 +64,6 @@ use task_control::AsyncRun;
 use task_control::InspectTaskMut;
 use task_control::StopTask;
 use task_control::TaskControl;
-use tracing::trace;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -241,7 +240,6 @@ impl BasicNic {
                      queue_pairs,
                  }| {
                     assert!(endpoint.is_ordered());
-                    tracing::info!(?mac_address, queue_pairs, "creating vport");
                     // An extra slot is needed because when setting the requested_num_queues state
                     // in the netvsp device the subchannel count is incremented by one.
                     let tasks: Vec<VportTask> = (0..(queue_pairs + 1))
@@ -302,8 +300,6 @@ impl BasicNic {
                     .vports
                     .get_mut(req.vport as usize)
                     .context("invalid vport")?;
-
-                tracing::info!("damanmulye");
 
                 let resp = ManaConfigVportResp {
                     tx_vport_offset: 0,
@@ -372,7 +368,6 @@ impl BasicNic {
                         new_task.queue_cfg.rx = Some((wq_id, cq_id, wq_handle));
                     }
                     vport.tasks.push(new_task);
-                    tracing::info!("allocated new task, total tasks: {}", vport.tasks.len());
                 }
 
                 let resp = ManaCreateWqobjResp {

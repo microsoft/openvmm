@@ -128,26 +128,42 @@ async fn mana_nic_multiqueue(
         .run()
         .await?;
 
-    let output = match os_flavor {
+    match os_flavor {
         OsFlavor::Windows => {
             let sh = agent.windows_shell();
-            cmd!(sh, "powershell.exe -NoExit -Command (Get-NetAdapterrss)")
-                .read()
-                .await?
-                .replace("\r\nPS C:\\>", "")
-                .trim()
-                .to_string()
+            let output = cmd!(
+                sh,
+                "powershell.exe -NoExit -Command (Get-NetAdapterrss)[0].NumberOfReceiveQueues"
+            )
+            .read()
+            .await?
+            .replace("\r\nPS C:\\>", "")
+            .trim()
+            .to_string();
+
+            assert!(
+                output == vp_count.to_string(),
+                "expected {} queues, got {}",
+                vp_count,
+                output
+            );
         }
         OsFlavor::Linux => {
             let sh = agent.unix_shell();
-            cmd!(sh, "ethtool -l eth0").read().await?
+            let output = cmd!(sh, "ethtool -l eth0").read().await?;
+            let _ = output
+                .lines()
+                .filter(|line| line.starts_with("Combined:"))
+                .map(|line| {
+                    let count = line.split_whitespace().nth(1).unwrap().trim().to_string();
+                    let n: u32 = count.parse().unwrap();
+                    assert!(n == vp_count, "expected {} queues, got {}", vp_count, n);
+                });
         }
         OsFlavor::Uefi | OsFlavor::FreeBsd => {
             anyhow::bail!("Unsupported OsFlavors");
         }
     };
-
-    tracing::info!("{}", output);
 
     Ok(())
 }
