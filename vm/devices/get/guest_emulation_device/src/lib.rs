@@ -1401,6 +1401,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     guest_state_lifetime: state.config.guest_state_lifetime,
                     guest_state_encryption_policy: state.config.guest_state_encryption_policy,
                     management_vtl_features: state.config.management_vtl_features,
+                    efi_diagnostics_log_level: Default::default(), // TODO - finish config
                 },
                 dynamic: get_protocol::dps_json::HclDevicePlatformSettingsV2Dynamic {
                     is_servicing_scenario: state.save_restore_buf.is_some(),

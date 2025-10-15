@@ -637,7 +637,6 @@ impl<'a> BaseChipsetBuilder<'a> {
                         },
                         vsm_config,
                         time_source,
-                        log_level: None, // TODO: Add via config
                     };
 
                     firmware_uefi::UefiDevice::new(runtime_deps, config, foundation.is_restoring)

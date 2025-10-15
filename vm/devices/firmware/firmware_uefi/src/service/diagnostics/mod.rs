@@ -17,6 +17,7 @@ pub use formatting::log_diagnostic_ratelimited;
 pub use formatting::log_diagnostic_unrestricted;
 pub use processor::LogLevel;
 pub use processor::ProcessingError;
+pub use processor::log_level;
 
 use crate::UefiDevice;
 use guestmem::GuestMemory;

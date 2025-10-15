@@ -66,6 +66,7 @@ use disk_backend::Disk;
 use disk_blockdevice::BlockDeviceResolver;
 use disk_blockdevice::OpenBlockDeviceConfig;
 use firmware_uefi::UefiCommandSet;
+use firmware_uefi::log_level;
 use futures::executor::block_on;
 use futures::future::join_all;
 use futures_concurrency::future::Race;
@@ -2207,6 +2208,13 @@ async fn new_underhill_vm(
                 } else {
                     UefiCommandSet::Aarch64
                 },
+                diagnostics_log_level: match dps.general.efi_diagnostics_log_level {
+                    get_protocol::dps_json::EfiDiagnosticsLogLevelType::Default => {
+                        log_level::default()
+                    }
+                    get_protocol::dps_json::EfiDiagnosticsLogLevelType::Info => log_level::info(),
+                    get_protocol::dps_json::EfiDiagnosticsLogLevelType::Full => log_level::full(),
+                },
             };
 
             let (watchdog_send, watchdog_recv) = mesh::channel();
@@ -3396,6 +3404,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         cxl_memory_enabled: _,
 
         // TODO: decide whether these need to be validated here
+        efi_diagnostics_log_level: _,
         guest_state_encryption_policy: _,
         guest_state_lifetime: _,
         management_vtl_features: _,
