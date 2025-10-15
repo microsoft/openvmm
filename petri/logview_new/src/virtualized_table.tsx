@@ -69,20 +69,13 @@ export function VirtualizedTable<TData extends object>({
 
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const headerWrapperRef = useRef<HTMLDivElement>(null);
-  const [headerHeight, setHeaderHeight] = useState(0);
+  const [headerHeight, setHeaderHeight] = useState(25.5); // Initial estimate
 
+  // Measure the header and set the value appropriately
   useLayoutEffect(() => {
     const el = headerWrapperRef.current;
     if (!el) return;
-    const measure = () => setHeaderHeight(el.getBoundingClientRect().height);
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    window.addEventListener("resize", measure);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener("resize", measure);
-    };
+    setHeaderHeight(el.getBoundingClientRect().height);
   }, []);
 
   const rowVirtualizer = useVirtualizer({
@@ -121,20 +114,12 @@ export function VirtualizedTable<TData extends object>({
   }, [scrollToIndex, rowVirtualizer, rows.length]);
 
   return (
-    <div className="table">
+    <div>
       <div
         ref={headerWrapperRef}
-        style={{
-          position: "sticky",
-          top: "4rem",
-          zIndex: 999,
-          boxShadow: "0 1px 0 rgba(0,0,0,0.08)",
-        }}
+        className="virtualized-table-header-container"
       >
-        <table
-          className="virtualized-table"
-          style={{ tableLayout: "fixed", width: "100%" }}
-        >
+        <table className="virtualized-table">
           <thead>
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
@@ -147,26 +132,10 @@ export function VirtualizedTable<TData extends object>({
                       className={header.column.getCanSort() ? "sortable" : ""}
                       onClick={header.column.getToggleSortingHandler()}
                       style={{
-                        padding: "6px 8px",
-                        fontWeight: 600,
-                        fontSize: "0.8rem",
-                        letterSpacing: "0.5px",
-                        textTransform: "uppercase",
-                        cursor: header.column.getCanSort()
-                          ? "pointer"
-                          : "default",
-                        background: "white",
-                        boxSizing: "border-box",
-                        ...(w ? { width: w, minWidth: w, maxWidth: w } : {}),
+                        width: w,
                       }}
                     >
-                      <div
-                        className="virtualized-table-header-content"
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                        }}
-                      >
+                      <div className="virtualized-table-header-content">
                         {header.isPlaceholder
                           ? null
                           : flexRender(
@@ -232,10 +201,7 @@ export function VirtualizedTable<TData extends object>({
                     onRowClick ? (event) => onRowClick(row, event) : undefined
                   }
                 >
-                  <table
-                    className="virtualized-table"
-                    style={{ margin: 0, tableLayout: "fixed", width: "100%" }}
-                  >
+                  <table className="virtualized-table">
                     <tbody>
                       <tr>
                         {row.getVisibleCells().map((cell) => {

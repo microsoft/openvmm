@@ -7,10 +7,11 @@
   flex: 0 0 auto;
 }
 
-.virtualized-table-header {
+.virtualized-table-header-container {
   position: sticky;
   top: 4rem;
   z-index: 999;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.1);
 }
 
 .virtualized-table {
@@ -29,14 +30,14 @@
 
 .virtualized-table th {
   color: #000000;
-  padding: 0.8rem 0.5rem;
   text-align: left;
   border-bottom: 1px solid #dee2e6;
   background: white;
   box-sizing: border-box;
-  font-weight: 600;
-  font-size: 0.8rem;
   text-transform: uppercase;
+  padding: 6px 8px;
+  font-weight: 600;
+  font-size: 0.83rem;
 }
 
 .virtualized-table th.sortable {
