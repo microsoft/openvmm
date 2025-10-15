@@ -40,7 +40,7 @@ pub struct IgvmAttestRequestData {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, IntoBytes, FromBytes, Immutable, Default)]
+#[derive(Clone, Copy, IntoBytes, FromBytes, Immutable)]
 pub struct IgvmAttestRequestBase {
     pub header: IgvmAttestRequestHeader,
     pub attestation_report: [u8; IGVM_ATTESTATION_REPORT_SIZE_MAX],
@@ -50,3 +50,13 @@ pub struct IgvmAttestRequestBase {
 pub const IGVM_REQUEST_DATA_SIZE: usize = size_of::<IgvmAttestRequestData>();
 pub const IGVM_REQUEST_BASE_SIZE: usize = size_of::<IgvmAttestRequestBase>();
 pub const IGVM_REQUEST_DATA_OFFSET: usize = IGVM_REQUEST_BASE_SIZE - IGVM_REQUEST_DATA_SIZE;
+
+impl Default for IgvmAttestRequestBase {
+    fn default() -> Self {
+        Self {
+            header: IgvmAttestRequestHeader::default(),
+            attestation_report: [0u8; IGVM_ATTESTATION_REPORT_SIZE_MAX],
+            request_data: IgvmAttestRequestData::default(),
+        }
+    }
+}
