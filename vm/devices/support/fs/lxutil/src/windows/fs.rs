@@ -1091,7 +1091,7 @@ pub fn get_lx_file_system_attributes(
     })
 }
 
-/// Truncates the suppllied file to the specified size.
+/// Truncates the supplied file to the specified size.
 pub fn truncate(file_handle: &OwnedHandle, size: u64) -> lx::Result<()> {
     let info = SystemServices::FILE_END_OF_FILE_INFORMATION {
         EndOfFile: size.try_into().map_err(|_| lx::Error::EINVAL)?,
