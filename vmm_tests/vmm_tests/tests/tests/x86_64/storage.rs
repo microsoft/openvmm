@@ -349,13 +349,8 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
 
     disk_vhd1::Vhd1Disk::make_fixed(vhd.as_file_mut()).context("make fixed")?;
 
-    // Close a handle to the file without deleting it.
-    // TODO: delete the VHD file after this test.
-    // (n.b. can't keep the file open because Hyper-V will need to open it).
-    let vhd_path = {
-        let (_, path) = vhd.keep().context("persist vtl2 vhd")?;
-        path
-    };
+    // Close a handle to the file without deleting it, so that Hyper-V can open it.
+    let vhd_path = vhd.into_temp_path();
 
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
