@@ -54,8 +54,6 @@ flowey_request! {
         pub fail_job_on_test_fail: bool,
         /// Copy the junit xml file to the provided directory.
         pub junit_xml_output_dir: ReadVar<PathBuf>,
-        /// Copy the nextest-list.json to the provided directory.
-        pub nextest_list_json_output_dir: ReadVar<PathBuf>,
         /// Copy full test results (all logs, dumps, etc) to the provided directory.
         pub test_results_full_output_dir: ReadVar<PathBuf>,
         pub done: WriteVar<SideEffect>,
@@ -93,7 +91,6 @@ impl SimpleFlowNode for Node {
             fail_job_on_test_fail,
             needs_prep_run,
             junit_xml_output_dir,
-            nextest_list_json_output_dir,
             test_results_full_output_dir,
             done,
         } = request;
@@ -212,23 +209,6 @@ impl SimpleFlowNode for Node {
         let test_log_path = test_log_path.depending_on(ctx, &results);
 
         let junit_xml = results.map(ctx, |r| r.junit_xml);
-        let archive_file = nextest_vmm_tests_archive.map(ctx, |x| x.archive_file);
-        // Run_ignored option is set to true so that we can dump all the tests that were built, instead of just the ones that were run.
-        let nextest_list_json = ctx.reqv(|v| crate::run_cargo_nextest_list::Request {
-            archive_file,
-            nextest_bin: None,
-            target: None,
-            working_dir: None,
-            config_file: None,
-            nextest_profile: nextest_profile.as_str().to_owned(),
-            nextest_filter_expr: nextest_filter_expr.clone(),
-            run_ignored: true,
-            extra_env: Some(extra_env),
-            output_dir: test_log_path.clone(),
-            pre_run_deps: vec![],
-            output_file: v,
-        });
-
         let mut side_effects = Vec::new();
 
         // Publish JUnit XML
@@ -247,16 +227,6 @@ impl SimpleFlowNode for Node {
                 test_label: junit_test_label.clone(),
                 attachments: BTreeMap::from([("logs".to_string(), (test_log_path, false))]),
                 output_dir: test_results_full_output_dir,
-                done: v,
-            }
-        }));
-
-        // Publish nextest-list.json
-        side_effects.push(ctx.reqv(|v| {
-            flowey_lib_common::publish_test_results::Request::PublishNextestListJson {
-                nextest_list_json,
-                test_label: junit_test_label,
-                output_dir: nextest_list_json_output_dir,
                 done: v,
             }
         }));

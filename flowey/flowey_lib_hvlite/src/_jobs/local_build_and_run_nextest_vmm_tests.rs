@@ -708,7 +708,10 @@ impl SimpleFlowNode for Node {
         let nextest_archive = ctx.reqv(|v| crate::build_nextest_vmm_tests::Request {
             target: target.as_triple(),
             profile: CommonProfile::from_release(release),
-            build_mode: crate::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(v),
+            build_mode: crate::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive {
+                nextest_list_json_file: None,
+                vmm_test_archive: v,
+            },
         });
         let nextest_archive_file = Path::new("vmm-tests-archive.tar.zst");
         copy_to_dir.push((

@@ -18,7 +18,15 @@ pub struct NextestVmmTestsArchive {
     pub archive_file: PathBuf,
 }
 
+/// Type-safe wrapper around a json file containing a list of test cases built in the nextest archive
+#[derive(Serialize, Deserialize)]
+pub struct NextestVmmTestsList {
+    #[serde(rename = "vmm_tests.json")]
+    pub nextest_list_json: PathBuf,
+}
+
 impl Artifact for NextestVmmTestsArchive {}
+impl Artifact for NextestVmmTestsList {}
 
 /// Build mode to use when building the nextest VMM tests
 #[derive(Serialize, Deserialize)]
@@ -45,7 +53,10 @@ pub enum BuildNextestVmmTestsMode {
     },
     /// Build and archive the tests into a nextest archive file, which can then
     /// be run via [`crate::test_nextest_vmm_tests_archive`].
-    Archive(WriteVar<NextestVmmTestsArchive>),
+    Archive {
+        nextest_list_json_file: Option<WriteVar<NextestVmmTestsList>>,
+        vmm_test_archive: WriteVar<NextestVmmTestsArchive>,
+    },
 }
 
 flowey_request! {
@@ -67,6 +78,7 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::install_openvmm_rust_build_essential::Node>();
         ctx.import::<crate::run_cargo_nextest_run::Node>();
+        ctx.import::<crate::run_cargo_nextest_list::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
         ctx.import::<crate::init_cross_build::Node>();
@@ -155,25 +167,58 @@ impl FlowNode for Node {
                         results,
                     })
                 }
-                BuildNextestVmmTestsMode::Archive(unit_tests_archive) => {
+                BuildNextestVmmTestsMode::Archive {
+                    nextest_list_json_file: nextest_list_json_write,
+                    vmm_test_archive,
+                } => {
                     let openvmm_repo_path =
                         ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
                     let archive_file =
                         ctx.reqv(|v| flowey_lib_common::run_cargo_nextest_archive::Request {
                             friendly_label: "vmm_tests".into(),
-                            working_dir: openvmm_repo_path,
+                            working_dir: openvmm_repo_path.clone(),
                             build_params,
                             pre_run_deps: ambient_deps,
                             archive_file: v,
                         });
 
+                    let nextest_list_json = if nextest_list_json_write.as_ref().is_some() {
+                        Some(ctx.reqv(|v| crate::run_cargo_nextest_list::Request {
+                            archive_file: archive_file.clone(),
+                            nextest_bin: None,
+                            target: None,
+                            working_dir: None,
+                            config_file: None,
+                            nextest_profile: "ci".into(),
+                            nextest_filter_expr: None,
+                            run_ignored: true,
+                            extra_env: None,
+                            output_dir: openvmm_repo_path,
+                            pre_run_deps: vec![],
+                            output_file: v,
+                        }))
+                    } else {
+                        None
+                    };
+
                     ctx.emit_minor_rust_step("report built vmm_tests", |ctx| {
                         let archive_file = archive_file.claim(ctx);
-                        let unit_tests = unit_tests_archive.claim(ctx);
+                        let vmm_tests = vmm_test_archive.claim(ctx);
+                        let nextest_list_json = nextest_list_json.claim(ctx);
+                        let nextest_list_json_write = nextest_list_json_write.claim(ctx);
                         |rt| {
                             let archive_file = rt.read(archive_file);
-                            rt.write(unit_tests, &NextestVmmTestsArchive { archive_file });
+                            let nextest_list_json = rt.read(nextest_list_json);
+                            rt.write(vmm_tests, &NextestVmmTestsArchive { archive_file });
+                            if let Some(nextest_list_json) = nextest_list_json {
+                                if let Some(nextest_list_json_write) = nextest_list_json_write {
+                                    rt.write(
+                                        nextest_list_json_write,
+                                        &NextestVmmTestsList { nextest_list_json },
+                                    );
+                                }
+                            }
                         }
                     });
                 }
