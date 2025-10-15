@@ -60,78 +60,6 @@
   color: #000000;
 }
 
-.common-advanced-table {
-  border-collapse: collapse;
-  min-width: 56rem;
-  position: sticky;
-  top: 0;
-  width: 100%;
-}
-
-/* Default hover for virtualized table rows - can be overridden by more specific selectors */
-.virtualized-table-row:hover td {
-  background-color: #f3f4f6;
-}
-
-.common-advanced-table th {
-  background: #f8f9fa;
-  color: #495057;
-  font-weight: 600;
-  font-size: 1rem;
-  padding: 0.8rem 0.5rem;
-  text-align: left;
-  border-bottom: 1px solid #dee2e6;
-}
-
-.common-advanced-table th.sortable {
-  cursor: pointer;
-  user-select: none;
-  z-index: 1;
-  position: sticky;
-  top: 4rem;
-}
-
-.common-advanced-table th.sortable:hover {
-  background-color: #e9ecef;
-  position: sticky;
-  top: 4rem;
-}
-
-.common-advanced-table-header-content {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  white-space: nowrap;
-  min-width: 0;
-  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
-  position: sticky;
-  top: 4rem;
-}
-
-/* Virtualized table styles */
-.virtualized-table-body {
-  background: white;
-}
-
-/* Simplified row styling: always white, no hover/background color variations */
-.virtualized-table-row {
-  background: white !important;
-  border-bottom: 1px solid #e0e0e0;
-  box-sizing: border-box;
-}
-
-/* Ensure proper column alignment in virtualized rows */
-.virtualized-table-row table {
-  border-collapse: collapse;
-}
-
-.virtualized-table-row td {
-  padding: 0.7rem 0.5rem;
-  vertical-align: middle;
-  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
-  font-size: 0.9rem;
-}
-
 /* Breadcrumb / page path link */
 .common-header-path {
   color: #000000;
@@ -264,7 +192,6 @@
 
 .common-table-link {
   font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
-  font-weight: 600;
   color: #1976d2;
   text-decoration: none;
   border-radius: 4px;

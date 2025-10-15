@@ -132,7 +132,7 @@ export function VirtualizedTable<TData extends object>({
         }}
       >
         <table
-          className="common-advanced-table"
+          className="virtualized-table"
           style={{ tableLayout: "fixed", width: "100%" }}
         >
           <thead>
@@ -161,11 +161,10 @@ export function VirtualizedTable<TData extends object>({
                       }}
                     >
                       <div
-                        className="common-advanced-table-header-content"
+                        className="virtualized-table-header-content"
                         style={{
                           display: "flex",
                           alignItems: "center",
-                          gap: "4px",
                         }}
                       >
                         {header.isPlaceholder
@@ -234,7 +233,7 @@ export function VirtualizedTable<TData extends object>({
                   }
                 >
                   <table
-                    className="common-advanced-table"
+                    className="virtualized-table"
                     style={{ margin: 0, tableLayout: "fixed", width: "100%" }}
                   >
                     <tbody>
