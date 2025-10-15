@@ -374,10 +374,10 @@ async fn tpm_test_platform_hierarchy_disabled(
     Ok(())
 }
 
-/// VBS attestation test with agent
+// VBS attestation test with agent
 // TODO: Enable when prep run dependency is supported for openvmm-based vbs tests and
 // remove `vbs_boot_with_attestation` test.
-// TODO: Support linux test when agent support is available  
+// TODO: Support linux test when agent support is available
 // #[openvmm_test(
 //     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
 // )]
