@@ -289,8 +289,7 @@ async fn servicing_keepalive_with_nvme_fault(
     .await
 }
 
-/// Test servicing an OpenHCL VM from the current version to itself
-/// with NVMe keepalive support. No AERs are processed.
+/// Verifies that the driver awaits an existing AER instead of issuing a new one after servicing.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn servicing_keepalive_verify_no_duplicate_aers(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
