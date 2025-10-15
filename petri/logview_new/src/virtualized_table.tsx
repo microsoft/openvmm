@@ -124,15 +124,13 @@ export function VirtualizedTable<TData extends object>({
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => {
-                  const effectiveWidthMap = columnWidthMap;
-                  const w = effectiveWidthMap[header.column.id];
                   return (
                     <th
                       key={header.id}
                       className={header.column.getCanSort() ? "sortable" : ""}
                       onClick={header.column.getToggleSortingHandler()}
                       style={{
-                        width: w,
+                        width: columnWidthMap[header.column.id],
                       }}
                     >
                       <div className="virtualized-table-header-content">
@@ -160,77 +158,59 @@ export function VirtualizedTable<TData extends object>({
         </table>
       </div>
       <div
+        ref={tableContainerRef}
+        className="virtualized-table-body"
         style={{
-          position: "sticky",
-          top: `calc(4rem + ${headerHeight}px)`,
-          zIndex: 998,
-          background: "white",
+          height: `calc(100vh - 4rem - ${headerHeight}px)`,
         }}
       >
         <div
-          ref={tableContainerRef}
-          className="virtualized-table-body"
           style={{
-            height: `calc(100vh - 4rem - ${headerHeight}px)`,
+            height: `${rowVirtualizer.getTotalSize()}px`,
           }}
         >
-          <div
-            style={{
-              height: `${rowVirtualizer.getTotalSize()}px`,
-              width: "100%",
-              position: "relative",
-            }}
-          >
-            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-              const row = rows[virtualRow.index] as Row<TData>;
-              return (
-                <div
-                  key={row.id}
-                  data-index={virtualRow.index}
-                  ref={rowVirtualizer.measureElement}
-                  className={`virtualized-table-row ${getRowClassName ? getRowClassName(row) : defaultInferRowClass(row)}`}
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    width: "100%",
-                    transform: `translateY(${virtualRow.start}px)`,
-                    cursor: onRowClick ? "pointer" : "default",
-                  }}
-                  onClick={
-                    onRowClick ? (event) => onRowClick(row, event) : undefined
-                  }
-                >
-                  <table className="virtualized-table">
-                    <tbody>
-                      <tr>
-                        {row.getVisibleCells().map((cell) => {
-                          const effectiveWidthMap = columnWidthMap;
-                          const w = effectiveWidthMap[cell.column.id];
-                          return (
-                            <td
-                              key={cell.id}
-                              style={{
-                                boxSizing: "border-box",
-                                ...(w
-                                  ? { width: w, minWidth: w, maxWidth: w }
-                                  : {}),
-                              }}
-                            >
-                              {flexRender(
-                                cell.column.columnDef.cell,
-                                cell.getContext()
-                              )}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              );
-            })}
-          </div>
+          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+            const row = rows[virtualRow.index] as Row<TData>;
+            return (
+              <div
+                key={row.id}
+                data-index={virtualRow.index}
+                ref={rowVirtualizer.measureElement}
+                className={`virtualized-table-row ${getRowClassName ? getRowClassName(row) : defaultInferRowClass(row)}`}
+                style={{
+                  position: "absolute",
+                  width: "100%",
+                  transform: `translateY(${virtualRow.start}px)`,
+                }}
+                onClick={
+                  onRowClick ? (event) => onRowClick(row, event) : undefined
+                }
+              >
+                <table className="virtualized-table">
+                  <tbody>
+                    <tr>
+                      {row.getVisibleCells().map((cell) => {
+                        return (
+                          <td
+                            key={cell.id}
+                            style={{
+                              boxSizing: "border-box",
+                              width: columnWidthMap[cell.column.id],
+                            }}
+                          >
+                            {flexRender(
+                              cell.column.columnDef.cell,
+                              cell.getContext()
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
