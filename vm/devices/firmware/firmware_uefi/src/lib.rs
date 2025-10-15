@@ -57,7 +57,7 @@ pub mod service;
 mod service;
 
 pub use crate::service::diagnostics::LogLevel;
-
+pub use crate::service::diagnostics::log_level;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -128,6 +128,7 @@ pub struct UefiConfig {
     pub initial_generation_id: [u8; 16],
     pub use_mmio: bool,
     pub command_set: UefiCommandSet,
+    pub diagnostics_log_level: LogLevel,
 }
 
 /// Various runtime objects used by the UEFI device + underlying services.
@@ -141,7 +142,6 @@ pub struct UefiRuntimeDeps<'a> {
     pub generation_id_deps: generation_id::GenerationIdRuntimeDeps,
     pub vsm_config: Option<Box<dyn VsmConfig>>,
     pub time_source: Box<dyn InspectableLocalClock>,
-    pub log_level: Option<LogLevel>,
 }
 
 /// The Hyper-V UEFI services chipset device.
@@ -184,7 +184,6 @@ impl UefiDevice {
             generation_id_deps,
             vsm_config,
             time_source,
-            log_level,
         } = runtime_deps;
 
         // Create the UEFI device with the rest of the services.
@@ -216,7 +215,7 @@ impl UefiDevice {
                 ),
                 time: service::time::TimeServices::new(time_source),
                 diagnostics: service::diagnostics::DiagnosticsServices::new(
-                    log_level.unwrap_or(LogLevel::default()),
+                    cfg.diagnostics_log_level,
                 ),
             },
         };
@@ -277,7 +276,7 @@ impl UefiDevice {
                 self.service.diagnostics.set_gpa(data)
             }
             UefiCommand::PROCESS_EFI_DIAGNOSTICS => {
-                self.process_diagnostics(false, LogLevel::default(), Some(DEFAULT_LOGS_PER_PERIOD))
+                self.process_diagnostics(false, log_level::default(), Some(DEFAULT_LOGS_PER_PERIOD))
             }
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
@@ -290,7 +289,7 @@ impl UefiDevice {
             // `inspect -u vm/uefi/process_diagnostics`. This is true, even for other
             // mutable paths in the inspect graph.
             if v.is_some() {
-                self.process_diagnostics(true, LogLevel::default(), None);
+                self.process_diagnostics(true, log_level::default(), None);
                 Result::<_, std::convert::Infallible>::Ok(
                     "attempted to process diagnostics through inspect".to_string(),
                 )
@@ -344,7 +343,7 @@ impl PollDevice for UefiDevice {
             // NOTE: Do not allow reprocessing diagnostics here.
             // UEFI programs the watchdog's configuration, so we should assume that
             // this path could trigger multiple times.
-            self.process_diagnostics(false, LogLevel::default(), Some(DEFAULT_LOGS_PER_PERIOD));
+            self.process_diagnostics(false, log_level::default(), Some(DEFAULT_LOGS_PER_PERIOD));
         }
     }
 }
