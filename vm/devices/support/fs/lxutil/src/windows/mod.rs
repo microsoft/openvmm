@@ -7,7 +7,6 @@
 
 mod macros;
 
-pub(crate) mod api;
 mod fs;
 pub(crate) mod path;
 mod readdir;
@@ -94,8 +93,6 @@ pub struct LxVolume {
 
 impl LxVolume {
     pub fn new(root_path: &Path, options: &super::LxVolumeOptions) -> lx::Result<Self> {
-        api::delay_load_lxutil()?;
-
         // Open a handle to the root.
         let (root, _) = util::open_relative_file(
             None,
@@ -631,9 +628,8 @@ impl LxVolume {
             return Err(lx::Error::ENOTSUP);
         }
 
-        let name = util::create_ansi_string(name)?;
         let file = self.open_file(path, winnt::FILE_READ_EA | winnt::FILE_WRITE_EA, 0)?;
-        unsafe { util::check_lx_error(api::LxUtilXattrRemove(file.as_raw_handle(), name.as_ref())) }
+        xattr::remove(&file, name.to_str().ok_or(lx::Error::EINVAL)?)
     }
 
     fn supports_xattr(&self) -> bool {

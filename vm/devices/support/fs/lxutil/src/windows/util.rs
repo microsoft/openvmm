@@ -456,15 +456,6 @@ pub fn check_status_rw(status: ntdef::NTSTATUS) -> lx::Result<ntdef::NTSTATUS> {
     }
 }
 
-// Convert an LX error code to an lx::Result.
-pub fn check_lx_error(result: i32) -> lx::Result<()> {
-    if result < 0 {
-        Err(lx::Error::from_lx(-result))
-    } else {
-        Ok(())
-    }
-}
-
 // Convert a DOS path to an NT path depending on whether the root is set.
 #[expect(clippy::join_absolute_paths)] // https://github.com/rust-lang/rust-clippy/issues/12244
 pub fn dos_to_nt_path(
