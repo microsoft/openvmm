@@ -475,12 +475,13 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
     Ok(())
 }
 
+#[cfg(not(debug_assertions))]
 #[vmm_test(
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_gp_small<T: PetriVmmBackend>(
+async fn memory_validation_gp_release_small<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     _: (),
     driver: pal_async::DefaultDriver,
@@ -490,6 +491,28 @@ async fn memory_validation_gp_small<T: PetriVmmBackend>(
         memstat::TestVPCount::SmallVPCount,
         memstat::WaitPeriodSec::ShortWait,
         driver,
+        "release",
+    )
+    .await
+}
+
+#[cfg(debug_assertions)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn memory_validation_gp_debug_small<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    _: (),
+    driver: pal_async::DefaultDriver,
+) -> anyhow::Result<()> {
+    memstat::idle_test(
+        config,
+        memstat::TestVPCount::SmallVPCount,
+        memstat::WaitPeriodSec::ShortWait,
+        driver,
+        "debug",
     )
     .await
 }
@@ -502,7 +525,7 @@ async fn memory_validation_gp_small<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_cvm_small<T: PetriVmmBackend>(
+async fn memory_validation_cvm_debug_small<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     _: (),
     driver: pal_async::DefaultDriver,
@@ -512,16 +535,18 @@ async fn memory_validation_cvm_small<T: PetriVmmBackend>(
         memstat::TestVPCount::SmallVPCount,
         memstat::WaitPeriodSec::ShortWait,
         driver,
+        "debug",
     )
     .await
 }
 
+#[cfg(not(debug_assertions))]
 #[vmm_test(
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_gp_heavy<T: PetriVmmBackend>(
+async fn memory_validation_gp_release_heavy<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     _: (),
     driver: pal_async::DefaultDriver,
@@ -531,6 +556,28 @@ async fn memory_validation_gp_heavy<T: PetriVmmBackend>(
         memstat::TestVPCount::LargeVPCount,
         memstat::WaitPeriodSec::LongWait,
         driver,
+        "release",
+    )
+    .await
+}
+
+#[cfg(debug_assertions)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn memory_validation_gp_debug_heavy<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    _: (),
+    driver: pal_async::DefaultDriver,
+) -> anyhow::Result<()> {
+    memstat::idle_test(
+        config,
+        memstat::TestVPCount::LargeVPCount,
+        memstat::WaitPeriodSec::LongWait,
+        driver,
+        "debug",
     )
     .await
 }
@@ -543,7 +590,7 @@ async fn memory_validation_gp_heavy<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_cvm_heavy<T: PetriVmmBackend>(
+async fn memory_validation_cvm_debug_heavy<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     _: (),
     driver: pal_async::DefaultDriver,
@@ -553,6 +600,7 @@ async fn memory_validation_cvm_heavy<T: PetriVmmBackend>(
         memstat::TestVPCount::LargeVPCount,
         memstat::WaitPeriodSec::LongWait,
         driver,
+        "debug",
     )
     .await
 }
