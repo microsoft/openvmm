@@ -134,6 +134,17 @@ pub enum GuestStateEncryptionPolicy {
     HardwareSealing,
 }
 
+#[derive(Copy, Clone, Debug, Default, Deserialize, Serialize)]
+pub enum EfiDiagnosticsLogLevelType {
+    /// Default log level
+    #[default]
+    Default = 0,
+    /// Include INFO logs
+    Info = 1,
+    /// All logs
+    Full = 2,
+}
+
 /// Management VTL Feature Flags
 #[bitfield(u64)]
 #[derive(Deserialize, Serialize)]
@@ -198,6 +209,8 @@ pub struct HclDevicePlatformSettingsV2Static {
     pub guest_state_lifetime: GuestStateLifetime,
     #[serde(default)]
     pub guest_state_encryption_policy: GuestStateEncryptionPolicy,
+    #[serde(default)]
+    pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
     #[serde(default)]
     pub management_vtl_features: ManagementVtlFeatures,
 }
