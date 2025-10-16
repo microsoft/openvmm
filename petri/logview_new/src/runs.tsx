@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import "./styles/common.css";
 import React, { useState, useMemo, useEffect } from "react";
 import { SortingState } from "@tanstack/react-table";

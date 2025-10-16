@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import React, { useState, useEffect, useRef, useLayoutEffect } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { QueryClient } from "@tanstack/react-query";
 import type { RunData, RunMetadata } from "./data_defs";
 

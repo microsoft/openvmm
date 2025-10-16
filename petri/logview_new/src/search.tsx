@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import React, { useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import "./styles/common.css";

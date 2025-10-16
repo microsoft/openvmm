@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { ColumnDef } from "@tanstack/react-table";
 import { RunData } from "../data_defs";
 import "../styles/runs.css";
