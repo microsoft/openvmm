@@ -165,7 +165,7 @@ async fn nvme_relay_shared_pool(
         "OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1",
         Some(ExpectedNvmeDeviceProperties {
             save_restore_supported: false, // No private pool, so no save/restore of memory.
-            qsize: 64,                     // After #2061 goes in, this should be 256.
+            qsize: 64,                     // Should be 256, but #2185.
             nvme_keepalive: false,
         }),
     )
@@ -186,7 +186,7 @@ async fn nvme_relay_private_pool(
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         Some(ExpectedNvmeDeviceProperties {
             save_restore_supported: true,
-            qsize: 64,
+            qsize: 256, // private pool should allow contiguous allocations.
             nvme_keepalive: false,
         }),
     )
