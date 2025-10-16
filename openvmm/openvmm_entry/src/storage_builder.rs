@@ -21,7 +21,7 @@ use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
@@ -36,7 +36,7 @@ pub(super) struct StorageBuilder {
     vtl2_scsi_devices: Vec<ScsiDeviceAndPath>,
     vtl0_nvme_namespaces: Vec<NamespaceDefinition>,
     vtl2_nvme_namespaces: Vec<NamespaceDefinition>,
-    pcie_nvme_controllers: HashMap<String, Vec<NamespaceDefinition>>,
+    pcie_nvme_controllers: BTreeMap<String, Vec<NamespaceDefinition>>,
     underhill_scsi_luns: Vec<Lun>,
     underhill_nvme_luns: Vec<Lun>,
     openhcl_vtl: Option<DeviceVtl>,
@@ -69,7 +69,7 @@ const UNDERHILL_VTL0_NVME_INSTANCE: Guid = guid::guid!("09a59b81-2bf6-4164-81d7-
 
 // PCIe controllers don't have VMBUS channel instance IDs the way VPCI
 // enumerated controllers do but we still need to present different
-// susbsystem IDs to the guest and we want those to be somewhat reliable.
+// subsystem IDs to the guest and we want those to be somewhat reliable.
 // Just hardcode a bunch for now.
 const PCIE_NVME_SUBSYSTEM_IDS: [Guid; 16] = [
     guid::guid!("55bfb22d-3f6c-4d5a-8ed8-d779dbdae6b8"),
@@ -98,7 +98,7 @@ impl StorageBuilder {
             vtl2_scsi_devices: Vec::new(),
             vtl0_nvme_namespaces: Vec::new(),
             vtl2_nvme_namespaces: Vec::new(),
-            pcie_nvme_controllers: HashMap::new(),
+            pcie_nvme_controllers: BTreeMap::new(),
             underhill_scsi_luns: Vec::new(),
             underhill_nvme_luns: Vec::new(),
             openhcl_vtl,
@@ -418,10 +418,10 @@ impl StorageBuilder {
 
         let owned_pcie_controllers = std::mem::take(&mut self.pcie_nvme_controllers);
         if owned_pcie_controllers.len() > PCIE_NVME_SUBSYSTEM_IDS.len() {
-            anyhow::bail!(format!(
+            anyhow::bail!(
                 "too many PCIe nvme controllers, max supported: {}",
                 PCIE_NVME_SUBSYSTEM_IDS.len()
-            ));
+            );
         }
         for ((port_name, namespaces), subsystem_id) in owned_pcie_controllers
             .into_iter()
