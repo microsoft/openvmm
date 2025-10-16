@@ -14,14 +14,6 @@ pub fn default_self_hosted(platform: FlowPlatform) -> GhRunner {
     }
 }
 
-pub fn default_gh_hosted(platform: FlowPlatform) -> GhRunner {
-    match platform {
-        FlowPlatform::Windows => gh_hosted_windows(),
-        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu) => gh_hosted_linux(),
-        platform => panic!("unsupported platform {platform}"),
-    }
-}
-
 /// This overrides the default image with a larger disk image for use with
 /// jobs that require more than the default disk space (e.g. to ensure vmm_tests
 /// have enough space to download test VHDs)
@@ -52,11 +44,11 @@ pub fn linux_self_hosted_largedisk() -> GhRunner {
     ])
 }
 
-pub fn gh_hosted_windows() -> GhRunner {
+pub fn gh_hosted_x64_windows() -> GhRunner {
     GhRunner::GhHosted(GhRunnerOsLabel::WindowsLatest)
 }
 
-pub fn gh_hosted_linux() -> GhRunner {
+pub fn gh_hosted_x64_linux() -> GhRunner {
     GhRunner::GhHosted(GhRunnerOsLabel::UbuntuLatest)
 }
 
