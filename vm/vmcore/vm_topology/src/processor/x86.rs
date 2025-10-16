@@ -210,8 +210,33 @@ impl TopologyBuilder<X86Topology> {
             // FUTURE: support multiple NUMA nodes per socket.
             let vnode = n / vps_per_socket;
             let socket = socket_offset + n / self.vps_per_socket;
-            let proc = n % self.vps_per_socket;
-            let apic_id = socket * vps_per_socket + proc;
+
+            // Compute the APIC index within the socket. Historically OHCL
+            // enumerated primary/secondary threads as adjacent VPs (so a
+            // sibling would be N+1). To match "primary-first" enumeration
+            // (where primary threads are numbered 0..cores-1 and secondary
+            // threads are cores..(2*cores-1) so a sibling is N + cores),
+            // interleave SMT threads here when SMT is enabled.
+            let local_index = n % self.vps_per_socket; // ordinal within requested socket
+            let apic_proc = if self.smt_enabled && self.vps_per_socket > 1 {
+                // Assume 2 threads per core when SMT enabled.
+                let threads_per_core = 2u32;
+                let cores = self.vps_per_socket / threads_per_core;
+                // local_index encodes the allocation order within the socket.
+                // If allocation order is primary-first (0..cores-1 then
+                // cores..2*cores-1), map that to APIC slots where low bits
+                // encode core*threads + thread.
+                let (core, thread) = if local_index < cores {
+                    (local_index, 0u32)
+                } else {
+                    (local_index - cores, 1u32)
+                };
+                core * threads_per_core + thread
+            } else {
+                local_index
+            };
+
+            let apic_id = socket * vps_per_socket + apic_proc;
             X86VpInfo {
                 base: VpInfo { vp_index, vnode },
                 apic_id,
