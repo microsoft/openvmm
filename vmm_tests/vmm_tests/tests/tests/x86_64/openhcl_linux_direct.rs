@@ -4,8 +4,11 @@
 //! Integration tests for x86_64 Linux direct boot with OpenHCL.
 
 use crate::x86_64::storage::new_test_vtl2_nvme_device;
+use anyhow::Context;
 use guid::Guid;
 use hvlite_defs::config::Vtl2BaseAddressType;
+use pal_async::DefaultDriver;
+use pal_async::socket::PolledSocket;
 use petri::OpenHclServicingFlags;
 use petri::PetriVmBuilder;
 use petri::ResolvedArtifact;
@@ -17,6 +20,8 @@ use petri::vtl2_settings::Vtl2LunBuilder;
 use petri::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
 use petri::vtl2_settings::Vtl2StorageControllerBuilder;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
+use std::path::Path;
+use unix_socket::UnixListener;
 use vmm_test_macros::openvmm_test;
 
 /// Today this only tests that the nic can get an IP address via consomme's DHCP
@@ -297,6 +302,74 @@ async fn openhcl_linux_vtl2_ram_self_allocate(
         diff,
         allowable_difference_kb
     );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+async fn test_wait_for_agent_core(
+    driver: &DefaultDriver,
+    listener: &mut PolledSocket<UnixListener>,
+    port: u32,
+    output_dir: &Path,
+) -> anyhow::Result<PipetteClient> {
+    // Wait for the pipette connection.
+    tracing::info!(port, "TEST listening for pipette connection");
+    let (conn, _) = listener
+        .accept()
+        .await
+        .with_context(|| format!("{port} TEST failed to accept pipette connection"))?;
+
+    tracing::info!(port, "TEST handshaking with pipette");
+    let client = PipetteClient::new(&driver, PolledSocket::new(driver, conn)?, output_dir)
+        .await
+        .context("TEST failed to connect to pipette")?;
+
+    tracing::info!(port, "TEST completed pipette handshake");
+    Ok(client)
+}
+
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn pipette_loop(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _: (),
+    driver: DefaultDriver,
+) -> Result<(), anyhow::Error> {
+    let (mut vm, agent) = config.with_vmbus_redirect(true).run().await?;
+
+    // Make sure that the agent is responsive.
+    let sh = agent.unix_shell();
+    let output = cmd!(sh, "echo hello world").read().await?;
+    assert_eq!(output.trim(), "hello world");
+
+    let vsock_path = vm.backend().vtl0_vsock_path();
+    const PORT: u32 = 0x1338;
+
+    // Make the vtl2 pipette connection listener.
+    let mut test_pipette_listener = {
+        let path = format!("{}_{PORT}", vsock_path.to_string_lossy());
+        PolledSocket::new(
+            &driver,
+            UnixListener::bind(path)
+                .with_context(|| format!("{PORT} failed to bind to test pipette listener"))?,
+        )?
+    };
+
+    tracing::info!(?PORT, "asking agent to connect to test pipette listener");
+    agent
+        .new_connection(PORT, Some(std::time::Duration::from_millis(5000)))
+        .await?; // Does not wait for connection to complete.
+
+    let mut t = tempfile::tempdir()
+        .with_context(|| format!("{PORT} failed to create temp dir for pipette logs"))?;
+    t.disable_cleanup(true);
+    tracing::info!(?PORT, "about to test_wait_for_agent_core");
+    test_wait_for_agent_core(&driver, &mut test_pipette_listener, PORT, t.path())
+        .await
+        .with_context(|| format!("{PORT} failed to connect to test pipette listener"))?;
+    tracing::info!(?PORT, "completed test_wait_for_agent_core");
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;

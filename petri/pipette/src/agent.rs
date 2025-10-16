@@ -36,7 +36,10 @@ pub struct DiagnosticSender(mesh::Sender<DiagnosticFile>);
 
 impl Agent {
     pub async fn new(driver: DefaultDriver) -> anyhow::Result<Self> {
-        let socket = (connect_client(&driver), connect_server(&driver))
+        let socket = (
+            connect_client(&driver),
+            connect_server(&driver, pipette_protocol::PIPETTE_VSOCK_PORT),
+        )
             .race_ok()
             .await
             .map_err(|e| {
@@ -96,9 +99,9 @@ impl Agent {
     }
 }
 
-async fn connect_server(driver: &DefaultDriver) -> anyhow::Result<PolledSocket<Socket>> {
+async fn connect_server(driver: &DefaultDriver, port: u32) -> anyhow::Result<PolledSocket<Socket>> {
     let mut socket = VmSocket::new()?;
-    socket.bind(VmAddress::vsock_any(pipette_protocol::PIPETTE_VSOCK_PORT))?;
+    socket.bind(VmAddress::vsock_any(port))?;
     let mut socket =
         PolledSocket::new(driver, socket.into()).context("failed to create polled socket")?;
     socket.listen(1)?;
@@ -124,6 +127,61 @@ async fn connect_client(driver: &DefaultDriver) -> anyhow::Result<PolledSocket<S
         .connect(&VmAddress::vsock_host(pipette_protocol::PIPETTE_VSOCK_PORT).into())
         .await?;
     Ok(socket)
+}
+
+async fn fake_bootstrap(
+    driver: &DefaultDriver,
+    port: u32,
+    keepalive_duration: Option<Duration>,
+) -> anyhow::Result<()> {
+    tracing::info!(port, "starting fake bootstrap");
+    let socket = (
+        connect_client(&driver),
+        connect_server(&driver, pipette_protocol::PIPETTE_VSOCK_PORT),
+    )
+        .race_ok()
+        .await
+        .map_err(|e| {
+            let [e0, e1] = &*e;
+            anyhow::anyhow!(
+                "failed to connect. client error: {:#} server error: {:#}",
+                e0,
+                e1
+            )
+        })?;
+
+    let (bootstrap_send, bootstrap_recv) = mesh::oneshot::<PipetteBootstrap>();
+    let _mesh = PointToPointMesh::new(&driver, socket, bootstrap_recv.into());
+
+    let (request_send, _request_recv) = mesh::channel();
+    let (_diag_file_send, diag_file_recv) = mesh::channel();
+    let (_watch_send, watch_recv) = mesh::oneshot();
+    let (log_read, _log_write) = mesh::pipe::pipe();
+
+    tracing::info!(port, "sending bootstrap message");
+
+    bootstrap_send.send(PipetteBootstrap {
+        requests: request_send,
+        diag_file_recv,
+        watch: watch_recv,
+        log: log_read,
+    });
+
+    tracing::info!(port, "bootstrap message sent");
+
+    if keepalive_duration.is_some() {
+        tracing::info!(
+            port,
+            keepalive_duration = ?keepalive_duration,
+            "starting fake bootstrap with keepalive"
+        );
+        let mut timer = PolledTimer::new(driver);
+        timer.sleep(keepalive_duration.unwrap()).await;
+    }
+
+    tracing::info!(port, "shutting down fake bootstrap");
+
+    Ok(())
 }
 
 async fn handle_request(
@@ -174,6 +232,33 @@ async fn handle_request(
         PipetteRequest::ReadFile(rpc) => rpc.handle_failable(read_file).await,
         PipetteRequest::WriteFile(rpc) => rpc.handle_failable(write_file).await,
         PipetteRequest::GetTime(rpc) => rpc.handle_sync(|()| SystemTime::now().into()),
+        PipetteRequest::FakeConnection(rpc) => {
+            let driver = driver.clone();
+            rpc.handle_sync(move |(port, keepalive_duration)| {
+                let d = driver.clone();
+                let mut timer = PolledTimer::new(&driver);
+                driver
+                    .spawn("new_connection", async move {
+                        tracing::info!(port, "(waiting) starting new pipette connection");
+                        timer.sleep(Duration::from_secs(2)).await;
+                        tracing::info!(port, "(now doing) starting new pipette connection");
+                        let r = fake_bootstrap(&d, port, keepalive_duration).await;
+                        match r {
+                            Ok(_socket) => {
+                                tracing::info!(port, "(done) starting new pipette connection");
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    port,
+                                    ?e,
+                                    "(failed) starting new pipette connection"
+                                );
+                            }
+                        }
+                    })
+                    .detach();
+            });
+        }
     }
 }
 
