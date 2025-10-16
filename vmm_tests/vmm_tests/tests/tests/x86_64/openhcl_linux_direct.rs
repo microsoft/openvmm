@@ -69,7 +69,6 @@ async fn mana_nic_shared_pool(
     let (vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(|b| b.with_nic())
-        .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
         .run()
         .await?;
 
@@ -92,7 +91,6 @@ async fn mana_nic_servicing(
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(|b| b.with_nic())
-        .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
         .run()
         .await?;
 

@@ -11,7 +11,7 @@ firmware_uefi_custom_vars.workspace = true
 hyperv_uefi_custom_vars_json.workspace = true
 
 [build-dependencies]
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 
 [lints]
 workspace = true
