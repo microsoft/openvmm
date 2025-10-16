@@ -9360,6 +9360,7 @@ dependencies = [
  "parking_lot",
  "paste",
  "pci_bus",
+ "pcie",
  "range_map_vec",
  "state_unit",
  "thiserror 2.0.16",
