@@ -15,12 +15,24 @@
 //! internal implementation details should be in submodules.
 
 use crate::UefiDevice;
+use formatting::EfiDiagnosticsLog;
+use formatting::log_diagnostic_ratelimited;
+use formatting::log_diagnostic_unrestricted;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use mesh::payload::Protobuf;
+use processor::ProcessingError;
 use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
 use uefi_specs::hyperv::debug_level::DEBUG_INFO;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
+
+mod formatting;
+mod message_accumulator;
+mod parser;
+mod processor;
+
+/// Default number of EfiDiagnosticsLogs emitted per period
+pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;
 
 /// Log level configuration - encapsulates a u32 mask where u32::MAX means log everything
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect, Protobuf)]
@@ -52,20 +64,6 @@ impl LogLevel {
         }
     }
 }
-
-mod formatting;
-mod message_accumulator;
-mod parser;
-mod processor;
-
-// Internal imports for implementation
-use formatting::EfiDiagnosticsLog;
-use formatting::log_diagnostic_ratelimited;
-use formatting::log_diagnostic_unrestricted;
-use processor::ProcessingError;
-
-/// Default number of EfiDiagnosticsLogs emitted per period
-pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;
 
 /// Definition of the diagnostics services state
 #[derive(Inspect)]
