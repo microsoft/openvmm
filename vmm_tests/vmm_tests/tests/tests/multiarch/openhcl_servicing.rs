@@ -428,10 +428,6 @@ async fn apply_fault_with_keepalive(
             ..Default::default()
         },
     )
-<<<<<<< HEAD
-    .await
-}
-=======
     .await?;
 
     fault_start_updater.set(false).await;
@@ -495,4 +491,3 @@ async fn create_keepalive_test_config(
         .run()
         .await
 }
->>>>>>> 1070675a (Added the create test config function back in)
