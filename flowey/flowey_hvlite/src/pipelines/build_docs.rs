@@ -50,7 +50,7 @@ impl IntoPipeline for BuildDocsCli {
                             branches,
                             ..Default::default()
                         })
-                        .gh_set_name("[flowey] OpenVMM Docs CI");
+                        .gh_set_name("OpenVMM Docs CI");
                 }
                 PipelineConfig::Pr => {
                     pipeline
@@ -58,7 +58,7 @@ impl IntoPipeline for BuildDocsCli {
                             branches,
                             ..GhPrTriggers::new_draftable()
                         })
-                        .gh_set_name("[flowey] OpenVMM Docs PR");
+                        .gh_set_name("OpenVMM Docs PR");
                 }
             }
         }

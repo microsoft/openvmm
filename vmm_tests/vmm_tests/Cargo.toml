@@ -35,6 +35,7 @@ scsidisk_resources.workspace = true
 storvsp_resources.workspace = true
 virtio_resources.workspace = true
 vm_resource.workspace = true
+disk_vhd1.workspace = true
 
 guid.workspace = true
 kmsg.workspace = true
