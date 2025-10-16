@@ -943,8 +943,11 @@ impl FromStr for DiskCli {
                 "uh" => underhill = Some(UnderhillDiskSource::Scsi),
                 "uh-nvme" => underhill = Some(UnderhillDiskSource::Nvme),
                 "pcie_port" => {
-                    let port = s.next().context("pcie_port requires port name")?;
-                    pcie_port = Some(String::from(port));
+                    let port = s.next();
+                    if port.is_none_or(|p| p.is_empty()) {
+                        anyhow::bail!("`pcie_port requires a port name");
+                    }
+                    pcie_port = Some(String::from(port.unwrap()));
                 }
                 opt => anyhow::bail!("unknown option: '{opt}'"),
             }
@@ -1609,6 +1612,29 @@ mod tests {
             }
             _ => panic!("Expected Memory variant"),
         }
+    }
+
+    #[test]
+    fn test_parse_pcie_disk() {
+        assert_eq!(
+            DiskCli::from_str("mem:1G,pcie_port=p0").unwrap().pcie_port,
+            Some("p0".to_string())
+        );
+        assert_eq!(
+            DiskCli::from_str("file:path.vhdx,pcie_port=p0")
+                .unwrap()
+                .pcie_port,
+            Some("p0".to_string())
+        );
+        assert_eq!(
+            DiskCli::from_str("memdiff:file:path.vhdx,pcie_port=p0")
+                .unwrap()
+                .pcie_port,
+            Some("p0".to_string())
+        );
+
+        // Missing port name
+        assert!(DiskCli::from_str("file:disk.vhd,pcie_port=").is_err());
     }
 
     #[test]
