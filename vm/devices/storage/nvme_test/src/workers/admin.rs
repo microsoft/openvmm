@@ -460,6 +460,9 @@ impl AdminHandler {
                 Event::NamespaceChange(nsid)
             };
             let changed_namespace_fault = async {
+                // NOTE: Don't check 'fault_active' as it may get toggled after
+                // this future is created. This channel is only used by the test
+                // so it is fine to always listen on it.
                 let Some(ns_change) = self
                     .config
                     .fault_configuration
