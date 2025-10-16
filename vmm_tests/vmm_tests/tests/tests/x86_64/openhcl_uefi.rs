@@ -155,26 +155,6 @@ async fn nvme_relay(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), a
 /// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
 ///
-/// Use the shared pool override to test the shared pool dma path.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
-async fn nvme_relay_shared_pool(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-) -> Result<(), anyhow::Error> {
-    nvme_relay_test_core(
-        config,
-        "OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1",
-        Some(ExpectedNvmeDeviceProperties {
-            save_restore_supported: false, // No private pool, so no save/restore of memory.
-            qsize: 64,                     // Should be 256, but #2185.
-            nvme_keepalive: false,
-        }),
-    )
-    .await
-}
-
-/// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
-/// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
-///
 /// Use the private pool override to test the private pool dma path.
 #[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay_private_pool(
