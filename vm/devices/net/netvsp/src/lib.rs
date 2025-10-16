@@ -2296,7 +2296,7 @@ impl<T: RingMem> NetChannel<T> {
         message_type: u32,
         mut reader: PacketReader<'_>,
         segments: &mut Vec<TxSegment>,
-        control_messages: &mut PendingControlMessages,
+        pending_control_messages: &mut Option<&mut PendingControlMessages>,
     ) -> Result<bool, WorkerError> {
         let is_packet = match message_type {
             rndisprot::MESSAGE_TYPE_PACKET_MSG => {
@@ -2311,8 +2311,7 @@ impl<T: RingMem> NetChannel<T> {
             }
             rndisprot::MESSAGE_TYPE_HALT_MSG => false,
             n => {
-                let _control = state
-                    .primary
+                let pending_control_messages = pending_control_messages
                     .as_mut()
                     .ok_or(WorkerError::NotSupportedOnSubChannel(n))?;
 
@@ -2326,15 +2325,19 @@ impl<T: RingMem> NetChannel<T> {
                 }
                 // Do not let the queue get too large--the guest should not be
                 // sending very many control messages at a time.
-                if CONTROL_MESSAGE_MAX_QUEUED_BYTES - control_messages.total_len < reader.len() {
+                if CONTROL_MESSAGE_MAX_QUEUED_BYTES - pending_control_messages.total_len
+                    < reader.len()
+                {
                     return Err(WorkerError::TooManyControlMessages);
                 }
 
-                control_messages.total_len += reader.len();
-                control_messages.control_messages.push(ControlMessage {
-                    message_type,
-                    data: reader.read_all()?.into(),
-                });
+                pending_control_messages.total_len += reader.len();
+                pending_control_messages
+                    .control_messages
+                    .push(ControlMessage {
+                        message_type,
+                        data: reader.read_all()?.into(),
+                    });
 
                 false
                 // The queue will be processed in the main dispatch loop.
@@ -5273,9 +5276,15 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 PacketData::RndisPacket(_) => {
                     assert!(data.tx_segments.is_empty());
                     let id = state.free_tx_packets.pop().unwrap();
-                    let mut control_messages = PendingControlMessages {
-                        total_len: 0,
-                        control_messages: Vec::new(),
+                    // Only create a list of pending control messages for the Primary Channel
+                    let mut pending_control_messages = if let Some(control) = state.primary.as_mut()
+                    {
+                        Some(&mut PendingControlMessages {
+                            total_len: control.control_messages_len,
+                            control_messages: Vec::new(),
+                        })
+                    } else {
+                        None
                     };
                     let result: Result<usize, WorkerError> = self.handle_rndis(
                         buffers,
@@ -5283,16 +5292,18 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         state,
                         &packet,
                         &mut data.tx_segments,
-                        &mut control_messages,
+                        &mut pending_control_messages,
                     );
                     let num_packets = match result {
                         Ok(num_packets) => {
-                            // Add control messages to primary channel state control message queue.
-                            let control = state.primary.as_mut().unwrap();
-                            control.control_messages_len += control_messages.total_len;
-                            control
-                                .control_messages
-                                .extend(control_messages.control_messages);
+                            if let Some(pending_control_messages) = pending_control_messages {
+                                // Add control messages to primary channel state control message queue.
+                                let control = state.primary.as_mut().unwrap();
+                                control.control_messages_len = pending_control_messages.total_len;
+                                control
+                                    .control_messages
+                                    .extend(pending_control_messages.control_messages.drain(..));
+                            }
                             num_packets
                         }
                         Err(err) => {
@@ -5470,7 +5481,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         state: &mut ActiveState,
         packet: &Packet<'_>,
         segments: &mut Vec<TxSegment>,
-        control_messages: &mut PendingControlMessages,
+        pending_control_messages: &mut Option<&mut PendingControlMessages>,
     ) -> Result<usize, WorkerError> {
         let mut num_packets = 0;
         let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
@@ -5503,7 +5514,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 header.message_type,
                 this_reader,
                 segments,
-                control_messages,
+                pending_control_messages,
             )? {
                 num_packets += 1;
             }
