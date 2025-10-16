@@ -460,10 +460,6 @@ impl AdminHandler {
                 Event::NamespaceChange(nsid)
             };
             let changed_namespace_fault = async {
-                if !self.config.fault_configuration.fault_active.get() {
-                    pending().await
-                }
-
                 let Some(ns_change) = self
                     .config
                     .fault_configuration
