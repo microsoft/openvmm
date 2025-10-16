@@ -60,6 +60,10 @@ pub fn gh_hosted_linux() -> GhRunner {
     GhRunner::GhHosted(GhRunnerOsLabel::UbuntuLatest)
 }
 
+pub fn gh_hosted_arm_windows() -> GhRunner {
+    GhRunner::GhHosted(GhRunnerOsLabel::Windows11Arm)
+}
+
 pub fn gh_hosted_arm_linux() -> GhRunner {
     GhRunner::GhHosted(GhRunnerOsLabel::Ubuntu2404Arm)
 }

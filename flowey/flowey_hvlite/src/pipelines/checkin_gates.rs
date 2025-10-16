@@ -742,11 +742,8 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowPlatform::Windows,
                 ),
                 clippy_targets: Some((
-                    "windows",
-                    &[
-                        (target_lexicon::triple!("x86_64-pc-windows-msvc"), false),
-                        (target_lexicon::triple!("aarch64-pc-windows-msvc"), false),
-                    ],
+                    "x64-windows",
+                    &[(target_lexicon::triple!("x86_64-pc-windows-msvc"), false)],
                 )),
                 unit_test_target: Some((
                     "x64-windows",
@@ -760,10 +757,9 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowPlatformLinuxDistro::Ubuntu,
                 )),
                 clippy_targets: Some((
-                    "linux, macos",
+                    "x64-linux, macos",
                     &[
                         (target_lexicon::triple!("x86_64-unknown-linux-gnu"), false),
-                        (target_lexicon::triple!("aarch64-unknown-linux-gnu"), false),
                         (target_lexicon::triple!("aarch64-apple-darwin"), false),
                     ],
                 )),
@@ -779,22 +775,48 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowPlatformLinuxDistro::Ubuntu,
                 )),
                 clippy_targets: Some((
-                    "linux-musl, misc nostd",
-                    &[
-                        (openhcl_musl_target(CommonArch::X86_64), true),
-                        (openhcl_musl_target(CommonArch::Aarch64), true),
-                    ],
+                    "x64-linux-musl, misc nostd",
+                    &[(openhcl_musl_target(CommonArch::X86_64), true)],
                 )),
                 unit_test_target: Some(("x64-linux-musl", openhcl_musl_target(CommonArch::X86_64))),
             },
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::Aarch64,
-                gh_pool: crate::pipelines_shared::gh_pools::gh_hosted_arm_linux(),
-                clippy_targets: None,
+                gh_pool: crate::pipelines_shared::gh_pools::gh_hosted_arm_windows(),
+                clippy_targets: Some((
+                    "aarch64-windows",
+                    &[(target_lexicon::triple!("aarch64-pc-windows-msvc"), false)],
+                )),
                 unit_test_target: Some((
                     "aarch64-windows",
                     target_lexicon::triple!("aarch64-pc-windows-msvc"),
+                )),
+            },
+            ClippyUnitTestJobParams {
+                platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                arch: FlowArch::Aarch64,
+                gh_pool: crate::pipelines_shared::gh_pools::gh_hosted_arm_linux(),
+                clippy_targets: Some((
+                    "aarch64-linux",
+                    &[(target_lexicon::triple!("aarch64-unknown-linux-gnu"), false)],
+                )),
+                unit_test_target: Some((
+                    "aarch64-linux",
+                    target_lexicon::triple!("aarch64-unknown-linux-gnu"),
+                )),
+            },
+            ClippyUnitTestJobParams {
+                platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                arch: FlowArch::Aarch64,
+                gh_pool: crate::pipelines_shared::gh_pools::gh_hosted_arm_linux(),
+                clippy_targets: Some((
+                    "aarch64-linux-musl, misc nostd",
+                    &[(openhcl_musl_target(CommonArch::Aarch64), true)],
+                )),
+                unit_test_target: Some((
+                    "aarch64-linux-musl",
+                    openhcl_musl_target(CommonArch::Aarch64),
                 )),
             },
         ] {
