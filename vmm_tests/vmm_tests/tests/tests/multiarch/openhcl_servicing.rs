@@ -8,6 +8,7 @@
 
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
+use futures::FutureExt;
 use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::VpciDeviceConfig;
@@ -276,6 +277,8 @@ async fn servicing_keepalive_with_namespace_update(
 ) -> Result<(), anyhow::Error> {
     let mut fault_start_updater = CellUpdater::new(false);
     let (ns_change_send, ns_change_recv) = mesh::channel::<NamespaceChange>();
+    let (aer_verify_send, aer_verify_recv) = mesh::oneshot::<()>();
+    let (log_verify_send, log_verify_recv) = mesh::oneshot::<()>();
 
     let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
         .with_namespace_fault(
@@ -284,7 +287,11 @@ async fn servicing_keepalive_with_namespace_update(
         .with_admin_queue_fault(
             AdminQueueFaultConfig::new().with_submission_queue_fault(
                 CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0).build(),
-                QueueFaultBehavior::Panic("Received a duplicate ASYNCHRONOUS_EVENT_REQUEST command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
+                QueueFaultBehavior::Verify(Some(aer_verify_send)),
+            )
+            .with_submission_queue_fault(
+                CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::GET_LOG_PAGE.0).build(),
+                QueueFaultBehavior::Verify(Some(log_verify_send)),
             )
         );
 
@@ -309,6 +316,9 @@ async fn servicing_keepalive_with_namespace_update(
     vm.restore_openhcl()
         .await?;
 
+    let _ = aer_verify_recv.now_or_never().expect("AER command was not observed during servicing with namespace change");
+    let _ = log_verify_recv.now_or_never().expect("Log command was not observed during servicing with namespace change");
+    
     fault_start_updater.set(false).await;
     agent.ping().await?;
 

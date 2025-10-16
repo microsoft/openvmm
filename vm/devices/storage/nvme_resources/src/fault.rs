@@ -6,12 +6,13 @@
 use mesh::Cell;
 use mesh::MeshPayload;
 use mesh::rpc::Rpc;
+use mesh::OneshotSender;
 use nvme_spec::Command;
 use nvme_spec::Completion;
 use std::time::Duration;
 
 /// Supported fault behaviour for NVMe queues
-#[derive(Debug, Clone, MeshPayload)]
+#[derive(Debug, MeshPayload)]
 pub enum QueueFaultBehavior<T> {
     /// Update the queue entry with the returned data
     Update(T),
@@ -23,6 +24,8 @@ pub enum QueueFaultBehavior<T> {
     Panic(String),
     /// Update a completion payload
     CustomPayload(Vec<u8>),
+    /// Verify that a particular command was seen
+    Verify(Option<OneshotSender<()>>),
 }
 
 #[derive(Clone, MeshPayload)]
@@ -55,7 +58,7 @@ pub struct NamespaceFaultConfig {
     pub recv_changed_namespace: mesh::Receiver<NamespaceChange>,
 }
 
-#[derive(MeshPayload, Clone)]
+#[derive(MeshPayload)]
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
     /// A map of NVME opcodes to the submission fault behavior for each. (This
