@@ -133,7 +133,7 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
                 let suffix = match ext {
                     "rs" | "c" | "proto" | "ts" | "tsx" | "js" | "toml" | "py" | "ps1"
                     | "config" => "",
-                    "css" => " */ ",
+                    "css" => " */",
                     "html" => " -->",
                     _ => unreachable!(),
                 };
