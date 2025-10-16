@@ -453,6 +453,9 @@ flags:
     pub gdb: Option<u16>,
 
     /// enable emulated MANA devices with the given network backend (see --net)
+    ///
+    /// Prefix with `pcie_port=<port_name>:` to expose the nic over emulated PCIe
+    /// at the specificed port.
     #[clap(long)]
     pub mana: Vec<NicConfigCli>,
 
@@ -1208,6 +1211,7 @@ pub struct NicConfigCli {
     pub endpoint: EndpointConfigCli,
     pub max_queues: Option<u16>,
     pub underhill: bool,
+    pub pcie_port: Option<String>,
 }
 
 impl FromStr for NicConfigCli {
@@ -1217,11 +1221,18 @@ impl FromStr for NicConfigCli {
         let mut vtl = DeviceVtl::Vtl0;
         let mut max_queues = None;
         let mut underhill = false;
+        let mut pcie_port = None;
         while let Some((opt, rest)) = s.split_once(':') {
             if let Some((opt, val)) = opt.split_once('=') {
                 match opt {
                     "queues" => {
                         max_queues = Some(val.parse().map_err(|_| "failed to parse queue count")?);
+                    }
+                    "pcie_port" => {
+                        if val.is_empty() {
+                            return Err("`pcie_port=` requires port name argument".into());
+                        }
+                        pcie_port = Some(val.to_string());
                     }
                     _ => break,
                 }
@@ -1241,12 +1252,17 @@ impl FromStr for NicConfigCli {
             return Err("`uh` is incompatible with `vtl2`".into());
         }
 
+        if pcie_port.is_some() && (underhill || vtl != DeviceVtl::Vtl0) {
+            return Err("`pcie_port` is incompatible with `uh` and `vtl2`".into());
+        }
+
         let endpoint = s.parse()?;
         Ok(NicConfigCli {
             vtl,
             endpoint,
             max_queues,
             underhill,
+            pcie_port,
         })
     }
 }
@@ -1948,26 +1964,39 @@ mod tests {
         assert_eq!(config.vtl, DeviceVtl::Vtl0);
         assert!(config.max_queues.is_none());
         assert!(!config.underhill);
+        assert!(config.pcie_port.is_none());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
         // Test with vtl2
         let config = NicConfigCli::from_str("vtl2:none").unwrap();
         assert_eq!(config.vtl, DeviceVtl::Vtl2);
+        assert!(config.pcie_port.is_none());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
         // Test with queues
         let config = NicConfigCli::from_str("queues=4:none").unwrap();
         assert_eq!(config.max_queues, Some(4));
+        assert!(config.pcie_port.is_none());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
         // Test with underhill
         let config = NicConfigCli::from_str("uh:none").unwrap();
         assert!(config.underhill);
+        assert!(config.pcie_port.is_none());
+        assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        // Test with pcie_port
+        let config = NicConfigCli::from_str("pcie_port=rp0:none").unwrap();
+        assert_eq!(config.pcie_port.unwrap(), "rp0".to_string());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
         // Test error cases
         assert!(NicConfigCli::from_str("queues=invalid:none").is_err());
         assert!(NicConfigCli::from_str("uh:vtl2:none").is_err()); // uh incompatible with vtl2
+        assert!(NicConfigCli::from_str("pcie_port=rp0:vtl2:none").is_err());
+        assert!(NicConfigCli::from_str("uh:pcie_port=rp0:none").is_err());
+        assert!(NicConfigCli::from_str("pcie_port=:none").is_err());
+        assert!(NicConfigCli::from_str("pcie_port:none").is_err());
     }
 
     #[test]
