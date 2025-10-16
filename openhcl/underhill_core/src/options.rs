@@ -166,11 +166,6 @@ pub struct Options {
     /// MCR Device Enable
     pub mcr: bool, // TODO MCR: support closed-source ENV vars
 
-    /// (OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1)
-    /// Enable the shared visibility pool. This is enabled by default on
-    /// hardware isolated platforms, but can be enabled for testing.
-    pub enable_shared_visibility_pool: bool,
-
     /// (OPENHCL_HIDE_ISOLATION=1)
     /// Hide the isolation mode from the guest.
     pub hide_isolation: bool,
@@ -328,8 +323,6 @@ impl Options {
         let serial_wait_for_rts = parse_legacy_env_bool("OPENHCL_SERIAL_WAIT_FOR_RTS");
         let nvme_vfio = parse_legacy_env_bool("OPENHCL_NVME_VFIO");
         let mcr = parse_legacy_env_bool("OPENHCL_MCR_DEVICE");
-        let enable_shared_visibility_pool =
-            parse_legacy_env_bool("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL");
         let hide_isolation = parse_env_bool("OPENHCL_HIDE_ISOLATION");
         let halt_on_guest_halt = parse_legacy_env_bool("OPENHCL_HALT_ON_GUEST_HALT");
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
@@ -418,7 +411,6 @@ impl Options {
             force_load_vtl0_image,
             nvme_vfio,
             mcr,
-            enable_shared_visibility_pool,
             hide_isolation,
             halt_on_guest_halt,
             no_sidecar_hotplug,

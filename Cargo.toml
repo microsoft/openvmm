@@ -603,8 +603,10 @@ lto = 'fat'
 [profile.dev.package.minimal_rt]
 opt-level = 1
 
-# Optimize loom even in the dev profile, as otherwise tests just take too long.
+# Optimize loom and its main dependency even in the dev profile, as otherwise tests just take too long.
 [profile.dev.package.loom]
+opt-level = 3
+[profile.dev.package.generator]
 opt-level = 3
 
 [patch.crates-io]
