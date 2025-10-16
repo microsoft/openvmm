@@ -35,7 +35,7 @@ hex.workspace = true
 fs-err.workspace = true
 getrandom = { workspace = true, optional = true}
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
 ucs2.workspace = true
 
