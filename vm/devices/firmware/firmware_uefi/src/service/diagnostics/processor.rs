@@ -3,6 +3,7 @@
 
 //! Core processing logic for EFI diagnostics buffer
 
+use crate::service::diagnostics::LogLevel;
 use crate::service::diagnostics::formatting::EfiDiagnosticsLog;
 use crate::service::diagnostics::message_accumulator::AccumulationError;
 use crate::service::diagnostics::message_accumulator::MessageAccumulator;
@@ -13,44 +14,9 @@ use guestmem::GuestMemoryError;
 use thiserror::Error;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerInfo;
 use uefi_specs::hyperv::advanced_logger::SIG_HEADER;
-use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
-use uefi_specs::hyperv::debug_level::DEBUG_INFO;
-use uefi_specs::hyperv::debug_level::DEBUG_WARN;
 
 /// Maximum allowed size of the log buffer
 pub const MAX_LOG_BUFFER_SIZE: u32 = 0x400000; // 4MB
-
-/// Log level configuration - uses a simple u32 mask where u32::MAX means log everything
-pub type LogLevel = u32;
-
-/// Log level constants and utilities
-pub mod log_level {
-    use super::*;
-
-    /// Create default log level configuration (ERROR and WARN only)
-    pub const fn default() -> LogLevel {
-        DEBUG_ERROR | DEBUG_WARN
-    }
-
-    /// Create info log level configuration (ERROR, WARN, and INFO)
-    pub const fn info() -> LogLevel {
-        DEBUG_ERROR | DEBUG_WARN | DEBUG_INFO
-    }
-
-    /// Create full log level configuration (all levels)
-    pub const fn full() -> LogLevel {
-        u32::MAX
-    }
-
-    /// Checks if a raw debug level should be logged based on this log level configuration
-    pub fn should_log(log_level: LogLevel, raw_debug_level: u32) -> bool {
-        if log_level == u32::MAX {
-            true // Log everything
-        } else {
-            (raw_debug_level & log_level) != 0
-        }
-    }
-}
 
 /// Errors that occur during processing
 #[derive(Debug, Error)]
@@ -191,7 +157,7 @@ where
 
         // Process the entry through the accumulator
         if let Some((log, raw_debug_level)) = accumulator.process_entry(&entry)?
-            && log_level::should_log(log_level, raw_debug_level)
+            && log_level.should_log(raw_debug_level)
         {
             log_handler(log, raw_debug_level);
         }
@@ -206,7 +172,7 @@ where
 
     // Process any remaining accumulated message
     if let Some((log, raw_debug_level)) = accumulator.finalize_remaining()
-        && log_level::should_log(log_level, raw_debug_level)
+        && log_level.should_log(raw_debug_level)
     {
         log_handler(log, raw_debug_level);
     }

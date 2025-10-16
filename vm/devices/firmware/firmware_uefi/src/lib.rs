@@ -57,7 +57,6 @@ pub mod service;
 mod service;
 
 pub use crate::service::diagnostics::LogLevel;
-pub use crate::service::diagnostics::log_level;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -276,7 +275,7 @@ impl UefiDevice {
                 self.service.diagnostics.set_gpa(data)
             }
             UefiCommand::PROCESS_EFI_DIAGNOSTICS => {
-                self.process_diagnostics(false, log_level::default(), Some(DEFAULT_LOGS_PER_PERIOD))
+                self.process_diagnostics(false, Some(DEFAULT_LOGS_PER_PERIOD))
             }
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
@@ -289,7 +288,7 @@ impl UefiDevice {
             // `inspect -u vm/uefi/process_diagnostics`. This is true, even for other
             // mutable paths in the inspect graph.
             if v.is_some() {
-                self.process_diagnostics(true, log_level::default(), None);
+                self.process_diagnostics(true, None);
                 Result::<_, std::convert::Infallible>::Ok(
                     "attempted to process diagnostics through inspect".to_string(),
                 )
@@ -343,7 +342,7 @@ impl PollDevice for UefiDevice {
             // NOTE: Do not allow reprocessing diagnostics here.
             // UEFI programs the watchdog's configuration, so we should assume that
             // this path could trigger multiple times.
-            self.process_diagnostics(false, log_level::default(), Some(DEFAULT_LOGS_PER_PERIOD));
+            self.process_diagnostics(false, Some(DEFAULT_LOGS_PER_PERIOD));
         }
     }
 }
