@@ -2,13 +2,13 @@
 // Licensed under the MIT License.
 
 #[macro_export]
-/// Generates a function that calls the given symbol saving and restoring all registers around the call.
+/// Generates a function that calls the given symbol saving and restoring general purpose registers around the call.
 macro_rules! create_function_with_restore {
     ($func_name:ident, $symbol:ident) => {
         #[inline(never)]
         // avoiding inline for debuggability in release builds.
         fn $func_name() {
-            // SAFETY: we are calling a function pointer and restoring all registers.
+            // SAFETY: we are calling a function pointer and restoring general purpose registers.
             unsafe {
                 asm!("
                     push rax

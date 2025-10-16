@@ -54,10 +54,7 @@ impl HvCall {
             .expect("size of start_virtual_processor header is not correct");
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallStartVirtualProcessor, None);
-        match output.result() {
-            Ok(()) => Ok(()),
-            err => panic!("Failed to start virtual processor: {:?}", err),
-        }
+        output.result()
     }
 
     /// Enables a VTL for a specific virtual processor (VP) on x86_64.
@@ -80,10 +77,7 @@ impl HvCall {
             .expect("size of enable_vp_vtl header is not correct");
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallEnableVpVtl, None);
-        match output.result() {
-            Ok(()) | Err(hvdef::HvError::VtlAlreadyEnabled) => Ok(()),
-            err => err,
-        }
+        output.result()
     }
 
     /// Retrieves the current VTL context by reading the necessary registers.

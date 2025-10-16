@@ -9,7 +9,7 @@ use x86_64::structures::idt::PageFaultErrorCode;
 static mut COMMON_HANDLER: fn(InterruptStackFrame, u8) = common_handler;
 static COMMON_HANDLER_MUTEX: Mutex<()> = Mutex::new(());
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 fn abstraction_handle(stack_frame: InterruptStackFrame, interrupt: u8) {
     // SAFETY: COMMON_HANDLER is only set via set_common_handler which is protected by a mutex.
     unsafe { (COMMON_HANDLER)(stack_frame, interrupt) };

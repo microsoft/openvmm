@@ -29,10 +29,7 @@ impl HvCall {
             .expect("size of start_virtual_processor header is not correct");
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallStartVirtualProcessor, None);
-        match output.result() {
-            Ok(()) => Ok(()),
-            err => panic!("Failed to start virtual processor: {:?}", err),
-        }
+        output.result()
     }
 
     /// Enables a VTL for a specific virtual processor (VP) on aarch64.
@@ -55,10 +52,7 @@ impl HvCall {
         _ = header.write_to_prefix(self.input_page().buffer.as_mut_slice());
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallEnableVpVtl, None);
-        match output.result() {
-            Ok(()) | Err(hvdef::HvError::VtlAlreadyEnabled) => Ok(()),
-            err => err,
-        }
+        output.result()
     }
 
     /// Placeholder for VTL call on aarch64.

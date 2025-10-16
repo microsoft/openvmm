@@ -79,7 +79,7 @@ where
         tmk_assert!(r.is_ok(), "get_register should succeed to read Control register");
 
         let reg_values = r.unwrap();
-        tmk_assert!(reg_values == 0x0000000000001000, format!("register value should be 0x0000000000000800, got {:x}", reg_values));
+        tmk_assert!(reg_values == 0x0000000000001000, format!("register value should be 0x0000000000001000, got {:x}", reg_values));
 
         log::info!("Switching to VTL0: attempting to read a protected register to verify security enforcement and intercept handling.");
 

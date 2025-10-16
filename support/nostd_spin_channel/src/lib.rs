@@ -186,20 +186,30 @@ impl<T> Receiver<T> {
     /// Tries to receive an element from the front of the queue while blocking
     /// Returns Ok(value) if successful, Err(RecvError) otherwise
     pub fn recv(&self) -> Result<T, RecvError> {
-        // Use a separate scope for the lock to ensure it's released promptly
-        let result = {
-            let mut buffer = self.inner.buffer.lock();
-            buffer.pop_front()
-        };
-        match result {
-            Some(val) => Ok(val),
-            None => {
-                // Check if there are any senders left
-                if self.inner.senders.load(Ordering::SeqCst) == 0 {
-                    Err(RecvError::Disconnected)
-                } else {
-                    Err(RecvError::Empty)
+        loop {
+            // Use a separate scope for the lock to ensure it's released promptly
+            let result = {
+                let mut buffer = self.inner.buffer.lock();
+                buffer.pop_front()
+            };
+            let r = match result {
+                Some(val) => Ok(val),
+                None => {
+                    // Check if there are any senders left
+                    if self.inner.senders.load(Ordering::SeqCst) == 0 {
+                        Err(RecvError::Disconnected)
+                    } else {
+                        Err(RecvError::Empty)
+                    }
                 }
+            };
+
+            if let Err(err) = r {
+                if err != RecvError::Empty {
+                    return Err(err);
+                }
+            } else {
+                return r;
             }
         }
     }
