@@ -135,10 +135,7 @@ async fn fake_bootstrap(
     keepalive_duration: Option<Duration>,
 ) -> anyhow::Result<()> {
     tracing::info!(port, "starting fake bootstrap");
-    let socket = (
-        connect_client(&driver),
-        connect_server(&driver, pipette_protocol::PIPETTE_VSOCK_PORT),
-    )
+    let socket = (connect_client(&driver), connect_server(&driver, port))
         .race_ok()
         .await
         .map_err(|e| {
