@@ -99,14 +99,18 @@ pub trait NvmeDevice: Inspect + Send + Sync {
     fn update_servicing_flags(&mut self, keep_alive: bool);
 }
 
+pub struct CreateNvmeDriverConfig {
+    pci_id: String, // todo: &str
+    vp_count: u32,
+    save_restore_supported: bool,
+}
+
 #[async_trait]
 pub trait CreateNvmeDriver: Inspect + Send + Sync {
     async fn create_driver(
         &self,
         driver_source: &VmTaskDriverSource,
-        pci_id: &str,
-        vp_count: u32,
-        save_restore_supported: bool,
+        config: &'_ CreateNvmeDriverConfig,
         saved_state: Option<&nvme_driver::NvmeDriverSavedState>,
     ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError>;
 }

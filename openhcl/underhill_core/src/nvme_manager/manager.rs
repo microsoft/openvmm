@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::nvme_manager::CreateNvmeDriver;
+use crate::nvme_manager::CreateNvmeDriverConfig;
 use crate::nvme_manager::device::NvmeDriverManager;
 use crate::nvme_manager::device::NvmeDriverManagerClient;
 use crate::nvme_manager::device::NvmeDriverShutdownOptions;
@@ -443,9 +444,11 @@ impl NvmeManagerWorker {
                 .nvme_driver_spawner
                 .create_driver(
                     &self.context.driver_source,
-                    &pci_id,
-                    saved_state.cpu_count,
-                    true, // save_restore_supported is always `true` when restoring.
+                    &CreateNvmeDriverConfig {
+                        pci_id: pci_id.clone(),
+                        vp_count: saved_state.cpu_count,
+                        save_restore_supported: true, // save_restore_supported is always `true` when restoring.
+                    },
                     Some(&disk.driver_state),
                 )
                 .await?;
@@ -732,20 +735,18 @@ mod tests {
         async fn create_driver(
             &self,
             driver_source: &VmTaskDriverSource,
-            pci_id: &str,
-            _vp_count: u32,
-            _save_restore_supported: bool,
+            config: &'_ CreateNvmeDriverConfig,
             _saved_state: Option<&NvmeDriverSavedState>,
         ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError> {
             if self.fail_create.load(Ordering::SeqCst) {
                 return Err(NvmeSpawnerError::MockDriverCreationFailed(anyhow::anyhow!(
                     "Mock create failure for {}",
-                    pci_id
+                    config.pci_id
                 )));
             }
 
             let driver = Arc::new(MockNvmeDriver::new(
-                pci_id,
+                &config.pci_id,
                 self.namespace_delay,
                 self.shutdown_delay,
                 driver_source.clone(),

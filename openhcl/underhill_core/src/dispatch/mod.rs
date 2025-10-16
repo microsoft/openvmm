@@ -753,8 +753,8 @@ impl LoadedVm {
             // DEVNOTE: A subtlety here is that the act of saving the NVMe state also causes the driver
             // to enter a state where subsequent teardown operations will noop. There is a STRONG
             // correlation between save/restore and keepalive. There are cases where the device
-            // may not be in a state where it can support keepalive. The particular device will handle that,
-            // logging appropriately and return `None`
+            // may not be in a state where it can support keepalive, in which case
+            // save() will return an error.
             n.save(vf_keepalive_flag)
                 .instrument(tracing::info_span!("nvme_manager_save", CVM_ALLOWED))
                 .await

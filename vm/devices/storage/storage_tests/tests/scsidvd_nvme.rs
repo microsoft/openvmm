@@ -12,6 +12,7 @@ use guid::Guid;
 use nvme::NvmeController;
 use nvme::NvmeControllerCaps;
 use nvme_driver::NvmeDriver;
+use nvme_driver::NvmeDriverConfig;
 use page_pool_alloc::PagePoolAllocator;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
@@ -79,9 +80,17 @@ impl ScsiDvdNvmeTest {
             .unwrap();
 
         let device = EmulatedDevice::new(nvme, msi_set, dma_client.clone());
-        let nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
-            .await
-            .unwrap();
+        let nvme_driver = NvmeDriver::new(
+            &driver_source,
+            device,
+            &NvmeDriverConfig {
+                cpu_count: CPU_COUNT,
+                use_bounce_buffer: false,
+                require_persistent_memory: false,
+            },
+        )
+        .await
+        .unwrap();
         let namespace = nvme_driver.namespace(1).await.unwrap();
         let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
         for i in 0..(sector_count / 8) {
