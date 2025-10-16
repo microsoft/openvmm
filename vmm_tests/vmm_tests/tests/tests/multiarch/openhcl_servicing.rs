@@ -268,6 +268,53 @@ async fn servicing_shutdown_ic(
 // TODO: add tests with guest workloads while doing servicing.
 // TODO: add tests from previous release branch to current.
 
+/// Updates the namespace during servicing and verify rescan events after servicing.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_with_namespace_update(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let mut fault_start_updater = CellUpdater::new(false);
+    let (ns_change_send, ns_change_recv) = mesh::channel::<NamespaceChange>();
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_namespace_fault(
+            NamespaceFaultConfig::new(ns_change_recv),
+        )
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0).build(),
+                QueueFaultBehavior::Panic("Received a duplicate ASYNCHRONOUS_EVENT_REQUEST command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
+            )
+        );
+
+    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
+
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+
+    // Make sure the disk showed up.
+    cmd!(sh, "ls /dev/sda").run().await?;
+
+    fault_start_updater.set(true).await;
+    vm.save_openhcl(
+        igvm_file.clone(),
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+    ns_change_send.call(NamespaceChange::ChangeNotification, NSID).await?;
+    vm.restore_openhcl()
+        .await?;
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    Ok(())
+}
+
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support and a faulty controller that drops CREATE_IO_COMPLETION_QUEUE commands
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
@@ -317,53 +364,6 @@ async fn servicing_keepalive_verify_no_duplicate_aers(
         (igvm_file,),
     )
     .await
-}
-
-/// Updates the namespace during servicing and verify rescan events after servicing.
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn servicing_keepalive_with_namespace_update(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
-) -> Result<(), anyhow::Error> {
-    let mut fault_start_updater = CellUpdater::new(false);
-    let (ns_change_send, ns_change_recv) = mesh::channel::<NamespaceChange>();
-
-    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
-        .with_namespace_fault(
-            NamespaceFaultConfig::new(ns_change_recv),
-        )
-        .with_admin_queue_fault(
-            AdminQueueFaultConfig::new().with_submission_queue_fault(
-                CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0).build(),
-                QueueFaultBehavior::Panic("Received a duplicate ASYNCHRONOUS_EVENT_REQUEST command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
-            )
-        );
-
-    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
-
-    agent.ping().await?;
-    let sh = agent.unix_shell();
-
-    // Make sure the disk showed up.
-    cmd!(sh, "ls /dev/sda").run().await?;
-
-    fault_start_updater.set(true).await;
-    vm.save_openhcl(
-        igvm_file.clone(),
-        OpenHclServicingFlags {
-            enable_nvme_keepalive: true,
-            ..Default::default()
-        },
-    )
-    .await?;
-    ns_change_send.call(NamespaceChange::ChangeNotification, NSID).await?;
-    vm.restore_openhcl()
-        .await?;
-
-    fault_start_updater.set(false).await;
-    agent.ping().await?;
-
-    Ok(())
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself with NVMe keepalive support
