@@ -33,6 +33,7 @@ use vmgs_format::VmgsEncryptionKey;
 use vmgs_format::VmgsExtendedFileTable;
 use vmgs_format::VmgsFileTable;
 use vmgs_format::VmgsHeader;
+use vmgs_format::VmgsMarkers;
 use vmgs_format::VmgsNonce;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
@@ -93,6 +94,7 @@ pub struct Vmgs {
     metadata_key: VmgsDatastoreKey,
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
     encrypted_metadata_keys: [VmgsEncryptionKey; 2],
+    reprovisioned: bool,
 
     #[cfg_attr(feature = "inspect", inspect(skip))]
     logger: Option<Arc<dyn VmgsLogger>>,
@@ -149,15 +151,15 @@ impl Vmgs {
         format_on_empty: bool,
         format_on_failure: bool,
     ) -> Result<Self, Error> {
-        match Vmgs::open(disk.clone(), logger.clone()).await {
+        match Self::open(disk.clone(), logger.clone()).await {
             Ok(vmgs) => Ok(vmgs),
             Err(Error::EmptyFile) if format_on_empty => {
                 tracing::info!(CVM_ALLOWED, "empty vmgs file, formatting");
-                Vmgs::format_new(disk, logger).await
+                Self::format_new(disk, logger).await
             }
             Err(err) if format_on_failure => {
                 tracing::warn!(CVM_ALLOWED, ?err, "vmgs initialization error, reformatting");
-                Vmgs::format_new(disk, logger).await
+                Self::format_new(disk, logger).await
             }
             Err(err) => {
                 let event_log_id = match err {
@@ -175,29 +177,74 @@ impl Vmgs {
         }
     }
 
+    /// Open the VMGS file.
+    pub async fn open(disk: Disk, logger: Option<Arc<dyn VmgsLogger>>) -> Result<Self, Error> {
+        tracing::debug!(CVM_ALLOWED, "opening VMGS datastore");
+        let storage = VmgsStorage::new_validated(disk).map_err(Error::Initialization)?;
+        Self::open_inner(storage, logger).await
+    }
+
     /// Format and open a new VMGS file.
     pub async fn format_new(
         disk: Disk,
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Self, Error> {
-        let mut storage = VmgsStorage::new(disk);
         tracing::debug!(CVM_ALLOWED, "formatting and initializing VMGS datastore");
-        // Errors from validate_file are fatal, as they involve invalid device metadata
-        Vmgs::validate_file(&storage)?;
+        let storage = VmgsStorage::new_validated(disk).map_err(Error::Initialization)?;
+        Self::format_new_inner(storage, logger).await
+    }
 
+    /// Format and open a new VMGS file.
+    pub async fn request_format(
+        disk: Disk,
+        logger: Option<Arc<dyn VmgsLogger>>,
+    ) -> Result<Self, Error> {
+        let mut storage = VmgsStorage::new_validated(disk).map_err(Error::Initialization)?;
+
+        match Self::open_header(&mut storage).await {
+            Ok((active_header, active_header_index)) if active_header.markers.reprovisioned() => {
+                tracing::info!(CVM_ALLOWED, "reprovisioned marker found, skipping format");
+                Self::finish_open(storage, active_header, active_header_index, logger).await
+            }
+            _ => {
+                tracing::info!(CVM_ALLOWED, "formatting vmgs file on request");
+                let mut vmgs = Vmgs::format_new_inner(storage, logger).await?;
+
+                // set the reprovisioned marker to prevent the vmgs from
+                // repeatedly being reset
+                vmgs.set_reprovisioned(true).await?;
+
+                Ok(vmgs)
+            }
+        }
+    }
+
+    async fn format_new_inner(
+        mut storage: VmgsStorage,
+        logger: Option<Arc<dyn VmgsLogger>>,
+    ) -> Result<Self, Error> {
         let active_header = Self::format(&mut storage, VMGS_VERSION_3_0).await?;
-
         Self::finish_open(storage, active_header, 0, logger).await
     }
 
-    /// Open the VMGS file.
-    pub async fn open(disk: Disk, logger: Option<Arc<dyn VmgsLogger>>) -> Result<Self, Error> {
-        tracing::debug!(CVM_ALLOWED, "opening VMGS datastore");
-        let mut storage = VmgsStorage::new(disk);
-        // Errors from validate_file are fatal, as they involve invalid device metadata
-        Vmgs::validate_file(&storage)?;
+    async fn open_inner(
+        mut storage: VmgsStorage,
+        logger: Option<Arc<dyn VmgsLogger>>,
+    ) -> Result<Self, Error> {
+        let (active_header, active_header_index) = Self::open_header(&mut storage).await?;
 
-        let (header_1, header_2) = read_headers_inner(&mut storage).await?;
+        let mut vmgs =
+            Self::finish_open(storage, active_header, active_header_index, logger).await?;
+
+        // clear the reprovisioned marker after successfully opening the vmgs
+        // without being requested to reprovision.
+        vmgs.set_reprovisioned(false).await?;
+
+        Ok(vmgs)
+    }
+
+    async fn open_header(storage: &mut VmgsStorage) -> Result<(VmgsHeader, usize), Error> {
+        let (header_1, header_2) = read_headers_inner(storage).await?;
 
         let empty_header = VmgsHeader::new_zeroed();
 
@@ -216,7 +263,7 @@ impl Vmgs {
             header_2
         };
 
-        Self::finish_open(storage, active_header, active_header_index, logger).await
+        Ok((active_header, active_header_index))
     }
 
     async fn finish_open(
@@ -226,7 +273,7 @@ impl Vmgs {
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Vmgs, Error> {
         let version = active_header.version;
-        let (encryption_algorithm, encrypted_metadata_keys, datastore_key_count) =
+        let (encryption_algorithm, encrypted_metadata_keys, datastore_key_count, reprovisioned) =
             if version >= VMGS_VERSION_3_0 {
                 let encryption_algorithm =
                     if active_header.encryption_algorithm == EncryptionAlgorithm::AES_GCM {
@@ -251,12 +298,14 @@ impl Vmgs {
                     encryption_algorithm,
                     active_header.metadata_keys,
                     datastore_key_count,
+                    active_header.markers.reprovisioned(),
                 )
             } else {
                 (
                     EncryptionAlgorithm::NONE,
                     [VmgsEncryptionKey::new_zeroed(); 2],
                     0,
+                    false,
                 )
             };
 
@@ -296,6 +345,7 @@ impl Vmgs {
             datastore_keys: [VmgsDatastoreKey::new_zeroed(); 2],
             metadata_key: VmgsDatastoreKey::new_zeroed(),
             encrypted_metadata_keys,
+            reprovisioned,
 
             #[cfg(feature = "inspect")]
             stats: Default::default(),
@@ -376,33 +426,6 @@ impl Vmgs {
         storage.flush().await.map_err(Error::FlushDisk)?;
 
         Ok(header)
-    }
-
-    fn validate_file(storage: &VmgsStorage) -> Result<(), Error> {
-        let sector_count = storage.sector_count();
-        let sector_size = storage.sector_size();
-
-        // Don't need to parse MBR/GPT table, VMGS uses RAW file format
-
-        // Validate capacity and max transfer size. This also enesures that there are no arithmetic
-        // overflows when converting from sector counts to byte counts.
-        if sector_count == 0 || sector_count > u64::MAX / 4096 {
-            return Err(Error::Initialization(format!(
-                "Invalid sector count of {}",
-                sector_count,
-            )));
-        }
-
-        // Any power-of-2 sector size up to 4096 bytes works, but in practice only 512 and 4096
-        // indicate a supported (tested) device configuration.
-        if sector_size != 512 && sector_size != 4096 {
-            return Err(Error::Initialization(format!(
-                "Invalid sector size {}",
-                sector_size
-            )));
-        }
-
-        Ok(())
     }
 
     /// Get allocated and valid bytes from File Control Block for file_id.
@@ -1485,8 +1508,19 @@ impl Vmgs {
             header_size: size_of::<VmgsHeader>() as u32,
             file_table_offset: file_table_fcb.block_offset,
             file_table_size: file_table_fcb.allocated_blocks.get(),
+            markers: VmgsMarkers::new().with_reprovisioned(self.reprovisioned),
             ..VmgsHeader::new_zeroed()
         }
+    }
+
+    async fn set_reprovisioned(&mut self, value: bool) -> Result<(), Error> {
+        if self.reprovisioned != value {
+            tracing::info!(reprovisioned = value, "update vmgs marker");
+            self.reprovisioned = value;
+            let mut new_header = self.prepare_new_header(&self.fcbs[&FileId::FILE_TABLE]);
+            self.update_header(&mut new_header).await?;
+        }
+        Ok(())
     }
 }
 
@@ -1840,6 +1874,8 @@ pub mod save_restore {
             pub metadata_key: SavedVmgsDatastoreKey,
             #[mesh(10)]
             pub encrypted_metadata_keys: [SavedVmgsEncryptionKey; 2],
+            #[mesh(11)]
+            pub reprovisioned: bool,
         }
     }
 
@@ -1877,6 +1913,7 @@ pub mod save_restore {
                 datastore_keys,
                 metadata_key,
                 encrypted_metadata_keys,
+                reprovisioned,
             } = state;
 
             Self {
@@ -1933,6 +1970,7 @@ pub mod save_restore {
                         encryption_key,
                     }
                 }),
+                reprovisioned,
                 logger,
             }
         }
@@ -1960,6 +1998,7 @@ pub mod save_restore {
                 metadata_key,
                 encrypted_metadata_keys,
                 logger: _,
+                reprovisioned,
             } = self;
 
             state::SavedVmgsState {
@@ -2012,6 +2051,7 @@ pub mod save_restore {
                         encryption_key,
                     }
                 }),
+                reprovisioned: *reprovisioned,
             }
         }
     }

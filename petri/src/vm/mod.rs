@@ -13,7 +13,6 @@ use crate::PetriTestParams;
 use crate::ShutdownKind;
 use crate::disk_image::AgentImage;
 use crate::openhcl_diag::OpenHclDiagHandler;
-use anyhow::Context;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use mesh::CancelContext;
@@ -233,8 +232,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// event (if configured). Does not configure and start pipette. Should
     /// only be used for testing platforms that pipette does not support.
     pub async fn run_without_agent(self) -> anyhow::Result<PetriVm<T>> {
-        let (vm, _) = self.run_core(false).await?;
-        Ok(vm)
+        self.run_core().await
     }
 
     /// Build and run the VM, then wait for the VM to emit the expected boot
@@ -243,14 +241,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         assert!(self.config.agent_image.is_some());
         assert!(self.config.agent_image.as_ref().unwrap().contains_pipette());
 
-        let (vm, agent) = self.run_core(true).await?;
-        Ok((vm, agent.unwrap()))
+        let mut vm = self.run_core().await?;
+        let client = vm.wait_for_agent().await?;
+        Ok((vm, client))
     }
 
-    async fn run_core(
-        self,
-        with_agent: bool,
-    ) -> anyhow::Result<(PetriVm<T>, Option<PipetteClient>)> {
+    async fn run_core(self) -> anyhow::Result<PetriVm<T>> {
         let arch = self.config.arch;
         let expect_reset = self.expect_reset();
 
@@ -279,20 +275,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
         vm.wait_for_expected_boot_event().await?;
 
-        let client = if with_agent {
-            Some(vm.wait_for_agent().await?)
-        } else {
-            None
-        };
-
-        if with_agent {
-            let result = vm.set_console_loglevel(3).await;
-            if result.is_err() {
-                tracing::warn!("failed to set console loglevel: {}", result.unwrap_err());
-            }
-        }
-
-        Ok((vm, client))
+        Ok(vm)
     }
 
     fn expect_reset(&self) -> bool {
@@ -572,6 +555,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Sets whether UEFI should always attempt a default boot.
+    pub fn with_default_boot_always_attempt(mut self, enable: bool) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("Default boot always attempt is only supported for UEFI firmware.")
+            .default_boot_always_attempt = enable;
+        self
+    }
+
     /// Run the VM with Enable VMBus relay enabled
     pub fn with_vmbus_redirect(mut self, enable: bool) -> Self {
         self.config
@@ -742,12 +735,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// Wait for the VM to reset and pipette to connect.
     pub async fn wait_for_reset(&mut self) -> anyhow::Result<PipetteClient> {
         self.wait_for_reset_no_agent().await?;
-        let client = self.wait_for_agent().await?;
-        let result = self.set_console_loglevel(3).await;
-        if result.is_err() {
-            tracing::warn!("failed to set console loglevel: {}", result.unwrap_err());
-        }
-        Ok(client)
+        self.wait_for_agent().await
     }
 
     async fn wait_for_reset_core(&mut self) -> anyhow::Result<()> {
@@ -974,22 +962,6 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         }
     }
 
-    async fn set_console_loglevel(&self, level: u8) -> anyhow::Result<()> {
-        let diag = self
-            .openhcl_diag()
-            .context("failed to open VTL2 diagnostic channel")?;
-        diag.kmsg().await?;
-        let res = diag
-            .run_vtl2_command("dmesg", &["-n", &level.to_string()])
-            .await?;
-
-        if !res.exit_status.success() {
-            anyhow::bail!("failed to set console loglevel: {:?}", res);
-        }
-
-        Ok(())
-    }
-
     /// Get the path to the VM's guest state file
     pub async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
         self.runtime.get_guest_state_file().await
@@ -1166,6 +1138,8 @@ pub struct UefiConfig {
     pub secure_boot_template: Option<SecureBootTemplate>,
     /// Disable the UEFI frontpage which will cause the VM to shutdown instead when unable to boot.
     pub disable_frontpage: bool,
+    /// Always attempt a default boot
+    pub default_boot_always_attempt: bool,
 }
 
 impl Default for UefiConfig {
@@ -1174,6 +1148,7 @@ impl Default for UefiConfig {
             secure_boot_enabled: false,
             secure_boot_template: None,
             disable_frontpage: true,
+            default_boot_always_attempt: false,
         }
     }
 }
