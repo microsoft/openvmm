@@ -505,7 +505,7 @@ mod tests {
             let mut vendor_device: u32 = 0;
             rc.mmio_read((device_number << 3) * 4096, vendor_device.as_mut_bytes())
                 .unwrap();
-            assert_eq!(vendor_device, 0xF111_1414);
+            assert_eq!(vendor_device, 0xC030_1414);
 
             let mut value_16: u16 = 0;
             rc.mmio_read((device_number << 3) * 4096, value_16.as_mut_bytes())
@@ -514,7 +514,7 @@ mod tests {
 
             rc.mmio_read((device_number << 3) * 4096 + 2, value_16.as_mut_bytes())
                 .unwrap();
-            assert_eq!(value_16, 0xF111);
+            assert_eq!(value_16, 0xC030);
         }
 
         for device_number in 4..10 {
