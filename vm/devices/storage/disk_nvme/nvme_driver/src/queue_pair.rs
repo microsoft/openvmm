@@ -4,6 +4,7 @@
 //! Implementation of an admin or IO queue pair.
 
 use super::spec;
+use crate::driver::save_restore::AerHandlerSavedState;
 use crate::driver::save_restore::Error;
 use crate::driver::save_restore::PendingCommandSavedState;
 use crate::driver::save_restore::PendingCommandsSavedState;
@@ -24,6 +25,7 @@ use mesh::CancelContext;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
+use nvme_spec::AsynchronousEventRequestDw0;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Task;
 use safeatomic::AtomicSliceOps;
@@ -44,11 +46,23 @@ use zerocopy::FromZeros;
 
 /// Value for unused PRP entries, to catch/mitigate buffer size mismatches.
 const INVALID_PAGE_ADDR: u64 = !(PAGE_SIZE as u64 - 1);
+/// Maximum SQ size in entries.
+pub const MAX_SQ_ENTRIES: u16 = (PAGE_SIZE / 64) as u16;
+/// Maximum CQ size in entries.
+pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16;
+/// Submission Queue size in bytes.
+const SQ_SIZE: usize = PAGE_SIZE;
+/// Completion Queue size in bytes.
+const CQ_SIZE: usize = PAGE_SIZE;
+/// Number of pages per queue if bounce buffering.
+const PER_QUEUE_PAGES_BOUNCE_BUFFER: usize = 128;
+/// Number of pages per queue if not bounce buffering.
+const PER_QUEUE_PAGES_NO_BOUNCE_BUFFER: usize = 64;
 
 #[derive(Inspect)]
-pub(crate) struct QueuePair {
+pub(crate) struct QueuePair<T: AerHandler> {
     #[inspect(skip)]
-    task: Task<QueueHandler>,
+    task: Task<QueueHandler<T>>,
     #[inspect(skip)]
     cancel: Cancel,
     #[inspect(flatten, with = "|x| inspect::send(&x.send, Req::Inspect)")]
@@ -162,20 +176,7 @@ impl PendingCommands {
     }
 }
 
-impl QueuePair {
-    /// Maximum SQ size in entries.
-    pub const MAX_SQ_ENTRIES: u16 = (PAGE_SIZE / 64) as u16;
-    /// Maximum CQ size in entries.
-    pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16;
-    /// Submission Queue size in bytes.
-    const SQ_SIZE: usize = PAGE_SIZE;
-    /// Completion Queue size in bytes.
-    const CQ_SIZE: usize = PAGE_SIZE;
-    /// Number of pages per queue if bounce buffering.
-    const PER_QUEUE_PAGES_BOUNCE_BUFFER: usize = 128;
-    /// Number of pages per queue if not bounce buffering.
-    const PER_QUEUE_PAGES_NO_BOUNCE_BUFFER: usize = 64;
-
+impl<T: AerHandler> QueuePair<T> {
     pub fn new(
         spawner: impl SpawnDriver,
         device: &impl DeviceBacking,
@@ -186,13 +187,14 @@ impl QueuePair {
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
         bounce_buffer: bool,
         require_persistent_memory: bool,
+        aer_handler: T,
     ) -> anyhow::Result<Self> {
-        let total_size = QueuePair::SQ_SIZE
-            + QueuePair::CQ_SIZE
+        let total_size = SQ_SIZE
+            + CQ_SIZE
             + if bounce_buffer {
-                QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER * PAGE_SIZE
+                PER_QUEUE_PAGES_BOUNCE_BUFFER * PAGE_SIZE
             } else {
-                QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE
+                PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE
             };
         let dma_client = device.dma_client();
         let mem = dma_client
@@ -206,8 +208,8 @@ impl QueuePair {
             }
         }
 
-        assert!(sq_entries <= Self::MAX_SQ_ENTRIES);
-        assert!(cq_entries <= Self::MAX_CQ_ENTRIES);
+        assert!(sq_entries <= MAX_SQ_ENTRIES);
+        assert!(cq_entries <= MAX_CQ_ENTRIES);
 
         QueuePair::new_or_restore(
             spawner,
@@ -219,6 +221,7 @@ impl QueuePair {
             mem,
             None,
             bounce_buffer,
+            aer_handler,
         )
     }
 
@@ -233,14 +236,15 @@ impl QueuePair {
         mem: MemoryBlock,
         saved_state: Option<&QueueHandlerSavedState>,
         bounce_buffer: bool,
+        aer_handler: T,
     ) -> anyhow::Result<Self> {
         // MemoryBlock is either allocated or restored prior calling here.
-        let sq_mem_block = mem.subblock(0, QueuePair::SQ_SIZE);
-        let cq_mem_block = mem.subblock(QueuePair::SQ_SIZE, QueuePair::CQ_SIZE);
-        let data_offset = QueuePair::SQ_SIZE + QueuePair::CQ_SIZE;
+        let sq_mem_block = mem.subblock(0, SQ_SIZE);
+        let cq_mem_block = mem.subblock(SQ_SIZE, CQ_SIZE);
+        let data_offset = SQ_SIZE + CQ_SIZE;
 
         let mut queue_handler = match saved_state {
-            Some(s) => QueueHandler::restore(sq_mem_block, cq_mem_block, s)?,
+            Some(s) => QueueHandler::restore(sq_mem_block, cq_mem_block, s, aer_handler)?,
             None => {
                 // Create a new one.
                 QueueHandler {
@@ -249,6 +253,7 @@ impl QueuePair {
                     commands: PendingCommands::new(qid),
                     stats: Default::default(),
                     drain_after_restore: false,
+                    aer_handler,
                 }
             }
         };
@@ -284,9 +289,9 @@ impl QueuePair {
         // NOTE: Do not remove the `const` blocks below. This is to force
         // compile time evaluation of the assertion described above.
         let alloc_len = if bounce_buffer {
-            const { pages_to_size_bytes(QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER) }
+            const { pages_to_size_bytes(PER_QUEUE_PAGES_BOUNCE_BUFFER) }
         } else {
-            const { pages_to_size_bytes(QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER) }
+            const { pages_to_size_bytes(PER_QUEUE_PAGES_NO_BOUNCE_BUFFER) }
         };
 
         let alloc = PageAllocator::new(mem.subblock(data_offset, alloc_len));
@@ -347,6 +352,7 @@ impl QueuePair {
         mem: MemoryBlock,
         saved_state: &QueuePairSavedState,
         bounce_buffer: bool,
+        aer_handler: T,
     ) -> anyhow::Result<Self> {
         let QueuePairSavedState {
             mem_len: _,  // Used to restore DMA buffer before calling this.
@@ -367,6 +373,7 @@ impl QueuePair {
             mem,
             Some(handler_data),
             bounce_buffer,
+            aer_handler,
         )
     }
 }
@@ -434,6 +441,13 @@ impl Issuer {
             Ok(completion) => Err(RequestError::Nvme(NvmeError(spec::Status(
                 completion.status.status(),
             )))),
+            Err(err) => Err(RequestError::Gone(err)),
+        }
+    }
+
+    pub async fn issue_get_aen(&self) -> Result<AsynchronousEventRequestDw0, RequestError> {
+        match self.send.call(Req::NextAen, ()).await {
+            Ok(aen_completion) => Ok(aen_completion),
             Err(err) => Err(RequestError::Gone(err)),
         }
     }
@@ -629,15 +643,145 @@ enum Req {
     Command(Rpc<spec::Command, spec::Completion>),
     Inspect(inspect::Deferred),
     Save(Rpc<(), Result<QueueHandlerSavedState, anyhow::Error>>),
+    SendAer(),
+    NextAen(Rpc<(), AsynchronousEventRequestDw0>),
+}
+
+/// Functionality for an AER handler. The default implementation
+/// represents a NoOp handler with functions on the critical path compiled out
+/// for efficiency and should be used for IO Queues.
+pub trait AerHandler: Send + Sync + 'static {
+    /// Given a completion command, if the command pertains to a pending AEN,
+    /// process it.
+    #[inline]
+    fn handle_completion(&mut self, _completion: &nvme_spec::Completion) {}
+    /// Handle a request from the driver to get the most-recent undelivered AEN
+    /// or wait for the next one.
+    fn handle_aen_request(&mut self, _rpc: Rpc<(), AsynchronousEventRequestDw0>) {}
+    /// Update the CID that the handler is awaiting an AEN on.
+    fn update_awaiting_cid(&mut self, _cid: u16) {}
+    /// Returns whether an AER needs to sent to the controller or not. Since
+    /// this is the only function on the critical path, attempt to inline it.
+    #[inline]
+    fn poll_send_aer(&self) -> bool {
+        false
+    }
+    fn save(&self) -> Option<AerHandlerSavedState> {
+        None
+    }
+    fn restore(&mut self, _state: &Option<AerHandlerSavedState>) {}
+}
+
+/// Admin queue AER handler. Ensures a single outstanding AER and persists state
+/// across save/restore to process AENs received during servicing.
+pub struct AdminAerHandler {
+    last_aen: Option<AsynchronousEventRequestDw0>,
+    await_aen_cid: Option<u16>,
+    send_aen: Option<Rpc<(), AsynchronousEventRequestDw0>>, // Channel to return AENs on.
+    failed: bool, // If the failed state is reached, it will stop looping until save/restore.
+}
+
+impl AdminAerHandler {
+    pub fn new() -> Self {
+        Self {
+            last_aen: None,
+            await_aen_cid: None,
+            send_aen: None,
+            failed: false,
+        }
+    }
+}
+
+impl AerHandler for AdminAerHandler {
+    fn handle_completion(&mut self, completion: &nvme_spec::Completion) {
+        if let Some(await_aen_cid) = self.await_aen_cid
+            && completion.cid == await_aen_cid
+            && !self.failed
+        {
+            self.await_aen_cid = None;
+
+            // If error, cleanup and stop processing AENs.
+            if completion.status.status() != 0 {
+                self.failed = true;
+                self.last_aen = None;
+                return;
+            }
+            // Complete the AEN or pend it.
+            let aen = AsynchronousEventRequestDw0::from_bits(completion.dw0);
+            if let Some(send_aen) = self.send_aen.take() {
+                send_aen.complete(aen);
+            } else {
+                self.last_aen = Some(aen);
+            }
+        }
+    }
+
+    fn handle_aen_request(&mut self, rpc: Rpc<(), AsynchronousEventRequestDw0>) {
+        if let Some(aen) = self.last_aen.take() {
+            rpc.complete(aen);
+        } else {
+            self.send_aen = Some(rpc); // Save driver request to be completed later.
+        }
+    }
+
+    fn poll_send_aer(&self) -> bool {
+        self.await_aen_cid.is_none() && !self.failed
+    }
+
+    fn update_awaiting_cid(&mut self, cid: u16) {
+        if self.await_aen_cid.is_some() {
+            panic!(
+                "already awaiting on AEN with cid {}",
+                self.await_aen_cid.unwrap()
+            );
+        }
+        self.await_aen_cid = Some(cid);
+    }
+
+    fn save(&self) -> Option<AerHandlerSavedState> {
+        Some(AerHandlerSavedState {
+            last_aen: self.last_aen.map(AsynchronousEventRequestDw0::into_bits), // Save as u32
+            await_aen_cid: self.await_aen_cid,
+        })
+    }
+
+    fn restore(&mut self, state: &Option<AerHandlerSavedState>) {
+        if let Some(state) = state {
+            let AerHandlerSavedState {
+                last_aen,
+                await_aen_cid,
+            } = state;
+            self.last_aen = last_aen.map(AsynchronousEventRequestDw0::from_bits); // Restore from u32
+            self.await_aen_cid = *await_aen_cid;
+        }
+    }
+}
+
+/// No-op AER handler. Should be only used for IO queues.
+pub struct NoOpAerHandler;
+impl AerHandler for NoOpAerHandler {
+    fn handle_aen_request(&mut self, _rpc: Rpc<(), AsynchronousEventRequestDw0>) {
+        panic!(
+            "no-op aer handler should never receive an aen request. This is likely a bug in the driver."
+        );
+    }
+
+    fn update_awaiting_cid(&mut self, _cid: u16) {
+        panic!(
+            "no-op aer handler should never be passed a cid to await. This is likely a bug in the driver."
+        );
+    }
 }
 
 #[derive(Inspect)]
-struct QueueHandler {
+struct QueueHandler<T: AerHandler> {
     sq: SubmissionQueue,
     cq: CompletionQueue,
     commands: PendingCommands,
     stats: QueueStats,
     drain_after_restore: bool,
+    #[inspect(skip)]
+    aer_handler: T,
 }
 
 #[derive(Inspect, Default)]
@@ -647,7 +791,7 @@ struct QueueStats {
     interrupts: Counter,
 }
 
-impl QueueHandler {
+impl<T: AerHandler> QueueHandler<T> {
     async fn run(
         &mut self,
         registers: &DeviceRegisters<impl DeviceBacking>,
@@ -664,6 +808,10 @@ impl QueueHandler {
                 // Normal processing of the requests and completions.
                 poll_fn(|cx| {
                     if !self.sq.is_full() && !self.commands.is_full() {
+                        // Prioritize sending AERs to keep the cycle going
+                        if self.aer_handler.poll_send_aer() {
+                            return Poll::Ready(Event::Request(Req::SendAer()));
+                        }
                         if let Poll::Ready(Some(req)) = recv.poll_next_unpin(cx) {
                             return Event::Request(req).into();
                         }
@@ -714,6 +862,16 @@ impl QueueHandler {
                         // Do not allow any more processing after save completed.
                         break;
                     }
+                    Req::NextAen(rpc) => {
+                        self.aer_handler.handle_aen_request(rpc);
+                    }
+                    Req::SendAer() => {
+                        let mut command = admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST);
+                        self.commands.insert(&mut command, Rpc::detached(()));
+                        self.aer_handler.update_awaiting_cid(command.cdw0.cid());
+                        self.sq.write(command).unwrap();
+                        self.stats.issued.increment();
+                    }
                 },
                 Event::Completion(completion) => {
                     assert_eq!(completion.sqid, self.sq.id());
@@ -723,6 +881,7 @@ impl QueueHandler {
                         self.drain_after_restore = false;
                     }
                     self.sq.update_head(completion.sqhd);
+                    self.aer_handler.handle_completion(&completion);
                     respond.complete(completion);
                     self.stats.completed.increment();
                 }
@@ -737,6 +896,7 @@ impl QueueHandler {
             sq_state: self.sq.save(),
             cq_state: self.cq.save(),
             pending_cmds: self.commands.save(),
+            aer_handler: self.aer_handler.save(),
         })
     }
 
@@ -745,12 +905,16 @@ impl QueueHandler {
         sq_mem_block: MemoryBlock,
         cq_mem_block: MemoryBlock,
         saved_state: &QueueHandlerSavedState,
+        mut aer_handler: T,
     ) -> anyhow::Result<Self> {
         let QueueHandlerSavedState {
             sq_state,
             cq_state,
             pending_cmds,
+            aer_handler: aer_handler_saved_state,
         } = saved_state;
+
+        aer_handler.restore(aer_handler_saved_state);
 
         Ok(Self {
             sq: SubmissionQueue::restore(sq_mem_block, sq_state)?,
@@ -760,6 +924,7 @@ impl QueueHandler {
             // Only drain pending commands for I/O queues.
             // Admin queue is expected to have pending Async Event requests.
             drain_after_restore: sq_state.sqid != 0 && !pending_cmds.commands.is_empty(),
+            aer_handler,
         })
     }
 }

@@ -10,7 +10,11 @@ use crate::NamespaceError;
 use crate::NvmeDriverSavedState;
 use crate::RequestError;
 use crate::driver::save_restore::IoQueueSavedState;
+use crate::queue_pair::AdminAerHandler;
 use crate::queue_pair::Issuer;
+use crate::queue_pair::MAX_CQ_ENTRIES;
+use crate::queue_pair::MAX_SQ_ENTRIES;
+use crate::queue_pair::NoOpAerHandler;
 use crate::queue_pair::QueuePair;
 use crate::queue_pair::admin_cmd;
 use crate::registers::Bar0;
@@ -79,7 +83,7 @@ struct DriverWorkerTask<T: DeviceBacking> {
     #[inspect(skip)]
     driver: VmTaskDriver,
     registers: Arc<DeviceRegisters<T>>,
-    admin: Option<QueuePair>,
+    admin: Option<QueuePair<AdminAerHandler>>,
     #[inspect(iter_by_index)]
     io: Vec<IoQueue>,
     io_issuers: Arc<IoIssuers>,
@@ -122,7 +126,7 @@ pub enum DeviceError {
 
 #[derive(Inspect)]
 struct IoQueue {
-    queue: QueuePair,
+    queue: QueuePair<NoOpAerHandler>,
     iv: u16,
     cpu: u32,
 }
@@ -156,6 +160,7 @@ impl IoQueue {
             mem_block,
             queue_data,
             bounce_buffer,
+            NoOpAerHandler,
         )?;
 
         Ok(Self {
@@ -314,7 +319,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // device bugs where differing sizes might be a less common scenario
         //
         // Namely: using differing sizes revealed a bug in the initial NvmeDirectV2 implementation
-        let admin_len = std::cmp::min(QueuePair::MAX_SQ_ENTRIES, QueuePair::MAX_CQ_ENTRIES);
+        let admin_len = std::cmp::min(MAX_SQ_ENTRIES, MAX_CQ_ENTRIES);
         let admin_sqes = admin_len;
         let admin_cqes = admin_len;
 
@@ -334,6 +339,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             worker.registers.clone(),
             self.config.use_bounce_buffer,
             self.config.require_persistent_memory,
+            AdminAerHandler::new(),
         )
         .context("failed to create admin queue pair")?;
 
@@ -461,8 +467,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 anyhow::bail!("bad device behavior. mqes cannot be 0");
             }
 
-            let io_cqsize = (QueuePair::MAX_CQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
-            let io_sqsize = (QueuePair::MAX_SQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
+            let io_cqsize = (MAX_CQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
+            let io_sqsize = (MAX_SQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
 
             // Some hardware (such as ASAP) require that the sq and cq have the same size.
             io_cqsize.min(io_sqsize)
@@ -689,6 +695,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     mem_block,
                     a,
                     config.use_bounce_buffer,
+                    AdminAerHandler::new(),
                 )
                 .unwrap()
             })
@@ -785,12 +792,11 @@ async fn handle_asynchronous_events(
     rescan_event: &event_listener::Event,
 ) -> anyhow::Result<()> {
     loop {
-        let completion = admin
-            .issue_neither(admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST))
+        let dw0 = admin
+            .issue_get_aen()
             .await
             .context("asynchronous event request failed")?;
 
-        let dw0 = spec::AsynchronousEventRequestDw0::from(completion.dw0);
         match spec::AsynchronousEventType(dw0.event_type()) {
             spec::AsynchronousEventType::NOTICE => {
                 tracing::info!("namespace attribute change event");
@@ -973,6 +979,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             self.registers.clone(),
             self.config.use_bounce_buffer,
             self.config.require_persistent_memory,
+            NoOpAerHandler,
         )
         .map_err(|err| DeviceError::IoQueuePairCreationFailure(err, qid))?;
 
@@ -1180,6 +1187,8 @@ pub mod save_restore {
         pub cq_state: CompletionQueueSavedState,
         #[mesh(3)]
         pub pending_cmds: PendingCommandsSavedState,
+        #[mesh(4)]
+        pub aer_handler: Option<AerHandlerSavedState>,
     }
 
     #[derive(Protobuf, Clone, Debug)]
@@ -1239,5 +1248,14 @@ pub mod save_restore {
         pub nsid: u32,
         #[mesh(2, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
         pub identify_ns: nvme_spec::nvm::IdentifyNamespace,
+    }
+
+    #[derive(Clone, Debug, Protobuf)]
+    #[mesh(package = "nvme_driver")]
+    pub struct AerHandlerSavedState {
+        #[mesh(1)]
+        pub last_aen: Option<u32>,
+        #[mesh(2)]
+        pub await_aen_cid: Option<u16>,
     }
 }

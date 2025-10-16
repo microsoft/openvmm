@@ -42,7 +42,7 @@ use zerocopy::IntoBytes;
 #[should_panic(expected = "assertion `left == right` failed: cid sequence number mismatch:")]
 async fn test_nvme_command_fault(driver: DefaultDriver) {
     let mut output_cmd = Command::new_zeroed();
-    output_cmd.cdw0.set_cid(0);
+    output_cmd.cdw0.set_cid(1); // AER will have cid 0.
 
     test_nvme_fault_injection(
         driver,

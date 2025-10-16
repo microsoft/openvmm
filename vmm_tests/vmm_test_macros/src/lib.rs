@@ -640,6 +640,19 @@ pub fn openvmm_test_no_agent(
         .into()
 }
 
+/// Same options as `vmm_test`, but only for Hyper-V tests
+#[proc_macro_attribute]
+pub fn hyperv_test(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let args = parse_macro_input!(attr as Args);
+    let item = parse_macro_input!(item as ItemFn);
+    make_vmm_test(args, item, Some(Vmm::HyperV), true)
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
+}
+
 fn make_vmm_test(
     args: Args,
     item: ItemFn,
