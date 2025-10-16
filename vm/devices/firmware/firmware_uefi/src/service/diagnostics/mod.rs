@@ -10,23 +10,59 @@
 //! The EFI diagnostics buffer follows the specification of Project Mu's
 //! Advanced Logger package, whose relevant types are defined in the Hyper-V
 //! specification within the uefi_specs crate.
-
-// Re-export public types from submodules
-pub use formatting::EfiDiagnosticsLog;
-pub use formatting::log_diagnostic_ratelimited;
-pub use formatting::log_diagnostic_unrestricted;
-pub use processor::LogLevel;
-pub use processor::ProcessingError;
-pub use processor::log_level;
+//!
+//! This file specifically should only expose the public API of the service;
+//! internal implementation details should be in submodules.
 
 use crate::UefiDevice;
 use guestmem::GuestMemory;
 use inspect::Inspect;
+use mesh::payload::Protobuf;
+use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
+use uefi_specs::hyperv::debug_level::DEBUG_INFO;
+use uefi_specs::hyperv::debug_level::DEBUG_WARN;
+
+/// Log level configuration - encapsulates a u32 mask where u32::MAX means log everything
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect, Protobuf)]
+#[mesh(transparent)]
+pub struct LogLevel(u32);
+
+impl LogLevel {
+    /// Create default log level configuration (ERROR and WARN only)
+    pub const fn default() -> Self {
+        Self(DEBUG_ERROR | DEBUG_WARN)
+    }
+
+    /// Create info log level configuration (ERROR, WARN, and INFO)
+    pub const fn info() -> Self {
+        Self(DEBUG_ERROR | DEBUG_WARN | DEBUG_INFO)
+    }
+
+    /// Create full log level configuration (all levels)
+    pub const fn full() -> Self {
+        Self(u32::MAX)
+    }
+
+    /// Checks if a raw debug level should be logged based on this log level configuration
+    pub fn should_log(self, raw_debug_level: u32) -> bool {
+        if self.0 == u32::MAX {
+            true // Log everything
+        } else {
+            (raw_debug_level & self.0) != 0
+        }
+    }
+}
 
 mod formatting;
 mod message_accumulator;
 mod parser;
 mod processor;
+
+// Internal imports for implementation
+use formatting::EfiDiagnosticsLog;
+use formatting::log_diagnostic_ratelimited;
+use formatting::log_diagnostic_unrestricted;
+use processor::ProcessingError;
 
 /// Default number of EfiDiagnosticsLogs emitted per period
 pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;
@@ -71,13 +107,11 @@ impl DiagnosticsServices {
     /// # Arguments
     /// * `allow_reprocess` - If true, allows processing even if already processed for guest
     /// * `gm` - Guest memory to read diagnostics from
-    /// * `log_level` - Log level for filtering
     /// * `log_handler` - Function to handle each parsed log entry
     fn process_diagnostics<F>(
         &mut self,
         allow_reprocess: bool,
         gm: &GuestMemory,
-        log_level: LogLevel,
         log_handler: F,
     ) -> Result<(), ProcessingError>
     where
@@ -89,7 +123,7 @@ impl DiagnosticsServices {
             &mut self.has_guest_processed_before,
             allow_reprocess,
             gm,
-            log_level,
+            self.log_level,
             log_handler,
         )
     }
@@ -103,18 +137,11 @@ impl UefiDevice {
     ///
     /// # Arguments
     /// * `allow_reprocess` - If true, allows processing even if already processed for guest
-    /// * `log_level` - Log level for filtering
     /// * `limit` - Maximum number of logs to process per period, or `None` for no limit
-    pub(crate) fn process_diagnostics(
-        &mut self,
-        allow_reprocess: bool,
-        log_level: LogLevel,
-        limit: Option<u32>,
-    ) {
+    pub(crate) fn process_diagnostics(&mut self, allow_reprocess: bool, limit: Option<u32>) {
         if let Err(error) = self.service.diagnostics.process_diagnostics(
             allow_reprocess,
             &self.gm,
-            log_level,
             |log, raw_debug_level| match limit {
                 Some(limit) => log_diagnostic_ratelimited(log, raw_debug_level, limit),
                 None => log_diagnostic_unrestricted(log, raw_debug_level),
@@ -135,7 +162,7 @@ mod save_restore {
     use vmcore::save_restore::SaveRestore;
 
     mod state {
-        use crate::service::diagnostics::LogLevel;
+        use super::LogLevel;
         use mesh::payload::Protobuf;
         use vmcore::save_restore::SavedStateRoot;
 

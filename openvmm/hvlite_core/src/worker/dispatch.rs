@@ -13,8 +13,8 @@ use chipset_device_resources::IRQ_LINE_SET;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
+use firmware_uefi::LogLevel;
 use firmware_uefi::UefiCommandSet;
-use firmware_uefi::log_level;
 use floppy_resources::FloppyDiskConfig;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -1140,7 +1140,7 @@ impl InitializedVm {
                         } else {
                             UefiCommandSet::Aarch64
                         },
-                        diagnostics_log_level: log_level::default(), // TODO: Use cfg instead
+                        diagnostics_log_level: LogLevel::default(), // TODO: Use cfg instead
                     },
                     logger,
                     nvram_storage: {

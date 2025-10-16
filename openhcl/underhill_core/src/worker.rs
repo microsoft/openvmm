@@ -65,8 +65,8 @@ use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_blockdevice::BlockDeviceResolver;
 use disk_blockdevice::OpenBlockDeviceConfig;
+use firmware_uefi::LogLevel;
 use firmware_uefi::UefiCommandSet;
-use firmware_uefi::log_level;
 use futures::executor::block_on;
 use futures::future::join_all;
 use futures_concurrency::future::Race;
@@ -2210,10 +2210,10 @@ async fn new_underhill_vm(
                 },
                 diagnostics_log_level: match dps.general.efi_diagnostics_log_level {
                     get_protocol::dps_json::EfiDiagnosticsLogLevelType::Default => {
-                        log_level::default()
+                        LogLevel::default()
                     }
-                    get_protocol::dps_json::EfiDiagnosticsLogLevelType::Info => log_level::info(),
-                    get_protocol::dps_json::EfiDiagnosticsLogLevelType::Full => log_level::full(),
+                    get_protocol::dps_json::EfiDiagnosticsLogLevelType::Info => LogLevel::info(),
+                    get_protocol::dps_json::EfiDiagnosticsLogLevelType::Full => LogLevel::full(),
                 },
             };
 
