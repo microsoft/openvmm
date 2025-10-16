@@ -202,10 +202,10 @@ impl Drop for Vtl2ParamsMap<'_> {
 
 // Write persisted info into the bootshim described persisted region.
 fn write_persisted_info(parsed: &ParsedBootDtInfo) -> anyhow::Result<()> {
-    use loader_defs::shim::MemoryEntry;
-    use loader_defs::shim::MmioEntry;
     use loader_defs::shim::PersistedStateHeader;
-    use loader_defs::shim::SavedState;
+    use loader_defs::shim::save_restore::MemoryEntry;
+    use loader_defs::shim::save_restore::MmioEntry;
+    use loader_defs::shim::save_restore::SavedState;
 
     tracing::trace!(
         protobuf_region = ?parsed.vtl2_persisted_protobuf_region,

@@ -181,8 +181,8 @@ where
     let mut offset = memory_start_address;
 
     // Reserve the first 2MB for a potential persisted state region. The first
-    // 4K page page is always the persisted state header, and the bootshim may
-    // decide to use the the remaining pages for the protobuf payload.
+    // 4K page is always the persisted state header, and the bootshim may decide
+    // to use the the remaining pages for the protobuf payload.
     let persisted_region_base = offset;
     let persisted_region_size = PERSISTED_REGION_SIZE;
     offset += persisted_region_size;
@@ -971,8 +971,8 @@ where
     let mut next_addr = memory_start_address;
 
     // Reserve the first 2MB for a potential persisted state region. The first
-    // 4K page page is always the persisted state header, and the bootshim may
-    // decide to use the the remaining pages for the protobuf payload.
+    // 4K page is always the persisted state header, and the bootshim may decide
+    // to use the the remaining pages for the protobuf payload.
     let persisted_region_base = next_addr;
     let persisted_region_size = PERSISTED_REGION_SIZE;
     next_addr += persisted_region_size;

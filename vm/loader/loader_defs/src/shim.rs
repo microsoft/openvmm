@@ -3,10 +3,6 @@
 
 //! Loader definitions for the openhcl boot loader (`openhcl_boot`).
 
-extern crate alloc;
-
-use alloc::vec::Vec;
-use memory_range::MemoryRange;
 use open_enum::open_enum;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -273,66 +269,75 @@ impl PersistedStateHeader {
     pub const MAGIC: u64 = u64::from_le_bytes(*b"OHCLPHDR");
 }
 
-/// A local newtype wrapper that represents a [`igvm_defs::MemoryMapEntryType`].
-///
-/// This is required to make it protobuf deriveable.
-#[derive(mesh_protobuf::Protobuf, Clone, Debug, PartialEq)]
-#[mesh(package = "openhcl.openhcl_boot")]
-pub struct IgvmMemoryType(#[mesh(1)] u16);
+/// Definitions used for save/restore between boots.
+pub mod save_restore {
+    extern crate alloc;
 
-impl From<igvm_defs::MemoryMapEntryType> for IgvmMemoryType {
-    fn from(igvm_type: igvm_defs::MemoryMapEntryType) -> Self {
-        Self(igvm_type.0)
+    use super::MemoryVtlType;
+    use alloc::vec::Vec;
+    use memory_range::MemoryRange;
+
+    /// A local newtype wrapper that represents a [`igvm_defs::MemoryMapEntryType`].
+    ///
+    /// This is required to make it protobuf deriveable.
+    #[derive(mesh_protobuf::Protobuf, Clone, Debug, PartialEq)]
+    #[mesh(package = "openhcl.openhcl_boot")]
+    pub struct IgvmMemoryType(#[mesh(1)] u16);
+
+    impl From<igvm_defs::MemoryMapEntryType> for IgvmMemoryType {
+        fn from(igvm_type: igvm_defs::MemoryMapEntryType) -> Self {
+            Self(igvm_type.0)
+        }
     }
-}
 
-impl From<IgvmMemoryType> for igvm_defs::MemoryMapEntryType {
-    fn from(igvm_type: IgvmMemoryType) -> Self {
-        igvm_defs::MemoryMapEntryType(igvm_type.0)
+    impl From<IgvmMemoryType> for igvm_defs::MemoryMapEntryType {
+        fn from(igvm_type: IgvmMemoryType) -> Self {
+            igvm_defs::MemoryMapEntryType(igvm_type.0)
+        }
     }
-}
 
-/// A memory entry describing what range of address space described as memory is
-/// used for what.
-#[derive(mesh_protobuf::Protobuf, Debug)]
-#[mesh(package = "openhcl.openhcl_boot")]
-pub struct MemoryEntry {
-    /// The range of memory.
-    #[mesh(1)]
-    pub range: MemoryRange,
-    /// The numa vnode for this range.
-    #[mesh(2)]
-    pub vnode: u32,
-    /// The VTL type for this range.
-    #[mesh(3)]
-    pub vtl_type: MemoryVtlType,
-    /// The IGVM type for this range, which was reported by the host originally.
-    #[mesh(4)]
-    pub igvm_type: IgvmMemoryType,
-}
+    /// A memory entry describing what range of address space described as memory is
+    /// used for what.
+    #[derive(mesh_protobuf::Protobuf, Debug)]
+    #[mesh(package = "openhcl.openhcl_boot")]
+    pub struct MemoryEntry {
+        /// The range of memory.
+        #[mesh(1)]
+        pub range: MemoryRange,
+        /// The numa vnode for this range.
+        #[mesh(2)]
+        pub vnode: u32,
+        /// The VTL type for this range.
+        #[mesh(3)]
+        pub vtl_type: MemoryVtlType,
+        /// The IGVM type for this range, which was reported by the host originally.
+        #[mesh(4)]
+        pub igvm_type: IgvmMemoryType,
+    }
 
-/// A mmio entry describing what range of address space described as mmio is
-/// used for what.
-#[derive(mesh_protobuf::Protobuf, Debug)]
-#[mesh(package = "openhcl.openhcl_boot")]
-pub struct MmioEntry {
-    /// The range of mmio.
-    #[mesh(1)]
-    pub range: MemoryRange,
-    /// The VTL type for this range, which should always be an mmio type.
-    #[mesh(2)]
-    pub vtl_type: MemoryVtlType,
-}
+    /// A mmio entry describing what range of address space described as mmio is
+    /// used for what.
+    #[derive(mesh_protobuf::Protobuf, Debug)]
+    #[mesh(package = "openhcl.openhcl_boot")]
+    pub struct MmioEntry {
+        /// The range of mmio.
+        #[mesh(1)]
+        pub range: MemoryRange,
+        /// The VTL type for this range, which should always be an mmio type.
+        #[mesh(2)]
+        pub vtl_type: MemoryVtlType,
+    }
 
-/// The format for saved state between the previous instance of OpenHCL and the
-/// next.
-#[derive(mesh_protobuf::Protobuf, Debug)]
-#[mesh(package = "openhcl.openhcl_boot")]
-pub struct SavedState {
-    /// The memory entries describing memory for the whole partition.
-    #[mesh(1)]
-    pub partition_memory: Vec<MemoryEntry>,
-    /// The mmio entries describing mmio for the whole partition.
-    #[mesh(2)]
-    pub partition_mmio: Vec<MmioEntry>,
+    /// The format for saved state between the previous instance of OpenHCL and the
+    /// next.
+    #[derive(mesh_protobuf::Protobuf, Debug)]
+    #[mesh(package = "openhcl.openhcl_boot")]
+    pub struct SavedState {
+        /// The memory entries describing memory for the whole partition.
+        #[mesh(1)]
+        pub partition_memory: Vec<MemoryEntry>,
+        /// The mmio entries describing mmio for the whole partition.
+        #[mesh(2)]
+        pub partition_mmio: Vec<MmioEntry>,
+    }
 }

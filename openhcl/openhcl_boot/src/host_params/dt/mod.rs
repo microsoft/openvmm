@@ -582,12 +582,13 @@ fn topology_from_persisted_state(
         )
     };
 
-    let parsed_protobuf: loader_defs::shim::SavedState = bump_alloc::with_global_alloc(|| {
-        log!("decoding protobuf of size {}", protobuf_raw.len());
-        mesh_protobuf::decode(protobuf_raw).expect("failed to decode protobuf")
-    });
+    let parsed_protobuf: loader_defs::shim::save_restore::SavedState =
+        bump_alloc::with_global_alloc(|| {
+            log!("decoding protobuf of size {}", protobuf_raw.len());
+            mesh_protobuf::decode(protobuf_raw).expect("failed to decode protobuf")
+        });
 
-    let loader_defs::shim::SavedState {
+    let loader_defs::shim::save_restore::SavedState {
         partition_memory,
         partition_mmio,
     } = parsed_protobuf;
