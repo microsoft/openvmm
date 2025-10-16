@@ -176,10 +176,7 @@ jobs:
       shell: bash
   job1:
     name: xtask fmt (linux)
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -346,9 +343,7 @@ jobs:
       shell: bash
   job10:
     name: clippy [windows], unit tests [x64-windows]
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
+    runs-on: windows-latest
     permissions:
       contents: read
       id-token: write
@@ -609,10 +604,7 @@ jobs:
       shell: bash
   job11:
     name: clippy [linux, macos], unit tests [x64-linux]
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -912,10 +904,7 @@ jobs:
       shell: bash
   job12:
     name: clippy [linux-musl, misc nostd], unit tests [x64-linux-musl]
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -1218,11 +1207,7 @@ jobs:
       shell: bash
   job13:
     name: unit tests [aarch64-windows]
-    runs-on:
-    - self-hosted
-    - Windows
-    - ARM64
-    - Baremetal
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       id-token: write
@@ -3147,6 +3132,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
+    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
     permissions:
       contents: read
       id-token: write
@@ -3357,10 +3343,7 @@ jobs:
         include-hidden-files: true
   job20:
     name: test flowey local backend
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -3470,7 +3453,10 @@ jobs:
       shell: bash
   job3:
     name: build artifacts (for VMM tests) [aarch64-windows]
-    runs-on: windows-latest
+    runs-on:
+    - self-hosted
+    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
+    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
     permissions:
       contents: read
       id-token: write
@@ -3758,6 +3744,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
+    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
     permissions:
       contents: read
       id-token: write
@@ -3972,7 +3959,10 @@ jobs:
         include-hidden-files: true
   job5:
     name: build artifacts (for VMM tests) [x64-windows]
-    runs-on: windows-latest
+    runs-on:
+    - self-hosted
+    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
+    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
     permissions:
       contents: read
       id-token: write

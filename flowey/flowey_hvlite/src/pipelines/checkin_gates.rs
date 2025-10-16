@@ -210,7 +210,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "xtask fmt (linux)",
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
+                .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 .dep_on(|ctx| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
@@ -294,7 +294,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build artifacts (not for VMM tests) [{arch_tag}-windows]"),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
+                .gh_set_pool(crate::pipelines_shared::gh_pools::default_self_hosted(
                     FlowPlatform::Windows,
                 ))
                 .dep_on(|ctx| flowey_lib_hvlite::build_hypestv::Request {
@@ -341,7 +341,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build artifacts (for VMM tests) [{arch_tag}-windows]"),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
+                .gh_set_pool(crate::pipelines_shared::gh_pools::default_self_hosted(
                     FlowPlatform::Windows,
                 ))
                 .dep_on(|ctx| {
@@ -482,7 +482,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build artifacts [{arch_tag}-linux]"),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
+                .gh_set_pool(crate::pipelines_shared::gh_pools::default_self_hosted(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 .dep_on(|ctx| {
@@ -645,7 +645,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build openhcl [{arch_tag}-linux]"),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
+                .gh_set_pool(crate::pipelines_shared::gh_pools::default_self_hosted(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 .dep_on(|ctx| {
@@ -698,7 +698,7 @@ impl IntoPipeline for CheckinGatesCli {
                         FlowArch::X86_64,
                         format!("verify openhcl binary size [{}]", arch_tag),
                     )
-                    .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
+                    .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
                         FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                     ))
                     .dep_on(
@@ -738,7 +738,9 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::windows_amd_self_hosted(),
+                gh_pool: crate::pipelines_shared::gh_pools::default_gh_hosted(
+                    FlowPlatform::Windows,
+                ),
                 clippy_targets: Some((
                     "windows",
                     &[
@@ -754,7 +756,9 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted(),
+                gh_pool: crate::pipelines_shared::gh_pools::default_gh_hosted(FlowPlatform::Linux(
+                    FlowPlatformLinuxDistro::Ubuntu,
+                )),
                 clippy_targets: Some((
                     "linux, macos",
                     &[
@@ -771,7 +775,9 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted(),
+                gh_pool: crate::pipelines_shared::gh_pools::default_gh_hosted(FlowPlatform::Linux(
+                    FlowPlatformLinuxDistro::Ubuntu,
+                )),
                 clippy_targets: Some((
                     "linux-musl, misc nostd",
                     &[
@@ -784,7 +790,7 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::Aarch64,
-                gh_pool: crate::pipelines_shared::gh_pools::windows_arm_self_hosted_baremetal(),
+                gh_pool: crate::pipelines_shared::gh_pools::gh_hosted_arm_linux(),
                 clippy_targets: None,
                 unit_test_target: Some((
                     "aarch64-windows",
@@ -982,7 +988,7 @@ impl IntoPipeline for CheckinGatesCli {
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted(),
+                gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk(),
                 label: "x64-linux",
                 target: CommonTriple::X86_64_LINUX_GNU,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
@@ -1066,7 +1072,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "test flowey local backend",
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
+                .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 .dep_on(
