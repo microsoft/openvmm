@@ -128,11 +128,13 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
                     _ => unreachable!(),
                 };
 
+                // Put a space here (if required), so that header lines without a prefix
+                // don't end with a trailing space. E.g. ` -->` instead of `-->`.
                 let suffix = match ext {
                     "rs" | "c" | "proto" | "ts" | "tsx" | "js" | "toml" | "py" | "ps1"
                     | "config" => "",
-                    "css" => "*/ ",
-                    "html" => "-->",
+                    "css" => " */ ",
+                    "html" => " -->",
                     _ => unreachable!(),
                 };
 
@@ -145,9 +147,9 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
                     f.read_exact(&mut [0; 3])?;
                 }
 
-                writeln!(f_fixed, "{} {} {}", prefix, HEADER_MIT_FIRST, suffix)?;
+                writeln!(f_fixed, "{} {}{}", prefix, HEADER_MIT_FIRST, suffix)?;
                 if !is_msft_internal {
-                    writeln!(f_fixed, "{} {} {}", prefix, HEADER_MIT_SECOND, suffix)?;
+                    writeln!(f_fixed, "{} {}{}", prefix, HEADER_MIT_SECOND, suffix)?;
                 }
 
                 writeln!(f_fixed)?; // also add that missing blank line
