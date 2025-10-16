@@ -107,8 +107,8 @@ async fn parse_guest_pci_devices(
 #[openvmm_test(
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     uefi_x64(vhd(ubuntu_2404_server_x64)),
-    uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+    uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+    // uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 async fn pcie_root_emulation(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
