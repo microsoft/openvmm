@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::dps_json::GuestStateLifetime;
+use get_resources::ged::EfiDiagnosticsLogLevelType;
 use get_resources::ged::GuestEmulationDeviceHandle;
 use get_resources::ged::GuestFirmwareConfig;
 use get_resources::ged::GuestSecureBootTemplateType;
@@ -193,6 +194,17 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 guest_state_lifetime,
                 guest_state_encryption_policy,
                 management_vtl_features,
+                efi_diagnostics_log_level: match resource.efi_diagnostics_log_level {
+                    EfiDiagnosticsLogLevelType::Default => {
+                        get_protocol::dps_json::EfiDiagnosticsLogLevelType::Default
+                    }
+                    EfiDiagnosticsLogLevelType::Info => {
+                        get_protocol::dps_json::EfiDiagnosticsLogLevelType::Info
+                    }
+                    EfiDiagnosticsLogLevelType::Full => {
+                        get_protocol::dps_json::EfiDiagnosticsLogLevelType::Full
+                    }
+                },
             },
             halt,
             resource.firmware_event_send,

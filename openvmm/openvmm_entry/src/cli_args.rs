@@ -550,6 +550,18 @@ flags:
     #[clap(long)]
     pub uefi_console_mode: Option<UefiConsoleModeCli>,
 
+    /// set the EFI diagnostics log level
+    #[clap(long_help = r#"
+Set the EFI diagnostics log level.
+
+options:
+    default                        default (ERROR and WARN only)
+    info                           info (ERROR, WARN, and INFO)
+    full                           full (all log levels)
+"#)]
+    #[clap(long, requires("uefi"))]
+    pub efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
+
     /// Perform a default boot even if boot entries exist and fail
     #[clap(long)]
     pub default_boot_always_attempt: bool,
@@ -1388,6 +1400,13 @@ pub enum UefiConsoleModeCli {
     Com1,
     Com2,
     None,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum EfiDiagnosticsLogLevelCli {
+    Default,
+    Info,
+    Full,
 }
 
 #[derive(Clone, Debug, PartialEq)]

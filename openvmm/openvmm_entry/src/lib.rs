@@ -29,6 +29,7 @@ use clap::CommandFactory;
 use clap::FromArgMatches;
 use clap::Parser;
 use cli_args::DiskCliKind;
+use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
 use cli_args::NicConfigCli;
 use cli_args::ProvisionVmgs;
@@ -1027,6 +1028,13 @@ fn vm_config_from_command_line(
                     no_persistent_secrets: true,
                     igvm_attest_test_config: None,
                     test_gsp_by_id: opt.test_gsp_by_id,
+                    efi_diagnostics_log_level: {
+                        match opt.efi_diagnostics_log_level.unwrap_or(EfiDiagnosticsLogLevelCli::Default) {
+                            EfiDiagnosticsLogLevelCli::Default => get_resources::ged::EfiDiagnosticsLogLevelType::Default,
+                            EfiDiagnosticsLogLevelCli::Info => get_resources::ged::EfiDiagnosticsLogLevelType::Info,
+                            EfiDiagnosticsLogLevelCli::Full => get_resources::ged::EfiDiagnosticsLogLevelType::Full,
+                        }
+                    },
                 }
                 .into_resource(),
             ),

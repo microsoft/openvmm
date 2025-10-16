@@ -1023,6 +1023,7 @@ impl PetriVmConfigSetupCore<'_> {
             no_persistent_secrets: !tpm_state_persistence,
             igvm_attest_test_config: None,
             test_gsp_by_id,
+            efi_diagnostics_log_level: Default::default(), // TODO: make configurable
         };
 
         Ok((ged, guest_request_send))
