@@ -126,6 +126,8 @@ async fn pcie_root_emulation(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
                     ports: vec![
                         PcieRootPortConfig { name: "rp0".into() },
                         PcieRootPortConfig { name: "rp1".into() },
+                        PcieRootPortConfig { name: "rp2".into() },
+                        PcieRootPortConfig { name: "rp3".into() },
                     ],
                 })
             })
@@ -135,12 +137,13 @@ async fn pcie_root_emulation(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
 
     let guest_devices = parse_guest_pci_devices(os_flavor, &agent).await?;
     tracing::info!(?guest_devices, "guest devices");
-    assert_eq!(guest_devices.len(), 2);
 
-    for dev in guest_devices {
-        assert_eq!(dev.vendor_id, 0x1414);
-        assert_eq!(dev.class_code, 0x0604);
-    }
+    let root_port_count = guest_devices
+        .iter()
+        .filter(|d| d.vendor_id == 0x1414 && d.device_id == 0xc030 && d.class_code == 0x0604)
+        .count();
+
+    assert_eq!(root_port_count, 4);
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
