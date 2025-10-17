@@ -30,10 +30,12 @@ flowey_request! {
         pub fail_fast: Option<bool>,
         /// Additional env vars set when executing the tests.
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
+        /// Additional command to run before the tests
+        pub extra_commands: Option<ReadVar<Vec<(OsString, Vec<OsString>)>>>,
         /// Generate a portable command with paths relative to `test_content_dir`
         pub portable: bool,
         /// Command for running the tests
-        pub command: WriteVar<Command>,
+        pub command: WriteVar<Script>,
     }
 }
 
@@ -59,10 +61,9 @@ pub enum CommandShell {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Command {
+pub struct Script {
     pub env: BTreeMap<String, String>,
-    pub argv0: OsString,
-    pub args: Vec<OsString>,
+    pub commands: Vec<(OsString, Vec<OsString>)>,
     pub shell: CommandShell,
 }
 
@@ -86,6 +87,7 @@ impl FlowNode for Node {
             tool_config_files,
             nextest_profile,
             extra_env,
+            extra_commands,
             nextest_filter_expr,
             run_ignored,
             fail_fast,
@@ -102,12 +104,14 @@ impl FlowNode for Node {
                     .map(|(a, b)| (a, b.claim(ctx)))
                     .collect::<Vec<_>>();
                 let extra_env = extra_env.claim(ctx);
+                let extra_commands = extra_commands.claim(ctx);
                 let command = command.claim(ctx);
 
                 move |rt| {
                     let working_dir = rt.read(working_dir);
                     let config_file = rt.read(config_file);
                     let mut with_env = rt.read(extra_env).unwrap_or_default();
+                    let mut commands = rt.read(extra_commands).unwrap_or_default();
 
                     let target = match &run_kind_deps {
                         RunKindDeps::BuildAndRun {
@@ -342,12 +346,13 @@ impl FlowNode for Node {
                     // run.
                     with_env.extend(build_env);
 
+                    commands.push((argv0, args));
+
                     rt.write(
                         command,
-                        &Command {
+                        &Script {
                             env: with_env,
-                            argv0,
-                            args,
+                            commands,
                             shell: if (portable || !windows_via_wsl2)
                                 && matches!(
                                     target.operating_system,
@@ -474,41 +479,46 @@ impl RunKindDeps {
     }
 }
 
-impl std::fmt::Display for Command {
+impl std::fmt::Display for Script {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let quote_char = match self.shell {
             CommandShell::Powershell => "\"",
             CommandShell::Bash => "'",
-        };
-        let arg_string = {
-            self.args
-                .iter()
-                .map(|v| format!("{quote_char}{}{quote_char}", v.to_string_lossy()))
-                .collect::<Vec<_>>()
-                .join(" ")
         };
 
         let env_string = match self.shell {
             CommandShell::Powershell => self
                 .env
                 .iter()
-                .map(|(k, v)| format!("$env:{k}=\"{v}\";"))
+                .map(|(k, v)| format!("$env:{k}=\"{v}\""))
                 .collect::<Vec<_>>()
-                .join(" "),
+                .join("\n"),
             CommandShell::Bash => self
                 .env
                 .iter()
-                .map(|(k, v)| format!("{k}=\"{v}\""))
+                .map(|(k, v)| format!("export {k}=\"{v}\""))
                 .collect::<Vec<_>>()
-                .join(" "),
+                .join("\n"),
         };
+        writeln!(f, "{env_string}")?;
 
-        let argv0_string = self.argv0.to_string_lossy();
-        let argv0_string = match self.shell {
-            CommandShell::Powershell => format!("&\"{argv0_string}\""),
-            CommandShell::Bash => format!("\"{argv0_string}\""),
-        };
+        for cmd in &self.commands {
+            let argv0_string = cmd.0.to_string_lossy();
+            let argv0_string = match self.shell {
+                CommandShell::Powershell => format!("&\"{argv0_string}\""),
+                CommandShell::Bash => format!("\"{argv0_string}\""),
+            };
 
-        write!(f, "{} {} {}", env_string, argv0_string, arg_string)
+            let arg_string = {
+                cmd.1
+                    .iter()
+                    .map(|v| format!("{quote_char}{}{quote_char}", v.to_string_lossy()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            writeln!(f, "{argv0_string} {arg_string}")?;
+        }
+
+        Ok(())
     }
 }
