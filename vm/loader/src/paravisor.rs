@@ -67,6 +67,9 @@ pub struct Vtl0Config<'a> {
 // See HclDefs.h
 pub const HCL_SECURE_VTL: Vtl = Vtl::Vtl2;
 
+/// Size of the persisted region (2MB).
+const PERSISTED_REGION_SIZE: u64 = 2 * 1024 * 1024;
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("memory is unaligned: {0}")]
@@ -146,6 +149,7 @@ where
     // - pad to next 2MB -
     // kernel
     // optional 2mb bounce buf for CVM
+    // persisted state region
     // --- Low memory, 2MB aligned ---
 
     // Paravisor memory ranges must be 2MB (large page) aligned.
@@ -175,6 +179,13 @@ where
     };
 
     let mut offset = memory_start_address;
+
+    // Reserve the first 2MB for a potential persisted state region. The first
+    // 4K page is always the persisted state header, and the bootshim may decide
+    // to use the the remaining pages for the protobuf payload.
+    let persisted_region_base = offset;
+    let persisted_region_size = PERSISTED_REGION_SIZE;
+    offset += persisted_region_size;
 
     // If hardware isolated, reserve a 2MB range for bounce buffering shared
     // pages. This is done first because we know the start address is 2MB
@@ -528,6 +539,8 @@ where
         log_buffer_size: bootshim_log_size,
         heap_start_offset: calculate_shim_offset(heap_start),
         heap_size,
+        persisted_state_region_offset: calculate_shim_offset(persisted_region_base),
+        persisted_state_region_size: persisted_region_size,
     };
 
     tracing::debug!(boot_params_base, "shim gpa");
@@ -955,7 +968,16 @@ where
         },
     )?;
 
-    tracing::trace!(memory_start_address, "loading the kernel");
+    let mut next_addr = memory_start_address;
+
+    // Reserve the first 2MB for a potential persisted state region. The first
+    // 4K page is always the persisted state header, and the bootshim may decide
+    // to use the the remaining pages for the protobuf payload.
+    let persisted_region_base = next_addr;
+    let persisted_region_size = PERSISTED_REGION_SIZE;
+    next_addr += persisted_region_size;
+
+    tracing::trace!(next_addr, "loading the kernel");
 
     // The aarch64 Linux kernel image is most commonly found as a flat binary with a
     // header rather than an ELF.
@@ -978,7 +1000,7 @@ where
     } = load_kernel_and_initrd_arm64(
         importer,
         kernel_image,
-        memory_start_address,
+        next_addr,
         Some(initrd_config),
         device_tree_blob,
     )
@@ -990,8 +1012,6 @@ where
     );
 
     tracing::trace!(kernel_base, "kernel loaded");
-
-    let mut next_addr;
 
     let InitrdInfo {
         gpa: initrd_gpa,
@@ -1154,6 +1174,8 @@ where
         log_buffer_size: bootshim_log_size,
         heap_start_offset: calculate_shim_offset(heap_start),
         heap_size,
+        persisted_state_region_offset: calculate_shim_offset(persisted_region_base),
+        persisted_state_region_size: persisted_region_size,
     };
 
     importer
