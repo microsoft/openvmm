@@ -174,6 +174,7 @@ pub fn load_uefi(
                 bridge.segment,
                 bridge.start_bus,
                 bridge.end_bus,
+                bridge.ecam_range,
                 bridge.low_mmio,
                 bridge.high_mmio,
             );

@@ -48,6 +48,8 @@ members = [
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
+  # opentmk
+  "opentmk",
 ]
 exclude = [
   "xsync",
@@ -127,6 +129,7 @@ mesh_rpc = { path = "support/mesh/mesh_rpc" }
 mesh_worker = { path = "support/mesh/mesh_worker" }
 mesh_tracing = { path = "support/mesh_tracing" }
 minircu = { path = "support/minircu" }
+nostd_spin_channel = { path = "support/nostd_spin_channel"}
 open_enum = { path = "support/open_enum" }
 openssl_kdf = { path = "support/openssl_kdf" }
 openssl_crypto_only = { path = "support/openssl_crypto_only" }
@@ -470,9 +473,11 @@ jiff = "0.2.14"
 kvm-bindings = "0.14.0"
 # Use of these specific REPO will go away when changes are taken upstream.
 landlock = "0.4.1"
+lazy_static = "1.4.0"
 libc = "0.2"
 libfuzzer-sys = "0.4"
 libtest-mimic = "0.8"
+linked_list_allocator = "0.10.5"
 linkme = "0.3.9"
 log = "0.4"
 loom = "0.7.2"
@@ -509,8 +514,8 @@ rusqlite = "0.37"
 rustc-hash = "2.1.1"
 rustyline = "17"
 seccompiler = "0.5"
-serde = "1.0.185"
-serde_json = "1.0"
+serde = { version = "1.0.185", default-features = false }
+serde_json = { version = "1.0", default-features = false }
 serde_yaml = "0.9"
 sha2 = { version = "0.10.8", default-features = false }
 shell-words = "1.1"
@@ -520,6 +525,7 @@ smallbox = "0.8"
 smallvec = "1.8"
 smoltcp = { version = "0.8", default-features = false }
 socket2 = "0.6"
+spin = "0.10.0"
 stackfuture = "0.3"
 static_assertions = "1.1"
 syn = "2"
@@ -547,6 +553,7 @@ windows = "0.62"
 windows-service = "0.8"
 windows-sys = "0.61"
 windows-version = "0.1.4"
+x86_64 = { version = "0.15.2", default-features = false }
 xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshell/issues/63
 xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
@@ -606,8 +613,10 @@ lto = 'fat'
 [profile.dev.package.minimal_rt]
 opt-level = 1
 
-# Optimize loom even in the dev profile, as otherwise tests just take too long.
+# Optimize loom and its main dependency even in the dev profile, as otherwise tests just take too long.
 [profile.dev.package.loom]
+opt-level = 3
+[profile.dev.package.generator]
 opt-level = 3
 
 [patch.crates-io]

@@ -31,6 +31,8 @@ pub(crate) struct QueueFull;
 
 impl SubmissionQueue {
     pub fn new(sqid: u16, len: u16, mem: MemoryBlock) -> Self {
+        tracing::debug!(sqid, len, pfns = ?mem.pfns(), "new submission queue");
+
         Self {
             sqid,
             head: 0,
@@ -122,6 +124,7 @@ pub(crate) struct CompletionQueue {
 
 impl CompletionQueue {
     pub fn new(cqid: u16, len: u16, mem: MemoryBlock) -> CompletionQueue {
+        tracing::debug!(cqid, len, pfns = ?mem.pfns(), "new completion queue");
         Self {
             cqid,
             head: 0,
@@ -138,8 +141,7 @@ impl CompletionQueue {
 
     pub fn read(&mut self) -> Option<spec::Completion> {
         let completion_mem = self.mem.as_slice()
-            [self.head as usize * size_of::<spec::Completion>()..]
-            [..size_of::<spec::Completion>() * 2]
+            [self.head as usize * size_of::<spec::Completion>()..][..size_of::<spec::Completion>()]
             .as_atomic_slice::<AtomicU64>()
             .unwrap();
 

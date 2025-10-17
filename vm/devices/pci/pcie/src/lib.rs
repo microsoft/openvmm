@@ -16,7 +16,7 @@ const PAGE_OFFSET_MASK: u64 = PAGE_SIZE64 - 1;
 const PAGE_SHIFT: u32 = PAGE_SIZE.trailing_zeros();
 
 const VENDOR_ID: u16 = 0x1414;
-const ROOT_PORT_DEVICE_ID: u16 = 0xF111;
+const ROOT_PORT_DEVICE_ID: u16 = 0xC030;
 
 const MAX_FUNCTIONS_PER_BUS: usize = 256;
 

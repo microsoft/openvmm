@@ -5,8 +5,9 @@ on:
     types:
       - completed
     workflows:
-      - '\[flowey\] OpenVMM CI'
-      - '\[flowey\] OpenVMM PR'
+      - 'OpenVMM CI'
+      - 'OpenVMM PR'
+      - '\[Optional\] OpenVMM Release PR'
 
 permissions:
   id-token: write

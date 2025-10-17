@@ -82,7 +82,7 @@ mbrman.workspace = true
 parking_lot.workspace = true
 prost.workspace = true
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 tempfile.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

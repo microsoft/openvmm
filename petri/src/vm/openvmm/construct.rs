@@ -587,19 +587,6 @@ impl PetriVmConfigSetupCore<'_> {
     }
 
     fn load_firmware(&self) -> anyhow::Result<LoadMode> {
-        // Forward OPENVMM_LOG and OPENVMM_SHOW_SPANS to OpenHCL if they're set.
-        let openhcl_tracing =
-            if let Ok(x) = std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG")) {
-                format!("OPENVMM_LOG={x}")
-            } else {
-                "OPENVMM_LOG=debug".to_owned()
-            };
-        let openhcl_show_spans = if let Ok(x) = std::env::var("OPENVMM_SHOW_SPANS") {
-            format!("OPENVMM_SHOW_SPANS={x}")
-        } else {
-            "OPENVMM_SHOW_SPANS=true".to_owned()
-        };
-
         Ok(match (self.arch, &self.firmware) {
             (MachineArch::X86_64, Firmware::LinuxDirect { kernel, initrd }) => {
                 let kernel = File::open(kernel.clone())
@@ -656,6 +643,7 @@ impl PetriVmConfigSetupCore<'_> {
                             secure_boot_enabled: _,  // new
                             secure_boot_template: _, // new
                             disable_frontpage,
+                            default_boot_always_attempt,
                         },
                 },
             ) => {
@@ -672,7 +660,7 @@ impl PetriVmConfigSetupCore<'_> {
                     enable_serial: true,
                     enable_vpci_boot: matches!(self.boot_device_type, BootDeviceType::Nvme),
                     uefi_console_mode: Some(hvlite_defs::config::UefiConsoleMode::Com1),
-                    default_boot_always_attempt: false,
+                    default_boot_always_attempt: *default_boot_always_attempt,
                 }
             }
             (
@@ -692,15 +680,13 @@ impl PetriVmConfigSetupCore<'_> {
                 let OpenHclConfig {
                     vtl2_nvme_boot: _, // load_boot_disk
                     vmbus_redirect: _, // config_openhcl_vmbus_devices
-                    command_line,
+                    command_line: _,
+                    log_levels: _,
                 } = openhcl_config;
 
-                let mut cmdline = command_line.clone();
+                let mut cmdline = Some(openhcl_config.command_line());
 
-                append_cmdline(
-                    &mut cmdline,
-                    format!("panic=-1 reboot=triple {openhcl_tracing} {openhcl_show_spans}"),
-                );
+                append_cmdline(&mut cmdline, "panic=-1 reboot=triple");
 
                 let isolated = match self.firmware {
                     Firmware::OpenhclLinuxDirect { .. } => {
@@ -962,6 +948,7 @@ impl PetriVmConfigSetupCore<'_> {
                 secure_boot_enabled,
                 secure_boot_template,
                 disable_frontpage,
+                default_boot_always_attempt,
             },
             OpenHclConfig { vmbus_redirect, .. },
         ) = match self.firmware {
@@ -988,7 +975,7 @@ impl PetriVmConfigSetupCore<'_> {
                 disable_frontpage: *disable_frontpage,
                 enable_vpci_boot: matches!(self.boot_device_type, BootDeviceType::Nvme),
                 console_mode: get_resources::ged::UefiConsoleMode::COM1,
-                default_boot_always_attempt: false,
+                default_boot_always_attempt: *default_boot_always_attempt,
             },
             com1: true,
             com2: true,
