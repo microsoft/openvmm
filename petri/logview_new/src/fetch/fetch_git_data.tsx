@@ -40,8 +40,8 @@ export async function getAllGithubPullRequests(): Promise<PullRequestTitles> {
 }
 
 /**
- * Fetch latest open pull requests from microsoft/openvmm and build a mapping
- * from PR title -> author login. Returns an empty object on any failure so that
+ * Fetch a page of pull requests from microsoft/openvmm and build a mapping
+ * from PR number (as string) -> PR title. Returns an empty object on any failure so that
  * prefetch errors never block the UI.
  */
 async function getGithubPullRequestsPage(
@@ -88,7 +88,7 @@ export async function fetchMissingPRTitles(
   queryClient: QueryClient
 ): Promise<Map<string, string | null>> {
   console.warn(
-    "[fetchMissingPRTitles] Fetching missing PR titles for individually:",
+    "[fetchMissingPRTitles] Fetching missing PR titles individually:",
     prNumbers
   );
   const unique = Array.from(new Set(prNumbers));
