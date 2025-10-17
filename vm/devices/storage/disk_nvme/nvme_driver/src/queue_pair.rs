@@ -46,18 +46,23 @@ use zerocopy::FromZeros;
 
 /// Value for unused PRP entries, to catch/mitigate buffer size mismatches.
 const INVALID_PAGE_ADDR: u64 = !(PAGE_SIZE as u64 - 1);
-/// Maximum SQ size in entries.
-pub const MAX_SQ_ENTRIES: u16 = (PAGE_SIZE / 64) as u16;
-/// Maximum CQ size in entries.
-pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16;
+
+const SQ_ENTRY_SIZE: usize = size_of::<spec::Command>();
+const CQ_ENTRY_SIZE: usize = size_of::<spec::Completion>();
 /// Submission Queue size in bytes.
-const SQ_SIZE: usize = PAGE_SIZE;
+const SQ_SIZE: usize = PAGE_SIZE * 4;
 /// Completion Queue size in bytes.
 const CQ_SIZE: usize = PAGE_SIZE;
+/// Maximum SQ size in entries.
+pub const MAX_SQ_ENTRIES: u16 = (SQ_SIZE / SQ_ENTRY_SIZE) as u16;
+/// Maximum CQ size in entries.
+pub const MAX_CQ_ENTRIES: u16 = (CQ_SIZE / CQ_ENTRY_SIZE) as u16;
 /// Number of pages per queue if bounce buffering.
 const PER_QUEUE_PAGES_BOUNCE_BUFFER: usize = 128;
 /// Number of pages per queue if not bounce buffering.
 const PER_QUEUE_PAGES_NO_BOUNCE_BUFFER: usize = 64;
+/// Number of SQ entries per page (64).
+const SQ_ENTRIES_PER_PAGE: usize = PAGE_SIZE / SQ_ENTRY_SIZE;
 
 #[derive(Inspect)]
 pub(crate) struct QueuePair<T: AerHandler> {
@@ -75,6 +80,8 @@ pub(crate) struct QueuePair<T: AerHandler> {
     sq_entries: u16,
     #[inspect(skip)]
     cq_entries: u16,
+    sq_addr: u64,
+    cq_addr: u64,
 }
 
 impl PendingCommands {
@@ -177,18 +184,32 @@ impl PendingCommands {
 }
 
 impl<T: AerHandler> QueuePair<T> {
+    /// Create a new queue pair.
+    ///
+    /// `sq_entries` and `cq_entries` are the requested sizes in entries.
+    /// Calling code should request the largest size it thinks the device
+    /// will support (see `CAP.MQES`). These may be clamped down to what will
+    /// fit in one page should this routine fail to allocate physically
+    /// contiguous memory to back the queues.
+    /// IMPORTANT: Calling code should check the actual sizes via corresponding
+    /// calls to [`QueuePair::sq_entries`] and [`QueuePair::cq_entries`] AFTER calling this routine.
     pub fn new(
         spawner: impl SpawnDriver,
         device: &impl DeviceBacking,
         qid: u16,
-        sq_entries: u16, // Requested SQ size in entries.
-        cq_entries: u16, // Requested CQ size in entries.
+        sq_entries: u16,
+        cq_entries: u16,
         interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
         bounce_buffer: bool,
         require_persistent_memory: bool,
         aer_handler: T,
     ) -> anyhow::Result<Self> {
+        // FUTURE: Consider splitting this into several allocations, rather than
+        // allocating the sum total together. This can increase the likelihood
+        // of getting contiguous memory when falling back to the LockedMem
+        // allocator, but this is not the expected path. Be careful that any
+        // changes you make here work with already established save state.
         let total_size = SQ_SIZE
             + CQ_SIZE
             + if bounce_buffer {
@@ -197,6 +218,10 @@ impl<T: AerHandler> QueuePair<T> {
                 PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE
             };
         let dma_client = device.dma_client();
+
+        // TODO: Keepalive: Detect when the allocation came from outside
+        // the private pool and put the device in a degraded state, so it
+        // is possible to inspect that a servicing with keepalive will fail.
         let mem = dma_client
             .allocate_dma_buffer(total_size)
             .context("failed to allocate memory for queues")?;
@@ -225,12 +250,11 @@ impl<T: AerHandler> QueuePair<T> {
         )
     }
 
-    /// Create new object or restore from saved state.
     fn new_or_restore(
         spawner: impl SpawnDriver,
         qid: u16,
-        sq_entries: u16, // Submission queue entries.
-        cq_entries: u16, // Completion queue entries.
+        sq_entries: u16,
+        cq_entries: u16,
         mut interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
         mem: MemoryBlock,
@@ -242,6 +266,49 @@ impl<T: AerHandler> QueuePair<T> {
         let sq_mem_block = mem.subblock(0, SQ_SIZE);
         let cq_mem_block = mem.subblock(SQ_SIZE, CQ_SIZE);
         let data_offset = SQ_SIZE + CQ_SIZE;
+
+        // Make sure that the queue memory is physically contiguous. While the
+        // NVMe spec allows for some provisions of queue memory to be
+        // non-contiguous, this depends on device support. At least one device
+        // that we must support requires that the memory is contiguous (via the
+        // CAP.CQR bit). Because of that, just simplify the code paths to use
+        // contiguous memory.
+        //
+        // We could also seek through the memory block to find contiguous pages
+        // (for example, if the first 4 pages are not contiguous, but pages 5-8
+        // are, use those), but other parts of this driver already assume the
+        // math to get the correct offsets.
+        //
+        // N.B. It is expected that allocations from the private pool will
+        // always be contiguous, and that is the normal path. That can fail in
+        // some cases (e.g. if we got some guesses about memory size wrong), and
+        // we prefer to operate in a perf degraded state rather than fail
+        // completely.
+
+        let (sq_is_contiguous, cq_is_contiguous) = (
+            sq_mem_block.contiguous_pfns(),
+            cq_mem_block.contiguous_pfns(),
+        );
+
+        let (sq_entries, cq_entries) = if !sq_is_contiguous || !cq_is_contiguous {
+            tracing::warn!(
+                qid,
+                sq_is_contiguous,
+                sq_mem_block.pfns = ?sq_mem_block.pfns(),
+                cq_is_contiguous,
+                cq_mem_block.pfns = ?cq_mem_block.pfns(),
+                "non-contiguous queue memory detected, falling back to single page queues"
+            );
+            // Clamp both queues to the number of entries that will fit in a
+            // single SQ page (since this will be the smaller between the SQ and
+            // CQ capacity).
+            (SQ_ENTRIES_PER_PAGE as u16, SQ_ENTRIES_PER_PAGE as u16)
+        } else {
+            (sq_entries, cq_entries)
+        };
+
+        let sq_addr = sq_mem_block.pfns()[0] * PAGE_SIZE64;
+        let cq_addr = cq_mem_block.pfns()[0] * PAGE_SIZE64;
 
         let mut queue_handler = match saved_state {
             Some(s) => QueueHandler::restore(sq_mem_block, cq_mem_block, s, aer_handler)?,
@@ -304,15 +371,27 @@ impl<T: AerHandler> QueuePair<T> {
             qid,
             sq_entries,
             cq_entries,
+            sq_addr,
+            cq_addr,
         })
     }
 
+    /// Returns the actual number of SQ entries supported by this queue pair.
+    pub fn sq_entries(&self) -> u16 {
+        self.sq_entries
+    }
+
+    /// Returns the actual number of CQ entries supported by this queue pair.
+    pub fn cq_entries(&self) -> u16 {
+        self.cq_entries
+    }
+
     pub fn sq_addr(&self) -> u64 {
-        self.mem.pfns()[0] * PAGE_SIZE64
+        self.sq_addr
     }
 
     pub fn cq_addr(&self) -> u64 {
-        self.mem.pfns()[1] * PAGE_SIZE64
+        self.cq_addr
     }
 
     pub fn issuer(&self) -> &Arc<Issuer> {

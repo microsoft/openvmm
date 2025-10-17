@@ -274,9 +274,6 @@ pub struct UnderhillEnvCfg {
     pub nvme_vfio: bool,
     // TODO MCR: support closed-source configuration logic for MCR device
     pub mcr: bool,
-    /// Enable the shared visibility pool. This is enabled by default on
-    /// hardware isolated platforms, but can be enabled for testing.
-    pub enable_shared_visibility_pool: bool,
     /// Halt on a guest halt request instead of forwarding to the host.
     pub halt_on_guest_halt: bool,
     /// Leave sidecar VPs remote even if they hit exits.
@@ -1381,7 +1378,6 @@ async fn new_underhill_vm(
             round_up_to_2mb(cpu_bytes + device_dma + attestation)
         }
         virt::IsolationType::Vbs => round_up_to_2mb(device_dma + attestation),
-        _ if env_cfg.enable_shared_visibility_pool => round_up_to_2mb(device_dma + attestation),
         _ => 0,
     };
 

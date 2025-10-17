@@ -177,6 +177,20 @@ impl MemoryBlock {
         self.mem.pfn_bias()
     }
 
+    /// Returns true if the PFNs are contiguous.
+    ///
+    /// TODO: Fallback allocations are here for now, but we should eventually
+    /// allow the caller to require these. See `DmaClient::allocate_dma_buffer`.
+    pub fn contiguous_pfns(&self) -> bool {
+        for (curr, next) in self.pfns().iter().zip(self.pfns().iter().skip(1)) {
+            if *curr + 1 != *next {
+                return false;
+            }
+        }
+
+        true
+    }
+
     /// Returns true if the PFNs are guaranteed to be stable across OpenHCL
     /// servicing events.
     pub fn persistent(&self) -> bool {
