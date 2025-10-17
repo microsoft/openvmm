@@ -21,7 +21,7 @@ export interface RunMetadata {
 
 export interface TestResult {
   name: string;
-  status: "passed" | "failed" | "unknown";
+  status: "passed" | "failed";
   path: string;
   duration?: number;
 }
