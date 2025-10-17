@@ -508,6 +508,11 @@ impl UnicodeString {
         self.0.Buffer.is_null()
     }
 
+    /// The length of the string in bytes.
+    pub fn length(&self) -> usize {
+        self.0.Length as usize
+    }
+
     pub fn as_ptr(&self) -> *const UNICODE_STRING {
         &self.0
     }
