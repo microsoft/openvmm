@@ -158,11 +158,8 @@ impl HyperVPetriConfig {
 
 #[async_trait]
 impl PetriVmmBackend for HyperVPetriBackend {
-<<<<<<< HEAD
     type VmmConfig = HyperVVmConfig;
-=======
     type VmmConfig = HyperVPetriConfig;
->>>>>>> openvmm/main
     type VmRuntime = HyperVPetriRuntime;
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
@@ -185,14 +182,11 @@ impl PetriVmmBackend for HyperVPetriBackend {
         modify_vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
         resources: &PetriVmResources,
     ) -> anyhow::Result<Self::VmRuntime> {
-<<<<<<< HEAD
         let mut hyperv_config = HyperVVmConfig::default();
         if let Some(f) = modify_vmm_config {
             hyperv_config = f(hyperv_config);
         }
 
-=======
->>>>>>> openvmm/main
         let PetriVmConfig {
             name,
             arch,
