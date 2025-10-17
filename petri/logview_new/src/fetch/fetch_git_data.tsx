@@ -2,31 +2,29 @@
 // Licensed under the MIT License.
 
 import { QueryClient } from "@tanstack/react-query";
+import { PullRequestTitles } from "../data_defs";
 
 const GET_PR_INFO = "https://api.github.com/repos/microsoft/openvmm/pulls/";
 const GET_PR_INFO_BATCHED =
   "https://api.github.com/repos/microsoft/openvmm/pulls?state=all&sort=updated&direction=desc";
 const PER_PAGE = 50;
 
-// Mapping of PR number (as string) -> PR title
-export type PullRequestAuthorMap = Record<string, string>;
-
 /**
  * Gets up to 200 of the most recent PRs from the openvmm repo. Parses them and
  * returns a mapping from PR number -> PR title. Returns an empty object if
  * there are failures.
  */
-export async function getAllGithubPullRequests(): Promise<PullRequestAuthorMap> {
+export async function getAllGithubPullRequests(): Promise<PullRequestTitles> {
   try {
     // Fetch first three pages in parallel. Each page returns up to 50 PRs.
     const pagePromises = [1, 2, 3, 4].map((p) =>
       getGithubPullRequestsPage(p, PER_PAGE).catch(
-        () => ({}) as PullRequestAuthorMap
+        () => ({}) as PullRequestTitles
       )
     );
     const pageMaps = await Promise.all(pagePromises);
     // Merge (later pages won't overwrite earlier ones if duplicate numbers appear, but duplicates are unlikely)
-    const merged: PullRequestAuthorMap = {};
+    const merged: PullRequestTitles = {};
     for (const m of pageMaps) {
       for (const k in m) {
         if (!Object.prototype.hasOwnProperty.call(merged, k)) {
@@ -49,7 +47,7 @@ export async function getAllGithubPullRequests(): Promise<PullRequestAuthorMap> 
 async function getGithubPullRequestsPage(
   number: number,
   perPage: number
-): Promise<PullRequestAuthorMap> {
+): Promise<PullRequestTitles> {
   const url = `${GET_PR_INFO_BATCHED}&per_page=${perPage}&page=${number}`;
   try {
     const res = await fetch(url, {
@@ -67,7 +65,7 @@ async function getGithubPullRequestsPage(
     }
     const data = await res.json();
     if (!Array.isArray(data)) return {};
-    const map: PullRequestAuthorMap = {};
+    const map: PullRequestTitles = {};
     for (const pr of data) {
       if (pr && typeof pr.title === "string" && typeof pr.number === "number") {
         map[pr.number] = pr.title;

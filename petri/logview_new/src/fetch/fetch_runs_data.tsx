@@ -3,11 +3,11 @@
 
 import { QueryClient } from "@tanstack/react-query";
 import type {
-  PullRequestAuthorMap,
   RunData,
   RunDetailsData,
   RunMetadata,
   TestResult,
+  PullRequestTitles,
 } from "../data_defs";
 import {
   fetchMissingPRTitles,
@@ -72,7 +72,7 @@ export async function fetchRunData(
       // NOTE: We could make this refresh every hour to keep PR titles fresh.
       // But this is fine for now! Titles will currently not be updated after
       // initial fetch.
-      const prMap = await queryClient.ensureQueryData<PullRequestAuthorMap>({
+      const prMap = await queryClient.ensureQueryData<PullRequestTitles>({
         queryKey: ["prs"],
         queryFn: () => getAllGithubPullRequests(),
         staleTime: Infinity,

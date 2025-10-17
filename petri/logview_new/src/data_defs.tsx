@@ -33,4 +33,4 @@ export interface RunDetailsData {
 }
 
 // Mapping of PR number (as string) -> PR title
-export type PullRequestAuthorMap = Record<string, string>;
+export type PullRequestTitles = Record<string, string>;
