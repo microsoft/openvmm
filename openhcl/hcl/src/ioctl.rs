@@ -1627,6 +1627,7 @@ pub struct Hcl {
     isolation: IsolationType,
     snp_register_bitmap: [u8; 64],
     sidecar: Option<SidecarClient>,
+    proxy_interrupt_redirect: bool,
 }
 
 /// The isolation type for a partition.
@@ -1659,6 +1660,11 @@ impl Hcl {
     /// Returns true if DR6 is a shared register on this processor.
     pub fn dr6_shared(&self) -> bool {
         self.dr6_shared
+    }
+
+    /// Returns true if proxy interrupt redirection is supported.
+    pub fn proxy_interrupt_redirect(&self) -> bool {
+        self.proxy_interrupt_redirect
     }
 }
 
@@ -2371,6 +2377,7 @@ impl Hcl {
             isolation,
             snp_register_bitmap,
             sidecar,
+            proxy_interrupt_redirect: false,
         })
     }
 
@@ -2382,6 +2389,11 @@ impl Hcl {
     /// Initializes SNP register tweak bitmap
     pub fn set_snp_register_bitmap(&mut self, register_bitmap: [u8; 64]) {
         self.snp_register_bitmap = register_bitmap;
+    }
+
+    /// Set proxy interrupt redirection capability.
+    pub fn set_proxy_interrupt_redirect(&mut self, enable: bool) {
+        self.proxy_interrupt_redirect = enable;
     }
 
     /// Adds `vp_count` VPs.
@@ -2962,7 +2974,8 @@ impl Hcl {
             IsolationType::Tdx => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available())
-                .with_dr6_shared(true),
+                .with_dr6_shared(true)
+                .with_proxy_interrupt_redirect_available(caps.proxy_interrupt_redirect_available()),
         };
 
         assert_eq!(caps.dr6_shared(), self.dr6_shared());

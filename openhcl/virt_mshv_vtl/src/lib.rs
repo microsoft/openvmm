@@ -235,7 +235,6 @@ struct UhPartitionInner {
     #[inspect(hex, with = "|x| inspect::iter_by_index(x.read().into_inner())")]
     device_vector_table: RwLock<IrrBitmap>,
     vmbus_relay: bool,
-    use_posted_redirection: bool,
 }
 
 #[derive(Inspect)]
@@ -1399,9 +1398,6 @@ pub struct UhPartitionNewParams<'a> {
     pub use_mmio_hypercalls: bool,
     /// Intercept guest debug exceptions to support gdbstub.
     pub intercept_debug_exceptions: bool,
-    /// This allows VTL0 owned device interrupts to be posted to VTL2
-    /// when VTL0 does not directly support posted interrupts.
-    pub use_posted_redirection: bool,
 }
 
 /// Parameters to [`UhProtoPartition::build`].
@@ -1733,6 +1729,13 @@ impl<'a> UhProtoPartition<'a> {
                 );
             }
             hcl.set_snp_register_bitmap(bitmap);
+        } else if isolation == IsolationType::Tdx {
+            // Configure proxy interrupt redirection if supported by hypervisor. This allows proxy interrupts
+            // for lower VTL devices to be delivered to VTL2 via posted interrupt mechanism when it cannot
+            // be directly posted to the lower VTL.
+            // This improves performance during device interrupt delivery to lower VTLs.
+            let caps = hcl.get_vsm_capabilities().map_err(Error::Hcl)?;
+            hcl.set_proxy_interrupt_redirect(caps.proxy_interrupt_redirect_available());
         }
 
         // Do per-VP HCL initialization.
@@ -1876,7 +1879,6 @@ impl<'a> UhProtoPartition<'a> {
             device_vector_table: RwLock::new(IrrBitmap::new(Default::default())),
             intercept_debug_exceptions: params.intercept_debug_exceptions,
             vmbus_relay: late_params.vmbus_relay,
-            use_posted_redirection: params.use_posted_redirection,
         });
 
         if cfg!(guest_arch = "x86_64") {

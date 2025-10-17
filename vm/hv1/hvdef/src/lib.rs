@@ -201,12 +201,7 @@ pub struct HvEnlightenmentInformation {
     pub use_hypercall_for_mmio_access: bool,
     pub use_gpa_pinning_hypercall: bool,
     pub wake_vps: bool,
-    #[bits(3)]
-    _reserved3: u32,
-    // TODO: Currently a placeholder.
-    pub posted_interrupt_redirection_support: bool,
-    #[bits(4)]
-    _reserved: u32,
+    _reserved: u8,
     pub long_spin_wait_count: u32,
     #[bits(7)]
     pub implemented_physical_address_bits: u32,
@@ -3153,8 +3148,10 @@ pub struct HvRegisterVsmCapabilities {
     pub install_intercept_ex: bool,
     /// Only available in VTL2.
     pub intercept_system_reset_available: bool,
-    #[bits(31)]
-    pub reserved: u64,
+    pub _reserved1: bool,
+    pub proxy_interrupt_redirect_available: bool,
+    #[bits(29)]
+    pub reserved2: u64,
 }
 
 #[bitfield(u64)]

@@ -1292,37 +1292,21 @@ async fn new_underhill_vm(
     let uevent_listener =
         Arc::new(UeventListener::new(tp.driver(0)).context("failed to start uevent listener")?);
 
+    let use_mmio_hypercalls = dps.general.always_relay_host_mmio;
     // TODO: Centralize cpuid based feature determination.
     #[cfg(guest_arch = "x86_64")]
-    let enlightenment_info = {
-        let result = 
-            safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
-        hvdef::HvEnlightenmentInformation::from(
-            result.eax as u128
-                | (result.ebx as u128) << 32
-                | (result.ecx as u128) << 64
-                | (result.edx as u128) << 96,
-        )
-    };
-
-    let use_mmio_hypercalls = dps.general.always_relay_host_mmio;
-    #[cfg(guest_arch = "x86_64")]
-    let use_mmio_hypercalls = use_mmio_hypercalls 
-        || (hardware_isolated && enlightenment_info.use_hypercall_for_mmio_access());
-
-    // Determine if posted interrupt redirection is supported. This allows posted interrupt delivery
-    // of VTL0 device interrupts to VTL2 when it cannot be posted directly to VTL0.
-    // This improves performance for VTL0 owned devices by avoiding  exits to VMM for device
-    // interrupt delivery. 
-    let use_posted_redirection = match isolation {
-        #[cfg(guest_arch = "x86_64")]
-        virt::IsolationType::Tdx => {
-            let supported = enlightenment_info.posted_interrupt_redirection_support();
-            tracing::info!(CVM_ALLOWED, supported, "Posted interrupt redirection");
-            supported
-        }
-        _ => false,
-    };
+    let use_mmio_hypercalls = use_mmio_hypercalls
+        || hardware_isolated && {
+            let result =
+                safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
+            hvdef::HvEnlightenmentInformation::from(
+                result.eax as u128
+                    | (result.ebx as u128) << 32
+                    | (result.ecx as u128) << 64
+                    | (result.edx as u128) << 96,
+            )
+            .use_hypercall_for_mmio_access()
+        };
 
     let boot_info = runtime_params.parsed_openhcl_boot();
 
@@ -1571,7 +1555,6 @@ async fn new_underhill_vm(
         use_mmio_hypercalls,
         intercept_debug_exceptions: env_cfg.gdbstub,
         hide_isolation,
-        use_posted_redirection,
     };
 
     let proto_partition = UhProtoPartition::new(params, |cpu| tp.driver(cpu).clone())
