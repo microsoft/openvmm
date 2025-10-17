@@ -201,8 +201,9 @@ impl MemStat {
     /// All other processes have a usage threshold of 512kB
     /// Kernel reservation has a threshold of 512kB
     /// In case any of these thresholds are exceeded, it would be considered a significant increase in memory usage from the previously established baseline (beyond run variance)
-    fn compare_to_baseline(self, arch: &str, vps: &str) -> anyhow::Result<()> {
-        let baseline_usage = Self::get_upper_limit_value(&self.baseline_json[arch][vps]["usage"]);
+    fn compare_to_baseline(self, build_version: &str, arch: &str, vps: &str) -> anyhow::Result<()> {
+        let baseline_usage =
+            Self::get_upper_limit_value(&self.baseline_json[build_version][arch][vps]["usage"]);
         let cur_usage = self.meminfo["MemTotal"] - self.total_free_memory_per_zone;
         assert!(
             baseline_usage >= cur_usage,
@@ -213,12 +214,12 @@ impl MemStat {
 
         for underhill_process in ["underhill_init", "openvmm_hcl", "underhill_vm"] {
             let baseline_pss = Self::get_upper_limit_value(
-                &self.baseline_json[arch][vps][underhill_process]["Pss"],
+                &self.baseline_json[build_version][arch][vps][underhill_process]["Pss"],
             );
             let cur_pss = self[underhill_process].smaps_rollup["Pss"];
 
             let baseline_pss_anon = Self::get_upper_limit_value(
-                &self.baseline_json[arch][vps][underhill_process]["Pss_Anon"],
+                &self.baseline_json[build_version][arch][vps][underhill_process]["Pss_Anon"],
             );
             let cur_pss_anon = self[underhill_process].smaps_rollup["Pss_Anon"];
 
@@ -238,10 +239,13 @@ impl MemStat {
             );
         }
 
-        let baseline_reservation =
-            Self::get_upper_limit_value(&self.baseline_json[arch][vps]["reservation"]);
-        let cur_reservation =
-            self.baseline_json[arch]["vtl2_total"].as_u64().unwrap() - self.meminfo["MemTotal"];
+        let baseline_reservation = Self::get_upper_limit_value(
+            &self.baseline_json[build_version][arch][vps]["reservation"],
+        );
+        let cur_reservation = self.baseline_json[build_version][arch]["vtl2_total"]
+            .as_u64()
+            .unwrap()
+            - self.meminfo["MemTotal"];
         assert!(
             baseline_reservation >= cur_reservation,
             "baseline reservation is less than current reservation: {} < {}",
@@ -370,6 +374,7 @@ pub(crate) async fn idle_test<T: PetriVmmBackend>(
     vps: TestVPCount,
     wait_time_sec: WaitPeriodSec,
     driver: DefaultDriver,
+    build_version: &str,
 ) -> anyhow::Result<()> {
     let isolation_type = config.isolation();
     let machine_arch = config.arch();
@@ -430,7 +435,7 @@ pub(crate) async fn idle_test<T: PetriVmmBackend>(
     tracing::info!("MEMSTAT_START:{}:MEMSTAT_END", to_string(&memstat).unwrap());
     agent.power_off().await?;
     vm.wait_for_teardown().await?;
-    memstat.compare_to_baseline(&arch_str, &format!("{}vp", vp_count))?;
+    memstat.compare_to_baseline(build_version, &arch_str, &format!("{}vp", vp_count))?;
 
     Ok(())
 }
