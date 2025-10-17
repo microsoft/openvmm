@@ -537,6 +537,121 @@ pub mod caps {
             _reserved3: bool,
         }
 
+        /// Link Capabilities Register
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct LinkCapabilities {
+            #[bits(4)]
+            pub max_link_speed: u32,
+            #[bits(6)]
+            pub max_link_width: u32,
+            #[bits(2)]
+            pub aspm_support: u32,
+            #[bits(3)]
+            pub l0s_exit_latency: u32,
+            #[bits(3)]
+            pub l1_exit_latency: u32,
+            pub clock_power_management: bool,
+            pub surprise_down_error_reporting: bool,
+            pub data_link_layer_link_active_reporting: bool,
+            pub link_bandwidth_notification_capability: bool,
+            pub aspm_optionality_compliance: bool,
+            #[bits(8)]
+            pub port_number: u32,
+            #[bits(1)]
+            _reserved: u32,
+        }
+
+        /// Slot Capabilities Register
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct SlotCapabilities {
+            pub attention_button_present: bool,
+            pub power_controller_present: bool,
+            pub mrl_sensor_present: bool,
+            pub attention_indicator_present: bool,
+            pub power_indicator_present: bool,
+            pub hot_plug_surprise: bool,
+            pub hot_plug_capable: bool,
+            #[bits(8)]
+            pub slot_power_limit_value: u32,
+            #[bits(2)]
+            pub slot_power_limit_scale: u32,
+            pub electromechanical_interlock_present: bool,
+            pub no_command_completed_support: bool,
+            #[bits(13)]
+            pub physical_slot_number: u32,
+        }
+
+        /// Root Capabilities Register
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct RootCapabilities {
+            pub crs_software_visibility: bool,
+            #[bits(15)]
+            _reserved: u16,
+        }
+
+        /// Device Capabilities 2 Register
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DeviceCapabilities2 {
+            #[bits(4)]
+            pub completion_timeout_ranges_supported: u32,
+            pub completion_timeout_disable_supported: bool,
+            pub ari_forwarding_supported: bool,
+            pub atomic_op_routing_supported: bool,
+            pub atomic_op_32_bit_completer_supported: bool,
+            pub atomic_op_64_bit_completer_supported: bool,
+            pub cas_128_bit_completer_supported: bool,
+            pub no_ro_enabled_pr_pr_passing: bool,
+            pub ltr_mechanism_supported: bool,
+            #[bits(2)]
+            pub tph_completer_supported: u32,
+            #[bits(2)]
+            pub ln_system_cls: u32,
+            pub ten_bit_tag_completer_supported: bool,
+            pub ten_bit_tag_requester_supported: bool,
+            #[bits(2)]
+            pub obff_supported: u32,
+            pub extended_fmt_field_supported: bool,
+            pub end_end_tlp_prefix_supported: bool,
+            #[bits(2)]
+            pub max_end_end_tlp_prefixes: u32,
+            #[bits(2)]
+            pub emergency_power_reduction_supported: u32,
+            pub emergency_power_reduction_init_required: bool,
+            #[bits(2)]
+            pub frs_supported: u32,
+            #[bits(3)]
+            _reserved: u32,
+        }
+
+        /// Link Capabilities 2 Register
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct LinkCapabilities2 {
+            #[bits(7)]
+            pub supported_link_speeds_vector: u32,
+            pub crosslink_supported: bool,
+            #[bits(8)]
+            pub lower_skp_os_generation_supported_speeds_vector: u32,
+            #[bits(8)]
+            pub lower_skp_os_reception_supported_speeds_vector: u32,
+            pub retimer_presence_detect_supported: bool,
+            pub two_retimers_presence_detect_supported: bool,
+            #[bits(6)]
+            _reserved: u32,
+        }
+
+        /// Slot Capabilities 2 Register
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct SlotCapabilities2 {
+            #[bits(32)]
+            _reserved: u32,
+        }
+
         /// Device Control Register
         #[bitfield(u16)]
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
@@ -670,6 +785,85 @@ pub mod caps {
             pub pme_pending: bool,
             #[bits(14)]
             _reserved: u32,
+        }
+
+        /// Device Control 2 Register (PCIe 2.0)
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DeviceControl2 {
+            #[bits(4)]
+            pub completion_timeout_value: u16,
+            pub completion_timeout_disable: bool,
+            pub ari_forwarding_enable: bool,
+            pub atomic_op_requester_enable: bool,
+            pub atomic_op_egress_blocking: bool,
+            pub ido_request_enable: bool,
+            pub ido_completion_enable: bool,
+            pub ltr_mechanism_enable: bool,
+            #[bits(2)]
+            pub emergency_power_reduction: u16,
+            pub emergency_power_reduction_init_required: bool,
+            #[bits(2)]
+            _reserved: u16,
+        }
+
+        /// Device Status 2 Register (PCIe 2.0)
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DeviceStatus2 {
+            #[bits(16)]
+            _reserved: u16,
+        }
+
+        /// Link Control 2 Register (PCIe 2.0)
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct LinkControl2 {
+            #[bits(4)]
+            pub target_link_speed: u16,
+            pub enter_compliance: bool,
+            pub hardware_autonomous_speed_disable: bool,
+            pub selectable_de_emphasis: bool,
+            #[bits(3)]
+            pub transmit_margin: u16,
+            pub enter_modified_compliance: bool,
+            pub compliance_sos: bool,
+            #[bits(4)]
+            pub compliance_preset_de_emphasis: u16,
+        }
+
+        /// Link Status 2 Register (PCIe 2.0)
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct LinkStatus2 {
+            #[bits(4)]
+            pub current_de_emphasis_level: u16,
+            pub equalization_complete: bool,
+            pub equalization_phase_1_successful: bool,
+            pub equalization_phase_2_successful: bool,
+            pub equalization_phase_3_successful: bool,
+            pub link_equalization_request: bool,
+            pub retimer_presence_detected: bool,
+            #[bits(2)]
+            pub crosslink_resolution: u16,
+            #[bits(4)]
+            _reserved: u16,
+        }
+
+        /// Slot Control 2 Register (PCIe 2.0)
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct SlotControl2 {
+            #[bits(16)]
+            _reserved: u16,
+        }
+
+        /// Slot Status 2 Register (PCIe 2.0)
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct SlotStatus2 {
+            #[bits(16)]
+            _reserved: u16,
         }
     }
 }
