@@ -44,10 +44,10 @@ members = [
   # tools
   "petri/make_imc_hive",
   "petri/petri-tool",
+  "vm/devices/tpm/tpm_guest_tests",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
-  "vm/devices/tpm/tpm_guest_tests",
 ]
 exclude = [
   "xsync",

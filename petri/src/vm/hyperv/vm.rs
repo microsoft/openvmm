@@ -298,6 +298,13 @@ impl HyperVVM {
         powershell::run_set_initial_machine_configuration(&self.vmid, &self.ps_mod, imc_hive).await
     }
 
+    /// Enable a virtual TPM for the VM.
+    pub async fn enable_tpm(&mut self) -> anyhow::Result<()> {
+        powershell::run_set_vm_key_protector_new_local(&self.vmid).await?;
+        powershell::run_enable_vm_tpm(&self.vmid).await?;
+        Ok(())
+    }
+
     async fn state(&self) -> anyhow::Result<VmState> {
         hvc::hvc_state(&self.vmid).await
     }

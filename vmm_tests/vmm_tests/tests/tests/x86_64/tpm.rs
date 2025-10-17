@@ -5,6 +5,7 @@ use anyhow::Context;
 use anyhow::ensure;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
+use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
 use petri::ShutdownKind;
 use petri::openvmm::OpenVmmPetriBackend;
@@ -14,9 +15,26 @@ use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
+use vmm_test_macros::vmm_test;
 
 const AK_CERT_NONZERO_BYTES: usize = 2500;
 const AK_CERT_TOTAL_BYTES: usize = 4096;
+
+trait SupportsTpm {
+    fn enable_tpm(self) -> Self;
+}
+
+impl SupportsTpm for petri::openvmm::PetriVmConfigOpenVmm {
+    fn enable_tpm(self) -> Self {
+        petri::openvmm::PetriVmConfigOpenVmm::with_tpm(self)
+    }
+}
+
+impl SupportsTpm for petri::hyperv::HyperVVmConfig {
+    fn enable_tpm(self) -> Self {
+        petri::hyperv::HyperVVmConfig::with_tpm(self)
+    }
+}
 
 fn expected_ak_cert_hex() -> String {
     use std::fmt::Write as _;
@@ -445,3 +463,65 @@ async fn tpm_test_platform_hierarchy_disabled(
 //     vm.wait_for_clean_teardown().await?;
 //     Ok(())
 // }
+
+/// CVM tests with TPM enabled.
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+)]
+async fn cvm_boot_with_tpm<T>(
+    config: PetriVmBuilder<T>,
+    extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,),
+) -> anyhow::Result<()>
+where
+    T: PetriVmmBackend,
+    T::VmmConfig: SupportsTpm,
+{
+    let (tpm_guest_tests_artifact,) = extra_deps;
+    let tpm_guest_tests_host_path = tpm_guest_tests_artifact.get();
+    let config = config
+        .modify_backend(|b| b.enable_tpm())
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
+
+    let (vm, agent) = config.run().await?;
+
+    let tpm_guest_tests_bytes = std::fs::read(tpm_guest_tests_host_path)
+        .with_context(|| format!("failed to read {}", tpm_guest_tests_host_path.display()))?;
+
+    agent
+        .write_file("C:\\tpm_guest_tests.exe", tpm_guest_tests_bytes.as_slice())
+        .await
+        .context("failed to copy tpm_guest_tests.exe into the guest")?;
+
+    let sh = agent.windows_shell();
+    let output = cmd!(sh, "C:\\tpm_guest_tests.exe")
+        .args(["ak_cert"])
+        .read()
+        .await
+        .context("failed to execute tpm_guest_tests.exe inside the guest")?;
+
+    assert!(
+        output.contains("AK certificate data"),
+        "tpm_guest_tests.exe --ak-cert did not report AK certificate data: {output}",
+    );
+
+    let report_output = cmd!(sh, "C:\\tpm_guest_tests.exe")
+        .args(["report", "--show-runtime-claims"])
+        .read()
+        .await
+        .context("failed to execute tpm_guest_tests.exe --report inside the guest")?;
+
+    ensure!(
+        report_output.contains("Runtime claims JSON"),
+        format!("{report_output}")
+    );
+    ensure!(
+        report_output.contains("\"vmUniqueId\""),
+        format!("{report_output}")
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}

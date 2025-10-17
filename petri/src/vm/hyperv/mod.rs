@@ -55,6 +55,24 @@ use std::time::Duration;
 use vm::HyperVVM;
 use vmgs_resources::GuestStateEncryptionPolicy;
 
+/// Hyper-V VM configuration
+#[derive(Clone, Copy, Default)]
+pub struct HyperVVmConfig {
+    enable_tpm: bool,
+}
+
+impl HyperVVmConfig {
+    /// Enable TPM for the VM
+    pub fn with_tpm(mut self) -> Self {
+        self.enable_tpm = true;
+        self
+    }
+
+    fn enable_tpm(&self) -> bool {
+        self.enable_tpm
+    }
+}
+
 /// The Hyper-V Petri backend
 pub struct HyperVPetriBackend {}
 
@@ -71,7 +89,7 @@ pub struct HyperVPetriRuntime {
 
 #[async_trait]
 impl PetriVmmBackend for HyperVPetriBackend {
-    type VmmConfig = ();
+    type VmmConfig = HyperVVmConfig;
     type VmRuntime = HyperVPetriRuntime;
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
@@ -94,8 +112,9 @@ impl PetriVmmBackend for HyperVPetriBackend {
         modify_vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
         resources: &PetriVmResources,
     ) -> anyhow::Result<Self::VmRuntime> {
-        if modify_vmm_config.is_some() {
-            panic!("specified modify_vmm_config, but that is not supported for hyperv");
+        let mut hyperv_config = HyperVVmConfig::default();
+        if let Some(f) = modify_vmm_config {
+            hyperv_config = f(hyperv_config);
         }
 
         let PetriVmConfig {
@@ -249,6 +268,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
             driver.clone(),
         )
         .await?;
+
+        if hyperv_config.enable_tpm() {
+            vm.enable_tpm().await?;
+        }
 
         {
             let ProcessorTopology {
