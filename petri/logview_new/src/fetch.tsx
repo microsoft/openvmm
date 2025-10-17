@@ -377,7 +377,7 @@ export async function fetchRunDetails(
 
     do {
       // Build URL with continuation token if we have one
-      // TODO: If heirarchical namespaces are supported this fetch call might go by much faster. Try this out in a non-prod environment first to try it out
+      // TODO: If hierarchical namespaces are supported this fetch call might go by much faster. Try this out in a non-prod environment first to try it out
       let url = `https://openvmmghtestresults.blob.core.windows.net/results?restype=container&comp=list&showonly=files&prefix=${encodeURIComponent(runNumber)}`;
       if (continuationToken) {
         url += `&marker=${encodeURIComponent(continuationToken)}`;
