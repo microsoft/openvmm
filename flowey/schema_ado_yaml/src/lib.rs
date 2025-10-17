@@ -261,6 +261,8 @@ pub struct Job {
     pub pool: Pool,
     pub depends_on: BTreeSet<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_in_minutes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub condition: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variables: Option<Vec<Variable>>,

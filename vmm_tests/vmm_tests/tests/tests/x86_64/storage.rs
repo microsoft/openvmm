@@ -200,7 +200,7 @@ async fn test_storage_linux(
 /// vmbus relay. This should expose two disks to VTL0 via vmbus.
 #[openvmm_test(
     openhcl_linux_direct_x64,
-    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+    //openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)) TODO: re-enable once pipette issues in #2039 are resolved
 )]
 async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");

@@ -54,7 +54,7 @@ export function Runs(): React.JSX.Element {
   const columns = useMemo(
     () =>
       createColumns((runId: string) => {
-        /* navigate(`/runs/${runId}`) */
+        navigate(`/runs/${runId}`);
       }),
     [navigate]
   );
