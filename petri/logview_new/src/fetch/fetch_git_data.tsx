@@ -42,8 +42,8 @@ export async function getAllGithubPullRequests(): Promise<PullRequestAuthorMap> 
 }
 
 /**
- * Fetch latest open pull requests from microsoft/openvmm and build a mapping
- * from PR title -> author login. Returns an empty object on any failure so that
+ * Fetch a page of pull requests from microsoft/openvmm and build a mapping
+ * from PR number (as string) -> PR title. Returns an empty object on any failure so that
  * prefetch errors never block the UI.
  */
 async function getGithubPullRequestsPage(
