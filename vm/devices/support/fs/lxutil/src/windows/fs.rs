@@ -980,11 +980,13 @@ pub fn read_app_exec_link(offset: lx::off_t, buf: &mut [u8]) -> usize {
     }
 
     // Copy PE_HEADER until either the end of PE_HEADER or buf
-    PE_HEADER
-        .iter()
-        .zip(buf.iter_mut())
-        .map(|(c, b)| *b = *c as u8)
-        .count()
+    let mut count = 0;
+    for (c, b) in PE_HEADER.iter().zip(buf.iter_mut()) {
+        *b = *c as u8;
+        count += 1;
+    }
+
+    count
 }
 
 /// Set the file times on a file. Any of the timespecs may have a nanoseconds field of

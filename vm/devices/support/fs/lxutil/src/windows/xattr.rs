@@ -248,8 +248,6 @@ pub fn get(handle: &OwnedHandle, name: &str, value: Option<&mut [u8]>) -> lx::Re
     let ea_info = FileFullEaInformation::read_from_prefix(&ea)
         .map_err(|_| lx::Error::EIO)?
         .0;
-    let next_entry_offset = ea_info.next_entry_offset.get();
-    assert_eq!(next_entry_offset, 0);
 
     // The attribute doesn't exist.
     if (ea_info.ea_value_length.get() as usize) < LX_UTILP_EA_VALUE_HEADER_SIZE {
@@ -292,8 +290,6 @@ fn check_exists(handle: &OwnedHandle, name: &str) -> lx::Result<bool> {
     let ea_info = FileFullEaInformation::read_from_prefix(&ea)
         .map_err(|_| lx::Error::EIO)?
         .0;
-    let next_entry_offset = ea_info.next_entry_offset.get();
-    assert_eq!(next_entry_offset, 0);
 
     // The attribute doesn't exist.
     if (ea_info.ea_value_length.get() as usize) < LX_UTILP_EA_VALUE_HEADER_SIZE {
