@@ -265,3 +265,112 @@ impl DeviceTestMemory {
         self.allocator.clone()
     }
 }
+
+/// Callbacks for the [`DeviceTestDmaClient`]. Tests supply these to customize the behaviour of the dma client.
+pub trait DeviceTestDmaClientCallbacks: Sync + Send {
+    /// Called when the DMA client needs to allocate a new DMA buffer.
+    fn allocate_dma_buffer(
+        &self,
+        allocator: &Arc<PagePoolAllocator>,
+        total_size: usize,
+    ) -> anyhow::Result<user_driver::memory::MemoryBlock>;
+
+    /// Called when the DMA client needs to attach pending buffers.
+    fn attach_pending_buffers(
+        &self,
+        inner: &Arc<PagePoolAllocator>,
+    ) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>>;
+}
+
+/// A DMA client that uses a [`PagePoolAllocator`] as the backing. It can be customized through the use of
+/// [`DeviceTestDmaClientCallbacks`] to modify its behaviour for testing purposes.
+///
+/// # Example
+/// ```rust
+/// use std::sync::Arc;
+/// use user_driver::DmaClient;
+/// use user_driver_emulated_mock::DeviceTestDmaClient;
+/// use page_pool_alloc::PagePoolAllocator;
+///
+/// struct MyCallbacks;
+/// impl user_driver_emulated_mock::DeviceTestDmaClientCallbacks for MyCallbacks {
+///     fn allocate_dma_buffer(
+///         &self,
+///         allocator: &Arc<page_pool_alloc::PagePoolAllocator>,
+///         total_size: usize,
+///     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+///         // Custom test logic here, for example:
+///         anyhow::bail!("allocation failed for testing");
+///     }
+///
+///     fn attach_pending_buffers(
+///         &self,
+///         allocator: &Arc<page_pool_alloc::PagePoolAllocator>,
+///     ) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
+///         // Custom test logic here, for example:
+///         anyhow::bail!("attachment failed for testing");
+///     }
+/// }
+///
+/// #[test]
+/// async fn test_dma_client() {
+///     let pages = 1000;
+///     let device_test_memory = user_driver_emulated_mock::DeviceTestMemory::new(
+///         pages,
+///         true,
+///         "test_dma_client",
+///     );
+///     let page_pool_allocator = Arc::new(device_test_memory.dma_client());
+///     let dma_client = DeviceTestDmaClient::new(page_pool_allocator)
+///       .with_callbacks(MyCallbacks);
+///
+///     // Use dma_client in tests...
+///     assert!(dma_client.allocate_dma_buffer(4096).is_err());
+/// }
+/// ```
+#[derive(Inspect)]
+#[inspect(transparent)]
+pub struct DeviceTestDmaClient<C>
+where
+    C: DeviceTestDmaClientCallbacks,
+{
+    inner: Arc<PagePoolAllocator>,
+    #[inspect(skip)]
+    callbacks: Option<C>,
+}
+
+impl<C: DeviceTestDmaClientCallbacks> DeviceTestDmaClient<C> {
+    /// Creates a new [`DeviceTestDmaClient`] with the given inner allocator.
+    pub fn new(inner: Arc<PagePoolAllocator>) -> Self {
+        Self {
+            inner,
+            callbacks: None,
+            // run_on_attach_pending_buffers: None,
+        }
+    }
+
+    /// Sets the callbacks for the DMA client.
+    pub fn with_callbacks(mut self, f: C) -> Self {
+        self.callbacks = Some(f);
+        self
+    }
+}
+
+impl<C: DeviceTestDmaClientCallbacks> DmaClient for DeviceTestDmaClient<C> {
+    fn allocate_dma_buffer(
+        &self,
+        total_size: usize,
+    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+        match &self.callbacks {
+            Some(c) => c.allocate_dma_buffer(&self.inner, total_size),
+            None => self.inner.allocate_dma_buffer(total_size),
+        }
+    }
+
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
+        match &self.callbacks {
+            Some(c) => c.attach_pending_buffers(&self.inner),
+            None => self.inner.attach_pending_buffers(),
+        }
+    }
+}

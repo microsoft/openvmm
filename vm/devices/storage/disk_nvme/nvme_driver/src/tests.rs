@@ -24,11 +24,14 @@ use parking_lot::Mutex;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use test_with_tracing::test;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
+use user_driver_emulated_mock::DeviceTestDmaClientCallbacks;
 use user_driver_emulated_mock::DeviceTestMemory;
 use user_driver_emulated_mock::EmulatedDevice;
 use user_driver_emulated_mock::Mapping;
@@ -70,6 +73,113 @@ async fn test_nvme_driver_bounce_buffer(driver: DefaultDriver) {
 #[async_test]
 async fn test_nvme_save_restore(driver: DefaultDriver) {
     test_nvme_save_restore_inner(driver).await;
+}
+
+#[async_test]
+async fn verify_handles_allocation_failures_appropriately(driver: DefaultDriver) {
+    const MSIX_COUNT: u16 = 2;
+    const IO_QUEUE_COUNT: u16 = 64;
+    const CPU_COUNT: u32 = 64;
+
+    struct Callbacks {
+        fail_alloc: Arc<AtomicBool>,
+    }
+
+    impl DeviceTestDmaClientCallbacks for Callbacks {
+        fn allocate_dma_buffer(
+            &self,
+            inner: &Arc<page_pool_alloc::PagePoolAllocator>,
+            size: usize,
+        ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+            match self.fail_alloc.load(Ordering::SeqCst) {
+                true => anyhow::bail!("alloc failed"),
+                false => inner.allocate_dma_buffer(size),
+            }
+        }
+
+        fn attach_pending_buffers(
+            &self,
+            inner: &Arc<page_pool_alloc::PagePoolAllocator>,
+        ) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
+            match self.fail_alloc.load(Ordering::SeqCst) {
+                true => anyhow::bail!("alloc failed"),
+                false => inner.attach_pending_buffers(),
+            }
+        }
+    }
+
+    // Memory setup
+    let pages = 1000;
+    let device_test_memory = DeviceTestMemory::new(
+        pages,
+        true,
+        "verify_handles_allocation_failures_appropriately",
+    );
+    let guest_mem = device_test_memory.guest_memory(); // Access to 0-8MB
+    let payload_mem = device_test_memory.payload_mem(); // Access 4-8MB. This will allow dma if the `allow_dma` flag is set.
+
+    let dma_client = device_test_memory.dma_client(); // Access 0-4MB
+    let fail_alloc = Arc::new(AtomicBool::new(false));
+    let dma_client = Arc::new(
+        user_driver_emulated_mock::DeviceTestDmaClient::new(dma_client).with_callbacks(Callbacks {
+            fail_alloc: fail_alloc.clone(),
+        }),
+    );
+
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let mut msi_set = MsiInterruptSet::new();
+    let nvme = nvme::NvmeController::new(
+        &driver_source,
+        guest_mem,
+        &mut msi_set,
+        &mut ExternallyManagedMmioIntercepts,
+        NvmeControllerCaps {
+            msix_count: MSIX_COUNT,
+            max_io_queues: IO_QUEUE_COUNT,
+            subsystem_id: Guid::new_random(),
+        },
+    );
+
+    nvme.client() // 2MB namespace
+        .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
+        .await
+        .unwrap();
+    let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
+    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
+        .await
+        .unwrap();
+    let namespace = driver.namespace(1).await.unwrap();
+
+    // Act: Write 1024 bytes of data to disk starting at LBA 1.
+    let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // 32 blocks
+    payload_mem.write_at(0, &[0xcc; 4096]).unwrap();
+    namespace
+        .write(
+            0,
+            1,
+            2,
+            false,
+            &payload_mem,
+            buf_range.buffer(&payload_mem).range(),
+        )
+        .await
+        .unwrap();
+
+    fail_alloc.store(true, Ordering::SeqCst);
+    let fallback_count = driver.fallback_cpu_count();
+
+    let write_result = namespace
+        .write(
+            6, // Pick a different target CPU, which will cause the driver to allocate new buffers. This should fail, but the IO should still succeed.
+            3,
+            2,
+            false,
+            &payload_mem,
+            buf_range.buffer(&payload_mem).range(),
+        )
+        .await;
+    assert!(write_result.is_ok());
+    assert_eq!(driver.fallback_cpu_count(), fallback_count + 1); // New CPU fell back
 }
 
 #[async_test]
