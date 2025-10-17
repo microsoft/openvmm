@@ -54,7 +54,7 @@ use vmm_test_macros::vmm_test;
 use zerocopy::IntoBytes;
 
 const DEFAULT_SERVICING_COUNT: u8 = 3;
-const NSID: u32 = 37; // Pick any namespace ID as long as it doesn't conflict with other namespaces in the controller
+const KEEPALIVE_VTL2_NSID: u32 = 37; // Pick any namespace ID as long as it doesn't conflict with other namespaces in the controller
 
 async fn openhcl_servicing_core<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -312,7 +312,7 @@ async fn servicing_keepalive_with_namespace_update(
         },
     )
     .await?;
-    ns_change_send.call(NamespaceChange::ChangeNotification, NSID).await?;
+    ns_change_send.call(NamespaceChange::ChangeNotification, KEEPALIVE_VTL2_NSID).await?;
     vm.restore_openhcl()
         .await?;
 
@@ -450,7 +450,7 @@ async fn create_keepalive_test_config(
                         msix_count: 10,
                         max_io_queues: 10,
                         namespaces: vec![NamespaceDefinition {
-                            nsid: NSID,
+                            nsid: KEEPALIVE_VTL2_NSID,
                             read_only: false,
                             disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                                 len: Some(256 * 1024),
@@ -473,7 +473,7 @@ async fn create_keepalive_test_config(
                                 .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
                                     ControllerType::Nvme,
                                     NVME_INSTANCE,
-                                    NSID,
+                                    KEEPALIVE_VTL2_NSID,
                                 )),
                         )
                         .build(),

@@ -509,7 +509,7 @@ impl AdminHandler {
                 let opcode = spec::AdminOpcode(command.cdw0.opcode());
 
                 if self.config.fault_configuration.fault_active.get()
-                    && let Some(fault) = Self::get_configured_fault_behavior::<nvme_spec::Command>(
+                    && let Some(fault) = Self::get_configured_fault_behavior_mut::<nvme_spec::Command>(
                         &mut self
                             .config
                             .fault_configuration
@@ -653,7 +653,7 @@ impl AdminHandler {
         // (Ignore namespace change and sq delete complete events for now).
         if let Some(command) = command_processed
             && self.config.fault_configuration.fault_active.get()
-            && let Some(fault) = Self::get_configured_fault_behavior::<nvme_spec::Completion>(
+            && let Some(fault) = Self::get_configured_fault_behavior_mut::<nvme_spec::Completion>(
                 &mut self
                     .config
                     .fault_configuration
@@ -1186,8 +1186,8 @@ impl AdminHandler {
         Ok(())
     }
 
-    /// Returns the configured fault behavior for the given command if a fault is configured.
-    fn get_configured_fault_behavior<'a, T: Clone>(
+    /// Returns a mutable reference to the fault behavior for a given command if a fault is configured.
+    fn get_configured_fault_behavior_mut<'a, T: Clone>(
         fault_configs: &'a mut [(CommandMatch, QueueFaultBehavior<T>)],
         command: &'a nvme_spec::Command,
     ) -> Option<&'a mut QueueFaultBehavior<T>> {
