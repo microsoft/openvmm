@@ -90,7 +90,7 @@ export async function fetchMissingPRTitles(
   queryClient: QueryClient
 ): Promise<Map<string, string | null>> {
   console.warn(
-    "[fetchMissingPRTitles] Fetching missing PR titles for individually:",
+    "[fetchMissingPRTitles] Fetching missing PR titles individually:",
     prNumbers
   );
   const unique = Array.from(new Set(prNumbers));
