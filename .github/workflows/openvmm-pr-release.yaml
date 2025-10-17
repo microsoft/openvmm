@@ -594,7 +594,10 @@ jobs:
       shell: bash
   job11:
     name: clippy [x64-linux, macos], unit tests [x64-linux]
-    runs-on: ubuntu-latest
+    runs-on:
+    - self-hosted
+    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
+    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
     permissions:
       contents: read
       id-token: write
@@ -875,7 +878,10 @@ jobs:
       shell: bash
   job12:
     name: clippy [x64-linux-musl, misc nostd], unit tests [x64-linux-musl]
-    runs-on: ubuntu-latest
+    runs-on:
+    - self-hosted
+    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
+    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
     permissions:
       contents: read
       id-token: write

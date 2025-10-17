@@ -745,7 +745,9 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::gh_hosted_x64_linux(),
+                // This job fails on github runners for an unknown reason, so
+                // use self-hosted runners for now.
+                gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk(),
                 clippy_targets: Some((
                     "x64-linux, macos",
                     &[
@@ -761,7 +763,9 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::gh_hosted_x64_linux(),
+                // This job fails on github runners due to disk space exhaustion, so
+                // use self-hosted runners for now.
+                gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk(),
                 clippy_targets: Some((
                     "x64-linux-musl, misc nostd",
                     &[(openhcl_musl_target(CommonArch::X86_64), true)],
