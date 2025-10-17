@@ -236,7 +236,8 @@ impl DirectoryEnumerator {
             self.next_read_index = 0;
             true
         } else {
-            false
+            // If this is the first read, restart_scan should be true.
+            self.next_read_index == 0
         };
 
         // Loop over all the entries in the enumerator.
