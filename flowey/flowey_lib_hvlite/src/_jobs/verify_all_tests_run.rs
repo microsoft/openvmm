@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 //! Verifies that all tests that are built are run at least once over the course of an entire pipeline run.
-use crate::build_nextest_vmm_tests::NextestVmmTestsList;
 use flowey::node::prelude::*;
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -21,10 +20,15 @@ struct Suite {
     testcases: HashMap<String, serde_json::Value>, // we don't care about contents
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct VmmTestResultsArtifacts {
+    pub junit_xml: ReadVar<PathBuf>,
+    pub nextest_list_json: ReadVar<PathBuf>,
+}
+
 flowey_request! {
     pub struct Request {
-        pub junit_xml_files: Vec<(String, ReadVar<PathBuf>)>,
-        pub nextest_list_json_files: Vec<ReadVar<NextestVmmTestsList>>,
+        pub test_artifacts: Vec<(String, VmmTestResultsArtifacts)>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -38,8 +42,7 @@ impl SimpleFlowNode for Node {
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
-            junit_xml_files,
-            nextest_list_json_files,
+            test_artifacts,
             done,
         } = request;
 
@@ -57,50 +60,42 @@ impl SimpleFlowNode for Node {
                 // of all tests that were run. If these sets were to differ it would be because a test was built but not run, which indicates a test gap.
                 // We have automation in the test run step that will automatically skip tests that are not meant to run on a given host because the host does
                 // not meet the test case requirements. For example, TDX/SNP tests are skipped on non-compatible hardware.
-                let junit_xml_files: Vec<_> = junit_xml_files
+                let artifacts: Vec<_> = test_artifacts
                     .into_iter()
-                    .map(|(prefix, var)| (prefix, var.claim(ctx)))
-                    .collect();
-                let nextest_list_json_files: Vec<_> = nextest_list_json_files
-                    .into_iter()
-                    .map(|var| var.claim(ctx))
+                    .map(|(prefix, artifacts)| {
+                        (
+                            prefix,
+                            artifacts.junit_xml.claim(ctx),
+                            artifacts.nextest_list_json.claim(ctx),
+                        )
+                    })
                     .collect();
 
                 move |rt| {
                     let mut combined_junit_testcases: HashSet<String> = HashSet::new();
                     let mut combined_nextest_testcases: HashSet<String> = HashSet::new();
 
-                    for (prefix, junit_xml_dir_var) in junit_xml_files {
-                        let junit_xml_dir = rt.read(junit_xml_dir_var);
-                        println!("JUnit artifact dir: {}", junit_xml_dir.display());
-                        assert!(
-                            junit_xml_dir.exists(),
-                            "expected junit artifact dir to exist"
-                        );
+                    for (prefix, junit_xml_dir, nextest_list_json_dir) in artifacts {
+                        let junit_xml_dir = rt.read(junit_xml_dir);
+                        let nextest_list_dir = rt.read(nextest_list_json_dir);
+                        println!("Artifact dir: {}", junit_xml_dir.display());
+                        println!("Artifact dir: {}", nextest_list_dir.display());
+                        assert!(junit_xml_dir.exists(), "expected artifact dir to exist");
+                        assert!(nextest_list_dir.exists(), "expected artifact dir to exist");
 
-                        let junit_xml_path =
-                            junit_xml_dir.join(format!("{}-vmm-tests-junit-xml.xml", prefix));
+                        let junit_xml = prefix.clone() + "-vmm-tests-junit-xml.xml";
+                        let nextest_list = prefix.clone() + "-vmm-tests-nextest-list.json";
+
+                        let junit_xml = junit_xml_dir.clone().join(&junit_xml);
+                        let nextest_list = nextest_list_dir.clone().join(&nextest_list);
 
                         get_testcase_names_from_junit_xml(
-                            &junit_xml_path,
+                            &junit_xml,
                             &mut combined_junit_testcases,
                         )?;
-                    }
-
-                    for nextest_list_json_file in nextest_list_json_files {
-                        let nextest_list_json_file = rt.read(nextest_list_json_file);
-                        let nextest_list_json_file = nextest_list_json_file.nextest_list_json;
-                        println!(
-                            "Nextest list artifact dir: {}",
-                            nextest_list_json_file.display()
-                        );
-                        assert!(
-                            nextest_list_json_file.exists(),
-                            "expected nextest list artifact dir to exist"
-                        );
 
                         get_testcase_names_from_nextest_list_json(
-                            &nextest_list_json_file,
+                            &nextest_list,
                             &mut combined_nextest_testcases,
                         )?;
                     }
