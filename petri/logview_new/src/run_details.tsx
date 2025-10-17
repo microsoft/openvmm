@@ -9,7 +9,7 @@ import { Menu } from "./menu";
 import { VirtualizedTable } from "./virtualized_table";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { fetchRunDetails } from "./fetch";
+import { fetchRunDetails } from "./fetch/fetch_runs_data";
 import { SearchInput } from "./search";
 import {
   createColumns,
