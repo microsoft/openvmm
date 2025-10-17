@@ -22,11 +22,12 @@ use vmm_test_macros::vmm_test_no_agent;
 
 /// Tests for Hyper-V integration components.
 mod ic;
-/// Servicing tests.
-mod openhcl_servicing;
-
 // Memory Validation tests.
 mod memstat;
+/// Servicing tests.
+mod openhcl_servicing;
+/// PCIe emulation tests.
+mod pcie;
 /// Tests of vmbus relay functionality.
 mod vmbus_relay;
 /// Tests involving VMGS functionality
