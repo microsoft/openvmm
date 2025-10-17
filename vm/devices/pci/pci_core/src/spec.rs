@@ -442,10 +442,34 @@ pub mod caps {
             /// | Cap + 0x0 | PCI Express Capabilities Register   | Next Pointer     | Capability ID (0x10) |
             /// | Cap + 0x4 | Device Capabilities Register                                                  |
             /// | Cap + 0x8 | Device Status    | Device Control                                             |
+            /// | Cap + 0xC | Link Capabilities Register                                                    |
+            /// | Cap + 0x10| Link Status      | Link Control                                               |
+            /// | Cap + 0x14| Slot Capabilities Register                                                    |
+            /// | Cap + 0x18| Slot Status      | Slot Control                                               |
+            /// | Cap + 0x1C| Root Capabilities| Root Control                                               |
+            /// | Cap + 0x20| Root Status Register                                                          |
+            /// | Cap + 0x24| Device Capabilities 2 Register                                                |
+            /// | Cap + 0x28| Device Status 2  | Device Control 2                                           |
+            /// | Cap + 0x2C| Link Capabilities 2 Register                                                  |
+            /// | Cap + 0x30| Link Status 2    | Link Control 2                                             |
+            /// | Cap + 0x34| Slot Capabilities 2 Register                                                  |
+            /// | Cap + 0x38| Slot Status 2    | Slot Control 2                                             |
             pub enum PciExpressCapabilityHeader: u16 {
-                PCIE_CAPS       = 0x00,
-                DEVICE_CAPS     = 0x04,
-                DEVICE_CTL_STS  = 0x08,
+                PCIE_CAPS           = 0x00,
+                DEVICE_CAPS         = 0x04,
+                DEVICE_CTL_STS      = 0x08,
+                LINK_CAPS           = 0x0C,
+                LINK_CTL_STS        = 0x10,
+                SLOT_CAPS           = 0x14,
+                SLOT_CTL_STS        = 0x18,
+                ROOT_CTL_CAPS       = 0x1C,
+                ROOT_STS            = 0x20,
+                DEVICE_CAPS_2       = 0x24,
+                DEVICE_CTL_STS_2    = 0x28,
+                LINK_CAPS_2         = 0x2C,
+                LINK_CTL_STS_2      = 0x30,
+                SLOT_CAPS_2         = 0x34,
+                SLOT_CTL_STS_2      = 0x38,
             }
         }
 
@@ -545,6 +569,107 @@ pub mod caps {
             pub transactions_pending: bool,
             #[bits(10)]
             _reserved: u16,
+        }
+
+        /// Link Control Register
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct LinkControl {
+            #[bits(2)]
+            pub aspm_control: u16,
+            #[bits(1)]
+            _reserved1: u16,
+            pub read_completion_boundary: bool,
+            pub link_disable: bool,
+            pub retrain_link: bool,
+            pub common_clock_configuration: bool,
+            pub extended_synch: bool,
+            pub enable_clock_power_management: bool,
+            pub hardware_autonomous_width_disable: bool,
+            pub link_bandwidth_management_interrupt_enable: bool,
+            pub link_autonomous_bandwidth_interrupt_enable: bool,
+            #[bits(4)]
+            _reserved2: u16,
+        }
+
+        /// Link Status Register
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct LinkStatus {
+            #[bits(4)]
+            pub current_link_speed: u16,
+            #[bits(6)]
+            pub negotiated_link_width: u16,
+            pub link_training: bool,
+            pub slot_clock_configuration: bool,
+            pub data_link_layer_link_active: bool,
+            pub link_bandwidth_management_status: bool,
+            pub link_autonomous_bandwidth_status: bool,
+            #[bits(1)]
+            _reserved: u16,
+        }
+
+        /// Slot Control Register
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct SlotControl {
+            pub attention_button_pressed_enable: bool,
+            pub power_fault_detected_enable: bool,
+            pub mrl_sensor_changed_enable: bool,
+            pub presence_detect_changed_enable: bool,
+            pub command_completed_interrupt_enable: bool,
+            pub hot_plug_interrupt_enable: bool,
+            #[bits(2)]
+            pub attention_indicator_control: u16,
+            #[bits(2)]
+            pub power_indicator_control: u16,
+            pub power_controller_control: bool,
+            pub electromechanical_interlock_control: bool,
+            pub data_link_layer_state_changed_enable: bool,
+            #[bits(3)]
+            _reserved: u16,
+        }
+
+        /// Slot Status Register
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct SlotStatus {
+            pub attention_button_pressed: bool,
+            pub power_fault_detected: bool,
+            pub mrl_sensor_changed: bool,
+            pub presence_detect_changed: bool,
+            pub command_completed: bool,
+            pub mrl_sensor_state: bool,
+            pub presence_detect_state: bool,
+            pub electromechanical_interlock_status: bool,
+            pub data_link_layer_state_changed: bool,
+            #[bits(7)]
+            _reserved: u16,
+        }
+
+        /// Root Control Register
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct RootControl {
+            pub system_error_on_correctable_error_enable: bool,
+            pub system_error_on_non_fatal_error_enable: bool,
+            pub system_error_on_fatal_error_enable: bool,
+            pub pme_interrupt_enable: bool,
+            pub crs_software_visibility_enable: bool,
+            #[bits(11)]
+            _reserved: u16,
+        }
+
+        /// Root Status Register
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct RootStatus {
+            #[bits(16)]
+            pub pme_requester_id: u32,
+            pub pme_status: bool,
+            pub pme_pending: bool,
+            #[bits(14)]
+            _reserved: u32,
         }
     }
 }
