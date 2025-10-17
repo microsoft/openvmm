@@ -6,7 +6,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import { SortingState } from "@tanstack/react-table";
 import { useQuery } from "@tanstack/react-query";
 import { RunData } from "./data_defs";
-import { fetchRunData } from "./fetch";
+import { fetchRunData } from "./fetch/fetch_runs_data.tsx";
 import { Menu } from "./menu";
 import { VirtualizedTable } from "./virtualized_table.tsx";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
