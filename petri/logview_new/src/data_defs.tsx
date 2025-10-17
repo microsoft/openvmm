@@ -18,3 +18,16 @@ export interface RunMetadata {
   ghPr?: string;
   prTitle?: string;
 }
+
+export interface TestResult {
+  name: string;
+  status: "passed" | "failed" | "unknown";
+  path: string;
+  duration?: number;
+}
+
+export interface RunDetailsData {
+  creationTime?: Date;
+  runNumber: string;
+  tests: TestResult[];
+}
