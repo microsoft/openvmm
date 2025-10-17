@@ -90,6 +90,7 @@ pub fn github_yaml(
             arch,
             ref external_read_vars,
             ado_pool: _,
+            timeout_minutes,
             ref gh_override_if,
             ref gh_global_env,
             ref gh_pool,
@@ -555,6 +556,7 @@ EOF
             format!("job{}", job_idx.index()),
             github_yaml_defs::Job {
                 name: label.clone(),
+                timeout_minutes,
                 runs_on: gh_pool.clone().map(|runner| runner_kind_to_yaml(&runner)),
                 permissions: job_permissions
                     .iter()

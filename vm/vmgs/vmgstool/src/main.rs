@@ -830,10 +830,10 @@ fn vmgs_dump_headers(header1: &VmgsHeader, header2: &VmgsHeader) -> Result<(), E
         "EncryptionAlgorithm:", encryption_algorithm1, encryption_algorithm2
     );
 
-    let reserved1 = format!("{:#06x}", header1.reserved);
-    let reserved2 = format!("{:#06x}", header2.reserved);
+    let markers1 = format!("{:#06x}", header1.markers.into_bits());
+    let markers2 = format!("{:#06x}", header2.markers.into_bits());
 
-    println!("{0:<23} {1:>70} {2:>70}", "Reserved:", reserved1, reserved2);
+    println!("{0:<23} {1:>70} {2:>70}", "Markers:", markers1, markers2);
 
     println!("{0:<23}", "MetadataKey1:");
 

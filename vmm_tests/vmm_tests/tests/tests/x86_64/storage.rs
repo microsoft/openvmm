@@ -18,6 +18,8 @@ use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use petri::PetriVmBuilder;
+#[cfg(windows)]
+use petri::hyperv::HyperVPetriBackend;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::PipetteClient;
 use petri::pipette::cmd;
@@ -36,6 +38,8 @@ use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
 use vm_resource::IntoResource;
+#[cfg(windows)]
+use vmm_test_macros::hyperv_test;
 use vmm_test_macros::openvmm_test;
 
 /// Create a VPCI device config for an NVMe controller assigned to VTL2, with a single namespace.
@@ -196,7 +200,7 @@ async fn test_storage_linux(
 /// vmbus relay. This should expose two disks to VTL0 via vmbus.
 #[openvmm_test(
     openhcl_linux_direct_x64,
-    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+    //openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)) TODO: re-enable once pipette issues in #2039 are resolved
 )]
 async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
@@ -306,6 +310,120 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
                 friendly_name: "nvme".to_string(),
             },
         ],
+    )
+    .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Test a Linux VM with a SCSI disk assigned to VTL2 and
+/// vmbus relay. This should expose one disk to VTL0 via vmbus.
+#[cfg(windows)]
+#[hyperv_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
+async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<(), anyhow::Error> {
+    let vtl2_lun = 5;
+    let vtl0_scsi_lun = 0;
+    let scsi_instance = Guid::new_random();
+    const SCSI_DISK_SECTORS: u64 = 0x4_0000;
+    const SECTOR_SIZE: u64 = 512;
+    const EXPECTED_SCSI_DISK_SIZE_BYTES: u64 = SCSI_DISK_SECTORS * SECTOR_SIZE;
+    const CONTROLLER_TEST_ID: &str = "scsi-controller";
+
+    // Assumptions made by test infra & routines:
+    //
+    // 1. Some test-infra added disks are 64MiB in size. Since we find disks by size,
+    // ensure that our test disks are a different size.
+    // 2. Disks under test need to be at least 100MiB for the IO tests (see [`test_storage_linux`]),
+    // with some arbitrary buffer (5MiB in this case).
+    static_assertions::const_assert_ne!(EXPECTED_SCSI_DISK_SIZE_BYTES, 64 * 1024 * 1024);
+    static_assertions::const_assert!(EXPECTED_SCSI_DISK_SIZE_BYTES > 105 * 1024 * 1024);
+
+    let mut vhd =
+        tempfile::NamedTempFile::with_suffix("vtl2.vhd").context("create temp vtl2 vhd")?;
+    vhd.as_file()
+        .set_len(EXPECTED_SCSI_DISK_SIZE_BYTES)
+        .context("set file length")?;
+
+    disk_vhd1::Vhd1Disk::make_fixed(vhd.as_file_mut()).context("make fixed")?;
+
+    // Close a handle to the file without deleting it, so that Hyper-V can open it.
+    let vhd_path = vhd.into_temp_path();
+
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(move |b| {
+            b.with_custom_vtl2_settings(|v| {
+                v.dynamic.as_mut().unwrap().storage_controllers.push(
+                    Vtl2StorageControllerBuilder::scsi()
+                        .with_instance_id(scsi_instance)
+                        .with_protocol(ControllerType::Scsi)
+                        .build(),
+                );
+            })
+            .with_additional_scsi_controller(CONTROLLER_TEST_ID.to_string(), 2)
+        })
+        .run()
+        .await?;
+
+    let (vtl2_controller_num, vtl2_vsid) = vm
+        .backend()
+        .get_additional_scsi_controllers()
+        .iter()
+        .filter(|c| c.test_id == CONTROLLER_TEST_ID)
+        .map(|c| (c.controller_number, c.vsid))
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("couldn't find additional scsi controller"))?;
+
+    vm.backend()
+        .add_vhd(
+            vhd_path,
+            petri::hyperv::powershell::ControllerType::Scsi,
+            Some(vtl2_lun),
+            Some(vtl2_controller_num),
+        )
+        .await?;
+
+    let Some(mut current_vtl2_settings) = vm.backend().get_base_vtl2_settings().await? else {
+        anyhow::bail!("expected vtl2 settings to be set");
+    };
+
+    let storage_controllers = &mut current_vtl2_settings
+        .dynamic
+        .as_mut()
+        .unwrap()
+        .storage_controllers;
+    assert_eq!(storage_controllers.len(), 1);
+    assert_eq!(
+        storage_controllers[0].instance_id,
+        scsi_instance.to_string()
+    );
+
+    let controller = storage_controllers.get_mut(0).unwrap();
+    controller.luns.push(
+        Vtl2LunBuilder::disk()
+            .with_location(vtl0_scsi_lun)
+            .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                ControllerType::Scsi,
+                vtl2_vsid,
+                vtl2_lun,
+            ))
+            .build(),
+    );
+    vm.backend()
+        .set_base_vtl2_settings(&current_vtl2_settings)
+        .await?;
+
+    test_storage_linux(
+        &agent,
+        vec![ExpectedGuestDevice {
+            controller_guid: scsi_instance,
+            lun: vtl0_scsi_lun,
+            disk_size_sectors: SCSI_DISK_SECTORS as usize,
+            friendly_name: "scsi".to_string(),
+        }],
     )
     .await?;
 

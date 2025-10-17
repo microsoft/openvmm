@@ -74,7 +74,7 @@ impl IntoPipeline for CheckinGatesCli {
                             branches,
                             ..Default::default()
                         })
-                        .gh_set_name("[flowey] OpenVMM CI");
+                        .gh_set_name("OpenVMM CI");
                 }
                 PipelineConfig::Pr => {
                     pipeline
@@ -82,7 +82,7 @@ impl IntoPipeline for CheckinGatesCli {
                             branches,
                             ..GhPrTriggers::new_draftable()
                         })
-                        .gh_set_name("[flowey] OpenVMM PR");
+                        .gh_set_name("OpenVMM PR");
                 }
                 PipelineConfig::PrRelease => {
                     // This workflow is triggered when a specific label is present on a PR.
@@ -91,7 +91,7 @@ impl IntoPipeline for CheckinGatesCli {
                     triggers.types.push("labeled".into());
                     pipeline
                         .gh_set_pr_triggers(triggers)
-                        .gh_set_name("[flowey] OpenVMM Release PR");
+                        .gh_set_name("[Optional] OpenVMM Release PR");
                 }
             }
         }

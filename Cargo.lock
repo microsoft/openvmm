@@ -2399,6 +2399,7 @@ dependencies = [
  "slab",
  "task_control",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "vm_resource",
  "vmcore",
@@ -3770,6 +3771,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "linked_list_allocator"
+version = "0.10.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9afa463f5405ee81cdb9cc2baf37e08ec7e4c8209442b5d72c04cfb2cd6e6286"
+dependencies = [
+ "spinning_top",
+]
+
+[[package]]
 name = "linkme"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4416,6 +4426,7 @@ dependencies = [
  "futures-concurrency",
  "guestmem",
  "inspect",
+ "inspect_counters",
  "memory_range",
  "mesh",
  "net_backend_resources",
@@ -4622,6 +4633,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostd_spin_channel"
+version = "0.0.0"
+dependencies = [
+ "spin 0.10.0",
+ "thiserror 2.0.16",
+]
+
+[[package]]
 name = "ntapi"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4818,6 +4837,7 @@ dependencies = [
  "inspect",
  "mesh",
  "open_enum",
+ "static_assertions",
  "storage_string",
  "zerocopy 0.8.25",
 ]
@@ -4997,6 +5017,7 @@ dependencies = [
  "memory_range",
  "mesh",
  "page_pool_alloc",
+ "tracing",
  "user_driver",
  "virt",
  "vmcore",
@@ -5068,6 +5089,28 @@ dependencies = [
  "openssl",
  "openssl-sys",
  "thiserror 2.0.16",
+]
+
+[[package]]
+name = "opentmk"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "cfg-if",
+ "hvdef",
+ "lazy_static",
+ "linked_list_allocator",
+ "log",
+ "memory_range",
+ "minimal_rt",
+ "nostd_spin_channel",
+ "serde",
+ "serde_json",
+ "spin 0.10.0",
+ "thiserror 2.0.16",
+ "uefi",
+ "x86_64",
+ "zerocopy 0.8.25",
 ]
 
 [[package]]
@@ -6850,6 +6893,18 @@ name = "spin"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+dependencies = [
+ "lock_api",
+]
+
+[[package]]
+name = "spinning_top"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b9eb1a2f4c41445a3a0ff9abc5221c5fcd28e1f13cd7c0397706f9ac938ddb0"
+dependencies = [
+ "lock_api",
+]
 
 [[package]]
 name = "spki"
@@ -9294,6 +9349,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "disk_backend_resources",
+ "disk_vhd1",
  "futures",
  "get_resources",
  "guid",
@@ -9365,6 +9421,7 @@ dependencies = [
  "parking_lot",
  "paste",
  "pci_bus",
+ "pcie",
  "range_map_vec",
  "state_unit",
  "thiserror 2.0.16",
@@ -9448,6 +9505,12 @@ dependencies = [
  "mesh_worker",
  "vmsocket",
 ]
+
+[[package]]
+name = "volatile"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "442887c63f2c839b346c192d047a7c87e73d0689c9157b00b53dcc27dd5ea793"
 
 [[package]]
 name = "vpci"
@@ -10180,6 +10243,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
+]
+
+[[package]]
+name = "x86_64"
+version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f042214de98141e9c8706e8192b73f56494087cc55ebec28ce10f26c5c364ae"
+dependencies = [
+ "bit_field",
+ "bitflags 2.9.3",
+ "rustversion",
+ "volatile",
 ]
 
 [[package]]
