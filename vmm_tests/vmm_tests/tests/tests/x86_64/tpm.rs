@@ -22,17 +22,26 @@ const AK_CERT_TOTAL_BYTES: usize = 4096;
 
 trait SupportsTpm {
     fn enable_tpm(self) -> Self;
+    fn with_tpm_state_persistence(self, state_persistence: bool) -> Self;
 }
 
 impl SupportsTpm for petri::openvmm::PetriVmConfigOpenVmm {
     fn enable_tpm(self) -> Self {
         petri::openvmm::PetriVmConfigOpenVmm::with_tpm(self)
     }
+
+    fn with_tpm_state_persistence(self, state_persistence: bool) -> Self {
+        petri::openvmm::PetriVmConfigOpenVmm::with_tpm_state_persistence(self, state_persistence)
+    }
 }
 
-impl SupportsTpm for petri::hyperv::HyperVVmConfig {
+impl SupportsTpm for petri::hyperv::HyperVPetriConfig {
     fn enable_tpm(self) -> Self {
-        petri::hyperv::HyperVVmConfig::with_tpm(self)
+        petri::hyperv::HyperVPetriConfig::with_tpm(self)
+    }
+
+    fn with_tpm_state_persistence(self, state_persistence: bool) -> Self {
+        petri::hyperv::HyperVPetriConfig::with_tpm_state_persistence(self, state_persistence)
     }
 }
 
@@ -59,7 +68,7 @@ fn configure_ak_cert_persisted_vm(
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .modify_backend(|b| {
             b.with_tpm()
-                .with_tpm_state_persistence()
+                .with_tpm_state_persistence(true)
                 .with_igvm_attest_test_config(
                     get_resources::ged::IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
                 )
@@ -74,7 +83,7 @@ fn configure_ak_cert_retry_vm(
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .modify_backend(|b| {
             b.with_tpm()
-                .with_tpm_state_persistence()
+                .with_tpm_state_persistence(true)
                 .with_igvm_attest_test_config(
                     get_resources::ged::IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
                 )
@@ -331,7 +340,7 @@ async fn vbs_boot_with_attestation(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    let config = config.modify_backend(|b| b.with_tpm().with_tpm_state_persistence());
+    let config = config.modify_backend(|b| b.with_tpm().with_tpm_state_persistence(true));
 
     let mut vm = match os_flavor {
         OsFlavor::Windows => {
@@ -480,8 +489,9 @@ where
 {
     let (tpm_guest_tests_artifact,) = extra_deps;
     let tpm_guest_tests_host_path = tpm_guest_tests_artifact.get();
+    // TODO: Add test IGVMAgent RPC server to support tpm state persistence and the boot-time attestation.
     let config = config
-        .modify_backend(|b| b.enable_tpm())
+        .modify_backend(|b| b.enable_tpm().with_tpm_state_persistence(false))
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
 
     let (vm, agent) = config.run().await?;
@@ -495,16 +505,18 @@ where
         .context("failed to copy tpm_guest_tests.exe into the guest")?;
 
     let sh = agent.windows_shell();
-    let output = cmd!(sh, "C:\\tpm_guest_tests.exe")
-        .args(["ak_cert"])
-        .read()
-        .await
-        .context("failed to execute tpm_guest_tests.exe inside the guest")?;
 
-    assert!(
-        output.contains("AK certificate data"),
-        "tpm_guest_tests.exe --ak-cert did not report AK certificate data: {output}",
-    );
+    // TODO: Add test IGVMAgent RPC server to support AK Cert
+    // let output = cmd!(sh, "C:\\tpm_guest_tests.exe")
+    //     .args(["ak_cert"])
+    //     .read()
+    //     .await
+    //     .context("failed to execute tpm_guest_tests.exe inside the guest")?;
+
+    // assert!(
+    //     output.contains("AK certificate data"),
+    //     "tpm_guest_tests.exe --ak-cert did not report AK certificate data: {output}",
+    // );
 
     let report_output = cmd!(sh, "C:\\tpm_guest_tests.exe")
         .args(["report", "--show-runtime-claims"])

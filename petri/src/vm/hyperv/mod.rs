@@ -56,24 +56,6 @@ use std::time::Duration;
 use vm::HyperVVM;
 use vmgs_resources::GuestStateEncryptionPolicy;
 
-/// Hyper-V VM configuration
-#[derive(Clone, Copy, Default)]
-pub struct HyperVVmConfig {
-    enable_tpm: bool,
-}
-
-impl HyperVVmConfig {
-    /// Enable TPM for the VM
-    pub fn with_tpm(mut self) -> Self {
-        self.enable_tpm = true;
-        self
-    }
-
-    fn enable_tpm(&self) -> bool {
-        self.enable_tpm
-    }
-}
-
 /// The Hyper-V Petri backend
 pub struct HyperVPetriBackend {}
 
@@ -124,6 +106,12 @@ pub struct HyperVPetriConfig {
     /// is important to the test. These are resolved into a list of
     /// [`HyperVScsiController`] objects stored in the runtime.
     additional_scsi_controllers: Vec<(String, u32)>,
+
+    /// Enable TPM
+    enable_tpm: bool,
+
+    /// Configure TPM state persistence
+    tpm_state_persistence: bool,
 }
 
 impl HyperVPetriConfig {
@@ -154,11 +142,30 @@ impl HyperVPetriConfig {
         self.additional_scsi_controllers.push((test_id, target_vtl));
         self
     }
+
+    /// Enable TPM for the VM
+    pub fn with_tpm(mut self) -> Self {
+        self.enable_tpm = true;
+        self
+    }
+
+    fn enable_tpm(&self) -> bool {
+        self.enable_tpm
+    }
+
+    /// Configure TPM state persistence
+    pub fn with_tpm_state_persistence(mut self, tpm_state_persistence: bool) -> Self {
+        self.tpm_state_persistence = tpm_state_persistence;
+        self
+    }
+
+    fn tpm_state_persistence(&self) -> bool {
+        self.tpm_state_persistence
+    }
 }
 
 #[async_trait]
 impl PetriVmmBackend for HyperVPetriBackend {
-    type VmmConfig = HyperVVmConfig;
     type VmmConfig = HyperVPetriConfig;
     type VmRuntime = HyperVPetriRuntime;
 
@@ -182,11 +189,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
         modify_vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
         resources: &PetriVmResources,
     ) -> anyhow::Result<Self::VmRuntime> {
-        let mut hyperv_config = HyperVVmConfig::default();
-        if let Some(f) = modify_vmm_config {
-            hyperv_config = f(hyperv_config);
-        }
-
         let PetriVmConfig {
             name,
             arch,
@@ -341,10 +343,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
             driver.clone(),
         )
         .await?;
-
-        if hyperv_config.enable_tpm() {
-            vm.enable_tpm().await?;
-        }
 
         {
             let ProcessorTopology {
@@ -609,12 +607,12 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
             tracing::debug!(?config, "additional hyper-v config");
 
-            for (test_id, target_vtl) in config.additional_scsi_controllers {
-                let (controller_number, vsid) = vm.add_scsi_controller(target_vtl).await?;
+            for (test_id, target_vtl) in &config.additional_scsi_controllers {
+                let (controller_number, vsid) = vm.add_scsi_controller(*target_vtl).await?;
                 added_controllers.push(HyperVScsiController {
-                    test_id,
+                    test_id: test_id.to_string(),
                     controller_number,
-                    target_vtl,
+                    target_vtl: *target_vtl,
                     vsid,
                 });
             }
@@ -622,6 +620,20 @@ impl PetriVmmBackend for HyperVPetriBackend {
             if let Some(settings) = &config.initial_vtl2_settings {
                 vm.set_base_vtl2_settings(settings).await?;
                 vtl2_settings = Some(settings.clone());
+            }
+
+            if config.enable_tpm() {
+                vm.enable_tpm().await?;
+
+                if config.tpm_state_persistence() {
+                    vm.set_guest_isolation_mode(powershell::HyperVGuestIsolationMode::Default)
+                        .await?;
+                } else {
+                    vm.set_guest_isolation_mode(
+                        powershell::HyperVGuestIsolationMode::NoPersistentSecrets,
+                    )
+                    .await?;
+                }
             }
         }
 
