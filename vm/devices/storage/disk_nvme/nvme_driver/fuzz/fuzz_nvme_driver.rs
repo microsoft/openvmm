@@ -13,6 +13,7 @@ use nvme::NvmeController;
 use nvme::NvmeControllerCaps;
 use nvme_driver::Namespace;
 use nvme_driver::NvmeDriver;
+use nvme_driver::NvmeDriverConfig;
 use nvme_spec::nvm::DsmRange;
 use page_pool_alloc::PagePoolAllocator;
 use pal_async::DefaultDriver;
@@ -64,7 +65,16 @@ impl FuzzNvmeDriver {
             .unwrap();
 
         let device = FuzzEmulatedDevice::new(nvme, msi_set, mem.dma_client());
-        let nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device, false).await?; // TODO: [use-arbitrary-input]
+        let nvme_driver = NvmeDriver::new(
+            &driver_source,
+            device,
+            &NvmeDriverConfig {
+                cpu_count,
+                use_bounce_buffer: false,
+                require_persistent_memory: false,
+            },
+        )
+        .await?; // TODO: [use-arbitrary-input]
         let namespace = nvme_driver.namespace(1).await?; // TODO: [use-arbitrary-input]
 
         Ok(Self {

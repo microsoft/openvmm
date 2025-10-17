@@ -74,7 +74,7 @@ pub struct NvmeDriver<T: DeviceBacking> {
     namespaces: Vec<Arc<Namespace>>,
     /// Keeps the controller connected (CC.EN==1) while servicing.
     nvme_keepalive: bool,
-    bounce_buffer: bool,
+    config: NvmeDriverConfig,
 }
 
 #[derive(Inspect)]
@@ -89,7 +89,7 @@ struct DriverWorkerTask<T: DeviceBacking> {
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
     recv: mesh::Receiver<NvmeWorkerRequest>,
-    bounce_buffer: bool,
+    config: NvmeDriverConfig,
 }
 
 #[derive(Inspect)]
@@ -194,20 +194,38 @@ enum NvmeWorkerRequest {
     Save(Rpc<(), anyhow::Result<NvmeDriverWorkerSavedState>>),
 }
 
+/// Common configuration for the NVMe driver, shared among different
+/// sub-components.
+#[derive(Debug, Clone, Inspect)]
+pub struct NvmeDriverConfig {
+    /// VTL0 CPU count.
+    pub cpu_count: u32,
+
+    /// Whether to use a bounce buffer for IO operations.
+    pub use_bounce_buffer: bool,
+
+    /// Whether DMA memory must be persistent (survive an OpenHCL save/restore).
+    /// When true, new driver instances will fail to initialize if they are not
+    /// able to allocate persistent memory for the admin queue or IO queue 0.
+    /// Subsequent IO queues will fail to initialize if they are not able to
+    /// allocate persistent memory, and will fall back to already allocated
+    /// queues (such as IO queue 0).
+    pub require_persistent_memory: bool,
+}
+
 impl<T: DeviceBacking> NvmeDriver<T> {
     /// Initializes the driver.
     pub async fn new(
         driver_source: &VmTaskDriverSource,
-        cpu_count: u32,
         device: T,
-        bounce_buffer: bool,
+        config: &NvmeDriverConfig,
     ) -> anyhow::Result<Self> {
         let pci_id = device.id().to_owned();
-        let mut this = Self::new_disabled(driver_source, cpu_count, device, bounce_buffer)
+        let mut this = Self::new_disabled(driver_source, device, config)
             .instrument(tracing::info_span!("nvme_new_disabled", pci_id))
             .await?;
         match this
-            .enable(cpu_count as u16)
+            .enable(config.cpu_count as u16)
             .instrument(tracing::info_span!("nvme_enable", pci_id))
             .await
         {
@@ -227,9 +245,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     /// is preallocated from backing device.
     async fn new_disabled(
         driver_source: &VmTaskDriverSource,
-        cpu_count: u32,
         mut device: T,
-        bounce_buffer: bool,
+        config: &NvmeDriverConfig,
     ) -> anyhow::Result<Self> {
         let driver = driver_source.simple();
         let bar0 = Bar0(
@@ -264,7 +281,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         let (send, recv) = mesh::channel();
         let io_issuers = Arc::new(IoIssuers {
-            per_cpu: (0..cpu_count).map(|_| OnceLock::new()).collect(),
+            per_cpu: (0..config.cpu_count).map(|_| OnceLock::new()).collect(),
             send,
         });
 
@@ -278,7 +295,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 io: Vec::new(),
                 io_issuers: io_issuers.clone(),
                 recv,
-                bounce_buffer,
+                config: config.clone(),
             })),
             admin: None,
             identify: None,
@@ -287,7 +304,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             rescan_event: Default::default(),
             namespaces: vec![],
             nvme_keepalive: false,
-            bounce_buffer,
+            config: config.clone(),
         })
     }
 
@@ -320,7 +337,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             admin_cqes,
             interrupt0,
             worker.registers.clone(),
-            self.bounce_buffer,
+            self.config.use_bounce_buffer,
+            self.config.require_persistent_memory,
             AdminAerHandler::new(),
         )
         .context("failed to create admin queue pair")?;
@@ -560,6 +578,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Saves the NVMe driver state during servicing.
     pub async fn save(&mut self) -> anyhow::Result<NvmeDriverSavedState> {
+        // todo: interrogate all queues to see if any are with non-persistent memory
+        // that's been allocated. If so, then fail the save (and make sure the stack above handles)
+        // that gracefully. By failing thye save, we should leave the driver
+        // in a state that is still running.
+        //
         // Nothing to save if Identify Controller was never queried.
         if self.identify.is_none() {
             return Err(save_restore::Error::InvalidState.into());
@@ -597,10 +620,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     /// Restores NVMe driver state after servicing.
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
-        cpu_count: u32,
         mut device: T,
         saved_state: &NvmeDriverSavedState,
-        bounce_buffer: bool,
+        config: &NvmeDriverConfig,
     ) -> anyhow::Result<Self> {
         let driver = driver_source.simple();
         let bar0_mapping = device
@@ -621,7 +643,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         let (send, recv) = mesh::channel();
         let io_issuers = Arc::new(IoIssuers {
-            per_cpu: (0..cpu_count).map(|_| OnceLock::new()).collect(),
+            per_cpu: (0..config.cpu_count).map(|_| OnceLock::new()).collect(),
             send,
         });
 
@@ -635,7 +657,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 io: Vec::new(),
                 io_issuers: io_issuers.clone(),
                 recv,
-                bounce_buffer,
+                config: config.clone(),
             })),
             admin: None, // Updated below.
             identify: Some(Arc::new(
@@ -647,7 +669,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             rescan_event: Default::default(),
             namespaces: vec![],
             nvme_keepalive: true,
-            bounce_buffer,
+            config: config.clone(),
         };
 
         let task = &mut this.task.as_mut().unwrap();
@@ -682,7 +704,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     registers.clone(),
                     mem_block,
                     a,
-                    bounce_buffer,
+                    config.use_bounce_buffer,
                     AdminAerHandler::new(),
                 )
                 .unwrap()
@@ -737,7 +759,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     registers.clone(),
                     mem_block,
                     q,
-                    bounce_buffer,
+                    config.use_bounce_buffer,
                 )?;
                 let issuer = IoIssuer {
                     issuer: q.queue.issuer().clone(),
@@ -943,7 +965,12 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
 
         let qid = self.io.len() as u16 + 1;
 
-        tracing::debug!(cpu, qid, "creating io queue");
+        tracing::debug!(
+            cpu,
+            qid,
+            self.config.require_persistent_memory,
+            "creating io queue"
+        );
 
         // Share IO queue 1's interrupt with the admin queue.
         let iv = self.io.len() as u16;
@@ -960,7 +987,8 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             state.qsize,
             interrupt,
             self.registers.clone(),
-            self.bounce_buffer,
+            self.config.use_bounce_buffer,
+            self.config.require_persistent_memory,
             NoOpAerHandler,
         )
         .map_err(|err| DeviceError::IoQueuePairCreationFailure(err, qid))?;

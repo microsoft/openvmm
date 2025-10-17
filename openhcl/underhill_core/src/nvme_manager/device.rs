@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::nvme_manager::CreateNvmeDriver;
+use crate::nvme_manager::CreateNvmeDriverConfig;
 use crate::nvme_manager::NamespaceError;
 use crate::nvme_manager::NvmeDevice;
 use crate::nvme_manager::NvmeSpawnerError;
@@ -13,6 +14,7 @@ use inspect::Inspect;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
+use nvme_driver::NvmeDriverConfig;
 use nvme_driver::NvmeDriverSavedState;
 use openhcl_dma_manager::AllocationVisibility;
 use openhcl_dma_manager::DmaClientParameters;
@@ -69,6 +71,10 @@ pub struct VfioNvmeDriverSpawner {
     pub is_isolated: bool,
     #[inspect(skip)]
     pub dma_client_spawner: DmaClientSpawner,
+    /// If true, log a warning when creating a driver since no private pool is available.
+    pub warn_no_private_pool: bool,
+    /// If true, log a warning when creating a driver since save/restore is not supported.
+    pub warn_no_save_restore: bool,
 }
 
 #[async_trait]
@@ -76,28 +82,51 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
     async fn create_driver(
         &self,
         driver_source: &VmTaskDriverSource,
-        pci_id: &str,
-        vp_count: u32,
-        save_restore_supported: bool,
+        config: &CreateNvmeDriverConfig,
         saved_state: Option<&NvmeDriverSavedState>,
     ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError> {
+        if self.warn_no_private_pool {
+            // Log a warning, since the nvme driver relies on contiguous allocations for
+            // per-queue IO, so without a private pool, we expect to get 1 page at a time.
+            // This limits the overall IO queue depth to 64 (the number of SQ entries per page).
+            //
+            // TODO: not quite accurate, since the allocations will come from the shared pool for
+            // IVMs.
+            tracing::warn!(
+                pci_id = ?config.pci_id,
+                "nvme: no private pool, expect degraded IO performance"
+            );
+        }
+
+        if self.warn_no_save_restore {
+            // Log a warning, since this implies that keepalive is not enabled and we can
+            // expect poor OpenHCL servicing performance in the event of particularly
+            // long IOs to the backing NVMe devices.
+            //
+            // TODO: not quite accurate for CVMs?
+            tracing::warn!(
+                pci_id = ?config.pci_id, "nvme: save/restore not supported");
+        }
+
         let dma_client = self
             .dma_client_spawner
             .new_client(DmaClientParameters {
-                device_name: format!("nvme_{}", pci_id),
+                device_name: format!("nvme_{}", config.pci_id),
                 lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                 allocation_visibility: if self.is_isolated {
                     AllocationVisibility::Shared
                 } else {
                     AllocationVisibility::Private
                 },
-                persistent_allocations: save_restore_supported,
+                persistent_allocations: config.save_restore_supported,
             })
             .map_err(NvmeSpawnerError::DmaClient)?;
 
         let nvme_driver = if let Some(saved_state) = saved_state {
-            let vfio_device = VfioDevice::restore(driver_source, pci_id, true, dma_client)
-                .instrument(tracing::info_span!("nvme_vfio_device_restore", pci_id))
+            let vfio_device = VfioDevice::restore(driver_source, &config.pci_id, true, dma_client)
+                .instrument(
+                    tracing::info_span!("nvme_vfio_device_restore", pci_id = ?config.pci_id),
+                )
                 .await
                 .map_err(NvmeSpawnerError::Vfio)?;
 
@@ -106,10 +135,13 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
             // confidential memory.
             nvme_driver::NvmeDriver::restore(
                 driver_source,
-                vp_count,
                 vfio_device,
                 saved_state,
-                self.is_isolated,
+                &NvmeDriverConfig {
+                    cpu_count: config.vp_count,
+                    use_bounce_buffer: self.is_isolated,
+                    require_persistent_memory: config.save_restore_supported,
+                },
             )
             .instrument(tracing::info_span!("nvme_driver_restore"))
             .await
@@ -117,8 +149,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
         } else {
             Self::create_nvme_device(
                 driver_source,
-                pci_id,
-                vp_count,
+                config,
                 self.nvme_always_flr,
                 self.is_isolated,
                 dma_client,
@@ -127,7 +158,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
         };
 
         Ok(Box::new(VfioNvmeDevice {
-            pci_id: pci_id.to_string(),
+            pci_id: config.pci_id.clone(),
             driver: nvme_driver,
         }))
     }
@@ -136,8 +167,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
 impl VfioNvmeDriverSpawner {
     async fn create_nvme_device(
         driver_source: &VmTaskDriverSource,
-        pci_id: &str,
-        vp_count: u32,
+        config: &CreateNvmeDriverConfig,
         nvme_always_flr: bool,
         is_isolated: bool,
         dma_client: Arc<dyn user_driver::DmaClient>,
@@ -148,8 +178,9 @@ impl VfioNvmeDriverSpawner {
         // the only cleanup performed. If the device fails to initialize, turn FLR
         // on and try again, so that the reset is invoked on the next attach.
         let update_reset = |method: PciDeviceResetMethod| {
-            if let Err(err) = vfio_set_device_reset_method(pci_id, method) {
+            if let Err(err) = vfio_set_device_reset_method(config.pci_id.clone(), method) {
                 tracing::warn!(
+                    pci_id = ?config.pci_id,
                     ?method,
                     err = &err as &dyn std::error::Error,
                     "failed to update reset_method"
@@ -170,8 +201,7 @@ impl VfioNvmeDriverSpawner {
             update_reset(*reset_method);
             match Self::try_create_nvme_device(
                 driver_source,
-                pci_id,
-                vp_count,
+                config,
                 is_isolated,
                 dma_client.clone(),
             )
@@ -185,7 +215,7 @@ impl VfioNvmeDriverSpawner {
                 }
                 Err(err) => {
                     tracing::error!(
-                        pci_id,
+                        pci_id= ?config.pci_id,
                         ?reset_method,
                         %err,
                         "failed to create nvme device"
@@ -201,23 +231,31 @@ impl VfioNvmeDriverSpawner {
 
     async fn try_create_nvme_device(
         driver_source: &VmTaskDriverSource,
-        pci_id: &str,
-        vp_count: u32,
+        config: &'_ CreateNvmeDriverConfig,
         is_isolated: bool,
         dma_client: Arc<dyn user_driver::DmaClient>,
     ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, NvmeSpawnerError> {
-        let device = VfioDevice::new(driver_source, pci_id, dma_client)
-            .instrument(tracing::info_span!("nvme_vfio_device_open", pci_id))
+        let device = VfioDevice::new(driver_source, &config.pci_id, dma_client)
+            .instrument(tracing::info_span!("nvme_vfio_device_open", pci_id = ?config.pci_id))
             .await
             .map_err(NvmeSpawnerError::Vfio)?;
 
         // TODO: For now, any isolation means use bounce buffering. This
         // needs to change when we have nvme devices that support DMA to
         // confidential memory.
-        nvme_driver::NvmeDriver::new(driver_source, vp_count, device, is_isolated)
-            .instrument(tracing::info_span!("nvme_driver_new", pci_id))
-            .await
-            .map_err(NvmeSpawnerError::DeviceInitFailed)
+        // TODO: double check parameters here re: save_restore_supported & requires_persistent_memory
+        nvme_driver::NvmeDriver::new(
+            driver_source,
+            device,
+            &NvmeDriverConfig {
+                cpu_count: config.vp_count,
+                use_bounce_buffer: is_isolated,
+                require_persistent_memory: config.save_restore_supported,
+            },
+        )
+        .instrument(tracing::info_span!("nvme_driver_new", pci_id = ?config.pci_id))
+        .await
+        .map_err(NvmeSpawnerError::DeviceInitFailed)
     }
 }
 
@@ -436,9 +474,11 @@ impl NvmeDriverManagerWorker {
                                 .nvme_driver_spawner
                                 .create_driver(
                                     &self.driver_source,
-                                    &self.pci_id,
-                                    self.vp_count,
-                                    self.save_restore_supported,
+                                    &CreateNvmeDriverConfig {
+                                        pci_id: self.pci_id.clone(),
+                                        vp_count: self.vp_count,
+                                        save_restore_supported: self.save_restore_supported,
+                                    },
                                     None,
                                 )
                                 .await?;

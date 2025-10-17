@@ -14,6 +14,7 @@ mod registers;
 mod tests;
 
 pub use self::driver::NvmeDriver;
+pub use self::driver::NvmeDriverConfig;
 pub use self::driver::save_restore::Error;
 pub use self::driver::save_restore::NvmeDriverSavedState;
 pub use self::namespace::Namespace;
