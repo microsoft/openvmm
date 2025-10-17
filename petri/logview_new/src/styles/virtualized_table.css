@@ -74,6 +74,7 @@
   overflow: auto;
   position: relative;
   width: 100%;
+  min-width: 56rem;
 }
 
 /* Simplified row styling: always white, no hover/background color variations */

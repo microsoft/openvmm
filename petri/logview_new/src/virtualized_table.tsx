@@ -103,7 +103,7 @@ export function VirtualizedTable<TData extends object>({
         rowVirtualizer.measureElement(el);
       }
     });
-  }, [rows.length, data, rowVirtualizer]);
+  }, [rows.length, data, rowVirtualizer, sorting]);
 
   // Scroll to a requested index (center align) whenever scrollToIndex changes.
   useEffect(() => {
