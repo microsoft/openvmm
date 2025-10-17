@@ -280,16 +280,14 @@ impl GhPrTriggers {
 #[derive(Debug, Clone, PartialEq)]
 pub enum GhRunnerOsLabel {
     UbuntuLatest,
+    Ubuntu2404,
     Ubuntu2204,
-    Ubuntu2004,
     WindowsLatest,
+    Windows2025,
     Windows2022,
-    Windows2019,
-    MacOsLatest,
-    MacOs14,
-    MacOs13,
-    MacOs12,
-    MacOs11,
+    Ubuntu2404Arm,
+    Ubuntu2204Arm,
+    Windows11Arm,
     Custom(String),
 }
 

@@ -41,6 +41,11 @@ filter = 'test(loom)'
 slow-timeout = { period = "30s", terminate-after = 2 }
 
 [[profile.ci.overrides]]
+# allow attestation tests more time, as they take a while
+filter = 'package(underhill_attestation)'
+slow-timeout = { period = "10s", terminate-after = 2 }
+
+[[profile.ci.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile
 filter = 'package(~vmm_tests)'
