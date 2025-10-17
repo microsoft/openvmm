@@ -97,6 +97,8 @@ impl PetriVmConfigOpenVmm {
 
         tracing::debug!(?config, ?firmware, ?arch, "VM config");
 
+        let has_pcie = !config.pcie_root_complexes.is_empty();
+
         let mesh = Mesh::new("petri_mesh".to_string())?;
 
         let host = Self::openvmm_host(&mut resources, &mesh, openvmm_log_file)
@@ -126,10 +128,12 @@ impl PetriVmConfigOpenVmm {
         // TODO: PCAT needs vga device support
         // TODO: arm64 is broken?
         // TODO: VPCI and NVMe don't support save/restore
+        // TODO: PCIe emulators don't support save/restore yet
         if !firmware.is_openhcl()
             && !matches!(firmware, Firmware::Pcat { .. })
             && !matches!(arch, MachineArch::Aarch64)
             && !matches!(boot_device_type, BootDeviceType::Nvme)
+            && !has_pcie
         {
             tracing::info!("Testing save/restore");
             vm.verify_save_restore().await?;
