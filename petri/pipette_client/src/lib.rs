@@ -51,11 +51,13 @@ impl PipetteClient {
     /// `conn` must be an established connection over some byte stream (e.g., a
     /// socket).
     pub async fn new(
+        //name: impl AsRef<str> + std::fmt::Display,
         spawner: impl Spawn,
         conn: impl 'static + AsyncRead + AsyncWrite + Send + Unpin,
         output_dir: &Path,
     ) -> Result<Self, mesh::RecvError> {
         let (bootstrap_send, bootstrap_recv) = mesh::oneshot::<PipetteBootstrap>();
+        //tracing::debug!(%name, "connecting to pipette agent");
         let mesh = PointToPointMesh::new(&spawner, conn, bootstrap_send.into());
         let bootstrap = bootstrap_recv.await?;
 
@@ -209,6 +211,19 @@ impl PipetteClient {
             .call(PipetteRequest::GetTime, ())
             .await
             .context("failed to get time")
+    }
+
+    /// Asks the agent to establish a new pipette connection on the specified port.
+    /// Returns immediately; does not wait for the connection to be established.
+    pub async fn new_connection(
+        &self,
+        port: u32,
+        keepalive_duration: Option<std::time::Duration>,
+    ) -> anyhow::Result<()> {
+        self.send
+            .call(PipetteRequest::FakeConnection, (port, keepalive_duration))
+            .await
+            .context("failed to kick off new connection")
     }
 }
 

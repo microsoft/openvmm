@@ -47,6 +47,8 @@ pub enum PipetteRequest {
     WriteFile(FailableRpc<WriteFileRequest, u64>),
     /// Get the current time in the guest.
     GetTime(Rpc<(), Timestamp>),
+    /// Establish a new pipette connection on the specified port. Returns immediately.
+    FakeConnection(Rpc<(u32, Option<std::time::Duration>), ()>),
 }
 
 /// A request to execute a command inside the guest.
