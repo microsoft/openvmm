@@ -437,6 +437,11 @@ impl<'a> Arm64PageTableSpace<'a> {
         debug_assert!(aligned(phys_table_start, Arm64PageSize::Small));
         debug_assert!(index < PAGE_SIZE_4K as usize / size_of::<Arm64PageTableEntry>());
 
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            "Writing page table entry {entry:#016x}, index {index:#x}, table {phys_table_start:#x}"
+        );
+
         let pos = phys_table_start as usize - self.phys_page_table_root
             + index * size_of::<Arm64PageTableEntry>();
         self.space[pos..pos + 8].copy_from_slice(&entry.to_le_bytes());
@@ -689,6 +694,11 @@ pub fn build_identity_page_tables_aarch64(
         panic!("size not 2mb aligned");
     }
 
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        "Creating Aarch64 page tables at {page_table_gpa:#x} mapping starting at {start_gpa:#x} of size {size} bytes"
+    );
+
     let mut page_tables =
         Arm64PageTableSpace::new(page_table_gpa as usize, page_table_space).unwrap();
     page_tables
@@ -705,12 +715,18 @@ pub fn build_identity_page_tables_aarch64(
 
     let used_space = page_tables.used_space();
 
+    #[cfg(feature = "tracing")]
+    {
+        tracing::debug!("Page tables use {used_space} bytes");
+        tracing::debug!("Page tables stats by level: {:?}", page_tables.lvl_stats());
+    }
+
     &page_table_space[0..used_space]
 }
 
 #[cfg(test)]
 mod tests {
-    extern crate std;
+    use std;
 
     use super::*;
     use std::vec;

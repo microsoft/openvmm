@@ -336,15 +336,16 @@ pub fn load_config(
     check_address_alignment(registers.gdt_address)?;
     import_default_gdt(importer, registers.gdt_address / HV_PAGE_SIZE).map_err(Error::Importer)?;
     check_address_alignment(registers.page_table_address)?;
-    let page_table_builder =
-        IdentityMapBuilder::new(registers.page_table_address, IdentityMapSize::Size4Gb);
     let mut page_table_work_buffer: Vec<PageTable> =
         vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
     let mut page_table: Vec<u8> = vec![0; PAGE_TABLE_MAX_BYTES];
-    let page_table = page_table_builder.build(
+    let page_table_builder = IdentityMapBuilder::new(
+        registers.page_table_address,
+        IdentityMapSize::Size4Gb,
         page_table_work_buffer.as_mut_slice(),
         page_table.as_mut_slice(),
     )?;
+    let page_table = page_table_builder.build();
     assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     importer
         .import_pages(

@@ -441,11 +441,18 @@ where
 
     tracing::debug!(page_table_region_start, page_table_region_size);
 
-    let mut page_table_builder = PageTableBuilder::new(page_table_region_start)
-        .with_mapped_region(memory_start_address, memory_size);
+    let mut page_table_work_buffer: Vec<PageTable> =
+        vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
+    let mut page_table: Vec<u8> = vec![0; PAGE_TABLE_MAX_BYTES];
+    let mut page_table_builder = PageTableBuilder::new(
+        page_table_region_start,
+        page_table_work_buffer.as_mut_slice(),
+        page_table.as_mut_slice(),
+    )?
+    .with_mapped_region(memory_start_address, memory_size)?;
 
     if let Some((local_map_start, size)) = local_map {
-        page_table_builder = page_table_builder.with_local_map(local_map_start, size);
+        page_table_builder = page_table_builder.with_local_map(local_map_start, size)?;
     }
 
     match isolation_type {
@@ -458,14 +465,7 @@ where
         _ => {}
     }
 
-    let mut page_table_work_buffer: Vec<PageTable> =
-        vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
-    let mut page_table: Vec<u8> = vec![0; PAGE_TABLE_MAX_BYTES];
-
-    let page_table = page_table_builder.build(
-        page_table_work_buffer.as_mut_slice(),
-        page_table.as_mut_slice(),
-    )?;
+    let page_table = page_table_builder.build()?;
 
     assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     let page_table_page_base = page_table_region_start / HV_PAGE_SIZE;

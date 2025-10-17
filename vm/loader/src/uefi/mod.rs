@@ -413,8 +413,12 @@ pub mod x86_64 {
         let mut page_table_work_buffer: Vec<PageTable> =
             vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
         let mut page_tables: Vec<u8> = vec![0; PAGE_TABLE_MAX_BYTES];
-        let page_table_builder =
-            IdentityMapBuilder::new(PAGE_TABLE_GPA_BASE, IdentityMapSize::Size4Gb);
+        let page_table_builder = IdentityMapBuilder::new(
+            PAGE_TABLE_GPA_BASE,
+            IdentityMapSize::Size4Gb,
+            page_table_work_buffer.as_mut_slice(),
+            page_tables.as_mut_slice(),
+        )?;
         let mut shared_vis_page_table_work_buffer: Vec<PageTable> = Vec::new();
         let mut shared_vis_page_tables: Vec<u8> = Vec::new();
         let (page_tables, shared_vis_page_tables) =
@@ -434,31 +438,26 @@ pub mod x86_64 {
                 shared_vis_page_table_work_buffer
                     .resize(PAGE_TABLE_MAX_COUNT, PageTable::new_zeroed());
                 shared_vis_page_tables.resize(PAGE_TABLE_MAX_BYTES, 0);
-                let shared_vis_builder =
-                    IdentityMapBuilder::new(shared_vis_page_table_gpa, IdentityMapSize::Size4Gb)
-                        .with_address_bias(shared_gpa_boundary);
+                let shared_vis_builder = IdentityMapBuilder::new(
+                    shared_vis_page_table_gpa,
+                    IdentityMapSize::Size4Gb,
+                    shared_vis_page_table_work_buffer.as_mut_slice(),
+                    shared_vis_page_tables.as_mut_slice(),
+                )?
+                .with_address_bias(shared_gpa_boundary);
 
                 // The extra page tables are placed after the first config blob
                 // page.  They will be accounted for when the IGVM parameters are
                 // built.
-                let shared_vis_page_tables = shared_vis_builder.build(
-                    shared_vis_page_table_work_buffer.as_mut_slice(),
-                    shared_vis_page_tables.as_mut_slice(),
-                )?;
+                let shared_vis_page_tables = shared_vis_builder.build();
 
                 let page_tables = page_table_builder
                     .with_pml4e_link((shared_vis_page_table_gpa, shared_gpa_boundary))
-                    .build(
-                        page_table_work_buffer.as_mut_slice(),
-                        page_tables.as_mut_slice(),
-                    )?;
+                    .build();
 
                 (page_tables, Some(shared_vis_page_tables))
             } else {
-                let page_tables = page_table_builder.build(
-                    page_table_work_buffer.as_mut_slice(),
-                    page_tables.as_mut_slice(),
-                )?;
+                let page_tables = page_table_builder.build();
                 (page_tables, None)
             };
 

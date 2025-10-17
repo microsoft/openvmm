@@ -45,11 +45,10 @@ pub fn load_x86(
     let page_table_builder = page_table::x64::IdentityMapBuilder::new(
         page_table_base,
         page_table::IdentityMapSize::Size4Gb,
-    );
-    let page_tables = page_table_builder.build(
         page_table_work_buffer.as_mut_slice(),
         page_tables.as_mut_slice(),
     )?;
+    let page_tables = page_table_builder.build();
     loader
         .import_pages(
             page_table_base >> 12,

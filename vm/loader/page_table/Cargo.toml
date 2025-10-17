@@ -9,6 +9,13 @@ rust-version.workspace = true
 [dependencies]
 bitfield-struct.workspace = true
 thiserror.workspace = true
+static_assertions.workspace = true
+tracing = { workspace = true, optional = true }
 zerocopy.workspace = true
+
+[features]
+tracing = ["dep:tracing", "std"]
+std = []
+
 [lints]
 workspace = true
