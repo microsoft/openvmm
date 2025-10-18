@@ -358,14 +358,30 @@ impl RootPort {
         value: &mut u32,
     ) -> IoResult {
         let bus_range = self.cfg_space.assigned_bus_range();
+        // TODO: should we save the dev/func in the GenericPciBusDevice?
         if *bus == *bus_range.start() && *device_function == 0 {
+            // Perform type-0 access to the child device's config space.
             if let Some((_, device)) = &mut self.link {
                 if let Some(result) = device.pci_cfg_read(cfg_offset, value) {
                     check_result!(result);
                 }
             }
         } else if bus_range.contains(bus) {
-            tracelimit::warn_ratelimited!("multi-level hierarchies not implemented yet");
+            if let Some((_, device)) = &mut self.link {
+                // Forward access to the routing component.
+                if let Some(routing_device) = device.as_routing_component() {
+                    if let Some(result) = routing_device.pci_cfg_read_forward(
+                        *bus,
+                        *device_function,
+                        cfg_offset,
+                        value,
+                    ) {
+                        check_result!(result);
+                    }
+                } else {
+                    tracelimit::warn_ratelimited!("invalid access");
+                }
+            }
         }
 
         IoResult::Ok
@@ -380,13 +396,28 @@ impl RootPort {
     ) -> IoResult {
         let bus_range = self.cfg_space.assigned_bus_range();
         if *bus == *bus_range.start() && *device_function == 0 {
+            // Perform type-0 access to the child device's config space.
             if let Some((_, device)) = &mut self.link {
                 if let Some(result) = device.pci_cfg_write(cfg_offset, value) {
                     check_result!(result);
                 }
             }
         } else if bus_range.contains(bus) {
-            tracelimit::warn_ratelimited!("multi-level hierarchies not implemented yet");
+            if let Some((_, device)) = &mut self.link {
+                // Forward access to the routing component.
+                if let Some(routing_device) = device.as_routing_component() {
+                    if let Some(result) = routing_device.pci_cfg_write_forward(
+                        *bus,
+                        *device_function,
+                        cfg_offset,
+                        value,
+                    ) {
+                        check_result!(result);
+                    }
+                } else {
+                    tracelimit::warn_ratelimited!("invalid access");
+                }
+            }
         }
 
         IoResult::Ok
