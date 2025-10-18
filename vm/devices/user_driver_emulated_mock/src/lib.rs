@@ -271,14 +271,14 @@ pub trait DeviceTestDmaClientCallbacks: Sync + Send {
     /// Called when the DMA client needs to allocate a new DMA buffer.
     fn allocate_dma_buffer(
         &self,
-        allocator: &Arc<PagePoolAllocator>,
+        allocator: &PagePoolAllocator,
         total_size: usize,
     ) -> anyhow::Result<user_driver::memory::MemoryBlock>;
 
     /// Called when the DMA client needs to attach pending buffers.
     fn attach_pending_buffers(
         &self,
-        inner: &Arc<PagePoolAllocator>,
+        inner: &PagePoolAllocator,
     ) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>>;
 }
 
@@ -296,7 +296,7 @@ pub trait DeviceTestDmaClientCallbacks: Sync + Send {
 /// impl user_driver_emulated_mock::DeviceTestDmaClientCallbacks for MyCallbacks {
 ///     fn allocate_dma_buffer(
 ///         &self,
-///         allocator: &Arc<page_pool_alloc::PagePoolAllocator>,
+///         allocator: &page_pool_alloc::PagePoolAllocator,
 ///         total_size: usize,
 ///     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
 ///         // Custom test logic here, for example:
@@ -305,7 +305,7 @@ pub trait DeviceTestDmaClientCallbacks: Sync + Send {
 ///
 ///     fn attach_pending_buffers(
 ///         &self,
-///         allocator: &Arc<page_pool_alloc::PagePoolAllocator>,
+///         allocator: &page_pool_alloc::PagePoolAllocator,
 ///     ) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
 ///         // Custom test logic here, for example:
 ///         anyhow::bail!("attachment failed for testing");
@@ -321,8 +321,7 @@ pub trait DeviceTestDmaClientCallbacks: Sync + Send {
 ///         "test_dma_client",
 ///     );
 ///     let page_pool_allocator = device_test_memory.dma_client();
-///     let dma_client = DeviceTestDmaClient::new(page_pool_allocator)
-///       .with_callbacks(MyCallbacks);
+///     let dma_client = DeviceTestDmaClient::new(page_pool_allocator, MyCallbacks);
 ///
 ///     // Use dma_client in tests...
 ///     assert!(dma_client.allocate_dma_buffer(4096).is_err());
@@ -336,22 +335,13 @@ where
 {
     inner: Arc<PagePoolAllocator>,
     #[inspect(skip)]
-    callbacks: Option<C>,
+    callbacks: C,
 }
 
 impl<C: DeviceTestDmaClientCallbacks> DeviceTestDmaClient<C> {
     /// Creates a new [`DeviceTestDmaClient`] with the given inner allocator.
-    pub fn new(inner: Arc<PagePoolAllocator>) -> Self {
-        Self {
-            inner,
-            callbacks: None,
-        }
-    }
-
-    /// Sets the callbacks for the DMA client.
-    pub fn with_callbacks(mut self, f: C) -> Self {
-        self.callbacks = Some(f);
-        self
+    pub fn new(inner: Arc<PagePoolAllocator>, callbacks: C) -> Self {
+        Self { inner, callbacks }
     }
 }
 
@@ -360,16 +350,10 @@ impl<C: DeviceTestDmaClientCallbacks> DmaClient for DeviceTestDmaClient<C> {
         &self,
         total_size: usize,
     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        match &self.callbacks {
-            Some(c) => c.allocate_dma_buffer(&self.inner, total_size),
-            None => self.inner.allocate_dma_buffer(total_size),
-        }
+        self.callbacks.allocate_dma_buffer(&self.inner, total_size)
     }
 
     fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
-        match &self.callbacks {
-            Some(c) => c.attach_pending_buffers(&self.inner),
-            None => self.inner.attach_pending_buffers(),
-        }
+        self.callbacks.attach_pending_buffers(&self.inner)
     }
 }

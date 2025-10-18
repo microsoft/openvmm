@@ -214,12 +214,12 @@ async fn test_nvme_driver(driver: DefaultDriver, config: NvmeTestConfig) {
     let guest_mem = device_test_memory.guest_memory(); // Access to 0-8MB
 
     let fail_alloc = Arc::new(AtomicBool::new(false));
-    let dma_client = Arc::new(
-        user_driver_emulated_mock::DeviceTestDmaClient::new(device_test_memory.dma_client())
-            .with_callbacks(NvmeTestDmaClientCallbacks {
-                fail_alloc: fail_alloc.clone(),
-            }),
-    ); // Access 0-4MB
+    let dma_client = Arc::new(user_driver_emulated_mock::DeviceTestDmaClient::new(
+        device_test_memory.dma_client(),
+        NvmeTestDmaClientCallbacks {
+            fail_alloc: fail_alloc.clone(),
+        },
+    )); // Access 0-4MB
     let payload_mem = device_test_memory.payload_mem(); // Access 4-8MB. This will allow dma if the `allow_dma` flag is set.
 
     // Arrange: Create the NVMe controller and driver.
@@ -593,7 +593,7 @@ struct NvmeTestDmaClientCallbacks {
 impl DeviceTestDmaClientCallbacks for NvmeTestDmaClientCallbacks {
     fn allocate_dma_buffer(
         &self,
-        inner: &Arc<page_pool_alloc::PagePoolAllocator>,
+        inner: &page_pool_alloc::PagePoolAllocator,
         size: usize,
     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
         match self.fail_alloc.load(Ordering::SeqCst) {
@@ -604,7 +604,7 @@ impl DeviceTestDmaClientCallbacks for NvmeTestDmaClientCallbacks {
 
     fn attach_pending_buffers(
         &self,
-        inner: &Arc<page_pool_alloc::PagePoolAllocator>,
+        inner: &page_pool_alloc::PagePoolAllocator,
     ) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
         match self.fail_alloc.load(Ordering::SeqCst) {
             true => anyhow::bail!("alloc failed"),
