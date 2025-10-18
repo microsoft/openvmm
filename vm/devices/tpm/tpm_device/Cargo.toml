@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-name = "tpm"
+name = "tpm_device"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -13,6 +13,8 @@ tpm = ["ms-tpm-20-ref", "ms-tpm-20-ref/vendored"]
 
 [dependencies]
 ms-tpm-20-ref = { optional = true, workspace = true }
+tpm_lib.workspace = true
+tpm_protocol.workspace = true
 tpm_resources.workspace = true
 
 chipset_device.workspace = true
@@ -28,12 +30,12 @@ open_enum.workspace = true
 pal_async.workspace = true
 
 async-trait.workspace = true
-bitfield-struct.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
 [lints]
 workspace = true

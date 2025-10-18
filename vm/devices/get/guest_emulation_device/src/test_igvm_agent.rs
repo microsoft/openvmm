@@ -114,7 +114,7 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
                 VecDeque::from([
-                    IgvmAgentAction::NoResponse,
+                    IgvmAgentAction::RespondFailure,
                     IgvmAgentAction::RespondFailure,
                     IgvmAgentAction::RespondSuccess,
                 ]),
