@@ -493,6 +493,8 @@ pub mod caps {
         pub enum DevicePortType {
             Endpoint = 0b0000,
             RootPort = 0b0100,
+            UpstreamSwitchPort = 0b0101,
+            DownstreamSwitchPort = 0b0110,
         }
 
         impl DevicePortType {
@@ -500,6 +502,8 @@ pub mod caps {
                 match bits {
                     0b0000 => DevicePortType::Endpoint,
                     0b0100 => DevicePortType::RootPort,
+                    0b0101 => DevicePortType::UpstreamSwitchPort,
+                    0b0110 => DevicePortType::DownstreamSwitchPort,
                     _ => unreachable!(),
                 }
             }
