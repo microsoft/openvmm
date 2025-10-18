@@ -13,6 +13,7 @@ use crate::PAGE_SIZE64;
 use crate::ROOT_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
 use crate::port::PciePort;
+use crate::switch::{PcieSwitchDefinition, Switch};
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -50,6 +51,34 @@ pub struct GenericPcieRootComplex {
 pub struct GenericPcieRootPortDefinition {
     /// The name of the root port.
     pub name: Arc<str>,
+    /// Switch configurations for switches connected to this port.
+    pub switches: Vec<HierarchicalSwitchDefinition>,
+}
+
+/// A hierarchical description of a PCIe switch that can contain child switches.
+pub struct HierarchicalSwitchDefinition {
+    /// The name of the switch.
+    pub name: Arc<str>,
+    /// Number of downstream ports.
+    pub num_downstream_ports: u8,
+    /// Child switches connected to specific downstream ports.
+    /// The key is the downstream port number (0-based), and the value is the child switch.
+    pub child_switches: HashMap<u8, HierarchicalSwitchDefinition>,
+}
+
+impl HierarchicalSwitchDefinition {
+    /// Create a new hierarchical switch definition.
+    pub fn new(
+        name: impl Into<Arc<str>>,
+        num_downstream_ports: u8,
+        child_switches: HashMap<u8, HierarchicalSwitchDefinition>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            num_downstream_ports,
+            child_switches,
+        }
+    }
 }
 
 enum DecodedEcamAccess<'a> {
@@ -77,7 +106,11 @@ impl GenericPcieRootComplex {
             .enumerate()
             .map(|(i, definition)| {
                 let device_number: u8 = (i << BDF_DEVICE_SHIFT).try_into().expect("too many ports");
-                let emulator = RootPort::new();
+                let mut emulator = RootPort::new();
+
+                // Build and connect switches to this root port
+                Self::build_switch_hierarchy(&mut emulator, &definition.switches);
+
                 (device_number, (definition.name, emulator))
             })
             .collect();
@@ -116,6 +149,74 @@ impl GenericPcieRootComplex {
     /// Returns the size of the ECAM MMIO region this root complex is emulating.
     pub fn ecam_size(&self) -> u64 {
         ecam_size_from_bus_numbers(self.start_bus, self.end_bus)
+    }
+
+    /// Recursively build and connect switches to the given root port.
+    fn build_switch_hierarchy(
+        parent_port: &mut RootPort,
+        switch_definitions: &[HierarchicalSwitchDefinition],
+    ) {
+        for switch_def in switch_definitions {
+            // Create the switch using the existing PcieSwitchDefinition
+            let switch_definition = PcieSwitchDefinition {
+                name: switch_def.name.clone(),
+                downstream_port_count: switch_def.num_downstream_ports as usize,
+            };
+            let mut switch = Switch::new(switch_definition);
+
+            // Recursively build child switches and connect them to this switch's downstream ports
+            Self::build_child_switches(&mut switch, &switch_def.child_switches);
+
+            // Connect this switch to the parent port
+            if let Err(existing_name) = parent_port.connect_device(&switch_def.name, switch) {
+                tracing::warn!(
+                    port_name = %switch_def.name,
+                    existing_device = %existing_name,
+                    "failed to connect switch to port: port already occupied"
+                );
+            }
+        }
+    }
+
+    /// Recursively build child switches and connect them to downstream ports.
+    fn build_child_switches(
+        parent_switch: &mut Switch,
+        child_definitions: &HashMap<u8, HierarchicalSwitchDefinition>,
+    ) {
+        for (downstream_port, child_def) in child_definitions {
+            // Create the child switch using the existing PcieSwitchDefinition
+            let switch_definition = PcieSwitchDefinition {
+                name: child_def.name.clone(),
+                downstream_port_count: child_def.num_downstream_ports as usize,
+            };
+            let mut child_switch = Switch::new(switch_definition);
+
+            // Recursively build grandchild switches
+            Self::build_child_switches(&mut child_switch, &child_def.child_switches);
+
+            // Connect to the specific downstream port indicated by the configuration
+            match parent_switch.connect_downstream_device(
+                *downstream_port,
+                &child_def.name,
+                child_switch,
+            ) {
+                Ok(()) => {
+                    tracing::debug!(
+                        switch_name = %child_def.name,
+                        port_id = downstream_port,
+                        "successfully connected child switch to specific downstream port"
+                    );
+                }
+                Err(existing_name) => {
+                    tracing::warn!(
+                        switch_name = %child_def.name,
+                        existing_device = %existing_name,
+                        port_id = downstream_port,
+                        "failed to connect child switch: downstream port already occupied"
+                    );
+                }
+            }
+        }
     }
 
     fn decode_ecam_access<'a>(&'a mut self, addr: u64) -> DecodedEcamAccess<'a> {
@@ -400,6 +501,7 @@ mod tests {
         let port_defs = (0..port_count)
             .map(|i| GenericPcieRootPortDefinition {
                 name: format!("test-port-{}", i).into(),
+                switches: Vec::new(),
             })
             .collect();
 
@@ -666,5 +768,56 @@ mod tests {
             .port
             .forward_cfg_write_with_routing(&1, &0, 0x0, 0x12345678);
         assert!(matches!(result, IoResult::Ok));
+    }
+
+    #[test]
+    fn test_hierarchical_switch_creation() {
+        // Create a hierarchical switch definition: switch0 -> switch1 on downstream port 0
+        let child_switch = HierarchicalSwitchDefinition::new("switch1", 2, HashMap::new());
+        let mut child_switches = HashMap::new();
+        child_switches.insert(0, child_switch); // Connect child to downstream port 0
+
+        let parent_switch = HierarchicalSwitchDefinition::new("switch0", 4, child_switches);
+
+        let port_def = GenericPcieRootPortDefinition {
+            name: "test-port".into(),
+            switches: vec![parent_switch],
+        };
+
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let rc = GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def]);
+
+        // Verify the root complex was created successfully
+        assert_eq!(rc.downstream_ports().len(), 1);
+        assert_eq!(rc.downstream_ports()[0].1.as_ref(), "test-port");
+    }
+
+    #[test]
+    fn test_hierarchical_switch_specific_port_assignment() {
+        // Create a more complex hierarchy to test specific port assignment:
+        // switch0 has 4 downstream ports:
+        //   - downstream port 1 -> switch1 (2 ports)
+        //   - downstream port 3 -> switch2 (1 port)
+
+        let switch1 = HierarchicalSwitchDefinition::new("switch1", 2, HashMap::new());
+        let switch2 = HierarchicalSwitchDefinition::new("switch2", 1, HashMap::new());
+
+        let mut child_switches = HashMap::new();
+        child_switches.insert(1, switch1); // Connect switch1 to downstream port 1
+        child_switches.insert(3, switch2); // Connect switch2 to downstream port 3
+
+        let parent_switch = HierarchicalSwitchDefinition::new("switch0", 4, child_switches);
+
+        let port_def = GenericPcieRootPortDefinition {
+            name: "test-port".into(),
+            switches: vec![parent_switch],
+        };
+
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let rc = GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def]);
+
+        // Verify the root complex was created successfully
+        assert_eq!(rc.downstream_ports().len(), 1);
+        assert_eq!(rc.downstream_ports()[0].1.as_ref(), "test-port");
     }
 }
