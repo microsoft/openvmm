@@ -71,6 +71,61 @@ pub trait GenericPciBusDevice: 'static + Send {
 
     /// Dispatch a PCI config space write to the device with the given address.
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult>;
+
+    /// Returns a mutable reference to this device as a routing component (like a switch), if it implements routing.
+    fn as_routing_component(&mut self) -> Option<&mut dyn GenericPciRoutingComponent> {
+        None
+    }
+}
+
+/// An abstract interface for a PCI routing component that can forward configuration
+/// space accesses to downstream devices.
+///
+/// This trait extends [`GenericPciBusDevice`] to add routing functionality for
+/// components like PCI-to-PCI bridges, and PCIe switch ports that need to forward
+/// configuration space accesses based on bus number ranges and device addressing.
+///
+/// Routing components implement both device functionality (responding to their own
+/// configuration space) and forwarding functionality (routing accesses to downstream
+/// devices based on the target bus, device, and function numbers).
+pub trait GenericPciRoutingComponent: GenericPciBusDevice {
+    /// Forward a PCI configuration space read to a downstream device.
+    ///
+    /// # Parameters
+    /// - `bus`: Target bus number for the downstream device
+    /// - `device_function`: Combined device and function number (device << 3 | function)
+    /// - `offset`: Configuration space offset within the target device
+    /// - `value`: Pointer to receive the read value
+    ///
+    /// # Returns
+    /// `Some(IoResult)` if the routing component handled the forward, `None` if
+    /// the component is no longer responding or the target is not reachable.
+    fn pci_cfg_read_forward(
+        &mut self,
+        bus: u8,
+        device_function: u8,
+        offset: u16,
+        value: &mut u32,
+    ) -> Option<IoResult>;
+
+    /// Forward a PCI configuration space write to a downstream device.
+    ///
+    /// # Parameters
+    /// - `bus`: Target bus number for the downstream device
+    /// - `device_function`: Combined device and function number (device << 3 | function)
+    /// - `offset`: Configuration space offset within the target device
+    /// - `value`: Value to write to the target device
+    ///
+    /// # Returns
+    /// `Some(IoResult)` if the routing component handled the forward, `None` if
+    /// the component is no longer responding or the target is not reachable.
+    fn pci_cfg_write_forward(
+        &mut self,
+        bus: u8,
+        device_function: u8,
+        offset: u16,
+        value: u32,
+    ) -> Option<IoResult>;
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Inspect)]
