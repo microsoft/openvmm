@@ -593,6 +593,34 @@ syntax: <root_complex_name>:<name>
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_port: Vec<PcieRootPortCli>,
+
+    /// Attach a PCI Express switch to the VM
+    #[clap(long_help = r#"
+Attach switches to root ports or other switches to create PCIe hierarchies.
+
+Examples:
+    # Connect switch0 directly to root port rp0
+    --pcie-switch rp0:switch0,num_downstream_ports=4
+
+    # Connect switch1 to downstream port 0 of switch0
+    --pcie-switch switch0-downstream-0:switch1,num_downstream_ports=2
+
+    # Create a 3-level hierarchy: rp0 -> switch0 -> switch1 -> switch2
+    --pcie-switch rp0:switch0
+    --pcie-switch switch0-downstream-0:switch1
+    --pcie-switch switch1-downstream-1:switch2
+
+syntax: <port_name>:<name>[,opt=arg,...]
+
+port_name can be:
+    - Root port name (e.g., "rp0") to connect directly to a root port
+    - Downstream port name (e.g., "switch0-downstream-1") to connect to another switch
+
+options:
+    `num_downstream_ports=<value>`    number of downstream ports, default 4
+"#)]
+    #[clap(long, conflicts_with("pcat"))]
+    pub pcie_switch: Vec<PcieSwitchCli>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1537,6 +1565,58 @@ impl FromStr for PcieRootPortCli {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct PcieSwitchCli {
+    pub port_name: String,
+    pub name: String,
+    pub num_downstream_ports: u8,
+}
+
+impl FromStr for PcieSwitchCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut opts = s.split(',');
+        let names = opts.next().context("expected switch identifiers")?;
+        if names.is_empty() {
+            anyhow::bail!("must provide switch identifiers");
+        }
+
+        let mut s = names.split(':');
+        let port_name = s.next().context("expected name of parent port")?;
+        let switch_name = s.next().context("expected switch name")?;
+
+        if let Some(extra) = s.next() {
+            anyhow::bail!("unexpected token: '{extra}'")
+        }
+
+        let mut num_downstream_ports = 4u8; // Default value
+
+        for opt in opts {
+            let mut kv = opt.split('=');
+            let key = kv.next().context("expected option name")?;
+            let value = kv.next().context("expected option value")?;
+
+            if let Some(extra) = kv.next() {
+                anyhow::bail!("unexpected token: '{extra}'")
+            }
+
+            match key {
+                "num_downstream_ports" => {
+                    num_downstream_ports = value.parse().context("invalid num_downstream_ports")?;
+                }
+                _ => anyhow::bail!("unknown option: '{key}'"),
+            }
+        }
+
+        Ok(PcieSwitchCli {
+            port_name: port_name.to_string(),
+            name: switch_name.to_string(),
+            num_downstream_ports,
+        })
+    }
+}
+
 /// Read a environment variable that may / may-not have a target-specific
 /// prefix. e.g: `default_value_from_arch_env("FOO")` would first try and read
 /// from `FOO`, and if that's not found, it will try `X86_64_FOO`.
@@ -2175,5 +2255,53 @@ mod tests {
         assert!(PcieRootPortCli::from_str("rp0,opt").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0:rp3").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,rp3").is_err());
+    }
+
+    #[test]
+    fn test_pcie_switch_from_str() {
+        assert_eq!(
+            PcieSwitchCli::from_str("rp0:switch0").unwrap(),
+            PcieSwitchCli {
+                port_name: "rp0".to_string(),
+                name: "switch0".to_string(),
+                num_downstream_ports: 2,
+            }
+        );
+
+        assert_eq!(
+            PcieSwitchCli::from_str("port1:my_switch,num_downstream_ports=4").unwrap(),
+            PcieSwitchCli {
+                port_name: "port1".to_string(),
+                name: "my_switch".to_string(),
+                num_downstream_ports: 4,
+            }
+        );
+
+        assert_eq!(
+            PcieSwitchCli::from_str("rp2:sw,num_downstream_ports=8").unwrap(),
+            PcieSwitchCli {
+                port_name: "rp2".to_string(),
+                name: "sw".to_string(),
+                num_downstream_ports: 8,
+            }
+        );
+
+        // Test hierarchical connections
+        assert_eq!(
+            PcieSwitchCli::from_str("switch0-downstream-1:child_switch").unwrap(),
+            PcieSwitchCli {
+                port_name: "switch0-downstream-1".to_string(),
+                name: "child_switch".to_string(),
+                num_downstream_ports: 4,
+            }
+        );
+
+        // Error cases
+        assert!(PcieSwitchCli::from_str("").is_err());
+        assert!(PcieSwitchCli::from_str("switch0").is_err());
+        assert!(PcieSwitchCli::from_str("rp0:switch0:extra").is_err());
+        assert!(PcieSwitchCli::from_str("rp0:switch0,invalid_opt=value").is_err());
+        assert!(PcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=bad").is_err());
+        assert!(PcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=").is_err());
     }
 }

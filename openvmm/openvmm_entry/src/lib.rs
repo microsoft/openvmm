@@ -74,6 +74,7 @@ use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
 use hvlite_defs::config::PcieRootComplexConfig;
 use hvlite_defs::config::PcieRootPortConfig;
+use hvlite_defs::config::PcieSwitchConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialInformation;
 use hvlite_defs::config::VirtioBus;
@@ -207,6 +208,54 @@ struct VmResources {
 struct ConsoleState<'a> {
     device: &'a str,
     input: Box<dyn AsyncWrite + Unpin + Send>,
+}
+
+/// Build a hierarchical structure of switches connected to the given parent port.
+///
+/// This function handles both:
+/// 1. Switches directly connected to a root port (port_name matches the root port name)
+/// 2. Switches connected to downstream ports of other switches (port_name format: switch_name-downstream-N)
+fn build_switch_hierarchy(
+    all_switches: &[cli_args::PcieSwitchCli],
+    parent_port_name: &str,
+) -> Vec<PcieSwitchConfig> {
+    // Find switches directly connected to this parent port
+    let direct_switches: Vec<_> = all_switches
+        .iter()
+        .filter(|switch_cli| switch_cli.port_name == parent_port_name)
+        .collect();
+
+    // For each direct switch, build its complete hierarchy
+    direct_switches
+        .into_iter()
+        .map(|switch_cli| {
+            // Recursively find switches connected to this switch's downstream ports
+            let mut child_switches = Vec::new();
+            for i in 0..switch_cli.num_downstream_ports {
+                let downstream_port_name = format!("{}-downstream-{}", switch_cli.name, i);
+                let children = build_switch_hierarchy(all_switches, &downstream_port_name);
+                // If there's exactly one child for this downstream port, add it to the vector with port info
+                if children.len() == 1 {
+                    child_switches.push((i, children.into_iter().next().unwrap()));
+                } else if children.len() > 1 {
+                    // This shouldn't happen with valid configuration, but handle gracefully
+                    tracing::warn!(
+                        "Multiple switches found for downstream port {}-{}, using the first one",
+                        switch_cli.name,
+                        i
+                    );
+                    child_switches.push((i, children.into_iter().next().unwrap()));
+                }
+                // If children.len() == 0, no switch is connected to this downstream port
+            }
+
+            PcieSwitchConfig {
+                name: switch_cli.name.clone(),
+                num_downstream_ports: switch_cli.num_downstream_ports,
+                child_switches,
+            }
+        })
+        .collect()
 }
 
 fn vm_config_from_command_line(
@@ -700,8 +749,12 @@ fn vm_config_from_command_line(
                 .pcie_root_port
                 .iter()
                 .filter(|port_cli| port_cli.root_complex_name == cli.name)
-                .map(|port_cli| PcieRootPortConfig {
-                    name: port_cli.name.clone(),
+                .map(|port_cli| {
+                    let switches = build_switch_hierarchy(&opt.pcie_switch, &port_cli.name);
+                    PcieRootPortConfig {
+                        name: port_cli.name.clone(),
+                        switches,
+                    }
                 })
                 .collect();
 

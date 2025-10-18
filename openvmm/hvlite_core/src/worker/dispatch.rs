@@ -80,6 +80,7 @@ use pci_core::PciInterruptPin;
 use pci_core::msi::MsiInterruptSet;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
+use pcie::root::HierarchicalSwitchDefinition;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::SimpleScsiDisk;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
@@ -1760,6 +1761,23 @@ impl InitializedVm {
 
         // PCI Express topology
 
+        /// Convert config switch to hierarchical definition
+        fn config_switch_to_hierarchical(
+            switch_cfg: &hvlite_defs::config::PcieSwitchConfig,
+        ) -> HierarchicalSwitchDefinition {
+            let child_switches = switch_cfg
+                .child_switches
+                .iter()
+                .map(|(port, switch)| (*port, config_switch_to_hierarchical(switch)))
+                .collect();
+
+            HierarchicalSwitchDefinition::new(
+                switch_cfg.name.clone(),
+                switch_cfg.num_downstream_ports,
+                child_switches,
+            )
+        }
+
         let mut pcie_host_bridges = Vec::new();
         {
             // ECAM allocation starts at the configured base and grows upwards.
@@ -1782,6 +1800,11 @@ impl InitializedVm {
                                 .into_iter()
                                 .map(|rp_cfg| GenericPcieRootPortDefinition {
                                     name: rp_cfg.name.into(),
+                                    switches: rp_cfg
+                                        .switches
+                                        .iter()
+                                        .map(config_switch_to_hierarchical)
+                                        .collect(),
                                 })
                                 .collect();
 

@@ -84,10 +84,11 @@ impl PciePort {
                     }
                 }
             } else {
-                tracelimit::warn_ratelimited!("invalid access: multi-function device access not supported for now");
+                tracelimit::warn_ratelimited!(
+                    "invalid access: multi-function device access not supported for now"
+                );
                 return IoResult::Ok;
             }
-
         } else if bus_range.contains(bus) {
             if let Some((_, device)) = &mut self.link {
                 // Forward access to the routing component.
@@ -104,7 +105,9 @@ impl PciePort {
                         }
                     }
                 } else {
-                    tracelimit::warn_ratelimited!("invalid access: bus number to access not within port's bus number range");
+                    tracelimit::warn_ratelimited!(
+                        "invalid access: bus number to access not within port's bus number range"
+                    );
                 }
             }
         }
@@ -142,10 +145,11 @@ impl PciePort {
                     }
                 }
             } else {
-                tracelimit::warn_ratelimited!("invalid access: multi-function device access not supported for now");
+                tracelimit::warn_ratelimited!(
+                    "invalid access: multi-function device access not supported for now"
+                );
                 return IoResult::Ok;
             }
-
         } else if bus_range.contains(bus) {
             if let Some((_, device)) = &mut self.link {
                 // Forward access to the routing component.
@@ -162,7 +166,9 @@ impl PciePort {
                         }
                     }
                 } else {
-                    tracelimit::warn_ratelimited!("invalid access: bus number to access not within port's bus number range");
+                    tracelimit::warn_ratelimited!(
+                        "invalid access: bus number to access not within port's bus number range"
+                    );
                 }
             }
         }
