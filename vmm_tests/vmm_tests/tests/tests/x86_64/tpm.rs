@@ -14,10 +14,10 @@ use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64;
-#[cfg(windows)]
-use vmm_test_macros::hyperv_test;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
+#[cfg(windows)]
+use vmm_test_macros::vmm_test;
 
 const AK_CERT_NONZERO_BYTES: usize = 2500;
 const AK_CERT_TOTAL_BYTES: usize = 4096;
@@ -110,11 +110,11 @@ async fn tpm_ak_cert_persisted_linux(
     let (vm, agent) = config.with_expect_reset().run().await?;
 
     let (linux_artifact,) = extra_deps;
-    let host_binary = linux_artifact.get();
+    let host_binary_path = linux_artifact.get();
     let guest_binary_path = "/tmp/tpm_guest_tests";
 
-    let guest_binary = std::fs::read(host_binary)
-        .with_context(|| format!("failed to read {}", host_binary.display()))?;
+    let guest_binary = std::fs::read(host_binary_path)
+        .with_context(|| format!("failed to read {}", host_binary_path.display()))?;
     agent
         .write_file(guest_binary_path, guest_binary.as_slice())
         .await?;
@@ -156,9 +156,9 @@ async fn tpm_ak_cert_persisted_windows(
     let agent = vm.wait_for_reset().await?;
 
     let (windows_artifact,) = extra_deps;
-    let host_binary = windows_artifact.get();
-    let guest_binary = std::fs::read(host_binary)
-        .with_context(|| format!("failed to read {}", host_binary.display()))?;
+    let host_binary_path = windows_artifact.get();
+    let guest_binary = std::fs::read(host_binary_path)
+        .with_context(|| format!("failed to read {}", host_binary_path.display()))?;
     let guest_binary_path = "C:\\tpm_guest_tests.exe";
 
     agent
@@ -201,11 +201,11 @@ async fn tpm_ak_cert_retry_linux(
     let (vm, agent) = config.with_expect_reset().run().await?;
 
     let (linux_artifact,) = extra_deps;
-    let host_binary = linux_artifact.get();
+    let host_binary_path = linux_artifact.get();
     let guest_binary_path = "/tmp/tpm_guest_tests";
 
-    let guest_binary = std::fs::read(host_binary)
-        .with_context(|| format!("failed to read {}", host_binary.display()))?;
+    let guest_binary = std::fs::read(host_binary_path)
+        .with_context(|| format!("failed to read {}", host_binary_path.display()))?;
     agent
         .write_file(guest_binary_path, guest_binary.as_slice())
         .await?;
@@ -258,9 +258,9 @@ async fn tpm_ak_cert_retry_windows(
     let (vm, agent) = config.run().await?;
 
     let (windows_artifact,) = extra_deps;
-    let host_binary = windows_artifact.get();
-    let guest_binary = std::fs::read(host_binary)
-        .with_context(|| format!("failed to read {}", host_binary.display()))?;
+    let host_binary_path = windows_artifact.get();
+    let guest_binary = std::fs::read(host_binary_path)
+        .with_context(|| format!("failed to read {}", host_binary_path.display()))?;
     let guest_binary_path = "C:\\tpm_guest_tests.exe";
 
     agent
@@ -450,38 +450,41 @@ async fn tpm_test_platform_hierarchy_disabled(
 //     Ok(())
 // }
 
-/// CVM tests with TPM enabled on Hyper-V.
+/// Linux CVM with guest tpm tests on Hyper-V.
 #[cfg(windows)]
-#[hyperv_test(
-    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
-    openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
-    openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
 )]
-async fn cvm_boot_with_tpm(
+async fn cvm_tpm_guest_tests_linux(
     config: PetriVmBuilder<HyperVPetriBackend>,
-    extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,),
+    extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_LINUX_X64>,),
 ) -> anyhow::Result<()> {
-    let (tpm_guest_tests_artifact,) = extra_deps;
-    let tpm_guest_tests_host_path = tpm_guest_tests_artifact.get();
+    let (linux_artifact,) = extra_deps;
+    let host_binary_path = linux_artifact.get();
+    let guest_binary_path = "/tmp/tpm_guest_tests";
+
     // TODO: Add test IGVMAgent RPC server to support the boot-time attestation.
     let config = config
         .modify_backend(|b| b.with_tpm_state_persistence(false))
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
 
-    let (vm, agent) = config.run().await?;
+    let (vm, agent) = config.with_expect_reset().run().await?;
 
-    let tpm_guest_tests_bytes = std::fs::read(tpm_guest_tests_host_path)
-        .with_context(|| format!("failed to read {}", tpm_guest_tests_host_path.display()))?;
+    let guest_binary = std::fs::read(host_binary_path)
+        .with_context(|| format!("failed to read {}", host_binary_path.display()))?;
 
     agent
-        .write_file("C:\\tpm_guest_tests.exe", tpm_guest_tests_bytes.as_slice())
+        .write_file(guest_binary_path, guest_binary.as_slice())
         .await
         .context("failed to copy tpm_guest_tests.exe into the guest")?;
 
-    let sh = agent.windows_shell();
+    let sh = agent.unix_shell();
+    cmd!(sh, "chmod +x {guest_binary_path}").run().await?;
 
     // TODO: Add test IGVMAgent RPC server to support AK Cert
-    // let output = cmd!(sh, "C:\\tpm_guest_tests.exe")
+    // let output = cmd!(sh, "{guest_binary_path}")
     //     .args(["ak_cert"])
     //     .read()
     //     .await
@@ -489,14 +492,78 @@ async fn cvm_boot_with_tpm(
 
     // assert!(
     //     output.contains("AK certificate data"),
-    //     "tpm_guest_tests.exe --ak-cert did not report AK certificate data: {output}",
+    //     "tpm_guest_tests ak-cert did not report AK certificate data: {output}",
     // );
 
-    let report_output = cmd!(sh, "C:\\tpm_guest_tests.exe")
+    let report_output = cmd!(sh, "{guest_binary_path}")
         .args(["report", "--show-runtime-claims"])
         .read()
         .await
-        .context("failed to execute tpm_guest_tests.exe --report inside the guest")?;
+        .context("failed to execute tpm_guest_tests report inside the guest")?;
+
+    ensure!(
+        report_output.contains("Runtime claims JSON"),
+        format!("{report_output}")
+    );
+    ensure!(
+        report_output.contains("\"vmUniqueId\""),
+        format!("{report_output}")
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Windows CVM with guest tpm tests on Hyper-V.
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+)]
+async fn cvm_tpm_guest_tests_windows(
+    config: PetriVmBuilder<HyperVPetriBackend>,
+    extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,),
+) -> anyhow::Result<()> {
+    let (windows_artifact,) = extra_deps;
+    let host_binary_path = windows_artifact.get();
+    let guest_binary_path = "C:\\tpm_guest_tests.exe";
+
+    // TODO: Add test IGVMAgent RPC server to support the boot-time attestation.
+    let config = config
+        .modify_backend(|b| b.with_tpm_state_persistence(false))
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
+
+    let (vm, agent) = config.run().await?;
+
+    let guest_binary = std::fs::read(host_binary_path)
+        .with_context(|| format!("failed to read {}", host_binary_path.display()))?;
+
+    agent
+        .write_file(guest_binary_path, guest_binary.as_slice())
+        .await
+        .context("failed to copy tpm_guest_tests.exe into the guest")?;
+
+    let sh = agent.windows_shell();
+
+    // TODO: Add test IGVMAgent RPC server to support AK Cert
+    // let output = cmd!(sh, "{guest_binary_path}")
+    //     .args(["ak_cert"])
+    //     .read()
+    //     .await
+    //     .context("failed to execute tpm_guest_tests.exe inside the guest")?;
+
+    // assert!(
+    //     output.contains("AK certificate data"),
+    //     "tpm_guest_tests.exe ak-cert did not report AK certificate data: {output}",
+    // );
+
+    let report_output = cmd!(sh, "{guest_binary_path}")
+        .args(["report", "--show-runtime-claims"])
+        .read()
+        .await
+        .context("failed to execute tpm_guest_tests.exe report inside the guest")?;
 
     ensure!(
         report_output.contains("Runtime claims JSON"),
