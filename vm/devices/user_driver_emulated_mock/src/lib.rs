@@ -312,15 +312,15 @@ pub trait DeviceTestDmaClientCallbacks: Sync + Send {
 ///     }
 /// }
 ///
-/// #[test]
-/// async fn test_dma_client() {
+/// // Use the above in a test ...
+/// fn test_dma_client() {
 ///     let pages = 1000;
 ///     let device_test_memory = user_driver_emulated_mock::DeviceTestMemory::new(
 ///         pages,
 ///         true,
 ///         "test_dma_client",
 ///     );
-///     let page_pool_allocator = Arc::new(device_test_memory.dma_client());
+///     let page_pool_allocator = device_test_memory.dma_client();
 ///     let dma_client = DeviceTestDmaClient::new(page_pool_allocator)
 ///       .with_callbacks(MyCallbacks);
 ///
@@ -345,7 +345,6 @@ impl<C: DeviceTestDmaClientCallbacks> DeviceTestDmaClient<C> {
         Self {
             inner,
             callbacks: None,
-            // run_on_attach_pending_buffers: None,
         }
     }
 
