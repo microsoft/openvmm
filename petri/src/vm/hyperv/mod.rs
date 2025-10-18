@@ -107,9 +107,6 @@ pub struct HyperVPetriConfig {
     /// [`HyperVScsiController`] objects stored in the runtime.
     additional_scsi_controllers: Vec<(String, u32)>,
 
-    /// Enable TPM
-    enable_tpm: bool,
-
     /// Configure TPM state persistence
     tpm_state_persistence: bool,
 }
