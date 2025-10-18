@@ -5,45 +5,22 @@ use anyhow::Context;
 use anyhow::ensure;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
-use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
 use petri::ShutdownKind;
+#[cfg(windows)]
+use petri::hyperv::HyperVPetriBackend;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64;
+#[cfg(windows)]
+use vmm_test_macros::hyperv_test;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
-use vmm_test_macros::vmm_test;
 
 const AK_CERT_NONZERO_BYTES: usize = 2500;
 const AK_CERT_TOTAL_BYTES: usize = 4096;
-
-trait SupportsTpm {
-    fn enable_tpm(self) -> Self;
-    fn with_tpm_state_persistence(self, state_persistence: bool) -> Self;
-}
-
-impl SupportsTpm for petri::openvmm::PetriVmConfigOpenVmm {
-    fn enable_tpm(self) -> Self {
-        petri::openvmm::PetriVmConfigOpenVmm::with_tpm(self)
-    }
-
-    fn with_tpm_state_persistence(self, state_persistence: bool) -> Self {
-        petri::openvmm::PetriVmConfigOpenVmm::with_tpm_state_persistence(self, state_persistence)
-    }
-}
-
-impl SupportsTpm for petri::hyperv::HyperVPetriConfig {
-    fn enable_tpm(self) -> Self {
-        petri::hyperv::HyperVPetriConfig::with_tpm(self)
-    }
-
-    fn with_tpm_state_persistence(self, state_persistence: bool) -> Self {
-        petri::hyperv::HyperVPetriConfig::with_tpm_state_persistence(self, state_persistence)
-    }
-}
 
 fn expected_ak_cert_hex() -> String {
     use std::fmt::Write as _;
@@ -473,25 +450,22 @@ async fn tpm_test_platform_hierarchy_disabled(
 //     Ok(())
 // }
 
-/// CVM tests with TPM enabled.
-#[vmm_test(
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+/// CVM tests with TPM enabled on Hyper-V.
+#[cfg(windows)]
+#[hyperv_test(
+    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+    openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+    openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
 )]
-async fn cvm_boot_with_tpm<T>(
-    config: PetriVmBuilder<T>,
+async fn cvm_boot_with_tpm(
+    config: PetriVmBuilder<HyperVPetriBackend>,
     extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,),
-) -> anyhow::Result<()>
-where
-    T: PetriVmmBackend,
-    T::VmmConfig: SupportsTpm,
-{
+) -> anyhow::Result<()> {
     let (tpm_guest_tests_artifact,) = extra_deps;
     let tpm_guest_tests_host_path = tpm_guest_tests_artifact.get();
-    // TODO: Add test IGVMAgent RPC server to support tpm state persistence and the boot-time attestation.
+    // TODO: Add test IGVMAgent RPC server to support the boot-time attestation.
     let config = config
-        .modify_backend(|b| b.enable_tpm().with_tpm_state_persistence(false))
+        .modify_backend(|b| b.with_tpm_state_persistence(false))
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
 
     let (vm, agent) = config.run().await?;

@@ -143,22 +143,13 @@ impl HyperVPetriConfig {
         self
     }
 
-    /// Enable TPM for the VM
-    pub fn with_tpm(mut self) -> Self {
-        self.enable_tpm = true;
-        self
-    }
-
-    fn enable_tpm(&self) -> bool {
-        self.enable_tpm
-    }
-
     /// Configure TPM state persistence
     pub fn with_tpm_state_persistence(mut self, tpm_state_persistence: bool) -> Self {
         self.tpm_state_persistence = tpm_state_persistence;
         self
     }
 
+    /// Check if TPM state persistence is enabled
     fn tpm_state_persistence(&self) -> bool {
         self.tpm_state_persistence
     }
@@ -610,7 +601,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             for (test_id, target_vtl) in &config.additional_scsi_controllers {
                 let (controller_number, vsid) = vm.add_scsi_controller(*target_vtl).await?;
                 added_controllers.push(HyperVScsiController {
-                    test_id: test_id.to_string(),
+                    test_id: test_id.clone(),
                     controller_number,
                     target_vtl: *target_vtl,
                     vsid,
@@ -622,18 +613,14 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 vtl2_settings = Some(settings.clone());
             }
 
-            if config.enable_tpm() {
-                vm.enable_tpm().await?;
-
-                if config.tpm_state_persistence() {
-                    vm.set_guest_isolation_mode(powershell::HyperVGuestIsolationMode::Default)
-                        .await?;
-                } else {
-                    vm.set_guest_isolation_mode(
-                        powershell::HyperVGuestIsolationMode::NoPersistentSecrets,
-                    )
+            if config.tpm_state_persistence() {
+                vm.set_guest_isolation_mode(powershell::HyperVGuestIsolationMode::Default)
                     .await?;
-                }
+            } else {
+                vm.set_guest_isolation_mode(
+                    powershell::HyperVGuestIsolationMode::NoPersistentSecrets,
+                )
+                .await?;
             }
         }
 

@@ -11,7 +11,7 @@ tpm_lib.workspace = true
 tpm_protocol.workspace = true
 
 parking_lot.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["alloc"] }
 zerocopy.workspace = true
 clap = { workspace = true, features = ["derive"] }
 

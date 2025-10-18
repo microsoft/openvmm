@@ -234,39 +234,6 @@ pub async fn run_set_vm_processor(
     .context("set_vm_processor")
 }
 
-/// Configures a new local key protector for the VM, enabling virtual TPM usage.
-pub async fn run_set_vm_key_protector_new_local(vmid: &Guid) -> anyhow::Result<()> {
-    run_host_cmd(
-        PowerShellBuilder::new()
-            .cmdlet("Get-VM")
-            .arg("Id", vmid)
-            .pipeline()
-            .cmdlet("Set-VMKeyProtector")
-            .flag("NewLocalKeyProtector")
-            .finish()
-            .build(),
-    )
-    .await
-    .map(|_| ())
-    .context("set_vm_key_protector")
-}
-
-/// Enables the virtual TPM device for the VM.
-pub async fn run_enable_vm_tpm(vmid: &Guid) -> anyhow::Result<()> {
-    run_host_cmd(
-        PowerShellBuilder::new()
-            .cmdlet("Get-VM")
-            .arg("Id", vmid)
-            .pipeline()
-            .cmdlet("Enable-VMTPM")
-            .finish()
-            .build(),
-    )
-    .await
-    .map(|_| ())
-    .context("enable_vm_tpm")
-}
-
 /// Arguments for the Set-VMMemory powershell cmdlet.
 #[derive(Default)]
 pub struct HyperVSetVMMemoryArgs {
