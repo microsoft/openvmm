@@ -6,6 +6,8 @@
 use crate::gen_cargo_nextest_run_cmd::RunKindDeps;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
+use std::process::ExitStatus;
+use std::process::Stdio;
 
 #[derive(Serialize, Deserialize)]
 pub struct TestResults {
@@ -131,6 +133,7 @@ impl FlowNode for Node {
         ctx.import::<crate::download_cargo_nextest::Node>();
         ctx.import::<crate::install_cargo_nextest::Node>();
         ctx.import::<crate::install_rust::Node>();
+        ctx.import::<crate::gen_cargo_nextest_list_cmd::Node>();
         ctx.import::<crate::gen_cargo_nextest_run_cmd::Node>();
     }
 
@@ -306,17 +309,7 @@ impl FlowNode for Node {
                     // exit code of the process.
                     //
                     // So we have to use the raw process API instead.
-                    let mut command = std::process::Command::new(&cmd.argv0);
-                    command
-                        .args(&cmd.args)
-                        .envs(&cmd.env)
-                        .current_dir(&working_dir);
-
-                    let mut child = command.spawn().with_context(|| {
-                        format!("failed to spawn '{}'", cmd.argv0.to_string_lossy())
-                    })?;
-
-                    let status = child.wait()?;
+                    let (status, _stdout) = run_command(&cmd, &working_dir, false)?;
 
                     #[cfg(unix)]
                     if let Some((soft, hard)) = old_core_rlimits {
@@ -415,5 +408,36 @@ impl build_params::NextestBuildParams {
             profile,
             extra_env: extra_env.claim(ctx),
         }
+    }
+}
+
+fn run_command(
+    cmd: &crate::gen_cargo_nextest_run_cmd::Command,
+    working_dir: &PathBuf,
+    capture_stdout: bool,
+) -> anyhow::Result<(ExitStatus, Option<String>)> {
+    let mut command = std::process::Command::new(&cmd.argv0);
+    command
+        .args(&cmd.args)
+        .envs(&cmd.env)
+        .current_dir(working_dir);
+
+    if capture_stdout {
+        command.stdout(Stdio::piped());
+    } else {
+        command.stdout(Stdio::inherit());
+    }
+
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("failed to spawn '{}'", cmd.argv0.to_string_lossy()))?;
+
+    if capture_stdout {
+        let output = child.wait_with_output()?;
+        let stdout_str = String::from_utf8_lossy(&output.stdout).into_owned();
+        Ok((output.status, Some(stdout_str)))
+    } else {
+        let status = child.wait()?;
+        Ok((status, None))
     }
 }

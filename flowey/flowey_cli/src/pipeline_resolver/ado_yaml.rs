@@ -6,7 +6,6 @@ use super::common_yaml::FloweySource;
 use super::common_yaml::check_generated_yaml_and_json;
 use super::common_yaml::job_flowey_bootstrap_source;
 use super::common_yaml::write_generated_yaml_and_json;
-use super::generic::ResolvedJobArtifact;
 use super::generic::ResolvedJobUseParameter;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
@@ -16,6 +15,8 @@ use crate::flow_resolver::stage1_dag::OutputGraphEntry;
 use crate::flow_resolver::stage1_dag::Step;
 use crate::pipeline_resolver::generic::ResolvedPipeline;
 use crate::pipeline_resolver::generic::ResolvedPipelineJob;
+use crate::pipeline_resolver::generic::ResolvedPublishedArtifact;
+use crate::pipeline_resolver::generic::ResolvedUsedArtifact;
 use anyhow::Context;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
@@ -191,7 +192,7 @@ pub fn ado_yaml(
         }
 
         // also download any artifacts that'll be used
-        for ResolvedJobArtifact {
+        for ResolvedUsedArtifact {
             flowey_var: _,
             name,
         } in artifacts_used
@@ -311,7 +312,10 @@ EOF
 
         // next, emit ado steps to create dirs for artifacts which will be
         // published
-        for ResolvedJobArtifact { flowey_var, name } in artifacts_published {
+        for ResolvedPublishedArtifact {
+            flowey_var, name, ..
+        } in artifacts_published
+        {
             writeln!(
                 flowey_bootstrap_bash,
                 r#"mkdir -p "$(AgentTempDirNormal)/publish_artifacts/{name}""#
@@ -325,7 +329,7 @@ EOF
 
         // lastly, emit ado steps that report the dirs for any artifacts which
         // are used by this job
-        for ResolvedJobArtifact { flowey_var, name } in artifacts_used {
+        for ResolvedUsedArtifact { flowey_var, name } in artifacts_used {
             // do NOT use ADO macro syntax $(...), since this is in the same
             // bootstrap block as where those ADO vars get defined, meaning it's
             // not available yet!
@@ -423,13 +427,14 @@ EOF
 
         // ..and once that's done, the last order of business is to emit some
         // ado steps to publish the various artifacts created by this job
-        for ResolvedJobArtifact {
+        for ResolvedPublishedArtifact {
             flowey_var: _,
             name,
+            force_upload,
         } in artifacts_published
         {
             ado_steps.push({
-                let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
+                let mut map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                         publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/{name}
                         displayName: '🌼📦 Publish {name}'
@@ -437,6 +442,12 @@ EOF
                     "#
                 ))
                 .unwrap();
+                if *force_upload {
+                    map.insert(
+                        "condition".into(),
+                        serde_yaml::Value::String("always()".into()),
+                    );
+                }
                 map.into()
             });
         }
