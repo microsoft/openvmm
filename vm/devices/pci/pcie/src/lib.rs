@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod port;
 pub mod root;
 pub mod switch;
 

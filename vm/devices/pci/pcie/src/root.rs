@@ -12,6 +12,7 @@ use crate::PAGE_SHIFT;
 use crate::PAGE_SIZE64;
 use crate::ROOT_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
+use crate::port::PciePort;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -21,8 +22,6 @@ use chipset_device::mmio::RegisterMmioIntercept;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pci_bus::GenericPciBusDevice;
-use pci_core::capabilities::pci_express::PciExpressCapability;
-use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
 use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
@@ -141,7 +140,12 @@ impl GenericPcieRootComplex {
             }
         } else if bus_number > self.start_bus && bus_number <= self.end_bus {
             for (_, port) in self.ports.values_mut() {
-                if port.cfg_space.assigned_bus_range().contains(&bus_number) {
+                if port
+                    .port
+                    .cfg_space
+                    .assigned_bus_range()
+                    .contains(&bus_number)
+                {
                     return DecodedEcamAccess::DownstreamPort(
                         port,
                         bus_number,
@@ -170,7 +174,7 @@ impl ChangeDeviceState for GenericPcieRootComplex {
 
     async fn reset(&mut self) {
         for (_, (_, port)) in self.ports.iter_mut() {
-            port.cfg_space.reset();
+            port.port.cfg_space.reset();
         }
     }
 }
@@ -227,7 +231,7 @@ impl MmioIntercept for GenericPcieRootComplex {
                 tracelimit::warn_ratelimited!("unroutable config space access");
             }
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
-                check_result!(port.cfg_space.read_u32(cfg_offset, &mut dword_value));
+                check_result!(port.port.cfg_space.read_u32(cfg_offset, &mut dword_value));
             }
             DecodedEcamAccess::DownstreamPort(port, bus_number, device_function, cfg_offset) => {
                 check_result!(port.forward_cfg_read(
@@ -286,7 +290,7 @@ impl MmioIntercept for GenericPcieRootComplex {
                 tracelimit::warn_ratelimited!("unroutable config space access");
             }
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
-                check_result!(port.cfg_space.write_u32(cfg_offset, write_dword));
+                check_result!(port.port.cfg_space.write_u32(cfg_offset, write_dword));
             }
             DecodedEcamAccess::DownstreamPort(port, bus_number, device_function, cfg_offset) => {
                 check_result!(port.forward_cfg_write(
@@ -304,34 +308,26 @@ impl MmioIntercept for GenericPcieRootComplex {
 
 #[derive(Inspect)]
 struct RootPort {
-    cfg_space: ConfigSpaceType1Emulator,
-
-    #[inspect(skip)]
-    link: Option<(Arc<str>, Box<dyn GenericPciBusDevice>)>,
+    /// The common PCIe port implementation.
+    #[inspect(flatten)]
+    port: PciePort,
 }
 
 impl RootPort {
     /// Constructs a new [`RootPort`] emulator.
     pub fn new() -> Self {
-        let cfg_space = ConfigSpaceType1Emulator::new(
-            HardwareIds {
-                vendor_id: VENDOR_ID,
-                device_id: ROOT_PORT_DEVICE_ID,
-                revision_id: 0,
-                prog_if: ProgrammingInterface::NONE,
-                sub_class: Subclass::BRIDGE_PCI_TO_PCI,
-                base_class: ClassCode::BRIDGE,
-                type0_sub_vendor_id: 0,
-                type0_sub_system_id: 0,
-            },
-            vec![Box::new(PciExpressCapability::new(
-                DevicePortType::RootPort,
-                None,
-            ))],
-        );
+        let hardware_ids = HardwareIds {
+            vendor_id: VENDOR_ID,
+            device_id: ROOT_PORT_DEVICE_ID,
+            revision_id: 0,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
+            base_class: ClassCode::BRIDGE,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        };
         Self {
-            cfg_space,
-            link: None,
+            port: PciePort::new(hardware_ids, DevicePortType::RootPort),
         }
     }
 
@@ -342,12 +338,7 @@ impl RootPort {
         name: impl AsRef<str>,
         dev: D,
     ) -> Result<(), Arc<str>> {
-        if let Some((name, _)) = &self.link {
-            return Err(name.clone());
-        }
-
-        self.link = Some((name.as_ref().into(), Box::new(dev)));
-        Ok(())
+        self.port.connect_device(name, dev)
     }
 
     fn forward_cfg_read(
@@ -357,34 +348,8 @@ impl RootPort {
         cfg_offset: u16,
         value: &mut u32,
     ) -> IoResult {
-        let bus_range = self.cfg_space.assigned_bus_range();
-        // TODO: should we save the dev/func in the GenericPciBusDevice?
-        if *bus == *bus_range.start() && *device_function == 0 {
-            // Perform type-0 access to the child device's config space.
-            if let Some((_, device)) = &mut self.link {
-                if let Some(result) = device.pci_cfg_read(cfg_offset, value) {
-                    check_result!(result);
-                }
-            }
-        } else if bus_range.contains(bus) {
-            if let Some((_, device)) = &mut self.link {
-                // Forward access to the routing component.
-                if let Some(routing_device) = device.as_routing_component() {
-                    if let Some(result) = routing_device.pci_cfg_read_forward(
-                        *bus,
-                        *device_function,
-                        cfg_offset,
-                        value,
-                    ) {
-                        check_result!(result);
-                    }
-                } else {
-                    tracelimit::warn_ratelimited!("invalid access");
-                }
-            }
-        }
-
-        IoResult::Ok
+        self.port
+            .forward_cfg_read_with_routing(bus, device_function, cfg_offset, value)
     }
 
     fn forward_cfg_write(
@@ -394,33 +359,8 @@ impl RootPort {
         cfg_offset: u16,
         value: u32,
     ) -> IoResult {
-        let bus_range = self.cfg_space.assigned_bus_range();
-        if *bus == *bus_range.start() && *device_function == 0 {
-            // Perform type-0 access to the child device's config space.
-            if let Some((_, device)) = &mut self.link {
-                if let Some(result) = device.pci_cfg_write(cfg_offset, value) {
-                    check_result!(result);
-                }
-            }
-        } else if bus_range.contains(bus) {
-            if let Some((_, device)) = &mut self.link {
-                // Forward access to the routing component.
-                if let Some(routing_device) = device.as_routing_component() {
-                    if let Some(result) = routing_device.pci_cfg_write_forward(
-                        *bus,
-                        *device_function,
-                        cfg_offset,
-                        value,
-                    ) {
-                        check_result!(result);
-                    }
-                } else {
-                    tracelimit::warn_ratelimited!("invalid access");
-                }
-            }
-        }
-
-        IoResult::Ok
+        self.port
+            .forward_cfg_write_with_routing(bus, device_function, cfg_offset, value)
     }
 }
 
@@ -705,5 +645,26 @@ mod tests {
         rc.mmio_read(PORT1_ECAM + COMMAND_REG, value_16.as_mut_bytes())
             .unwrap();
         assert_eq!(value_16, COMMAND_REG_VALUE);
+    }
+
+    #[test]
+    fn test_root_port_invalid_bus_range_handling() {
+        let mut root_port = RootPort::new();
+
+        // Don't configure bus numbers, so the range should be 0..=0 (invalid)
+        let bus_range = root_port.port.cfg_space.assigned_bus_range();
+        assert_eq!(bus_range, 0..=0);
+
+        // Test that forwarding returns Ok but doesn't crash when bus range is invalid
+        let mut value = 0u32;
+        let result = root_port
+            .port
+            .forward_cfg_read_with_routing(&1, &0, 0x0, &mut value);
+        assert!(matches!(result, IoResult::Ok));
+
+        let result = root_port
+            .port
+            .forward_cfg_write_with_routing(&1, &0, 0x0, 0x12345678);
+        assert!(matches!(result, IoResult::Ok));
     }
 }
