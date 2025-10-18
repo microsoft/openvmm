@@ -592,6 +592,7 @@ fn vm_config_from_command_line(
             mana.1.vports.push(VportDefinition {
                 mac_address: vport.mac_address,
                 endpoint: vport.endpoint,
+                queue_pairs: vport.max_queues.unwrap_or(1),
             });
         } else {
             vmbus_devices.push(vport.into_netvsp_handle());
@@ -667,6 +668,7 @@ fn vm_config_from_command_line(
             .push(VportDefinition {
                 mac_address: vport.mac_address,
                 endpoint: vport.endpoint,
+                queue_pairs: vport.max_queues.unwrap_or(1),
             });
     }
 

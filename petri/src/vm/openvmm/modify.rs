@@ -132,6 +132,7 @@ impl PetriVmConfigOpenVmm {
                     vports: vec![VportDefinition {
                         mac_address: NIC_MAC_ADDRESS,
                         endpoint,
+                        queue_pairs: 1,
                     }],
                 }
                 .into_resource(),
