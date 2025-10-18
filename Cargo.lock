@@ -4801,6 +4801,7 @@ dependencies = [
  "nvme_resources",
  "nvme_spec",
  "nvme_test",
+ "page_pool_alloc",
  "pal_async",
  "parking_lot",
  "pci_core",
