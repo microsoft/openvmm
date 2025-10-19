@@ -36,10 +36,21 @@ impl PciePort {
         hardware_ids: HardwareIds,
         port_type: DevicePortType,
     ) -> Self {
+        Self::new_with_multi_function(name, hardware_ids, port_type, false)
+    }
+
+    /// Creates a new PCIe port with the specified hardware configuration and multi-function flag.
+    pub fn new_with_multi_function(
+        name: impl Into<Arc<str>>,
+        hardware_ids: HardwareIds,
+        port_type: DevicePortType,
+        multi_function: bool,
+    ) -> Self {
         let cfg_space = ConfigSpaceType1Emulator::new(
             hardware_ids,
             vec![Box::new(PciExpressCapability::new(port_type, None))],
-        );
+        )
+        .with_multi_function_bit(multi_function);
         Self {
             name: name.into(),
             cfg_space,
