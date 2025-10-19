@@ -180,19 +180,19 @@ pub struct PcieRootComplexConfig {
     pub low_mmio_size: u32,
     pub high_mmio_size: u64,
     pub ports: Vec<PcieRootPortConfig>,
+    pub switches: Vec<PcieSwitchConfig>,
 }
 
 #[derive(Debug, MeshPayload)]
 pub struct PcieRootPortConfig {
     pub name: String,
-    pub switches: Vec<PcieSwitchConfig>,
 }
 
 #[derive(Debug, MeshPayload)]
 pub struct PcieSwitchConfig {
     pub name: String,
     pub num_downstream_ports: u8,
-    pub child_switches: Vec<(u8, PcieSwitchConfig)>,
+    pub parent_port: String,
 }
 
 #[derive(Debug, MeshPayload)]
