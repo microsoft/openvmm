@@ -825,7 +825,7 @@ pub mod caps {
             pub drs_supported: bool,
         }
 
-        /// Link Control 2 Register (PCIe 2.0)
+        /// Link Control 2 Register
         #[bitfield(u16)]
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct LinkControl2 {
@@ -843,7 +843,7 @@ pub mod caps {
             pub compliance_preset_de_emphasis: u16,
         }
 
-        /// Link Status 2 Register (PCIe 2.0)
+        /// Link Status 2 Register
         #[bitfield(u16)]
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct LinkStatus2 {
@@ -875,7 +875,7 @@ pub mod caps {
             _reserved: u32,
         }
 
-        /// Slot Control 2 Register (PCIe 2.0)
+        /// Slot Control 2 Register
         #[bitfield(u16)]
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct SlotControl2 {
@@ -883,7 +883,7 @@ pub mod caps {
             _reserved: u16,
         }
 
-        /// Slot Status 2 Register (PCIe 2.0)
+        /// Slot Status 2 Register
         #[bitfield(u16)]
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct SlotStatus2 {
