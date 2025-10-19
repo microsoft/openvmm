@@ -848,7 +848,7 @@ pub mod caps {
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct LinkStatus2 {
             #[bits(1)]
-            pub current_de_emphasis_level: u32,
+            pub current_de_emphasis_level: u16,
             pub equalization_8gts_complete: bool,
             pub equalization_8gts_phase_1_successful: bool,
             pub equalization_8gts_phase_2_successful: bool,
@@ -860,7 +860,7 @@ pub mod caps {
             pub crosslink_resolution: u16,
             pub flit_mode_status: bool,
             #[bits(1)]
-            _reserved: u32,
+            _reserved: u16,
             #[bits(3)]
             pub downstream_component_presence: u16,
             pub drs_message_received: bool,
