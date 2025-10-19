@@ -898,7 +898,7 @@ mod weak_mutex_pci {
             dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
         ) -> Result<(), PcieConflict> {
             self.lock()
-                .add_pcie_device(port, name.clone(), WeakMutexPciDeviceWrapper(dev))
+                .add_pcie_device(port, name.clone(), Box::new(WeakMutexPciDeviceWrapper(dev)))
                 .map_err(|existing_dev_name| PcieConflict {
                     reason: PcieConflictReason::ExistingDev(existing_dev_name),
                     conflict_dev: name,
