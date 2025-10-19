@@ -2264,7 +2264,7 @@ mod tests {
             PcieSwitchCli {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
-                num_downstream_ports: 2,
+                num_downstream_ports: 4,
             }
         );
 
