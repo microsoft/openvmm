@@ -88,7 +88,7 @@ pub struct DownstreamSwitchPort {
 
 impl DownstreamSwitchPort {
     /// Constructs a new [`DownstreamSwitchPort`] emulator.
-    pub fn new() -> Self {
+    pub fn new(name: impl Into<Arc<str>>) -> Self {
         let hardware_ids = HardwareIds {
             vendor_id: VENDOR_ID,
             device_id: DOWNSTREAM_SWITCH_PORT_DEVICE_ID,
@@ -100,16 +100,16 @@ impl DownstreamSwitchPort {
             type0_sub_system_id: 0,
         };
         Self {
-            port: PciePort::new(hardware_ids, DevicePortType::DownstreamSwitchPort),
+            port: PciePort::new(name, hardware_ids, DevicePortType::DownstreamSwitchPort),
         }
     }
 
     /// Try to connect a PCIe device, returning an existing device name if the
     /// port is already occupied.
-    pub fn connect_device<D: GenericPciBusDevice>(
+    pub fn connect_device(
         &mut self,
         name: impl AsRef<str>,
-        dev: D,
+        dev: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Arc<str>> {
         self.port.connect_device(name, dev)
     }
@@ -147,11 +147,16 @@ impl DownstreamSwitchPort {
     pub fn cfg_space_mut(&mut self) -> &mut ConfigSpaceType1Emulator {
         &mut self.port.cfg_space
     }
+
+    /// Get a mutable reference to the underlying PCIe port.
+    pub fn port_mut(&mut self) -> &mut PciePort {
+        &mut self.port
+    }
 }
 
 impl Default for DownstreamSwitchPort {
     fn default() -> Self {
-        Self::new()
+        Self::new("default-downstream-port")
     }
 }
 
@@ -191,7 +196,7 @@ impl Switch {
         let downstream_ports = (0..definition.downstream_port_count)
             .map(|i| {
                 let port_name = format!("{}-downstream-{}", definition.name, i);
-                let port = DownstreamSwitchPort::new();
+                let port = DownstreamSwitchPort::new(port_name.clone());
                 (i as u8, (port_name.into(), port))
             })
             .collect();
@@ -227,17 +232,22 @@ impl Switch {
     }
 
     /// Connect a device to a specific downstream port.
-    pub fn connect_downstream_device<D: GenericPciBusDevice>(
+    pub fn connect_downstream_device(
         &mut self,
-        port: u8,
-        name: impl AsRef<str>,
-        dev: D,
+        port_name: impl AsRef<str>,
+        device_name: impl AsRef<str>,
+        dev: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Arc<str>> {
+        // Find the downstream port with the matching name
+        let port_name_ref = port_name.as_ref();
         let (_, downstream_port) = self
             .downstream_ports
-            .get_mut(&port)
-            .ok_or_else(|| -> Arc<str> { format!("Invalid downstream port {}", port).into() })?;
-        downstream_port.connect_device(name, dev)
+            .values_mut()
+            .find(|(name, _)| name.as_ref() == port_name_ref)
+            .ok_or_else(|| -> Arc<str> {
+                format!("Downstream port '{}' not found", port_name_ref).into()
+            })?;
+        downstream_port.connect_device(device_name, dev)
     }
 
     /// Route configuration space access to the appropriate port based on addressing.
@@ -349,6 +359,32 @@ impl GenericPciRoutingComponent for Switch {
         let mut temp_value = value;
         self.route_cfg_access(bus, device_function, false, offset, &mut temp_value)
     }
+
+    fn try_connect_under(
+        &mut self,
+        port_name: &str,
+        device: Box<dyn GenericPciBusDevice>,
+    ) -> Result<(), Box<dyn GenericPciBusDevice>> {
+        // Try to connect to each downstream port - any of them might be able to handle
+        // the connection either directly (if name matches) or by routing it further down
+        let mut current_device = device;
+
+        for (_, (_, downstream_port)) in self.downstream_ports.iter_mut() {
+            match downstream_port
+                .port
+                .try_connect_under(port_name, current_device)
+            {
+                Ok(()) => return Ok(()),
+                Err(returned_device) => {
+                    current_device = returned_device;
+                    // Continue to next downstream port
+                }
+            }
+        }
+
+        // None of our downstream ports could handle the connection
+        Err(current_device)
+    }
 }
 
 impl Default for Switch {
@@ -377,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_downstream_switch_port_creation() {
-        let port = DownstreamSwitchPort::new();
+        let port = DownstreamSwitchPort::new("test-downstream-port");
         assert!(port.port.link.is_none());
 
         // Verify that we can read the vendor/device ID from config space
@@ -395,7 +431,7 @@ mod tests {
         use crate::test_helpers::TestPcieEndpoint;
         use chipset_device::io::IoError;
 
-        let mut port = DownstreamSwitchPort::new();
+        let mut port = DownstreamSwitchPort::new("test-port");
         let test_device = TestPcieEndpoint::new(
             |offset, value| match offset {
                 0x0 => {
@@ -408,7 +444,10 @@ mod tests {
         );
 
         // Connect a device
-        assert!(port.connect_device("test-endpoint", test_device).is_ok());
+        assert!(
+            port.connect_device("test-endpoint", Box::new(test_device))
+                .is_ok()
+        );
         assert!(port.port.link.is_some());
 
         // Try to connect another device (should fail)
@@ -416,7 +455,7 @@ mod tests {
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
         );
-        let result = port.connect_device("another-endpoint", another_device);
+        let result = port.connect_device("another-endpoint", Box::new(another_device));
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().as_ref(), "test-endpoint");
     }
@@ -473,7 +512,11 @@ mod tests {
         // Connect downstream device to port 0
         assert!(
             switch
-                .connect_downstream_device(0, "downstream-dev", downstream_device)
+                .connect_downstream_device(
+                    "test-switch-downstream-0",
+                    "downstream-dev",
+                    Box::new(downstream_device)
+                )
                 .is_ok()
         );
 
@@ -482,9 +525,17 @@ mod tests {
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
         );
-        let result = switch.connect_downstream_device(99, "invalid-dev", invalid_device);
+        let result = switch.connect_downstream_device(
+            "invalid-port-name",
+            "invalid-dev",
+            Box::new(invalid_device),
+        );
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Invalid downstream port 99"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Downstream port 'invalid-port-name' not found")
+        );
     }
 
     #[test]
