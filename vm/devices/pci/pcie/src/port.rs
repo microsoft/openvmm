@@ -18,6 +18,9 @@ use std::sync::Arc;
 /// including device connection management and configuration space forwarding logic.
 #[derive(Inspect)]
 pub struct PciePort {
+    /// The name of this port.
+    pub name: Arc<str>,
+
     /// The configuration space emulator for this port.
     pub cfg_space: ConfigSpaceType1Emulator,
 
@@ -28,12 +31,17 @@ pub struct PciePort {
 
 impl PciePort {
     /// Creates a new PCIe port with the specified hardware configuration.
-    pub fn new(hardware_ids: HardwareIds, port_type: DevicePortType) -> Self {
+    pub fn new(
+        name: impl Into<Arc<str>>,
+        hardware_ids: HardwareIds,
+        port_type: DevicePortType,
+    ) -> Self {
         let cfg_space = ConfigSpaceType1Emulator::new(
             hardware_ids,
             vec![Box::new(PciExpressCapability::new(port_type, None))],
         );
         Self {
+            name: name.into(),
             cfg_space,
             link: None,
         }
@@ -41,16 +49,16 @@ impl PciePort {
 
     /// Try to connect a PCIe device, returning an existing device name if the
     /// port is already occupied.
-    pub fn connect_device<D: GenericPciBusDevice>(
+    pub fn connect_device(
         &mut self,
         name: impl AsRef<str>,
-        dev: D,
+        dev: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Arc<str>> {
         if let Some((name, _)) = &self.link {
             return Err(name.clone());
         }
 
-        self.link = Some((name.as_ref().into(), Box::new(dev)));
+        self.link = Some((name.as_ref().into(), dev));
         Ok(())
     }
 
@@ -174,5 +182,34 @@ impl PciePort {
         }
 
         IoResult::Ok
+    }
+
+    /// Try to connect a device to a specific downstream port.
+    pub fn try_connect_under(
+        &mut self,
+        port_name: &str,
+        device: Box<dyn GenericPciBusDevice>,
+    ) -> Result<(), Box<dyn GenericPciBusDevice>> {
+        // If the name matches this port's name, connect the device here
+        if port_name == self.name.as_ref() {
+            // Check if there's already a device connected
+            if self.link.is_some() {
+                return Err(device); // Port is already occupied
+            }
+
+            // Connect the device to this port
+            self.link = Some(("connected_device".into(), device));
+            return Ok(());
+        }
+
+        // Otherwise, if we have a child device that can route, forward the call
+        if let Some((_, child_device)) = &mut self.link {
+            if let Some(routing_component) = child_device.as_routing_component() {
+                return routing_component.try_connect_under(port_name, device);
+            }
+        }
+
+        // If we can't handle this port name, fail
+        Err(device)
     }
 }
