@@ -131,6 +131,7 @@ pub trait GenericPciRoutingComponent: GenericPciBusDevice {
     ///
     /// # Parameters
     /// - `port_name`: The name of the downstream port to connect to
+    /// - `device_name`: The name to assign to the connected device
     /// - `device`: The device to connect
     ///
     /// # Returns
@@ -139,6 +140,7 @@ pub trait GenericPciRoutingComponent: GenericPciBusDevice {
     fn try_connect_under(
         &mut self,
         port_name: &str,
+        device_name: Arc<str>,
         device: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Box<dyn GenericPciBusDevice>>;
 }

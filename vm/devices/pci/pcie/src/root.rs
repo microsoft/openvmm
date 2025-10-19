@@ -198,7 +198,11 @@ impl GenericPcieRootComplex {
 
                 let mut connected = false;
                 for (_, (_, root_port)) in port_map.iter_mut() {
-                    match root_port.port.try_connect_under(&switch_def.parent_port, boxed_switch) {
+                    match root_port.port.try_connect_under(
+                        &switch_def.parent_port,
+                        switch_def.name.clone(),
+                        boxed_switch,
+                    ) {
                         Ok(()) => {
                             connected = true;
                             break;
@@ -588,7 +592,24 @@ impl RootPort {
         name: impl AsRef<str>,
         dev: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Arc<str>> {
-        self.port.connect_device(name, dev)
+        let port_name = self.port.name.clone();
+        let device_name: Arc<str> = name.as_ref().into();
+        match self
+            .port
+            .try_connect_under(port_name.as_ref(), device_name, dev)
+        {
+            Ok(()) => Ok(()),
+            Err(_returned_device) => {
+                // If the connection failed, it means the port is already occupied
+                // We need to get the name of the existing device
+                if let Some((existing_name, _)) = &self.port.link {
+                    Err(existing_name.clone())
+                } else {
+                    // This shouldn't happen if try_connect_under works correctly
+                    Err("unknown".into())
+                }
+            }
+        }
     }
 
     fn forward_cfg_read(

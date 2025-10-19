@@ -111,7 +111,24 @@ impl DownstreamSwitchPort {
         name: impl AsRef<str>,
         dev: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Arc<str>> {
-        self.port.connect_device(name, dev)
+        let port_name = self.port.name.clone();
+        let device_name: Arc<str> = name.as_ref().into();
+        match self
+            .port
+            .try_connect_under(port_name.as_ref(), device_name, dev)
+        {
+            Ok(()) => Ok(()),
+            Err(_returned_device) => {
+                // If the connection failed, it means the port is already occupied
+                // We need to get the name of the existing device
+                if let Some((existing_name, _)) = &self.port.link {
+                    Err(existing_name.clone())
+                } else {
+                    // This shouldn't happen if try_connect_under works correctly
+                    Err("unknown".into())
+                }
+            }
+        }
     }
 
     /// Forward a configuration space read to the connected device.
@@ -363,6 +380,7 @@ impl GenericPciRoutingComponent for Switch {
     fn try_connect_under(
         &mut self,
         port_name: &str,
+        device_name: Arc<str>,
         device: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Box<dyn GenericPciBusDevice>> {
         // Try to connect to each downstream port - any of them might be able to handle
@@ -370,10 +388,11 @@ impl GenericPciRoutingComponent for Switch {
         let mut current_device = device;
 
         for (_, (_, downstream_port)) in self.downstream_ports.iter_mut() {
-            match downstream_port
-                .port
-                .try_connect_under(port_name, current_device)
-            {
+            match downstream_port.port.try_connect_under(
+                port_name,
+                device_name.clone(),
+                current_device,
+            ) {
                 Ok(()) => return Ok(()),
                 Err(returned_device) => {
                     current_device = returned_device;
