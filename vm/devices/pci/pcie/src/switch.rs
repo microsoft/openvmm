@@ -89,6 +89,11 @@ pub struct DownstreamSwitchPort {
 impl DownstreamSwitchPort {
     /// Constructs a new [`DownstreamSwitchPort`] emulator.
     pub fn new(name: impl Into<Arc<str>>) -> Self {
+        Self::new_with_multi_function(name, false)
+    }
+
+    /// Constructs a new [`DownstreamSwitchPort`] emulator with multi-function flag.
+    pub fn new_with_multi_function(name: impl Into<Arc<str>>, multi_function: bool) -> Self {
         let hardware_ids = HardwareIds {
             vendor_id: VENDOR_ID,
             device_id: DOWNSTREAM_SWITCH_PORT_DEVICE_ID,
@@ -100,7 +105,12 @@ impl DownstreamSwitchPort {
             type0_sub_system_id: 0,
         };
         Self {
-            port: PciePort::new(name, hardware_ids, DevicePortType::DownstreamSwitchPort),
+            port: PciePort::new_with_multi_function(
+                name,
+                hardware_ids,
+                DevicePortType::DownstreamSwitchPort,
+                multi_function,
+            ),
         }
     }
 
@@ -210,10 +220,16 @@ impl Switch {
     pub fn new(definition: PcieSwitchDefinition) -> Self {
         let upstream_port = UpstreamSwitchPort::new();
 
+        // If there are multiple downstream ports, they need the multi-function flag set
+        let multi_function = definition.downstream_port_count > 1;
+
         let downstream_ports = (0..definition.downstream_port_count)
             .map(|i| {
                 let port_name = format!("{}-downstream-{}", definition.name, i);
-                let port = DownstreamSwitchPort::new(port_name.clone());
+                let port = DownstreamSwitchPort::new_with_multi_function(
+                    port_name.clone(),
+                    multi_function,
+                );
                 (i as u8, (port_name.into(), port))
             })
             .collect();
@@ -246,25 +262,6 @@ impl Switch {
             .iter()
             .map(|(port, (name, _))| (*port, name.clone()))
             .collect()
-    }
-
-    /// Connect a device to a specific downstream port.
-    pub fn connect_downstream_device(
-        &mut self,
-        port_name: impl AsRef<str>,
-        device_name: impl AsRef<str>,
-        dev: Box<dyn GenericPciBusDevice>,
-    ) -> Result<(), Arc<str>> {
-        // Find the downstream port with the matching name
-        let port_name_ref = port_name.as_ref();
-        let (_, downstream_port) = self
-            .downstream_ports
-            .values_mut()
-            .find(|(name, _)| name.as_ref() == port_name_ref)
-            .ok_or_else(|| -> Arc<str> {
-                format!("Downstream port '{}' not found", port_name_ref).into()
-            })?;
-        downstream_port.connect_device(device_name, dev)
     }
 
     /// Route configuration space access to the appropriate port based on addressing.
@@ -531,9 +528,9 @@ mod tests {
         // Connect downstream device to port 0
         assert!(
             switch
-                .connect_downstream_device(
+                .try_connect_under(
                     "test-switch-downstream-0",
-                    "downstream-dev",
+                    "downstream-dev".into(),
                     Box::new(downstream_device)
                 )
                 .is_ok()
@@ -544,17 +541,15 @@ mod tests {
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
         );
-        let result = switch.connect_downstream_device(
+        let result = switch.try_connect_under(
             "invalid-port-name",
-            "invalid-dev",
+            "invalid-dev".into(),
             Box::new(invalid_device),
         );
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .contains("Downstream port 'invalid-port-name' not found")
-        );
+        // try_connect_under returns the device back instead of an error message,
+        // so we just verify that the connection failed
+        assert!(result.is_err());
     }
 
     #[test]
@@ -696,5 +691,82 @@ mod tests {
         // Access to the secondary bus (switch internal) should still work for downstream port config
         let result3 = switch.route_cfg_access(secondary_bus, 0, true, 0x0, &mut value);
         assert!(result3.is_some());
+    }
+
+    #[test]
+    fn test_switch_multi_function_bit() {
+        // Test that switches with multiple downstream ports set the multi-function bit
+        let multi_port_definition = PcieSwitchDefinition {
+            name: "multi-port-switch".into(),
+            downstream_port_count: 3,
+        };
+        let multi_port_switch = Switch::new(multi_port_definition);
+
+        // Verify each downstream port has the multi-function bit set
+        for (port_num, _) in multi_port_switch.downstream_ports() {
+            if let Some((_, downstream_port)) = multi_port_switch.downstream_ports.get(&port_num) {
+                let mut header_type_value: u32 = 0;
+                downstream_port
+                    .cfg_space()
+                    .read_u32(0x0C, &mut header_type_value)
+                    .unwrap();
+
+                // Extract the header type field (bits 16-23, with multi-function bit at bit 23)
+                let header_type_field = (header_type_value >> 16) & 0xFF;
+
+                // Multi-function bit should be set (bit 7 of header type field = bit 23 of dword)
+                assert_eq!(
+                    header_type_field & 0x80,
+                    0x80,
+                    "Multi-function bit should be set for downstream port {} in multi-port switch",
+                    port_num
+                );
+
+                // Base header type should still be 01 (bridge)
+                assert_eq!(
+                    header_type_field & 0x7F,
+                    0x01,
+                    "Header type should be 01 (bridge) for downstream port {}",
+                    port_num
+                );
+            }
+        }
+
+        // Test that switches with single downstream port do NOT set the multi-function bit
+        let single_port_definition = PcieSwitchDefinition {
+            name: "single-port-switch".into(),
+            downstream_port_count: 1,
+        };
+        let single_port_switch = Switch::new(single_port_definition);
+
+        // Verify the single downstream port does NOT have the multi-function bit set
+        for (port_num, _) in single_port_switch.downstream_ports() {
+            if let Some((_, downstream_port)) = single_port_switch.downstream_ports.get(&port_num) {
+                let mut header_type_value: u32 = 0;
+                downstream_port
+                    .cfg_space()
+                    .read_u32(0x0C, &mut header_type_value)
+                    .unwrap();
+
+                // Extract the header type field (bits 16-23)
+                let header_type_field = (header_type_value >> 16) & 0xFF;
+
+                // Multi-function bit should NOT be set
+                assert_eq!(
+                    header_type_field & 0x80,
+                    0x00,
+                    "Multi-function bit should NOT be set for downstream port {} in single-port switch",
+                    port_num
+                );
+
+                // Base header type should still be 01 (bridge)
+                assert_eq!(
+                    header_type_field & 0x7F,
+                    0x01,
+                    "Header type should be 01 (bridge) for downstream port {}",
+                    port_num
+                );
+            }
+        }
     }
 }

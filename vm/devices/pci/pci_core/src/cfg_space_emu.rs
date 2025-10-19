@@ -643,6 +643,7 @@ pub struct ConfigSpaceType1Emulator {
     hardware_ids: HardwareIds,
     #[inspect(with = "|x| inspect::iter_by_key(x.iter().map(|cap| (cap.label(), cap)))")]
     capabilities: Vec<Box<dyn PciCapability>>,
+    multi_function_bit: bool,
     state: ConfigSpaceType1EmulatorState,
 }
 
@@ -652,6 +653,7 @@ impl ConfigSpaceType1Emulator {
         Self {
             hardware_ids,
             capabilities,
+            multi_function_bit: false,
             state: ConfigSpaceType1EmulatorState::new(),
         }
     }
@@ -663,6 +665,12 @@ impl ConfigSpaceType1Emulator {
         for cap in &mut self.capabilities {
             cap.reset();
         }
+    }
+
+    /// Set the multi-function bit for this device.
+    pub fn with_multi_function_bit(mut self, multi_function: bool) -> Self {
+        self.multi_function_bit = multi_function;
+        self
     }
 
     /// Returns the range of bus numbers the bridge is programmed to decode.
@@ -741,8 +749,12 @@ impl ConfigSpaceType1Emulator {
                     | self.hardware_ids.revision_id as u32
             }
             HeaderType01::BIST_HEADER => {
-                // Header type 01
-                0x00010000
+                // Header type 01 with optional multi-function bit
+                if self.multi_function_bit {
+                    0x00810000 // Header type 01 with multi-function bit (bit 23)
+                } else {
+                    0x00010000 // Header type 01 without multi-function bit
+                }
             }
             HeaderType01::BAR0 => 0,
             HeaderType01::BAR1 => 0,
