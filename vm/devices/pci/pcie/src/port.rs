@@ -47,21 +47,6 @@ impl PciePort {
         }
     }
 
-    /// Try to connect a PCIe device, returning an existing device name if the
-    /// port is already occupied.
-    pub fn connect_device(
-        &mut self,
-        name: impl AsRef<str>,
-        dev: Box<dyn GenericPciBusDevice>,
-    ) -> Result<(), Arc<str>> {
-        if let Some((name, _)) = &self.link {
-            return Err(name.clone());
-        }
-
-        self.link = Some((name.as_ref().into(), dev));
-        Ok(())
-    }
-
     /// Forward a configuration space read to the connected device with root port logic.
     ///
     /// This version supports routing components for multi-level hierarchies.
@@ -188,6 +173,7 @@ impl PciePort {
     pub fn try_connect_under(
         &mut self,
         port_name: &str,
+        device_name: Arc<str>,
         device: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Box<dyn GenericPciBusDevice>> {
         // If the name matches this port's name, connect the device here
@@ -198,14 +184,14 @@ impl PciePort {
             }
 
             // Connect the device to this port
-            self.link = Some(("connected_device".into(), device));
+            self.link = Some((device_name, device));
             return Ok(());
         }
 
         // Otherwise, if we have a child device that can route, forward the call
         if let Some((_, child_device)) = &mut self.link {
             if let Some(routing_component) = child_device.as_routing_component() {
-                return routing_component.try_connect_under(port_name, device);
+                return routing_component.try_connect_under(port_name, device_name, device);
             }
         }
 
