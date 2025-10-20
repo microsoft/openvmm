@@ -47,17 +47,17 @@ pub enum NamespaceChange {
 }
 
 /// A fault configuration to apply [`PciFaultBehavior`] to the controller management layer.
-/// 
+///
 /// Currently the only supported fault is to delay enabling the controller via
 /// cc.en().
-/// 
+///
 /// # Example
 /// Delay enabling the controller by 500ms.
-/// 
+///
 /// admin queue:
 /// ```no_run
 /// use nvme_test::command_match::CommandMatchBuilder;
-/// 
+///
 /// pub fn pci_enable_delay_fault() -> FaultConfiguration{
 ///     let mut fault_start_updater = CellUpdater::new(false);
 ///     FaultConfiguration::new(fault_start_updater.cell())
@@ -75,7 +75,7 @@ pub struct PciFaultConfig {
 }
 
 /// A fault config to trigger spurious namespace change notifications from the controller.
-/// 
+///
 /// The fault controller listens on the provided channel for notifications containing
 /// a `u32` value representing the NSID (Namespace Identifier) that has changed.
 /// This does not actually modify the namespace; instead, it triggers the controller
@@ -87,12 +87,12 @@ pub struct PciFaultConfig {
 /// GET_LOG_PAGE command. For implementation simplicity, namespace fault is not
 /// gated by the `fault_active` flag. Since only test code can send
 /// notifications on the fault channel, it is safe to bypass this check.
-/// 
+///
 /// # Example
 /// Send a namespace change notification for NSID 1 and wait for it to be processed.
 /// ```no_run
 /// use nvme_test::command_match::CommandMatchBuilder;
-/// 
+///
 /// pub fn send_namespace_change_fault() {
 ///     let mut fault_start_updater = CellUpdater::new(false);
 ///     let (ns_change_send, ns_change_recv) = mesh::channel::<NamespaceChange>();
@@ -102,7 +102,7 @@ pub struct PciFaultConfig {
 ///         );
 ///     // Complete setup
 ///     let fault_controller_handle = NvmeFaultControllerHandle {...}
-/// 
+///
 ///     // Send the namespace change notification and await processing.
 ///     ns_change_send.call(NamespaceChange::ChangeNotification(), 1).await.unwrap();
 /// }
@@ -114,7 +114,7 @@ pub struct NamespaceFaultConfig {
 }
 
 /// A fault configuration to inject faults into the admin submission and completion queues.
-/// 
+///
 /// This struct maintains a mapping from [`CommandMatch`] to [`QueueFaultBehavior`] for
 /// submission and completion queues. When a command match is found, (and `fault_active == true`)
 /// the associated fault is applied.
@@ -124,17 +124,17 @@ pub struct NamespaceFaultConfig {
 /// match defined first is prioritized. Faults are added via the
 /// `with_submission_queue_fault` and `with_completion_queue_fault` methods and
 /// can be chained. AdminQueueFaultConfig::new() creates an empty fault.
-/// 
+///
 /// # Panics
 /// Panics if a duplicate `CommandMatch` is added for either submission or
 /// completion queues
-/// 
+///
 /// # Example
 /// Panic on CREATE_IO_COMPLETION_QUEUE and delay before sending completion for 500ms after
 /// GET_LOG_PAGE command is processed.
 /// ```no_run
 /// use nvme_test::command_match::CommandMatchBuilder;
-/// 
+///
 /// pub fn build_admin_queue_fault() -> FaultConfiguration {
 ///     let mut fault_start_updater = CellUpdater::new(false);
 ///     return FaultConfiguration::new(fault_start_updater.cell())
@@ -160,13 +160,13 @@ pub struct AdminQueueFaultConfig {
 }
 
 /// A versatile definition to command match [`NVMe commands`](nvme_spec::Command)
-/// 
+///
 /// Matches NVMe commands using a 512-bit mask: (command_bytes & mask) == (pattern_bytes & mask).
 /// A convenient way to build the patterns is to treat both the command and the mask as
 /// `nvme_spec::Command` and max out the fields in the mask that should be
 /// matched.
-/// 
-/// # Example 
+///
+/// # Example
 /// Builds a command match that matches on all CREATE_IO_COMPLETION_QUEUE admin commands.
 /// ```no_run
 /// pub fn build_command_match() -> CommandMatch {
@@ -202,7 +202,7 @@ pub struct CommandMatch {
 /// admin queue:
 /// ```no_run
 /// use nvme_test::command_match::CommandMatchBuilder;
-/// 
+///
 /// pub fn example_fault() {
 ///     let mut fault_start_updater = CellUpdater::new(false);
 ///     let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
