@@ -77,7 +77,7 @@ fn set_case_sensitive(handle: &OwnedHandle, value: &[u8], flags: i32) -> lx::Res
         return Err(lx::Error::EEXIST);
     }
 
-    if value.len() != 1 || (value[0] != b'0' && value[0] != b'1') {
+    if value != b"0" && value != b"1" {
         return Err(lx::Error::EINVAL);
     }
 

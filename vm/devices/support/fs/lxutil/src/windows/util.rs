@@ -341,7 +341,7 @@ pub fn get_attributes_by_handle(
         None
     };
     let is_app_execution_alias =
-        stat.EndOfFile.eq(&0) && fs::is_app_exec_link(stat.FileAttributes, stat.ReparseTag);
+        stat.EndOfFile == 0 && fs::is_app_exec_link(stat.FileAttributes, stat.ReparseTag);
 
     Ok(LxStatInformation {
         stat,
@@ -627,22 +627,12 @@ pub fn create_nt_link_reparse_buffer(target: &ffi::OsStr, flags: u32) -> lx::Res
         };
 
         if flags & LX_UTIL_NT_SYMLINK_ESCAPE_TARGET != 0 {
-            path::unescape_path_in_place(link_target.as_mut_slice());
-        }
+        let path_buffer = &mut reparse[offset_of!(FileSystem::REPARSE_DATA_BUFFER, Anonymous)
+            + offset_of!(FileSystem::REPARSE_DATA_BUFFER_0_0, PathBuffer)..];
 
-        // Copy the target name twice into the buffer.
-        let path_buffer = reparse
-            .as_mut_ptr()
-            .add(offset_of!(FileSystem::REPARSE_DATA_BUFFER, Anonymous))
-            .add(offset_of!(FileSystem::REPARSE_DATA_BUFFER_0_0, PathBuffer))
-            .cast();
-        ptr::copy_nonoverlapping(
-            link_target.as_slice().as_ptr(),
-            path_buffer,
-            link_target.length() / 2,
-        );
-        ptr::copy_nonoverlapping(
-            link_target.as_slice().as_ptr(),
+        let link_bytes = link_target.as_slice().as_bytes();
+        path_buffer[..link_bytes.len()].copy_from_slice(link_bytes);
+        path_buffer[link_bytes.len()..(link_bytes.len() * 2)].copy_from_slice(link_bytes);
             path_buffer.add(link_target.length() / 2),
             link_target.length() / 2,
         );

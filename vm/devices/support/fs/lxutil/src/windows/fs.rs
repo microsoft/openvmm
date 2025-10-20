@@ -948,7 +948,7 @@ fn determine_fallback_mode(
 pub fn get_fs_block_size(file_handle: &OwnedHandle) -> u32 {
     // SAFETY: Calling Win32 API as documented
     let mut iosb = Default::default();
-    let mut fs_info: FileSystem::FILE_FS_SECTOR_SIZE_INFORMATION = Default::default();
+    let mut fs_info = FileSystem::FILE_FS_SECTOR_SIZE_INFORMATION::default();
     let result = unsafe {
         util::check_status(FileSystem::NtQueryVolumeInformationFile(
             Foundation::HANDLE(file_handle.as_raw_handle()),
@@ -980,12 +980,8 @@ pub fn read_app_exec_link(offset: lx::off_t, buf: &mut [u8]) -> usize {
     }
 
     // Copy PE_HEADER until either the end of PE_HEADER or buf
-    let mut count = 0;
-    for (c, b) in PE_HEADER.iter().zip(buf.iter_mut()) {
-        *b = *c as u8;
-        count += 1;
-    }
-
+    let mut count = min(PE_HEADER.len() - offset, buf.len());
+    buf[..count].copy_from_slice(&PE_HEADER[offset..offset + count]);
     count
 }
 
@@ -1003,7 +999,7 @@ pub fn set_file_times(
     let current_time: i64 =
         (current_time.dwHighDateTime as i64) << 32 | (current_time.dwLowDateTime as i64);
 
-    let mut info: FileSystem::FILE_BASIC_INFORMATION = Default::default();
+    let mut info = FileSystem::FILE_BASIC_INFORMATION::default();
     info.LastAccessTime =
         util::timespec_utime_to_nt_time(accessed_time, current_time).unwrap_or_default();
     info.LastWriteTime =
@@ -1029,17 +1025,13 @@ pub fn create_link_reparse_buffer(target: AnsiStringRef<'_>) -> lx::Result<Vec<u
     // SAFETY: Calling Win32 API to allocate heap memory, writing to the buffer,
     // accessing union fields, and constructing an RtlHeapBuffer. The buffer is guaranteed
     // large enough to write to all members.
-    unsafe {
-        let reparse: *mut SymlinkReparse = buf.as_mut_ptr().cast();
-        (*reparse).header.ReparseTag = FileSystem::IO_REPARSE_TAG_LX_SYMLINK as u32;
-        (*reparse).header.ReparseDataLength =
-            LX_UTIL_SYMLINK_TARGET_OFFSET as u16 + target_length as u16;
-        (*reparse).data.symlink.version = LX_UTIL_SYMLINK_DATA_VERSION_2;
-        std::ptr::copy_nonoverlapping(
-            target.as_slice().as_ptr(),
-            (*reparse).data.symlink.target.as_mut_ptr(),
-            target_length,
-        );
+    let reparse = unsafe { buf.as_mut_ptr().cast::<SymlinkReparse>().as_mut().unwrap() };
+    reparse.header.ReparseTag = FileSystem::IO_REPARSE_TAG_LX_SYMLINK as u32;
+    reparse.header.ReparseDataLength = LX_UTIL_SYMLINK_TARGET_OFFSET as u16 + target_length as u16;
+    reparse.data.symlink.version = LX_UTIL_SYMLINK_DATA_VERSION_2;
+    let offset = REPARSE_DATA_BUFFER_HEADER_SIZE + LX_UTIL_SYMLINK_TARGET_OFFSET as usize;
+    buf[offset..offset + target_length].copy_from_slice(target.as_slice());
+    Ok(buf)
 
         Ok(buf)
     }
