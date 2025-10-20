@@ -271,7 +271,7 @@ async fn servicing_shutdown_ic(
 // TODO: add tests with guest workloads while doing servicing.
 // TODO: add tests from previous release branch to current.
 
-/// Updates the namespace during servicing and verify rescan events after servicing.
+/// Updates the namespace during servicing and verifies rescan events after servicing.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn servicing_keepalive_with_namespace_update(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
