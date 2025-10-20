@@ -140,7 +140,7 @@ pub trait GenericPciRoutingComponent: GenericPciBusDevice {
     fn try_connect_under(
         &mut self,
         port_name: &str,
-        device_name: Arc<str>,
+        device_name: &str,
         device: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Box<dyn GenericPciBusDevice>>;
 }

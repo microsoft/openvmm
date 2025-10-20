@@ -200,7 +200,7 @@ impl GenericPcieRootComplex {
                 for (_, (_, root_port)) in port_map.iter_mut() {
                     match root_port.port.try_connect_under(
                         &switch_def.parent_port,
-                        switch_def.name.clone(),
+                        &switch_def.name,
                         boxed_switch,
                     ) {
                         Ok(()) => {
@@ -604,10 +604,9 @@ impl RootPort {
         dev: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Arc<str>> {
         let port_name = self.port.name.clone();
-        let device_name: Arc<str> = name.as_ref().into();
         match self
             .port
-            .try_connect_under(port_name.as_ref(), device_name, dev)
+            .try_connect_under(port_name.as_ref(), name.as_ref(), dev)
         {
             Ok(()) => Ok(()),
             Err(_returned_device) => {
