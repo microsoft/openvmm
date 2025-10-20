@@ -699,7 +699,7 @@ impl AdminHandler {
                     // Panic to avoid silent test failures.
                     PrpRange::parse(&self.config.mem, payload.len(), command.dptr)
                         .expect("configured fault failure: failed to parse PRP for custom payload write.")
-                        .write(&self.config.mem, &payload)
+                        .write(&self.config.mem, payload)
                         .expect("configured fault failure: failed to write custom payload");
                 }
                 QueueFaultBehavior::Verify(send) => {
