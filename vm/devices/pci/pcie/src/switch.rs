@@ -114,33 +114,6 @@ impl DownstreamSwitchPort {
         }
     }
 
-    /// Try to connect a PCIe device, returning an existing device name if the
-    /// port is already occupied.
-    pub fn connect_device(
-        &mut self,
-        name: impl AsRef<str>,
-        dev: Box<dyn GenericPciBusDevice>,
-    ) -> Result<(), Arc<str>> {
-        let port_name = self.port.name.clone();
-        let device_name: Arc<str> = name.as_ref().into();
-        match self
-            .port
-            .try_connect_under(port_name.as_ref(), device_name, dev)
-        {
-            Ok(()) => Ok(()),
-            Err(_returned_device) => {
-                // If the connection failed, it means the port is already occupied
-                // We need to get the name of the existing device
-                if let Some((existing_name, _)) = &self.port.link {
-                    Err(existing_name.clone())
-                } else {
-                    // This shouldn't happen if try_connect_under works correctly
-                    Err("unknown".into())
-                }
-            }
-        }
-    }
-
     /// Get a reference to the configuration space emulator.
     pub fn cfg_space(&self) -> &ConfigSpaceType1Emulator {
         &self.port.cfg_space
@@ -361,7 +334,7 @@ impl GenericPciRoutingComponent for Switch {
     fn try_connect_under(
         &mut self,
         port_name: &str,
-        device_name: Arc<str>,
+        device_name: &str,
         device: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Box<dyn GenericPciBusDevice>> {
         // Try to connect to each downstream port - any of them might be able to handle
@@ -371,7 +344,7 @@ impl GenericPciRoutingComponent for Switch {
         for (_, (_, downstream_port)) in self.downstream_ports.iter_mut() {
             match downstream_port.port.try_connect_under(
                 port_name,
-                device_name.clone(),
+                device_name,
                 current_device,
             ) {
                 Ok(()) => return Ok(()),
@@ -424,40 +397,6 @@ mod tests {
             .unwrap();
         let expected = (DOWNSTREAM_SWITCH_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
         assert_eq!(vendor_device_id, expected);
-    }
-
-    #[test]
-    fn test_downstream_switch_port_device_connection() {
-        use crate::test_helpers::TestPcieEndpoint;
-        use chipset_device::io::IoError;
-
-        let mut port = DownstreamSwitchPort::new("test-port");
-        let test_device = TestPcieEndpoint::new(
-            |offset, value| match offset {
-                0x0 => {
-                    *value = 0xABCD_EF01;
-                    Some(IoResult::Ok)
-                }
-                _ => Some(IoResult::Err(IoError::InvalidRegister)),
-            },
-            |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
-        );
-
-        // Connect a device
-        assert!(
-            port.connect_device("test-endpoint", Box::new(test_device))
-                .is_ok()
-        );
-        assert!(port.port.link.is_some());
-
-        // Try to connect another device (should fail)
-        let another_device = TestPcieEndpoint::new(
-            |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
-            |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
-        );
-        let result = port.connect_device("another-endpoint", Box::new(another_device));
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().as_ref(), "test-endpoint");
     }
 
     #[test]

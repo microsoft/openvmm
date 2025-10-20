@@ -141,7 +141,7 @@ impl PciePort {
     pub fn try_connect_under(
         &mut self,
         port_name: &str,
-        device_name: Arc<str>,
+        device_name: &str,
         device: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Box<dyn GenericPciBusDevice>> {
         // If the name matches this port's name, connect the device here
@@ -152,7 +152,7 @@ impl PciePort {
             }
 
             // Connect the device to this port
-            self.link = Some((device_name, device));
+            self.link = Some((device_name.into(), device));
             return Ok(());
         }
 
