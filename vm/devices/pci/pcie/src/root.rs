@@ -1102,7 +1102,9 @@ mod tests {
         };
 
         let mut register_mmio = TestPcieMmioRegistration {};
-        let rc =
+
+        // This should panic due to non-existing parent of the switch 1
+        let _rc =
             GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def], switches);
     }
 
