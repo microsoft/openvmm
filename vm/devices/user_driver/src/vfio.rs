@@ -72,7 +72,7 @@ impl VfioDevice {
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
     pub async fn new(
         driver_source: &VmTaskDriverSource,
-        pci_id: impl AsRef<str>,
+        pci_id: &str,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
         Self::restore(driver_source, pci_id, false, dma_client).await
@@ -82,11 +82,10 @@ impl VfioDevice {
     /// or creates a device from the saved state if provided.
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
-        pci_id: impl AsRef<str>,
+        pci_id: &str,
         keepalive: bool,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
-        let pci_id = pci_id.as_ref();
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
         // The vfio device attaches asynchronously after the PCI device is added,
