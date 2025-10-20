@@ -231,7 +231,7 @@ impl GenericPcieRootComplex {
         let mut all_names = std::collections::HashSet::new();
 
         // Check root port names
-        for (_, (name, _)) in port_map {
+        for (name, _) in port_map.values() {
             if !all_names.insert(name.clone()) {
                 panic!("duplicate name found: {}", name.as_ref());
             }
@@ -1090,7 +1090,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "parent port nonexistent-downstream-0 of switch switch1 cannot be found")]
+    #[should_panic(
+        expected = "parent port nonexistent-downstream-0 of switch switch1 cannot be found"
+    )]
     fn test_invalid_parent_switch() {
         // Create a switch that references a non-existent parent switch
         let switch1 = GenericSwitchDefinition::new("switch1", 2, "nonexistent-downstream-0");
