@@ -625,16 +625,17 @@ impl SimpleFlowNode for Node {
                 profile: CommonProfile::from_release(release),
                 tpm_guest_tests: v,
             });
+
+            copy_to_dir.push((
+                extras_dir.to_owned(),
+                output.map(ctx, |x| {
+                    Some(match x {
+                        TpmGuestTestsOutput::WindowsBin { exe, .. } => exe.clone(),
+                        TpmGuestTestsOutput::LinuxBin { .. } => unreachable!(),
+                    })
+                }),
+            ));
             if copy_extras {
-                copy_to_dir.push((
-                    extras_dir.to_owned(),
-                    output.map(ctx, |x| {
-                        Some(match x {
-                            TpmGuestTestsOutput::WindowsBin { exe, .. } => exe.clone(),
-                            TpmGuestTestsOutput::LinuxBin { .. } => unreachable!(),
-                        })
-                    }),
-                ));
                 copy_to_dir.push((
                     extras_dir.to_owned(),
                     output.map(ctx, |x| {
@@ -657,16 +658,17 @@ impl SimpleFlowNode for Node {
                 profile: CommonProfile::from_release(release),
                 tpm_guest_tests: v,
             });
+
+            copy_to_dir.push((
+                extras_dir.to_owned(),
+                output.map(ctx, |x| {
+                    Some(match x {
+                        TpmGuestTestsOutput::LinuxBin { bin, .. } => bin.clone(),
+                        TpmGuestTestsOutput::WindowsBin { .. } => unreachable!(),
+                    })
+                }),
+            ));
             if copy_extras {
-                copy_to_dir.push((
-                    extras_dir.to_owned(),
-                    output.map(ctx, |x| {
-                        Some(match x {
-                            TpmGuestTestsOutput::LinuxBin { bin, .. } => bin.clone(),
-                            TpmGuestTestsOutput::WindowsBin { .. } => unreachable!(),
-                        })
-                    }),
-                ));
                 copy_to_dir.push((
                     extras_dir.to_owned(),
                     output.map(ctx, |x| {
