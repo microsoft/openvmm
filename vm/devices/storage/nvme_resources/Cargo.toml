@@ -14,5 +14,8 @@ mesh.workspace = true
 
 guid = { workspace = true, features = ["mesh"] }
 
+[dev-dependencies]
+zerocopy.workspace = true
+
 [lints]
 workspace = true
