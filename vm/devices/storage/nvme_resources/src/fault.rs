@@ -22,7 +22,7 @@ pub enum QueueFaultBehavior<T> {
     Delay(Duration),
     /// Panic
     Panic(String),
-    /// Writes the given payload to the PR range. The test should ensure
+    /// Writes the given payload to the PRP range. The test should ensure
     /// that the payload is of valid size. If the size is too large, the fault
     /// controller will panic. This behavior is not yet supported by the submission
     /// queue fault.
@@ -54,7 +54,6 @@ pub enum NamespaceChange {
 /// # Example
 /// Delay enabling the controller by 500ms.
 ///
-/// admin queue:
 /// ```no_run
 /// use mesh::CellUpdater;
 /// use nvme_resources::fault::FaultConfiguration;
