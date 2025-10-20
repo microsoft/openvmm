@@ -453,7 +453,7 @@ mod tests {
             switch
                 .try_connect_under(
                     "test-switch-downstream-0",
-                    "downstream-dev".into(),
+                    "downstream-dev",
                     Box::new(downstream_device)
                 )
                 .is_ok()
@@ -466,7 +466,7 @@ mod tests {
         );
         let result = switch.try_connect_under(
             "invalid-port-name",
-            "invalid-dev".into(),
+            "invalid-dev",
             Box::new(invalid_device),
         );
         assert!(result.is_err());
@@ -524,7 +524,7 @@ mod tests {
         // Simulate the switch's internal bus being assigned as bus 1
         let secondary_bus = 1u8;
         // Set secondary bus number (offset 0x18) - bits 8-15 of the 32-bit value at 0x18
-        let bus_config = (10u32 << 24) | ((secondary_bus as u32) << 16) | (0u32 << 8) | 0u32; // subordinate | secondary | reserved | primary
+        let bus_config = (10u32 << 24) | ((secondary_bus as u32) << 16); // subordinate | secondary
         switch
             .upstream_port
             .cfg_space_mut()

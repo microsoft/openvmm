@@ -1292,7 +1292,7 @@ mod tests {
 
         // Now try to access the switch upstream port on bus 1
         let mut value_32: u32 = 0;
-        const BUS_1_DEVICE_0_ECAM: u64 = 1 * 256 * 4096; // Bus 1, Device 0
+        const BUS_1_DEVICE_0_ECAM: u64 = 256 * 4096; // Bus 1, Device 0
         rc.mmio_read(BUS_1_DEVICE_0_ECAM, value_32.as_mut_bytes())
             .unwrap();
 
@@ -1369,7 +1369,7 @@ mod tests {
         // The switch has 2 downstream ports. Each downstream port appears as a different function
         // of device 0 on the switch's secondary bus (bus 2 in this case)
         const BUS_2_DEVICE_0_FUNC_0_ECAM: u64 = 2 * 256 * 4096; // Bus 2, Device 0, Function 0 (first downstream port)
-        const BUS_2_DEVICE_0_FUNC_1_ECAM: u64 = 2 * 256 * 4096 + 1 * 4096; // Bus 2, Device 0, Function 1 (second downstream port)
+        const BUS_2_DEVICE_0_FUNC_1_ECAM: u64 = 2 * 256 * 4096 + 4096; // Bus 2, Device 0, Function 1 (second downstream port)
 
         // Access first downstream port (function 0)
         rc.mmio_read(BUS_2_DEVICE_0_FUNC_0_ECAM, value_32.as_mut_bytes())
