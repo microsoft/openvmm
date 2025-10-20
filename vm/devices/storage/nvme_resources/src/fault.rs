@@ -56,7 +56,11 @@ pub enum NamespaceChange {
 ///
 /// admin queue:
 /// ```no_run
-/// use nvme_test::command_match::CommandMatchBuilder;
+/// use mesh::CellUpdater;
+/// use nvme_resources::fault::FaultConfiguration;
+/// use nvme_resources::fault::PciFaultBehavior;
+/// use nvme_resources::fault::PciFaultConfig;
+/// use std::time::Duration;
 ///
 /// pub fn pci_enable_delay_fault() -> FaultConfiguration{
 ///     let mut fault_start_updater = CellUpdater::new(false);
@@ -91,7 +95,6 @@ pub struct PciFaultConfig {
 /// # Example
 /// Send a namespace change notification for NSID 1 and wait for it to be processed.
 /// ```no_run
-/// use nvme_test::command_match::CommandMatchBuilder;
 ///
 /// pub fn send_namespace_change_fault() {
 ///     let mut fault_start_updater = CellUpdater::new(false);
@@ -133,17 +136,29 @@ pub struct NamespaceFaultConfig {
 /// Panic on CREATE_IO_COMPLETION_QUEUE and delay before sending completion for 500ms after
 /// GET_LOG_PAGE command is processed.
 /// ```no_run
-/// use nvme_test::command_match::CommandMatchBuilder;
+/// use mesh::CellUpdater;
+/// use nvme_resources::fault::AdminQueueFaultConfig;
+/// use nvme_resources::fault::CommandMatch;
+/// use nvme_resources::fault::FaultConfiguration;
+/// use nvme_resources::fault::QueueFaultBehavior;
+/// use nvme_spec::Command;
+/// use std::time::Duration;
 ///
 /// pub fn build_admin_queue_fault() -> FaultConfiguration {
 ///     let mut fault_start_updater = CellUpdater::new(false);
 ///     return FaultConfiguration::new(fault_start_updater.cell())
 ///         .with_admin_queue_fault(
 ///             AdminQueueFaultConfig::new().with_submission_queue_fault(
-///                 CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0).build(),
+///                 CommandMatch {
+///                     command: Command::new_zeroed().cdw0.with_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0),
+///                     mask: Command::new_zeroed().cdw0.with_opcode(u8::MAX).as_bytes().try_into().expect("mask should be 64 bytes"),
+///                 },
 ///                 QueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command".to_string()),
 ///             ).with_completion_queue_fault(
-///                 CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::GET_LOG_PAGE.0).build(),
+///                 CommandMatch {
+///                     command: Command::new_zeroed().cdw0.with_opcode(nvme_spec::AdminOpcode::GET_LOG_PAGE.0),
+///                     mask: Command::new_zeroed().cdw0.with_opcode(u8::MAX).as_bytes().try_into().expect("mask should be 64 bytes"),
+///                 },
 ///                 QueueFaultBehavior::Delay(Duration::from_millis(500)),
 ///             )
 ///         );
@@ -169,6 +184,10 @@ pub struct AdminQueueFaultConfig {
 /// # Example
 /// Builds a command match that matches on all CREATE_IO_COMPLETION_QUEUE admin commands.
 /// ```no_run
+/// use nvme_resources::fault::CommandMatch;
+/// use nvme_spec::Command;
+/// use zerocopy::FromZeros;
+///
 /// pub fn build_command_match() -> CommandMatch {
 ///     let command = Command::new_zeroed().cdw0.with_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0);
 ///     let mask = Command::new_zeroed().cdw0.with_opcode(u8::MAX);
@@ -201,19 +220,33 @@ pub struct CommandMatch {
 /// Panic when a command that matches CREATE_IO_COMPLETION_QUEUE is seen in the
 /// admin queue:
 /// ```no_run
-/// use nvme_test::command_match::CommandMatchBuilder;
+/// use mesh::CellUpdater;
+/// use nvme_resources::fault::FaultConfiguration;
 ///
 /// pub fn example_fault() {
 ///     let mut fault_start_updater = CellUpdater::new(false);
 ///     let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
 ///         .with_admin_queue_fault(
 ///             AdminQueueFaultConfig::new().with_submission_queue_fault(
-///                 CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0).build(),
+///                 CommandMatch {
+///                     command: Command::new_zeroed().cdw0.with_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0),
+///                     mask: Command::new_zeroed().cdw0.with_opcode(u8::MAX).as_bytes().try_into().expect("mask should be 64 bytes"),
+///                 },
 ///                 QueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command".to_string()),
 ///             )
 ///         );
 ///     let fault_controller_handle = NvmeFaultControllerHandle {
-///         ...
+///         subsystem_id: Guid::new_random(),
+///         msix_count: 10,
+///         max_io_queues: 10,
+///         namespaces: vec![NamespaceDefinition {
+///             nsid: vtl2_nsid,
+///             read_only: false,
+///             disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+///                 len: Some(256 * 1024),
+///             })
+///             .into_resource(),
+///         }],
 ///         fault_config: fault_configuration,
 ///     };
 ///     // Pass the controller handle in to the vm config to create and attach the fault controller. At this point the fault is inactive.
