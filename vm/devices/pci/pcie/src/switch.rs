@@ -141,30 +141,6 @@ impl DownstreamSwitchPort {
         }
     }
 
-    /// Forward a configuration space read to the connected device.
-    pub fn forward_cfg_read(
-        &mut self,
-        bus: &u8,
-        device_function: &u8,
-        cfg_offset: u16,
-        value: &mut u32,
-    ) -> IoResult {
-        self.port
-            .forward_cfg_read_with_routing(bus, device_function, cfg_offset, value)
-    }
-
-    /// Forward a configuration space write to the connected device.
-    pub fn forward_cfg_write(
-        &mut self,
-        bus: &u8,
-        device_function: &u8,
-        cfg_offset: u16,
-        value: u32,
-    ) -> IoResult {
-        self.port
-            .forward_cfg_write_with_routing(bus, device_function, cfg_offset, value)
-    }
-
     /// Get a reference to the configuration space emulator.
     pub fn cfg_space(&self) -> &ConfigSpaceType1Emulator {
         &self.port.cfg_space
@@ -251,11 +227,6 @@ impl Switch {
         &self.upstream_port
     }
 
-    /// Get a mutable reference to the upstream switch port.
-    pub fn upstream_port_mut(&mut self) -> &mut UpstreamSwitchPort {
-        &mut self.upstream_port
-    }
-
     /// Enumerate the downstream ports of the switch.
     pub fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
         self.downstream_ports
@@ -273,7 +244,6 @@ impl Switch {
         cfg_offset: u16,
         value: &mut u32,
     ) -> Option<IoResult> {
-        // Check if the access is for the upstream port's decoded bus range
         let upstream_bus_range = self.upstream_port.cfg_space().assigned_bus_range();
 
         // If the bus range is 0..=0, this indicates invalid/uninitialized bus configuration
@@ -281,57 +251,71 @@ impl Switch {
             return None;
         }
 
-        if upstream_bus_range.contains(&bus) {
-            // If the access goes to the secondary bus number of the upstream switch port, this means the
-            // access should target one of the downstream switch ports. Look for the matching one and
-            // return the config space access result from it if found.
-            if bus == *upstream_bus_range.start() {
-                if let Some((_, downstream_port)) = self.downstream_ports.get_mut(&device_function)
-                {
-                    if is_read {
-                        return Some(downstream_port.port.cfg_space.read_u32(cfg_offset, value));
-                    } else {
-                        return Some(downstream_port.port.cfg_space.write_u32(cfg_offset, *value));
-                    }
-                }
+        // Only handle accesses within our decoded bus range
+        if !upstream_bus_range.contains(&bus) {
+            return None;
+        }
 
-                // No downstream switch port found for the access targeting the secondary bus number,
-                // this means no valid device to handle the access.
-                return None;
+        let secondary_bus = *upstream_bus_range.start();
+
+        // Direct access to downstream switch ports on the secondary bus
+        if bus == secondary_bus {
+            return self.handle_downstream_port_access(device_function, is_read, cfg_offset, value);
+        }
+
+        // Route to downstream ports for further forwarding
+        self.route_to_downstream_ports(bus, device_function, is_read, cfg_offset, value)
+    }
+
+    /// Handle direct configuration space access to downstream switch ports.
+    fn handle_downstream_port_access(
+        &mut self,
+        device_function: u8,
+        is_read: bool,
+        cfg_offset: u16,
+        value: &mut u32,
+    ) -> Option<IoResult> {
+        if let Some((_, downstream_port)) = self.downstream_ports.get_mut(&device_function) {
+            Some(if is_read {
+                downstream_port.port.cfg_space.read_u32(cfg_offset, value)
+            } else {
+                downstream_port.port.cfg_space.write_u32(cfg_offset, *value)
+            })
+        } else {
+            // No downstream switch port found for this device function
+            None
+        }
+    }
+
+    /// Route configuration space access to downstream ports for further forwarding.
+    fn route_to_downstream_ports(
+        &mut self,
+        bus: u8,
+        device_function: u8,
+        is_read: bool,
+        cfg_offset: u16,
+        value: &mut u32,
+    ) -> Option<IoResult> {
+        for (_, downstream_port) in self.downstream_ports.values_mut() {
+            let downstream_bus_range = downstream_port.cfg_space().assigned_bus_range();
+
+            // Skip downstream ports with invalid/uninitialized bus configuration
+            if downstream_bus_range == (0..=0) {
+                continue;
             }
 
-            // Otherwise, since the access is within the decoded bus range of the switch, this means the
-            // access should be routed downstream of one of the downstream switch ports.
-            for (_, downstream_port) in self.downstream_ports.values_mut() {
-                let downstream_bus_range = downstream_port.cfg_space().assigned_bus_range();
-
-                // Skip downstream ports with invalid/uninitialized bus configuration
-                if downstream_bus_range == (0..=0) {
-                    continue;
-                }
-
-                if downstream_bus_range.contains(&bus) {
-                    if is_read {
-                        return Some(downstream_port.forward_cfg_read(
-                            &bus,
-                            &device_function,
-                            cfg_offset,
-                            value,
-                        ));
-                    } else {
-                        return Some(downstream_port.forward_cfg_write(
-                            &bus,
-                            &device_function,
-                            cfg_offset,
-                            *value,
-                        ));
-                    }
-                }
+            if downstream_bus_range.contains(&bus) {
+                return Some(downstream_port.port.forward_cfg_access_with_routing(
+                    &bus,
+                    &device_function,
+                    is_read,
+                    cfg_offset,
+                    value,
+                ));
             }
         }
 
-        // The access is not within the upstream switch port's decoded bus range,
-        // return None to indicate no handling.
+        // No downstream port could handle this bus number
         None
     }
 }
