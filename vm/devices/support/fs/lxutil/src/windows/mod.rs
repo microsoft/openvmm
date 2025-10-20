@@ -708,7 +708,7 @@ impl LxVolume {
         // Create the reparse point data for the symlink type.
         let mut create_options = ntioapi::FILE_OPEN_REPARSE_POINT;
         let reparse_data = match link_type {
-            SymlinkType::Lx => util::create_link_reparse_buffer(target)?,
+            SymlinkType::Lx => fs::create_link_reparse_buffer(target)?,
             SymlinkType::Nt(dir) => {
                 if dir {
                     create_options |= ntioapi::FILE_DIRECTORY_FILE;
@@ -745,7 +745,7 @@ impl LxVolume {
             // If creating an NT link failed with a permission error (which means the user was not
             // elevated and doesn't have developer mode enabled), fall back to an LX link and try
             // again.
-            let reparse_data = util::create_link_reparse_buffer(target)?;
+            let reparse_data = fs::create_link_reparse_buffer(target)?;
             util::set_reparse_point(&handle, &reparse_data)?;
         }
 

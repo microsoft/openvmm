@@ -6,6 +6,7 @@ use std::mem::{size_of, size_of_val};
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::OwnedHandle;
 use windows::Wdk::Storage::FileSystem;
+use windows::Wdk::System::SystemServices::PAGE_SIZE;
 use windows::Win32::Foundation;
 use windows::Win32::System::SystemServices as W32Ss;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unalign};
@@ -19,7 +20,7 @@ const LX_UTIL_XATTR_NAME_MAX: usize = u16::MAX as usize - LX_UTIL_XATTR_NAME_PRE
 const LX_UTILP_XATTR_QUERY_RESTART_SCAN: i32 = 0x1;
 const LX_UTILP_XATTR_QUERY_RETURN_SINGLE_ENTRY: i32 = 0x2;
 
-/// Magic header value "laex" (little-endian "axel") used to identify Linux extended attributes
+/// Magic header value 'aexl' (little-endian "lxea") used to identify Linux extended attributes
 /// stored in Windows EA (Extended Attributes). This helps distinguish Linux xattrs from
 /// native Windows EAs.
 const LX_UTILP_EA_VALUE_HEADER: u32 =
@@ -58,11 +59,6 @@ struct FileFullEaInformation {
     // EaName[1]
 }
 
-/// Check if the given attribute name is the case sensitivity attribute.
-fn is_case_sensitive_attribute(name: &str) -> bool {
-    name == LX_UTIL_CASE_SENSITIVE
-}
-
 /// Get the value of the case sensitivity attribute.
 fn get_case_sensitive(handle: &OwnedHandle) -> lx::Result<bool> {
     let case_info: FileSystem::FILE_CASE_SENSITIVE_INFORMATION =
@@ -99,23 +95,23 @@ pub fn get_system(handle: &OwnedHandle, name: &str, value: Option<&mut [u8]>) ->
         return Err(lx::Error::EINVAL);
     }
 
-    if is_case_sensitive_attribute(name) {
-        if let Some(value) = value {
-            if value.is_empty() {
-                return Err(lx::Error::ERANGE);
-            }
+    if name != LX_UTIL_CASE_SENSITIVE {
+        return Err(lx::Error::ENOTSUP);
+    }
 
-            if get_case_sensitive(handle)? {
-                value[0] = b'1';
-            } else {
-                value[0] = b'0';
-            }
+    if let Some(value) = value {
+        if value.is_empty() {
+            return Err(lx::Error::ERANGE);
         }
 
-        Ok(1)
-    } else {
-        Err(lx::Error::ENOTSUP)
+        if get_case_sensitive(handle)? {
+            value[0] = b'1';
+        } else {
+            value[0] = b'0';
+        }
     }
+
+    Ok(1)
 }
 
 /// Copy the Linux EA attribute prefix and the specified name into the start of the provided buffer.
@@ -180,7 +176,7 @@ fn query_ea(
     };
 
     // Start with a PAGE_SIZE buffer and grow as needed.
-    let mut out_buf = vec![0u8; 4096];
+    let mut out_buf = vec![0u8; PAGE_SIZE as usize];
     loop {
         let mut io_status = Default::default();
         let status = unsafe {
@@ -376,7 +372,7 @@ pub fn set(handle: &OwnedHandle, name: &str, value: &[u8], flags: i32) -> lx::Re
 
 /// Set a linux extended attribute in the system namespace on a file.
 pub fn set_system(handle: &OwnedHandle, name: &str, value: &[u8], flags: i32) -> lx::Result<()> {
-    if is_case_sensitive_attribute(name) {
+    if name == LX_UTIL_CASE_SENSITIVE {
         set_case_sensitive(handle, value, flags)
     } else {
         Err(lx::Error::ENOTSUP)

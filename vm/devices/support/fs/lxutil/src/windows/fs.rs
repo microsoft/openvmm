@@ -13,8 +13,8 @@ use ::windows::Win32::System::SystemInformation;
 use ::windows::Win32::System::SystemServices as W32Ss;
 use bitfield_struct::bitfield;
 use headervec::HeaderVec;
-use pal::windows::AnsiStringRef;
 use pal::windows::UnicodeString;
+use std::cmp::min;
 use std::marker::PhantomData;
 use std::mem::offset_of;
 use std::os::windows::io::AsRawHandle;
@@ -946,9 +946,9 @@ fn determine_fallback_mode(
 
 /// Get the block size for atomicity from a file system.
 pub fn get_fs_block_size(file_handle: &OwnedHandle) -> u32 {
-    // SAFETY: Calling Win32 API as documented
     let mut iosb = Default::default();
     let mut fs_info = FileSystem::FILE_FS_SECTOR_SIZE_INFORMATION::default();
+    // SAFETY: Calling Win32 API as documented
     let result = unsafe {
         util::check_status(FileSystem::NtQueryVolumeInformationFile(
             Foundation::HANDLE(file_handle.as_raw_handle()),
@@ -980,8 +980,13 @@ pub fn read_app_exec_link(offset: lx::off_t, buf: &mut [u8]) -> usize {
     }
 
     // Copy PE_HEADER until either the end of PE_HEADER or buf
-    let mut count = min(PE_HEADER.len() - offset, buf.len());
-    buf[..count].copy_from_slice(&PE_HEADER[offset..offset + count]);
+    let count = min(PE_HEADER.len() - offset as usize, buf.len());
+    buf[..count].copy_from_slice(
+        &PE_HEADER[offset as usize..offset as usize + count]
+            .iter()
+            .map(|c| *c as u8)
+            .collect::<Vec<u8>>(),
+    );
     count
 }
 
@@ -1011,8 +1016,9 @@ pub fn set_file_times(
 }
 
 /// Create the reparse buffer for an LX symlink. The size of the buffer is returned in `size`.
-pub fn create_link_reparse_buffer(target: AnsiStringRef<'_>) -> lx::Result<Vec<u8>> {
-    let target_length = target.as_slice().len();
+pub fn create_link_reparse_buffer(target: &lx::LxStr) -> lx::Result<Vec<u8>> {
+    let link_target = util::create_ansi_string(target)?;
+    let target_length = link_target.as_slice().len();
     let reparse_size =
         REPARSE_DATA_BUFFER_HEADER_SIZE + LX_UTIL_SYMLINK_TARGET_OFFSET as usize + target_length;
 
@@ -1023,18 +1029,14 @@ pub fn create_link_reparse_buffer(target: AnsiStringRef<'_>) -> lx::Result<Vec<u
 
     let mut buf = vec![0u8; reparse_size];
     // SAFETY: Calling Win32 API to allocate heap memory, writing to the buffer,
-    // accessing union fields, and constructing an RtlHeapBuffer. The buffer is guaranteed
-    // large enough to write to all members.
+    // and accessing union fields. The buffer is guaranteed large enough to write to all members.
     let reparse = unsafe { buf.as_mut_ptr().cast::<SymlinkReparse>().as_mut().unwrap() };
     reparse.header.ReparseTag = FileSystem::IO_REPARSE_TAG_LX_SYMLINK as u32;
     reparse.header.ReparseDataLength = LX_UTIL_SYMLINK_TARGET_OFFSET as u16 + target_length as u16;
     reparse.data.symlink.version = LX_UTIL_SYMLINK_DATA_VERSION_2;
     let offset = REPARSE_DATA_BUFFER_HEADER_SIZE + LX_UTIL_SYMLINK_TARGET_OFFSET as usize;
-    buf[offset..offset + target_length].copy_from_slice(target.as_slice());
+    buf[offset..offset + target_length].copy_from_slice(link_target.as_slice());
     Ok(buf)
-
-        Ok(buf)
-    }
 }
 
 /// Retrieve the file system attributes and optionally the name of a filesystem.
@@ -1073,11 +1075,11 @@ pub fn get_lx_file_system_attributes(
         block_count: size_info.TotalAllocationUnits as _,
         free_block_count: size_info.ActualAvailableAllocationUnits as _,
         available_block_count: size_info.CallerAvailableAllocationUnits as _,
-        file_system_id: [1, 0, 0, 0, 0, 0, 0, 0],
         maximum_file_name_length: attribute_info.head.MaximumComponentNameLength as _,
         file_record_size: block_size as _,
         spare: [0; 4],
         // The following values are faked, based mostly on what Android expected.
+        file_system_id: [1, 0, 0, 0, 0, 0, 0, 0],
         file_count: 999,
         available_file_count: 1000000,
         // Flags is filled out by VFS, not here.

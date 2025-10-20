@@ -580,13 +580,6 @@ pub fn file_info_to_stat(
     Ok(stat)
 }
 
-// Create the reparse buffer for an LX symlink.
-pub fn create_link_reparse_buffer(target: &lx::LxStr) -> lx::Result<Vec<u8>> {
-    let link_target = create_ansi_string(target)?;
-
-    fs::create_link_reparse_buffer(link_target)
-}
-
 // Create the reparse buffer for an NT symlink.
 pub fn create_nt_link_reparse_buffer(target: &ffi::OsStr, flags: u32) -> lx::Result<Vec<u8>> {
     let mut link_target: windows::UnicodeString =
@@ -625,18 +618,18 @@ pub fn create_nt_link_reparse_buffer(target: &ffi::OsStr, flags: u32) -> lx::Res
                 },
             },
         };
-
-        if flags & LX_UTIL_NT_SYMLINK_ESCAPE_TARGET != 0 {
-        let path_buffer = &mut reparse[offset_of!(FileSystem::REPARSE_DATA_BUFFER, Anonymous)
-            + offset_of!(FileSystem::REPARSE_DATA_BUFFER_0_0, PathBuffer)..];
-
-        let link_bytes = link_target.as_slice().as_bytes();
-        path_buffer[..link_bytes.len()].copy_from_slice(link_bytes);
-        path_buffer[link_bytes.len()..(link_bytes.len() * 2)].copy_from_slice(link_bytes);
-            path_buffer.add(link_target.length() / 2),
-            link_target.length() / 2,
-        );
     }
+
+    if flags & LX_UTIL_NT_SYMLINK_ESCAPE_TARGET != 0 {
+        path::unescape_path_in_place(link_target.as_mut_slice());
+    }
+
+    let path_buffer = &mut reparse[offset_of!(FileSystem::REPARSE_DATA_BUFFER, Anonymous)
+        + offset_of!(FileSystem::REPARSE_DATA_BUFFER_0_0, PathBuffer)..];
+
+    let link_bytes = link_target.as_slice().as_bytes();
+    path_buffer[..link_bytes.len()].copy_from_slice(link_bytes);
+    path_buffer[link_bytes.len()..(link_bytes.len() * 2)].copy_from_slice(link_bytes);
 
     Ok(reparse)
 }

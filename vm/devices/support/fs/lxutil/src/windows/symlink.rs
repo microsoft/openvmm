@@ -147,13 +147,11 @@ pub fn read(link_file: &OwnedHandle) -> lx::Result<String> {
     let standard_info: FileSystem::FILE_STANDARD_INFORMATION =
         util::query_information_file(link_file)?;
 
-    let high_part = (standard_info.EndOfFile & (i32::MAX as i64) << 32) >> 32;
-    let low_part = standard_info.EndOfFile & i32::MAX as i64;
-    if high_part != 0 || low_part == 0 || low_part > i16::MAX as i64 {
+    if standard_info.EndOfFile > i16::MAX as i64 {
         return Err(lx::Error::EIO);
     }
 
-    let mut lx_target = vec![0u8; low_part as usize];
+    let mut lx_target = vec![0u8; standard_info.EndOfFile as usize];
 
     let mut iosb = Default::default();
 
@@ -177,10 +175,7 @@ pub fn read(link_file: &OwnedHandle) -> lx::Result<String> {
     }
 
     path::path_from_lx(&lx_target).and_then(|cow_path| {
-        let path = match cow_path {
-            std::borrow::Cow::Borrowed(p) => p,
-            std::borrow::Cow::Owned(ref s) => s.as_ref(),
-        };
+        let path = cow_path.as_ref();
         if !path.is_absolute() {
             return Err(lx::Error::EINVAL);
         }
