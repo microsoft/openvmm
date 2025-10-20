@@ -16,7 +16,7 @@ const PER_PAGE = 50;
  */
 export async function getAllGithubPullRequests(): Promise<PullRequestTitles> {
   try {
-    // Fetch first three pages in parallel. Each page returns up to 50 PRs.
+    // Fetch first four pages in parallel. Each page returns up to 50 PRs.
     const pagePromises = [1, 2, 3, 4].map((p) =>
       getGithubPullRequestsPage(p, PER_PAGE).catch(
         () => ({}) as PullRequestTitles
