@@ -1809,34 +1809,18 @@ impl InitializedVm {
         }
 
         for dev_cfg in cfg.pcie_devices {
-            let dev_name = format!("pcie:{}-{}", dev_cfg.port_name, dev_cfg.resource.id());
-            let mut msi_set = MsiInterruptSet::new();
-            chipset_builder
-                .arc_mutex_device(dev_name)
-                .on_pcie_port(vmotherboard::BusId::new(&dev_cfg.port_name))
-                .try_add_async(async |services| {
-                    resolver
-                        .resolve(
-                            dev_cfg.resource,
-                            pci_resources::ResolvePciDeviceHandleParams {
-                                register_msi: &mut msi_set,
-                                register_mmio: &mut services.register_mmio(),
-                                driver_source: &driver_source,
-                                guest_memory: &gm,
-                                doorbell_registration: partition
-                                    .clone()
-                                    .into_doorbell_registration(Vtl::Vtl0),
-                                shared_mem_mapper: Some(&mapper),
-                            },
-                        )
-                        .await
-                        .map(|r| r.0)
-                })
-                .await?;
-
-            if let Some(target) = partition.clone().into_msi_target(Vtl::Vtl0) {
-                msi_set.connect(target.as_ref());
-            }
+            vmm_core::device_builder::build_pcie_device(
+                &mut chipset_builder,
+                dev_cfg.port_name.into(),
+                &driver_source,
+                &resolver,
+                &gm,
+                dev_cfg.resource,
+                partition.clone().into_doorbell_registration(Vtl::Vtl0),
+                Some(&mapper),
+                partition.clone().into_msi_target(Vtl::Vtl0),
+            )
+            .await?;
         }
 
         if let Some(vmbus_cfg) = cfg.vmbus {

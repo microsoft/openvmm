@@ -945,7 +945,7 @@ impl FromStr for DiskCli {
                 "pcie_port" => {
                     let port = s.next();
                     if port.is_none_or(|p| p.is_empty()) {
-                        anyhow::bail!("`pcie_port requires a port name");
+                        anyhow::bail!("`pcie_port` requires a port name");
                     }
                     pcie_port = Some(String::from(port.unwrap()));
                 }
