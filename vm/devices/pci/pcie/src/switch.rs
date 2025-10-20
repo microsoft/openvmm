@@ -342,11 +342,10 @@ impl GenericPciRoutingComponent for Switch {
         let mut current_device = device;
 
         for (_, (_, downstream_port)) in self.downstream_ports.iter_mut() {
-            match downstream_port.port.try_connect_under(
-                port_name,
-                device_name,
-                current_device,
-            ) {
+            match downstream_port
+                .port
+                .try_connect_under(port_name, device_name, current_device)
+            {
                 Ok(()) => return Ok(()),
                 Err(returned_device) => {
                     current_device = returned_device;
@@ -464,11 +463,8 @@ mod tests {
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
         );
-        let result = switch.try_connect_under(
-            "invalid-port-name",
-            "invalid-dev",
-            Box::new(invalid_device),
-        );
+        let result =
+            switch.try_connect_under("invalid-port-name", "invalid-dev", Box::new(invalid_device));
         assert!(result.is_err());
         // try_connect_under returns the device back instead of an error message,
         // so we just verify that the connection failed
