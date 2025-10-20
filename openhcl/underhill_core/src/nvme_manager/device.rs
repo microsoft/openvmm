@@ -140,7 +140,6 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
                 &NvmeDriverConfig {
                     cpu_count: config.vp_count,
                     use_bounce_buffer: self.is_isolated,
-                    require_persistent_memory: config.save_restore_supported,
                 },
             )
             .instrument(tracing::info_span!("nvme_driver_restore"))
@@ -250,7 +249,6 @@ impl VfioNvmeDriverSpawner {
             &NvmeDriverConfig {
                 cpu_count: config.vp_count,
                 use_bounce_buffer: is_isolated,
-                require_persistent_memory: config.save_restore_supported,
             },
         )
         .instrument(tracing::info_span!("nvme_driver_new", pci_id = ?config.pci_id))

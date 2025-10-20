@@ -71,7 +71,6 @@ impl FuzzNvmeDriver {
             &NvmeDriverConfig {
                 cpu_count,
                 use_bounce_buffer: false,
-                require_persistent_memory: false,
             },
         )
         .await?; // TODO: [use-arbitrary-input]

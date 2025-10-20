@@ -113,7 +113,6 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
         &NvmeDriverConfig {
             cpu_count: CPU_COUNT,
             use_bounce_buffer: false,
-            require_persistent_memory: false,
         },
     )
     .await;
@@ -157,7 +156,6 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
         &NvmeDriverConfig {
             cpu_count: CPU_COUNT,
             use_bounce_buffer: false,
-            require_persistent_memory: false,
         },
     )
     .await;
@@ -203,7 +201,6 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
         &NvmeDriverConfig {
             cpu_count: CPU_COUNT,
             use_bounce_buffer: false,
-            require_persistent_memory: false,
         },
     )
     .await
@@ -327,7 +324,6 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
         &NvmeDriverConfig {
             cpu_count: CPU_COUNT,
             use_bounce_buffer: false,
-            require_persistent_memory: false,
         },
     )
     .await
@@ -411,7 +407,6 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
         &NvmeDriverConfig {
             cpu_count: CPU_COUNT,
             use_bounce_buffer: false,
-            require_persistent_memory: false,
         },
     )
     .await

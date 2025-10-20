@@ -202,7 +202,6 @@ impl<T: AerHandler> QueuePair<T> {
         interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
         bounce_buffer: bool,
-        require_persistent_memory: bool,
         aer_handler: T,
     ) -> anyhow::Result<Self> {
         // FUTURE: Consider splitting this into several allocations, rather than
@@ -219,19 +218,9 @@ impl<T: AerHandler> QueuePair<T> {
             };
         let dma_client = device.dma_client();
 
-        // TODO: Keepalive: Detect when the allocation came from outside
-        // the private pool and put the device in a degraded state, so it
-        // is possible to inspect that a servicing with keepalive will fail.
         let mem = dma_client
             .allocate_dma_buffer(total_size)
             .context("failed to allocate memory for queues")?;
-        if !mem.persistent() {
-            if !require_persistent_memory {
-                tracing::info!(qid, "allocated non-persistent memory for queue pair");
-            } else {
-                anyhow::bail!("failed to allocate persistent memory for queue pair");
-            }
-        }
 
         assert!(sq_entries <= MAX_SQ_ENTRIES);
         assert!(cq_entries <= MAX_CQ_ENTRIES);

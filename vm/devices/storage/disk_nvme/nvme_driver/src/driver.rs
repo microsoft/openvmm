@@ -203,14 +203,6 @@ pub struct NvmeDriverConfig {
 
     /// Whether to use a bounce buffer for IO operations.
     pub use_bounce_buffer: bool,
-
-    /// Whether DMA memory must be persistent (survive an OpenHCL save/restore).
-    /// When true, new driver instances will fail to initialize if they are not
-    /// able to allocate persistent memory for the admin queue or IO queue 0.
-    /// Subsequent IO queues will fail to initialize if they are not able to
-    /// allocate persistent memory, and will fall back to already allocated
-    /// queues (such as IO queue 0).
-    pub require_persistent_memory: bool,
 }
 
 impl<T: DeviceBacking> NvmeDriver<T> {
@@ -338,7 +330,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             interrupt0,
             worker.registers.clone(),
             self.config.use_bounce_buffer,
-            self.config.require_persistent_memory,
             AdminAerHandler::new(),
         )
         .context("failed to create admin queue pair")?;
@@ -965,12 +956,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
 
         let qid = self.io.len() as u16 + 1;
 
-        tracing::debug!(
-            cpu,
-            qid,
-            self.config.require_persistent_memory,
-            "creating io queue"
-        );
+        tracing::debug!(cpu, qid, "creating io queue");
 
         // Share IO queue 1's interrupt with the admin queue.
         let iv = self.io.len() as u16;
@@ -988,7 +974,6 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             interrupt,
             self.registers.clone(),
             self.config.use_bounce_buffer,
-            self.config.require_persistent_memory,
             NoOpAerHandler,
         )
         .map_err(|err| DeviceError::IoQueuePairCreationFailure(err, qid))?;

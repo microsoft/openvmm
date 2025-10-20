@@ -102,6 +102,16 @@ pub trait NvmeDevice: Inspect + Send + Sync {
 pub struct CreateNvmeDriverConfig {
     pci_id: String, // todo: &str
     vp_count: u32,
+
+    /// Indicates that the external environment is such that the device should
+    /// support save/restore of state.
+    ///
+    /// This implies that DMA memory must be persistent (survive an OpenHCL
+    /// save/restore). When true, new driver instances will fail to initialize
+    /// if they are not able to allocate persistent memory for the admin queue
+    /// or IO queue 0. Subsequent IO queues will fail to initialize if they are
+    /// not able to allocate persistent memory, and will fall back to already
+    /// allocated queues (such as IO queue 0).
     save_restore_supported: bool,
 }
 

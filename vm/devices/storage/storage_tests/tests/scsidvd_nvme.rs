@@ -86,7 +86,6 @@ impl ScsiDvdNvmeTest {
             &NvmeDriverConfig {
                 cpu_count: CPU_COUNT,
                 use_bounce_buffer: false,
-                require_persistent_memory: false,
             },
         )
         .await
