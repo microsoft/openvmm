@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Provides an interface the programatically and deterministically inject faults in the NVMe fault controller.
+//! Provides an interface to programmatically and deterministically inject faults in the NVMe fault controller.
 
 use mesh::Cell;
 use mesh::MeshPayload;
