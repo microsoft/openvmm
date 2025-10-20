@@ -193,7 +193,7 @@ pub struct NamespaceFaultConfig {
 ///         );
 /// }
 /// ```
-#[derive(MeshPayload, Clone)]
+#[derive(MeshPayload)]
 pub struct AdminQueueFaultConfig {
     /// A map of NVME opcodes to the submission fault behavior for each. (This
     /// would ideally be a `HashMap`, but `mesh` doesn't support that type.
