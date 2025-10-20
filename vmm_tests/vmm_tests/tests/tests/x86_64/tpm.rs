@@ -5,10 +5,10 @@ use anyhow::Context;
 use anyhow::ensure;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
+#[cfg(windows)]
+use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
 use petri::ShutdownKind;
-#[cfg(windows)]
-use petri::hyperv::HyperVPetriBackend;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
@@ -137,6 +137,7 @@ impl<'a> TpmGuestTests<'a> {
         }
     }
 
+    #[cfg(windows)]
     async fn read_report(&self) -> anyhow::Result<String> {
         let guest_binary_path = &self.guest_binary_path;
         match self.os_flavor {
@@ -470,14 +471,14 @@ async fn tpm_test_platform_hierarchy_disabled(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
 )]
-async fn cvm_tpm_guest_tests<T>(
-    config: PetriVmBuilder<HyperVPetriBackend>,
+async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>,),
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     // TODO: Add test IGVMAgent RPC server to support the boot-time attestation.
     let config = config
-        .modify_backend(|b| b.with_tpm_state_persistence(false))
+        .with_tpm_state_persistence(false)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
 
     let (vm, agent, guest_binary_path) = match os_flavor {

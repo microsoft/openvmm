@@ -106,9 +106,6 @@ pub struct HyperVPetriConfig {
     /// is important to the test. These are resolved into a list of
     /// [`HyperVScsiController`] objects stored in the runtime.
     additional_scsi_controllers: Vec<(String, u32)>,
-
-    /// Configure TPM state persistence
-    tpm_state_persistence: bool,
 }
 
 impl HyperVPetriConfig {
@@ -138,17 +135,6 @@ impl HyperVPetriConfig {
     pub fn with_additional_scsi_controller(mut self, test_id: String, target_vtl: u32) -> Self {
         self.additional_scsi_controllers.push((test_id, target_vtl));
         self
-    }
-
-    /// Configure TPM state persistence
-    pub fn with_tpm_state_persistence(mut self, tpm_state_persistence: bool) -> Self {
-        self.tpm_state_persistence = tpm_state_persistence;
-        self
-    }
-
-    /// Check if TPM state persistence is enabled
-    fn tpm_state_persistence(&self) -> bool {
-        self.tpm_state_persistence
     }
 }
 
@@ -187,6 +173,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             openhcl_agent_image,
             boot_device_type,
             vmgs,
+            tpm_state_persistence,
         } = config;
 
         let PetriVmResources { driver, log_source } = resources;
@@ -588,6 +575,14 @@ impl PetriVmmBackend for HyperVPetriBackend {
         let mut added_controllers = Vec::new();
         let mut vtl2_settings = None;
 
+        if tpm_state_persistence {
+            vm.set_guest_isolation_mode(powershell::HyperVGuestIsolationMode::Default)
+                .await?;
+        } else {
+            vm.set_guest_isolation_mode(powershell::HyperVGuestIsolationMode::NoPersistentSecrets)
+                .await?;
+        }
+
         // TODO: If OpenHCL is being used, then translate storage through it.
         // (requires changes above where VHDs are added)
         if let Some(modify_vmm_config) = modify_vmm_config {
@@ -595,12 +590,12 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
             tracing::debug!(?config, "additional hyper-v config");
 
-            for (test_id, target_vtl) in &config.additional_scsi_controllers {
-                let (controller_number, vsid) = vm.add_scsi_controller(*target_vtl).await?;
+            for (test_id, target_vtl) in config.additional_scsi_controllers {
+                let (controller_number, vsid) = vm.add_scsi_controller(target_vtl).await?;
                 added_controllers.push(HyperVScsiController {
-                    test_id: test_id.clone(),
+                    test_id,
                     controller_number,
-                    target_vtl: *target_vtl,
+                    target_vtl,
                     vsid,
                 });
             }
@@ -608,16 +603,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
             if let Some(settings) = &config.initial_vtl2_settings {
                 vm.set_base_vtl2_settings(settings).await?;
                 vtl2_settings = Some(settings.clone());
-            }
-
-            if config.tpm_state_persistence() {
-                vm.set_guest_isolation_mode(powershell::HyperVGuestIsolationMode::Default)
-                    .await?;
-            } else {
-                vm.set_guest_isolation_mode(
-                    powershell::HyperVGuestIsolationMode::NoPersistentSecrets,
-                )
-                .await?;
             }
         }
 

@@ -127,6 +127,8 @@ pub struct PetriVmConfig {
     pub vmgs: PetriVmgsResource,
     /// The boot device type for the VM
     pub boot_device_type: BootDeviceType,
+    /// Configure TPM state persistence
+    pub tpm_state_persistence: bool,
 }
 
 /// Resources used by a Petri VM during contruction and runtime
@@ -212,6 +214,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 agent_image: artifacts.agent_image,
                 openhcl_agent_image: artifacts.openhcl_agent_image,
                 vmgs: PetriVmgsResource::Ephemeral,
+                tpm_state_persistence: true,
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -649,6 +652,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// This overrides the default, which is determined by the firmware type.
     pub fn with_boot_device_type(mut self, boot: BootDeviceType) -> Self {
         self.config.boot_device_type = boot;
+        self
+    }
+
+    /// Enable or disable the TPM state persistence for the VM.
+    pub fn with_tpm_state_persistence(mut self, tpm_state_persistence: bool) -> Self {
+        self.config.tpm_state_persistence = tpm_state_persistence;
         self
     }
 

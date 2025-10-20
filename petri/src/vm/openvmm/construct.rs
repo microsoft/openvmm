@@ -115,6 +115,7 @@ impl PetriVmConfigOpenVmm {
             openhcl_agent_image,
             vmgs,
             boot_device_type,
+            tpm_state_persistence,
         } = petri_vm_config;
 
         let PetriVmResources { driver, log_source } = resources;
@@ -180,6 +181,7 @@ impl PetriVmConfigOpenVmm {
                     &mut devices,
                     &firmware_event_send,
                     framebuffer.is_some(),
+                    tpm_state_persistence,
                 )?;
                 let (vtl2_vsock_listener, vtl2_vsock_path) = make_vsock_listener()?;
                 (
@@ -909,6 +911,7 @@ impl PetriVmConfigSetupCore<'_> {
         devices: &mut impl Extend<Device>,
         firmware_event_send: &mesh::Sender<FirmwareEvent>,
         framebuffer: bool,
+        tpm_state_persistence: bool,
     ) -> anyhow::Result<(
         get_resources::ged::GuestEmulationDeviceHandle,
         mesh::Sender<get_resources::ged::GuestEmulationRequest>,
@@ -997,7 +1000,7 @@ impl PetriVmConfigSetupCore<'_> {
                 None => get_resources::ged::GuestSecureBootTemplateType::None,
             },
             enable_battery: false,
-            no_persistent_secrets: !test_gsp_by_id,
+            no_persistent_secrets: !tpm_state_persistence,
             igvm_attest_test_config: None,
             test_gsp_by_id,
         };
