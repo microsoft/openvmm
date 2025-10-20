@@ -338,7 +338,7 @@
             "vtl2_total": 524288,
             "2vp": {
                 "usage": {
-                    "base": 3278,
+                    "base": 32768,
                     "threshold": 1024
                 },
                 "reservation": {
@@ -351,17 +351,17 @@
                         "threshold": 512
                     },
                     "Pss_Anon": {
-                        "base": 280,
+                        "base": 283,
                         "threshold": 512
                     }
                 },
                 "openvmm_hcl": {
                     "Pss": {
-                        "base": 3798,
+                        "base": 3815,
                         "threshold": 512
                     },
                     "Pss_Anon": {
-                        "base": 1162,
+                        "base": 1164,
                         "threshold": 512
                     }
                 },
