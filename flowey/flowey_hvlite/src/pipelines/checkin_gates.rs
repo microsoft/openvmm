@@ -1070,12 +1070,7 @@ impl IntoPipeline for CheckinGatesCli {
                 })
             }
 
-            // ARM VMM tests currently are hitting a UEFI bug that causes them to randomly fail.
-            // For now to unblock other devs don't require them to pass in PRs.
-            // TODO: Remove this if
-            if arch != FlowArch::Aarch64 {
-                all_jobs.push(vmm_tests_run_job.finish());
-            }
+            all_jobs.push(vmm_tests_run_job.finish());
         }
 
         // test the flowey local backend by running cargo xflowey build-igvm on x64
