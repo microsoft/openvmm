@@ -131,10 +131,7 @@ pub struct LockedMemorySpawner;
 
 impl crate::DmaClient for LockedMemorySpawner {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<crate::memory::MemoryBlock> {
-        Ok(crate::memory::MemoryBlock::new(
-            LockedMemory::new(len)?,
-            false,
-        ))
+        Ok(crate::memory::MemoryBlock::new(LockedMemory::new(len)?))
     }
 
     fn attach_pending_buffers(&self) -> anyhow::Result<Vec<crate::memory::MemoryBlock>> {
