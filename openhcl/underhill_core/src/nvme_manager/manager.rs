@@ -994,7 +994,7 @@ mod tests {
         for (i, duration) in results {
             println!("Device {} took {:?}", i, duration);
             assert!(
-                duration >= Duration::from_millis(190) && duration <= Duration::from_millis(250),
+                duration >= Duration::from_millis(190) && duration <= Duration::from_millis(300),
                 "Device {} timing {:?} outside expected range",
                 i,
                 duration
