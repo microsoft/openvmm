@@ -91,13 +91,12 @@ fn arch_to_tokens(arch: MachineArch) -> TokenStream {
 }
 
 impl Config {
-    fn name_prefix(&self, specific_vmm: Option<Vmm>) -> String {
+    fn name_prefix(&self, resolved_vmm: Vmm) -> String {
         let arch_prefix = arch_to_str(self.arch);
 
-        let vmm_prefix = match (specific_vmm, self.vmm) {
-            (_, Some(Vmm::OpenVmm)) | (Some(Vmm::OpenVmm), None) => "openvmm",
-            (_, Some(Vmm::HyperV)) | (Some(Vmm::HyperV), None) => "hyperv",
-            _ => "",
+        let vmm_prefix = match resolved_vmm {
+            Vmm::OpenVmm => "openvmm",
+            Vmm::HyperV => "hyperv",
         };
 
         let firmware_prefix = match &self.firmware {
@@ -687,7 +686,7 @@ fn make_vmm_test(
             _ => return Err(Error::new(config.span, "vmm mismatch")),
         };
 
-        let name = format!("{}_{original_name}", config.name_prefix(specific_vmm));
+        let name = format!("{}_{original_name}", config.name_prefix(resolved_vmm));
 
         // Build requirements based on the configuration and resolved VMM
         let requirements = build_requirements(&config.firmware, &name, resolved_vmm);
