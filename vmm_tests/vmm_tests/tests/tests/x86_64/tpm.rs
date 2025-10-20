@@ -481,20 +481,13 @@ async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
         .with_tpm_state_persistence(false)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
 
-    let (vm, agent, guest_binary_path) = match os_flavor {
-        OsFlavor::Linux => {
-            let (vm, agent) = config.run().await?;
+    let (vm, agent) = config.run().await?;
 
-            (vm, agent, TPM_GUEST_TESTS_LINUX_GUEST_PATH)
-        }
-        OsFlavor::Windows => {
-            let (vm, agent) = config.run().await?;
-
-            (vm, agent, TPM_GUEST_TESTS_WINDOWS_GUEST_PATH)
-        }
+    let guest_binary_path = match os_flavor {
+        OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
+        OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
         _ => unreachable!(),
     };
-
     let (artifact,) = extra_deps;
     let host_binary_path = artifact.get();
     let tpm_guest_tests =
