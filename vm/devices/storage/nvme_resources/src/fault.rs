@@ -5,8 +5,8 @@
 
 use mesh::Cell;
 use mesh::MeshPayload;
-use mesh::rpc::Rpc;
 use mesh::OneshotSender;
+use mesh::rpc::Rpc;
 use nvme_spec::Command;
 use nvme_spec::Completion;
 use std::time::Duration;
