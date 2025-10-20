@@ -452,10 +452,10 @@ async fn memory_validation_release_small<T: PetriVmmBackend>(
     _: (),
     driver: DefaultDriver,
 ) -> anyhow::Result<()> {
-    memstat::idle_test(
+    idle_test(
         config,
-        memstat::TestVPCount::SmallVPCount,
-        memstat::WaitPeriodSec::ShortWait,
+        TestVPCount::SmallVPCount,
+        WaitPeriodSec::ShortWait,
         driver,
         "release",
     )
