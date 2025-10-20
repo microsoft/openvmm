@@ -2296,7 +2296,7 @@ impl<T: RingMem> NetChannel<T> {
         message_type: u32,
         mut reader: PacketReader<'_>,
         segments: &mut Vec<TxSegment>,
-        pending_control_messages: &mut Option<&mut PendingControlMessages>,
+        pending_control_messages: &mut Option<PendingControlMessages>,
     ) -> Result<bool, WorkerError> {
         let is_packet = match message_type {
             rndisprot::MESSAGE_TYPE_PACKET_MSG => {
@@ -5277,15 +5277,14 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     assert!(data.tx_segments.is_empty());
                     let id = state.free_tx_packets.pop().unwrap();
                     // Only create a list of pending control messages for the Primary Channel
-                    let mut pending_control_messages = if let Some(control) = state.primary.as_mut()
-                    {
-                        Some(&mut PendingControlMessages {
-                            total_len: control.control_messages_len,
-                            control_messages: Vec::new(),
-                        })
-                    } else {
-                        None
-                    };
+                    let mut pending_control_messages =
+                        state
+                            .primary
+                            .as_ref()
+                            .map(|primary| PendingControlMessages {
+                                total_len: primary.control_messages_len,
+                                control_messages: Vec::new(),
+                            });
                     let result: Result<usize, WorkerError> = self.handle_rndis(
                         buffers,
                         id,
@@ -5296,7 +5295,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     );
                     let num_packets = match result {
                         Ok(num_packets) => {
-                            if let Some(pending_control_messages) = pending_control_messages {
+                            if let Some(pending_control_messages) =
+                                pending_control_messages.as_mut()
+                            {
                                 // Add control messages to primary channel state control message queue.
                                 let control = state.primary.as_mut().unwrap();
                                 control.control_messages_len = pending_control_messages.total_len;
@@ -5481,7 +5482,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         state: &mut ActiveState,
         packet: &Packet<'_>,
         segments: &mut Vec<TxSegment>,
-        pending_control_messages: &mut Option<&mut PendingControlMessages>,
+        pending_control_messages: &mut Option<PendingControlMessages>,
     ) -> Result<usize, WorkerError> {
         let mut num_packets = 0;
         let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
