@@ -215,7 +215,7 @@ impl GenericPcieRootComplex {
 
                 if !connected {
                     panic!(
-                        "Warning: parent port {} of switch {} cannot be found - switch not connected",
+                        "Warning: parent port {} of switch {} cannot be found",
                         switch_def.parent_port, switch_def.name
                     );
                 }
@@ -1090,6 +1090,7 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "parent port nonexistent-downstream-0 of switch switch1 cannot be found")]
     fn test_invalid_parent_switch() {
         // Create a switch that references a non-existent parent switch
         let switch1 = GenericSwitchDefinition::new("switch1", 2, "nonexistent-downstream-0");
@@ -1103,10 +1104,6 @@ mod tests {
         let mut register_mmio = TestPcieMmioRegistration {};
         let rc =
             GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def], switches);
-
-        // Verify the root complex was created successfully (even though switch couldn't be connected)
-        assert_eq!(rc.downstream_ports().len(), 1);
-        assert_eq!(rc.downstream_ports()[0].1.as_ref(), "test-port");
     }
 
     #[test]
