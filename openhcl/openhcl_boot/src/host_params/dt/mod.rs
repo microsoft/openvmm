@@ -515,6 +515,10 @@ fn topology_from_host_dt(
     let vtl2_gpa_pool_size = {
         let dt_page_count = parsed.device_dma_page_count;
         let cmdline_page_count = options.enable_vtl2_gpa_pool;
+
+        if (dt_page_count.is_none() && cmdline_page_count.is_none()) {
+            // todo: make sure that Some(0) is treated correctly
+        }
         max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0))
     };
     if vtl2_gpa_pool_size != 0 {
