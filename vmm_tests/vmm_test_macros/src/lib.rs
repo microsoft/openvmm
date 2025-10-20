@@ -675,10 +675,22 @@ fn make_vmm_test(
     let mut tests = TokenStream::new();
     // FUTURE: compute all this in code instead of in the macro.
     for config in args.configs {
+        // Resolve the VMM backend early by combining specific_vmm and config.vmm
+        let resolved_vmm = match (specific_vmm, config.vmm) {
+            (Some(Vmm::HyperV), Some(Vmm::HyperV))
+            | (Some(Vmm::HyperV), None)
+            | (None, Some(Vmm::HyperV)) => Vmm::HyperV,
+            (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
+            | (Some(Vmm::OpenVmm), None)
+            | (None, Some(Vmm::OpenVmm)) => Vmm::OpenVmm,
+            (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
+            _ => return Err(Error::new(config.span, "vmm mismatch")),
+        };
+
         let name = format!("{}_{original_name}", config.name_prefix(specific_vmm));
 
-        // Build requirements based on the configuration
-        let requirements = build_requirements(&config, &name);
+        // Build requirements based on the configuration and resolved VMM
+        let requirements = build_requirements(&config.firmware, &name, resolved_vmm);
         let requirements = if let Some(req) = requirements {
             quote! { Some(#req) }
         } else {
@@ -694,24 +706,17 @@ fn make_vmm_test(
         };
         let arch = arch_to_tokens(config.arch);
 
-        let (cfg_conditions, artifacts, petri_vm_config) = match (specific_vmm, config.vmm) {
-            (Some(Vmm::HyperV), Some(Vmm::HyperV))
-            | (Some(Vmm::HyperV), None)
-            | (None, Some(Vmm::HyperV)) => (
+        let (cfg_conditions, artifacts, petri_vm_config) = match resolved_vmm {
+            Vmm::HyperV => (
                 quote!(#[cfg(windows)]),
                 quote!(::petri::PetriVmArtifacts::<::petri::hyperv::HyperVPetriBackend>),
                 quote!(::petri::PetriVmBuilder::<::petri::hyperv::HyperVPetriBackend>),
             ),
-
-            (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
-            | (Some(Vmm::OpenVmm), None)
-            | (None, Some(Vmm::OpenVmm)) => (
+            Vmm::OpenVmm => (
                 quote!(),
                 quote!(::petri::PetriVmArtifacts::<::petri::openvmm::OpenVmmPetriBackend>),
                 quote!(::petri::PetriVmBuilder::<::petri::openvmm::OpenVmmPetriBackend>),
             ),
-            (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
-            _ => return Err(Error::new(config.span, "vmm mismatch")),
         };
 
         let petri_vm_config = quote!(#petri_vm_config::new(&params, artifacts, &driver)?);
@@ -746,8 +751,8 @@ fn make_vmm_test(
     })
 }
 
-// Helper to build requirements TokenStream for a config and specific_vmm
-fn build_requirements(config: &Config, name: &str) -> Option<TokenStream> {
+// Helper to build requirements TokenStream for firmware and resolved VMM
+fn build_requirements(firmware: &Firmware, name: &str, resolved_vmm: Vmm) -> Option<TokenStream> {
     let mut requirement_expr: Option<TokenStream> = None;
     let mut is_vbs = false;
     // Add isolation requirement if specified
@@ -757,7 +762,7 @@ fn build_requirements(config: &Config, name: &str) -> Option<TokenStream> {
             ..
         },
         _,
-    ) = &config.firmware
+    ) = firmware
     {
         let isolation_requirement = match isolation {
             IsolationType::Vbs => {
@@ -803,7 +808,7 @@ fn build_requirements(config: &Config, name: &str) -> Option<TokenStream> {
         };
     }
 
-    let is_hyperv = config.vmm.is_some() && config.vmm == Some(Vmm::HyperV);
+    let is_hyperv = resolved_vmm == Vmm::HyperV;
 
     if is_hyperv && is_vbs {
         let hyperv_vbs_requirement_expr = quote!(
