@@ -424,7 +424,7 @@ export async function fetchRunDetails(
       tests: allTests,
     };
   } catch (error) {
-    console.error(`Error fetching run details for ${runNumber}:`, error);
+    console.error(`Error fetching run details`, error);
     throw error;
   }
 }
