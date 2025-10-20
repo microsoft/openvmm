@@ -12,14 +12,15 @@ use futures::FutureExt;
 use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::VpciDeviceConfig;
-use mesh::rpc::RpcSend;
+use mesh::CancelContext;
 use mesh::CellUpdater;
-use nvme_resources::fault::NamespaceChange;
-use nvme_resources::fault::NamespaceFaultConfig;
+use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::NamespaceChange;
+use nvme_resources::fault::NamespaceFaultConfig;
 use nvme_resources::fault::QueueFaultBehavior;
 use nvme_test::command_match::CommandMatchBuilder;
 use petri::OpenHclServicingFlags;
@@ -45,6 +46,7 @@ use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_LINUX_DIREC
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_STANDARD_AARCH64;
 use pipette_client::PipetteClient;
 use scsidisk_resources::SimpleScsiDiskHandle;
+use std::time::Duration;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
@@ -281,18 +283,21 @@ async fn servicing_keepalive_with_namespace_update(
     let (log_verify_send, log_verify_recv) = mesh::oneshot::<()>();
 
     let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
-        .with_namespace_fault(
-            NamespaceFaultConfig::new(ns_change_recv),
-        )
+        .with_namespace_fault(NamespaceFaultConfig::new(ns_change_recv))
         .with_admin_queue_fault(
-            AdminQueueFaultConfig::new().with_submission_queue_fault(
-                CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0).build(),
-                QueueFaultBehavior::Verify(Some(aer_verify_send)),
-            )
-            .with_submission_queue_fault(
-                CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::GET_LOG_PAGE.0).build(),
-                QueueFaultBehavior::Verify(Some(log_verify_send)),
-            )
+            AdminQueueFaultConfig::new()
+                .with_submission_queue_fault(
+                    CommandMatchBuilder::new()
+                        .match_cdw0_opcode(nvme_spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0)
+                        .build(),
+                    QueueFaultBehavior::Verify(Some(aer_verify_send)),
+                )
+                .with_submission_queue_fault(
+                    CommandMatchBuilder::new()
+                        .match_cdw0_opcode(nvme_spec::AdminOpcode::GET_LOG_PAGE.0)
+                        .build(),
+                    QueueFaultBehavior::Verify(Some(log_verify_send)),
+                ),
         );
 
     let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
@@ -312,13 +317,23 @@ async fn servicing_keepalive_with_namespace_update(
         },
     )
     .await?;
-    ns_change_send.call(NamespaceChange::ChangeNotification, KEEPALIVE_VTL2_NSID).await?;
-    vm.restore_openhcl()
+    ns_change_send
+        .call(NamespaceChange::ChangeNotification, KEEPALIVE_VTL2_NSID)
         .await?;
+    vm.restore_openhcl().await?;
 
-    let _ = aer_verify_recv.now_or_never().expect("AER command was not observed during servicing with namespace change");
-    let _ = log_verify_recv.now_or_never().expect("Log command was not observed during servicing with namespace change");
-    
+    let _ = CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(aer_verify_recv)
+        .await
+        .expect("AER command was not observed within 10 seconds of vm restore after servicing with namespace change");
+
+    let _ = CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(log_verify_recv)
+        .await
+        .expect("GET_LOG_PAGE command was not observed within 10 seconds of vm restore after servicing with namespace change");
+
     fault_start_updater.set(false).await;
     agent.ping().await?;
 
