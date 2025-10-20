@@ -214,9 +214,7 @@ impl GenericPcieRootComplex {
                 }
 
                 if !connected {
-                    // Log a warning but don't panic - allow the root complex to be created
-                    // even if some switches can't be connected due to invalid parent ports
-                    eprintln!(
+                    panic!(
                         "Warning: parent port {} of switch {} cannot be found - switch not connected",
                         switch_def.parent_port, switch_def.name
                     );
@@ -225,7 +223,7 @@ impl GenericPcieRootComplex {
         }
     }
 
-    /// Validate that all names are unique across root ports and switches.
+    /// Validate that all names are unique across root ports, switches, and generated downstream port names.
     fn validate_names(
         port_map: &HashMap<u8, (Arc<str>, RootPort)>,
         switch_definitions: &[GenericSwitchDefinition],
@@ -239,10 +237,23 @@ impl GenericPcieRootComplex {
             }
         }
 
-        // Check switch names
+        // Check switch names and their generated downstream port names
         for switch_def in switch_definitions {
+            // Check switch name itself
             if !all_names.insert(switch_def.name.clone()) {
                 panic!("duplicate name found: {}", switch_def.name.as_ref());
+            }
+
+            // Check all downstream port names that will be generated for this switch
+            for i in 0..switch_def.num_downstream_ports {
+                let downstream_port_name: Arc<str> =
+                    format!("{}-downstream-{}", switch_def.name, i).into();
+                if !all_names.insert(downstream_port_name.clone()) {
+                    panic!(
+                        "duplicate name found: {} (generated downstream port name)",
+                        downstream_port_name.as_ref()
+                    );
+                }
             }
         }
     }
@@ -620,7 +631,7 @@ impl RootPort {
         value: &mut u32,
     ) -> IoResult {
         self.port
-            .forward_cfg_read_with_routing(bus, device_function, cfg_offset, value)
+            .forward_cfg_access_with_routing(bus, device_function, true, cfg_offset, value)
     }
 
     fn forward_cfg_write(
@@ -630,8 +641,14 @@ impl RootPort {
         cfg_offset: u16,
         value: u32,
     ) -> IoResult {
-        self.port
-            .forward_cfg_write_with_routing(bus, device_function, cfg_offset, value)
+        let mut mutable_value = value;
+        self.port.forward_cfg_access_with_routing(
+            bus,
+            device_function,
+            false,
+            cfg_offset,
+            &mut mutable_value,
+        )
     }
 }
 
@@ -938,12 +955,12 @@ mod tests {
         let mut value = 0u32;
         let result = root_port
             .port
-            .forward_cfg_read_with_routing(&1, &0, 0x0, &mut value);
+            .forward_cfg_access_with_routing(&1, &0, true, 0x0, &mut value);
         assert!(matches!(result, IoResult::Ok));
 
         let result = root_port
             .port
-            .forward_cfg_write_with_routing(&1, &0, 0x0, 0x12345678);
+            .forward_cfg_access_with_routing(&1, &0, false, 0x0, &mut value);
         assert!(matches!(result, IoResult::Ok));
     }
 
@@ -1099,7 +1116,7 @@ mod tests {
         // Create a switch with the same name as a root port
         let switch1 = GenericSwitchDefinition::new("test-port", 2, "some-parent");
 
-        let switches = vec![switch1];
+        let switches: Vec<GenericSwitchDefinition> = vec![switch1];
 
         let port_def = GenericPcieRootPortDefinition {
             name: "test-port".into(), // Same name as switch
@@ -1130,6 +1147,37 @@ mod tests {
         // This should panic due to duplicate names
         let _rc =
             GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def], switches);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "duplicate name found: switch2-downstream-1 (generated downstream port name)"
+    )]
+    fn test_switch_downstream_port_name_collision() {
+        // Create two switches where one switch's name conflicts with another's downstream port name
+        let switch1 = GenericSwitchDefinition::new("switch1", 1, "test-port");
+        let switch2 = GenericSwitchDefinition::new("switch2", 3, "test-port");
+
+        let switches = vec![switch1, switch2];
+
+        let port_def = GenericPcieRootPortDefinition {
+            name: "test-port".into(),
+        };
+        let port_def2 = GenericPcieRootPortDefinition {
+            name: "switch2-downstream-1".into(), // This conflicts with switch2's second downstream port
+        };
+
+        let mut register_mmio = TestPcieMmioRegistration {};
+
+        // This should panic due to downstream port name collision
+        let _rc = GenericPcieRootComplex::new(
+            &mut register_mmio,
+            0,
+            255,
+            0,
+            vec![port_def, port_def2],
+            switches,
+        );
     }
 
     #[test]

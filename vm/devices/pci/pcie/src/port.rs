@@ -58,13 +58,14 @@ impl PciePort {
         }
     }
 
-    /// Forward a configuration space read to the connected device with root port logic.
+    /// Forward a configuration space access to the connected device with root port logic.
     ///
     /// This version supports routing components for multi-level hierarchies.
-    pub fn forward_cfg_read_with_routing(
+    pub fn forward_cfg_access_with_routing(
         &mut self,
         bus: &u8,
         device_function: &u8,
+        is_read: bool,
         cfg_offset: u16,
         value: &mut u32,
     ) -> IoResult {
@@ -80,7 +81,13 @@ impl PciePort {
             // Perform type-0 access to the child device's config space.
             if *device_function == 0 {
                 if let Some((_, device)) = &mut self.link {
-                    if let Some(result) = device.pci_cfg_read(cfg_offset, value) {
+                    let result = if is_read {
+                        device.pci_cfg_read(cfg_offset, value)
+                    } else {
+                        device.pci_cfg_write(cfg_offset, *value)
+                    };
+
+                    if let Some(result) = result {
                         match result {
                             IoResult::Ok => (),
                             res => return res,
@@ -97,73 +104,23 @@ impl PciePort {
             if let Some((_, device)) = &mut self.link {
                 // Forward access to the routing component.
                 if let Some(routing_device) = device.as_routing_component() {
-                    if let Some(result) = routing_device.pci_cfg_read_forward(
-                        *bus,
-                        *device_function,
-                        cfg_offset,
-                        value,
-                    ) {
-                        match result {
-                            IoResult::Ok => (),
-                            res => return res,
-                        }
-                    }
-                } else {
-                    tracelimit::warn_ratelimited!(
-                        "invalid access: bus number to access not within port's bus number range"
-                    );
-                }
-            }
-        }
+                    let result = if is_read {
+                        routing_device.pci_cfg_read_forward(
+                            *bus,
+                            *device_function,
+                            cfg_offset,
+                            value,
+                        )
+                    } else {
+                        routing_device.pci_cfg_write_forward(
+                            *bus,
+                            *device_function,
+                            cfg_offset,
+                            *value,
+                        )
+                    };
 
-        IoResult::Ok
-    }
-
-    /// Forward a configuration space write to the connected device with root port logic.
-    ///
-    /// This version supports routing components for multi-level hierarchies.
-    pub fn forward_cfg_write_with_routing(
-        &mut self,
-        bus: &u8,
-        device_function: &u8,
-        cfg_offset: u16,
-        value: u32,
-    ) -> IoResult {
-        let bus_range = self.cfg_space.assigned_bus_range();
-
-        // If the bus range is 0..=0, this indicates invalid/uninitialized bus configuration
-        if bus_range == (0..=0) {
-            tracelimit::warn_ratelimited!("invalid access: port bus number range not configured");
-            return IoResult::Ok;
-        }
-
-        if *bus == *bus_range.start() {
-            if *device_function == 0 {
-                // Perform type-0 access to the child device's config space.
-                if let Some((_, device)) = &mut self.link {
-                    if let Some(result) = device.pci_cfg_write(cfg_offset, value) {
-                        match result {
-                            IoResult::Ok => (),
-                            res => return res,
-                        }
-                    }
-                }
-            } else {
-                tracelimit::warn_ratelimited!(
-                    "invalid access: multi-function device access not supported for now"
-                );
-                return IoResult::Ok;
-            }
-        } else if bus_range.contains(bus) {
-            if let Some((_, device)) = &mut self.link {
-                // Forward access to the routing component.
-                if let Some(routing_device) = device.as_routing_component() {
-                    if let Some(result) = routing_device.pci_cfg_write_forward(
-                        *bus,
-                        *device_function,
-                        cfg_offset,
-                        value,
-                    ) {
+                    if let Some(result) = result {
                         match result {
                             IoResult::Ok => (),
                             res => return res,
