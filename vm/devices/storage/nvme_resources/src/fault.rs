@@ -28,7 +28,7 @@ pub enum QueueFaultBehavior<T> {
     /// controller will panic. This behavior is not yet supported by the submission
     /// queue fault.
     CustomPayload(Vec<u8>),
-    /// Verify that a particular command was seen
+    /// Verify that a command was seen.
     Verify(Option<OneshotSender<()>>),
 }
 
