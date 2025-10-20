@@ -681,7 +681,7 @@ impl AdminHandler {
                     return Ok(());
                 }
                 QueueFaultBehavior::Delay(duration) => {
-                    self.timer.sleep(duration.clone()).await;
+                    self.timer.sleep(*duration).await;
                 }
                 QueueFaultBehavior::Panic(message) => {
                     panic!(
