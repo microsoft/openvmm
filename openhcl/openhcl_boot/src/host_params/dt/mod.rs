@@ -13,6 +13,7 @@ use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
 use crate::host_params::MAX_VTL2_RAM_RANGES;
+use crate::host_params::dt::dma_hint::vtl2_calculate_dma_hint;
 use crate::host_params::mmio::select_vtl2_mmio_range;
 use crate::host_params::shim_params::IsolationType;
 use crate::memory::AddressSpaceManager;
@@ -41,6 +42,7 @@ use thiserror::Error;
 use zerocopy::FromBytes;
 
 mod bump_alloc;
+mod dma_hint;
 
 /// Errors when reading the host device tree.
 #[derive(Debug, Error)]
@@ -510,16 +512,37 @@ fn topology_from_host_dt(
         .init()
         .expect("failed to initialize address space manager");
 
-    // Decide if we will reserve memory for a VTL2 private pool. Parse this
-    // from the final command line, or the host provided device tree value.
+    // Decide if we will reserve memory for a VTL2 private pool. This value comes from one
+    // of several sources:
+    //
+    // Source 1: The final command line. The external environment may specify a
+    //           value for VTL2 private pool size via the command line.
+    // Source 2: The device tree. The host may specify a value for VTL2 private
+    //           pool size via the device tree.
+    // Source 3: Heuristics. If neither the command line nor device tree specify
+    //           a value, we may decide to reserve a default size based on the
+    //           amount of VTL2 ram and number of vCPUs. The point of this method
+    //           is to account for cases where we retrofit the private pool into
+    //           existing deployments that do not specify it explicitly.
+    //
+    // If either of the external sources (command line or device tree) specify
+    // a size, we use the maximum of those two values. If neither specify a size,
+    // we use heuristics to decide if we should reserve a pool.
     let vtl2_gpa_pool_size = {
         let dt_page_count = parsed.device_dma_page_count;
         let cmdline_page_count = options.enable_vtl2_gpa_pool;
 
-        if (dt_page_count.is_none() && cmdline_page_count.is_none()) {
+        if dt_page_count.is_some() || cmdline_page_count.is_some() {
+            // Any external source defined the pool size, use the maximum of all external sources.
             // todo: make sure that Some(0) is treated correctly
+            max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0))
+        } else {
+            // todo mattkur
+
+            // No external source defined the pool size, use heuristics to decide.
+            let mem_size = vtl2_ram.iter().map(|e| e.range.len()).sum();
+            vtl2_calculate_dma_hint(parsed.cpu_count(), mem_size)
         }
-        max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0))
     };
     if vtl2_gpa_pool_size != 0 {
         // Reserve the specified number of pages for the pool. Use the used
