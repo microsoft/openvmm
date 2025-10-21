@@ -717,12 +717,15 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         };
         loop {
             let mut timer = PolledTimer::new(&self.driver);
-            tracing::info!("attempting to connect to pipette server");
+            tracing::info!(set_high_vtl, "attempting to connect to pipette server");
             match client_core().await {
                 Ok(socket) => {
-                    return PipetteClient::new(&self.driver, socket, self.temp_dir.path())
+                    tracing::info!(set_high_vtl, "handshaking with pipette");
+                    let c = PipetteClient::new(&self.driver, socket, self.temp_dir.path())
                         .await
                         .context("failed to handshake with pipette");
+                    tracing::info!(set_high_vtl, "completed pipette handshake");
+                    return c;
                 }
                 Err(err) => {
                     eprintln!("failed to connect to pipette server, retrying: {:?}", err);
