@@ -5,23 +5,29 @@ import './styles/common.css';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { SortingState } from '@tanstack/react-table';
 import { useQueryClient } from '@tanstack/react-query';
-import { fetchTestAnalysis, convertToTestData } from './fetch/fetch_runs_data';
-import { CONCURRENCY_BACKGROUND, CONCURRENCY_FOREGROUND, TestData } from './data_defs';
+import { fetchTestAnalysis, convertToTestDetailsData } from './fetch/fetch_runs_data';
+import { CONCURRENCY_BACKGROUND, CONCURRENCY_FOREGROUND, TestRunInfo } from './data_defs';
 import { Menu } from './menu.tsx';
 import { VirtualizedTable } from './virtualized_table.tsx';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { SearchInput } from './search';
-import { createColumns, defaultSorting, columnWidthMap } from './table_defs/tests';
+import { createColumns, defaultSorting, columnWidthMap } from './table_defs/test_details';
 
-export function Tests(): React.JSX.Element {
+export function TestDetails(): React.JSX.Element {
     const [searchParams, setSearchParams] = useSearchParams();
     const branchFromUrl = searchParams.get('branchFilter') || 'main';
     const [branchFilter, setBranchFilterState] = useState<string>(branchFromUrl);
     const [searchFilter, setSearchFilter] = useState<string>('');
-    const [tableData, setTableData] = useState<TestData[]>([]);
+    const [tableData, setTableData] = useState<TestRunInfo[]>([]);
     const [fetchedCount, setFetchedCount] = useState<number>(0);
     const [totalToFetch, setTotalToFetch] = useState<number | null>(null);
     const queryClient = useQueryClient();
+
+    const { architecture: archParam, testName: encodedTestName } = useParams();
+    // Build full test name depending on whether new (architecture + remainder) or legacy route
+    const architecture = archParam ? decodeURIComponent(archParam) : '';
+    const testNameRemainder = encodedTestName ? decodeURIComponent(encodedTestName) : '';
+    const fullTestName = architecture + '/' + testNameRemainder;
 
     // Track component mount state for dynamic concurrency control
     const concurrencyRef = useRef(CONCURRENCY_FOREGROUND);
@@ -50,7 +56,6 @@ export function Tests(): React.JSX.Element {
     // Fetch run details for the selected branch
     useEffect(() => {
         setFetchedCount(0);
-
         // Fetch test analysis (which returns the test mapping)
         fetchTestAnalysis(
             branchFilter,
@@ -61,21 +66,22 @@ export function Tests(): React.JSX.Element {
             },
             () => concurrencyRef.current // Dynamic concurrency
         ).then(testMapping => {
-            setTableData(convertToTestData(testMapping));
-        }).catch(err => {
-            console.error('Error fetching test analysis:', err);
+            setTableData(convertToTestDetailsData(testMapping, fullTestName));
         });
-    }, [branchFilter, queryClient]);
+    }, [fullTestName, branchFilter, queryClient]);
 
     // Get the table definition (columns and default sorting)
     const [sorting, setSorting] = useState<SortingState>(defaultSorting);
-    const columns = useMemo(() => createColumns(), []);
+    const columns = useMemo(() => createColumns(fullTestName), [fullTestName]);
     const filteredTableData = useMemo(() => filterTests(tableData, searchFilter), [tableData, searchFilter]);
 
     return (
         <div className="common-page-display">
             <div className="common-page-header">
-                <TestsHeader
+                <TestDetailsHeader
+                    architecture={architecture}
+                    testNameRemainder={testNameRemainder}
+                    fullTestName={fullTestName}
                     branchFilter={branchFilter}
                     setBranchFilter={setBranchFilter}
                     searchFilter={searchFilter}
@@ -96,7 +102,10 @@ export function Tests(): React.JSX.Element {
     );
 }
 
-interface TestsHeaderProps {
+interface TestDetailsHeaderProps {
+    architecture: string;
+    testNameRemainder: string;
+    fullTestName: string;
     branchFilter: string;
     setBranchFilter: (branch: string) => void;
     searchFilter: string;
@@ -106,7 +115,10 @@ interface TestsHeaderProps {
     totalToFetch: number | null;
 }
 
-export function TestsHeader({
+export function TestDetailsHeader({
+    architecture,
+    testNameRemainder,
+    fullTestName,
     branchFilter,
     setBranchFilter,
     searchFilter,
@@ -114,13 +126,31 @@ export function TestsHeader({
     resultCount,
     fetchedCount,
     totalToFetch,
-}: TestsHeaderProps): React.JSX.Element {
+}: TestDetailsHeaderProps): React.JSX.Element {
+    const encodedArchitecture = encodeURIComponent(architecture);
+    const encodedTestName = encodeURIComponent(testNameRemainder);
+
     return (
         <>
-            <div className="common-header-left">
-                <div className="common-header-title">
+            <div className="common-header-left" style={{ minWidth: 0, flex: 1, display: 'flex' }}>
+                <div className="common-header-title" style={{
+                    minWidth: 0,
+                }}>
                     <Menu />
                     <Link to="/tests" className="common-header-path">Tests</Link>
+                    <span>/</span>
+                    <Link
+                        to={`/tests/${encodedArchitecture}/${encodedTestName}`}
+                        className="common-header-path-long"
+                        title={fullTestName}
+                    >
+                        {testNameRemainder}
+                    </Link>
+                    {architecture && (
+                        <div className="common-sub-header">
+                            {architecture}
+                        </div>
+                    )}
                 </div>
                 <div className="common-header-filter-buttons">
                     <button
@@ -142,7 +172,7 @@ export function TestsHeader({
                     <div className="header-loading-indicator">
                         <div className="header-loading-spinner"></div>
                         <div className="header-loading-text">
-                            Analyzed {fetchedCount}/{totalToFetch}
+                            Analysed {fetchedCount}/{totalToFetch}
                         </div>
                     </div>
                 )}
@@ -165,13 +195,12 @@ export function TestsHeader({
  * - The searchable fields include: architecture and test name.
  * - The filtering is case-insensitive.
  */
-function filterTests(tests: TestData[], searchFilter: string): TestData[] {
+function filterTests(tests: TestRunInfo[], searchFilter: string): TestRunInfo[] {
     const terms = searchFilter.trim().toLowerCase().split(/\s+/).filter(Boolean);
     if (terms.length === 0) return tests;
     return tests.filter(test => {
-        // Search in architecture and name fields
-        const status = test.failedCount === 0 ? 'passed' : 'failed';
-        const haystack = `${status} ${test.architecture} ${test.name}`.toLowerCase();
+        // Search in name and status fields
+        const haystack = `${test.runNumber} ${test.status}`.toLowerCase();
         return terms.every(term => haystack.includes(term));
     });
 }
