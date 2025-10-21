@@ -56,6 +56,8 @@ impl PetriVmConfigOpenVmm {
                     guest_secret_key: None,
                     logger: None,
                     is_confidential_vm: self.firmware.isolation().is_some(),
+                    // TODO: generate an actual BIOS GUID and put it here
+                    bios_guid: guid::guid!("00000000-0000-0000-0000-000000000000"),
                 }
                 .into_resource(),
             });
@@ -164,34 +166,6 @@ impl PetriVmConfigOpenVmm {
             ));
         }
 
-        self
-    }
-
-    /// Specifies whether the UEFI will always attempt a default boot
-    pub fn with_default_boot_always_attempt(mut self, val: bool) -> Self {
-        match self.config.load_mode {
-            LoadMode::Uefi {
-                ref mut default_boot_always_attempt,
-                ..
-            } => {
-                *default_boot_always_attempt = val;
-            }
-            LoadMode::Igvm { .. } => {
-                let ged = self.ged.as_mut().expect("no GED to configure DPS");
-                match ged.firmware {
-                    get_resources::ged::GuestFirmwareConfig::Uefi {
-                        ref mut default_boot_always_attempt,
-                        ..
-                    } => {
-                        *default_boot_always_attempt = val;
-                    }
-                    _ => {
-                        panic!("not a UEFI boot");
-                    }
-                }
-            }
-            _ => panic!("not a UEFI boot"),
-        }
         self
     }
 

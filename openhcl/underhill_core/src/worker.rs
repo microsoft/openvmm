@@ -46,6 +46,7 @@ use crate::nvme_manager::manager::NvmeDiskConfig;
 use crate::nvme_manager::manager::NvmeDiskResolver;
 use crate::nvme_manager::manager::NvmeManager;
 use crate::options::GuestStateEncryptionPolicyCli;
+use crate::options::GuestStateLifetimeCli;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -273,9 +274,6 @@ pub struct UnderhillEnvCfg {
     pub nvme_vfio: bool,
     // TODO MCR: support closed-source configuration logic for MCR device
     pub mcr: bool,
-    /// Enable the shared visibility pool. This is enabled by default on
-    /// hardware isolated platforms, but can be enabled for testing.
-    pub enable_shared_visibility_pool: bool,
     /// Halt on a guest halt request instead of forwarding to the host.
     pub halt_on_guest_halt: bool,
     /// Leave sidecar VPs remote even if they hit exits.
@@ -291,9 +289,15 @@ pub struct UnderhillEnvCfg {
     /// test configuration
     pub test_configuration: Option<TestScenarioConfig>,
     /// Disable the UEFI front page.
-    pub disable_uefi_frontpage: bool,
+    pub disable_uefi_frontpage: Option<bool>,
+    /// Always attempt a default boot
+    pub default_boot_always_attempt: Option<bool>,
+    /// Guest state lifetime
+    pub guest_state_lifetime: Option<GuestStateLifetimeCli>,
     /// Guest state encryption policy
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+    /// Strict guest state encryption policy
+    pub strict_encryption_policy: Option<bool>,
     /// Attempt to renew the AK cert
     pub attempt_ak_cert_callback: Option<bool>,
     /// Enable the VPCI relay
@@ -1218,11 +1222,30 @@ async fn new_underhill_vm(
 
     // override dps values with env_cfg values as necessary
     let dps = {
-        if let Some(value) = env_cfg.attempt_ak_cert_callback {
-            tracing::info!("using HCL_ATTEMPT_AK_CERT_CALLBACK={value} from cmdline");
-            dps.general
-                .management_vtl_features
-                .set_attempt_ak_cert_callback(value);
+        if let Some(value) = env_cfg.disable_uefi_frontpage {
+            tracing::info!("using OPENHCL_DISABLE_UEFI_FRONTPAGE={value} from cmdline");
+            dps.general.disable_frontpage = value;
+        }
+
+        if let Some(value) = env_cfg.default_boot_always_attempt {
+            tracing::info!("using HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT={value} from cmdline");
+            dps.general.default_boot_always_attempt = value;
+        }
+
+        if let Some(lifetime) = env_cfg.guest_state_lifetime {
+            tracing::info!("using HCL_GUEST_STATE_LIFETIME={lifetime:?} from cmdline");
+            dps.general.guest_state_lifetime = match lifetime {
+                GuestStateLifetimeCli::Default => GuestStateLifetime::Default,
+                GuestStateLifetimeCli::ReprovisionOnFailure => {
+                    GuestStateLifetime::ReprovisionOnFailure
+                }
+                GuestStateLifetimeCli::Reprovision => GuestStateLifetime::Reprovision,
+                GuestStateLifetimeCli::Ephemeral => GuestStateLifetime::Ephemeral,
+            };
+        }
+
+        if env_cfg.reformat_vmgs {
+            dps.general.guest_state_lifetime = GuestStateLifetime::Reprovision;
         }
 
         if let Some(policy) = env_cfg.guest_state_encryption_policy {
@@ -1233,6 +1256,20 @@ async fn new_underhill_vm(
                 GuestStateEncryptionPolicyCli::GspKey => GuestStateEncryptionPolicy::GspKey,
                 GuestStateEncryptionPolicyCli::None => GuestStateEncryptionPolicy::None,
             };
+        }
+
+        if let Some(value) = env_cfg.strict_encryption_policy {
+            tracing::info!("using HCL_STRICT_ENCRYPTION_POLICY={value} from cmdline");
+            dps.general
+                .management_vtl_features
+                .set_strict_encryption_policy(value);
+        }
+
+        if let Some(value) = env_cfg.attempt_ak_cert_callback {
+            tracing::info!("using HCL_ATTEMPT_AK_CERT_CALLBACK={value} from cmdline");
+            dps.general
+                .management_vtl_features
+                .set_attempt_ak_cert_callback(value);
         }
 
         dps
@@ -1341,7 +1378,6 @@ async fn new_underhill_vm(
             round_up_to_2mb(cpu_bytes + device_dma + attestation)
         }
         virt::IsolationType::Vbs => round_up_to_2mb(device_dma + attestation),
-        _ if env_cfg.enable_shared_visibility_pool => round_up_to_2mb(device_dma + attestation),
         _ => 0,
     };
 
@@ -1480,13 +1516,11 @@ async fn new_underhill_vm(
             let disk = Disk::new(disk).context("invalid vmgs disk")?;
             let logger = Arc::new(GetVmgsLogger::new(get_client.clone()));
 
-            let vmgs = if env_cfg.reformat_vmgs
-                || matches!(
-                    dps.general.guest_state_lifetime,
-                    GuestStateLifetime::Reprovision
-                ) {
-                tracing::info!(CVM_ALLOWED, "formatting vmgs file on request");
-                Vmgs::format_new(disk, Some(logger))
+            let vmgs = if matches!(
+                dps.general.guest_state_lifetime,
+                GuestStateLifetime::Reprovision
+            ) {
+                Vmgs::request_format(disk, Some(logger))
                     .instrument(tracing::info_span!("vmgs_format", CVM_ALLOWED))
                     .await
                     .context("failed to format vmgs")?
@@ -2572,7 +2606,8 @@ async fn new_underhill_vm(
         });
 
     if dps.general.tpm_enabled {
-        let no_persistent_secrets = dps.general.suppress_attestation.unwrap_or(false);
+        let no_persistent_secrets =
+            vmgs_client.is_none() || dps.general.suppress_attestation.unwrap_or(false);
         let (ppi_store, nvram_store) = if no_persistent_secrets {
             (
                 EphemeralNonVolatileStoreHandle.into_resource(),
@@ -2637,6 +2672,7 @@ async fn new_underhill_vm(
                 guest_secret_key: platform_attestation_data.guest_secret_key,
                 logger: Some(GetTpmLoggerHandle.into_resource()),
                 is_confidential_vm: isolation.is_isolated(),
+                bios_guid: dps.general.bios_guid,
             }
             .into_resource(),
         });
@@ -3247,7 +3283,6 @@ async fn new_underhill_vm(
             load_kind,
             &dps,
             isolation.is_isolated(),
-            env_cfg.disable_uefi_frontpage,
         )
         .instrument(tracing::info_span!("load_firmware", CVM_ALLOWED))
         .await?;
@@ -3521,16 +3556,12 @@ async fn load_firmware(
     load_kind: LoadKind,
     dps: &DevicePlatformSettings,
     isolated: bool,
-    disable_uefi_frontpage: bool,
 ) -> Result<(), anyhow::Error> {
     let cmdline_append = match cmdline_append {
         Some(cmdline) => CString::new(cmdline.as_bytes()).context("bad command line")?,
         None => CString::default(),
     };
-    let loader_config = crate::loader::Config {
-        cmdline_append,
-        disable_uefi_frontpage,
-    };
+    let loader_config = crate::loader::Config { cmdline_append };
     let caps = partition.caps();
     let vtl0_vp_context = crate::loader::load(
         gm,

@@ -16,7 +16,7 @@ fs-err.workspace = true
 log.workspace = true
 pathdiff.workspace = true
 semver.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["std"] }
 toml_edit = { workspace = true, features = ["serde"] }
 
 ci_logger.workspace = true

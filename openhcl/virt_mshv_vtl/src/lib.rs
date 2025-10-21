@@ -285,20 +285,6 @@ impl BackingShared {
         }
     }
 
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    fn guest_vsm_disabled(&self) -> bool {
-        match self {
-            BackingShared::Hypervisor(h) => {
-                matches!(*h.guest_vsm.read(), GuestVsmState::NotPlatformSupported)
-            }
-            #[cfg(guest_arch = "x86_64")]
-            BackingShared::Snp(SnpBackedShared { cvm, .. })
-            | BackingShared::Tdx(TdxBackedShared { cvm, .. }) => {
-                matches!(*cvm.guest_vsm.read(), GuestVsmState::NotPlatformSupported)
-            }
-        }
-    }
-
     fn untrusted_synic(&self) -> Option<&GlobalSynic> {
         match self {
             BackingShared::Hypervisor(_) => None,
@@ -2355,28 +2341,6 @@ impl UhPartitionInner {
             !write || self.monitor_page.gpa() != Some(gpa & !(HV_PAGE_SIZE - 1))
         } else {
             false
-        }
-    }
-
-    /// Gets the CPUID result, applying any necessary runtime modifications.
-    #[cfg(guest_arch = "x86_64")]
-    fn cpuid_result(&self, eax: u32, ecx: u32, default: &[u32; 4]) -> [u32; 4] {
-        let r = self.cpuid.result(eax, ecx, default);
-        if eax == hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES {
-            // Update the VSM access privilege.
-            //
-            // FUTURE: Investigate if this is really necessary for non-CVM--the
-            // hypervisor should already update this correctly.
-            //
-            // If it is only for CVM, then it should be moved to the
-            // CVM-specific cpuid fixups.
-            let mut features = hvdef::HvFeatures::from_cpuid(r);
-            if self.backing_shared.guest_vsm_disabled() {
-                features.set_privileges(features.privileges().with_access_vsm(false));
-            }
-            features.into_cpuid()
-        } else {
-            r
         }
     }
 }

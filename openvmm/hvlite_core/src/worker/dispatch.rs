@@ -1063,7 +1063,7 @@ impl InitializedVm {
                 .context("failed to open vmgs file")?,
             ),
             Some(VmgsResource::Reprovision(disk)) => Some(
-                vmgs::Vmgs::format_new(
+                vmgs::Vmgs::request_format(
                     open_simple_disk(&resolver, disk.disk, false, &driver_source).await?,
                     None,
                 )
@@ -1795,6 +1795,9 @@ impl InitializedVm {
                         high_mmio_address..high_mmio_address + rc.high_mmio_size,
                     ),
                 });
+
+                let bus_id = vmotherboard::BusId::new(&rc.name);
+                chipset_builder.register_weak_mutex_pcie_enumerator(bus_id, Box::new(root_complex));
 
                 ecam_address += ecam_size;
                 low_mmio_address -= low_mmio_size;
@@ -2558,6 +2561,7 @@ impl LoadedVmInner {
                 enable_vpci_boot,
                 uefi_console_mode,
                 default_boot_always_attempt,
+                bios_guid,
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
@@ -2574,6 +2578,7 @@ impl LoadedVmInner {
                     serial: enable_serial,
                     uefi_console_mode,
                     default_boot_always_attempt,
+                    bios_guid,
                 };
                 let regs = super::vm_loaders::uefi::load_uefi(
                     firmware,

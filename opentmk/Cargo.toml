@@ -1,0 +1,30 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "opentmk"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bitfield-struct.workspace = true
+cfg-if.workspace  = true
+hvdef.workspace = true
+lazy_static = { workspace = true, features = ["spin_no_std"] }
+linked_list_allocator.workspace = true
+log.workspace = true
+memory_range.workspace = true
+minimal_rt.workspace = true
+spin.workspace = true
+serde = { workspace = true, features = ["derive"]}
+serde_json = { workspace = true, features = ["alloc"] }
+thiserror.workspace = true
+uefi = { workspace = true, features = ["alloc"] }
+x86_64 = { workspace = true, features = ["instructions"] }
+zerocopy.workspace = true
+nostd_spin_channel.workspace = true
+
+[lints]
+workspace = true
+
+[build-dependencies]

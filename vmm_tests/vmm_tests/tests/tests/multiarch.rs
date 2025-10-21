@@ -22,11 +22,12 @@ use vmm_test_macros::vmm_test_no_agent;
 
 /// Tests for Hyper-V integration components.
 mod ic;
-/// Servicing tests.
-mod openhcl_servicing;
-
 // Memory Validation tests.
 mod memstat;
+/// Servicing tests.
+mod openhcl_servicing;
+/// PCIe emulation tests.
+mod pcie;
 /// Tests of vmbus relay functionality.
 mod vmbus_relay;
 /// Tests involving VMGS functionality
@@ -521,7 +522,7 @@ async fn memory_validation_cvm_small<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_gp_large<T: PetriVmmBackend>(
+async fn memory_validation_gp_heavy<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     _: (),
     driver: pal_async::DefaultDriver,
@@ -543,7 +544,7 @@ async fn memory_validation_gp_large<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_cvm_large<T: PetriVmmBackend>(
+async fn memory_validation_cvm_heavy<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     _: (),
     driver: pal_async::DefaultDriver,
