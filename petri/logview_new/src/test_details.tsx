@@ -192,7 +192,7 @@ export function TestDetailsHeader({
  * 
  * - Search string is split into terms (by whitespace), and each test is checked
  *   to see if ALL terms are present.
- * - The searchable fields include: architecture and test name.
+ * - The searchable fields include: run number and status.
  * - The filtering is case-insensitive.
  */
 function filterTests(tests: TestRunInfo[], searchFilter: string): TestRunInfo[] {
