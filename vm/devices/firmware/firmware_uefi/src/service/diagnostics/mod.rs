@@ -35,7 +35,7 @@ mod processor;
 pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;
 
 /// Log level configuration - encapsulates a u32 mask where u32::MAX means log everything
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect, Protobuf)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Protobuf)]
 #[mesh(transparent)]
 pub struct LogLevel(u32);
 
@@ -68,6 +68,15 @@ impl LogLevel {
 impl Default for LogLevel {
     fn default() -> Self {
         Self::default()
+    }
+}
+
+impl Inspect for LogLevel {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        let human_readable = formatting::debug_level_to_string(self.0);
+        req.respond()
+            .field("raw_value", self.0)
+            .field("debug_levels", human_readable.as_ref());
     }
 }
 
