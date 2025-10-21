@@ -10,7 +10,11 @@ use crate::NamespaceError;
 use crate::NvmeDriverSavedState;
 use crate::RequestError;
 use crate::driver::save_restore::IoQueueSavedState;
+use crate::queue_pair::AdminAerHandler;
 use crate::queue_pair::Issuer;
+use crate::queue_pair::MAX_CQ_ENTRIES;
+use crate::queue_pair::MAX_SQ_ENTRIES;
+use crate::queue_pair::NoOpAerHandler;
 use crate::queue_pair::QueuePair;
 use crate::queue_pair::admin_cmd;
 use crate::registers::Bar0;
@@ -79,7 +83,7 @@ struct DriverWorkerTask<T: DeviceBacking> {
     #[inspect(skip)]
     driver: VmTaskDriver,
     registers: Arc<DeviceRegisters<T>>,
-    admin: Option<QueuePair>,
+    admin: Option<QueuePair<AdminAerHandler>>,
     #[inspect(iter_by_index)]
     io: Vec<IoQueue>,
     io_issuers: Arc<IoIssuers>,
@@ -103,9 +107,26 @@ pub enum RestoreError {
     InvalidData,
 }
 
+#[derive(Debug, Error)]
+pub enum DeviceError {
+    #[error("no more io queues available, reached maximum {0}")]
+    NoMoreIoQueues(u16),
+    #[error("failed to map interrupt")]
+    InterruptMapFailure(#[source] anyhow::Error),
+    #[error("failed to create io queue pair {1}")]
+    IoQueuePairCreationFailure(#[source] anyhow::Error, u16),
+    #[error("failed to create io completion queue {1}")]
+    IoCompletionQueueFailure(#[source] anyhow::Error, u16),
+    #[error("failed to create io submission queue {1}")]
+    IoSubmissionQueueFailure(#[source] anyhow::Error, u16),
+    // Other device related errors
+    #[error(transparent)]
+    Other(anyhow::Error),
+}
+
 #[derive(Inspect)]
 struct IoQueue {
-    queue: QueuePair,
+    queue: QueuePair<NoOpAerHandler>,
     iv: u16,
     cpu: u32,
 }
@@ -139,6 +160,7 @@ impl IoQueue {
             mem_block,
             queue_data,
             bounce_buffer,
+            NoOpAerHandler,
         )?;
 
         Ok(Self {
@@ -280,7 +302,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // device bugs where differing sizes might be a less common scenario
         //
         // Namely: using differing sizes revealed a bug in the initial NvmeDirectV2 implementation
-        let admin_len = std::cmp::min(QueuePair::MAX_SQ_ENTRIES, QueuePair::MAX_CQ_ENTRIES);
+        let admin_len = std::cmp::min(MAX_SQ_ENTRIES, MAX_CQ_ENTRIES);
         let admin_sqes = admin_len;
         let admin_cqes = admin_len;
 
@@ -299,8 +321,12 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             interrupt0,
             worker.registers.clone(),
             self.bounce_buffer,
+            AdminAerHandler::new(),
         )
         .context("failed to create admin queue pair")?;
+
+        let admin_sqes = admin.sq_entries();
+        let admin_cqes = admin.cq_entries();
 
         let admin = worker.admin.insert(admin);
 
@@ -426,8 +452,15 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 anyhow::bail!("bad device behavior. mqes cannot be 0");
             }
 
-            let io_cqsize = (QueuePair::MAX_CQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
-            let io_sqsize = (QueuePair::MAX_SQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
+            let io_cqsize = (MAX_CQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
+            let io_sqsize = (MAX_SQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
+
+            tracing::debug!(
+                io_cqsize,
+                io_sqsize,
+                hw_size = worker.registers.cap.mqes_z(),
+                "io queue sizes"
+            );
 
             // Some hardware (such as ASAP) require that the sq and cq have the same size.
             io_cqsize.min(io_sqsize)
@@ -607,7 +640,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             admin: None, // Updated below.
             identify: Some(Arc::new(
                 spec::IdentifyController::read_from_bytes(saved_state.identify_ctrl.as_bytes())
-                    .map_err(|_| RestoreError::InvalidData)?, // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+                    .map_err(|_| RestoreError::InvalidData)?,
             )),
             driver: driver.clone(),
             io_issuers,
@@ -650,6 +683,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     mem_block,
                     a,
                     bounce_buffer,
+                    AdminAerHandler::new(),
                 )
                 .unwrap()
             })
@@ -746,12 +780,11 @@ async fn handle_asynchronous_events(
     rescan_event: &event_listener::Event,
 ) -> anyhow::Result<()> {
     loop {
-        let completion = admin
-            .issue_neither(admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST))
+        let dw0 = admin
+            .issue_get_aen()
             .await
             .context("asynchronous event request failed")?;
 
-        let dw0 = spec::AsynchronousEventRequestDw0::from(completion.dw0);
         match spec::AsynchronousEventType(dw0.event_type()) {
             spec::AsynchronousEventType::NOTICE => {
                 tracing::info!("namespace attribute change event");
@@ -868,12 +901,27 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     .find_map(|(i, issuer)| issuer.get().map(|issuer| (i, issuer)))
                     .unwrap();
 
-                tracing::error!(
-                    cpu,
-                    fallback_cpu,
-                    error = err.as_ref() as &dyn std::error::Error,
-                    "failed to create io queue, falling back"
-                );
+                // Log the error as informational only when there is a lack of
+                // hardware resources from the device.
+                match err {
+                    DeviceError::NoMoreIoQueues(_) => {
+                        tracing::info!(
+                            cpu,
+                            fallback_cpu,
+                            error = &err as &dyn std::error::Error,
+                            "failed to create io queue, falling back"
+                        );
+                    }
+                    _ => {
+                        tracing::error!(
+                            cpu,
+                            fallback_cpu,
+                            error = &err as &dyn std::error::Error,
+                            "failed to create io queue, falling back"
+                        );
+                    }
+                }
+
                 fallback.clone()
             }
         };
@@ -888,9 +936,9 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         &mut self,
         state: &mut WorkerState,
         cpu: u32,
-    ) -> anyhow::Result<IoIssuer> {
+    ) -> Result<IoIssuer, DeviceError> {
         if self.io.len() >= state.max_io_queues as usize {
-            anyhow::bail!("no more io queues available");
+            return Err(DeviceError::NoMoreIoQueues(state.max_io_queues));
         }
 
         let qid = self.io.len() as u16 + 1;
@@ -902,7 +950,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         let interrupt = self
             .device
             .map_interrupt(iv.into(), cpu)
-            .context("failed to map interrupt")?;
+            .map_err(DeviceError::InterruptMapFailure)?;
 
         let queue = QueuePair::new(
             self.driver.clone(),
@@ -913,8 +961,12 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             interrupt,
             self.registers.clone(),
             self.bounce_buffer,
+            NoOpAerHandler,
         )
-        .with_context(|| format!("failed to create io queue pair {qid}"))?;
+        .map_err(|err| DeviceError::IoQueuePairCreationFailure(err, qid))?;
+
+        assert_eq!(queue.sq_entries(), queue.cq_entries());
+        state.qsize = queue.sq_entries();
 
         let io_sq_addr = queue.sq_addr();
         let io_cq_addr = queue.cq_addr();
@@ -943,7 +995,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     ..admin_cmd(spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE)
                 })
                 .await
-                .with_context(|| format!("failed to create io completion queue {qid}"))?;
+                .map_err(|err| DeviceError::IoCompletionQueueFailure(err.into(), qid))?;
 
             created_completion_queue = true;
 
@@ -961,7 +1013,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     ..admin_cmd(spec::AdminOpcode::CREATE_IO_SUBMISSION_QUEUE)
                 })
                 .await
-                .with_context(|| format!("failed to create io submission queue {qid}"))?;
+                .map_err(|err| DeviceError::IoSubmissionQueueFailure(err.into(), qid))?;
 
             Ok(())
         };
@@ -983,7 +1035,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             }
             let io = self.io.pop().unwrap();
             io.queue.shutdown().await;
-            return Err(err);
+            return Err(DeviceError::Other(err));
         }
 
         Ok(IoIssuer {
@@ -1120,6 +1172,8 @@ pub mod save_restore {
         pub cq_state: CompletionQueueSavedState,
         #[mesh(3)]
         pub pending_cmds: PendingCommandsSavedState,
+        #[mesh(4)]
+        pub aer_handler: Option<AerHandlerSavedState>,
     }
 
     #[derive(Protobuf, Clone, Debug)]
@@ -1179,5 +1233,14 @@ pub mod save_restore {
         pub nsid: u32,
         #[mesh(2, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
         pub identify_ns: nvme_spec::nvm::IdentifyNamespace,
+    }
+
+    #[derive(Clone, Debug, Protobuf)]
+    #[mesh(package = "nvme_driver")]
+    pub struct AerHandlerSavedState {
+        #[mesh(1)]
+        pub last_aen: Option<u32>,
+        #[mesh(2)]
+        pub await_aen_cid: Option<u16>,
     }
 }

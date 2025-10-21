@@ -37,6 +37,7 @@ use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
+use vmgs_resources::GuestStateEncryptionPolicy;
 
 /// The set of artifacts and resources needed to instantiate a
 /// [`PetriVmBuilder`].
@@ -231,8 +232,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// event (if configured). Does not configure and start pipette. Should
     /// only be used for testing platforms that pipette does not support.
     pub async fn run_without_agent(self) -> anyhow::Result<PetriVm<T>> {
-        let (vm, _) = self.run_core(false).await?;
-        Ok(vm)
+        self.run_core().await
     }
 
     /// Build and run the VM, then wait for the VM to emit the expected boot
@@ -241,14 +241,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         assert!(self.config.agent_image.is_some());
         assert!(self.config.agent_image.as_ref().unwrap().contains_pipette());
 
-        let (vm, agent) = self.run_core(true).await?;
-        Ok((vm, agent.unwrap()))
+        let mut vm = self.run_core().await?;
+        let client = vm.wait_for_agent().await?;
+        Ok((vm, client))
     }
 
-    async fn run_core(
-        self,
-        with_agent: bool,
-    ) -> anyhow::Result<(PetriVm<T>, Option<PipetteClient>)> {
+    async fn run_core(self) -> anyhow::Result<PetriVm<T>> {
         let arch = self.config.arch;
         let expect_reset = self.expect_reset();
 
@@ -277,20 +275,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
         vm.wait_for_expected_boot_event().await?;
 
-        let client = if with_agent {
-            Some(vm.wait_for_agent().await?)
-        } else {
-            None
-        };
-
-        if with_agent {
-            let result = vm.set_console_loglevel(3).await;
-            if result.is_err() {
-                tracing::warn!("failed to set console loglevel: {}", result.unwrap_err());
-            }
-        }
-
-        Ok((vm, client))
+        Ok(vm)
     }
 
     fn expect_reset(&self) -> bool {
@@ -321,7 +306,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         let mut tasks = Vec::new();
 
         {
-            const TIMEOUT_DURATION_MINUTES: u64 = 6;
+            const TIMEOUT_DURATION_MINUTES: u64 = 10;
             const TIMER_DURATION: Duration = Duration::from_secs(TIMEOUT_DURATION_MINUTES * 60);
             let log_source = resources.log_source.clone();
             let inspect_task =
@@ -530,6 +515,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         ))
     }
 
+    /// Sets the command line parameters passed to OpenHCL related to logging.
+    pub fn with_openhcl_log_levels(mut self, levels: OpenHclLogConfig) -> Self {
+        self.config
+            .firmware
+            .openhcl_config_mut()
+            .expect("OpenHCL firmware is required to set custom OpenHCL log levels.")
+            .log_levels = levels;
+        self
+    }
+
     /// Adds a file to the VM's pipette agent image.
     pub fn with_agent_file(mut self, name: &str, artifact: ResolvedArtifact) -> Self {
         self.config
@@ -560,6 +555,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Sets whether UEFI should always attempt a default boot.
+    pub fn with_default_boot_always_attempt(mut self, enable: bool) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("Default boot always attempt is only supported for UEFI firmware.")
+            .default_boot_always_attempt = enable;
+        self
+    }
+
     /// Run the VM with Enable VMBus relay enabled
     pub fn with_vmbus_redirect(mut self, enable: bool) -> Self {
         self.config
@@ -579,7 +584,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             PetriVmgsResource::Disk(disk)
             | PetriVmgsResource::ReprovisionOnFailure(disk)
             | PetriVmgsResource::Reprovision(disk) => disk,
-            PetriVmgsResource::Ephemeral => PetriDiskType::Memory,
+            PetriVmgsResource::Ephemeral => PetriVmgsDisk::default(),
         };
         self.config.vmgs = match guest_state_lifetime {
             PetriGuestStateLifetime::Disk => PetriVmgsResource::Disk(disk),
@@ -588,12 +593,27 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             }
             PetriGuestStateLifetime::Reprovision => PetriVmgsResource::Reprovision(disk),
             PetriGuestStateLifetime::Ephemeral => {
-                if !matches!(disk, PetriDiskType::Memory) {
+                if !matches!(disk.disk, PetriDiskType::Memory) {
                     panic!("attempted to use ephemeral guest state after specifying backing vmgs")
                 }
                 PetriVmgsResource::Ephemeral
             }
         };
+        self
+    }
+
+    /// Specify the guest state encryption policy for the VM
+    pub fn with_guest_state_encryption(mut self, policy: GuestStateEncryptionPolicy) -> Self {
+        match &mut self.config.vmgs {
+            PetriVmgsResource::Disk(vmgs)
+            | PetriVmgsResource::ReprovisionOnFailure(vmgs)
+            | PetriVmgsResource::Reprovision(vmgs) => {
+                vmgs.encryption_policy = policy;
+            }
+            PetriVmgsResource::Ephemeral => {
+                panic!("attempted to encrypt ephemeral guest state")
+            }
+        }
         self
     }
 
@@ -609,13 +629,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     fn with_backing_vmgs(mut self, disk: PetriDiskType) -> Self {
         match &mut self.config.vmgs {
-            PetriVmgsResource::Disk(installed_disk)
-            | PetriVmgsResource::ReprovisionOnFailure(installed_disk)
-            | PetriVmgsResource::Reprovision(installed_disk) => {
-                if !matches!(installed_disk, PetriDiskType::Memory) {
+            PetriVmgsResource::Disk(vmgs)
+            | PetriVmgsResource::ReprovisionOnFailure(vmgs)
+            | PetriVmgsResource::Reprovision(vmgs) => {
+                if !matches!(vmgs.disk, PetriDiskType::Memory) {
                     panic!("already specified a backing vmgs file");
                 }
-                *installed_disk = disk;
+                vmgs.disk = disk;
             }
             PetriVmgsResource::Ephemeral => {
                 panic!("attempted to specify a backing vmgs with ephemeral guest state")
@@ -666,12 +686,43 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 }
 
 impl<T: PetriVmmBackend> PetriVm<T> {
+    /// Immediately tear down the VM.
+    pub async fn teardown(self) -> anyhow::Result<()> {
+        tracing::info!("Tearing down VM...");
+        self.runtime.teardown().await
+    }
+
     /// Wait for the VM to halt, returning the reason for the halt.
     pub async fn wait_for_halt(&mut self) -> anyhow::Result<PetriHaltReason> {
         tracing::info!("Waiting for VM to halt...");
         let halt_reason = self.runtime.wait_for_halt(false).await?;
-        tracing::info!("VM halted: {halt_reason:?}");
+        tracing::info!("VM halted: {halt_reason:?}. Cancelling watchdogs...");
+        futures::future::join_all(self.watchdog_tasks.drain(..).map(|t| t.cancel())).await;
         Ok(halt_reason)
+    }
+
+    /// Wait for the VM to cleanly shutdown.
+    pub async fn wait_for_clean_shutdown(&mut self) -> anyhow::Result<()> {
+        let halt_reason = self.wait_for_halt().await?;
+        if halt_reason != PetriHaltReason::PowerOff {
+            anyhow::bail!("Expected PowerOff, got {halt_reason:?}");
+        }
+        tracing::info!("VM was cleanly powered off and torn down.");
+        Ok(())
+    }
+
+    /// Wait for the VM to halt, returning the reason for the halt,
+    /// and tear down the VM.
+    pub async fn wait_for_teardown(mut self) -> anyhow::Result<PetriHaltReason> {
+        let halt_reason = self.wait_for_halt().await?;
+        self.teardown().await?;
+        Ok(halt_reason)
+    }
+
+    /// Wait for the VM to cleanly shutdown and tear down the VM.
+    pub async fn wait_for_clean_teardown(mut self) -> anyhow::Result<()> {
+        self.wait_for_clean_shutdown().await?;
+        self.teardown().await
     }
 
     /// Wait for the VM to reset. Does not wait for pipette.
@@ -684,12 +735,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// Wait for the VM to reset and pipette to connect.
     pub async fn wait_for_reset(&mut self) -> anyhow::Result<PipetteClient> {
         self.wait_for_reset_no_agent().await?;
-        let client = self.wait_for_agent().await?;
-        let result = self.set_console_loglevel(3).await;
-        if result.is_err() {
-            tracing::warn!("failed to set console loglevel: {}", result.unwrap_err());
-        }
-        Ok(client)
+        self.wait_for_agent().await
     }
 
     async fn wait_for_reset_core(&mut self) -> anyhow::Result<()> {
@@ -702,33 +748,30 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         Ok(())
     }
 
-    /// Wait for the VM to halt, returning the reason for the halt,
-    /// and cleanly tear down the VM.
-    pub async fn wait_for_teardown(mut self) -> anyhow::Result<PetriHaltReason> {
-        let halt_reason = self.wait_for_halt().await?;
-        tracing::info!("Cancelling watchdogs...");
-        futures::future::join_all(self.watchdog_tasks.into_iter().map(|t| t.cancel())).await;
-        tracing::info!("Tearing down VM...");
-        self.runtime.teardown().await?;
-        Ok(halt_reason)
-    }
-
-    /// Wait for the VM to reset
-    pub async fn wait_for_clean_teardown(self) -> anyhow::Result<()> {
-        let halt_reason = self.wait_for_teardown().await?;
-        if halt_reason != PetriHaltReason::PowerOff {
-            anyhow::bail!("Expected PowerOff, got {halt_reason:?}");
-        }
-        tracing::info!("VM was cleanly powered off and torn down.");
-        Ok(())
+    /// Invoke Inspect on the running OpenHCL instance.
+    ///
+    /// IMPORTANT: As mentioned in the Guide, inspect output is *not* guaranteed
+    /// to be stable. Use this to test that components in OpenHCL are working as
+    /// you would expect. But, if you are adding a test simply to verify that
+    /// the inspect output as some other tool depends on it, then that is
+    /// incorrect.
+    ///
+    /// - `timeout` is enforced on the client side
+    /// - `path` and `depth` are passed to the [`inspect::Inspect`] machinery.
+    pub async fn inspect_openhcl(
+        &self,
+        path: impl Into<String>,
+        depth: Option<usize>,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<inspect::Node> {
+        self.openhcl_diag()?
+            .inspect(path.into().as_str(), depth, timeout)
+            .await
     }
 
     /// Test that we are able to inspect OpenHCL.
     pub async fn test_inspect_openhcl(&mut self) -> anyhow::Result<()> {
-        self.openhcl_diag()?
-            .inspect("", None, None)
-            .await
-            .map(|_| ())
+        self.inspect_openhcl("", None, None).await.map(|_| ())
     }
 
     /// Wait for VTL 2 to report that it is ready to respond to commands.
@@ -919,24 +962,9 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         }
     }
 
-    async fn set_console_loglevel(&self, level: u8) -> anyhow::Result<()> {
-        match self.openhcl_diag() {
-            Ok(diag) => {
-                diag.kmsg().await?;
-                let res = diag
-                    .run_vtl2_command("dmesg", &["-n", &level.to_string()])
-                    .await?;
-
-                if !res.exit_status.success() {
-                    anyhow::bail!("failed to set console loglevel: {:?}", res);
-                }
-            }
-            Err(e) => {
-                anyhow::bail!("failed to open VTl2 diagnostic channel: {}", e);
-            }
-        };
-
-        Ok(())
+    /// Get the path to the VM's guest state file
+    pub async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
+        self.runtime.get_guest_state_file().await
     }
 }
 
@@ -994,6 +1022,10 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     }
     /// Issue a hard reset to the VM
     async fn reset(&mut self) -> anyhow::Result<()>;
+    /// Get the path to the VM's guest state file
+    async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
+        Ok(None)
+    }
 }
 
 /// Interface for getting information about the state of the VM
@@ -1106,6 +1138,8 @@ pub struct UefiConfig {
     pub secure_boot_template: Option<SecureBootTemplate>,
     /// Disable the UEFI frontpage which will cause the VM to shutdown instead when unable to boot.
     pub disable_frontpage: bool,
+    /// Always attempt a default boot
+    pub default_boot_always_attempt: bool,
 }
 
 impl Default for UefiConfig {
@@ -1114,20 +1148,90 @@ impl Default for UefiConfig {
             secure_boot_enabled: false,
             secure_boot_template: None,
             disable_frontpage: true,
+            default_boot_always_attempt: false,
         }
     }
 }
 
+/// Control the logging configuration of OpenHCL for this VM.
+#[derive(Debug, Clone)]
+pub enum OpenHclLogConfig {
+    /// Use the default log levels used by petri tests. This will forward
+    /// `OPENVMM_LOG` and `OPENVMM_SHOW_SPANS` from the environment if they are
+    /// set, otherwise it will use `debug` and `true` respectively
+    TestDefault,
+    /// Use the built-in default log levels of OpenHCL (e.g. don't pass
+    /// OPENVMM_LOG or OPENVMM_SHOW_SPANS)
+    BuiltInDefault,
+    /// Use the provided custom log levels (e.g.
+    /// `OPENVMM_LOG=info,disk_nvme=debug OPENVMM_SHOW_SPANS=true`)
+    Custom(String),
+}
+
 /// OpenHCL configuration
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct OpenHclConfig {
     /// Emulate SCSI via NVME to VTL2, with the provided namespace ID on
     /// the controller with `BOOT_NVME_INSTANCE`.
     pub vtl2_nvme_boot: bool,
     /// Whether to enable VMBus redirection
     pub vmbus_redirect: bool,
-    /// Command line to pass to OpenHCL
+    /// Test-specified command-line parameters to pass to OpenHCL. VM backends
+    /// should use [`OpenHclConfig::command_line()`] rather than reading this
+    /// directly.
     pub command_line: Option<String>,
+    /// Command line parameters that control OpenHCL logging behavior. Separate
+    /// from `command_line` so that petri can decide to use default log
+    /// levels.
+    pub log_levels: OpenHclLogConfig,
+}
+
+impl OpenHclConfig {
+    /// Returns the command line to pass to OpenHCL based on these parameters. Aggregates
+    /// the command line and log levels.
+    pub fn command_line(&self) -> String {
+        let mut cmdline = self.command_line.clone();
+        match &self.log_levels {
+            OpenHclLogConfig::TestDefault => {
+                let default_log_levels = {
+                    // Forward OPENVMM_LOG and OPENVMM_SHOW_SPANS to OpenHCL if they're set.
+                    let openhcl_tracing = if let Ok(x) =
+                        std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG"))
+                    {
+                        format!("OPENVMM_LOG={x}")
+                    } else {
+                        "OPENVMM_LOG=debug".to_owned()
+                    };
+                    let openhcl_show_spans = if let Ok(x) = std::env::var("OPENVMM_SHOW_SPANS") {
+                        format!("OPENVMM_SHOW_SPANS={x}")
+                    } else {
+                        "OPENVMM_SHOW_SPANS=true".to_owned()
+                    };
+                    format!("{openhcl_tracing} {openhcl_show_spans}")
+                };
+                append_cmdline(&mut cmdline, &default_log_levels);
+            }
+            OpenHclLogConfig::BuiltInDefault => {
+                // do nothing, use whatever the built-in default is
+            }
+            OpenHclLogConfig::Custom(levels) => {
+                append_cmdline(&mut cmdline, levels);
+            }
+        }
+
+        cmdline.unwrap_or_default()
+    }
+}
+
+impl Default for OpenHclConfig {
+    fn default() -> Self {
+        Self {
+            vtl2_nvme_boot: false,
+            vmbus_redirect: false,
+            command_line: None,
+            log_levels: OpenHclLogConfig::TestDefault,
+        }
+    }
 }
 
 /// Firmware to load into the test VM.
@@ -1612,17 +1716,48 @@ pub enum PetriDiskType {
     Persistent(PathBuf),
 }
 
+/// Petri VMGS disk
+#[derive(Debug, Clone)]
+pub struct PetriVmgsDisk {
+    /// Backing disk
+    pub disk: PetriDiskType,
+    /// Guest state encryption policy
+    pub encryption_policy: GuestStateEncryptionPolicy,
+}
+
+impl Default for PetriVmgsDisk {
+    fn default() -> Self {
+        PetriVmgsDisk {
+            disk: PetriDiskType::Memory,
+            // TODO: make this strict once we can set it in OpenHCL on Hyper-V
+            encryption_policy: GuestStateEncryptionPolicy::None(false),
+        }
+    }
+}
+
 /// Petri VM guest state resource
 #[derive(Debug, Clone)]
 pub enum PetriVmgsResource {
     /// Use disk to store guest state
-    Disk(PetriDiskType),
+    Disk(PetriVmgsDisk),
     /// Use disk to store guest state, reformatting if corrupted.
-    ReprovisionOnFailure(PetriDiskType),
+    ReprovisionOnFailure(PetriVmgsDisk),
     /// Format and use disk to store guest state
-    Reprovision(PetriDiskType),
+    Reprovision(PetriVmgsDisk),
     /// Store guest state in memory
     Ephemeral,
+}
+
+impl PetriVmgsResource {
+    /// get the inner vmgs disk if one exists
+    pub fn disk(&self) -> Option<&PetriVmgsDisk> {
+        match self {
+            PetriVmgsResource::Disk(vmgs)
+            | PetriVmgsResource::ReprovisionOnFailure(vmgs)
+            | PetriVmgsResource::Reprovision(vmgs) => Some(vmgs),
+            PetriVmgsResource::Ephemeral => None,
+        }
+    }
 }
 
 /// Petri VM guest state lifetime
@@ -1707,12 +1842,12 @@ pub enum PetriHaltReason {
     Other,
 }
 
-fn append_cmdline(cmd: &mut Option<String>, add_cmd: &str) {
+fn append_cmdline(cmd: &mut Option<String>, add_cmd: impl AsRef<str>) {
     if let Some(cmd) = cmd.as_mut() {
         cmd.push(' ');
-        cmd.push_str(add_cmd);
+        cmd.push_str(add_cmd.as_ref());
     } else {
-        *cmd = Some(add_cmd.to_string());
+        *cmd = Some(add_cmd.as_ref().to_string());
     }
 }
 

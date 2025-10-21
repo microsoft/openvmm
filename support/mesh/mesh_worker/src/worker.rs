@@ -153,17 +153,14 @@ impl WorkerHostRunner {
 /// Represents a running [`Worker`] instance providing the ability to restart,
 /// stop or wait for exit. To launch a worker and get a handle, use
 /// [`WorkerHost::launch_worker`]
-#[derive(Debug, MeshPayload)]
+#[derive(Debug, MeshPayload, Inspect)]
 pub struct WorkerHandle {
+    #[inspect(skip)]
     name: String,
+    #[inspect(flatten, send = "WorkerRpc::Inspect")]
     send: mesh::Sender<WorkerRpc<mesh::OwnedMessage>>,
+    #[inspect(skip)]
     events: mesh::Receiver<WorkerEvent>,
-}
-
-impl Inspect for WorkerHandle {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.send.send(WorkerRpc::Inspect(req.defer()))
-    }
 }
 
 impl Stream for WorkerHandle {

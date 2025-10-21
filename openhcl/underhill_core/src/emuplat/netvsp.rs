@@ -895,7 +895,9 @@ pub struct HclNetworkVFManagerEndpointInfo {
     pub endpoint: Box<DisconnectableEndpoint>,
 }
 
+#[derive(Inspect)]
 struct HclNetworkVFManagerSharedState {
+    #[inspect(flatten, send = "HclNetworkVfManagerMessage::Inspect")]
     worker_channel: mesh::Sender<HclNetworkVfManagerMessage>,
 }
 
@@ -903,17 +905,12 @@ enum HclNetworkVFUpdateNotification {
     Update(Rpc<(), ()>),
 }
 
+#[derive(Inspect)]
 pub struct HclNetworkVFManager {
+    #[inspect(flatten)]
     shared_state: Arc<HclNetworkVFManagerSharedState>,
+    #[inspect(skip)]
     _task: Task<()>,
-}
-
-impl Inspect for HclNetworkVFManager {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.shared_state
-            .worker_channel
-            .send(HclNetworkVfManagerMessage::Inspect(req.defer()))
-    }
 }
 
 impl HclNetworkVFManager {

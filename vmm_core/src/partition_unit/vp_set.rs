@@ -710,21 +710,14 @@ pub struct VpSet {
     started: bool,
 }
 
+#[derive(Inspect)]
 struct Vp {
+    #[inspect(flatten, send = "|req| VpEvent::State(StateEvent::Inspect(req))")]
     send: mesh::Sender<VpEvent>,
+    #[inspect(skip)]
     done: mesh::OneshotReceiver<()>,
+    #[inspect(flatten)]
     vp_info: TargetVpInfo,
-}
-
-impl Inspect for Vp {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        req.respond()
-            .merge(&self.vp_info)
-            .merge(inspect::adhoc(|req| {
-                self.send
-                    .send(VpEvent::State(StateEvent::Inspect(req.defer())))
-            }));
-    }
 }
 
 impl VpSet {

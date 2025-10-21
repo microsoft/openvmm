@@ -46,6 +46,7 @@ use crate::nvme_manager::manager::NvmeDiskConfig;
 use crate::nvme_manager::manager::NvmeDiskResolver;
 use crate::nvme_manager::manager::NvmeManager;
 use crate::options::GuestStateEncryptionPolicyCli;
+use crate::options::GuestStateLifetimeCli;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -274,9 +275,6 @@ pub struct UnderhillEnvCfg {
     pub nvme_vfio: bool,
     // TODO MCR: support closed-source configuration logic for MCR device
     pub mcr: bool,
-    /// Enable the shared visibility pool. This is enabled by default on
-    /// hardware isolated platforms, but can be enabled for testing.
-    pub enable_shared_visibility_pool: bool,
     /// Halt on a guest halt request instead of forwarding to the host.
     pub halt_on_guest_halt: bool,
     /// Leave sidecar VPs remote even if they hit exits.
@@ -294,9 +292,15 @@ pub struct UnderhillEnvCfg {
     /// test configuration
     pub test_configuration: Option<TestScenarioConfig>,
     /// Disable the UEFI front page.
-    pub disable_uefi_frontpage: bool,
+    pub disable_uefi_frontpage: Option<bool>,
+    /// Always attempt a default boot
+    pub default_boot_always_attempt: Option<bool>,
+    /// Guest state lifetime
+    pub guest_state_lifetime: Option<GuestStateLifetimeCli>,
     /// Guest state encryption policy
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+    /// Strict guest state encryption policy
+    pub strict_encryption_policy: Option<bool>,
     /// Attempt to renew the AK cert
     pub attempt_ak_cert_callback: Option<bool>,
     /// Enable the VPCI relay
@@ -1287,7 +1291,7 @@ async fn new_underhill_vm(
 ) -> anyhow::Result<LoadedVm> {
     let UhVmParams {
         mut get_client,
-        dps,
+        mut dps,
         servicing_state,
         boot_init,
         env_cfg,
@@ -1302,15 +1306,60 @@ async fn new_underhill_vm(
         }
     }
 
-    let management_vtl_features = {
-        let mut features = dps.general.management_vtl_features;
+    // override dps values with env_cfg values as necessary
+    let dps = {
+        if let Some(value) = env_cfg.disable_uefi_frontpage {
+            tracing::info!("using OPENHCL_DISABLE_UEFI_FRONTPAGE={value} from cmdline");
+            dps.general.disable_frontpage = value;
+        }
+
+        if let Some(value) = env_cfg.default_boot_always_attempt {
+            tracing::info!("using HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT={value} from cmdline");
+            dps.general.default_boot_always_attempt = value;
+        }
+
+        if let Some(lifetime) = env_cfg.guest_state_lifetime {
+            tracing::info!("using HCL_GUEST_STATE_LIFETIME={lifetime:?} from cmdline");
+            dps.general.guest_state_lifetime = match lifetime {
+                GuestStateLifetimeCli::Default => GuestStateLifetime::Default,
+                GuestStateLifetimeCli::ReprovisionOnFailure => {
+                    GuestStateLifetime::ReprovisionOnFailure
+                }
+                GuestStateLifetimeCli::Reprovision => GuestStateLifetime::Reprovision,
+                GuestStateLifetimeCli::Ephemeral => GuestStateLifetime::Ephemeral,
+            };
+        }
+
+        if env_cfg.reformat_vmgs {
+            dps.general.guest_state_lifetime = GuestStateLifetime::Reprovision;
+        }
+
+        if let Some(policy) = env_cfg.guest_state_encryption_policy {
+            tracing::info!("using HCL_GUEST_STATE_ENCRYPTION_POLICY={policy:?} from cmdline");
+            dps.general.guest_state_encryption_policy = match policy {
+                GuestStateEncryptionPolicyCli::Auto => GuestStateEncryptionPolicy::Auto,
+                GuestStateEncryptionPolicyCli::GspById => GuestStateEncryptionPolicy::GspById,
+                GuestStateEncryptionPolicyCli::GspKey => GuestStateEncryptionPolicy::GspKey,
+                GuestStateEncryptionPolicyCli::None => GuestStateEncryptionPolicy::None,
+            };
+        }
+
+        if let Some(value) = env_cfg.strict_encryption_policy {
+            tracing::info!("using HCL_STRICT_ENCRYPTION_POLICY={value} from cmdline");
+            dps.general
+                .management_vtl_features
+                .set_strict_encryption_policy(value);
+        }
+
         if let Some(value) = env_cfg.attempt_ak_cert_callback {
             tracing::info!("using HCL_ATTEMPT_AK_CERT_CALLBACK={value} from cmdline");
-            features.set_attempt_ak_cert_callback(value);
+            dps.general
+                .management_vtl_features
+                .set_attempt_ak_cert_callback(value);
         }
-        features
+
+        dps
     };
-    tracing::info!(management_vtl_features = management_vtl_features.into_bits());
 
     // Read the initial configuration from the IGVM parameters.
     let (runtime_params, measured_vtl2_info) =
@@ -1415,7 +1464,6 @@ async fn new_underhill_vm(
             round_up_to_2mb(cpu_bytes + device_dma + attestation)
         }
         virt::IsolationType::Vbs => round_up_to_2mb(device_dma + attestation),
-        _ if env_cfg.enable_shared_visibility_pool => round_up_to_2mb(device_dma + attestation),
         _ => 0,
     };
 
@@ -1554,13 +1602,11 @@ async fn new_underhill_vm(
             let disk = Disk::new(disk).context("invalid vmgs disk")?;
             let logger = Arc::new(GetVmgsLogger::new(get_client.clone()));
 
-            let vmgs = if env_cfg.reformat_vmgs
-                || matches!(
-                    dps.general.guest_state_lifetime,
-                    GuestStateLifetime::Reprovision
-                ) {
-                tracing::info!(CVM_ALLOWED, "formatting vmgs file on request");
-                Vmgs::format_new(disk, Some(logger))
+            let vmgs = if matches!(
+                dps.general.guest_state_lifetime,
+                GuestStateLifetime::Reprovision
+            ) {
+                Vmgs::request_format(disk, Some(logger))
                     .instrument(tracing::info_span!("vmgs_format", CVM_ALLOWED))
                     .await
                     .context("failed to format vmgs")?
@@ -1780,20 +1826,6 @@ async fn new_underhill_vm(
         virt::IsolationType::None => None,
     };
 
-    // use the encryption policy from the command line if it is provided
-    let guest_state_encryption_policy = env_cfg
-        .guest_state_encryption_policy
-        .map(|p| {
-            tracing::info!("using guest state encryption policy from command line");
-            match p {
-                GuestStateEncryptionPolicyCli::Auto => GuestStateEncryptionPolicy::Auto,
-                GuestStateEncryptionPolicyCli::GspById => GuestStateEncryptionPolicy::GspById,
-                GuestStateEncryptionPolicyCli::GspKey => GuestStateEncryptionPolicy::GspKey,
-                GuestStateEncryptionPolicyCli::None => GuestStateEncryptionPolicy::None,
-            }
-        })
-        .unwrap_or(dps.general.guest_state_encryption_policy);
-
     // Decrypt VMGS state before the VMGS file is used for anything.
     //
     // `refresh_tpm_seeds` is a host side GSP service configuration
@@ -1833,8 +1865,10 @@ async fn new_underhill_vm(
                 tee_call.as_deref(),
                 suppress_attestation,
                 early_init_driver,
-                guest_state_encryption_policy,
-                management_vtl_features.strict_encryption_policy(),
+                dps.general.guest_state_encryption_policy,
+                dps.general
+                    .management_vtl_features
+                    .strict_encryption_policy(),
             )
             .instrument(tracing::info_span!(
                 "initialize_platform_security",
@@ -2658,7 +2692,8 @@ async fn new_underhill_vm(
         });
 
     if dps.general.tpm_enabled {
-        let no_persistent_secrets = dps.general.suppress_attestation.unwrap_or(false);
+        let no_persistent_secrets =
+            vmgs_client.is_none() || dps.general.suppress_attestation.unwrap_or(false);
         let (ppi_store, nvram_store) = if no_persistent_secrets {
             (
                 EphemeralNonVolatileStoreHandle.into_resource(),
@@ -2692,7 +2727,12 @@ async fn new_underhill_vm(
                     TpmAkCertTypeResource::HwAttested(request_ak_cert)
                 }
                 AttestationType::Vbs => TpmAkCertTypeResource::SwAttested(request_ak_cert),
-                AttestationType::Host if management_vtl_features.attempt_ak_cert_callback() => {
+                AttestationType::Host
+                    if dps
+                        .general
+                        .management_vtl_features
+                        .attempt_ak_cert_callback() =>
+                {
                     TpmAkCertTypeResource::Trusted(request_ak_cert)
                 }
                 AttestationType::Host => TpmAkCertTypeResource::TrustedPreProvisionedOnly,
@@ -3206,8 +3246,6 @@ async fn new_underhill_vm(
         );
     }
 
-    let mut vmbus_intercept_devices = Vec::new();
-
     let shutdown_relay = if let Some(recv) = intercepted_shutdown_ic {
         let mut shutdown_guest = ShutdownGuestIc::new();
         let recv_host_shutdown = shutdown_guest.get_shutdown_notifier();
@@ -3233,8 +3271,7 @@ async fn new_underhill_vm(
                 .context("shutdown relay dma client")?,
             shutdown_guest,
         )?;
-        vmbus_intercept_devices.push(shutdown_guest.detach(driver_source.simple(), recv)?);
-
+        shutdown_guest.detach(driver_source.simple(), recv)?;
         Some((recv_host_shutdown, send_guest_shutdown))
     } else {
         None
@@ -3342,7 +3379,6 @@ async fn new_underhill_vm(
             load_kind,
             &dps,
             isolation.is_isolated(),
-            env_cfg.disable_uefi_frontpage,
         )
         .instrument(tracing::info_span!("load_firmware", CVM_ALLOWED))
         .await?;
@@ -3377,7 +3413,6 @@ async fn new_underhill_vm(
         vmbus_server,
         host_vmbus_relay,
         _vmbus_devices: vmbus_devices,
-        _vmbus_intercept_devices: vmbus_intercept_devices,
         _ide_accel_devices: ide_accel_devices,
         network_settings,
         shutdown_relay,
@@ -3412,7 +3447,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         com1_vmbus_redirector: _,
         com2_enabled: _,
         com2_vmbus_redirector: _,
-        suppress_attestation,
+        suppress_attestation: _,
         bios_guid: _,
         vpci_boot_enabled: _,
 
@@ -3428,7 +3463,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         firmware_mode_is_pcat,
         psp_enabled,
         default_boot_always_attempt,
-        guest_state_encryption_policy,
 
         // Minimum level enforced by UEFI loader
         memory_protection_mode: _,
@@ -3457,6 +3491,9 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         watchdog_enabled: _,
         vtl2_settings: _,
         cxl_memory_enabled: _,
+
+        // TODO: decide whether these need to be validated here
+        guest_state_encryption_policy: _,
         guest_state_lifetime: _,
         management_vtl_features: _,
     } = &dps.general;
@@ -3493,20 +3530,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
     }
     if *default_boot_always_attempt {
         anyhow::bail!("default_boot_always_attempt is not supported");
-    }
-    // TODO: don't allow auto once all CVMs are configured to require GspKey
-    if !(matches!(
-        guest_state_encryption_policy,
-        GuestStateEncryptionPolicy::GspKey | GuestStateEncryptionPolicy::Auto
-    ) || (matches!(
-        guest_state_encryption_policy,
-        GuestStateEncryptionPolicy::None,
-    ) && suppress_attestation.unwrap_or(false)))
-    {
-        anyhow::bail!(
-            "encryption policy not supported: {:?}",
-            guest_state_encryption_policy
-        );
     }
 
     Ok(())
@@ -3630,16 +3653,12 @@ async fn load_firmware(
     load_kind: LoadKind,
     dps: &DevicePlatformSettings,
     isolated: bool,
-    disable_uefi_frontpage: bool,
 ) -> Result<(), anyhow::Error> {
     let cmdline_append = match cmdline_append {
         Some(cmdline) => CString::new(cmdline.as_bytes()).context("bad command line")?,
         None => CString::default(),
     };
-    let loader_config = crate::loader::Config {
-        cmdline_append,
-        disable_uefi_frontpage,
-    };
+    let loader_config = crate::loader::Config { cmdline_append };
     let caps = partition.caps();
     let vtl0_vp_context = crate::loader::load(
         gm,

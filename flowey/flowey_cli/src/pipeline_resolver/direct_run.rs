@@ -93,6 +93,7 @@ fn direct_run_do_work(
             platform,
             arch,
             cond_param_idx,
+            timeout_minutes: _,
             ado_pool: _,
             ado_variables: _,
             gh_override_if: _,

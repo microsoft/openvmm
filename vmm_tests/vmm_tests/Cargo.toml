@@ -35,6 +35,7 @@ scsidisk_resources.workspace = true
 storvsp_resources.workspace = true
 virtio_resources.workspace = true
 vm_resource.workspace = true
+disk_vhd1.workspace = true
 
 guid.workspace = true
 kmsg.workspace = true
@@ -42,6 +43,7 @@ mesh.workspace = true
 pal.workspace = true
 pal_async.workspace = true
 unix_socket.workspace = true
+vmgs_resources.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true
@@ -55,9 +57,9 @@ hvlite_ttrpc_vmservice.workspace = true
 mesh_rpc.workspace = true
 
 tempfile.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 pipette_client.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["std"] }
 
 [lints]
 workspace = true

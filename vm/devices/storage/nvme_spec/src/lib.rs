@@ -157,6 +157,7 @@ pub struct Command {
     pub cdw14: u32,
     pub cdw15: u32,
 }
+static_assertions::assert_eq_size!(Command, [u8; 64]);
 
 #[derive(Inspect)]
 #[bitfield(u32)]
@@ -230,6 +231,7 @@ pub struct Completion {
     pub cid: u16,
     pub status: CompletionStatus,
 }
+static_assertions::assert_eq_size!(Completion, [u8; 16]);
 
 #[bitfield(u16)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, MeshPayload)]
