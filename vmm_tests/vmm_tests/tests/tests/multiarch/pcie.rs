@@ -128,8 +128,7 @@ async fn pcie_root_emulation(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
                         PcieRootPortConfig { name: "rp1".into() },
                         PcieRootPortConfig { name: "rp2".into() },
                         PcieRootPortConfig { name: "rp3".into() },
-                    ],
-                    switches: vec![],
+                    ]
                 })
             })
         })

@@ -707,6 +707,8 @@ fn vm_config_from_command_line(
         })
     }));
 
+    let pcie_switches = build_switch_list(&opt.pcie_switch);
+
     let pcie_root_complexes = opt
         .pcie_root_complex
         .iter()
@@ -721,8 +723,6 @@ fn vm_config_from_command_line(
                 })
                 .collect();
 
-            let switches = build_switch_list(&opt.pcie_switch);
-
             PcieRootComplexConfig {
                 index: i as u32,
                 name: cli.name.clone(),
@@ -732,7 +732,6 @@ fn vm_config_from_command_line(
                 low_mmio_size: cli.low_mmio,
                 high_mmio_size: cli.high_mmio,
                 ports,
-                switches,
             }
         })
         .collect();
@@ -1386,6 +1385,7 @@ fn vm_config_from_command_line(
         floppy_disks,
         pcie_root_complexes,
         pcie_devices: Vec::new(),
+        pcie_switches,
         vpci_devices,
         ide_disks: Vec::new(),
         memory: MemoryConfig {

@@ -93,13 +93,12 @@ impl GenericPcieRootComplex {
         end_bus: u8,
         ecam_base: u64,
         ports: Vec<GenericPcieRootPortDefinition>,
-        switches: Vec<GenericSwitchDefinition>,
     ) -> Self {
         let ecam_size = ecam_size_from_bus_numbers(start_bus, end_bus);
         let mut ecam = register_mmio.new_io_region("ecam", ecam_size);
         ecam.map(ecam_base);
 
-        let mut port_map: HashMap<u8, (Arc<str>, RootPort)> = ports
+        let port_map: HashMap<u8, (Arc<str>, RootPort)> = ports
             .into_iter()
             .enumerate()
             .map(|(i, definition)| {
@@ -108,12 +107,6 @@ impl GenericPcieRootComplex {
                 (device_number, (definition.name, emulator))
             })
             .collect();
-
-        // Validate names before building topology
-        Self::validate_names(&port_map, &switches);
-
-        // Build and connect switches based on flat definitions
-        Self::build_switch_topology(&mut port_map, switches);
 
         Self {
             start_bus,
@@ -691,14 +684,7 @@ mod tests {
             .collect();
 
         let mut register_mmio = TestPcieMmioRegistration {};
-        GenericPcieRootComplex::new(
-            &mut register_mmio,
-            start_bus,
-            end_bus,
-            0,
-            port_defs,
-            Vec::new(),
-        )
+        GenericPcieRootComplex::new(&mut register_mmio, start_bus, end_bus, 0, port_defs)
     }
 
     #[test]
@@ -974,8 +960,7 @@ mod tests {
         };
 
         let mut register_mmio = TestPcieMmioRegistration {};
-        let rc =
-            GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def], switches);
+        let rc = GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def]);
 
         // Verify the root complex was created successfully
         assert_eq!(rc.downstream_ports().len(), 1);
@@ -1000,8 +985,7 @@ mod tests {
         };
 
         let mut register_mmio = TestPcieMmioRegistration {};
-        let rc =
-            GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def], switches);
+        let rc = GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def]);
 
         // Verify the root complex was created successfully
         assert_eq!(rc.downstream_ports().len(), 1);
@@ -1028,8 +1012,7 @@ mod tests {
         let mut register_mmio = TestPcieMmioRegistration {};
 
         // This should complete without panic (no switches get connected but no error)
-        let rc =
-            GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def], switches);
+        let rc = GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def]);
 
         assert_eq!(rc.downstream_ports().len(), 1);
     }
@@ -1053,8 +1036,7 @@ mod tests {
         };
 
         let mut register_mmio = TestPcieMmioRegistration {};
-        let rc =
-            GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def], switches);
+        let rc = GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def]);
 
         // Verify the root complex was created successfully
         assert_eq!(rc.downstream_ports().len(), 1);
@@ -1081,8 +1063,7 @@ mod tests {
         };
 
         let mut register_mmio = TestPcieMmioRegistration {};
-        let rc =
-            GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def], switches);
+        let rc = GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def]);
 
         // Verify the root complex was created successfully
         assert_eq!(rc.downstream_ports().len(), 1);
@@ -1106,8 +1087,7 @@ mod tests {
         let mut register_mmio = TestPcieMmioRegistration {};
 
         // This should panic due to non-existing parent of the switch 1
-        let _rc =
-            GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def], switches);
+        let _rc = GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def]);
     }
 
     #[test]
@@ -1125,8 +1105,7 @@ mod tests {
         let mut register_mmio = TestPcieMmioRegistration {};
 
         // This should panic due to duplicate name
-        let _rc =
-            GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def], switches);
+        let _rc = GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def]);
     }
 
     #[test]
@@ -1145,8 +1124,7 @@ mod tests {
         let mut register_mmio = TestPcieMmioRegistration {};
 
         // This should panic due to duplicate names
-        let _rc =
-            GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def], switches);
+        let _rc = GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def]);
     }
 
     #[test]
@@ -1170,14 +1148,8 @@ mod tests {
         let mut register_mmio = TestPcieMmioRegistration {};
 
         // This should panic due to downstream port name collision
-        let _rc = GenericPcieRootComplex::new(
-            &mut register_mmio,
-            0,
-            255,
-            0,
-            vec![port_def, port_def2],
-            switches,
-        );
+        let _rc =
+            GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def, port_def2]);
     }
 
     #[test]
@@ -1192,8 +1164,7 @@ mod tests {
         };
 
         let mut register_mmio = TestPcieMmioRegistration {};
-        let rc =
-            GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def], switches);
+        let rc = GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def]);
 
         // Verify the root complex was created successfully
         assert_eq!(rc.downstream_ports().len(), 1);
@@ -1213,8 +1184,7 @@ mod tests {
         };
 
         let mut register_mmio = TestPcieMmioRegistration {};
-        let rc =
-            GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def], switches);
+        let rc = GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def]);
 
         // Verify the root complex was created successfully
         assert_eq!(rc.downstream_ports().len(), 1);
@@ -1234,8 +1204,7 @@ mod tests {
         };
 
         let mut register_mmio = TestPcieMmioRegistration {};
-        let rc =
-            GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def], switches);
+        let rc = GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def]);
 
         // Verify the root complex was created successfully
         assert_eq!(rc.downstream_ports().len(), 1);
@@ -1256,14 +1225,7 @@ mod tests {
         };
 
         let mut register_mmio = TestPcieMmioRegistration {};
-        let mut rc = GenericPcieRootComplex::new(
-            &mut register_mmio,
-            0,
-            255,
-            0,
-            vec![port_def],
-            switches, // Use automatic switch topology building
-        );
+        let mut rc = GenericPcieRootComplex::new(&mut register_mmio, 0, 255, 0, vec![port_def]);
 
         // Configure the root port to decode bus range 1..=10
         const ROOT_PORT_ECAM_BASE: u64 = 0; // Device 0

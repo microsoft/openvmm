@@ -37,6 +37,7 @@ use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
 use hvlite_defs::config::PcieDeviceConfig;
 use hvlite_defs::config::PcieRootComplexConfig;
+use hvlite_defs::config::PcieSwitchConfig;
 use hvlite_defs::config::PmuGsivConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialPipes;
@@ -80,7 +81,6 @@ use pci_core::PciInterruptPin;
 use pci_core::msi::MsiInterruptSet;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
-use pcie::root::GenericSwitchDefinition;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::SimpleScsiDisk;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
@@ -175,6 +175,7 @@ impl Manifest {
             ide_disks: config.ide_disks,
             pcie_root_complexes: config.pcie_root_complexes,
             pcie_devices: config.pcie_devices,
+            pcie_switches: config.pcie_switches,
             vpci_devices: config.vpci_devices,
             hypervisor: config.hypervisor,
             memory: config.memory,
@@ -223,6 +224,7 @@ pub struct Manifest {
     ide_disks: Vec<IdeDeviceConfig>,
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pcie_devices: Vec<PcieDeviceConfig>,
+    pcie_switches: Vec<PcieSwitchConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
     memory: MemoryConfig,
     processor_topology: ProcessorTopologyConfig,
@@ -1761,17 +1763,6 @@ impl InitializedVm {
 
         // PCI Express topology
 
-        /// Convert config switch to generic switch definition
-        fn config_switch_to_generic(
-            switch_cfg: &hvlite_defs::config::PcieSwitchConfig,
-        ) -> GenericSwitchDefinition {
-            GenericSwitchDefinition::new(
-                switch_cfg.name.clone(),
-                switch_cfg.num_downstream_ports,
-                switch_cfg.parent_port.clone(),
-            )
-        }
-
         let mut pcie_host_bridges = Vec::new();
         {
             // ECAM allocation starts at the configured base and grows upwards.
@@ -1797,16 +1788,12 @@ impl InitializedVm {
                                 })
                                 .collect();
 
-                            let switch_definitions =
-                                rc.switches.iter().map(config_switch_to_generic).collect();
-
                             GenericPcieRootComplex::new(
                                 &mut services.register_mmio(),
                                 rc.start_bus,
                                 rc.end_bus,
                                 ecam_address,
                                 root_port_definitions,
-                                switch_definitions,
                             )
                         })?;
 
@@ -1831,6 +1818,10 @@ impl InitializedVm {
                 low_mmio_address -= low_mmio_size;
                 high_mmio_address += rc.high_mmio_size;
             }
+
+            // TODO: Create and connect PCIe switches after root complexes are set up
+            // This will require a different approach since switches need to be connected
+            // to specific ports on root complexes
         }
 
         for dev_cfg in cfg.pcie_devices {
@@ -3078,6 +3069,7 @@ impl LoadedVm {
             ide_disks: vec![],           // TODO
             pcie_root_complexes: vec![], // TODO
             pcie_devices: vec![],        // TODO
+            pcie_switches: vec![],       // TODO
             vpci_devices: vec![],        // TODO
             memory: self.inner.memory_cfg,
             processor_topology: self.inner.processor_topology.to_config(),

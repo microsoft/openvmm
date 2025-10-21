@@ -27,6 +27,7 @@ pub struct Config {
     pub ide_disks: Vec<ide_resources::IdeDeviceConfig>,
     pub pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pub pcie_devices: Vec<PcieDeviceConfig>,
+    pub pcie_switches: Vec<PcieSwitchConfig>,
     pub vpci_devices: Vec<VpciDeviceConfig>,
     pub memory: MemoryConfig,
     pub processor_topology: ProcessorTopologyConfig,
@@ -180,7 +181,6 @@ pub struct PcieRootComplexConfig {
     pub low_mmio_size: u32,
     pub high_mmio_size: u64,
     pub ports: Vec<PcieRootPortConfig>,
-    pub switches: Vec<PcieSwitchConfig>,
 }
 
 #[derive(Debug, MeshPayload)]
