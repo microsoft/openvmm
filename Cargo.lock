@@ -3666,6 +3666,16 @@ name = "kmsg_defs"
 version = "0.0.0"
 
 [[package]]
+name = "kmsg_writer"
+version = "0.0.0"
+dependencies = [
+ "fs-err",
+ "thiserror 2.0.16",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "kvm"
 version = "0.0.0"
 dependencies = [
@@ -7898,6 +7908,7 @@ dependencies = [
  "inspect",
  "kmsg",
  "kmsg_defs",
+ "kmsg_writer",
  "libc",
  "loader",
  "loader_defs",
