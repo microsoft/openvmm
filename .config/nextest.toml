@@ -41,8 +41,10 @@ filter = 'test(loom)'
 slow-timeout = { period = "30s", terminate-after = 2 }
 
 [[profile.ci.overrides]]
-# allow attestation tests more time, as they take a while
-filter = 'package(underhill_attestation)'
+# allow attestation tests more time, as they take a while.
+# this really should be a package-based filter, but that breaks the internal
+# repo due to this package not existing in that workspace.
+filter = 'test(underhill_attestation)'
 slow-timeout = { period = "10s", terminate-after = 2 }
 
 [[profile.ci.overrides]]
