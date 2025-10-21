@@ -397,7 +397,7 @@ pub(crate) async fn idle_test<T: PetriVmmBackend>(
                 dynamic_memory_range: None,
             }
         })
-        //.with_openhcl_log_levels(OpenHclLogConfig::BuiltInDefault)
+        .with_openhcl_log_levels(OpenHclLogConfig::BuiltInDefault)
         .run()
         .await;
 
