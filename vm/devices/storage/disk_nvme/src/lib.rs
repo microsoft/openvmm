@@ -15,11 +15,20 @@ use inspect::Inspect;
 use nvme_common::from_nvme_reservation_report;
 use nvme_spec::Status;
 use nvme_spec::nvm;
-#[cfg(unix)]
-use pal::unix::affinity::get_cpu_number;
-#[cfg(windows)]
-use pal::windows::affinity::get_cpu_number;
 use std::io;
+
+cfg_if::cfg_if! {
+    if #[cfg(target_os = "linux")] {
+        use pal::unix::affinity::get_cpu_number;
+    } else if #[cfg(windows)] {
+        use pal::windows::affinity::get_cpu_number;
+    }
+    else {
+        fn get_cpu_number() -> u32 {
+            todo!();
+        }
+    }
+}
 
 #[derive(Debug, Inspect)]
 pub struct NvmeDisk {

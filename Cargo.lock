@@ -1333,6 +1333,7 @@ name = "disk_nvme"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "cfg-if",
  "disk_backend",
  "inspect",
  "nvme_common",
