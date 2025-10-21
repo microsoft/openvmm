@@ -3391,16 +3391,23 @@ impl Hcl {
     }
 
     /// Map or unmap guest device interrupt vector in VTL2 kernel
-    pub fn map_redirected_device_interrupt(&self, vector: u32, apic_id: u32, create_mapping: bool) -> Option<u32> {
+    pub fn map_redirected_device_interrupt(
+        &self,
+        vector: u32,
+        apic_id: u32,
+        create_mapping: bool,
+    ) -> Option<u32> {
         let mut param = mshv_map_device_int {
             vector,
             apic_id,
             create_mapping,
         };
 
-        match unsafe { 
-            hcl_map_redirected_device_interrupt(self.mshv_vtl.file.as_raw_fd(), &mut param) 
-        } {
+        // SAFETY: following the IOCTL definition.
+        let output = unsafe {
+            hcl_map_redirected_device_interrupt(self.mshv_vtl.file.as_raw_fd(), &mut param)
+        };
+        match output {
             Ok(_) => Some(param.vector),
             Err(_) => None,
         }
