@@ -72,7 +72,7 @@ impl FlowNode for Node {
 
         let base_env = [
             // Used by the test_with_tracing macro in test runners
-            ("RUST_LOG", "debug"),
+            ("RUST_LOG", "trace"),
         ]
         .into_iter()
         .map(|(a, b)| (a.to_owned(), b.to_owned()))
