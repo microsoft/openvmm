@@ -65,6 +65,12 @@ impl LogLevel {
     }
 }
 
+impl Default for LogLevel {
+    fn default() -> Self {
+        Self::default()
+    }
+}
+
 /// Definition of the diagnostics services state
 #[derive(Inspect)]
 pub struct DiagnosticsServices {
