@@ -1071,8 +1071,16 @@ pub mod hypercall {
         pub partition_id: u64,
         pub device_id: u64,
         pub entry: InterruptEntry,
-        pub rsvd: u64,
+        pub flags: RetargetDeviceInterruptFlags,
         pub target_header: InterruptTarget,
+    }
+
+    #[bitfield(u64)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct RetargetDeviceInterruptFlags {
+        pub posted_redirect: bool,
+        #[bits(63)]
+        pub rsvd: u64,
     }
 
     #[bitfield(u8)]
@@ -3151,8 +3159,10 @@ pub struct HvRegisterVsmCapabilities {
     pub install_intercept_ex: bool,
     /// Only available in VTL2.
     pub intercept_system_reset_available: bool,
-    #[bits(31)]
-    pub reserved: u64,
+    pub _reserved1: bool,
+    pub proxy_interrupt_redirect_available: bool,
+    #[bits(29)]
+    pub reserved2: u64,
 }
 
 #[bitfield(u64)]
