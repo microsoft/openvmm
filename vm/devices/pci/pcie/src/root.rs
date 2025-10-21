@@ -13,7 +13,7 @@ use crate::PAGE_SIZE64;
 use crate::ROOT_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
 use crate::port::PciePort;
-use crate::switch::{PcieSwitchDefinition, Switch};
+use crate::switch::{PcieSwitch, PcieSwitchDefinition};
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -193,7 +193,7 @@ impl GenericPcieRootComplex {
 
                 // Create the switch and try to insert that under each of the root ports.
                 // If all failed, this means the switch cannot be connected.
-                let switch = Switch::new(switch_definition);
+                let switch = PcieSwitch::new(switch_definition);
                 let mut boxed_switch = Box::new(switch) as Box<dyn GenericPciBusDevice>;
 
                 let mut connected = false;

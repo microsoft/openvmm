@@ -14,7 +14,9 @@ use crate::DOWNSTREAM_SWITCH_PORT_DEVICE_ID;
 use crate::UPSTREAM_SWITCH_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
 use crate::port::PciePort;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
+use chipset_device::pci::PciConfigSpace;
 use inspect::Inspect;
 use pci_bus::{GenericPciBusDevice, GenericPciRoutingComponent};
 use pci_core::capabilities::pci_express::PciExpressCapability;
@@ -26,6 +28,7 @@ use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
 use std::collections::HashMap;
 use std::sync::Arc;
+use vmcore::device_state::ChangeDeviceState;
 
 /// A PCI Express upstream switch port emulator.
 ///
@@ -154,7 +157,7 @@ pub struct PcieSwitchDefinition {
 /// The switch implements routing functionality to forward configuration space accesses
 /// between the upstream and downstream ports based on bus number assignments.
 #[derive(Inspect)]
-pub struct Switch {
+pub struct PcieSwitch {
     /// The name of this switch instance.
     name: Arc<str>,
     /// The upstream switch port that connects to the parent.
@@ -164,8 +167,8 @@ pub struct Switch {
     downstream_ports: HashMap<u8, (Arc<str>, DownstreamSwitchPort)>,
 }
 
-impl Switch {
-    /// Constructs a new [`Switch`] emulator.
+impl PcieSwitch {
+    /// Constructs a new [`PcieSwitch`] emulator.
     pub fn new(definition: PcieSwitchDefinition) -> Self {
         let upstream_port = UpstreamSwitchPort::new();
 
@@ -293,7 +296,7 @@ impl Switch {
     }
 }
 
-impl GenericPciBusDevice for Switch {
+impl GenericPciBusDevice for PcieSwitch {
     fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult> {
         // Forward to the upstream port's configuration space (the switch presents as the upstream port)
         self.upstream_port.cfg_space.read_u32(offset, value).into()
@@ -309,7 +312,7 @@ impl GenericPciBusDevice for Switch {
     }
 }
 
-impl GenericPciRoutingComponent for Switch {
+impl GenericPciRoutingComponent for PcieSwitch {
     fn pci_cfg_read_forward(
         &mut self,
         bus: u8,
@@ -359,12 +362,53 @@ impl GenericPciRoutingComponent for Switch {
     }
 }
 
-impl Default for Switch {
+impl Default for PcieSwitch {
     fn default() -> Self {
         Self::new(PcieSwitchDefinition {
             name: "default-switch".into(),
             downstream_port_count: 4,
         })
+    }
+}
+
+impl ChangeDeviceState for PcieSwitch {
+    fn start(&mut self) {}
+
+    async fn stop(&mut self) {}
+
+    async fn reset(&mut self) {
+        // Reset the upstream port configuration space
+        self.upstream_port.cfg_space.reset();
+
+        // Reset all downstream port configuration spaces
+        for (_, downstream_port) in self.downstream_ports.values_mut() {
+            downstream_port.port.cfg_space.reset();
+        }
+    }
+}
+
+impl ChipsetDevice for PcieSwitch {
+    fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
+        Some(self)
+    }
+}
+
+impl PciConfigSpace for PcieSwitch {
+    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
+        // Delegate to the GenericPciBusDevice implementation
+        GenericPciBusDevice::pci_cfg_read(self, offset, value)
+            .unwrap_or(IoResult::Err(chipset_device::io::IoError::InvalidRegister))
+    }
+
+    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+        // Delegate to the GenericPciBusDevice implementation
+        GenericPciBusDevice::pci_cfg_write(self, offset, value)
+            .unwrap_or(IoResult::Err(chipset_device::io::IoError::InvalidRegister))
+    }
+
+    fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
+        // PCIe switches typically don't have a fixed BDF requirement
+        None
     }
 }
 
@@ -404,7 +448,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 3,
         };
-        let switch = Switch::new(definition);
+        let switch = PcieSwitch::new(definition);
 
         assert_eq!(switch.name().as_ref(), "test-switch");
         assert_eq!(switch.downstream_ports().len(), 3);
@@ -434,7 +478,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
         };
-        let mut switch = Switch::new(definition);
+        let mut switch = PcieSwitch::new(definition);
 
         let downstream_device = TestPcieEndpoint::new(
             |offset, value| match offset {
@@ -477,14 +521,14 @@ mod tests {
             name: "routing-switch".into(),
             downstream_port_count: 1,
         };
-        let mut switch = Switch::new(definition);
+        let mut switch = PcieSwitch::new(definition);
 
         // Verify that Switch implements GenericPciRoutingComponent
         assert!(switch.as_routing_component().is_some());
 
         // Test basic configuration space access
         let mut value = 0u32;
-        let result = switch.pci_cfg_read(0x0, &mut value);
+        let result = GenericPciBusDevice::pci_cfg_read(&mut switch, 0x0, &mut value);
         assert!(result.is_some());
 
         // Verify vendor/device ID is from the upstream port
@@ -493,8 +537,35 @@ mod tests {
     }
 
     #[test]
+    fn test_switch_chipset_device() {
+        use chipset_device::ChipsetDevice;
+        use chipset_device::pci::PciConfigSpace;
+
+        let mut switch = PcieSwitch::default();
+
+        // Test that it supports PCI but not other interfaces
+        assert!(switch.supports_pci().is_some());
+        assert!(switch.supports_mmio().is_none());
+        assert!(switch.supports_pio().is_none());
+        assert!(switch.supports_poll_device().is_none());
+
+        // Test PciConfigSpace interface
+        let mut value = 0u32;
+        let result = PciConfigSpace::pci_cfg_read(&mut switch, 0x0, &mut value);
+        assert!(matches!(result, IoResult::Ok));
+
+        // Verify we get the expected vendor/device ID
+        let expected = (UPSTREAM_SWITCH_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
+        assert_eq!(value, expected);
+
+        // Test write operation
+        let result = PciConfigSpace::pci_cfg_write(&mut switch, 0x4, 0x12345678);
+        assert!(matches!(result, IoResult::Ok));
+    }
+
+    #[test]
     fn test_switch_default() {
-        let switch = Switch::default();
+        let switch = PcieSwitch::default();
         assert_eq!(switch.name().as_ref(), "default-switch");
         assert_eq!(switch.downstream_ports().len(), 4);
     }
@@ -505,7 +576,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 16,
         };
-        let switch = Switch::new(definition);
+        let switch = PcieSwitch::new(definition);
         assert_eq!(switch.downstream_ports().len(), 16);
     }
 
@@ -515,7 +586,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 3,
         };
-        let mut switch = Switch::new(definition);
+        let mut switch = PcieSwitch::new(definition);
 
         // Simulate the switch's internal bus being assigned as bus 1
         let secondary_bus = 1u8;
@@ -557,7 +628,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
         };
-        let mut switch = Switch::new(definition);
+        let mut switch = PcieSwitch::new(definition);
 
         // Don't configure bus numbers, so the range should be 0..=0 (invalid)
         let bus_range = switch.upstream_port.cfg_space().assigned_bus_range();
@@ -581,7 +652,7 @@ mod tests {
             name: "test-switch".into(),
             downstream_port_count: 2,
         };
-        let mut switch = Switch::new(definition);
+        let mut switch = PcieSwitch::new(definition);
 
         // Configure the upstream port with a valid bus range
         let secondary_bus = 1u8;
@@ -619,7 +690,7 @@ mod tests {
             name: "multi-port-switch".into(),
             downstream_port_count: 3,
         };
-        let multi_port_switch = Switch::new(multi_port_definition);
+        let multi_port_switch = PcieSwitch::new(multi_port_definition);
 
         // Verify each downstream port has the multi-function bit set
         for (port_num, _) in multi_port_switch.downstream_ports() {
@@ -656,7 +727,7 @@ mod tests {
             name: "single-port-switch".into(),
             downstream_port_count: 1,
         };
-        let single_port_switch = Switch::new(single_port_definition);
+        let single_port_switch = PcieSwitch::new(single_port_definition);
 
         // Verify the single downstream port does NOT have the multi-function bit set
         for (port_num, _) in single_port_switch.downstream_ports() {

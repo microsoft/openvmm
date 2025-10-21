@@ -805,6 +805,7 @@ mod weak_mutex_pci {
     use chipset_device::io::IoResult;
     use closeable_mutex::CloseableMutex;
     use pci_bus::GenericPciBusDevice;
+    use pci_bus::GenericPciRoutingComponent;
     use std::sync::Arc;
     use std::sync::Weak;
 
@@ -901,6 +902,32 @@ mod weak_mutex_pci {
                 .add_pcie_device(port, name.clone(), Box::new(WeakMutexPciDeviceWrapper(dev)))
                 .map_err(|existing_dev_name| PcieConflict {
                     reason: PcieConflictReason::ExistingDev(existing_dev_name),
+                    conflict_dev: name,
+                })
+        }
+
+        fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
+            self.lock().downstream_ports()
+        }
+    }
+
+    // wiring to enable using the PCIe switch alongside the Arc+CloseableMutex device infra
+    impl RegisterWeakMutexPcie for Arc<CloseableMutex<pcie::switch::PcieSwitch>> {
+        fn add_pcie_device(
+            &mut self,
+            port: u8,
+            name: Arc<str>,
+            dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+        ) -> Result<(), PcieConflict> {
+            let port_name = format!("{}-downstream-{}", self.lock().name(), port);
+            self.lock()
+                .try_connect_under(
+                    &port_name,
+                    name.as_ref(),
+                    Box::new(WeakMutexPciDeviceWrapper(dev)),
+                )
+                .map_err(|_| PcieConflict {
+                    reason: PcieConflictReason::ExistingDev(format!("port-{}", port).into()),
                     conflict_dev: name,
                 })
         }
