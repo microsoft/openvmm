@@ -509,8 +509,8 @@ impl AdminHandler {
                 let opcode = spec::AdminOpcode(command.cdw0.opcode());
 
                 if self.config.fault_configuration.fault_active.get()
-                    && let Some(fault) = Self::get_configured_fault_behavior::<nvme_spec::Command>(
-                        &self
+                    && let Some(fault) = Self::get_configured_fault_behavior_mut::<nvme_spec::Command>(
+                        &mut self
                             .config
                             .fault_configuration
                             .admin_fault
@@ -523,9 +523,9 @@ impl AdminHandler {
                             tracing::info!(
                                 "configured fault: admin command updated in sq. original: {:?},\n new: {:?}",
                                 &command,
-                                &command_updated
+                                command_updated
                             );
-                            command = command_updated;
+                            command = *command_updated;
                         }
                         QueueFaultBehavior::Drop => {
                             tracing::info!(
@@ -535,7 +535,7 @@ impl AdminHandler {
                             return Ok(());
                         }
                         QueueFaultBehavior::Delay(duration) => {
-                            self.timer.sleep(duration).await;
+                            self.timer.sleep(*duration).await;
                         }
                         QueueFaultBehavior::Panic(message) => {
                             panic!(
@@ -548,6 +548,12 @@ impl AdminHandler {
                                 "bad fault configuration: custom payloads are not applicable to admin submission commands. command: {:?}",
                                 &command
                             );
+                        }
+                        QueueFaultBehavior::Verify(send) => {
+                            // Verify that the command was received.
+                            if let Some(send) = send.take() {
+                                send.send(());
+                            }
                         }
                     }
                 }
@@ -647,8 +653,8 @@ impl AdminHandler {
         // (Ignore namespace change and sq delete complete events for now).
         if let Some(command) = command_processed
             && self.config.fault_configuration.fault_active.get()
-            && let Some(fault) = Self::get_configured_fault_behavior::<nvme_spec::Completion>(
-                &self
+            && let Some(fault) = Self::get_configured_fault_behavior_mut::<nvme_spec::Completion>(
+                &mut self
                     .config
                     .fault_configuration
                     .admin_fault
@@ -662,9 +668,9 @@ impl AdminHandler {
                         "configured fault: admin completion updated in cq. command: {:?},original: {:?},\n new: {:?}",
                         &command,
                         &completion,
-                        &completion_updated
+                        completion_updated
                     );
-                    completion = completion_updated;
+                    completion = completion_updated.clone();
                 }
                 QueueFaultBehavior::Drop => {
                     tracing::info!(
@@ -675,7 +681,7 @@ impl AdminHandler {
                     return Ok(());
                 }
                 QueueFaultBehavior::Delay(duration) => {
-                    self.timer.sleep(duration).await;
+                    self.timer.sleep(*duration).await;
                 }
                 QueueFaultBehavior::Panic(message) => {
                     panic!(
@@ -693,8 +699,14 @@ impl AdminHandler {
                     // Panic to avoid silent test failures.
                     PrpRange::parse(&self.config.mem, payload.len(), command.dptr)
                         .expect("configured fault failure: failed to parse PRP for custom payload write.")
-                        .write(&self.config.mem, &payload)
+                        .write(&self.config.mem, payload)
                         .expect("configured fault failure: failed to write custom payload");
+                }
+                QueueFaultBehavior::Verify(send) => {
+                    // Verify that the command was received.
+                    if let Some(send) = send.take() {
+                        send.send(());
+                    }
                 }
             }
         }
@@ -1174,15 +1186,15 @@ impl AdminHandler {
         Ok(())
     }
 
-    /// Returns the configured fault behavior for the given command if a fault is configured.
-    fn get_configured_fault_behavior<T: Clone>(
-        fault_configs: &[(CommandMatch, QueueFaultBehavior<T>)],
-        command: &nvme_spec::Command,
-    ) -> Option<QueueFaultBehavior<T>> {
+    /// Returns a mutable reference to the fault behavior for a given command if a fault is configured.
+    fn get_configured_fault_behavior_mut<'a, T: Clone>(
+        fault_configs: &'a mut [(CommandMatch, QueueFaultBehavior<T>)],
+        command: &'a nvme_spec::Command,
+    ) -> Option<&'a mut QueueFaultBehavior<T>> {
         fault_configs
-            .iter()
+            .iter_mut()
             .find(|(pattern, _)| match_command_pattern(pattern, command))
-            .map(|(_, behavior)| behavior.clone())
+            .map(|(_, behavior)| behavior)
     }
 }
 
