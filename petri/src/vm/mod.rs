@@ -10,7 +10,6 @@ pub mod vtl2_settings;
 
 use crate::PetriLogSource;
 use crate::PetriTestParams;
-use crate::SIZE_1_GB;
 use crate::ShutdownKind;
 use crate::disk_image::AgentImage;
 use crate::openhcl_diag::OpenHclDiagHandler;
@@ -485,7 +484,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .firmware
             .openhcl_config_mut()
             .expect("OpenHCL firmware is required to set custom VTL2 address type.")
-            .vtl2_base_address_type = address_type;
+            .vtl2_base_address_type = Some(address_type);
         self
     }
 
@@ -1199,8 +1198,9 @@ pub struct OpenHclConfig {
     /// from `command_line` so that petri can decide to use default log
     /// levels.
     pub log_levels: OpenHclLogConfig,
-    /// How to place VTL2 in address space.
-    pub vtl2_base_address_type: Vtl2BaseAddressType,
+    /// How to place VTL2 in address space. If `None`, the backend VMM
+    /// will decide on default behavior.
+    pub vtl2_base_address_type: Option<Vtl2BaseAddressType>,
 }
 
 impl OpenHclConfig {
@@ -1247,7 +1247,7 @@ impl Default for OpenHclConfig {
             vmbus_redirect: false,
             command_line: None,
             log_levels: OpenHclLogConfig::TestDefault,
-            vtl2_base_address_type: Vtl2BaseAddressType::File,
+            vtl2_base_address_type: None,
         }
     }
 }
@@ -1401,17 +1401,6 @@ impl Firmware {
             uefi_config: Default::default(),
             openhcl_config: OpenHclConfig {
                 vtl2_nvme_boot,
-                vtl2_base_address_type: if isolation.is_some() {
-                    // Isolated VMs must load at the location specified by
-                    // the file, as they do not support relocation.
-                    Vtl2BaseAddressType::File
-                } else {
-                    // By default, utilize IGVM relocation and tell OpenVMM
-                    // to place VTL2 at 2GB. This tests both relocation
-                    // support in OpenVMM, and relocation support within
-                    // OpenHCL.
-                    Vtl2BaseAddressType::Absolute(2 * SIZE_1_GB)
-                },
                 ..Default::default()
             },
         }

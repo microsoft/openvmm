@@ -466,10 +466,14 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 vmbus_redirect,
                 command_line: _,
                 log_levels: _,
-                vtl2_base_address_type: _,
+                vtl2_base_address_type,
             },
         )) = &openhcl_config
         {
+            if vtl2_base_address_type.is_some() {
+                todo!("custom VTL2 base address type not yet supported for Hyper-V")
+            }
+
             // Copy the IGVM file locally, since it may not be accessible by
             // Hyper-V (e.g., if it is in a WSL filesystem).
             let igvm_file = temp_dir.path().join("igvm.bin");
@@ -478,7 +482,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 .context("failed to set ACL for igvm file")?;
 
             // TODO: only increase VTL2 memory on debug builds
-            // TODO: use vtl2_base_address_type
             vm.set_openhcl_firmware(
                 &igvm_file,
                 // don't increase VTL2 memory on CVMs
