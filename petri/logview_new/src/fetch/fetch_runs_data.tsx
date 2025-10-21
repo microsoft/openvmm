@@ -457,10 +457,6 @@ export async function fetchTestAnalysis(
   const totalToFetch = filteredRuns.length;
   let fetchedCount = 0;
 
-  // Prefetch with controlled parallelism - maintains constant concurrent requests
-  // Use dynamic concurrency if provided, otherwise default to 5
-  const runIds: string[] = [];
-
   const prefetchRun = async (run: RunData) => {
     const runId = run.name.split("/")[1]; // run.name is "runs/123456789", we want "123456789"
     const key = ["runDetails", runId];
@@ -502,6 +498,10 @@ export async function fetchTestAnalysis(
   // Process with rolling window - always keep maxConcurrent requests in flight
   let currentIndex = 0;
   const inFlight = new Set<Promise<string>>();
+  
+  // Prefetch with controlled parallelism - maintains constant concurrent requests
+  // Use dynamic concurrency if provided, otherwise default to 5
+  const runIds: string[] = [];
 
   while (currentIndex < filteredRuns.length || inFlight.size > 0) {
     // Get current concurrency limit (can change dynamically)

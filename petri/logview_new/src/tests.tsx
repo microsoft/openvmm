@@ -13,6 +13,10 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { SearchInput } from './search';
 import { createColumns, defaultSorting, columnWidthMap } from './table_defs/tests';
 
+// Concurrency settings when fetching test results
+const CONCURRENCY_FOREGROUND = 15;
+const CONCURRENCY_BACKGROUND = 5;
+
 export function Tests(): React.JSX.Element {
     const [searchParams, setSearchParams] = useSearchParams();
     const branchFromUrl = searchParams.get('branchFilter') || 'main';
@@ -24,13 +28,13 @@ export function Tests(): React.JSX.Element {
     const queryClient = useQueryClient();
 
     // Track component mount state for dynamic concurrency control
-    const concurrencyRef = useRef(15);
+    const concurrencyRef = useRef(CONCURRENCY_FOREGROUND);
 
     // Update concurrency based on mount state
     useEffect(() => {
-        concurrencyRef.current = 15;
+        concurrencyRef.current = CONCURRENCY_FOREGROUND;
         return () => {
-            concurrencyRef.current = 5;
+            concurrencyRef.current = CONCURRENCY_BACKGROUND;
         };
     }, []);
 
