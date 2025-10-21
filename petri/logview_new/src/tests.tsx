@@ -138,7 +138,7 @@ export function TestsHeader({
                         </div>
                     </div>
                 )}
-                {(fetchedCount != totalToFetch) && (totalToFetch !== null) && (
+                {(fetchedCount !== totalToFetch) && (totalToFetch !== null) && (
                     <div className="header-loading-indicator">
                         <div className="header-loading-spinner"></div>
                         <div className="header-loading-text">

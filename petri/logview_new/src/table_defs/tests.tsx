@@ -4,7 +4,6 @@
 import { ColumnDef } from '@tanstack/react-table';
 import { Link } from 'react-router-dom';
 import { TestData } from '../data_defs';
-import '../styles/tests.css';
 import '../styles/common.css';
 
 export const defaultSorting = [
@@ -58,7 +57,7 @@ export const createColumns = (): ColumnDef<TestData>[] => {
             header: 'Architecture',
             enableSorting: true,
             cell: (info) => (
-                <div className="architecture-name" title={info.getValue() as string}>
+                <div className="common-architecture-name" title={info.getValue() as string}>
                     {info.getValue() as string}
                 </div>
             ),

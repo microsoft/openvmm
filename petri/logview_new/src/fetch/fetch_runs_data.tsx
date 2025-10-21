@@ -581,12 +581,12 @@ export function convertToTestData(
     const failedCount = runInfos.filter(
       (info) => info.status === "failed"
     ).length;
-    const split = testName.split("/");
+     const [architecture, name] = testName.split("/");
     const totalCount = runInfos.length;
 
     data.push({
-      architecture: split[0],
-      name: split[1],
+      architecture,
+      name,
       failedCount,
       totalCount,
     });
