@@ -466,6 +466,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 vmbus_redirect,
                 command_line: _,
                 log_levels: _,
+                vtl2_base_address_type: _,
             },
         )) = &openhcl_config
         {
@@ -477,6 +478,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 .context("failed to set ACL for igvm file")?;
 
             // TODO: only increase VTL2 memory on debug builds
+            // TODO: use vtl2_base_address_type
             vm.set_openhcl_firmware(
                 &igvm_file,
                 // don't increase VTL2 memory on CVMs

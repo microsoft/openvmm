@@ -42,7 +42,7 @@ async fn nvme_relay_test_core(
             ..Default::default()
         })
         .with_vtl2_base_address_type(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
-            size: Some(130 * 1024 * 1024),
+            size: Some(512 * 1024 * 1024), // 512MB to be more than what is defined in the dev manifest json
         })
         .run()
         .await?;

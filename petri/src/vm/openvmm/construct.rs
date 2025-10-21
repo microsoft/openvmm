@@ -179,11 +179,24 @@ impl PetriVmConfigOpenVmm {
                     &firmware_event_send,
                     framebuffer.is_some(),
                 )?;
+
+                let late_map_vtl0_memory = match firmware.openhcl_config().unwrap() {
+                    OpenHclConfig {
+                        vtl2_base_address_type:
+                            hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate { .. },
+                        ..
+                    } => {
+                        // Late Map VTL0 memory not supported when test supplies Vtl2Allocate
+                        None
+                    }
+                    _ => Some(LateMapVtl0MemoryPolicy::InjectException),
+                };
+
                 let (vtl2_vsock_listener, vtl2_vsock_path) = make_vsock_listener()?;
                 (
                     Some(Vtl2Config {
                         vtl0_alias_map: false, // TODO: enable when OpenVMM supports it for DMA
-                        late_map_vtl0_memory: Some(LateMapVtl0MemoryPolicy::InjectException),
+                        late_map_vtl0_memory,
                     }),
                     Some(VmbusConfig {
                         vsock_listener: Some(vtl2_vsock_listener),
@@ -675,6 +688,8 @@ impl PetriVmConfigSetupCore<'_> {
                     openhcl_config,
                 },
             ) => {
+                tracing::info!(?openhcl_config, "Loading OpenHCL firmware");
+
                 let OpenHclConfig {
                     vtl2_nvme_boot: _, // load_boot_disk
                     vmbus_redirect: _, // config_openhcl_vmbus_devices
