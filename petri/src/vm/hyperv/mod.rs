@@ -576,11 +576,13 @@ impl PetriVmmBackend for HyperVPetriBackend {
         let mut vtl2_settings = None;
 
         if tpm_state_persistence {
-            vm.set_guest_isolation_mode(powershell::HyperVGuestIsolationMode::Default)
+            vm.set_guest_state_isolation_mode(powershell::HyperVGuestStateIsolationMode::Default)
                 .await?;
         } else {
-            vm.set_guest_isolation_mode(powershell::HyperVGuestIsolationMode::NoPersistentSecrets)
-                .await?;
+            vm.set_guest_state_isolation_mode(
+                powershell::HyperVGuestStateIsolationMode::NoPersistentSecrets,
+            )
+            .await?;
         }
 
         // TODO: If OpenHCL is being used, then translate storage through it.

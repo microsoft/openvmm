@@ -568,12 +568,12 @@ impl HyperVVM {
         powershell::run_set_base_vtl2_settings(&self.vmid, &self.ps_mod, settings).await
     }
 
-    /// Set GuestIsolationMode
-    pub async fn set_guest_isolation_mode(
+    /// Set GuestStateIsolationMode
+    pub async fn set_guest_state_isolation_mode(
         &self,
-        mode: powershell::HyperVGuestIsolationMode,
+        mode: powershell::HyperVGuestStateIsolationMode,
     ) -> anyhow::Result<()> {
-        powershell::run_set_guest_isolation_mode(&self.vmid, &self.ps_mod, mode).await
+        powershell::run_set_guest_state_isolation_mode(&self.vmid, &self.ps_mod, mode).await
     }
 }
 

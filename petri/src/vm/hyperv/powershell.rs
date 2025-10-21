@@ -1151,9 +1151,9 @@ pub async fn run_set_base_vtl2_settings(
     .context("set_base_vtl2_settings")
 }
 
-/// Guest isolation modes for Hyper-V VMs.
+/// Guest state isolation modes for Hyper-V VMs.
 #[derive(Debug)]
-pub enum HyperVGuestIsolationMode {
+pub enum HyperVGuestStateIsolationMode {
     /// Default isolation mode.
     Default = 0,
     /// No persistent secrets isolation mode.
@@ -1162,23 +1162,23 @@ pub enum HyperVGuestIsolationMode {
     NoManagementVtl = 2,
 }
 
-impl ps::AsVal for HyperVGuestIsolationMode {
+impl ps::AsVal for HyperVGuestStateIsolationMode {
     fn as_val(&self) -> impl '_ + AsRef<OsStr> {
         match self {
-            HyperVGuestIsolationMode::Default => "0",
-            HyperVGuestIsolationMode::NoPersistentSecrets => "1",
-            HyperVGuestIsolationMode::NoManagementVtl => "2",
+            HyperVGuestStateIsolationMode::Default => "0",
+            HyperVGuestStateIsolationMode::NoPersistentSecrets => "1",
+            HyperVGuestStateIsolationMode::NoManagementVtl => "2",
         }
     }
 }
 
-/// Sets the guest isolation mode for a VM.
-pub async fn run_set_guest_isolation_mode(
+/// Sets the guest state isolation mode for a VM.
+pub async fn run_set_guest_state_isolation_mode(
     vmid: &Guid,
     ps_mod: &Path,
-    mode: HyperVGuestIsolationMode,
+    mode: HyperVGuestStateIsolationMode,
 ) -> anyhow::Result<()> {
-    tracing::trace!(?mode, ?vmid, "set guest isolation mode");
+    tracing::trace!(?mode, ?vmid, "set guest state isolation mode");
 
     run_host_cmd(
         PowerShellBuilder::new()
@@ -1195,5 +1195,5 @@ pub async fn run_set_guest_isolation_mode(
     )
     .await
     .map(|_| ())
-    .context("set_guest_isolation_mode")
+    .context("set_guest_state_isolation_mode")
 }
