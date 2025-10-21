@@ -1200,7 +1200,7 @@ impl OpenHclConfig {
                     {
                         format!("OPENVMM_LOG={x}")
                     } else {
-                        "OPENVMM_LOG=debug".to_owned()
+                        "OPENVMM_LOG=debug,vmbus_server=trace".to_owned()
                     };
                     let openhcl_show_spans = if let Ok(x) = std::env::var("OPENVMM_SHOW_SPANS") {
                         format!("OPENVMM_SHOW_SPANS={x}")
