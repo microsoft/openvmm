@@ -99,6 +99,7 @@ const REPORT_TIMER_PERIOD: std::time::Duration = std::time::Duration::new(2, 0);
 const LEGACY_VTPM_SIZE: usize = 16384;
 
 /// Operation types for provisioning telemetry.
+#[expect(clippy::enum_variant_names)]
 #[derive(Debug)]
 enum LogOpType {
     BeginVtpmKeysProvision,
