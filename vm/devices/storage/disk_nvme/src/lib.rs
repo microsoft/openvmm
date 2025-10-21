@@ -3,7 +3,6 @@
 
 //! Disk backend implementation that uses a user-mode NVMe driver based on VFIO.
 
-#![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
 #![expect(missing_docs)]
 
@@ -16,7 +15,10 @@ use inspect::Inspect;
 use nvme_common::from_nvme_reservation_report;
 use nvme_spec::Status;
 use nvme_spec::nvm;
+#[cfg(unix)]
 use pal::unix::affinity::get_cpu_number;
+#[cfg(windows)]
+use pal::windows::affinity::get_cpu_number;
 use std::io;
 
 #[derive(Debug, Inspect)]

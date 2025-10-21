@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 //! Tests using NVMe as the block backend for SimpleScsiDvd.
-#![cfg(target_os = "linux")]
 
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_backend::Disk;
