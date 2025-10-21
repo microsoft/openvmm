@@ -1,12 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg_attr(not(target_os = "linux"), expect(missing_docs))]
-#![cfg(target_os = "linux")]
-
 //! The [`vm_resource`] resources and [`mesh_worker`] workers that are available
 //! in OpenVMM-HCL.
 
+#![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
 
 // Resources.

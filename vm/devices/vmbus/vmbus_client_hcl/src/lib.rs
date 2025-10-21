@@ -1,12 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg_attr(not(target_os = "linux"), expect(missing_docs))]
-#![cfg(target_os = "linux")]
-
 //! Implementation of [`vmbus_client`] traits to communicate with the synic via
 //! the Linux HCL driver.
 
+#![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
 
 use anyhow::Context as _;

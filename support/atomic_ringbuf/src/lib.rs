@@ -9,6 +9,8 @@
 //! for when they miss an update and the ring buffer wraps around. Writing
 //! is synchronized with a lock, but read attempts are never blocked.
 
+#![forbid(unsafe_code)]
+
 cfg_if::cfg_if! {
     if #[cfg(all(target_arch = "x86_64", test))] { // xtask-fmt allow-target-arch dependency
         use loom::sync::Mutex;

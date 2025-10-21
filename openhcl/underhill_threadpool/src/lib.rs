@@ -1,13 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg_attr(not(target_os = "linux"), expect(missing_docs))]
-#![cfg(target_os = "linux")]
-
 //! The Underhill per-CPU thread pool used to run async tasks and IO.
 //!
 //! This is built on top of [`pal_uring`] and [`pal_async`].
 
+#![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
 
 use cvm_tracing::CVM_ALLOWED;
