@@ -581,7 +581,16 @@ export function convertToTestData(
     const failedCount = runInfos.filter(
       (info) => info.status === "failed"
     ).length;
-     const [architecture, name] = testName.split("/");
+
+    // Default to - to avoid skipping entries. Added benefit here is that
+    // linking is on test name. So if split was unsuccessful, we won't make a
+    // bad link either.
+    let architecture: string = "-", name: string = "-";
+    const split = testName.split("/");
+    architecture = split[0];  // Minimum length of split is 1.
+    if (split.length > 1) {
+      name = split[1];
+    }
     const totalCount = runInfos.length;
 
     data.push({
