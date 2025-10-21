@@ -3,6 +3,8 @@
 
 //! Shared TPM protocol constants and helpers used across the vTPM stack.
 
+#![forbid(unsafe_code)]
+
 pub mod tpm20proto;
 
 use tpm20proto::NV_INDEX_RANGE_BASE_PLATFORM_MANUFACTURER;

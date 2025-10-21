@@ -3,6 +3,8 @@
 
 //! The module includes the helper functions for sending TPM commands.
 
+#![forbid(unsafe_code)]
+
 use cvm_tracing::CVM_ALLOWED;
 use inspect::Inspect;
 use inspect::InspectMut;
