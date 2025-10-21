@@ -34,8 +34,6 @@ use crate::vm::append_cmdline;
 use anyhow::Context;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
-use jiff::Timestamp;
-use jiff::ToSpan;
 use pal_async::DefaultDriver;
 use pal_async::pipe::PolledPipe;
 use pal_async::socket::PolledSocket;
@@ -694,40 +692,44 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     }
 
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
-        let socket = VmSocket::new().context("failed to create AF_HYPERV socket")?;
-        socket
-            .set_connect_timeout(Duration::from_secs(5))
-            .context("failed to set connect timeout")?;
-        socket
-            .set_high_vtl(set_high_vtl)
-            .context("failed to set socket for VTL0")?;
+        let client_core = async || {
+            let socket = VmSocket::new().context("failed to create AF_HYPERV socket")?;
+            // Extend the default timeout of 2 seconds, as tests are often run in
+            // parallel on a host, causing very heavy load on the overall system.
+            socket
+                .set_connect_timeout(Duration::from_secs(5))
+                .context("failed to set connect timeout")?;
+            socket
+                .set_high_vtl(set_high_vtl)
+                .context("failed to set socket for VTL0")?;
 
-        // TODO: This maximum is specific to hyper-v tests and should be configurable.
-        //
-        // Allow for the slowest test (hyperv_pcat_x64_ubuntu_2204_server_x64_boot)
-        // but fail before the nextest timeout. (~1 attempt for second)
-        let connect_timeout = 240.seconds();
-        let start = Timestamp::now();
-
-        let mut socket = PolledSocket::new(&self.driver, socket)?.convert();
-        while let Err(e) = socket
-            .connect(
-                &VmAddress::hyperv_vsock(*self.vm.vmid(), pipette_client::PIPETTE_VSOCK_PORT)
-                    .into(),
-            )
-            .await
-        {
-            if connect_timeout.compare(Timestamp::now() - start)? == std::cmp::Ordering::Less {
-                anyhow::bail!("Pipette connection timed out: {e}")
+            let mut socket = PolledSocket::new(&self.driver, socket)
+                .context("failed to create polled client socket")?
+                .convert();
+            socket
+                .connect(
+                    &VmAddress::hyperv_vsock(*self.vm.vmid(), pipette_client::PIPETTE_VSOCK_PORT)
+                        .into(),
+                )
+                .await
+                .context("failed to connect")
+                .map(|()| socket)
+        };
+        loop {
+            let mut timer = PolledTimer::new(&self.driver);
+            tracing::info!("attempting to connect to pipette server");
+            match client_core().await {
+                Ok(socket) => {
+                    return PipetteClient::new(&self.driver, socket, self.temp_dir.path())
+                        .await
+                        .context("failed to handshake with pipette");
+                }
+                Err(err) => {
+                    eprintln!("failed to connect to pipette server, retrying: {:?}", err);
+                    timer.sleep(Duration::from_secs(1)).await;
+                }
             }
-            PolledTimer::new(&self.driver)
-                .sleep(Duration::from_secs(1))
-                .await;
         }
-
-        PipetteClient::new(&self.driver, socket, self.temp_dir.path())
-            .await
-            .context("failed to connect to pipette")
     }
 
     fn openhcl_diag(&self) -> Option<OpenHclDiagHandler> {
