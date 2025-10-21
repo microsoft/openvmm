@@ -52,6 +52,17 @@ To seek approval to include a change in a release branch, follow these steps:
 Please reach out to the maintainers before staging that PR if you have any
 doubts.
 
+#### Backport PR Best Practices
+
+When creating a backport PR to a `release/YYMM` branch:
+
+* **Clean cherry-picks are strongly preferred.** A clean cherry-pick minimizes
+  reviewer effort and reduces the risk of introducing regressions.
+* **If the backport is not a clean cherry-pick** (e.g., requires conflict
+  resolution or additional modifications), clearly indicate this in the PR
+  description. This signals to the reviewer that extra care is needed during
+  the review process.
+
 ## Existing Release Branches
 
 | Release | Phase | Notes |

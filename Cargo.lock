@@ -2680,6 +2680,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_resources",
+ "cvm_tracing",
  "futures",
  "futures-concurrency",
  "get_protocol",
@@ -4829,6 +4830,7 @@ dependencies = [
  "mesh",
  "nvme_spec",
  "vm_resource",
+ "zerocopy 0.8.25",
 ]
 
 [[package]]
@@ -7495,17 +7497,20 @@ name = "tpm_device"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chipset_device",
  "chipset_device_resources",
  "cvm_tracing",
  "getrandom 0.3.3",
  "guestmem",
+ "guid",
  "inspect",
  "mesh",
  "ms-tpm-20-ref",
  "open_enum",
  "pal_async",
  "parking_lot",
+ "sha2",
  "thiserror 2.0.16",
  "tpm_lib",
  "tpm_protocol",
@@ -7557,6 +7562,7 @@ dependencies = [
 name = "tpm_resources"
 version = "0.0.0"
 dependencies = [
+ "guid",
  "inspect",
  "mesh",
  "vm_resource",

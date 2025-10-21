@@ -24,6 +24,7 @@ guestmem.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
 
+guid = { workspace = true, features = ["inspect"] }
 inspect.workspace = true
 mesh.workspace = true
 open_enum.workspace = true
@@ -36,6 +37,9 @@ thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
+sha2.workspace = true
+base64.workspace = true
 
 [lints]
 workspace = true
