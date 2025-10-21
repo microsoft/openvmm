@@ -1,12 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! [`Inspect`] support for process rlimits.
-
+#![cfg_attr(not(target_os = "linux"), expect(missing_docs))]
 #![cfg(target_os = "linux")]
 // UNSAFETY: Calls to libc functions to get rlimit info.
 // TODO: replace unsafe with calls into the rlimit crate.
 #![expect(unsafe_code)]
+
+//! [`Inspect`] support for process rlimits.
 
 use cfg_if::cfg_if;
 use inspect::Inspect;
