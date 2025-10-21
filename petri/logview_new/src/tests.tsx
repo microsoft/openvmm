@@ -142,7 +142,7 @@ export function TestsHeader({
                     <div className="header-loading-indicator">
                         <div className="header-loading-spinner"></div>
                         <div className="header-loading-text">
-                            Analysed {fetchedCount}/{totalToFetch}
+                            Analyzed {fetchedCount}/{totalToFetch}
                         </div>
                     </div>
                 )}
