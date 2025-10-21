@@ -585,12 +585,9 @@ export function convertToTestData(
     // Default to - to avoid skipping entries. Added benefit here is that
     // linking is on test name. So if split was unsuccessful, we won't make a
     // bad link either.
-    let architecture: string = "-", name: string = "-";
     const split = testName.split("/");
-    architecture = split[0];  // Minimum length of split is 1.
-    if (split.length > 1) {
-      name = split[1];
-    }
+    const architecture: string = split[0];  // Minimum len is 1. This is safe to do.
+    const name: string = split.length > 1 ? split[1] : "-";
     const totalCount = runInfos.length;
 
     data.push({
