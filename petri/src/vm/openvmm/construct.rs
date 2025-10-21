@@ -42,6 +42,7 @@ use fs_err::File;
 use futures::StreamExt;
 use get_resources::crash::GuestCrashDeviceHandle;
 use get_resources::ged::FirmwareEvent;
+use guid::Guid;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
@@ -661,6 +662,7 @@ impl PetriVmConfigSetupCore<'_> {
                     enable_vpci_boot: matches!(self.boot_device_type, BootDeviceType::Nvme),
                     uefi_console_mode: Some(hvlite_defs::config::UefiConsoleMode::Com1),
                     default_boot_always_attempt: *default_boot_always_attempt,
+                    bios_guid: Guid::new_random(),
                 }
             }
             (
