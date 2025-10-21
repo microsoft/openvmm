@@ -462,6 +462,8 @@ async fn memory_validation_release_small<T: PetriVmmBackend>(
     .await
 }
 
+// We can't get a VTL 2 pipette with release build CVM debugging restrictions,
+// so only run CVM tests in debug builds.
 #[cfg(debug_assertions)]
 #[vmm_test(
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
@@ -506,6 +508,8 @@ async fn memory_validation_release_heavy<T: PetriVmmBackend>(
     .await
 }
 
+// We can't get a VTL 2 pipette with release build CVM debugging restrictions,
+// so only run CVM tests in debug builds.
 #[cfg(debug_assertions)]
 #[vmm_test(
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
