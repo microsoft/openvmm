@@ -67,7 +67,7 @@ impl LogLevel {
 
 impl Default for LogLevel {
     fn default() -> Self {
-        Self::default()
+        LogLevel::default()
     }
 }
 
