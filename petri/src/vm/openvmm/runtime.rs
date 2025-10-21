@@ -209,6 +209,11 @@ impl PetriVmOpenVmm {
             .context("VM is not configured with OpenHCL")
     }
 
+    /// Get the path to the VTL 0 vsock socket.
+    pub fn vtl0_vsock_path(&self) -> &Path {
+        self.inner.resources._vmbus_vsock_path.as_ref()
+    }
+
     petri_vm_fn!(
         /// Waits for an event emitted by the firmware about its boot status, and
         /// returns that status.
