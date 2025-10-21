@@ -1849,7 +1849,7 @@ mod tests {
 
     #[async_test]
     async fn test_fix_corrupted_vmgs() {
-        let tpm_state_blob = include_bytes!("../test_data/vTpmState-corrupt.blob");
+        let tpm_state_blob = include_bytes!("../../test_data/vTpmState-corrupt.blob");
         let tpm_state_vec = tpm_state_blob.to_vec();
         let mut store = EphemeralNonVolatileStore::new_boxed();
         store.persist(tpm_state_vec).await.unwrap();
