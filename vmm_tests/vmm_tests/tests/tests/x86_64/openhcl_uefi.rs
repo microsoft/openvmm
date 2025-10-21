@@ -38,8 +38,11 @@ async fn nvme_relay_test_core(
         .with_openhcl_command_line(openhcl_cmdline)
         .with_vmbus_redirect(true)
         .with_processor_topology(ProcessorTopology {
-            vp_count: 1,
+            vp_count: 4, // Ideally, with 16GB RAM to match D4v5
             ..Default::default()
+        })
+        .with_vtl2_base_address_type(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            size: Some(130 * 1024 * 1024),
         })
         .run()
         .await?;

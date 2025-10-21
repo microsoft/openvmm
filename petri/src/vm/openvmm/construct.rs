@@ -22,7 +22,6 @@ use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmgsResource;
 use crate::ProcessorTopology;
-use crate::SIZE_1_GB;
 use crate::SecureBootTemplate;
 use crate::UefiConfig;
 use crate::UefiGuest;
@@ -57,7 +56,6 @@ use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialInformation;
 use hvlite_defs::config::VmbusConfig;
 use hvlite_defs::config::VpciDeviceConfig;
-use hvlite_defs::config::Vtl2BaseAddressType;
 use hvlite_defs::config::Vtl2Config;
 use hvlite_helpers::disk::open_disk_type;
 use hvlite_pcat_locator::RomFileLocation;
@@ -682,43 +680,30 @@ impl PetriVmConfigSetupCore<'_> {
                     vmbus_redirect: _, // config_openhcl_vmbus_devices
                     command_line: _,
                     log_levels: _,
+                    vtl2_base_address_type,
                 } = openhcl_config;
 
                 let mut cmdline = Some(openhcl_config.command_line());
 
                 append_cmdline(&mut cmdline, "panic=-1 reboot=triple");
 
-                let isolated = match self.firmware {
-                    Firmware::OpenhclLinuxDirect { .. } => {
-                        // Set UNDERHILL_SERIAL_WAIT_FOR_RTS=1 so that we don't pull serial data
-                        // until the guest is ready. Otherwise, Linux will drop the input serial
-                        // data on the floor during boot.
-                        append_cmdline(
-                            &mut cmdline,
-                            "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh\"",
-                        );
-                        false
-                    }
-                    Firmware::OpenhclUefi { isolation, .. } if isolation.is_some() => true,
-                    _ => false,
-                };
+                if matches!(self.firmware, Firmware::OpenhclLinuxDirect { .. }) {
+                    // Set UNDERHILL_SERIAL_WAIT_FOR_RTS=1 so that we don't pull serial data
+                    // until the guest is ready. Otherwise, Linux will drop the input serial
+                    // data on the floor during boot.
+                    append_cmdline(
+                        &mut cmdline,
+                        "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh\"",
+                    );
+                }
+
                 let file = File::open(igvm_path.clone())
                     .context("failed to open openhcl firmware file")?
                     .into();
                 LoadMode::Igvm {
                     file,
                     cmdline: cmdline.unwrap_or_default(),
-                    vtl2_base_address: if isolated {
-                        // Isolated VMs must load at the location specified by
-                        // the file, as they do not support relocation.
-                        Vtl2BaseAddressType::File
-                    } else {
-                        // By default, utilize IGVM relocation and tell hvlite
-                        // to place VTL2 at 2GB. This tests both relocation
-                        // support in hvlite, and relocation support within
-                        // underhill.
-                        Vtl2BaseAddressType::Absolute(2 * SIZE_1_GB)
-                    },
+                    vtl2_base_address: *vtl2_base_address_type,
                     com_serial: Some(SerialInformation {
                         io_port: ComPort::Com3.io_port(),
                         irq: ComPort::Com3.irq().into(),
