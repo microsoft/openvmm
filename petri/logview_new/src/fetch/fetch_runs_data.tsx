@@ -7,11 +7,15 @@ import type {
   RunDetailsData,
   RunMetadata,
   TestResult,
-} from "./data_defs";
+  PullRequestTitles,
+} from "../data_defs";
+import {
+  fetchMissingPRTitles,
+  getAllGithubPullRequests,
+} from "./fetch_git_data";
 
 const GET_RUNS_URL =
   "https://openvmmghtestresults.blob.core.windows.net/results?restype=container&comp=list&showonly=files&include=metadata&prefix=runs/";
-const GET_PR_INFO = "https://api.github.com/repos/microsoft/openvmm/pulls/";
 
 /**
  * Start background data prefetching and refetching for the runs list.
@@ -24,6 +28,16 @@ export function startDataPrefetching(queryClient: QueryClient): void {
     queryFn: () => fetchRunData(queryClient),
     staleTime: 3 * 60 * 1000,
     gcTime: Infinity,
+  });
+
+  // Prefetch GitHub PR author map (never stale / never GC so we only fetch once
+  // per session)
+  // Subsequent calls will be handled by per-PR queries
+  void queryClient.prefetchQuery({
+    queryKey: ["prs"],
+    queryFn: () => getAllGithubPullRequests(),
+    staleTime: Infinity, // never goes stale
+    gcTime: Infinity, // keep forever
   });
 
   // Background refetch every 2 minutes to keep data fresh
@@ -55,31 +69,44 @@ export async function fetchRunData(
       .filter((pr): pr is string => pr !== undefined);
 
     if (prNumbers.length > 0) {
-      // Use per-PR cached queries (never stale, never garbage collected) to
-      // avoid redundant network calls.
-      // NOTE: PR titles will not be updated even if they are updated in the
-      // back end. This saves us from hitting GitHub's rate limits. Could be
-      // rethought to pull stuff after 15min.
-      const unique = Array.from(new Set(prNumbers));
-      const entries = await Promise.all(
-        unique.map(async (pr) => {
-          const title = await queryClient.ensureQueryData<string | null>({
-            queryKey: ["prTitle", pr],
-            queryFn: () => fetchSinglePRTitle(pr),
-            staleTime: Infinity, // Never goes stale
-            gcTime: Infinity, // Never garbage collected
-          });
-          return [pr, title] as const;
-        })
-      );
-      const titleMap = new Map<string, string | null>(entries);
+      // NOTE: We could make this refresh every hour to keep PR titles fresh.
+      // But this is fine for now! Titles will currently not be updated after
+      // initial fetch.
+      const prMap = await queryClient.ensureQueryData<PullRequestTitles>({
+        queryKey: ["prs"],
+        queryFn: () => getAllGithubPullRequests(),
+        staleTime: Infinity,
+        gcTime: Infinity,
+      });
+
+      // Track missing PR numbers that aren't in the bulk-fetched map
+      const missingPRs: string[] = [];
+
       runs.forEach((run) => {
-        const pr = run.metadata.ghPr;
-        if (pr && titleMap.has(pr)) {
-          const t = titleMap.get(pr);
-          if (t) run.metadata.prTitle = t;
+        const prNumber = run.metadata.ghPr;
+        if (prNumber) {
+          if (prMap[prNumber]) {
+            run.metadata.prTitle = prMap[prNumber];
+          } else {
+            missingPRs.push(prNumber);
+          }
         }
       });
+
+      // Fetch missing PR titles using individual API calls
+      if (missingPRs.length > 0) {
+        const missingTitles = await fetchMissingPRTitles(
+          missingPRs,
+          queryClient
+        );
+        runs.forEach((run) => {
+          const pr = run.metadata.ghPr;
+          if (pr && missingTitles.has(pr)) {
+            const title = missingTitles.get(pr);
+            if (title) run.metadata.prTitle = title;
+          }
+        });
+      }
     }
 
     return runs;
@@ -87,24 +114,6 @@ export async function fetchRunData(
     console.error("Error fetching run data:", error);
     throw error;
   }
-}
-
-/** Fetch a single PR title from GitHub. Returns null if unavailable or rate-limited. */
-async function fetchSinglePRTitle(prNumber: string): Promise<string | null> {
-  try {
-    const response = await fetch(`${GET_PR_INFO}${prNumber}`);
-    if (response.status === 403) {
-      // Likely rate limited – treat as missing but keep cached null to avoid hammering.
-      return null;
-    }
-    if (response.ok) {
-      const prData = await response.json();
-      return typeof prData.title === "string" ? prData.title : null;
-    }
-  } catch {
-    /* swallow network errors; null indicates unknown */
-  }
-  return null;
 }
 
 // Function to parse XML run data into structured format
@@ -157,7 +166,6 @@ function parseRunData(xmlText: string, queryClient: QueryClient): RunData[] {
     });
   }
 
-  // TODO: Trigger background data prefetching of runDetails in future PR.
   opportunisticPrefetching(runs, queryClient);
   return runs;
 }
@@ -354,6 +362,7 @@ function parseRunDetails(
   // Sort tests by name
   tests.sort((a, b) => a.name.localeCompare(b.name));
 
+  // TODO: Prefetch petri.jsonl files for failed tests here in later PRs
   return {
     creationTime: creationTime ?? undefined,
     runNumber,
@@ -413,7 +422,7 @@ export async function fetchRunDetails(
       tests: allTests,
     };
   } catch (error) {
-    console.error(`Error fetching run details for ${runNumber}:`, error);
+    console.error(`Error fetching run details`, error);
     throw error;
   }
 }

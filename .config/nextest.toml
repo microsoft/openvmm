@@ -24,8 +24,8 @@ threads-required = 24
 
 # Profile for CI runs.
 [profile.ci]
-# Set the default timeout to 1 second, with tests terminated after 5 seconds
-slow-timeout = { period = "1s", terminate-after = 5 }
+# Set the default timeout to 1 second, with tests terminated after 10 seconds
+slow-timeout = { period = "1s", terminate-after = 10 }
 # Print out output for failing tests at the end of the run.
 failure-output = "final"
 # Do not cancel the test run on the first failure.

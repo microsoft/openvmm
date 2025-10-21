@@ -31,3 +31,6 @@ export interface RunDetailsData {
   runNumber: string;
   tests: TestResult[];
 }
+
+// Mapping of PR number (as string) -> PR title
+export type PullRequestTitles = Record<string, string>;

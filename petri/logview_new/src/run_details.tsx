@@ -2,14 +2,14 @@
 // Licensed under the MIT License.
 
 import "./styles/common.css";
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useMemo } from "react";
 import { SortingState } from "@tanstack/react-table";
-import { RunDetailsData, TestResult } from "./data_defs";
+import { TestResult } from "./data_defs";
 import { Menu } from "./menu";
 import { VirtualizedTable } from "./virtualized_table";
-import { Link, useLocation, useParams } from "react-router-dom";
-import { useQueryClient } from "@tanstack/react-query";
-import { fetchRunDetails } from "./fetch";
+import { Link, useParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { fetchRunDetails } from "./fetch/fetch_runs_data";
 import { SearchInput } from "./search";
 import {
   createColumns,
@@ -18,23 +18,18 @@ import {
 } from "./table_defs/run_details";
 
 export function RunDetails(): React.JSX.Element {
-  const [runDetails, setRunDetails] = useState<RunDetailsData | null>(null);
   const [searchFilter, setSearchFilter] = useState<string>("");
   const [sorting, setSorting] = useState<SortingState>(defaultSorting);
   let { runId } = useParams();
   runId = runId ? decodeURIComponent(runId) : "";
 
-  const queryClient = useQueryClient();
-  useEffect(() => {
-    queryClient
-      .fetchQuery({
-        queryKey: ["runDetails", runId],
-        queryFn: () => fetchRunDetails(runId, queryClient),
-        staleTime: Infinity, // never goes stale
-        gcTime: Infinity,
-      })
-      .then(setRunDetails);
-  }, [queryClient, runId]);
+  // Fetch the relevant data
+  const { data: runDetails, isSuccess } = useQuery({
+    queryKey: ["runDetails", runId],
+    queryFn: (context) => fetchRunDetails(runId, context.client),
+    staleTime: Infinity, // never goes stale
+    gcTime: Infinity,
+  });
 
   // Define columns for the test results table
   const columns = useMemo(() => createColumns(runId), [runId]);
@@ -56,6 +51,7 @@ export function RunDetails(): React.JSX.Element {
           runId={runId}
           searchFilter={searchFilter}
           setSearchFilter={setSearchFilter}
+          loadingSuccess={isSuccess}
         />
       </div>
       {hasNoData ? (
@@ -82,6 +78,7 @@ interface RunDetailsHeaderProps {
   runId: string;
   searchFilter: string;
   setSearchFilter: (filter: string) => void;
+  loadingSuccess: boolean;
 }
 
 function RunDetailsHeader({
@@ -89,6 +86,7 @@ function RunDetailsHeader({
   runId,
   searchFilter,
   setSearchFilter,
+  loadingSuccess,
 }: RunDetailsHeaderProps): React.JSX.Element {
   return (
     <>
@@ -103,6 +101,14 @@ function RunDetailsHeader({
             {runId}
           </Link>
         </div>
+        {!loadingSuccess && (
+        <div className="header-loading-indicator">
+            <div className="header-loading-spinner"></div>
+            <div className="header-loading-text">
+                Fetching run details ...
+            </div>
+        </div>
+        )}
       </div>
       <div className="common-header-right">
         <SearchInput value={searchFilter} onChange={setSearchFilter} />
