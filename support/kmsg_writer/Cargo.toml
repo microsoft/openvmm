@@ -7,7 +7,6 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 fs-err.workspace = true
