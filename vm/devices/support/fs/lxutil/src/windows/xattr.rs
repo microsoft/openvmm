@@ -200,7 +200,7 @@ fn query_ea(
             s if s == grow_buffer_status => {
                 // Grow the buffer and try again.
                 if out_buf.len() <= u16::MAX as usize {
-                    out_buf.resize(out_buf.len() + 4096, 0);
+                    out_buf.resize(out_buf.len() + PAGE_SIZE as usize, 0);
                 } else {
                     // The buffer was already big enough, so something else must be wrong.
                     return Err(lx::Error::EIO);

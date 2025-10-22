@@ -147,7 +147,7 @@ pub fn read(link_file: &OwnedHandle) -> lx::Result<String> {
     let standard_info: FileSystem::FILE_STANDARD_INFORMATION =
         util::query_information_file(link_file)?;
 
-    if standard_info.EndOfFile > i16::MAX as i64 {
+    if standard_info.EndOfFile > i16::MAX as i64 || standard_info.EndOfFile == 0 {
         return Err(lx::Error::EIO);
     }
 

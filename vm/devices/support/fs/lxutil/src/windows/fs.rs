@@ -1023,8 +1023,7 @@ pub fn create_link_reparse_buffer(target: &lx::LxStr) -> lx::Result<Vec<u8>> {
     }
 
     let mut buf = vec![0u8; reparse_size];
-    // SAFETY: Calling Win32 API to allocate heap memory, writing to the buffer,
-    // and accessing union fields. The buffer is guaranteed large enough to write to all members.
+    // SAFETY: Casting buffer which is guaranteed to be large enough.
     let reparse = unsafe { buf.as_mut_ptr().cast::<SymlinkReparse>().as_mut().unwrap() };
     reparse.header.ReparseTag = FileSystem::IO_REPARSE_TAG_LX_SYMLINK as u32;
     reparse.header.ReparseDataLength = LX_UTIL_SYMLINK_TARGET_OFFSET as u16 + target_length as u16;
