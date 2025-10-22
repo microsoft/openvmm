@@ -9122,6 +9122,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "fs-err",
  "futures",
  "futures-concurrency",
  "getrandom 0.3.3",
