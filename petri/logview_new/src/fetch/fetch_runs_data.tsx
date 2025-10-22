@@ -600,3 +600,15 @@ export function convertToTestData(
 
   return data;
 }
+
+/**
+ * Convert test mapping to test details data for a specific test.
+ * Extracts the run information for a single test from the mapping.
+ */
+export function convertToTestDetailsData(
+  testMapping: Map<string, TestRunInfo[]>,
+  testName: string
+): TestRunInfo[] {
+  const testRunInfos = testMapping.get(testName);
+  return testRunInfos || [];
+}

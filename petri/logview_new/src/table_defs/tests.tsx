@@ -78,8 +78,7 @@ export const createColumns = (): ColumnDef<TestData>[] => {
                 const encodedTestName = encodeURIComponent(name);
                 return (
                     <Link
-                        to={`/tests/`}  // TODO: Disable linking to test_details for now
-                        // to={`/tests/${encodedArchitecture}/${encodedTestName}`}
+                        to={`/tests/${encodedArchitecture}/${encodedTestName}`}
                         state={{ testData: info.row.original }}
                         className="common-table-link"
                         title={name}

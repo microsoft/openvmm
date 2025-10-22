@@ -173,6 +173,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             openhcl_agent_image,
             boot_device_type,
             vmgs,
+            tpm_state_persistence,
         } = config;
 
         let PetriVmResources { driver, log_source } = resources;
@@ -466,9 +467,14 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 vmbus_redirect,
                 command_line: _,
                 log_levels: _,
+                vtl2_base_address_type,
             },
         )) = &openhcl_config
         {
+            if vtl2_base_address_type.is_some() {
+                todo!("custom VTL2 base address type not yet supported for Hyper-V")
+            }
+
             // Copy the IGVM file locally, since it may not be accessible by
             // Hyper-V (e.g., if it is in a WSL filesystem).
             let igvm_file = temp_dir.path().join("igvm.bin");
@@ -573,6 +579,16 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         let mut added_controllers = Vec::new();
         let mut vtl2_settings = None;
+
+        if tpm_state_persistence {
+            vm.set_guest_state_isolation_mode(powershell::HyperVGuestStateIsolationMode::Default)
+                .await?;
+        } else {
+            vm.set_guest_state_isolation_mode(
+                powershell::HyperVGuestStateIsolationMode::NoPersistentSecrets,
+            )
+            .await?;
+        }
 
         // TODO: If OpenHCL is being used, then translate storage through it.
         // (requires changes above where VHDs are added)

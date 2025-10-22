@@ -48,3 +48,7 @@ export interface TestData {
     failedCount: number;
     totalCount: number;
 }
+
+// Concurrency settings when fetching test results
+export const CONCURRENCY_FOREGROUND = 15;
+export const CONCURRENCY_BACKGROUND = 5;
