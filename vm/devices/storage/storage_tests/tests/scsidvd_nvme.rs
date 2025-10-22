@@ -3,6 +3,8 @@
 
 //! Tests using NVMe as the block backend for SimpleScsiDvd.
 
+#![cfg(any(windows, target_os = "linux"))]
+
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_backend::Disk;
 use disk_nvme::NvmeDisk;
