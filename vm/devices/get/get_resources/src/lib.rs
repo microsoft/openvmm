@@ -147,11 +147,11 @@ pub mod ged {
     pub enum EfiDiagnosticsLogLevelType {
         /// Default log level
         #[default]
-        Default = 0,
+        Default,
         /// Include INFO logs
-        Info = 1,
+        Info,
         /// All logs
-        Full = 2,
+        Full,
     }
 
     /// The boot devices for a PC/AT BIOS.

@@ -2210,10 +2210,14 @@ async fn new_underhill_vm(
                 },
                 diagnostics_log_level: match dps.general.efi_diagnostics_log_level {
                     get_protocol::dps_json::EfiDiagnosticsLogLevelType::Default => {
-                        LogLevel::default()
+                        LogLevel::make_default()
                     }
-                    get_protocol::dps_json::EfiDiagnosticsLogLevelType::Info => LogLevel::info(),
-                    get_protocol::dps_json::EfiDiagnosticsLogLevelType::Full => LogLevel::full(),
+                    get_protocol::dps_json::EfiDiagnosticsLogLevelType::Info => {
+                        LogLevel::make_info()
+                    }
+                    get_protocol::dps_json::EfiDiagnosticsLogLevelType::Full => {
+                        LogLevel::make_full()
+                    }
                 },
             };
 

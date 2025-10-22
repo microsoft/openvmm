@@ -1030,7 +1030,7 @@ fn vm_config_from_command_line(
                     igvm_attest_test_config: None,
                     test_gsp_by_id: opt.test_gsp_by_id,
                     efi_diagnostics_log_level: {
-                        match opt.efi_diagnostics_log_level.unwrap_or(EfiDiagnosticsLogLevelCli::Default) {
+                        match opt.efi_diagnostics_log_level.unwrap_or_default() {
                             EfiDiagnosticsLogLevelCli::Default => get_resources::ged::EfiDiagnosticsLogLevelType::Default,
                             EfiDiagnosticsLogLevelCli::Info => get_resources::ged::EfiDiagnosticsLogLevelType::Info,
                             EfiDiagnosticsLogLevelCli::Full => get_resources::ged::EfiDiagnosticsLogLevelType::Full,
@@ -1430,10 +1430,7 @@ fn vm_config_from_command_line(
         rtc_delta_milliseconds: 0,
         automatic_guest_reset: !opt.halt_on_reset,
         efi_diagnostics_log_level: {
-            match opt
-                .efi_diagnostics_log_level
-                .unwrap_or(EfiDiagnosticsLogLevelCli::Default)
-            {
+            match opt.efi_diagnostics_log_level.unwrap_or_default() {
                 EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::Default,
                 EfiDiagnosticsLogLevelCli::Info => EfiDiagnosticsLogLevelType::Info,
                 EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::Full,

@@ -1402,8 +1402,9 @@ pub enum UefiConsoleModeCli {
     None,
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, Default, ValueEnum)]
 pub enum EfiDiagnosticsLogLevelCli {
+    #[default]
     Default,
     Info,
     Full,

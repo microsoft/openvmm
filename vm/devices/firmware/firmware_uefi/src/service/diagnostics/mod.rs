@@ -41,17 +41,17 @@ pub struct LogLevel(u32);
 
 impl LogLevel {
     /// Create default log level configuration (ERROR and WARN only)
-    pub const fn default() -> Self {
+    pub const fn make_default() -> Self {
         Self(DEBUG_ERROR | DEBUG_WARN)
     }
 
     /// Create info log level configuration (ERROR, WARN, and INFO)
-    pub const fn info() -> Self {
+    pub const fn make_info() -> Self {
         Self(DEBUG_ERROR | DEBUG_WARN | DEBUG_INFO)
     }
 
     /// Create full log level configuration (all levels)
-    pub const fn full() -> Self {
+    pub const fn make_full() -> Self {
         Self(u32::MAX)
     }
 
@@ -67,7 +67,7 @@ impl LogLevel {
 
 impl Default for LogLevel {
     fn default() -> Self {
-        LogLevel::default()
+        Self::make_default()
     }
 }
 

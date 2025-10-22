@@ -57,6 +57,7 @@ pub mod service;
 mod service;
 
 pub use crate::service::diagnostics::LogLevel;
+
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;

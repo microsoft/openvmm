@@ -201,9 +201,9 @@ impl Manifest {
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
             efi_diagnostics_log_level: match config.efi_diagnostics_log_level {
-                EfiDiagnosticsLogLevelType::Default => LogLevel::default(),
-                EfiDiagnosticsLogLevelType::Info => LogLevel::info(),
-                EfiDiagnosticsLogLevelType::Full => LogLevel::full(),
+                EfiDiagnosticsLogLevelType::Default => LogLevel::make_default(),
+                EfiDiagnosticsLogLevelType::Info => LogLevel::make_info(),
+                EfiDiagnosticsLogLevelType::Full => LogLevel::make_full(),
             },
         }
     }
