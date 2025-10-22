@@ -79,7 +79,6 @@ use pci_core::PciInterruptPin;
 use pci_core::msi::MsiInterruptSet;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
-use pcie::root::GenericSwitchDefinition;
 use pcie::switch::GenericPcieSwitch;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::SimpleScsiDisk;
@@ -1817,6 +1816,7 @@ impl InitializedVm {
                 let switch_device =
                     chipset_builder
                         .arc_mutex_device(device_name)
+                        .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
                         .add(|_services| {
                             let definition = pcie::switch::GenericPcieSwitchDefinition {
                                 name: switch.name.clone().into(),
