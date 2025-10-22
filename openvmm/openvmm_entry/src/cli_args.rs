@@ -620,7 +620,7 @@ options:
     `num_downstream_ports=<value>`    number of downstream ports, default 4
 "#)]
     #[clap(long, conflicts_with("pcat"))]
-    pub pcie_switch: Vec<PcieSwitchCli>,
+    pub pcie_switch: Vec<GenericPcieSwitchCli>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1566,13 +1566,13 @@ impl FromStr for PcieRootPortCli {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct PcieSwitchCli {
+pub struct GenericPcieSwitchCli {
     pub port_name: String,
     pub name: String,
     pub num_downstream_ports: u8,
 }
 
-impl FromStr for PcieSwitchCli {
+impl FromStr for GenericPcieSwitchCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -1609,7 +1609,7 @@ impl FromStr for PcieSwitchCli {
             }
         }
 
-        Ok(PcieSwitchCli {
+        Ok(GenericPcieSwitchCli {
             port_name: port_name.to_string(),
             name: switch_name.to_string(),
             num_downstream_ports,
@@ -2260,8 +2260,8 @@ mod tests {
     #[test]
     fn test_pcie_switch_from_str() {
         assert_eq!(
-            PcieSwitchCli::from_str("rp0:switch0").unwrap(),
-            PcieSwitchCli {
+            GenericPcieSwitchCli::from_str("rp0:switch0").unwrap(),
+            GenericPcieSwitchCli {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
@@ -2269,8 +2269,8 @@ mod tests {
         );
 
         assert_eq!(
-            PcieSwitchCli::from_str("port1:my_switch,num_downstream_ports=4").unwrap(),
-            PcieSwitchCli {
+            GenericPcieSwitchCli::from_str("port1:my_switch,num_downstream_ports=4").unwrap(),
+            GenericPcieSwitchCli {
                 port_name: "port1".to_string(),
                 name: "my_switch".to_string(),
                 num_downstream_ports: 4,
@@ -2278,8 +2278,8 @@ mod tests {
         );
 
         assert_eq!(
-            PcieSwitchCli::from_str("rp2:sw,num_downstream_ports=8").unwrap(),
-            PcieSwitchCli {
+            GenericPcieSwitchCli::from_str("rp2:sw,num_downstream_ports=8").unwrap(),
+            GenericPcieSwitchCli {
                 port_name: "rp2".to_string(),
                 name: "sw".to_string(),
                 num_downstream_ports: 8,
@@ -2288,8 +2288,8 @@ mod tests {
 
         // Test hierarchical connections
         assert_eq!(
-            PcieSwitchCli::from_str("switch0-downstream-1:child_switch").unwrap(),
-            PcieSwitchCli {
+            GenericPcieSwitchCli::from_str("switch0-downstream-1:child_switch").unwrap(),
+            GenericPcieSwitchCli {
                 port_name: "switch0-downstream-1".to_string(),
                 name: "child_switch".to_string(),
                 num_downstream_ports: 4,
@@ -2297,11 +2297,11 @@ mod tests {
         );
 
         // Error cases
-        assert!(PcieSwitchCli::from_str("").is_err());
-        assert!(PcieSwitchCli::from_str("switch0").is_err());
-        assert!(PcieSwitchCli::from_str("rp0:switch0:extra").is_err());
-        assert!(PcieSwitchCli::from_str("rp0:switch0,invalid_opt=value").is_err());
-        assert!(PcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=bad").is_err());
-        assert!(PcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=").is_err());
+        assert!(GenericPcieSwitchCli::from_str("").is_err());
+        assert!(GenericPcieSwitchCli::from_str("switch0").is_err());
+        assert!(GenericPcieSwitchCli::from_str("rp0:switch0:extra").is_err());
+        assert!(GenericPcieSwitchCli::from_str("rp0:switch0,invalid_opt=value").is_err());
+        assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=bad").is_err());
+        assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=").is_err());
     }
 }

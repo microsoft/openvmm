@@ -912,7 +912,7 @@ mod weak_mutex_pci {
     }
 
     // wiring to enable using the PCIe switch alongside the Arc+CloseableMutex device infra
-    impl RegisterWeakMutexPcie for Arc<CloseableMutex<pcie::switch::PcieSwitch>> {
+    impl RegisterWeakMutexPcie for Arc<CloseableMutex<pcie::switch::GenericPcieSwitch>> {
         fn add_pcie_device(
             &mut self,
             port: u8,

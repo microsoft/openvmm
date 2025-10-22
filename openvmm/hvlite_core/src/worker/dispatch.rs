@@ -30,6 +30,7 @@ use hvlite_defs::config::ArchTopologyConfig;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::EfiDiagnosticsLogLevelType;
+use hvlite_defs::config::GenericPcieSwitchConfig;
 use hvlite_defs::config::GicConfig;
 use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::HypervisorConfig;
@@ -37,7 +38,6 @@ use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
 use hvlite_defs::config::PcieDeviceConfig;
 use hvlite_defs::config::PcieRootComplexConfig;
-use hvlite_defs::config::PcieSwitchConfig;
 use hvlite_defs::config::PmuGsivConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialPipes;
@@ -81,6 +81,8 @@ use pci_core::PciInterruptPin;
 use pci_core::msi::MsiInterruptSet;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
+use pcie::root::GenericSwitchDefinition;
+use pcie::switch::GenericPcieSwitch;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::SimpleScsiDisk;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
@@ -224,7 +226,7 @@ pub struct Manifest {
     ide_disks: Vec<IdeDeviceConfig>,
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pcie_devices: Vec<PcieDeviceConfig>,
-    pcie_switches: Vec<PcieSwitchConfig>,
+    pcie_switches: Vec<GenericPcieSwitchConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
     memory: MemoryConfig,
     processor_topology: ProcessorTopologyConfig,
@@ -1819,9 +1821,23 @@ impl InitializedVm {
                 high_mmio_address += rc.high_mmio_size;
             }
 
-            // TODO: Create and connect PCIe switches after root complexes are set up
-            // This will require a different approach since switches need to be connected
-            // to specific ports on root complexes
+            for switch in cfg.pcie_switches {
+                let device_name = format!("pcie-switch:{}", switch.name);
+                let switch_device =
+                    chipset_builder
+                        .arc_mutex_device(device_name)
+                        .add(|_services| {
+                            let definition = pcie::switch::GenericPcieSwitchDefinition {
+                                name: switch.name.clone().into(),
+                                downstream_port_count: switch.num_downstream_ports as usize,
+                            };
+                            GenericPcieSwitch::new(definition)
+                        })?;
+
+                let bus_id = vmotherboard::BusId::new(&switch.name);
+                chipset_builder
+                    .register_weak_mutex_pcie_enumerator(bus_id, Box::new(switch_device));
+            }
         }
 
         for dev_cfg in cfg.pcie_devices {
