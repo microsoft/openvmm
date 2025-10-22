@@ -170,7 +170,7 @@ flags:
     `uh-nvme`                      relay this disk to VTL0 through NVMe-to-OpenHCL (show to VTL0 as NVMe)
 
 options:
-    `pcie_port=<name>`             present the disk using pcie under the specified port
+    `pcie_port=<name>`             present the disk using pcie under the specified port, incompatible with `vtl2`, `uh`, and `uh-nvme`
 "#)]
     #[clap(long)]
     pub nvme: Vec<DiskCli>,
@@ -957,6 +957,10 @@ impl FromStr for DiskCli {
             anyhow::bail!("`uh` or `uh-nvme` is incompatible with `vtl2`");
         }
 
+        if pcie_port.is_some() && (underhill.is_some() || vtl != DeviceVtl::Vtl0 || is_dvd) {
+            anyhow::bail!("`pcie_port` is incompatible with `uh`, `uh-nvme`, `vtl2`, and `dvd`");
+        }
+
         Ok(DiskCli {
             vtl,
             kind,
@@ -1635,6 +1639,11 @@ mod tests {
 
         // Missing port name
         assert!(DiskCli::from_str("file:disk.vhd,pcie_port=").is_err());
+
+        // Incompatible with various other disk fields
+        assert!(DiskCli::from_str("file:disk.vhd,pcie_port=p0,vtl2").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,pcie_port=p0,uh").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,pcie_port=p0,uh-nvme").is_err());
     }
 
     #[test]
