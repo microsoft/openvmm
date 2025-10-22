@@ -1072,7 +1072,7 @@ pub fn get_lx_file_system_attributes(
         maximum_file_name_length: attribute_info.head.MaximumComponentNameLength as _,
         file_record_size: block_size as _,
         spare: [0; 4],
-        // The following values are faked, based mostly on what Android expected.
+        // The following values are faked.
         file_system_id: [1, 0, 0, 0, 0, 0, 0, 0],
         file_count: 999,
         available_file_count: 1000000,
