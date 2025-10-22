@@ -973,7 +973,7 @@ pub fn is_app_exec_link(attributes: u32, reparse_tag: u32) -> bool {
 
 /// Read the fake PE header generated for app execution aliases into a slice.
 pub fn read_app_exec_link(offset: lx::off_t, buf: &mut [u8]) -> usize {
-    const PE_HEADER: [char; LX_UTIL_PE_HEADER_SIZE] = ['M', 'Z'];
+    const PE_HEADER: [u8; LX_UTIL_PE_HEADER_SIZE] = [b'M', b'Z'];
 
     if offset >= LX_UTIL_PE_HEADER_SIZE as _ {
         return 0;
@@ -981,12 +981,7 @@ pub fn read_app_exec_link(offset: lx::off_t, buf: &mut [u8]) -> usize {
 
     // Copy PE_HEADER until either the end of PE_HEADER or buf
     let count = min(PE_HEADER.len() - offset as usize, buf.len());
-    buf[..count].copy_from_slice(
-        &PE_HEADER[offset as usize..offset as usize + count]
-            .iter()
-            .map(|c| *c as u8)
-            .collect::<Vec<u8>>(),
-    );
+    buf[..count].copy_from_slice(&PE_HEADER[offset as usize..offset as usize + count]);
     count
 }
 
