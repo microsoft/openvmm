@@ -371,11 +371,11 @@ impl<'a> PageTableBuilder<'a> {
     }
 
     pub fn with_local_map(mut self, start_va: u64, size: u64) -> Result<Self, Error> {
-        if start_va % X64_LARGE_PAGE_SIZE != 0 {
+        if !start_va.is_multiple_of(X64_LARGE_PAGE_SIZE) {
             return Err(Error::StartAlignment(start_va));
         }
 
-        if size % X64_LARGE_PAGE_SIZE != 0 {
+        if !size.is_multiple_of(X64_LARGE_PAGE_SIZE) {
             return Err(Error::SizeAlignment(size));
         }
 
