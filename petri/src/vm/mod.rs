@@ -961,17 +961,20 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         // Start pipette through DiagClient
         let res = self
             .openhcl_diag()?
-            .run_vtl2_command(
-                "sh",
-                &[
-                    "-c",
-                    "mkdir /cidata && mount LABEL=cidata /cidata && sh -c '/cidata/pipette &'",
-                ],
-            )
+            .run_vtl2_command("sh", &["-c", "mkdir /cidata && mount LABEL=cidata /cidata"])
             .await?;
 
         if !res.exit_status.success() {
-            anyhow::bail!("Failed to start VTL 2 pipette: {:?}", res);
+            anyhow::bail!("Failed to mount VTL 2 pipette drive: {:?}", res);
+        }
+
+        let res = self
+            .openhcl_diag()?
+            .run_detached_vtl2_command("sh", &["-c", "/cidata/pipette | logger &"])
+            .await?;
+
+        if !res.success() {
+            anyhow::bail!("Failed to spawn VTL 2 pipette: {:?}", res);
         }
 
         Ok(())
