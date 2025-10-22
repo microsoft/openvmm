@@ -11,11 +11,15 @@ use disk_backend_resources::layer::RamDiskLayerHandle;
 use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::VpciDeviceConfig;
+use mesh::CancelContext;
 use mesh::CellUpdater;
+use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::NamespaceChange;
+use nvme_resources::fault::NamespaceFaultConfig;
 use nvme_resources::fault::QueueFaultBehavior;
 use nvme_test::command_match::CommandMatchBuilder;
 use petri::OpenHclServicingFlags;
@@ -41,6 +45,7 @@ use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_LINUX_DIREC
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_STANDARD_AARCH64;
 use pipette_client::PipetteClient;
 use scsidisk_resources::SimpleScsiDiskHandle;
+use std::time::Duration;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
@@ -50,6 +55,7 @@ use vmm_test_macros::vmm_test;
 use zerocopy::IntoBytes;
 
 const DEFAULT_SERVICING_COUNT: u8 = 3;
+const KEEPALIVE_VTL2_NSID: u32 = 37; // Pick any namespace ID as long as it doesn't conflict with other namespaces in the controller
 
 async fn openhcl_servicing_core<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -264,6 +270,75 @@ async fn servicing_shutdown_ic(
 // TODO: add tests with guest workloads while doing servicing.
 // TODO: add tests from previous release branch to current.
 
+/// Updates the namespace during servicing and verifies rescan events after servicing.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_with_namespace_update(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let mut fault_start_updater = CellUpdater::new(false);
+    let (ns_change_send, ns_change_recv) = mesh::channel::<NamespaceChange>();
+    let (aer_verify_send, aer_verify_recv) = mesh::oneshot::<()>();
+    let (log_verify_send, log_verify_recv) = mesh::oneshot::<()>();
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_namespace_fault(NamespaceFaultConfig::new(ns_change_recv))
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new()
+                .with_submission_queue_fault(
+                    CommandMatchBuilder::new()
+                        .match_cdw0_opcode(nvme_spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0)
+                        .build(),
+                    QueueFaultBehavior::Verify(Some(aer_verify_send)),
+                )
+                .with_submission_queue_fault(
+                    CommandMatchBuilder::new()
+                        .match_cdw0_opcode(nvme_spec::AdminOpcode::GET_LOG_PAGE.0)
+                        .build(),
+                    QueueFaultBehavior::Verify(Some(log_verify_send)),
+                ),
+        );
+
+    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
+
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+
+    // Make sure the disk showed up.
+    cmd!(sh, "ls /dev/sda").run().await?;
+
+    fault_start_updater.set(true).await;
+    vm.save_openhcl(
+        igvm_file.clone(),
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+    ns_change_send
+        .call(NamespaceChange::ChangeNotification, KEEPALIVE_VTL2_NSID)
+        .await?;
+    vm.restore_openhcl().await?;
+
+    let _ = CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(aer_verify_recv)
+        .await
+        .expect("AER command was not observed within 10 seconds of vm restore after servicing with namespace change");
+
+    let _ = CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(log_verify_recv)
+        .await
+        .expect("GET_LOG_PAGE command was not observed within 10 seconds of vm restore after servicing with namespace change");
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    Ok(())
+}
+
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support and a faulty controller that drops CREATE_IO_COMPLETION_QUEUE commands
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
@@ -297,7 +372,7 @@ async fn servicing_keepalive_verify_no_duplicate_aers(
             AdminQueueFaultConfig::new().with_submission_queue_fault(
                 CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0).build(),
                 QueueFaultBehavior::Panic("Received a duplicate ASYNCHRONOUS_EVENT_REQUEST command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
-            ),
+            )
         );
 
     apply_fault_with_keepalive(config, fault_configuration, fault_start_updater, igvm_file).await
@@ -373,7 +448,6 @@ async fn create_keepalive_test_config(
 ) -> Result<(petri::PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
     let vtl0_nvme_lun = 1;
-    let vtl2_nsid = 37; // Pick any namespace ID as long as it doesn't conflict with other namespaces in the controller
     let scsi_instance = Guid::new_random();
 
     config
@@ -390,7 +464,7 @@ async fn create_keepalive_test_config(
                         msix_count: 10,
                         max_io_queues: 10,
                         namespaces: vec![NamespaceDefinition {
-                            nsid: vtl2_nsid,
+                            nsid: KEEPALIVE_VTL2_NSID,
                             read_only: false,
                             disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                                 len: Some(256 * 1024),
@@ -413,7 +487,7 @@ async fn create_keepalive_test_config(
                                 .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
                                     ControllerType::Nvme,
                                     NVME_INSTANCE,
-                                    vtl2_nsid,
+                                    KEEPALIVE_VTL2_NSID,
                                 )),
                         )
                         .build(),

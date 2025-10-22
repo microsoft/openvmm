@@ -34,3 +34,17 @@ export interface RunDetailsData {
 
 // Mapping of PR number (as string) -> PR title
 export type PullRequestTitles = Record<string, string>;
+
+
+export interface TestRunInfo {
+    runNumber: string;
+    creationTime?: Date;
+    status: 'passed' | 'failed' | 'unknown';
+}
+
+export interface TestData {
+    architecture: string;
+    name: string;
+    failedCount: number;
+    totalCount: number;
+}

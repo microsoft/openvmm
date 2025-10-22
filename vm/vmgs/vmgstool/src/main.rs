@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 use uefi_nvram::UefiNvramOperation;
 use vmgs::Error as VmgsError;
+use vmgs::GspType;
 use vmgs::Vmgs;
 use vmgs::vmgs_helpers::get_active_header;
 use vmgs::vmgs_helpers::read_headers;
@@ -110,13 +111,6 @@ enum ExitCode {
     ErrorNotFound = 4,
     ErrorV1 = 5,
     ErrorGspById = 6,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum VmgsEncryptionScheme {
-    GspKey,
-    GspById,
-    None,
 }
 
 #[derive(Args)]
@@ -1048,23 +1042,20 @@ async fn vmgs_file_query_encryption(file_path: impl AsRef<Path>) -> Result<(), E
 
     let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnly).await?;
 
-    match (
-        vmgs.get_encryption_algorithm(),
-        vmgs_get_encryption_scheme(&vmgs),
-    ) {
+    match (vmgs.get_encryption_algorithm(), vmgs_get_gsp_type(&vmgs)) {
         (EncryptionAlgorithm::NONE, scheme) => {
             println!("not encrypted (encryption scheme: {scheme:?})");
             Err(Error::NotEncrypted)
         }
-        (EncryptionAlgorithm::AES_GCM, VmgsEncryptionScheme::GspKey) => {
+        (EncryptionAlgorithm::AES_GCM, GspType::GspKey) => {
             println!("encrypted with AES GCM encryption algorithm using GspKey");
             Ok(())
         }
-        (EncryptionAlgorithm::AES_GCM, VmgsEncryptionScheme::GspById) => {
+        (EncryptionAlgorithm::AES_GCM, GspType::GspById) => {
             println!("encrypted with AES GCM encryption algorithm using GspById");
             Err(Error::GspByIdEncryption)
         }
-        (EncryptionAlgorithm::AES_GCM, VmgsEncryptionScheme::None) => {
+        (EncryptionAlgorithm::AES_GCM, GspType::None) => {
             println!(
                 "encrypted with AES GCM encryption algorithm using an unknown encryption scheme"
             );
@@ -1079,13 +1070,13 @@ async fn vmgs_file_query_encryption(file_path: impl AsRef<Path>) -> Result<(), E
     }
 }
 
-fn vmgs_get_encryption_scheme(vmgs: &Vmgs) -> VmgsEncryptionScheme {
+fn vmgs_get_gsp_type(vmgs: &Vmgs) -> GspType {
     if vmgs_query_file_size(vmgs, FileId::KEY_PROTECTOR).is_ok() {
-        VmgsEncryptionScheme::GspKey
+        GspType::GspKey
     } else if vmgs_query_file_size(vmgs, FileId::VM_UNIQUE_ID).is_ok() {
-        VmgsEncryptionScheme::GspById
+        GspType::GspById
     } else {
-        VmgsEncryptionScheme::None
+        GspType::None
     }
 }
 
