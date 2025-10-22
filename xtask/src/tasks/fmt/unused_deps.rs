@@ -631,10 +631,12 @@ impl Sink for StopAfterFirstMatch {
         if (mat.starts_with("//") || mat.starts_with("//!"))
             && !(mat.starts_with("/// # use") || mat.starts_with("/// use"))
         {
-            // Using statements placed in an outer doc comment are relevant.
             // Continue if seeing what resembles a comment or an inner doc
-            // comment. Unfortunately we can't check whether the example is
-            // within a code snippet without actually parsing the code.
+            // comment.
+            // Certain exceptions for outer doc comments (`///`) because they may contain code
+            // examples that use dependencies, and skipping them could cause us to miss usages
+            // relevant for dependency detection. Unfortunately we can't check whether the example
+            // is within a code snippet without actually parsing the code.
             return Ok(true);
         }
 
