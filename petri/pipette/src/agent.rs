@@ -38,12 +38,14 @@ impl Agent {
             .race()
             .await;
 
+        eprintln!("Pipette handshaking with host");
         let (bootstrap_send, bootstrap_recv) = mesh::oneshot::<PipetteBootstrap>();
         let mesh = PointToPointMesh::new(&driver, socket, bootstrap_recv.into());
 
         let (request_send, request_recv) = mesh::channel();
         let (diag_file_send, diag_file_recv) = mesh::channel();
         let (watch_send, watch_recv) = mesh::oneshot();
+        eprintln!("Pipette initializing tracing");
         let log = crate::trace::init_tracing();
 
         bootstrap_send.send(PipetteBootstrap {
@@ -52,6 +54,7 @@ impl Agent {
             watch: watch_recv,
             log,
         });
+        eprintln!("Pipette bootstrap sent to host");
 
         Ok(Self {
             driver,
