@@ -506,6 +506,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // If nvme_keepalive was requested, return early.
         // The memory is still aliased as we don't flush pending IOs.
         if self.nvme_keepalive {
+            tracing.log();
             return;
         }
         self.reset().await;
@@ -564,6 +565,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         if self.identify.is_none() {
             return Err(save_restore::Error::InvalidState.into());
         }
+        tracing.log("Maybe we should be updating here?");
         self.nvme_keepalive = true;
         match self
             .io_issuers
@@ -771,6 +773,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Change device's behavior when servicing.
     pub fn update_servicing_flags(&mut self, nvme_keepalive: bool) {
+        tracing.log(
+            tracing::Level::DEBUG,
+            "updating nvme servicing flags: nvme_keepalive={}",
+            nvme_keepalive,
+        );
         self.nvme_keepalive = nvme_keepalive;
     }
 }
