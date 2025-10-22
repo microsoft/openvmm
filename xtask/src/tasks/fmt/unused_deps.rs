@@ -628,7 +628,10 @@ impl Sink for StopAfterFirstMatch {
         let mat = String::from_utf8(mat.bytes().to_vec())?;
         let mat = mat.trim();
 
-        if (mat.starts_with("//") || mat.starts_with("//!")) && !mat.starts_with("///") {
+        if (mat.starts_with("//") || mat.starts_with("//!"))
+            && !(mat.starts_with("/// # use") || mat.starts_with("/// use"))
+        {
+            // Using statements placed in an outer doc comment are relevant.
             // Continue if seeing what resembles a comment or an inner doc
             // comment. Unfortunately we can't check whether the example is
             // within a code snippet without actually parsing the code.
