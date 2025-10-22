@@ -103,8 +103,8 @@ async fn connect_server(driver: &DefaultDriver) -> PolledSocket<Socket> {
 
     match server_core().await {
         Ok(socket) => socket,
-        Err(err) => {
-            eprintln!("failed to stand up server: {:?}", err);
+        Err(_err) => {
+            //eprintln!("failed to stand up server: {:?}", err);
             std::future::pending().await
         }
     }
@@ -131,8 +131,8 @@ async fn connect_client(driver: &DefaultDriver) -> PolledSocket<Socket> {
         let mut timer = PolledTimer::new(driver);
         match client_core().await {
             Ok(socket) => return socket,
-            Err(err) => {
-                eprintln!("failed to connect to server, retrying: {:?}", err);
+            Err(_err) => {
+                //eprintln!("failed to connect to server, retrying: {:?}", err);
                 timer.sleep(Duration::from_secs(1)).await;
             }
         }
