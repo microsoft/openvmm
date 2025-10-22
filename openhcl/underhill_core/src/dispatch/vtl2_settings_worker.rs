@@ -931,7 +931,7 @@ async fn make_disk_type_from_physical_devices(
             }
             Resource::new(disk_backend_resources::StripedDiskHandle {
                 devices: physical_disk_configs,
-                chunk_size_in_bytes: Some(chunk_size_in_kb * 1024),
+                chunk_size_in_bytes: chunk_size_in_kb.map(|chunk_size| chunk_size * 1024),
                 logic_sector_count: None,
             })
         }
