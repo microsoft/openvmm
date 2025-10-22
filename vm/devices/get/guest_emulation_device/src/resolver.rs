@@ -196,13 +196,13 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 management_vtl_features,
                 efi_diagnostics_log_level: match resource.efi_diagnostics_log_level {
                     EfiDiagnosticsLogLevelType::Default => {
-                        get_protocol::dps_json::EfiDiagnosticsLogLevelType::Default
+                        get_protocol::dps_json::EfiDiagnosticsLogLevelType::DEFAULT
                     }
                     EfiDiagnosticsLogLevelType::Info => {
-                        get_protocol::dps_json::EfiDiagnosticsLogLevelType::Info
+                        get_protocol::dps_json::EfiDiagnosticsLogLevelType::INFO
                     }
                     EfiDiagnosticsLogLevelType::Full => {
-                        get_protocol::dps_json::EfiDiagnosticsLogLevelType::Full
+                        get_protocol::dps_json::EfiDiagnosticsLogLevelType::FULL
                     }
                 },
             },

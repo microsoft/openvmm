@@ -2208,16 +2208,17 @@ async fn new_underhill_vm(
                 } else {
                     UefiCommandSet::Aarch64
                 },
-                diagnostics_log_level: match dps.general.efi_diagnostics_log_level {
-                    get_protocol::dps_json::EfiDiagnosticsLogLevelType::Default => {
+                diagnostics_log_level: match dps.general.efi_diagnostics_log_level.0 {
+                    x if x == get_protocol::dps_json::EfiDiagnosticsLogLevelType::DEFAULT.0 => {
                         LogLevel::make_default()
                     }
-                    get_protocol::dps_json::EfiDiagnosticsLogLevelType::Info => {
+                    x if x == get_protocol::dps_json::EfiDiagnosticsLogLevelType::INFO.0 => {
                         LogLevel::make_info()
                     }
-                    get_protocol::dps_json::EfiDiagnosticsLogLevelType::Full => {
+                    x if x == get_protocol::dps_json::EfiDiagnosticsLogLevelType::FULL.0 => {
                         LogLevel::make_full()
                     }
+                    _ => LogLevel::make_default(),
                 },
             };
 

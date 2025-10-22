@@ -6,6 +6,7 @@
 
 use bitfield_struct::bitfield;
 use guid::Guid;
+use open_enum::open_enum;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -134,15 +135,39 @@ pub enum GuestStateEncryptionPolicy {
     HardwareSealing,
 }
 
-#[derive(Copy, Clone, Debug, Default, Deserialize, Serialize)]
-pub enum EfiDiagnosticsLogLevelType {
-    /// Default log level
-    #[default]
-    Default,
-    /// Include INFO logs
-    Info,
-    /// All logs
-    Full,
+open_enum! {
+    pub enum EfiDiagnosticsLogLevelType: u32 {
+        /// Default log level
+        DEFAULT = 0,
+        /// Include INFO logs
+        INFO = 1,
+        /// All logs
+        FULL = 2,
+    }
+}
+
+impl Default for EfiDiagnosticsLogLevelType {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+impl Serialize for EfiDiagnosticsLogLevelType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for EfiDiagnosticsLogLevelType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        u32::deserialize(deserializer).map(Self)
+    }
 }
 
 /// Management VTL Feature Flags
