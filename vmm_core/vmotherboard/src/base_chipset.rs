@@ -919,15 +919,10 @@ mod weak_mutex_pci {
             name: Arc<str>,
             dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
         ) -> Result<(), PcieConflict> {
-            let port_name = format!("{}-downstream-{}", self.lock().name(), port);
             self.lock()
-                .try_connect_under(
-                    &port_name,
-                    name.as_ref(),
-                    Box::new(WeakMutexPciDeviceWrapper(dev)),
-                )
-                .map_err(|_| PcieConflict {
-                    reason: PcieConflictReason::ExistingDev(format!("port-{}", port).into()),
+                .add_pcie_device(port, &name, Box::new(WeakMutexPciDeviceWrapper(dev)))
+                .map_err(|existing_dev_name| PcieConflict {
+                    reason: PcieConflictReason::ExistingDev(existing_dev_name),
                     conflict_dev: name,
                 })
         }
