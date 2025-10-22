@@ -127,22 +127,22 @@ pub trait GenericPciRoutingComponent: GenericPciBusDevice {
         value: u32,
     ) -> Option<IoResult>;
 
-    /// Try to connect a device to a specific downstream port.
+    /// Connect a device to a specific downstream port.
     ///
     /// # Parameters
-    /// - `port_name`: The name of the downstream port to connect to
-    /// - `device_name`: The name to assign to the connected device
+    /// - `port`: The port number to connect to
+    /// - `name`: The name to assign to the connected device
     /// - `device`: The device to connect
     ///
     /// # Returns
     /// `Ok(())` if the device was successfully connected, or an error if the
     /// port doesn't exist or is already occupied.
-    fn try_connect_under(
+    fn add_pcie_device(
         &mut self,
-        port_name: &str,
-        device_name: &str,
-        device: Box<dyn GenericPciBusDevice>,
-    ) -> Result<(), Box<dyn GenericPciBusDevice>>;
+        port: u8,
+        name: &str,
+        dev: Box<dyn GenericPciBusDevice>,
+    ) -> Result<(), Arc<str>>;
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Inspect)]

@@ -335,31 +335,22 @@ impl GenericPciRoutingComponent for GenericPcieSwitch {
         self.route_cfg_access(bus, device_function, false, offset, &mut temp_value)
     }
 
-    fn try_connect_under(
+    fn add_pcie_device(
         &mut self,
-        port_name: &str,
-        device_name: &str,
-        device: Box<dyn GenericPciBusDevice>,
-    ) -> Result<(), Box<dyn GenericPciBusDevice>> {
-        // Try to connect to each downstream port - any of them might be able to handle
-        // the connection either directly (if name matches) or by routing it further down
-        let mut current_device = device;
-
-        for (_, (_, downstream_port)) in self.downstream_ports.iter_mut() {
-            match downstream_port
+        port: u8,
+        name: &str,
+        dev: Box<dyn GenericPciBusDevice>,
+    ) -> Result<(), Arc<str>> {
+        // Find the specific downstream port that matches the port number
+        if let Some((port_name, downstream_port)) = self.downstream_ports.get_mut(&port) {
+            // Found the matching port, try to connect to it using the port's name
+            downstream_port
                 .port
-                .try_connect_under(port_name, device_name, current_device)
-            {
-                Ok(()) => return Ok(()),
-                Err(returned_device) => {
-                    current_device = returned_device;
-                    // Continue to next downstream port
-                }
-            }
+                .add_pcie_device(port_name.as_ref(), name, dev)
+        } else {
+            // No downstream port found with matching port number
+            Err(format!("Port {} not found", port).into())
         }
-
-        // None of our downstream ports could handle the connection
-        Err(current_device)
     }
 }
 
@@ -517,8 +508,8 @@ mod tests {
         // Connect downstream device to port 0
         assert!(
             switch
-                .try_connect_under(
-                    "test-switch-downstream-0",
+                .add_pcie_device(
+                    0, // Port number instead of port name
                     "downstream-dev",
                     Box::new(downstream_device)
                 )
@@ -530,10 +521,9 @@ mod tests {
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
             |_, _| Some(IoResult::Err(IoError::InvalidRegister)),
         );
-        let result =
-            switch.try_connect_under("invalid-port-name", "invalid-dev", Box::new(invalid_device));
+        let result = switch.add_pcie_device(99, "invalid-dev", Box::new(invalid_device)); // Use invalid port number
         assert!(result.is_err());
-        // try_connect_under returns the device back instead of an error message,
+        // add_pcie_device returns an error string on failure,
         // so we just verify that the connection failed
         assert!(result.is_err());
     }

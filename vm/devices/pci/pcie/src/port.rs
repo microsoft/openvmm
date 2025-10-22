@@ -137,18 +137,18 @@ impl PciePort {
         IoResult::Ok
     }
 
-    /// Try to connect a device to a specific downstream port.
-    pub fn try_connect_under(
+    /// Connect a device to this specific port by exact name match.
+    pub fn add_pcie_device(
         &mut self,
         port_name: &str,
         device_name: &str,
         device: Box<dyn GenericPciBusDevice>,
-    ) -> Result<(), Box<dyn GenericPciBusDevice>> {
-        // If the name matches this port's name, connect the device here
+    ) -> Result<(), Arc<str>> {
+        // Only connect if the name exactly matches this port's name
         if port_name == self.name.as_ref() {
             // Check if there's already a device connected
             if self.link.is_some() {
-                return Err(device); // Port is already occupied
+                return Err("Port is already occupied".into());
             }
 
             // Connect the device to this port
@@ -156,14 +156,7 @@ impl PciePort {
             return Ok(());
         }
 
-        // Otherwise, if we have a child device that can route, forward the call
-        if let Some((_, child_device)) = &mut self.link {
-            if let Some(routing_component) = child_device.as_routing_component() {
-                return routing_component.try_connect_under(port_name, device_name, device);
-            }
-        }
-
-        // If we can't handle this port name, fail
-        Err(device)
+        // If the name doesn't match, fail immediately (no forwarding)
+        Err("Port name does not match".into())
     }
 }

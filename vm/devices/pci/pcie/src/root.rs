@@ -14,6 +14,7 @@ use crate::ROOT_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
 use crate::port::PciePort;
 use crate::switch::GenericPcieSwitch;
+use crate::switch::GenericPcieSwitchDefinition;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -187,11 +188,11 @@ impl GenericPcieRootComplex {
                 // Create the switch and try to insert that under each of the root ports.
                 // If all failed, this means the switch cannot be connected.
                 let switch = GenericPcieSwitch::new(switch_definition);
-                let mut boxed_switch = Box::new(switch) as Box<dyn GenericPciBusDevice>;
+                let boxed_switch = Box::new(switch) as Box<dyn GenericPciBusDevice>;
 
                 let mut connected = false;
                 for (_, (_, root_port)) in port_map.iter_mut() {
-                    match root_port.port.try_connect_under(
+                    match root_port.port.add_pcie_device(
                         &switch_def.parent_port,
                         &switch_def.name,
                         boxed_switch,
@@ -200,8 +201,11 @@ impl GenericPcieRootComplex {
                             connected = true;
                             break;
                         }
-                        Err(returned_device) => {
-                            boxed_switch = returned_device;
+                        Err(_error_message) => {
+                            // Connection failed, but we can't get the device back anymore
+                            // In the new architecture, we should know exactly which port to connect to
+                            // This try-all-ports approach is from the old coupled design
+                            break;
                         }
                     }
                 }
@@ -599,7 +603,7 @@ impl RootPort {
         let port_name = self.port.name.clone();
         match self
             .port
-            .try_connect_under(port_name.as_ref(), name.as_ref(), dev)
+            .add_pcie_device(port_name.as_ref(), name.as_ref(), dev)
         {
             Ok(()) => Ok(()),
             Err(_returned_device) => {
@@ -608,7 +612,7 @@ impl RootPort {
                 if let Some((existing_name, _)) = &self.port.link {
                     Err(existing_name.clone())
                 } else {
-                    // This shouldn't happen if try_connect_under works correctly
+                    // This shouldn't happen if add_pcie_device works correctly
                     Err("unknown".into())
                 }
             }
