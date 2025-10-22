@@ -4,7 +4,6 @@
 import { ColumnDef } from "@tanstack/react-table";
 import { Link } from "react-router-dom";
 import { TestResult } from "../data_defs";
-import "../styles/run_details.css";
 
 export const defaultSorting = [
   { id: "status", desc: false }, // Sort by status ascending, failed tests first
@@ -42,7 +41,7 @@ export const createColumns = (runId: string): ColumnDef<TestResult>[] => [
       return parts.length > 1 ? parts[0] : "Other";
     },
     cell: (info) => (
-      <div className="architecture-name">{info.getValue() as string}</div>
+      <div className="common-architecture-name">{info.getValue() as string}</div>
     ),
     enableSorting: true,
   },

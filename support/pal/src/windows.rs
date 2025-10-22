@@ -8,6 +8,7 @@
 #![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 pub mod afd;
+pub mod affinity;
 pub mod alpc;
 pub mod fs;
 pub mod job;

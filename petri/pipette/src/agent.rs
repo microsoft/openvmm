@@ -3,8 +3,6 @@
 
 //! The main pipette agent, which is run when the process starts.
 
-#![cfg(any(target_os = "linux", target_os = "windows"))]
-
 use anyhow::Context;
 use futures::future::FutureExt;
 use futures_concurrency::future::RaceOk;

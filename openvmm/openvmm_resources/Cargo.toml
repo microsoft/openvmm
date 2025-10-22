@@ -10,6 +10,9 @@ rust-version.workspace = true
 # Enable gdbstub support.
 gdb = ["hvlite_core/gdb", "dep:debug_worker"]
 
+# Enable building with TPM device support.
+tpm = ["dep:tpm_device"]
+
 # Enable building with /dev/mshv support.
 virt_mshv = ["hvlite_core/virt_mshv"]
 
@@ -49,7 +52,7 @@ missing_dev.workspace = true
 serial_16550.workspace = true
 serial_debugcon.workspace = true
 serial_pl011.workspace = true
-tpm = { workspace = true, optional = true, features = ["tpm"] }
+tpm_device = { workspace = true, optional = true, features = ["tpm"] }
 
 # Non-volatile stores
 vmcore.workspace = true
