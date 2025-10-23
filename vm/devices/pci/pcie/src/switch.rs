@@ -394,6 +394,30 @@ impl PciConfigSpace for GenericPcieSwitch {
             .unwrap_or(IoResult::Err(chipset_device::io::IoError::InvalidRegister))
     }
 
+    fn pci_cfg_read_forward(
+        &mut self,
+        bus: u8,
+        device_function: u8,
+        offset: u16,
+        value: &mut u32,
+    ) -> Option<IoResult> {
+        tracing::info!("GenericPcieSwitch::PciConfigSpace::pci_cfg_read_forward read access {}:{} offset {}", bus, device_function, offset);
+        // Delegate to the GenericPciBusDevice implementation
+        GenericPciBusDevice::pci_cfg_read_forward(self, bus, device_function, offset, value)
+    }
+
+    fn pci_cfg_write_forward(
+        &mut self,
+        bus: u8,
+        device_function: u8,
+        offset: u16,
+        value: u32,
+    ) -> Option<IoResult> {
+        tracing::info!("GenericPcieSwitch::PciConfigSpace::pci_cfg_write_forward write access {}:{} offset {}, value {}", bus, device_function, offset, value);
+        // Delegate to the GenericPciBusDevice implementation
+        GenericPciBusDevice::pci_cfg_write_forward(self, bus, device_function, offset, value)
+    }
+
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
         // PCIe switches typically don't have a fixed BDF requirement
         None

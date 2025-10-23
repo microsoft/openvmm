@@ -834,6 +834,36 @@ mod weak_mutex_pci {
                     .pci_cfg_write(offset, value),
             )
         }
+
+        fn pci_cfg_read_forward(
+            &mut self,
+            bus: u8,
+            device_function: u8,
+            offset: u16,
+            value: &mut u32,
+        ) -> Option<IoResult> {
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()
+                .expect("builder code ensures supports_pci.is_some()")
+                .pci_cfg_read_forward(bus, device_function, offset, value)
+        }
+
+        fn pci_cfg_write_forward(
+            &mut self,
+            bus: u8,
+            device_function: u8,
+            offset: u16,
+            value: u32,
+        ) -> Option<IoResult> {
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()
+                .expect("builder code ensures supports_pci.is_some()")
+                .pci_cfg_write_forward(bus, device_function, offset, value)
+        }
     }
 
     // wiring to enable using the generic PCI bus alongside the Arc+CloseableMutex device infra
