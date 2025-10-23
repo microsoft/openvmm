@@ -729,13 +729,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 .worker_data
                 .io
                 .iter()
-                .map(|io_state| {
-                    format!(
-                        "{{id: {}, pending_commands_count: {}}}",
-                        io_state.queue_data.qid,
-                        io_state.queue_data.handler_data.pending_cmds.commands.len(),
-                    )
-                })
+                .map(|io_state| { io_state.to_string() })
                 .collect::<Vec<_>>()
                 .join(", "),
             "restoring io queues",
@@ -1229,6 +1223,17 @@ pub mod save_restore {
         pub iv: u32,
         #[mesh(3)]
         pub queue_data: QueuePairSavedState,
+    }
+
+    impl std::fmt::Display for IoQueueSavedState {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "{{qid={}, pending_commands_count={}}}",
+                self.queue_data.qid,
+                self.queue_data.handler_data.pending_cmds.commands.len()
+            )
+        }
     }
 
     /// Save/restore state for QueueHandler task.
