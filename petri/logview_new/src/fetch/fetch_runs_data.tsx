@@ -417,6 +417,7 @@ export async function fetchRunDetails(
     return parseRunDetails(allXmlData, runNumber, queryClient);
   } catch (error) {
     console.error(`Error fetching run details`, error);
+    throw error;
   }
 }
 
