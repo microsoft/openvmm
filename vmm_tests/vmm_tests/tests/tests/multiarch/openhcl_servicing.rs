@@ -502,3 +502,57 @@ async fn mana_nic_servicing_keepalive(
 
     Ok(())
 }
+
+// Test upgrading from 25_05 release to latest, then service again to go through keepalive path
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, RELEASE_25_05_LINUX_DIRECT_X64])]
+async fn mana_nic_servicing_keepalive_upgrade(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (to_igvm_file, from_igvm_file): (
+        ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,
+        ResolvedArtifact<RELEASE_25_05_LINUX_DIRECT_X64>,
+    ),
+) -> Result<(), anyhow::Error> {
+    // Start a VM using 25_05 release IGVM
+    let (mut vm, agent) = config
+        // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .with_custom_openhcl(from_igvm_file)
+        .with_vmbus_redirect(true)
+        .modify_backend(|b| b.with_nic())
+        .with_openhcl_command_line(
+            "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off OPENHCL_MANA_KEEP_ALIVE=1",
+        ) // disable sidecar until #1345 is fixed
+        .run()
+        .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    // Service to latest IGVM and make sure MANA nic still works
+    vm.restart_openhcl(
+        to_igvm_file.clone(),
+        OpenHclServicingFlags {
+            enable_mana_keepalive: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    // Service again to latest IGVM to test keepalive path
+    vm.restart_openhcl(
+        to_igvm_file,
+        OpenHclServicingFlags {
+            enable_mana_keepalive: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
