@@ -455,7 +455,7 @@ flags:
     /// enable emulated MANA devices with the given network backend (see --net)
     ///
     /// Prefix with `pcie_port=<port_name>:` to expose the nic over emulated PCIe
-    /// at the specificed port.
+    /// at the specified port.
     #[clap(long)]
     pub mana: Vec<NicConfigCli>,
 

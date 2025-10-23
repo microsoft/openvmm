@@ -1330,7 +1330,7 @@ fn vm_config_from_command_line(
             anyhow::bail!("use --net uh:[...] to add underhill NICs")
         }
         if cli_cfg.pcie_port.is_some() {
-            anyhow::bail!("use --mana to PCIe NICs")
+            anyhow::bail!("use --mana to add PCIe NICs")
         }
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
         add_virtio_device(
