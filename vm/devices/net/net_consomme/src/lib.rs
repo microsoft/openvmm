@@ -183,23 +183,27 @@ impl net_backend::Endpoint for ConsommeEndpoint {
         _rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn net_backend::Queue>>,
     ) -> anyhow::Result<()> {
-        assert_eq!(config.len(), 1);
-        let config = config.into_iter().next().unwrap();
-        let mut queue = Box::new(ConsommeQueue {
-            slot: self.endpoint_state.clone(),
-            endpoint_state: self.endpoint_state.lock().take(),
-            state: QueueState {
-                pool: config.pool,
-                rx_avail: config.initial_rx.iter().copied().collect(),
-                rx_ready: VecDeque::new(),
-                tx_avail: VecDeque::new(),
-                tx_ready: VecDeque::new(),
-            },
-            stats: Default::default(),
-            driver: config.driver,
-        });
-        queue.with_consomme(|c| c.refresh_driver());
-        queues.push(queue);
+        // Support returning one queue per requested config. The underlying
+        // Consomme state is shared via `slot` and each queue will lock it
+        // when interacting with the consomme instance.
+        for cfg in config.into_iter() {
+            let mut queue = Box::new(ConsommeQueue {
+                slot: self.endpoint_state.clone(),
+                state: QueueState {
+                    pool: cfg.pool,
+                    rx_avail: cfg.initial_rx.iter().copied().collect(),
+                    rx_ready: VecDeque::new(),
+                    tx_avail: VecDeque::new(),
+                    tx_ready: VecDeque::new(),
+                },
+                stats: Default::default(),
+                driver: cfg.driver,
+            });
+            // Allow the consomme instance to refresh its driver for this
+            // queue. The call will lock the shared slot briefly.
+            queue.with_consomme(|c| c.refresh_driver());
+            queues.push(queue);
+        }
         Ok(())
     }
 
@@ -219,11 +223,17 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             tso: true,
         }
     }
+
+    fn multiqueue_support(&self) -> net_backend::MultiQueueSupport {
+        net_backend::MultiQueueSupport {
+            max_queues: 64,
+            indirection_table_size: 128,
+        }
+    }
 }
 
 pub struct ConsommeQueue {
     slot: Arc<Mutex<Option<EndpointState>>>,
-    endpoint_state: Option<EndpointState>,
     state: QueueState,
     stats: Stats,
     driver: Box<dyn Driver>,
@@ -231,19 +241,15 @@ pub struct ConsommeQueue {
 
 impl InspectMut for ConsommeQueue {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        req.respond()
-            .merge(&mut self.endpoint_state.as_mut().unwrap().consomme)
-            .field("rx_avail", self.state.rx_avail.len())
+        let mut resp = req.respond();
+        if let Some(ep_state) = &mut *self.slot.lock() {
+            resp.merge(&mut ep_state.consomme);
+        }
+        resp.field("rx_avail", self.state.rx_avail.len())
             .field("rx_ready", self.state.rx_ready.len())
             .field("tx_avail", self.state.tx_avail.len())
             .field("tx_ready", self.state.tx_ready.len())
             .field("stats", &self.stats);
-    }
-}
-
-impl Drop for ConsommeQueue {
-    fn drop(&mut self) {
-        *self.slot.lock() = self.endpoint_state.take();
     }
 }
 
@@ -252,21 +258,30 @@ impl ConsommeQueue {
     where
         F: FnOnce(&mut consomme::Access<'_, Client<'_>>) -> R,
     {
-        f(&mut self
-            .endpoint_state
+        // Lock the shared endpoint state and run the closure with access to
+        // the consomme instance. The lock must be held while the access is
+        // used so the borrowed `consomme` remains valid.
+        let mut guard = self.slot.lock();
+        let ep_state = guard
             .as_mut()
-            .unwrap()
-            .consomme
-            .access(&mut Client {
-                state: &mut self.state,
-                stats: &mut self.stats,
-                driver: &self.driver,
-            }))
+            .expect("consomme endpoint state not initialized");
+        let consomme = &mut ep_state.consomme;
+        let mut client = Client {
+            state: &mut self.state,
+            stats: &mut self.stats,
+            driver: &self.driver,
+        };
+        let mut access = consomme.access(&mut client);
+        f(&mut access)
     }
 
     fn poll_message(&mut self, cx: &mut Context<'_>) {
         // process all pending messages
-        let state = self.endpoint_state.as_mut().unwrap();
+        let mut guard = self.slot.lock();
+        let state = match guard.as_mut() {
+            Some(s) => s,
+            None => return,
+        };
         while let Some(recv) = &mut state.recv {
             match recv.poll_recv(cx) {
                 Poll::Ready(Err(err)) => {
@@ -277,14 +292,15 @@ impl ConsommeQueue {
                     state.recv = None;
                     return;
                 }
-                Poll::Ready(Ok(message)) => process_message(
-                    &mut state.consomme.access(&mut Client {
+                Poll::Ready(Ok(message)) => {
+                    let mut client = Client {
                         state: &mut self.state,
                         stats: &mut self.stats,
                         driver: &self.driver,
-                    }),
-                    message,
-                ),
+                    };
+                    let mut access = state.consomme.access(&mut client);
+                    process_message(&mut access, message);
+                }
                 Poll::Pending => return,
             }
         }
