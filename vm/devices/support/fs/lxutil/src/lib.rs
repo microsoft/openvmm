@@ -2087,7 +2087,7 @@ mod tests {
     // the case sensitive directory attribute, which is only enabled if the WSL optional component
     // is installed.
     #[test]
-    #[cfg(any(unix, not(feature = "ci")))]
+    #[cfg(not(all(windows, feature = "ci")))]
     fn case_sensitive() {
         let env = TestEnv::with_options(LxVolumeOptions::new().create_case_sensitive_dirs(true));
 

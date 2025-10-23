@@ -4,22 +4,23 @@
 //! This is the petri pipette agent, which runs on the guest and executes
 //! commands and other requests from the host.
 
+#![cfg_attr(not(windows), forbid(unsafe_code))]
+
+#[cfg(any(target_os = "linux", windows))]
 mod agent;
+#[cfg(any(target_os = "linux", windows))]
 mod execute;
+#[cfg(any(target_os = "linux", windows))]
 mod shutdown;
+#[cfg(any(target_os = "linux", windows))]
 mod trace;
 #[cfg(windows)]
 mod winsvc;
 
-// This is here to satisfy rust-analyzer on macos. Pipette does not yet support
-// macos.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", windows))]
 fn main() -> anyhow::Result<()> {
-    anyhow::bail!("unsupported on macos")
-}
+    eprintln!("Pipette starting up");
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-fn main() -> anyhow::Result<()> {
     #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("--service") {
         return winsvc::start_service();
@@ -29,4 +30,9 @@ fn main() -> anyhow::Result<()> {
         let agent = agent::Agent::new(driver).await?;
         agent.run().await
     })
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn main() -> anyhow::Result<()> {
+    anyhow::bail!("unsupported platform");
 }

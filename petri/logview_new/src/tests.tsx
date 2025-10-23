@@ -6,16 +6,12 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { SortingState } from '@tanstack/react-table';
 import { useQueryClient } from '@tanstack/react-query';
 import { fetchTestAnalysis, convertToTestData } from './fetch/fetch_runs_data';
-import { TestData } from './data_defs';
+import { CONCURRENCY_BACKGROUND, CONCURRENCY_FOREGROUND, TestData } from './data_defs';
 import { Menu } from './menu.tsx';
 import { VirtualizedTable } from './virtualized_table.tsx';
 import { Link, useSearchParams } from 'react-router-dom';
 import { SearchInput } from './search';
 import { createColumns, defaultSorting, columnWidthMap } from './table_defs/tests';
-
-// Concurrency settings when fetching test results
-const CONCURRENCY_FOREGROUND = 15;
-const CONCURRENCY_BACKGROUND = 5;
 
 export function Tests(): React.JSX.Element {
     const [searchParams, setSearchParams] = useSearchParams();
@@ -174,7 +170,8 @@ function filterTests(tests: TestData[], searchFilter: string): TestData[] {
     if (terms.length === 0) return tests;
     return tests.filter(test => {
         // Search in architecture and name fields
-        const haystack = `${test.architecture} ${test.name}`.toLowerCase();
+        const status = test.failedCount === 0 ? 'passed' : 'failed';
+        const haystack = `${status} ${test.architecture} ${test.name}`.toLowerCase();
         return terms.every(term => haystack.includes(term));
     });
 }

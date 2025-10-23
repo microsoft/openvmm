@@ -567,6 +567,14 @@ impl HyperVVM {
     ) -> anyhow::Result<()> {
         powershell::run_set_base_vtl2_settings(&self.vmid, &self.ps_mod, settings).await
     }
+
+    /// Set GuestStateIsolationMode
+    pub async fn set_guest_state_isolation_mode(
+        &self,
+        mode: powershell::HyperVGuestStateIsolationMode,
+    ) -> anyhow::Result<()> {
+        powershell::run_set_guest_state_isolation_mode(&self.vmid, &self.ps_mod, mode).await
+    }
 }
 
 impl Drop for HyperVVM {

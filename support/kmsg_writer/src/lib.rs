@@ -3,6 +3,8 @@
 
 //! Implements a type for writing tracing events to `/dev/kmsg`.
 
+#![forbid(unsafe_code)]
+
 use std::fs::File;
 use std::io::IoSlice;
 use std::io::Write;
@@ -39,6 +41,7 @@ impl KmsgWriter {
     }
 }
 
+/// A writer that writes to `/dev/kmsg` with a prefix.
 pub struct KmsgWithPrefix<'a> {
     kmsg: &'a File,
     prefix: String,

@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::download_lxutil::LxutilArch;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
 use crate::init_openvmm_magicpath_linux_test_kernel::OpenvmmLinuxTestKernelArch;
 use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
@@ -23,7 +22,6 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::init_openvmm_magicpath_linux_test_kernel::Node>();
-        ctx.import::<crate::init_openvmm_magicpath_lxutil::Node>();
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
         ctx.import::<crate::init_openvmm_magicpath_release_openhcl_igvm::resolve::Node>();
         ctx.import::<crate::init_openvmm_magicpath_protoc::Node>();
@@ -51,10 +49,6 @@ impl SimpleFlowNode for Node {
                             .into_side_effect()]);
                     }
                     deps.extend_from_slice(&[
-                        ctx.reqv(|done| crate::init_openvmm_magicpath_lxutil::Request {
-                            arch: LxutilArch::X86_64,
-                            done,
-                        }),
                         ctx.reqv(|done| crate::init_openvmm_magicpath_uefi_mu_msvm::Request {
                             arch: MuMsvmArch::X86_64,
                             done,
@@ -77,10 +71,6 @@ impl SimpleFlowNode for Node {
                             .into_side_effect()]);
                     }
                     deps.extend_from_slice(&[
-                        ctx.reqv(|done| crate::init_openvmm_magicpath_lxutil::Request {
-                            arch: LxutilArch::Aarch64,
-                            done,
-                        }),
                         ctx.reqv(|done| crate::init_openvmm_magicpath_uefi_mu_msvm::Request {
                             arch: MuMsvmArch::Aarch64,
                             done,
