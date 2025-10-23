@@ -404,7 +404,7 @@ export async function fetchRunDetails(
       const data = await response.text();
 
       // NOTE: This is not a proper concatenation of XML data. It will be poorly
-      // formatted. However, since we use grep to parse Name elements later
+      // formatted. However, since we use regex to parse Name elements later
       // (instead of DOM element) this works just fine. 
       allXmlData += data;
 
