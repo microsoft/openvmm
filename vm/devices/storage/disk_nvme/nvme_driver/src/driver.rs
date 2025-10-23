@@ -808,11 +808,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Change device's behavior when servicing.
     pub fn update_servicing_flags(&mut self, nvme_keepalive: bool) {
-        tracing::info!(
-            "updating nvme servicing flags: nvme_keepalive={}",
-            nvme_keepalive,
-        );
-
+        tracing::info!(nvme_keepalive, "updating nvme servicing flags");
         self.nvme_keepalive = nvme_keepalive;
     }
 }
@@ -850,7 +846,7 @@ async fn handle_asynchronous_events(
 
                 if list[0] != 0 {
                     // For simplicity, tell all namespaces to rescan.
-                    tracing::info!("notifying listeners of changed namespaces: {:?}", list);
+                    tracing::info!(namespaces = ?list, "notifying listeners of changed namespaces");
                     rescan_event.notify(usize::MAX);
                 }
             }
