@@ -13,7 +13,7 @@
 use crate::DOWNSTREAM_SWITCH_PORT_DEVICE_ID;
 use crate::UPSTREAM_SWITCH_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
-use crate::port::PciePort;
+use crate::port::PcieDownstreamPort;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::pci::PciConfigSpace;
@@ -87,7 +87,7 @@ impl Default for UpstreamSwitchPort {
 pub struct DownstreamSwitchPort {
     /// The common PCIe port implementation.
     #[inspect(flatten)]
-    port: PciePort,
+    port: PcieDownstreamPort,
 }
 
 impl DownstreamSwitchPort {
@@ -109,7 +109,7 @@ impl DownstreamSwitchPort {
             type0_sub_system_id: 0,
         };
         Self {
-            port: PciePort::new_with_multi_function(
+            port: PcieDownstreamPort::new_with_multi_function(
                 name,
                 hardware_ids,
                 DevicePortType::DownstreamSwitchPort,
@@ -129,7 +129,7 @@ impl DownstreamSwitchPort {
     }
 
     /// Get a mutable reference to the underlying PCIe port.
-    pub fn port_mut(&mut self) -> &mut PciePort {
+    pub fn port_mut(&mut self) -> &mut PcieDownstreamPort {
         &mut self.port
     }
 }

@@ -12,12 +12,12 @@ use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::HardwareIds;
 use std::sync::Arc;
 
-/// A common PCIe port implementation that handles device connections and configuration forwarding.
+/// A common PCIe downstream facing port implementation that handles device connections and configuration forwarding.
 ///
 /// This struct contains the common functionality shared between RootPort and DownstreamSwitchPort,
 /// including device connection management and configuration space forwarding logic.
 #[derive(Inspect)]
-pub struct PciePort {
+pub struct PcieDownstreamPort {
     /// The name of this port.
     pub name: Arc<str>,
 
@@ -29,7 +29,7 @@ pub struct PciePort {
     pub link: Option<(Arc<str>, Box<dyn GenericPciBusDevice>)>,
 }
 
-impl PciePort {
+impl PcieDownstreamPort {
     /// Creates a new PCIe port with the specified hardware configuration.
     pub fn new(
         name: impl Into<Arc<str>>,
