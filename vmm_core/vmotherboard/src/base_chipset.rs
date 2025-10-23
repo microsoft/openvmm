@@ -805,7 +805,6 @@ mod weak_mutex_pci {
     use chipset_device::io::IoResult;
     use closeable_mutex::CloseableMutex;
     use pci_bus::GenericPciBusDevice;
-    use pci_bus::GenericPciRoutingComponent;
     use std::sync::Arc;
     use std::sync::Weak;
 
