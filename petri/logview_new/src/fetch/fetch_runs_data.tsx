@@ -266,7 +266,7 @@ function opportunisticPrefetching(
 
 // Function to parse detailed run data from XML using lightweight regex parsing
 function parseRunDetails(
-  xmlText: string,
+  xmlTextArray: string[],
   runNumber: string,
   queryClient: QueryClient
 ): RunDetailsData {
@@ -275,50 +275,58 @@ function parseRunDetails(
     { hasJsonl: boolean; hasPassed: boolean }
   >();
 
-  // Extract creation time from the first blob
+  // Extract creation time from the first blob (check first string in array)
   let creationTime: Date | null = null;
-  try {
-    const creationTimeMatch = xmlText.match(
-      /<Creation-Time>([^<]+)<\/Creation-Time>/
-    );
-    if (creationTimeMatch) {
-      const parsedDate = new Date(creationTimeMatch[1]);
-      if (!isNaN(parsedDate.getTime())) {
-        creationTime = parsedDate;
+  if (xmlTextArray.length > 0) {
+    try {
+      const creationTimeMatch = xmlTextArray[0].match(
+        /<Creation-Time>([^<]+)<\/Creation-Time>/
+      );
+      if (creationTimeMatch) {
+        const parsedDate = new Date(creationTimeMatch[1]);
+        if (!isNaN(parsedDate.getTime())) {
+          creationTime = parsedDate;
+        }
       }
+    } catch {
+      // If parsing fails, creationTime remains null
     }
-  } catch {
-    // If parsing fails, creationTime remains null
   }
 
   // Regex to extract Name elements from Blob entries
   // This avoids creating a full DOM tree and just scans the text
   const nameRegex = /<Name>([^<]+)<\/Name>/g;
 
-  let match;
-  while ((match = nameRegex.exec(xmlText)) !== null) {
-    const name = match[1];
-    const nameParts = name.split("/");
-    const fileName = nameParts[nameParts.length - 1];
+  // Process each string in the array
+  for (const xmlText of xmlTextArray) {
+    let match;
+    // Reset regex lastIndex for each new string
+    nameRegex.lastIndex = 0;
+    
+    while ((match = nameRegex.exec(xmlText)) !== null) {
+      const name = match[1];
+      const nameParts = name.split("/");
+      const fileName = nameParts[nameParts.length - 1];
 
-    // Skip if not a test result file
-    if (fileName !== "petri.jsonl" && fileName !== "petri.passed") {
-      continue;
-    }
+      // Skip if not a test result file
+      if (fileName !== "petri.jsonl" && fileName !== "petri.passed") {
+        continue;
+      }
 
-    // Extract test folder path (everything except the filename)
-    const testFolderPath = nameParts.slice(0, -1).join("/");
+      // Extract test folder path (everything except the filename)
+      const testFolderPath = nameParts.slice(0, -1).join("/");
 
-    // Initialize or update the test folder tracking
-    if (!testFolders.has(testFolderPath)) {
-      testFolders.set(testFolderPath, { hasJsonl: false, hasPassed: false });
-    }
+      // Initialize or update the test folder tracking
+      if (!testFolders.has(testFolderPath)) {
+        testFolders.set(testFolderPath, { hasJsonl: false, hasPassed: false });
+      }
 
-    const folder = testFolders.get(testFolderPath)!;
-    if (fileName === "petri.jsonl") {
-      folder.hasJsonl = true;
-    } else if (fileName === "petri.passed") {
-      folder.hasPassed = true;
+      const folder = testFolders.get(testFolderPath)!;
+      if (fileName === "petri.jsonl") {
+        folder.hasJsonl = true;
+      } else if (fileName === "petri.passed") {
+        folder.hasPassed = true;
+      }
     }
   }
 
@@ -382,10 +390,10 @@ export async function fetchRunDetails(
   queryClient: QueryClient
 ): Promise<RunDetailsData> {
   try {
-    let allXmlData = "";
+    const xmlDataArray: string[] = [];
     let continuationToken: string | null = null;
 
-    // Collect all XML data first
+    // Collect all XML data first in an array to avoid string concatenation overhead
     do {
       // Build URL with continuation token if we have one
       // TODO: If hierarchical namespaces are supported this fetch call might go by much faster. Try this out in a non-prod environment first to try it out
@@ -402,19 +410,15 @@ export async function fetchRunDetails(
       }
 
       const data = await response.text();
-
-      // NOTE: This is not a proper concatenation of XML data. It will be poorly
-      // formatted. However, since we use regex to parse Name elements later
-      // (instead of DOM element) this works just fine. 
-      allXmlData += data;
+      xmlDataArray.push(data);
 
       // Check for NextMarker using regex instead of DOMParser (more memory efficient)
       const nextMarkerMatch = data.match(/<NextMarker>([^<]+)<\/NextMarker>/);
       continuationToken = nextMarkerMatch ? nextMarkerMatch[1] : null;
     } while (continuationToken);
 
-    // Parse all collected data at once.
-    return parseRunDetails(allXmlData, runNumber, queryClient);
+    // Parse all collected data at once by scanning through the array
+    return parseRunDetails(xmlDataArray, runNumber, queryClient);
   } catch (error) {
     console.error(`Error fetching run details`, error);
     throw error;
