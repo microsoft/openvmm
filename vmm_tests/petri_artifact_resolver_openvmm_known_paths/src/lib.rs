@@ -449,7 +449,7 @@ fn openhcl_bin_path(
             },
         ),
         (MachineArch::X86_64, OpenhclVersion::Release2505, OpenhclFlavor::LinuxDirect) => (
-            "flowey-out/artifacts/latest-release-igvm-files",
+            "flowey-out/artifacts/last-release-igvm-files",
             "release-2505-x64-direct-openhcl.bin",
             MissingCommand::XFlowey {
                 description: "Previous OpenHCL release IGVM file",
@@ -457,7 +457,7 @@ fn openhcl_bin_path(
             },
         ),
         (MachineArch::X86_64, OpenhclVersion::Release2505, OpenhclFlavor::Standard) => (
-            "flowey-out/artifacts/latest-release-igvm-files",
+            "flowey-out/artifacts/last-release-igvm-files",
             "release-2505-x64-openhcl.bin",
             MissingCommand::XFlowey {
                 description: "Previous OpenHCL release IGVM file",
@@ -465,7 +465,7 @@ fn openhcl_bin_path(
             },
         ),
         (MachineArch::Aarch64, OpenhclVersion::Release2505, OpenhclFlavor::Standard) => (
-            "flowey-out/artifacts/latest-release-igvm-files",
+            "flowey-out/artifacts/last-release-igvm-files",
             "release-2505-aarch64-openhcl.bin",
             MissingCommand::XFlowey {
                 description: "Previous OpenHCL release IGVM file",
