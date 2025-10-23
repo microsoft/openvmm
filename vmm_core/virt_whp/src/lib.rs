@@ -542,6 +542,14 @@ impl virt::Partition for WhpPartition {
         Some(self.with_vtl(minimum_vtl).clone())
     }
 
+    #[cfg(guest_arch = "x86_64")]
+    fn msi_interrupt_target(
+        self: &Arc<Self>,
+        minimum_vtl: Vtl,
+    ) -> Option<Arc<dyn pci_core::msi::MsiInterruptTarget>> {
+        Some(self.with_vtl(minimum_vtl).clone())
+    }
+
     fn request_msi(&self, vtl: Vtl, request: MsiRequest) {
         if let Err(err) = self.inner.interrupt(vtl, request) {
             tracelimit::warn_ratelimited!(

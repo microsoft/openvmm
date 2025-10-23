@@ -168,6 +168,9 @@ flags:
     `vtl2`                         assign this disk to VTL2
     `uh`                           relay this disk to VTL0 through SCSI-to-OpenHCL (show to VTL0 as NVMe)
     `uh-nvme`                      relay this disk to VTL0 through NVMe-to-OpenHCL (show to VTL0 as NVMe)
+
+options:
+    `pcie_port=<name>`             present the disk using pcie under the specified port, incompatible with `vtl2`, `uh`, and `uh-nvme`
 "#)]
     #[clap(long)]
     pub nvme: Vec<DiskCli>,
@@ -916,6 +919,7 @@ pub struct DiskCli {
     pub read_only: bool,
     pub is_dvd: bool,
     pub underhill: Option<UnderhillDiskSource>,
+    pub pcie_port: Option<String>,
 }
 
 #[derive(Copy, Clone)]
@@ -935,6 +939,7 @@ impl FromStr for DiskCli {
         let mut is_dvd = false;
         let mut underhill = None;
         let mut vtl = DeviceVtl::Vtl0;
+        let mut pcie_port = None;
         for opt in opts {
             let mut s = opt.split('=');
             let opt = s.next().unwrap();
@@ -949,6 +954,13 @@ impl FromStr for DiskCli {
                 }
                 "uh" => underhill = Some(UnderhillDiskSource::Scsi),
                 "uh-nvme" => underhill = Some(UnderhillDiskSource::Nvme),
+                "pcie_port" => {
+                    let port = s.next();
+                    if port.is_none_or(|p| p.is_empty()) {
+                        anyhow::bail!("`pcie_port` requires a port name");
+                    }
+                    pcie_port = Some(String::from(port.unwrap()));
+                }
                 opt => anyhow::bail!("unknown option: '{opt}'"),
             }
         }
@@ -957,12 +969,17 @@ impl FromStr for DiskCli {
             anyhow::bail!("`uh` or `uh-nvme` is incompatible with `vtl2`");
         }
 
+        if pcie_port.is_some() && (underhill.is_some() || vtl != DeviceVtl::Vtl0 || is_dvd) {
+            anyhow::bail!("`pcie_port` is incompatible with `uh`, `uh-nvme`, `vtl2`, and `dvd`");
+        }
+
         Ok(DiskCli {
             vtl,
             kind,
             read_only,
             is_dvd,
             underhill,
+            pcie_port,
         })
     }
 }
@@ -1619,6 +1636,34 @@ mod tests {
             }
             _ => panic!("Expected Memory variant"),
         }
+    }
+
+    #[test]
+    fn test_parse_pcie_disk() {
+        assert_eq!(
+            DiskCli::from_str("mem:1G,pcie_port=p0").unwrap().pcie_port,
+            Some("p0".to_string())
+        );
+        assert_eq!(
+            DiskCli::from_str("file:path.vhdx,pcie_port=p0")
+                .unwrap()
+                .pcie_port,
+            Some("p0".to_string())
+        );
+        assert_eq!(
+            DiskCli::from_str("memdiff:file:path.vhdx,pcie_port=p0")
+                .unwrap()
+                .pcie_port,
+            Some("p0".to_string())
+        );
+
+        // Missing port name
+        assert!(DiskCli::from_str("file:disk.vhd,pcie_port=").is_err());
+
+        // Incompatible with various other disk fields
+        assert!(DiskCli::from_str("file:disk.vhd,pcie_port=p0,vtl2").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,pcie_port=p0,uh").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,pcie_port=p0,uh-nvme").is_err());
     }
 
     #[test]

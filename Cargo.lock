@@ -9329,6 +9329,8 @@ dependencies = [
  "build_rs_guest_arch",
  "cache_topology",
  "chipset",
+ "chipset_device_resources",
+ "closeable_mutex",
  "cvm_tracing",
  "futures",
  "futures-concurrency",

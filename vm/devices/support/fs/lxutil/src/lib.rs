@@ -4,9 +4,6 @@
 //! The LxUtil crate provides an API that allows you to write the same file system code on Windows
 //! and Linux, using Linux semantics on both platforms (subject to the limitations of the underlying
 //! file system).
-//!
-//! This crate uses lxutil.dll, a library created for the Windows Subsystem for Linux to emulate
-//! Linux file system semantics on Windows.
 
 #![cfg(any(windows, target_os = "linux"))]
 #![expect(clippy::field_reassign_with_default)] // protocol code benefits from imperative field assignment
