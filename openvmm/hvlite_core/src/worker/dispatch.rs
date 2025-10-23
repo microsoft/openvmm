@@ -30,7 +30,6 @@ use hvlite_defs::config::ArchTopologyConfig;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::EfiDiagnosticsLogLevelType;
-use hvlite_defs::config::GenericPcieSwitchConfig;
 use hvlite_defs::config::GicConfig;
 use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::HypervisorConfig;
@@ -38,6 +37,7 @@ use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
 use hvlite_defs::config::PcieDeviceConfig;
 use hvlite_defs::config::PcieRootComplexConfig;
+use hvlite_defs::config::PcieSwitchConfig;
 use hvlite_defs::config::PmuGsivConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialPipes;
@@ -225,7 +225,7 @@ pub struct Manifest {
     ide_disks: Vec<IdeDeviceConfig>,
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pcie_devices: Vec<PcieDeviceConfig>,
-    pcie_switches: Vec<GenericPcieSwitchConfig>,
+    pcie_switches: Vec<PcieSwitchConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
     memory: MemoryConfig,
     processor_topology: ProcessorTopologyConfig,

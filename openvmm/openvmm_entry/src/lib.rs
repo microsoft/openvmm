@@ -68,7 +68,7 @@ use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::EfiDiagnosticsLogLevelType;
-use hvlite_defs::config::GenericPcieSwitchConfig;
+use hvlite_defs::config::PcieSwitchConfig;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LateMapVtl0MemoryPolicy;
 use hvlite_defs::config::LoadMode;
@@ -216,10 +216,10 @@ struct ConsoleState<'a> {
 /// where each switch specifies its parent port directly.
 fn build_switch_list(
     all_switches: &[cli_args::GenericPcieSwitchCli],
-) -> Vec<GenericPcieSwitchConfig> {
+) -> Vec<PcieSwitchConfig> {
     all_switches
         .iter()
-        .map(|switch_cli| GenericPcieSwitchConfig {
+        .map(|switch_cli| PcieSwitchConfig {
             name: switch_cli.name.clone(),
             num_downstream_ports: switch_cli.num_downstream_ports,
             parent_port: switch_cli.port_name.clone(),
