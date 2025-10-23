@@ -86,7 +86,7 @@ impl SimpleFlowNode for Node {
                     pipeline_name,
                     gh_workflow: v,
                 },
-                gh_run_status: gh_workflow_id::GhRunStatus::Success,
+                gh_run_status: gh_workflow_id::GhRunStatus::Completed,
                 gh_run_job_name: job_name,
             })
         });

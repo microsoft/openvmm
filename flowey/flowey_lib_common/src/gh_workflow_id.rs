@@ -33,14 +33,6 @@ pub struct BasicQuery {
     pub params: WorkflowQueryParams,
 }
 
-/// Query with custom status filter
-#[derive(Serialize, Deserialize)]
-pub struct QueryWithStatus {
-    #[serde(flatten)]
-    pub params: WorkflowQueryParams,
-    pub gh_run_status: GhRunStatus,
-}
-
 /// Query with custom status and specific job name
 #[derive(Serialize, Deserialize)]
 pub struct QueryWithStatusAndJob {
@@ -54,8 +46,6 @@ flowey_request! {
     pub enum Request {
         /// Get workflow ID with default settings (success status)
         Basic(BasicQuery),
-        /// Get workflow ID with custom run status
-        WithStatus(QueryWithStatus),
         /// Get workflow ID with custom status and specific job name
         WithStatusAndJob(QueryWithStatusAndJob),
     }
@@ -74,10 +64,6 @@ impl FlowNode for Node {
         for request in requests {
             let (params, gh_run_status, gh_run_job_name) = match request {
                 Request::Basic(BasicQuery { params }) => (params, GhRunStatus::Success, None),
-                Request::WithStatus(QueryWithStatus {
-                    params,
-                    gh_run_status,
-                }) => (params, gh_run_status, None),
                 Request::WithStatusAndJob(QueryWithStatusAndJob {
                     params,
                     gh_run_status,
