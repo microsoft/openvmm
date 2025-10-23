@@ -405,7 +405,7 @@ export async function fetchRunDetails(
 
       // NOTE: This is not a proper concatenation of XML data. It will be poorly
       // formatted. However, since we use grep to parse Name elements later
-      // (instead of DOM element) this should work for our purpose. 
+      // (instead of DOM element) this works just fine. 
       allXmlData += data;
 
       // Check for NextMarker using regex instead of DOMParser (more memory efficient)
@@ -413,16 +413,10 @@ export async function fetchRunDetails(
       continuationToken = nextMarkerMatch ? nextMarkerMatch[1] : null;
     } while (continuationToken);
 
-    // Parse all collected data at once
-    const result = parseRunDetails(allXmlData, runNumber, queryClient);
-
-    // Sort all tests by name
-    result.tests.sort((a, b) => a.name.localeCompare(b.name));
-    
-    return result;
+    // Parse all collected data at once.
+    return parseRunDetails(allXmlData, runNumber, queryClient);
   } catch (error) {
     console.error(`Error fetching run details`, error);
-    throw error;
   }
 }
 
