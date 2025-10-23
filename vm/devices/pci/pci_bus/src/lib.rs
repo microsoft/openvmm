@@ -96,7 +96,6 @@ pub trait GenericPciBusDevice: 'static + Send {
         _offset: u16,
         _value: &mut u32,
     ) -> Option<IoResult> {
-        tracing::info!("!!! GenericPciBusDevice::pci_cfg_read_forward read access {}:{} offset {}", _bus, _device_function, _offset);
         None
     }
 
@@ -121,7 +120,6 @@ pub trait GenericPciBusDevice: 'static + Send {
         _offset: u16,
         _value: u32,
     ) -> Option<IoResult> {
-        tracing::info!("!!! GenericPciBusDevice::pci_cfg_write_forward write access {}:{} offset {}, value {}", _bus, _device_function, _offset, _value);
         None
     }
 

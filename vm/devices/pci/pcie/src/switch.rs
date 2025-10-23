@@ -315,7 +315,6 @@ impl GenericPciBusDevice for GenericPcieSwitch {
         offset: u16,
         value: &mut u32,
     ) -> Option<IoResult> {
-        tracing::info!("GenericPcieSwitch::pci_cfg_read_forward read access {}:{} offset {}", bus, device_function, offset);
         self.route_cfg_access(bus, device_function, true, offset, value)
     }
 
@@ -326,7 +325,6 @@ impl GenericPciBusDevice for GenericPcieSwitch {
         offset: u16,
         value: u32,
     ) -> Option<IoResult> {
-        tracing::info!("GenericPcieSwitch::pci_cfg_write_forward write access {}:{} offset {}, value {}", bus, device_function, offset, value);
         let mut temp_value = value;
         self.route_cfg_access(bus, device_function, false, offset, &mut temp_value)
     }
