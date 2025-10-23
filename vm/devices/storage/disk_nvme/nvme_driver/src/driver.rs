@@ -572,13 +572,10 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .await?
         {
             Ok(s) => {
-                // TODO: The decision is to re-query namespace data after the restore.
-                // Leaving the code in place so it can be restored in future.
-                // The reason is uncertainty about namespace change during servicing.
-                // ------
-                // for ns in &self.namespaces {
-                //     s.namespaces.push(ns.save()?);
-                // }
+                let mut namespaces = vec![];
+                for ns in &self.namespaces {
+                    namespaces.push(ns.save()?);
+                }
                 Ok(NvmeDriverSavedState {
                     identify_ctrl: spec::IdentifyController::read_from_bytes(
                         self.identify.as_ref().unwrap().as_bytes(),
@@ -586,7 +583,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     .unwrap(),
                     device_id: self.device_id.clone(),
                     // TODO: See the description above, save the vector once resolved.
-                    namespaces: vec![],
+                    namespaces,
                     worker_data: s,
                 })
             }
