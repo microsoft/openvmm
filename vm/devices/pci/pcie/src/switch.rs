@@ -491,6 +491,7 @@ mod tests {
     #[test]
     fn test_switch_routing_functionality() {
         use crate::test_helpers::TestPcieEndpoint;
+        use chipset_device::io::IoResult;
 
         let definition = GenericPcieSwitchDefinition {
             name: "test-switch".into(),
@@ -506,10 +507,13 @@ mod tests {
         // Should succeed for port 0 (first downstream port)
         assert!(add_result.is_ok());
 
-        // Test basic configuration space access
+        // Test basic configuration space access through the PCI interface
         let mut value = 0u32;
-        let result = GenericPciBusDevice::pci_cfg_read(&mut switch, 0x0, &mut value);
-        assert!(result.is_some());
+        let result = switch
+            .upstream_port
+            .cfg_space_mut()
+            .read_u32(0x0, &mut value);
+        assert!(matches!(result, IoResult::Ok));
 
         // Verify vendor/device ID is from the upstream port
         let expected = (UPSTREAM_SWITCH_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
@@ -521,7 +525,11 @@ mod tests {
         use chipset_device::ChipsetDevice;
         use chipset_device::pci::PciConfigSpace;
 
-        let mut switch = GenericPcieSwitch::default();
+        let definition = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 4,
+        };
+        let mut switch = GenericPcieSwitch::new(definition);
 
         // Test that it supports PCI but not other interfaces
         assert!(switch.supports_pci().is_some());
@@ -545,7 +553,11 @@ mod tests {
 
     #[test]
     fn test_switch_default() {
-        let switch = GenericPcieSwitch::default();
+        let definition = GenericPcieSwitchDefinition {
+            name: "default-switch".into(),
+            downstream_port_count: 4,
+        };
+        let switch = GenericPcieSwitch::new(definition);
         assert_eq!(switch.name().as_ref(), "default-switch");
         assert_eq!(switch.downstream_ports().len(), 4);
     }
