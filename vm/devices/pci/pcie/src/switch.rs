@@ -73,12 +73,6 @@ impl UpstreamSwitchPort {
     }
 }
 
-impl Default for UpstreamSwitchPort {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// A PCI Express downstream switch port emulator.
 ///
 /// A downstream switch port connects a switch to its children (e.g., endpoints or other switches).
@@ -131,12 +125,6 @@ impl DownstreamSwitchPort {
     /// Get a mutable reference to the underlying PCIe port.
     pub fn port_mut(&mut self) -> &mut PcieDownstreamPort {
         &mut self.port
-    }
-}
-
-impl Default for DownstreamSwitchPort {
-    fn default() -> Self {
-        Self::new("default-downstream-port")
     }
 }
 
@@ -345,15 +333,6 @@ impl GenericPciBusDevice for GenericPcieSwitch {
             // No downstream port found with matching port number
             Err(format!("Port {} not found", port).into())
         }
-    }
-}
-
-impl Default for GenericPcieSwitch {
-    fn default() -> Self {
-        Self::new(GenericPcieSwitchDefinition {
-            name: "default-switch".into(),
-            downstream_port_count: 4,
-        })
     }
 }
 
