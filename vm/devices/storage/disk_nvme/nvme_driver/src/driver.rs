@@ -605,7 +605,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         saved_state: &NvmeDriverSavedState,
         bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
-        tracing::info!("restoring nvme driver state after servicing.");
         let driver = driver_source.simple();
         let bar0_mapping = device
             .map_bar(0)
@@ -675,7 +674,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .as_ref()
             .map(|a| {
                 tracing::info!(
-                    id = a.handler_data.sq_state.sqid,
+                    id = a.qid,
                     pending_commands_count = a.handler_data.pending_cmds.commands.len(),
                     "restoring admin queue",
                 );
@@ -705,7 +704,10 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             let admin = admin.issuer().clone();
             let rescan_event = this.rescan_event.clone();
             async move {
-                if let Err(err) = handle_asynchronous_events(&admin, &rescan_event).await {
+                if let Err(err) = handle_asynchronous_events(&admin, &rescan_event)
+                    .instrument(tracing::info_span!("async_event_handler"))
+                    .await
+                {
                     tracing::error!(
                         error = err.as_ref() as &dyn std::error::Error,
                         "asynchronous event failure, not processing any more"
@@ -723,20 +725,20 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         this.admin = Some(admin.issuer().clone());
 
         tracing::info!(
-            "restoring io queues from state: [{}]",
-            saved_state
+            state = saved_state
                 .worker_data
                 .io
                 .iter()
                 .map(|io_state| {
                     format!(
                         "{{id: {}, pending_commands_count: {}}}",
-                        io_state.queue_data.handler_data.sq_state.sqid,
+                        io_state.queue_data.qid,
                         io_state.queue_data.handler_data.pending_cmds.commands.len(),
                     )
                 })
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", "),
+            "restoring io queues",
         );
 
         // Restore I/O queues.
@@ -802,13 +804,13 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         task.insert(&this.driver, "nvme_worker", state);
         task.start();
 
-        tracing::info!("nvme driver state restored successfully.");
+        tracing::info!("nvme driver state restored successfully");
         Ok(this)
     }
 
     /// Change device's behavior when servicing.
     pub fn update_servicing_flags(&mut self, nvme_keepalive: bool) {
-        tracing::info!(nvme_keepalive, "updating nvme servicing flags");
+        tracing::debug!(nvme_keepalive, "updating nvme servicing flags");
         self.nvme_keepalive = nvme_keepalive;
     }
 }
@@ -817,7 +819,6 @@ async fn handle_asynchronous_events(
     admin: &Issuer,
     rescan_event: &event_listener::Event,
 ) -> anyhow::Result<()> {
-    tracing::info!("started the asynchronous event handler");
     loop {
         let dw0 = admin
             .issue_get_aen()
