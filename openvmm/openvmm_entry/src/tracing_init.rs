@@ -67,14 +67,10 @@ pub fn enable_tracing() -> anyhow::Result<()> {
     // TODO: include the process name and maybe a VM ID?
     #[cfg(windows)]
     let sub = sub.with(
-        win_etw_tracing::TracelogSubscriber::new(
-            winapi::shared::guiddef::GUID::from(
-                "22bc55fe-2116-5adc-12fb-3fadfd7e360c"
-                    .parse::<guid::Guid>()
-                    .unwrap(),
-            ),
-            "Microsoft.HvLite",
-        )
+        {
+            let g: guid::Guid = "22bc55fe-2116-5adc-12fb-3fadfd7e360c".parse().unwrap();
+            win_etw_tracing::TracelogSubscriber::new(g, "Microsoft.HvLite")
+        }
         .map_err(|e| anyhow!("failed to start ETW provider: {:?}", e))?,
     );
 

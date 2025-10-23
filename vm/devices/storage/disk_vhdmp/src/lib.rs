@@ -29,13 +29,15 @@ mod virtdisk {
     #![expect(non_snake_case, dead_code)]
 
     use std::os::windows::prelude::*;
-    use winapi::shared::guiddef::GUID;
-    use winapi::shared::minwindef::BOOL;
-    use winapi::shared::ntdef::PCWSTR;
-    use winapi::shared::ntdef::ULONG;
-    use winapi::shared::ntdef::ULONGLONG;
-    use winapi::um::minwinbase::OVERLAPPED;
-    use winapi::um::winnt::SECURITY_DESCRIPTOR;
+    use windows_sys::Win32::Security::SECURITY_DESCRIPTOR;
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+    use windows_sys::core::GUID;
+
+    // Local type aliases matching Win32 typedefs
+    type BOOL = i32; // BOOL
+    type ULONG = u32; // unsigned long
+    type ULONGLONG = u64; // unsigned long long
+    type PCWSTR = *const u16; // const WCHAR*
 
     #[repr(C)]
     #[derive(Copy, Clone)]
