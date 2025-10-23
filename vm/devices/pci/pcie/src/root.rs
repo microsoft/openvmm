@@ -390,7 +390,7 @@ impl RootPort {
         value: &mut u32,
     ) -> IoResult {
         self.port
-            .forward_cfg_access_with_routing(bus, device_function, true, cfg_offset, value)
+            .forward_cfg_read_with_routing(bus, device_function, cfg_offset, value)
     }
 
     fn forward_cfg_write(
@@ -400,14 +400,8 @@ impl RootPort {
         cfg_offset: u16,
         value: u32,
     ) -> IoResult {
-        let mut mutable_value = value;
-        self.port.forward_cfg_access_with_routing(
-            bus,
-            device_function,
-            false,
-            cfg_offset,
-            &mut mutable_value,
-        )
+        self.port
+            .forward_cfg_write_with_routing(bus, device_function, cfg_offset, value)
     }
 }
 
@@ -707,12 +701,12 @@ mod tests {
         let mut value = 0u32;
         let result = root_port
             .port
-            .forward_cfg_access_with_routing(&1, &0, true, 0x0, &mut value);
+            .forward_cfg_read_with_routing(&1, &0, 0x0, &mut value);
         assert!(matches!(result, IoResult::Ok));
 
         let result = root_port
             .port
-            .forward_cfg_access_with_routing(&1, &0, false, 0x0, &mut value);
+            .forward_cfg_write_with_routing(&1, &0, 0x0, value);
         assert!(matches!(result, IoResult::Ok));
     }
 }
