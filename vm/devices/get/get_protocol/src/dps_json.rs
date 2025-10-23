@@ -136,6 +136,8 @@ pub enum GuestStateEncryptionPolicy {
 }
 
 open_enum! {
+    /// EFI Diagnostics Log Level Filter
+    #[derive(Default, Deserialize, Serialize)]
     pub enum EfiDiagnosticsLogLevelType: u32 {
         /// Default log level
         DEFAULT = 0,
@@ -143,30 +145,6 @@ open_enum! {
         INFO = 1,
         /// All logs
         FULL = 2,
-    }
-}
-
-impl Default for EfiDiagnosticsLogLevelType {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
-impl Serialize for EfiDiagnosticsLogLevelType {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        self.0.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for EfiDiagnosticsLogLevelType {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        u32::deserialize(deserializer).map(Self)
     }
 }
 
