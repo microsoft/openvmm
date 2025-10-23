@@ -68,13 +68,13 @@ use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::EfiDiagnosticsLogLevelType;
-use hvlite_defs::config::PcieSwitchConfig;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LateMapVtl0MemoryPolicy;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
 use hvlite_defs::config::PcieRootComplexConfig;
 use hvlite_defs::config::PcieRootPortConfig;
+use hvlite_defs::config::PcieSwitchConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialInformation;
 use hvlite_defs::config::VirtioBus;
@@ -214,9 +214,7 @@ struct ConsoleState<'a> {
 ///
 /// This function converts hierarchical CLI switch definitions into a flat list
 /// where each switch specifies its parent port directly.
-fn build_switch_list(
-    all_switches: &[cli_args::GenericPcieSwitchCli],
-) -> Vec<PcieSwitchConfig> {
+fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<PcieSwitchConfig> {
     all_switches
         .iter()
         .map(|switch_cli| PcieSwitchConfig {
