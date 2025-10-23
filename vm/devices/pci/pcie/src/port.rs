@@ -135,7 +135,7 @@ impl PcieDownstreamPort {
         if port_name == self.name.as_ref() {
             // Check if there's already a device connected
             if self.link.is_some() {
-                return Err("Port is already occupied".into());
+                return Err("port is already occupied".into());
             }
 
             // Connect the device to this port
@@ -144,6 +144,6 @@ impl PcieDownstreamPort {
         }
 
         // If the name doesn't match, fail immediately (no forwarding)
-        Err("Port name does not match".into())
+        Err("port name does not match".into())
     }
 }

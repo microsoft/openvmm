@@ -299,7 +299,7 @@ impl GenericPcieSwitch {
                 .add_pcie_device(port_name.as_ref(), name, dev)
         } else {
             // No downstream port found with matching port number
-            Err(format!("Port {} not found", port).into())
+            Err(format!("port {} not found", port).into())
         }
     }
 }
