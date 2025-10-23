@@ -777,7 +777,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 .map(|ns| ns.to_string())
                 .collect::<Vec<_>>()
                 .join(", "),
-            "restoring namespaces from saved state",
+            "restoring namespaces",
         );
 
         // Restore namespace(s).
@@ -1098,29 +1098,22 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         // Log admin queue details
         if let Some(ref admin_state) = admin {
             tracing::info!(
-                "admin queue save state: {{qid: {}, pending_commands_count: {}, sq_head: {}, cq_head: {}, aer_pending: {}}}",
-                admin_state.handler_data.sq_state.sqid,
-                admin_state.handler_data.pending_cmds.commands.len(),
-                admin_state.handler_data.sq_state.head,
-                admin_state.handler_data.cq_state.head,
-                admin_state.handler_data.aer_handler.is_some(),
+                id = admin_state.qid,
+                pending_commands_count = admin_state.handler_data.pending_cmds.commands.len(),
+                "saved admin queue",
             );
         }
 
         // Log IO queues summary
         if !io.is_empty() {
-            let io_queues_json: Vec<String> = io.iter().map(|io_state| {
-                format!(
-                    "{{qid: {}, pending_commands_count: {}, sq_head: {}, cq_head: {}, cpu: {}}}",
-                    io_state.queue_data.handler_data.sq_state.sqid,
-                    io_state.queue_data.handler_data.pending_cmds.commands.len(),
-                    io_state.queue_data.handler_data.sq_state.head,
-                    io_state.queue_data.handler_data.cq_state.head,
-                    io_state.cpu,
-                )
-            }).collect();
-
-            tracing::info!("io queues save state: [{}]", io_queues_json.join(", "));
+            tracing::info!(
+                state = io
+                    .iter()
+                    .map(|io_state| { io_state.to_string() })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                "saved io queues",
+            );
         }
 
         Ok(NvmeDriverWorkerSavedState {
