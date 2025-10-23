@@ -775,13 +775,13 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .collect();
 
         tracing::info!(
-            "restoring namespaces from saved state: [{}]",
-            saved_state
+            namespaces = saved_state
                 .namespaces
                 .iter()
-                .map(|ns| { format!("{{nsid: {}, size: {}}}", ns.nsid, ns.identify_ns.nsze) })
+                .map(|ns| ns.to_string())
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", "),
+            "restoring namespaces from saved state",
         );
 
         // Restore namespace(s).
@@ -808,7 +808,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Change device's behavior when servicing.
     pub fn update_servicing_flags(&mut self, nvme_keepalive: bool) {
-        tracing::debug!(
+        tracing::info!(
             "updating nvme servicing flags: nvme_keepalive={}",
             nvme_keepalive,
         );
@@ -1305,6 +1305,12 @@ pub mod save_restore {
         pub nsid: u32,
         #[mesh(2, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
         pub identify_ns: nvme_spec::nvm::IdentifyNamespace,
+    }
+
+    impl std::fmt::Display for SavedNamespaceData {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{{nsid={}, size={}}}", self.nsid, self.identify_ns.nsze)
+        }
     }
 
     #[derive(Clone, Debug, Protobuf)]
