@@ -19,6 +19,8 @@ mod winsvc;
 
 #[cfg(any(target_os = "linux", windows))]
 fn main() -> anyhow::Result<()> {
+    eprintln!("Pipette starting up");
+
     #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("--service") {
         return winsvc::start_service();

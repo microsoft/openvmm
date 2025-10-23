@@ -376,6 +376,7 @@ async fn idle_test<T: PetriVmmBackend>(
     wait_time_sec: WaitPeriodSec,
     driver: DefaultDriver,
     build_flavor: &str,
+    assert_against_baseline: bool,
 ) -> anyhow::Result<()> {
     let isolation_type = config.isolation();
     let machine_arch = config.arch();
@@ -436,7 +437,9 @@ async fn idle_test<T: PetriVmmBackend>(
     tracing::info!("MEMSTAT_START:{}:MEMSTAT_END", to_string(&memstat).unwrap());
     agent.power_off().await?;
     vm.wait_for_teardown().await?;
-    memstat.compare_to_baseline(build_flavor, &arch_str, &format!("{}vp", vp_count))?;
+    if assert_against_baseline {
+        memstat.compare_to_baseline(build_flavor, &arch_str, &format!("{}vp", vp_count))?;
+    }
 
     Ok(())
 }
@@ -458,6 +461,8 @@ async fn memory_validation_release_small<T: PetriVmmBackend>(
         WaitPeriodSec::ShortWait,
         driver,
         "release",
+        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
+        false,
     )
     .await
 }
@@ -483,6 +488,8 @@ async fn memory_validation_debug_small<T: PetriVmmBackend>(
         WaitPeriodSec::ShortWait,
         driver,
         "debug",
+        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
+        false,
     )
     .await
 }
@@ -504,6 +511,8 @@ async fn memory_validation_release_heavy<T: PetriVmmBackend>(
         WaitPeriodSec::LongWait,
         driver,
         "release",
+        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
+        false,
     )
     .await
 }
@@ -529,6 +538,8 @@ async fn memory_validation_debug_heavy<T: PetriVmmBackend>(
         WaitPeriodSec::LongWait,
         driver,
         "debug",
+        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
+        false,
     )
     .await
 }

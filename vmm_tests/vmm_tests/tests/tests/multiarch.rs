@@ -302,6 +302,11 @@ async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
     let (mut vm, agent) = config.run().await?;
     let shell = agent.windows_shell();
 
+    // VBS should be off by default
+    let output = cmd!(shell, "systeminfo").output().await?;
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    assert!(!output_str.contains("Virtualization-based security: Status: Running"));
+
     // Enable VBS
     cmd!(shell, "reg")
         .args([
