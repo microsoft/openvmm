@@ -71,9 +71,6 @@ impl PciePort {
     ) -> IoResult {
         let bus_range = self.cfg_space.assigned_bus_range();
 
-        if *bus == 2 && *device_function == 0 {
-            tracing::info!("{} forward {} access to 2.0.0, offset {}, current bus range: {} - {}", self.name, if is_read { "read" } else { "write" }, cfg_offset, bus_range.start(), bus_range.end());
-        }
         // If the bus range is 0..=0, this indicates invalid/uninitialized bus configuration
         if bus_range == (0..=0) {
             tracelimit::warn_ratelimited!("invalid access: port bus number range not configured");
@@ -105,9 +102,6 @@ impl PciePort {
             }
         } else if bus_range.contains(bus) {
             if let Some((_, device)) = &mut self.link {
-                if *bus == 2 && *device_function == 0 {
-                    tracing::info!("{} will handle {} access to 2.0.0, offset {}", self.name, if is_read { "read" } else { "write" }, cfg_offset);
-                }
                 // Forward access to the linked device.
                 let result = if is_read {
                     device.pci_cfg_read_forward(*bus, *device_function, cfg_offset, value)
@@ -140,7 +134,6 @@ impl PciePort {
     ) -> Result<(), Arc<str>> {
         // Only connect if the name exactly matches this port's name
         if port_name == self.name.as_ref() {
-            tracing::info!("{} adds {} as child", port_name, device_name);
             // Check if there's already a device connected
             if self.link.is_some() {
                 return Err("Port is already occupied".into());
