@@ -1822,17 +1822,16 @@ impl InitializedVm {
 
             for switch in cfg.pcie_switches {
                 let device_name = format!("pcie-switch:{}", switch.name);
-                let switch_device =
-                    chipset_builder
-                        .arc_mutex_device(device_name)
-                        .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
-                        .add(|_services| {
-                            let definition = pcie::switch::GenericPcieSwitchDefinition {
-                                name: switch.name.clone().into(),
-                                downstream_port_count: switch.num_downstream_ports as usize,
-                            };
-                            GenericPcieSwitch::new(definition)
-                        })?;
+                let switch_device = chipset_builder
+                    .arc_mutex_device(device_name)
+                    .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
+                    .add(|_services| {
+                        let definition = pcie::switch::GenericPcieSwitchDefinition {
+                            name: switch.name.clone().into(),
+                            downstream_port_count: switch.num_downstream_ports as usize,
+                        };
+                        GenericPcieSwitch::new(definition)
+                    })?;
 
                 let bus_id = vmotherboard::BusId::new(&switch.name);
                 chipset_builder

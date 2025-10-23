@@ -12,9 +12,7 @@ use crate::PAGE_SHIFT;
 use crate::PAGE_SIZE64;
 use crate::ROOT_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
-use crate::port::PciePort;
-use crate::switch::GenericPcieSwitch;
-use crate::switch::GenericPcieSwitchDefinition;
+use crate::port::PcieDownstreamPort;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -337,7 +335,7 @@ impl MmioIntercept for GenericPcieRootComplex {
 struct RootPort {
     /// The common PCIe port implementation.
     #[inspect(flatten)]
-    port: PciePort,
+    port: PcieDownstreamPort,
 }
 
 impl RootPort {
@@ -354,7 +352,7 @@ impl RootPort {
             type0_sub_system_id: 0,
         };
         Self {
-            port: PciePort::new(name, hardware_ids, DevicePortType::RootPort),
+            port: PcieDownstreamPort::new(name, hardware_ids, DevicePortType::RootPort),
         }
     }
 
