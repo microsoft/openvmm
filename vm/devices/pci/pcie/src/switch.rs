@@ -19,7 +19,7 @@ use chipset_device::io::IoResult;
 use chipset_device::pci::PciConfigSpace;
 use inspect::Inspect;
 use inspect::InspectMut;
-use pci_bus::{GenericPciBusDevice, GenericPciRoutingComponent};
+use pci_bus::GenericPciBusDevice;
 use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
 use pci_core::spec::caps::pci_express::DevicePortType;
@@ -308,12 +308,6 @@ impl GenericPciBusDevice for GenericPcieSwitch {
         self.upstream_port.cfg_space.write_u32(offset, value).into()
     }
 
-    fn as_routing_component(&mut self) -> Option<&mut dyn GenericPciRoutingComponent> {
-        Some(self)
-    }
-}
-
-impl GenericPciRoutingComponent for GenericPcieSwitch {
     fn pci_cfg_read_forward(
         &mut self,
         bus: u8,
@@ -529,15 +523,22 @@ mod tests {
     }
 
     #[test]
-    fn test_switch_as_routing_component() {
+    fn test_switch_routing_functionality() {
+        use crate::test_helpers::TestPcieEndpoint;
+
         let definition = GenericPcieSwitchDefinition {
-            name: "routing-switch".into(),
-            downstream_port_count: 1,
+            name: "test-switch".into(),
+            downstream_port_count: 2,
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
-        // Verify that Switch implements GenericPciRoutingComponent
-        assert!(switch.as_routing_component().is_some());
+        // Verify that Switch implements routing functionality by testing add_pcie_device method
+        // This tests that the switch can accept device connections (routing capability)
+        let test_device =
+            TestPcieEndpoint::new(|_, _| Some(IoResult::Ok), |_, _| Some(IoResult::Ok));
+        let add_result = switch.add_pcie_device(0, "test-device", Box::new(test_device));
+        // Should succeed for port 0 (first downstream port)
+        assert!(add_result.is_ok());
 
         // Test basic configuration space access
         let mut value = 0u32;

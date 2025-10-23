@@ -65,6 +65,9 @@ pub mod standard_x86_io_ports {
 ///
 /// This is also the reason why the read/write methods are fallible: the PCI bus
 /// should be resilient to backing devices unexpectedly going offline.
+///
+/// PCI devices can optionally implement routing functionality (like switches and bridges)
+/// by providing implementations for the forwarding methods.
 pub trait GenericPciBusDevice: 'static + Send {
     /// Dispatch a PCI config space read to the device with the given address.
     fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult>;
@@ -72,24 +75,10 @@ pub trait GenericPciBusDevice: 'static + Send {
     /// Dispatch a PCI config space write to the device with the given address.
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult>;
 
-    /// Returns a mutable reference to this device as a routing component (like a switch), if it implements routing.
-    fn as_routing_component(&mut self) -> Option<&mut dyn GenericPciRoutingComponent> {
-        None
-    }
-}
-
-/// An abstract interface for a PCI routing component that can forward configuration
-/// space accesses to downstream devices.
-///
-/// This trait extends [`GenericPciBusDevice`] to add routing functionality for
-/// components like PCI-to-PCI bridges, and PCIe switch ports that need to forward
-/// configuration space accesses based on bus number ranges and device addressing.
-///
-/// Routing components implement both device functionality (responding to their own
-/// configuration space) and forwarding functionality (routing accesses to downstream
-/// devices based on the target bus, device, and function numbers).
-pub trait GenericPciRoutingComponent: GenericPciBusDevice {
     /// Forward a PCI configuration space read to a downstream device.
+    ///
+    /// Default implementation returns `None`, indicating this device doesn't support routing.
+    /// Routing components like switches and bridges should override this method.
     ///
     /// # Parameters
     /// - `bus`: Target bus number for the downstream device
@@ -99,16 +88,21 @@ pub trait GenericPciRoutingComponent: GenericPciBusDevice {
     ///
     /// # Returns
     /// `Some(IoResult)` if the routing component handled the forward, `None` if
-    /// the component is no longer responding or the target is not reachable.
+    /// the component doesn't support routing or the target is not reachable.
     fn pci_cfg_read_forward(
         &mut self,
-        bus: u8,
-        device_function: u8,
-        offset: u16,
-        value: &mut u32,
-    ) -> Option<IoResult>;
+        _bus: u8,
+        _device_function: u8,
+        _offset: u16,
+        _value: &mut u32,
+    ) -> Option<IoResult> {
+        None
+    }
 
     /// Forward a PCI configuration space write to a downstream device.
+    ///
+    /// Default implementation returns `None`, indicating this device doesn't support routing.
+    /// Routing components like switches and bridges should override this method.
     ///
     /// # Parameters
     /// - `bus`: Target bus number for the downstream device
@@ -118,16 +112,21 @@ pub trait GenericPciRoutingComponent: GenericPciBusDevice {
     ///
     /// # Returns
     /// `Some(IoResult)` if the routing component handled the forward, `None` if
-    /// the component is no longer responding or the target is not reachable.
+    /// the component doesn't support routing or the target is not reachable.
     fn pci_cfg_write_forward(
         &mut self,
-        bus: u8,
-        device_function: u8,
-        offset: u16,
-        value: u32,
-    ) -> Option<IoResult>;
+        _bus: u8,
+        _device_function: u8,
+        _offset: u16,
+        _value: u32,
+    ) -> Option<IoResult> {
+        None
+    }
 
     /// Connect a device to a specific downstream port.
+    ///
+    /// Default implementation returns an error, indicating this device doesn't support routing.
+    /// Routing components like switches and bridges should override this method.
     ///
     /// # Parameters
     /// - `port`: The port number to connect to
@@ -136,13 +135,15 @@ pub trait GenericPciRoutingComponent: GenericPciBusDevice {
     ///
     /// # Returns
     /// `Ok(())` if the device was successfully connected, or an error if the
-    /// port doesn't exist or is already occupied.
+    /// device doesn't support routing, or the port doesn't exist or is already occupied.
     fn add_pcie_device(
         &mut self,
-        port: u8,
-        name: &str,
-        dev: Box<dyn GenericPciBusDevice>,
-    ) -> Result<(), Arc<str>>;
+        _port: u8,
+        _name: &str,
+        _dev: Box<dyn GenericPciBusDevice>,
+    ) -> Result<(), Arc<str>> {
+        Err("Device does not support PCIe device connections".into())
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Inspect)]

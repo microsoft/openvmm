@@ -102,35 +102,23 @@ impl PciePort {
             }
         } else if bus_range.contains(bus) {
             if let Some((_, device)) = &mut self.link {
-                // Forward access to the routing component.
-                if let Some(routing_device) = device.as_routing_component() {
-                    let result = if is_read {
-                        routing_device.pci_cfg_read_forward(
-                            *bus,
-                            *device_function,
-                            cfg_offset,
-                            value,
-                        )
-                    } else {
-                        routing_device.pci_cfg_write_forward(
-                            *bus,
-                            *device_function,
-                            cfg_offset,
-                            *value,
-                        )
-                    };
-
-                    if let Some(result) = result {
-                        match result {
-                            IoResult::Ok => (),
-                            res => return res,
-                        }
-                    }
+                // Forward access to the linked device.
+                let result = if is_read {
+                    device.pci_cfg_read_forward(*bus, *device_function, cfg_offset, value)
                 } else {
-                    tracelimit::warn_ratelimited!(
-                        "invalid access: bus number to access not within port's bus number range"
-                    );
+                    device.pci_cfg_write_forward(*bus, *device_function, cfg_offset, *value)
+                };
+
+                if let Some(result) = result {
+                    match result {
+                        IoResult::Ok => (),
+                        res => return res,
+                    }
                 }
+            } else {
+                tracelimit::warn_ratelimited!(
+                    "invalid access: bus number to access not within port's bus number range"
+                );
             }
         }
 
