@@ -399,7 +399,6 @@ impl PciConfigSpace for GenericPcieSwitch {
         offset: u16,
         value: &mut u32,
     ) -> Option<IoResult> {
-        tracing::info!("GenericPcieSwitch::PciConfigSpace::pci_cfg_read_forward read access {}:{} offset {}", bus, device_function, offset);
         // Delegate to the GenericPciBusDevice implementation
         GenericPciBusDevice::pci_cfg_read_forward(self, bus, device_function, offset, value)
     }
@@ -411,7 +410,6 @@ impl PciConfigSpace for GenericPcieSwitch {
         offset: u16,
         value: u32,
     ) -> Option<IoResult> {
-        tracing::info!("GenericPcieSwitch::PciConfigSpace::pci_cfg_write_forward write access {}:{} offset {}, value {}", bus, device_function, offset, value);
         // Delegate to the GenericPciBusDevice implementation
         GenericPciBusDevice::pci_cfg_write_forward(self, bus, device_function, offset, value)
     }
