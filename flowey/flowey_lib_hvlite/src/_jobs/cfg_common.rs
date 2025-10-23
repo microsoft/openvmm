@@ -42,7 +42,6 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::download_lxutil::Node>();
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
         ctx.import::<crate::download_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
