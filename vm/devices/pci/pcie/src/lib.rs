@@ -5,7 +5,7 @@
 
 #![forbid(unsafe_code)]
 
-pub mod port;
+pub(crate) mod port;
 pub mod root;
 pub mod switch;
 

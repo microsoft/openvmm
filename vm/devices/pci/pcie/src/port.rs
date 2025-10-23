@@ -58,9 +58,8 @@ impl PcieDownstreamPort {
         }
     }
 
-    /// Forward a configuration space access to the connected device with root port logic.
-    ///
-    /// This version supports routing components for multi-level hierarchies.
+    /// Forward a configuration space access to the connected device.
+    /// Supports routing components for multi-level hierarchies.
     pub fn forward_cfg_access_with_routing(
         &mut self,
         bus: &u8,
