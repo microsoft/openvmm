@@ -134,7 +134,7 @@ impl FlowNode for Node {
                             sh,
                             "{gh_cli} run view {action_id}
                             --json jobs
-                            --jq .jobs[] | select(.name == {job_name} && .conclusion == \"{gh_run_status}\") | .url"
+                            --jq .jobs[] | select(.name == {job_name} && .conclusion == \"success\") | .url"
                         )
                         .read();
 
