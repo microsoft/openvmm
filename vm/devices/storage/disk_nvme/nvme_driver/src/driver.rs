@@ -668,23 +668,17 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .attach_pending_buffers()
             .context("failed to restore allocations")?;
 
-        // Log admin queue restore details
-        if let Some(ref admin_state) = saved_state.worker_data.admin {
-            tracing::info!(
-                id = admin_state.handler_data.sq_state.sqid,
-                pending_commands_count = admin_state.handler_data.pending_cmds.commands.len(),
-                "restoring admin queue",
-            );
-        } else {
-            tracing::info!("attempting to restore admin queue from empty state");
-        }
-
         // Restore the admin queue pair.
         let admin = saved_state
             .worker_data
             .admin
             .as_ref()
             .map(|a| {
+                tracing::info!(
+                    id = a.handler_data.sq_state.sqid,
+                    pending_commands_count = a.handler_data.pending_cmds.commands.len(),
+                    "restoring admin queue",
+                );
                 // Restore memory block for admin queue pair.
                 let mem_block = restored_memory
                     .iter()
@@ -700,9 +694,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     bounce_buffer,
                     AdminAerHandler::new(),
                 )
-                .unwrap()
+                .expect("failed to restore admin queue pair")
             })
-            .expect("failed to restore admin queue");
+            .expect("attempted to restore admin queue from empty state");
 
         let admin = worker.admin.insert(admin);
 
