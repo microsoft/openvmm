@@ -50,7 +50,7 @@ pub enum PhysicalDevices {
     Striped {
         #[inspect(iter_by_index)]
         devices: Vec<PhysicalDevice>,
-        chunk_size_in_kb: u32,
+        chunk_size_in_kb: Option<u32>,
     },
 }
 

@@ -90,7 +90,7 @@ message Lun {
     PhysicalDevices physical_devices = 16;
     bool is_dvd = 17;
 
-    uint32 chunk_size_in_kb = 18;
+    optional uint32 chunk_size_in_kb = 18;
     // Specify small size vm, for example independently attach a 75GB NVMe controller, but show as a 5GB SCSI disk inside VM
     optional uint64 scsi_disk_size_in_bytes = 19;
     // GUID for NTFS format

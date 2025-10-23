@@ -488,7 +488,7 @@ async fn openhcl_linux_stripe_storvsp(
                         .add_lun(
                             Vtl2LunBuilder::disk()
                                 .with_location(vtl0_nvme_lun)
-                                .with_chunk_size_in_kb(128)
+                                .with_chunk_size_in_kb(Some(128))
                                 .with_physical_devices(vec![
                                     Vtl2StorageBackingDeviceBuilder::new(
                                         ControllerType::Nvme,

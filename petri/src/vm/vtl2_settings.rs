@@ -103,7 +103,7 @@ pub struct Vtl2LunBuilder {
     model_number: String,
     physical_devices: Vec<Vtl2StorageBackingDeviceBuilder>,
     is_dvd: bool,
-    chunk_size_in_kb: u32,
+    chunk_size_in_kb: Option<u32>,
 }
 
 impl Vtl2LunBuilder {
@@ -120,7 +120,7 @@ impl Vtl2LunBuilder {
             model_number: "1".to_string(),
             physical_devices: Vec::new(),
             is_dvd: false,
-            chunk_size_in_kb: 0,
+            chunk_size_in_kb: None,
         }
     }
 
@@ -158,7 +158,7 @@ impl Vtl2LunBuilder {
     }
 
     /// For striped devices, the size of the stripe chunk in KB.
-    pub fn with_chunk_size_in_kb(mut self, chunk_size_in_kb: u32) -> Self {
+    pub fn with_chunk_size_in_kb(mut self, chunk_size_in_kb: Option<u32>) -> Self {
         self.chunk_size_in_kb = chunk_size_in_kb;
         self
     }
