@@ -506,7 +506,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // If nvme_keepalive was requested, return early.
         // The memory is still aliased as we don't flush pending IOs.
         if self.nvme_keepalive {
-            tracing.log();
             return;
         }
         self.reset().await;
@@ -565,12 +564,13 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         if self.identify.is_none() {
             return Err(save_restore::Error::InvalidState.into());
         }
-        tracing.log("Maybe we should be updating here?");
+        tracing::info!("started saving the nvme driver state for servicing.");
         self.nvme_keepalive = true;
         match self
             .io_issuers
             .send
             .call(NvmeWorkerRequest::Save, ())
+            .instrument(tracing::info_span!("nvme_driver_save"))
             .await?
         {
             Ok(s) => {
@@ -604,6 +604,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         saved_state: &NvmeDriverSavedState,
         bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
+        tracing::info!("restoring nvme driver state after servicing.");
         let driver = driver_source.simple();
         let bar0_mapping = device
             .map_bar(0)
@@ -666,6 +667,20 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .attach_pending_buffers()
             .context("failed to restore allocations")?;
 
+        // Log admin queue restore details
+        if let Some(ref admin_state) = saved_state.worker_data.admin {
+            tracing::info!(
+                "restoring admin queue from: {{sqid: {}, cqid: {}, pending_commands_count: {}, sq_head: {}, cq_head: {}}}",
+                admin_state.handler_data.sq_state.sqid,
+                admin_state.handler_data.cq_state.cqid,
+                admin_state.handler_data.pending_cmds.commands.len(),
+                admin_state.handler_data.sq_state.head,
+                admin_state.handler_data.cq_state.head,
+            );
+        } else {
+            tracing::info!("attempting to restore admin queue from empty state");
+        }
+
         // Restore the admin queue pair.
         let admin = saved_state
             .worker_data
@@ -689,7 +704,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 )
                 .unwrap()
             })
-            .unwrap();
+            .expect("failed to restore admin queue");
 
         let admin = worker.admin.insert(admin);
 
@@ -714,6 +729,28 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         };
 
         this.admin = Some(admin.issuer().clone());
+
+        tracing::info!(
+            "restoring io queues from state: [{}]",
+            saved_state
+            .worker_data
+            .io
+            .iter()
+            .map(|io_state| {
+                format!(
+                "{{sqid: {}, cqid: {}, pending_commands_count: {}, sq_head: {}, cq_head: {}, cpu: {}, iv: {}}}",
+                io_state.queue_data.handler_data.sq_state.sqid,
+                io_state.queue_data.handler_data.cq_state.cqid,
+                io_state.queue_data.handler_data.pending_cmds.commands.len(),
+                io_state.queue_data.handler_data.sq_state.head,
+                io_state.queue_data.handler_data.cq_state.head,
+                io_state.cpu,
+                io_state.iv,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+        );
 
         // Restore I/O queues.
         // Interrupt vector 0 is shared between Admin queue and I/O queue #1.
@@ -750,6 +787,16 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             })
             .collect();
 
+        tracing::info!(
+            "restoring namespaces from saved state: [{}]",
+            saved_state
+                .namespaces
+                .iter()
+                .map(|ns| { format!("{{nsid: {}, size: {}}}", ns.nsid, ns.identify_ns.nsze) })
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
         // Restore namespace(s).
         for ns in &saved_state.namespaces {
             // TODO: Current approach is to re-query namespace data after servicing
@@ -768,16 +815,17 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         task.insert(&this.driver, "nvme_worker", state);
         task.start();
 
+        tracing::info!("nvme driver state restored successfully.");
         Ok(this)
     }
 
     /// Change device's behavior when servicing.
     pub fn update_servicing_flags(&mut self, nvme_keepalive: bool) {
-        tracing.log(
-            tracing::Level::DEBUG,
+        tracing::info!(
             "updating nvme servicing flags: nvme_keepalive={}",
             nvme_keepalive,
         );
+
         self.nvme_keepalive = nvme_keepalive;
     }
 }
@@ -786,6 +834,7 @@ async fn handle_asynchronous_events(
     admin: &Issuer,
     rescan_event: &event_listener::Event,
 ) -> anyhow::Result<()> {
+    tracing::info!("started the asynchronous event handler");
     loop {
         let dw0 = admin
             .issue_get_aen()
@@ -794,7 +843,7 @@ async fn handle_asynchronous_events(
 
         match spec::AsynchronousEventType(dw0.event_type()) {
             spec::AsynchronousEventType::NOTICE => {
-                tracing::info!("namespace attribute change event");
+                tracing::info!("received an async notice event (aen) from the controller");
 
                 // Clear the namespace list.
                 let mut list = [0u32; 1024];
@@ -814,6 +863,7 @@ async fn handle_asynchronous_events(
 
                 if list[0] != 0 {
                     // For simplicity, tell all namespaces to rescan.
+                    tracing::info!("notifying listeners of changed namespaces: {:?}", list);
                     rescan_event.notify(usize::MAX);
                 }
             }
@@ -906,7 +956,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     .enumerate()
                     .rev()
                     .find_map(|(i, issuer)| issuer.get().map(|issuer| (i, issuer)))
-                    .unwrap();
+                    .expect("unable to find an io issuer for fallback");
 
                 // Log the error as informational only when there is a lack of
                 // hardware resources from the device.
@@ -1061,11 +1111,39 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             None => None,
         };
 
-        let io = join_all(self.io.drain(..).map(async |q| q.save().await))
+        let io: Vec<IoQueueSavedState> = join_all(self.io.drain(..).map(async |q| q.save().await))
             .await
             .into_iter()
             .flatten()
             .collect();
+
+        // Log admin queue details
+        if let Some(ref admin_state) = admin {
+            tracing::info!(
+                "admin queue save state: {{qid: {}, pending_commands_count: {}, sq_head: {}, cq_head: {}, aer_pending: {}}}",
+                admin_state.handler_data.sq_state.sqid,
+                admin_state.handler_data.pending_cmds.commands.len(),
+                admin_state.handler_data.sq_state.head,
+                admin_state.handler_data.cq_state.head,
+                admin_state.handler_data.aer_handler.is_some(),
+            );
+        }
+
+        // Log IO queues summary
+        if !io.is_empty() {
+            let io_queues_json: Vec<String> = io.iter().map(|io_state| {
+                format!(
+                    "{{qid: {}, pending_commands_count: {}, sq_head: {}, cq_head: {}, cpu: {}}}",
+                    io_state.queue_data.handler_data.sq_state.sqid,
+                    io_state.queue_data.handler_data.pending_cmds.commands.len(),
+                    io_state.queue_data.handler_data.sq_state.head,
+                    io_state.queue_data.handler_data.cq_state.head,
+                    io_state.cpu,
+                )
+            }).collect();
+
+            tracing::info!("io queues save state: [{}]", io_queues_json.join(", "));
+        }
 
         Ok(NvmeDriverWorkerSavedState {
             admin,
