@@ -60,6 +60,7 @@ features = [
     "Win32_System_Ioctl",
     "Win32_System_Kernel",
     "Win32_System_Memory",
+    "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
 ]

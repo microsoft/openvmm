@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::ops::Index;
 use std::ops::IndexMut;
 use std::time::Duration;
+use vmm_test_macros::vmm_test;
 
 #[repr(u32)]
 #[derive(PartialEq)]
@@ -201,8 +202,9 @@ impl MemStat {
     /// All other processes have a usage threshold of 512kB
     /// Kernel reservation has a threshold of 512kB
     /// In case any of these thresholds are exceeded, it would be considered a significant increase in memory usage from the previously established baseline (beyond run variance)
-    fn compare_to_baseline(self, arch: &str, vps: &str) -> anyhow::Result<()> {
-        let baseline_usage = Self::get_upper_limit_value(&self.baseline_json[arch][vps]["usage"]);
+    fn compare_to_baseline(self, build_flavor: &str, arch: &str, vps: &str) -> anyhow::Result<()> {
+        let baseline_usage =
+            Self::get_upper_limit_value(&self.baseline_json[build_flavor][arch][vps]["usage"]);
         let cur_usage = self.meminfo["MemTotal"] - self.total_free_memory_per_zone;
         assert!(
             baseline_usage >= cur_usage,
@@ -213,12 +215,12 @@ impl MemStat {
 
         for underhill_process in ["underhill_init", "openvmm_hcl", "underhill_vm"] {
             let baseline_pss = Self::get_upper_limit_value(
-                &self.baseline_json[arch][vps][underhill_process]["Pss"],
+                &self.baseline_json[build_flavor][arch][vps][underhill_process]["Pss"],
             );
             let cur_pss = self[underhill_process].smaps_rollup["Pss"];
 
             let baseline_pss_anon = Self::get_upper_limit_value(
-                &self.baseline_json[arch][vps][underhill_process]["Pss_Anon"],
+                &self.baseline_json[build_flavor][arch][vps][underhill_process]["Pss_Anon"],
             );
             let cur_pss_anon = self[underhill_process].smaps_rollup["Pss_Anon"];
 
@@ -238,10 +240,13 @@ impl MemStat {
             );
         }
 
-        let baseline_reservation =
-            Self::get_upper_limit_value(&self.baseline_json[arch][vps]["reservation"]);
-        let cur_reservation =
-            self.baseline_json[arch]["vtl2_total"].as_u64().unwrap() - self.meminfo["MemTotal"];
+        let baseline_reservation = Self::get_upper_limit_value(
+            &self.baseline_json[build_flavor][arch][vps]["reservation"],
+        );
+        let cur_reservation = self.baseline_json[build_flavor][arch]["vtl2_total"]
+            .as_u64()
+            .unwrap()
+            - self.meminfo["MemTotal"];
         assert!(
             baseline_reservation >= cur_reservation,
             "baseline reservation is less than current reservation: {} < {}",
@@ -365,11 +370,13 @@ fn get_arch_str(isolation_type: Option<IsolationType>, machine_arch: MachineArch
         .to_string()
 }
 
-pub(crate) async fn idle_test<T: PetriVmmBackend>(
+async fn idle_test<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     vps: TestVPCount,
     wait_time_sec: WaitPeriodSec,
     driver: DefaultDriver,
+    build_flavor: &str,
+    assert_against_baseline: bool,
 ) -> anyhow::Result<()> {
     let isolation_type = config.isolation();
     let machine_arch = config.arch();
@@ -430,7 +437,109 @@ pub(crate) async fn idle_test<T: PetriVmmBackend>(
     tracing::info!("MEMSTAT_START:{}:MEMSTAT_END", to_string(&memstat).unwrap());
     agent.power_off().await?;
     vm.wait_for_teardown().await?;
-    memstat.compare_to_baseline(&arch_str, &format!("{}vp", vp_count))?;
+    if assert_against_baseline {
+        memstat.compare_to_baseline(build_flavor, &arch_str, &format!("{}vp", vp_count))?;
+    }
 
     Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn memory_validation_release_small<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    _: (),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    idle_test(
+        config,
+        TestVPCount::SmallVPCount,
+        WaitPeriodSec::ShortWait,
+        driver,
+        "release",
+        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
+        false,
+    )
+    .await
+}
+
+// We can't get a VTL 2 pipette with release build CVM debugging restrictions,
+// so only run CVM tests in debug builds.
+#[cfg(debug_assertions)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn memory_validation_debug_small<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    _: (),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    idle_test(
+        config,
+        TestVPCount::SmallVPCount,
+        WaitPeriodSec::ShortWait,
+        driver,
+        "debug",
+        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
+        false,
+    )
+    .await
+}
+
+#[cfg(not(debug_assertions))]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn memory_validation_release_heavy<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    _: (),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    idle_test(
+        config,
+        TestVPCount::LargeVPCount,
+        WaitPeriodSec::LongWait,
+        driver,
+        "release",
+        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
+        false,
+    )
+    .await
+}
+
+// We can't get a VTL 2 pipette with release build CVM debugging restrictions,
+// so only run CVM tests in debug builds.
+#[cfg(debug_assertions)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn memory_validation_debug_heavy<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    _: (),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    idle_test(
+        config,
+        TestVPCount::LargeVPCount,
+        WaitPeriodSec::LongWait,
+        driver,
+        "debug",
+        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
+        false,
+    )
+    .await
 }

@@ -9,9 +9,9 @@ use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use std::sync::Arc;
 use thiserror::Error;
-use tpm::ak_cert::RequestAkCert;
-use tpm::logger::TpmLogEvent;
-use tpm::logger::TpmLogger;
+use tpm_device::ak_cert::RequestAkCert;
+use tpm_device::logger::TpmLogEvent;
+use tpm_device::logger::TpmLogger;
 use underhill_attestation::AttestationType;
 
 #[derive(Debug, Error)]
@@ -162,8 +162,8 @@ pub mod resources {
     use mesh::MeshPayload;
     use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
     use std::sync::Arc;
-    use tpm::ak_cert::ResolvedRequestAkCert;
-    use tpm::logger::ResolvedTpmLogger;
+    use tpm_device::ak_cert::ResolvedRequestAkCert;
+    use tpm_device::logger::ResolvedTpmLogger;
     use tpm_resources::RequestAkCertKind;
     use tpm_resources::TpmLoggerKind;
     use underhill_attestation::AttestationType;

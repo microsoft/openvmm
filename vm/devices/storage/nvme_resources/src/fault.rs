@@ -5,13 +5,14 @@
 
 use mesh::Cell;
 use mesh::MeshPayload;
+use mesh::OneshotSender;
 use mesh::rpc::Rpc;
 use nvme_spec::Command;
 use nvme_spec::Completion;
 use std::time::Duration;
 
-/// Supported fault behaviour for NVMe queues.
-#[derive(Debug, Clone, MeshPayload)]
+/// Supported fault behaviour for NVMe queues
+#[derive(Debug, MeshPayload)]
 pub enum QueueFaultBehavior<T> {
     /// Update the queue entry with the returned data
     Update(T),
@@ -27,6 +28,8 @@ pub enum QueueFaultBehavior<T> {
     /// controller will panic. This behavior is not yet supported by the submission
     /// queue fault.
     CustomPayload(Vec<u8>),
+    /// Verify that a command was seen.
+    Verify(Option<OneshotSender<()>>),
 }
 
 /// Supported fault behaviour for PCI faults
@@ -190,7 +193,7 @@ pub struct NamespaceFaultConfig {
 ///         );
 /// }
 /// ```
-#[derive(MeshPayload, Clone)]
+#[derive(MeshPayload)]
 pub struct AdminQueueFaultConfig {
     /// A map of NVME opcodes to the submission fault behavior for each. (This
     /// would ideally be a `HashMap`, but `mesh` doesn't support that type.

@@ -6,6 +6,7 @@
 use crate::x86_64::storage::new_test_vtl2_nvme_device;
 use guid::Guid;
 use hvlite_defs::config::Vtl2BaseAddressType;
+use petri::MemoryConfig;
 use petri::OpenHclServicingFlags;
 use petri::PetriVmBuilder;
 use petri::ResolvedArtifact;
@@ -179,30 +180,12 @@ async fn openhcl_linux_vtl2_ram_self_allocate(
     let vtl2_ram_size = 1024 * 1024 * 1024; // 1GB
     let vm_ram_size = 6 * 1024 * 1024 * 1024; // 6GB
     let (mut vm, agent) = config
-        .modify_backend(move |b| {
-            b.with_custom_config(|cfg| {
-                if let hvlite_defs::config::LoadMode::Igvm {
-                    ref mut vtl2_base_address,
-                    ..
-                } = cfg.load_mode
-                {
-                    *vtl2_base_address = Vtl2BaseAddressType::Vtl2Allocate {
-                        size: Some(vtl2_ram_size),
-                    }
-                } else {
-                    panic!("unexpected load mode, must be igvm");
-                }
-
-                // Disable late map vtl0 memory when vtl2 allocation mode is used.
-                cfg.hypervisor
-                    .with_vtl2
-                    .as_mut()
-                    .unwrap()
-                    .late_map_vtl0_memory = None;
-
-                // Set overall VM ram.
-                cfg.memory.mem_size = vm_ram_size;
-            })
+        .with_memory(MemoryConfig {
+            startup_bytes: vm_ram_size,
+            ..Default::default()
+        })
+        .with_vtl2_base_address_type(Vtl2BaseAddressType::Vtl2Allocate {
+            size: Some(vtl2_ram_size),
         })
         .run()
         .await?;

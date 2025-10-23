@@ -44,6 +44,7 @@ members = [
   # tools
   "petri/make_imc_hive",
   "petri/petri-tool",
+  "vm/devices/tpm/tpm_guest_tests",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
@@ -113,6 +114,7 @@ inspect_proto = { path = "support/inspect_proto" }
 inspect_rlimit = { path = "support/inspect_rlimit" }
 inspect_task = { path = "support/inspect_task" }
 kmsg = { path = "support/kmsg" }
+kmsg_writer = { path = "support/kmsg_writer" }
 loan_cell = { path = "support/loan_cell" }
 local_clock = { path = "support/local_clock" }
 mesh = { path = "support/mesh" }
@@ -309,7 +311,9 @@ serial_core = { path = "vm/devices/serial/serial_core" }
 serial_pl011 = { path = "vm/devices/serial/serial_pl011" }
 serial_pl011_resources = { path = "vm/devices/serial/serial_pl011_resources" }
 serial_socket = { path = "vm/devices/serial/serial_socket" }
-tpm = { path = "vm/devices/tpm" }
+tpm_device = { path = "vm/devices/tpm/tpm_device" }
+tpm_lib = { path = "vm/devices/tpm/tpm_lib" }
+tpm_protocol = { path = "vm/devices/tpm/tpm_protocol" }
 tpm_resources = { path = "vm/devices/tpm_resources" }
 mcr_resources = { path = "vm/devices/mcr_resources" }
 uidevices = { path = "vm/devices/uidevices" }

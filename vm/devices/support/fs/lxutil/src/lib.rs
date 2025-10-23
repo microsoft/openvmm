@@ -4,9 +4,6 @@
 //! The LxUtil crate provides an API that allows you to write the same file system code on Windows
 //! and Linux, using Linux semantics on both platforms (subject to the limitations of the underlying
 //! file system).
-//!
-//! This crate uses lxutil.dll, a library created for the Windows Subsystem for Linux to emulate
-//! Linux file system semantics on Windows.
 
 #![cfg(any(windows, target_os = "linux"))]
 #![expect(clippy::field_reassign_with_default)] // protocol code benefits from imperative field assignment
@@ -2087,7 +2084,7 @@ mod tests {
     // the case sensitive directory attribute, which is only enabled if the WSL optional component
     // is installed.
     #[test]
-    #[cfg(any(unix, not(feature = "ci")))]
+    #[cfg(not(all(windows, feature = "ci")))]
     fn case_sensitive() {
         let env = TestEnv::with_options(LxVolumeOptions::new().create_case_sensitive_dirs(true));
 

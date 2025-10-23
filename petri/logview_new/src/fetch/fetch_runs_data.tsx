@@ -8,6 +8,8 @@ import type {
   RunMetadata,
   TestResult,
   PullRequestTitles,
+  TestRunInfo,
+  TestData,
 } from "../data_defs";
 import {
   fetchMissingPRTitles,
@@ -380,10 +382,10 @@ export async function fetchRunDetails(
   queryClient: QueryClient
 ): Promise<RunDetailsData> {
   try {
-    let allTests: TestResult[] = [];
+    let allXmlData = "";
     let continuationToken: string | null = null;
-    let creationTime: Date | null = null;
 
+    // Collect all XML data first
     do {
       // Build URL with continuation token if we have one
       // TODO: If hierarchical namespaces are supported this fetch call might go by much faster. Try this out in a non-prod environment first to try it out
@@ -400,29 +402,205 @@ export async function fetchRunDetails(
       }
 
       const data = await response.text();
-      const pageResults = parseRunDetails(data, runNumber, queryClient);
 
-      if (!creationTime && pageResults.creationTime) {
-        creationTime = pageResults.creationTime;
-      }
-
-      // Merge tests from this page
-      allTests.push(...pageResults.tests);
+      // NOTE: This is not a proper concatenation of XML data. It will be poorly
+      // formatted. However, since we use regex to parse Name elements later
+      // (instead of DOM element) this works just fine. 
+      allXmlData += data;
 
       // Check for NextMarker using regex instead of DOMParser (more memory efficient)
       const nextMarkerMatch = data.match(/<NextMarker>([^<]+)<\/NextMarker>/);
       continuationToken = nextMarkerMatch ? nextMarkerMatch[1] : null;
     } while (continuationToken);
 
-    // Sort all tests by name
-    allTests.sort((a, b) => a.name.localeCompare(b.name));
-    return {
-      creationTime: creationTime ?? undefined,
-      runNumber,
-      tests: allTests,
-    };
+    // Parse all collected data at once.
+    return parseRunDetails(allXmlData, runNumber, queryClient);
   } catch (error) {
     console.error(`Error fetching run details`, error);
     throw error;
   }
+}
+
+/**
+ * Fetch run details for runs filtered by branch.
+ * Returns a map of testName -> TestRunInfo[].
+ *
+ * @param getConcurrency - Optional callback to get current max concurrent requests (defaults to 5)
+ */
+export async function fetchTestAnalysis(
+  branchFilter: string,
+  queryClient: QueryClient,
+  onProgress?: (fetched: number, total: number) => void,
+  getConcurrency?: () => number
+): Promise<Map<string, TestRunInfo[]>> {
+  // Fetch all runs
+  const runs = await queryClient.ensureQueryData<RunData[]>({
+    queryKey: ["runs"],
+    queryFn: () => fetchRunData(queryClient),
+    staleTime: 2 * 60 * 1000, // refetch every 2 minutes
+    gcTime: Infinity, // never garbage collect
+  });
+
+  // Filter runs based on branch selection
+  const filteredRuns = runs.filter(
+    (run) => run.metadata.ghBranch === branchFilter
+  );
+
+  const totalToFetch = filteredRuns.length;
+  let fetchedCount = 0;
+
+  const prefetchRun = async (run: RunData) => {
+    const runId = run.name.split("/")[1]; // run.name is "runs/123456789", we want "123456789"
+    const key = ["runDetails", runId];
+
+    // Skip if already cached
+    if (queryClient.getQueryData(key)) {
+      fetchedCount++;
+      if (onProgress) {
+        onProgress(fetchedCount, totalToFetch);
+      }
+      return runId;
+    }
+
+    try {
+      await queryClient.prefetchQuery({
+        queryKey: key,
+        queryFn: () => fetchRunDetails(runId, queryClient),
+        staleTime: Infinity, // never goes stale because this data should never change
+        gcTime: Infinity, // never garbage collect
+      });
+
+      // Increment counter and report progress after each prefetch completes
+      fetchedCount++;
+      if (onProgress) {
+        onProgress(fetchedCount, totalToFetch);
+      }
+
+      return runId;
+    } catch (e) {
+      console.warn(`[fetchTestAnalysis] Prefetch failed for run ${runId}`, e);
+      fetchedCount++;
+      if (onProgress) {
+        onProgress(fetchedCount, totalToFetch);
+      }
+      return runId;
+    }
+  };
+
+  // Process with rolling window - always keep maxConcurrent requests in flight
+  let currentIndex = 0;
+  const inFlight = new Set<Promise<string>>();
+  
+  // Prefetch with controlled parallelism - maintains constant concurrent requests
+  // Use dynamic concurrency if provided, otherwise default to 5
+  const runIds: string[] = [];
+
+  while (currentIndex < filteredRuns.length || inFlight.size > 0) {
+    // Get current concurrency limit (can change dynamically)
+    const maxConcurrent = getConcurrency ? getConcurrency() : 5;
+
+    // Fill up to maxConcurrent
+    while (
+      currentIndex < filteredRuns.length &&
+      inFlight.size < maxConcurrent
+    ) {
+      const promise = prefetchRun(filteredRuns[currentIndex]);
+      inFlight.add(promise);
+      currentIndex++;
+
+      // Clean up when done and collect result
+      promise.then(
+        (runId) => {
+          inFlight.delete(promise);
+          if (runId) runIds.push(runId);
+        },
+        () => {
+          inFlight.delete(promise);
+        }
+      );
+    }
+
+    // Wait for at least one to complete before continuing
+    if (inFlight.size > 0) {
+      await Promise.race(inFlight);
+    }
+  }
+
+  // Build the map from cached data
+  const runDetailsMap = new Map<string, RunDetailsData>();
+  runIds.forEach((runId) => {
+    const runDetails = queryClient.getQueryData<RunDetailsData>([
+      "runDetails",
+      runId,
+    ]);
+    if (runDetails) {
+      runDetailsMap.set(runId, runDetails);
+    }
+  });
+
+  // Create mapping of testName -> TestRunInfo[]
+  const testMapping = new Map<string, TestRunInfo[]>();
+
+  runDetailsMap.forEach((runDetails) => {
+    runDetails.tests.forEach((test) => {
+      const testName = test.name;
+      const testRunInfo: TestRunInfo = {
+        runNumber: runDetails.runNumber,
+        status: test.status,
+        creationTime: runDetails.creationTime,
+      };
+
+      if (!testMapping.has(testName)) {
+        testMapping.set(testName, []);
+      }
+      testMapping.get(testName)!.push(testRunInfo);
+    });
+  });
+
+  return testMapping;
+}
+
+/**
+ * Convert test mapping to table data.
+ * Transforms a map of test names to their run information into a flat array of TestData.
+ */
+export function convertToTestData(
+  testMapping: Map<string, TestRunInfo[]>
+): TestData[] {
+  const data: TestData[] = [];
+
+  testMapping.forEach((runInfos, testName) => {
+    const failedCount = runInfos.filter(
+      (info) => info.status === "failed"
+    ).length;
+
+    // Default to - to avoid skipping entries. Added benefit here is that
+    // linking is on test name. So if split was unsuccessful, we won't make a
+    // bad link either.
+    const split = testName.split("/");
+    const architecture: string = split[0];  // Minimum len is 1. This is safe to do.
+    const name: string = split.length > 1 ? split[1] : "-";
+    const totalCount = runInfos.length;
+
+    data.push({
+      architecture,
+      name,
+      failedCount,
+      totalCount,
+    });
+  });
+
+  return data;
+}
+
+/**
+ * Convert test mapping to test details data for a specific test.
+ * Extracts the run information for a single test from the mapping.
+ */
+export function convertToTestDetailsData(
+  testMapping: Map<string, TestRunInfo[]>,
+  testName: string
+): TestRunInfo[] {
+  const testRunInfos = testMapping.get(testName);
+  return testRunInfos || [];
 }

@@ -506,8 +506,13 @@ fn vm_config_from_command_line(
         read_only,
         is_dvd,
         underhill,
+        ref pcie_port,
     } in &opt.disk
     {
+        if pcie_port.is_some() {
+            anyhow::bail!("`--disk` is incompatible with PCIe");
+        }
+
         storage.add(
             vtl,
             underhill,
@@ -542,12 +547,13 @@ fn vm_config_from_command_line(
         read_only,
         is_dvd,
         underhill,
+        ref pcie_port,
     } in &opt.nvme
     {
         storage.add(
             vtl,
             underhill,
-            storage_builder::DiskLocation::Nvme(None),
+            storage_builder::DiskLocation::Nvme(None, pcie_port.clone()),
             kind,
             is_dvd,
             read_only,
@@ -797,6 +803,9 @@ fn vm_config_from_command_line(
         );
     }
 
+    // TODO: load from VMGS file if it exists
+    let bios_guid = Guid::new_random();
+
     let VmChipsetResult {
         chipset,
         mut chipset_devices,
@@ -865,6 +874,7 @@ fn vm_config_from_command_line(
                 UefiConsoleModeCli::None => UefiConsoleMode::None,
             }),
             default_boot_always_attempt: opt.default_boot_always_attempt,
+            bios_guid,
         };
     } else {
         // Linux Direct
@@ -1059,6 +1069,7 @@ fn vm_config_from_command_line(
                 guest_secret_key: None,
                 logger: None,
                 is_confidential_vm: false,
+                bios_guid,
             }
             .into_resource(),
         });
@@ -1346,6 +1357,7 @@ fn vm_config_from_command_line(
         load_mode,
         floppy_disks,
         pcie_root_complexes,
+        pcie_devices: Vec::new(),
         vpci_devices,
         ide_disks: Vec::new(),
         memory: MemoryConfig {

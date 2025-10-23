@@ -3,8 +3,6 @@
 
 //! [`tracing`] support.
 
-#![cfg(any(target_os = "linux", target_os = "windows"))]
-
 use std::sync::Arc;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::fmt::format::FmtSpan;
