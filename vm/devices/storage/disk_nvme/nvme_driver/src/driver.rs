@@ -36,6 +36,7 @@ use task_control::InspectTask;
 use task_control::TaskControl;
 use thiserror::Error;
 use tracing::Instrument;
+use tracing::Span;
 use tracing::info_span;
 use user_driver::DeviceBacking;
 use user_driver::backoff::Backoff;
@@ -191,7 +192,7 @@ struct IoIssuer {
 enum NvmeWorkerRequest {
     CreateIssuer(Rpc<u32, ()>),
     /// Save worker state.
-    Save(Rpc<(), anyhow::Result<NvmeDriverWorkerSavedState>>),
+    Save(Rpc<Span, anyhow::Result<NvmeDriverWorkerSavedState>>),
 }
 
 impl<T: DeviceBacking> NvmeDriver<T> {
@@ -564,13 +565,13 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         if self.identify.is_none() {
             return Err(save_restore::Error::InvalidState.into());
         }
-        tracing::info!("started saving the nvme driver state for servicing.");
+        let span = tracing::info_span!("nvme_driver_save", pci_id = self.device_id);
         self.nvme_keepalive = true;
         match self
             .io_issuers
             .send
-            .call(NvmeWorkerRequest::Save, ())
-            .instrument(tracing::info_span!("nvme_driver_save"))
+            .call(NvmeWorkerRequest::Save, span.clone())
+            .instrument(span)
             .await?
         {
             Ok(s) => {
@@ -670,12 +671,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // Log admin queue restore details
         if let Some(ref admin_state) = saved_state.worker_data.admin {
             tracing::info!(
-                "restoring admin queue from: {{sqid: {}, cqid: {}, pending_commands_count: {}, sq_head: {}, cq_head: {}}}",
-                admin_state.handler_data.sq_state.sqid,
-                admin_state.handler_data.cq_state.cqid,
-                admin_state.handler_data.pending_cmds.commands.len(),
-                admin_state.handler_data.sq_state.head,
-                admin_state.handler_data.cq_state.head,
+                id = admin_state.handler_data.sq_state.sqid,
+                pending_commands_count = admin_state.handler_data.pending_cmds.commands.len(),
+                "restoring admin queue",
             );
         } else {
             tracing::info!("attempting to restore admin queue from empty state");
@@ -733,23 +731,18 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         tracing::info!(
             "restoring io queues from state: [{}]",
             saved_state
-            .worker_data
-            .io
-            .iter()
-            .map(|io_state| {
-                format!(
-                "{{sqid: {}, cqid: {}, pending_commands_count: {}, sq_head: {}, cq_head: {}, cpu: {}, iv: {}}}",
-                io_state.queue_data.handler_data.sq_state.sqid,
-                io_state.queue_data.handler_data.cq_state.cqid,
-                io_state.queue_data.handler_data.pending_cmds.commands.len(),
-                io_state.queue_data.handler_data.sq_state.head,
-                io_state.queue_data.handler_data.cq_state.head,
-                io_state.cpu,
-                io_state.iv,
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
+                .worker_data
+                .io
+                .iter()
+                .map(|io_state| {
+                    format!(
+                        "{{id: {}, pending_commands_count: {}}}",
+                        io_state.queue_data.handler_data.sq_state.sqid,
+                        io_state.queue_data.handler_data.pending_cmds.commands.len(),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
         );
 
         // Restore I/O queues.
@@ -821,7 +814,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Change device's behavior when servicing.
     pub fn update_servicing_flags(&mut self, nvme_keepalive: bool) {
-        tracing::info!(
+        tracing::debug!(
             "updating nvme servicing flags: nvme_keepalive={}",
             nvme_keepalive,
         );
