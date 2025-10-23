@@ -283,41 +283,9 @@ impl GenericPcieSwitch {
         // No downstream port could handle this bus number
         None
     }
-}
 
-impl GenericPciBusDevice for GenericPcieSwitch {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult> {
-        // Forward to the upstream port's configuration space (the switch presents as the upstream port)
-        self.upstream_port.cfg_space.read_u32(offset, value).into()
-    }
-
-    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult> {
-        // Forward to the upstream port's configuration space (the switch presents as the upstream port)
-        self.upstream_port.cfg_space.write_u32(offset, value).into()
-    }
-
-    fn pci_cfg_read_forward(
-        &mut self,
-        bus: u8,
-        device_function: u8,
-        offset: u16,
-        value: &mut u32,
-    ) -> Option<IoResult> {
-        self.route_cfg_access(bus, device_function, true, offset, value)
-    }
-
-    fn pci_cfg_write_forward(
-        &mut self,
-        bus: u8,
-        device_function: u8,
-        offset: u16,
-        value: u32,
-    ) -> Option<IoResult> {
-        let mut temp_value = value;
-        self.route_cfg_access(bus, device_function, false, offset, &mut temp_value)
-    }
-
-    fn add_pcie_device(
+    /// Attach the provided `GenericPciBusDevice` to the port identified.
+    pub fn add_pcie_device(
         &mut self,
         port: u8,
         name: &str,
@@ -360,15 +328,13 @@ impl ChipsetDevice for GenericPcieSwitch {
 
 impl PciConfigSpace for GenericPcieSwitch {
     fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        // Delegate to the GenericPciBusDevice implementation
-        GenericPciBusDevice::pci_cfg_read(self, offset, value)
-            .unwrap_or(IoResult::Err(chipset_device::io::IoError::InvalidRegister))
+        // Forward to the upstream port's configuration space (the switch presents as the upstream port)
+        self.upstream_port.cfg_space.read_u32(offset, value)
     }
 
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        // Delegate to the GenericPciBusDevice implementation
-        GenericPciBusDevice::pci_cfg_write(self, offset, value)
-            .unwrap_or(IoResult::Err(chipset_device::io::IoError::InvalidRegister))
+        // Forward to the upstream port's configuration space (the switch presents as the upstream port)
+        self.upstream_port.cfg_space.write_u32(offset, value)
     }
 
     fn pci_cfg_read_forward(
@@ -378,8 +344,7 @@ impl PciConfigSpace for GenericPcieSwitch {
         offset: u16,
         value: &mut u32,
     ) -> Option<IoResult> {
-        // Delegate to the GenericPciBusDevice implementation
-        GenericPciBusDevice::pci_cfg_read_forward(self, bus, device_function, offset, value)
+        self.route_cfg_access(bus, device_function, true, offset, value)
     }
 
     fn pci_cfg_write_forward(
@@ -389,8 +354,8 @@ impl PciConfigSpace for GenericPcieSwitch {
         offset: u16,
         value: u32,
     ) -> Option<IoResult> {
-        // Delegate to the GenericPciBusDevice implementation
-        GenericPciBusDevice::pci_cfg_write_forward(self, bus, device_function, offset, value)
+        let mut temp_value = value;
+        self.route_cfg_access(bus, device_function, false, offset, &mut temp_value)
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {

@@ -122,28 +122,6 @@ pub trait GenericPciBusDevice: 'static + Send {
     ) -> Option<IoResult> {
         None
     }
-
-    /// Connect a device to a specific downstream port.
-    ///
-    /// Default implementation returns an error, indicating this device doesn't support routing.
-    /// Routing components like switches and bridges should override this method.
-    ///
-    /// # Parameters
-    /// - `port`: The port number to connect to
-    /// - `name`: The name to assign to the connected device
-    /// - `device`: The device to connect
-    ///
-    /// # Returns
-    /// `Ok(())` if the device was successfully connected, or an error if the
-    /// device doesn't support routing, or the port doesn't exist or is already occupied.
-    fn add_pcie_device(
-        &mut self,
-        _port: u8,
-        _name: &str,
-        _dev: Box<dyn GenericPciBusDevice>,
-    ) -> Result<(), Arc<str>> {
-        Err("Device does not support PCIe device connections".into())
-    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Inspect)]
