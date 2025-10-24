@@ -18,12 +18,13 @@ use virtio::LegacyVirtioDevice;
 use virtio::VirtioQueueCallbackWork;
 use virtio::VirtioQueueWorkerContext;
 use virtio::VirtioState;
+use virtio::spec::VirtioDeviceFeatures;
 
 const VIRTIO_DEVICE_TYPE_CONSOLE: u16 = 3;
 
-// const VIRTIO_CONSOLE_F_SIZE: u64 = 1;
-const VIRTIO_CONSOLE_F_MULTIPORT: u64 = 2;
-// const VIRTIO_CONSOLE_F_EMERG_WRITE: u64 = 4;
+// const VIRTIO_CONSOLE_F_SIZE: u32 = 1;
+const VIRTIO_CONSOLE_F_MULTIPORT: u32 = 2;
+// const VIRTIO_CONSOLE_F_EMERG_WRITE: u32 = 4;
 
 const VIRTIO_CONSOLE_DEVICE_READY: u16 = 0;
 const VIRTIO_CONSOLE_DEVICE_ADD: u16 = 1;
@@ -517,11 +518,14 @@ impl SerialIo {
 impl LegacyVirtioDevice for VirtioSerialDevice {
     fn traits(&self) -> DeviceTraits {
         let queue_size = 2 + 2 * self.config.max_ports;
-        let features = if self.config.max_ports > 1 {
-            VIRTIO_CONSOLE_F_MULTIPORT
-        } else {
-            0
-        };
+        let features = VirtioDeviceFeatures::new().with_bank(
+            0,
+            if self.config.max_ports > 1 {
+                VIRTIO_CONSOLE_F_MULTIPORT
+            } else {
+                0
+            },
+        );
         DeviceTraits {
             device_id: VIRTIO_DEVICE_TYPE_CONSOLE,
             device_features: features,
@@ -566,7 +570,7 @@ impl LegacyVirtioDevice for VirtioSerialDevice {
         match state {
             // if multi-port is set, start the control port thread
             VirtioState::Running(run_state) => {
-                if run_state.features & VIRTIO_CONSOLE_F_MULTIPORT != 0 {
+                if run_state.features.bank(0) & VIRTIO_CONSOLE_F_MULTIPORT != 0 {
                     let enabled_queues = run_state.enabled_queues.clone();
                     if run_state.enabled_queues[2] && run_state.enabled_queues[3] {
                         // on ready callback, asynchronously register the available ports with the guest.

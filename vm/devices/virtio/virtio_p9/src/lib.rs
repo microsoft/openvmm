@@ -16,10 +16,11 @@ use virtio::LegacyVirtioDevice;
 use virtio::VirtioQueueCallbackWork;
 use virtio::VirtioQueueWorkerContext;
 use virtio::VirtioState;
+use virtio::spec::VirtioDeviceFeatures;
 
 const VIRTIO_DEVICE_TYPE_9P_TRANSPORT: u16 = 9;
 
-const VIRTIO_9P_F_MOUNT_TAG: u64 = 1;
+const VIRTIO_9P_F_MOUNT_TAG: u32 = 1;
 
 pub struct VirtioPlan9Device {
     fs: Arc<Plan9FileSystem>,
@@ -56,7 +57,7 @@ impl LegacyVirtioDevice for VirtioPlan9Device {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: VIRTIO_DEVICE_TYPE_9P_TRANSPORT,
-            device_features: VIRTIO_9P_F_MOUNT_TAG,
+            device_features: VirtioDeviceFeatures::new().with_bank(0, VIRTIO_9P_F_MOUNT_TAG),
             max_queues: 1,
             device_register_length: self.tag.len() as u32,
             ..Default::default()
