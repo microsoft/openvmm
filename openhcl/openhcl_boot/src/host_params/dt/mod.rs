@@ -534,14 +534,15 @@ fn topology_from_host_dt(
 
         if dt_page_count.is_some() || cmdline_page_count.is_some() {
             // Any external source defined the pool size, use the maximum of all external sources.
-            max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0))
+            let external = max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0));
+            if external == 0 { None } else { Some(external) }
         } else {
             // No external source defined the pool size, use heuristics to decide.
             let mem_size = vtl2_ram.iter().map(|e| e.range.len()).sum();
-            vtl2_calculate_dma_hint(parsed.cpu_count(), mem_size)
+            Some(vtl2_calculate_dma_hint(parsed.cpu_count(), mem_size))
         }
     };
-    if vtl2_gpa_pool_size != 0 {
+    if let Some(vtl2_gpa_pool_size) = vtl2_gpa_pool_size {
         // Reserve the specified number of pages for the pool. Use the used
         // ranges to figure out which VTL2 memory is free to allocate from.
         let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;

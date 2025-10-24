@@ -36,6 +36,7 @@ use igvm_defs::PAGE_SIZE_4K;
 ///
 /// The table is sorted by VP count, then by assigned memory.
 /// (vp_count, vtl2_memory_mb, dma_hint_mb)
+#[cfg(not(debug_assertions))]
 const LOOKUP_TABLE: &[(u16, u16, u16); 38] = &[
     (2, 96, 2),
     (2, 98, 4),
@@ -75,6 +76,16 @@ const LOOKUP_TABLE: &[(u16, u16, u16); 38] = &[
     (128, 1342, 84),
     (128, 1360, 84),
     (896, 12912, 0), // (516) Needs to be validated as the vNIC number is unknown. (TODO, as part of network device keepalive support).
+];
+
+/// TEST ONLY variant of the lookup table above. Since the IGVM manifest specifies additional
+/// VTL2 memory for dev (well above what is required for release configs), allow the heuristics
+/// to still kick in.
+#[cfg(debug_assertions)]
+const LOOKUP_TABLE: &[(u16, u16, u16); 3] = &[
+    (4, 496, 32),    // 4 VP, default memory for dev, allocate some memory for DMA.
+    (16, 768, 128), // 16 VP "heavy", with extra memory above what is required for dev, allocate some memory for DMA.
+    (32, 1024, 256), // 32 VP "very heavy", with extra memory above what is required for dev, allocate some memory for DMA.
 ];
 
 const ONE_MB: u64 = 1024 * 1024;
