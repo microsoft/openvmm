@@ -375,6 +375,17 @@ struct PartitionTopology {
     memory_allocation_mode: MemoryAllocationMode,
 }
 
+// Calculate the default mmio size for VTL2 when not specified by the host.
+//
+// This is half of the high mmio gap size, rounded down, with a minimum of 128
+// MB and a maximum of 1 GB.
+fn calculate_default_mmio_size(parsed: &ParsedDt) -> Result<u64, DtError> {
+    const MINIMUM_MMIO_SIZE: u64 = 128 * (1 << 20);
+    const MAXIMUM_MMIO_SIZE: u64 = 1 << 30;
+    let half_high_gap = parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?.mmio[1].len() / 2;
+    Ok(half_high_gap.clamp(MINIMUM_MMIO_SIZE, MAXIMUM_MMIO_SIZE))
+}
+
 /// Read topology from the host provided device tree.
 fn topology_from_host_dt(
     params: &ShimParams,
@@ -418,16 +429,16 @@ fn topology_from_host_dt(
             parsed.memory_allocation_mode,
             MemoryAllocationMode::Vtl2 { .. }
         ) {
-        // Decide the amount of mmio VTL2 should allocate. Enforce a minimum
-        // of 128 MB mmio for VTL2.
-        const MINIMUM_MMIO_SIZE: u64 = 128 * (1 << 20);
+        // Decide the amount of mmio VTL2 should allocate.
         let mmio_size = max(
             match parsed.memory_allocation_mode {
                 MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
                 _ => 0,
             },
-            MINIMUM_MMIO_SIZE,
+            calculate_default_mmio_size(parsed)?,
         );
+
+        log!("allocating vtl2 mmio size {mmio_size:#x} bytes");
 
         // Decide what mmio vtl2 should use.
         let mmio = &parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?.mmio;
