@@ -27,10 +27,6 @@ scroll down to select an appropriate `*-openvmm` artifact for your particular
 architecture and operating system.  **You must be signed into GitHub in order
 to download artifacts**.
 
-**On Windows:** You must also download a copy of `lxutil.dll` from
-[`microsoft/openvmm-deps`](https://github.com/microsoft/openvmm-deps/releases/tag/Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release)
-on GitHub, and ensure it is in the same directory as `openvmm.exe`.
-
 ## Examples
 
 ```admonish tip
