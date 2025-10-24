@@ -463,7 +463,7 @@ impl NvmeDriverManagerWorker {
                     .await
                 }
                 NvmeDriverRequest::Save(rpc) => {
-                    rpc.handle(async |_span| self.driver.as_mut().unwrap().save().await)
+                    rpc.handle(async |span| self.driver.as_mut().unwrap().save().await)
                         .await
                 }
                 NvmeDriverRequest::Shutdown(rpc) => {
