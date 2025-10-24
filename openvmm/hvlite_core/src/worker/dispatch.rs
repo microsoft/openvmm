@@ -35,6 +35,7 @@ use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
 use hvlite_defs::config::PcieDeviceConfig;
 use hvlite_defs::config::PcieRootComplexConfig;
+use hvlite_defs::config::PcieSwitchConfig;
 use hvlite_defs::config::PmuGsivConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialPipes;
@@ -78,6 +79,7 @@ use pci_core::PciInterruptPin;
 use pci_core::msi::MsiInterruptSet;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
+use pcie::switch::GenericPcieSwitch;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::SimpleScsiDisk;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
@@ -172,6 +174,7 @@ impl Manifest {
             ide_disks: config.ide_disks,
             pcie_root_complexes: config.pcie_root_complexes,
             pcie_devices: config.pcie_devices,
+            pcie_switches: config.pcie_switches,
             vpci_devices: config.vpci_devices,
             hypervisor: config.hypervisor,
             memory: config.memory,
@@ -215,6 +218,7 @@ pub struct Manifest {
     ide_disks: Vec<IdeDeviceConfig>,
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pcie_devices: Vec<PcieDeviceConfig>,
+    pcie_switches: Vec<PcieSwitchConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
     memory: MemoryConfig,
     processor_topology: ProcessorTopologyConfig,
@@ -1806,6 +1810,24 @@ impl InitializedVm {
                 low_mmio_address -= low_mmio_size;
                 high_mmio_address += rc.high_mmio_size;
             }
+
+            for switch in cfg.pcie_switches {
+                let device_name = format!("pcie-switch:{}", switch.name);
+                let switch_device = chipset_builder
+                    .arc_mutex_device(device_name)
+                    .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
+                    .add(|_services| {
+                        let definition = pcie::switch::GenericPcieSwitchDefinition {
+                            name: switch.name.clone().into(),
+                            downstream_port_count: switch.num_downstream_ports as usize,
+                        };
+                        GenericPcieSwitch::new(definition)
+                    })?;
+
+                let bus_id = vmotherboard::BusId::new(&switch.name);
+                chipset_builder
+                    .register_weak_mutex_pcie_enumerator(bus_id, Box::new(switch_device));
+            }
         }
 
         for dev_cfg in cfg.pcie_devices {
@@ -3053,6 +3075,7 @@ impl LoadedVm {
             ide_disks: vec![],           // TODO
             pcie_root_complexes: vec![], // TODO
             pcie_devices: vec![],        // TODO
+            pcie_switches: vec![],       // TODO
             vpci_devices: vec![],        // TODO
             memory: self.inner.memory_cfg,
             processor_topology: self.inner.processor_topology.to_config(),
