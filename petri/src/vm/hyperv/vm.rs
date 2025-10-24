@@ -220,7 +220,23 @@ impl HyperVVM {
             };
             // Messages end with a period, exclude it
             let path = &event.message[path_start..event.message.len() - 1];
-            self.logger.trace_attachment(Path::new(path));
+            // Copy the dump to a location that will persist after the VM is deleted
+            // and attach it to the log.
+            match tempfile::NamedTempFile::new()
+                .and_then(|x| x.keep().map_err(|e| e.error))
+                .and_then(|dest| std::fs::copy(path, &dest.1).map(|_| dest.1))
+            {
+                Err(e) => {
+                    tracing::warn!(
+                        error = &e as &dyn std::error::Error,
+                        "failed to copy dump to temp file, attempting to attach original file",
+                    );
+                    self.logger.trace_attachment(Path::new(path));
+                }
+                Ok(temp_path) => {
+                    self.logger.trace_attachment(&temp_path);
+                }
+            }
         }
     }
 
