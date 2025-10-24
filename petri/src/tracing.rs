@@ -109,7 +109,8 @@ impl PetriLogSource {
         Ok(path)
     }
 
-    fn trace_attachment(&self, path: &Path) {
+    /// Log an already existing file as an attachment.
+    pub fn trace_attachment(&self, path: &Path) {
         // Just write the relative path to the JSON log.
         self.0
             .json_log
