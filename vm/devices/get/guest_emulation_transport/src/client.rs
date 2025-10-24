@@ -338,6 +338,7 @@ impl GuestEmulationTransportClient {
                 firmware_mode_is_pcat: json.v2.r#static.firmware_mode_is_pcat,
                 imc_enabled: json.v2.r#static.imc_enabled,
                 cxl_memory_enabled: json.v2.r#static.cxl_memory_enabled,
+                efi_diagnostics_log_level: json.v2.r#static.efi_diagnostics_log_level,
                 guest_state_lifetime: json.v2.r#static.guest_state_lifetime,
                 guest_state_encryption_policy: json.v2.r#static.guest_state_encryption_policy,
                 management_vtl_features: json.v2.r#static.management_vtl_features,

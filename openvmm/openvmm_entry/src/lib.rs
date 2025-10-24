@@ -29,6 +29,7 @@ use clap::CommandFactory;
 use clap::FromArgMatches;
 use clap::Parser;
 use cli_args::DiskCliKind;
+use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
 use cli_args::NicConfigCli;
 use cli_args::ProvisionVmgs;
@@ -66,6 +67,7 @@ use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use hvlite_defs::config::DeviceVtl;
+use hvlite_defs::config::EfiDiagnosticsLogLevelType;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LateMapVtl0MemoryPolicy;
 use hvlite_defs::config::LoadMode;
@@ -1033,6 +1035,13 @@ fn vm_config_from_command_line(
                     no_persistent_secrets: true,
                     igvm_attest_test_config: None,
                     test_gsp_by_id: opt.test_gsp_by_id,
+                    efi_diagnostics_log_level: {
+                        match opt.efi_diagnostics_log_level.unwrap_or_default() {
+                            EfiDiagnosticsLogLevelCli::Default => get_resources::ged::EfiDiagnosticsLogLevelType::Default,
+                            EfiDiagnosticsLogLevelCli::Info => get_resources::ged::EfiDiagnosticsLogLevelType::Info,
+                            EfiDiagnosticsLogLevelCli::Full => get_resources::ged::EfiDiagnosticsLogLevelType::Full,
+                        }
+                    },
                 }
                 .into_resource(),
             ),
@@ -1427,6 +1436,13 @@ fn vm_config_from_command_line(
         generation_id_recv: None,
         rtc_delta_milliseconds: 0,
         automatic_guest_reset: !opt.halt_on_reset,
+        efi_diagnostics_log_level: {
+            match opt.efi_diagnostics_log_level.unwrap_or_default() {
+                EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::Default,
+                EfiDiagnosticsLogLevelCli::Info => EfiDiagnosticsLogLevelType::Info,
+                EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::Full,
+            }
+        },
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;

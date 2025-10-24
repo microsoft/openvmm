@@ -6,6 +6,7 @@
 
 use bitfield_struct::bitfield;
 use guid::Guid;
+use open_enum::open_enum;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -134,6 +135,19 @@ pub enum GuestStateEncryptionPolicy {
     HardwareSealing,
 }
 
+open_enum! {
+    /// EFI Diagnostics Log Level Filter
+    #[derive(Default, Deserialize, Serialize)]
+    pub enum EfiDiagnosticsLogLevelType: u32 {
+        /// Default log level
+        DEFAULT = 0,
+        /// Include INFO logs
+        INFO = 1,
+        /// All logs
+        FULL = 2,
+    }
+}
+
 /// Management VTL Feature Flags
 #[bitfield(u64)]
 #[derive(Deserialize, Serialize)]
@@ -198,6 +212,8 @@ pub struct HclDevicePlatformSettingsV2Static {
     pub guest_state_lifetime: GuestStateLifetime,
     #[serde(default)]
     pub guest_state_encryption_policy: GuestStateEncryptionPolicy,
+    #[serde(default)]
+    pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
     #[serde(default)]
     pub management_vtl_features: ManagementVtlFeatures,
 }
