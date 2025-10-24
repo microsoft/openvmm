@@ -91,6 +91,7 @@ use input_core::InputData;
 use input_core::MultiplexedInputHandle;
 use inspect::Inspect;
 use loader_defs::shim::MemoryVtlType;
+use mana_driver::save_restore::ManaSavedState;
 use memory_range::MemoryRange;
 use mesh::CancelContext;
 use mesh::MeshPayload;
@@ -284,6 +285,8 @@ pub struct UnderhillEnvCfg {
     pub hide_isolation: bool,
     /// Enable nvme keep alive.
     pub nvme_keep_alive: bool,
+    /// Enable mana keep alive.
+    pub mana_keep_alive: bool,
     /// Don't skip FLR for NVMe devices.
     pub nvme_always_flr: bool,
     /// test configuration
@@ -760,6 +763,8 @@ impl UhVmNetworkSettings {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
+        save_restore_supported: bool,
+        saved_mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState> {
         let instance_id = nic_config.instance_id;
         let nic_max_sub_channels = nic_config
@@ -775,7 +780,7 @@ impl UhVmNetworkSettings {
             } else {
                 AllocationVisibility::Private
             },
-            persistent_allocations: false,
+            persistent_allocations: save_restore_supported,
         })?;
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
@@ -790,6 +795,7 @@ impl UhVmNetworkSettings {
             servicing_netvsp_state,
             self.dma_mode,
             dma_client,
+            saved_mana_state,
         )
         .await?;
 
@@ -916,6 +922,8 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
+        save_restore_supported: bool,
+        mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState> {
         if self.vf_managers.contains_key(&instance_id) {
             return Err(NetworkSettingsError::VFManagerExists(instance_id).into());
@@ -949,6 +957,8 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
                 vmbus_server,
                 dma_client_spawner,
                 is_isolated,
+                save_restore_supported,
+                mana_state,
             )
             .await?;
 
@@ -1003,6 +1013,82 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
             params = manager.packet_capture(params).await?;
         }
         Ok(params)
+    }
+
+    async fn save(&mut self) -> Vec<ManaSavedState> {
+        let mut vf_managers: Vec<(Guid, Arc<HclNetworkVFManager>)> =
+            self.vf_managers.drain().collect();
+
+        // Notify VF managers of shutdown so that the subsequent teardown of
+        // the NICs does not modify VF state.
+        let vf_managers = vf_managers
+            .drain(..)
+            .map(move |(instance_id, manager)| {
+                (
+                    instance_id,
+                    Arc::into_inner(manager).unwrap().shutdown_begin(false),
+                )
+            })
+            .collect::<Vec<(Guid, HclNetworkVFManagerShutdownInProgress)>>();
+
+        // Collect the instance_id of every vf_manager being shutdown
+        let instance_ids: Vec<Guid> = vf_managers
+            .iter()
+            .map(|(instance_id, _)| *instance_id)
+            .collect();
+
+        // Only remove the vmbus channels and NICs from the VF Managers
+        let mut nic_channels = Vec::new();
+        let mut i = 0;
+        while i < self.nics.len() {
+            if instance_ids.contains(&self.nics[i].0) {
+                let val = self.nics.remove(i);
+                nic_channels.push(val);
+            } else {
+                i += 1;
+            }
+        }
+
+        for instance_id in instance_ids {
+            if !nic_channels.iter().any(|(id, _)| *id == instance_id) {
+                tracing::error!(
+                    "No vmbus channel found that matches VF Manager instance_id: {instance_id}"
+                );
+            }
+        }
+
+        let mut endpoints: Vec<_> =
+            join_all(nic_channels.drain(..).map(async |(instance_id, channel)| {
+                async {
+                    let nic = channel.remove().await.revoke().await;
+                    nic.shutdown()
+                }
+                .instrument(tracing::info_span!("nic_shutdown", %instance_id))
+                .await
+            }))
+            .await;
+
+        let run_endpoints = async {
+            loop {
+                let _ = endpoints
+                    .iter_mut()
+                    .map(|endpoint| endpoint.wait_for_endpoint_action())
+                    .collect::<Vec<_>>()
+                    .race()
+                    .await;
+            }
+        };
+
+        let save_vf_managers = join_all(
+            vf_managers
+                .into_iter()
+                .map(|(_, vf_manager)| vf_manager.save()),
+        );
+
+        let state = (run_endpoints, save_vf_managers).race().await;
+
+        // Discard any vf_managers that failed to return valid save state.
+        state.into_iter().flatten().collect()
     }
 }
 
@@ -3102,6 +3188,15 @@ async fn new_underhill_vm(
     if !controllers.mana.is_empty() {
         let _span = tracing::info_span!("network_settings", CVM_ALLOWED).entered();
         for nic_config in controllers.mana.into_iter() {
+            let nic_servicing_state = if let Some(ref state) = servicing_state.mana_state {
+                state.iter().find(|s| s.pci_id == nic_config.pci_id)
+            } else {
+                None
+            };
+
+            let private_pool_available = !runtime_params.private_pool_ranges().is_empty();
+            let save_restore_supported = env_cfg.mana_keep_alive && private_pool_available;
+
             let save_state = uh_network_settings
                 .add_network(
                     nic_config.instance_id,
@@ -3115,6 +3210,8 @@ async fn new_underhill_vm(
                     &vmbus_server,
                     dma_manager.client_spawner(),
                     isolation.is_isolated(),
+                    save_restore_supported,
+                    nic_servicing_state,
                 )
                 .await?;
 
@@ -3334,6 +3431,7 @@ async fn new_underhill_vm(
 
         _periodic_telemetry_task: periodic_telemetry_task,
         nvme_keep_alive: env_cfg.nvme_keep_alive,
+        mana_keep_alive: env_cfg.mana_keep_alive,
         test_configuration: env_cfg.test_configuration,
         dma_manager,
     };
