@@ -130,11 +130,14 @@ impl FlowNode for Node {
 
                     // Verify a job with a given name and status exists for an action id
                     let verify_job_exists = |action_id: &str, job_name: &str| -> Option<String> {
+                        // cmd! will escape quotes in any strings passed as an arg. Since we need multiple layers of
+                        // escapes, first create the jq filter and then let cmd! handle the escaping.
+                        let select = format!(".jobs[] | select(.name == \"{job_name}\" and .conclusion == \"success\") | .url");
                         let output = xshell::cmd!(
                             sh,
                             "{gh_cli} run view {action_id}
                             --json jobs
-                            --jq=\".jobs[] | select(.name == {job_name} && .conclusion == \"success\") | .url\""
+                            --jq={select}"
                         )
                         .read();
 
