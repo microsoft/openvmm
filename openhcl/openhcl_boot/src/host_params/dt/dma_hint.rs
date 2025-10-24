@@ -66,15 +66,15 @@ const LOOKUP_TABLE: &[(u16, u16, u16); 38] = &[
     (64, 924, 68),
     (64, 938, 68),
     (96, 1030, 64),
-    (96, 1042, 114), // Can be '64'.
-    (96, 1058, 114), // Can be '106'.
+    (96, 1042, 114), // There is another 96vp/1042MB configuration that only requires 64 MB of DMA memory, pick the larger.
+    (96, 1058, 114), // There is another 96vp/1058MB configuration that only requires 106 MB of DMA memory, pick the larger.
     (96, 1340, 102),
     (96, 1358, 104),
     (96, 1382, 120),
     (112, 1566, 288),
     (128, 1342, 84),
     (128, 1360, 84),
-    (896, 12912, 0), // (516) Needs to be validated as the vNIC number is unknown.
+    (896, 12912, 0), // (516) Needs to be validated as the vNIC number is unknown. (TODO, as part of network device keepalive support).
 ];
 
 const ONE_MB: u64 = 1024 * 1024;
@@ -170,15 +170,15 @@ pub fn vtl2_calculate_dma_hint(vp_count: usize, mem_size: u64) -> u64 {
                     min_vtl2_memory_mb = min_vtl2_memory_mb.min(*vtl2_memory_mb);
                     max_vtl2_memory_mb = max_vtl2_memory_mb.max(*vtl2_memory_mb);
                     min_ratio_1000th =
-                        min_ratio_1000th.min(*vtl2_memory_mb as u32 * 1000 / *dma_hint_mb as u32);
+                        min_ratio_1000th.min(*vtl2_memory_mb as u32 * RATIO / *dma_hint_mb as u32);
                     max_ratio_1000th =
-                        max_ratio_1000th.max(*vtl2_memory_mb as u32 * 1000 / *dma_hint_mb as u32);
+                        max_ratio_1000th.max(*vtl2_memory_mb as u32 * RATIO / *dma_hint_mb as u32);
                 });
         }
 
         if dma_hint_4k == 0 {
             // Didn't find an exact match for vp_count, try to extrapolate.
-            dma_hint_4k = (mem_size_mb as u64 * 1000u64 * (ONE_MB / PAGE_SIZE_4K))
+            dma_hint_4k = (mem_size_mb as u64 * RATIO as u64 * (ONE_MB / PAGE_SIZE_4K))
                 / ((min_ratio_1000th + max_ratio_1000th) as u64 / 2u64);
 
             // And then round up to 2MiB.

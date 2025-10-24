@@ -534,11 +534,8 @@ fn topology_from_host_dt(
 
         if dt_page_count.is_some() || cmdline_page_count.is_some() {
             // Any external source defined the pool size, use the maximum of all external sources.
-            // todo: make sure that Some(0) is treated correctly
             max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0))
         } else {
-            // todo mattkur
-
             // No external source defined the pool size, use heuristics to decide.
             let mem_size = vtl2_ram.iter().map(|e| e.range.len()).sum();
             vtl2_calculate_dma_hint(parsed.cpu_count(), mem_size)
