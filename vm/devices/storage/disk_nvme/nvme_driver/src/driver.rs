@@ -798,7 +798,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         task.insert(&this.driver, "nvme_worker", state);
         task.start();
 
-        tracing::info!("nvme driver state restored successfully");
         Ok(this)
     }
 
@@ -813,6 +812,7 @@ async fn handle_asynchronous_events(
     admin: &Issuer,
     rescan_event: &event_listener::Event,
 ) -> anyhow::Result<()> {
+    tracing::info!("starting asynchronous event handler task");
     loop {
         let dw0 = admin
             .issue_get_aen()
@@ -904,7 +904,8 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
                             .await
                     }
                     Some(NvmeWorkerRequest::Save(rpc)) => {
-                        rpc.handle(async |_| self.save(state).await).await
+                        rpc.handle(async |span| self.save(state).instrument(span).await)
+                            .await
                     }
                     None => break,
                 }
