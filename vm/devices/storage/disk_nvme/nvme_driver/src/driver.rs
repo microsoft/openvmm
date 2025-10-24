@@ -729,7 +729,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 .worker_data
                 .io
                 .iter()
-                .map(|io_state| { io_state.to_string() })
+                .map(|io_state| format!(
+                    "{{qid={}, pending_commands_count={}}}",
+                    io_state.queue_data.qid,
+                    io_state.queue_data.handler_data.pending_cmds.commands.len()
+                ))
                 .collect::<Vec<_>>()
                 .join(", "),
             "restoring io queues",
@@ -774,7 +778,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             namespaces = saved_state
                 .namespaces
                 .iter()
-                .map(|ns| ns.to_string())
+                .map(|ns| format!("{{nsid={}, size={}}}", ns.nsid, ns.identify_ns.nsze))
                 .collect::<Vec<_>>()
                 .join(", "),
             "restoring namespaces",
@@ -1110,7 +1114,11 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             tracing::info!(
                 state = io
                     .iter()
-                    .map(|io_state| { io_state.to_string() })
+                    .map(|io_state| format!(
+                        "{{qid={}, pending_commands_count={}}}",
+                        io_state.queue_data.qid,
+                        io_state.queue_data.handler_data.pending_cmds.commands.len()
+                    ))
                     .collect::<Vec<_>>()
                     .join(", "),
                 "saved io queues",
@@ -1219,17 +1227,6 @@ pub mod save_restore {
         pub queue_data: QueuePairSavedState,
     }
 
-    impl std::fmt::Display for IoQueueSavedState {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(
-                f,
-                "{{qid={}, pending_commands_count={}}}",
-                self.queue_data.qid,
-                self.queue_data.handler_data.pending_cmds.commands.len()
-            )
-        }
-    }
-
     /// Save/restore state for QueueHandler task.
     #[derive(Protobuf, Clone, Debug)]
     #[mesh(package = "nvme_driver")]
@@ -1301,12 +1298,6 @@ pub mod save_restore {
         pub nsid: u32,
         #[mesh(2, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
         pub identify_ns: nvme_spec::nvm::IdentifyNamespace,
-    }
-
-    impl std::fmt::Display for SavedNamespaceData {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{{nsid={}, size={}}}", self.nsid, self.identify_ns.nsze)
-        }
     }
 
     #[derive(Clone, Debug, Protobuf)]
