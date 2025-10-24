@@ -10,8 +10,8 @@ working on.
 
 ## Writing VMM Tests
 
-To streamline the process of booting and interacting VMs during VMM tests, the
-OpenVMM project uses a in-house test framework/library called `petri`.
+To streamline the process of booting and interacting with VMs during VMM tests, the
+OpenVMM project uses an in-house test framework/library called `petri`.
 
 The library does not yet have a stable API, so at this time, the best way to
 learn how to write new VMM tests is by reading through the existing corpus of
@@ -37,7 +37,7 @@ are curated to balance individual trial (test case) performance against overall 
 engineers' local machines and in CI. Put these special words in your test to opt in to that override:
 
 - `heavy` - if your test is heavier than the typical vmm_test. E.g., your test explicitly requests 16 virtual processors.
-- `very_heavy` if your test is heavier than a `heavy` test. E.g., your test explicity requests 32 virtual processors.
+- `very_heavy` if your test is heavier than a `heavy` test. E.g., your test explicitly requests 32 virtual processors.
 
 ## Running VMM Tests (Flowey)
 
