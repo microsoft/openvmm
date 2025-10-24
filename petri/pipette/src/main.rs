@@ -21,6 +21,12 @@ mod winsvc;
 fn main() -> anyhow::Result<()> {
     eprintln!("Pipette starting up");
 
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        eprintln!("Pipette panicked: {}", info);
+        hook(info);
+    }));
+
     #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("--service") {
         return winsvc::start_service();
