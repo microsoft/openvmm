@@ -18,7 +18,7 @@ threads-required = 6
 [[profile.default.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile
-filter = 'package(~vmm_tests) and test(heavy) and not(test(very_heavy))'
+filter = 'package(~vmm_tests) and test(heavy) and not (test(very_heavy))'
 # Mark heavy tests as extra heavy, as they include up to 16 vps.
 threads-required = 24
 
