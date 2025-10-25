@@ -1102,6 +1102,7 @@ impl PetriVmFramebufferAccess for NoPetriVmFramebufferAccess {
 }
 
 /// Common processor topology information for the VM.
+#[derive(Debug)]
 pub struct ProcessorTopology {
     /// The number of virtual processors.
     pub vp_count: u32,

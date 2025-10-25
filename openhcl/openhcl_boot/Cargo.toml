@@ -37,6 +37,10 @@ safe_intrinsics.workspace = true
 tdcall.workspace = true
 x86defs.workspace = true
 
+[dev-dependencies]
+test_with_tracing.workspace = true
+tracing.workspace = true
+
 [build-dependencies]
 minimal_rt_build.workspace = true
 
