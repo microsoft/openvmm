@@ -49,7 +49,6 @@ use inspect_counters::Histogram;
 use mesh::rpc::Rpc;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
-use net_backend::L3Protocol;
 use net_backend::QueueConfig;
 use net_backend::RxId;
 use net_backend::TxError;
@@ -2393,7 +2392,7 @@ impl<T: RingMem> NetChannel<T> {
 
         let mut metadata = net_backend::TxMetadata {
             id,
-            len: request.data_length as usize,
+            len: request.data_length,
             ..Default::default()
         };
 
@@ -2419,20 +2418,21 @@ impl<T: RingMem> NetChannel<T> {
                     rndisprot::PPI_TCP_IP_CHECKSUM => {
                         let n: rndisprot::TxTcpIpChecksumInfo = d.reader(mem).read_plain()?;
 
-                        metadata.offload_tcp_checksum =
-                            (n.is_ipv4() || n.is_ipv6()) && n.tcp_checksum();
-                        metadata.offload_udp_checksum =
-                            (n.is_ipv4() || n.is_ipv6()) && !n.tcp_checksum() && n.udp_checksum();
-                        metadata.offload_ip_header_checksum = n.is_ipv4() && n.ip_header_checksum();
-                        metadata.l3_protocol = if n.is_ipv4() {
-                            L3Protocol::Ipv4
-                        } else if n.is_ipv6() {
-                            L3Protocol::Ipv6
-                        } else {
-                            L3Protocol::Unknown
-                        };
+                        metadata.flags.set_offload_tcp_checksum(
+                            (n.is_ipv4() || n.is_ipv6()) && n.tcp_checksum(),
+                        );
+                        metadata.flags.set_offload_udp_checksum(
+                            (n.is_ipv4() || n.is_ipv6()) && !n.tcp_checksum() && n.udp_checksum(),
+                        );
+                        metadata
+                            .flags
+                            .set_offload_ip_header_checksum(n.is_ipv4() && n.ip_header_checksum());
+                        metadata.flags.set_is_ipv4(n.is_ipv4());
+                        metadata.flags.set_is_ipv6(n.is_ipv6() && !n.is_ipv4());
                         metadata.l2_len = ETHERNET_HEADER_LEN as u8;
-                        if metadata.offload_tcp_checksum || metadata.offload_udp_checksum {
+                        if metadata.flags.offload_tcp_checksum()
+                            || metadata.flags.offload_udp_checksum()
+                        {
                             metadata.l3_len = if n.tcp_header_offset() >= metadata.l2_len as u16 {
                                 n.tcp_header_offset() - metadata.l2_len as u16
                             } else if n.is_ipv4() {
@@ -2450,14 +2450,11 @@ impl<T: RingMem> NetChannel<T> {
                     rndisprot::PPI_LSO => {
                         let n: rndisprot::TcpLsoInfo = d.reader(mem).read_plain()?;
 
-                        metadata.offload_tcp_segmentation = true;
-                        metadata.offload_tcp_checksum = true;
-                        metadata.offload_ip_header_checksum = n.is_ipv4();
-                        metadata.l3_protocol = if n.is_ipv4() {
-                            L3Protocol::Ipv4
-                        } else {
-                            L3Protocol::Ipv6
-                        };
+                        metadata.flags.set_offload_tcp_segmentation(true);
+                        metadata.flags.set_offload_tcp_checksum(true);
+                        metadata.flags.set_offload_ip_header_checksum(n.is_ipv4());
+                        metadata.flags.set_is_ipv4(n.is_ipv4());
+                        metadata.flags.set_is_ipv6(n.is_ipv6() && !n.is_ipv4());
                         metadata.l2_len = ETHERNET_HEADER_LEN as u8;
                         if n.tcp_header_offset() < metadata.l2_len as u16 {
                             return Err(WorkerError::InvalidTcpHeaderOffset);
@@ -2489,21 +2486,20 @@ impl<T: RingMem> NetChannel<T> {
             });
         }
 
-        if metadata.offload_tcp_segmentation {
-            if segments.len() < rndisprot::LSO_MIN_SEGMENT_COUNT as usize {
-                return Err(WorkerError::InvalidLsoPacketInsufficientSegments(
-                    segments.len() as u32,
-                ));
-            }
+        metadata.segment_count = (segments.len() - start) as u8;
+        if metadata.flags.offload_tcp_segmentation()
+            && (metadata.segment_count as u32) < rndisprot::LSO_MIN_SEGMENT_COUNT
+        {
+            return Err(WorkerError::InvalidLsoPacketInsufficientSegments(
+                segments.len() as u32,
+            ));
         }
-
-        metadata.segment_count = segments.len() - start;
 
         stats.tx_packets.increment();
-        if metadata.offload_tcp_checksum || metadata.offload_udp_checksum {
+        if metadata.flags.offload_tcp_checksum() || metadata.flags.offload_udp_checksum() {
             stats.tx_checksum_packets.increment();
         }
-        if metadata.offload_tcp_segmentation {
+        if metadata.flags.offload_tcp_segmentation() {
             stats.tx_lso_packets.increment();
         }
 
