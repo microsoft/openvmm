@@ -110,7 +110,8 @@ export function LogViewer(): React.JSX.Element {
     const handleRowClick = (originalIndex: number, logId: string, event: React.MouseEvent) => {
         if ((event.target as HTMLElement).closest('a')) return; // ignore clicks on links
 
-        // Detect if user is performing a text selection inside this row. If so, never remove the highlight.
+        // Detect if user is performing a text selection inside this row. If so,
+        // Don't do anything.
         const sel = window.getSelection();
         const isSelectingText = !!sel && !sel.isCollapsed && sel.toString().trim().length > 0;
         const currentTarget = event.currentTarget as HTMLElement | null;
@@ -119,6 +120,7 @@ export function LogViewer(): React.JSX.Element {
             const range = sel.getRangeAt(0);
             const common = range.commonAncestorContainer;
             selectionInsideRow = currentTarget.contains(common.nodeType === 1 ? common as Node : common.parentElement as Node);
+            return;
         }
 
         const params = new URLSearchParams(location.search);
