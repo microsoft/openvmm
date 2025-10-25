@@ -207,6 +207,7 @@ pub fn vtl2_calculate_dma_hint(vp_count: usize, mem_size: u64) -> u64 {
         }
     }
 
+    #[cfg(test)]
     tracing::debug!(
         ?vp_count,
         ?mem_size,
