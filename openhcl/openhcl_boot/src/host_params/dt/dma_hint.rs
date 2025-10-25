@@ -75,10 +75,10 @@ const LOOKUP_TABLE: &[(u16, u16, u16); 38] = &[
     (112, 1566, 288),
     (128, 1342, 84),
     (128, 1360, 84),
-    (896, 12912, 0), // (516) Needs to be validated as the vNIC number is unknown. (TODO, as part of network device keepalive support).
+    (896, 12912, 516), // Needs to be validated as the vNIC number is unknown. (TODO, as part of network device keepalive support).
 ];
 
-/// TEST ONLY variant of the lookup table above. Since the IGVM manifest specifies additional
+/// DEV/TEST ONLY variant of the lookup table above. Since the IGVM manifest specifies additional
 /// VTL2 memory for dev (well above what is required for release configs), allow the heuristics
 /// to still kick in.
 #[cfg(debug_assertions)]
@@ -188,6 +188,16 @@ pub fn vtl2_calculate_dma_hint(vp_count: usize, mem_size: u64) -> u64 {
         }
 
         if dma_hint_4k == 0 {
+            #[cfg(test)]
+            tracing::debug!(
+                ?min_vp_count,
+                ?max_vp_count,
+                ?min_vtl2_memory_mb,
+                ?max_vtl2_memory_mb,
+                ?min_ratio_1000th,
+                ?max_ratio_1000th,
+                "Extrapolating VTL2 DMA hint",
+            );
             // Didn't find an exact match for vp_count, try to extrapolate.
             dma_hint_4k = (mem_size_mb as u64 * RATIO as u64 * (ONE_MB / PAGE_SIZE_4K))
                 / ((min_ratio_1000th + max_ratio_1000th) as u64 / 2u64);
@@ -197,6 +207,15 @@ pub fn vtl2_calculate_dma_hint(vp_count: usize, mem_size: u64) -> u64 {
         }
     }
 
+    tracing::debug!(
+        ?vp_count,
+        ?mem_size,
+        ?dma_hint_4k,
+        "Calculated VTL2 DMA hint (0n{} vp, 0x{:x} mem -> 0x{:x} pages)",
+        vp_count,
+        mem_size,
+        dma_hint_4k,
+    );
     dma_hint_4k
 }
 
@@ -205,16 +224,70 @@ mod test {
     use super::*;
     use test_with_tracing::test;
 
+    const ONE_MB: u64 = 0x10_0000;
+
+    #[cfg(not(debug_assertions))]
     #[test]
-    fn test_vtl2_calculate_dma_hint() {
-        assert_eq!(vtl2_calculate_dma_hint(2, 0x6200000), 1024);
-        assert_eq!(vtl2_calculate_dma_hint(4, 0x6E00000), 1536);
+    fn test_vtl2_calculate_dma_hint_release() {
+        assert_eq!(
+            vtl2_calculate_dma_hint(2, 0x620_0000),
+            4 * ONE_MB / PAGE_SIZE_4K
+        );
+        assert_eq!(
+            vtl2_calculate_dma_hint(4, 0x6E0_0000),
+            6 * ONE_MB / PAGE_SIZE_4K
+        );
 
         // Test VP count higher than max from LOOKUP_TABLE.
-        assert_eq!(vtl2_calculate_dma_hint(112, 0x7000000), 5632);
+        assert_eq!(
+            vtl2_calculate_dma_hint(112, 0x700_0000),
+            22 * ONE_MB / PAGE_SIZE_4K
+        );
 
         // Test unusual VP count.
-        assert_eq!(vtl2_calculate_dma_hint(52, 0x6000000), 2048);
-        assert_eq!(vtl2_calculate_dma_hint(52, 0x8000000), 2560);
+        assert_eq!(
+            vtl2_calculate_dma_hint(52, 0x600_0000),
+            8 * ONE_MB / PAGE_SIZE_4K
+        );
+        assert_eq!(
+            vtl2_calculate_dma_hint(52, 0x800_0000),
+            10 * ONE_MB / PAGE_SIZE_4K
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn test_vtl2_calculate_dma_hint_debug() {
+        assert_eq!(
+            vtl2_calculate_dma_hint(4, 0x1F00_0000),
+            32 * ONE_MB / PAGE_SIZE_4K
+        );
+        assert_eq!(
+            vtl2_calculate_dma_hint(64, 0x4000_0000),
+            256 * ONE_MB / PAGE_SIZE_4K
+        );
+        // Test VP count higher than max from LOOKUP_TABLE.
+        assert_eq!(
+            vtl2_calculate_dma_hint(128, 0x4000_0000),
+            256 * ONE_MB / PAGE_SIZE_4K
+        );
+        assert_eq!(
+            vtl2_calculate_dma_hint(128, 0x8000_0000),
+            512 * ONE_MB / PAGE_SIZE_4K
+        );
+    }
+
+    #[test]
+    fn test_vtl2_calculate_dma_hint_exact_matches() {
+        for (vp_count, vtl2_memory_mb, dma_hint_mb) in LOOKUP_TABLE {
+            let calculated_dma_hint_4k =
+                vtl2_calculate_dma_hint(*vp_count as usize, (*vtl2_memory_mb as u64) * ONE_MB);
+            let expected_dma_hint_4k = (*dma_hint_mb as u64) * ONE_MB / PAGE_SIZE_4K;
+            assert_eq!(
+                calculated_dma_hint_4k, expected_dma_hint_4k,
+                "Failed exact match test for vp_count={}, vtl2_memory_mb={}",
+                vp_count, vtl2_memory_mb
+            );
+        }
     }
 }
