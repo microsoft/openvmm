@@ -22,8 +22,6 @@ use crate::UhCvmVpState;
 use crate::UhPartitionInner;
 use crate::UhPartitionNewParams;
 use crate::WakeReason;
-use crate::processor::NMI_SUPPRESS_LINT1_DELIVERED;
-use crate::processor::NMI_SUPPRESS_LINT1_REQUESTED;
 use crate::processor::UhHypercallHandler;
 use crate::processor::UhProcessor;
 use crate::processor::hardware_cvm::apic::ApicBacking;
@@ -888,20 +886,6 @@ impl<'b> ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpBacked> {
         // TODO SNP: support virtual NMI injection
         // For now, just inject an NMI and hope for the best.
         // Don't forget to update handle_cross_vtl_interrupts if this code changes.
-
-        if (self.backing.cvm.lapics[vtl].nmi_suppression & NMI_SUPPRESS_LINT1_DELIVERED) != 0 {
-            //  Cancel this NMI request since it cannot be delivered.
-            self.backing.cvm.lapics[vtl].nmi_pending = false;
-            return;
-        }
-
-        if (self.backing.cvm.lapics[vtl].nmi_suppression & NMI_SUPPRESS_LINT1_REQUESTED) != 0 {
-            // If a LINT1 NMI has been requested, then it is being delivered now,
-            // so no further NMIs can be delivered.
-            self.backing.cvm.lapics[vtl].nmi_suppression &= !NMI_SUPPRESS_LINT1_REQUESTED;
-            self.backing.cvm.lapics[vtl].nmi_suppression |= NMI_SUPPRESS_LINT1_DELIVERED;
-        }
-
         let mut vmsa = self.runner.vmsa_mut(vtl);
 
         // TODO GUEST VSM: Don't inject the NMI if there's already an event
@@ -922,10 +906,6 @@ impl<'b> ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpBacked> {
         vmsa.set_cs(virt_seg_to_snp(cs));
         vmsa.set_rip(0);
         self.backing.cvm.lapics[vtl].activity = MpState::Running;
-    }
-
-    fn supports_nmi_masking(&mut self) -> bool {
-        false
     }
 }
 
