@@ -397,6 +397,7 @@ struct NetChannel<T: RingMem> {
 /// Buffers used during packet processing.
 struct ProcessingData {
     tx_segments: Vec<TxSegment>,
+    tx_segments_sent: usize,
     tx_done: Box<[TxId]>,
     rx_ready: Box<[RxId]>,
     rx_done: Vec<RxId>,
@@ -408,6 +409,7 @@ impl ProcessingData {
     fn new() -> Self {
         Self {
             tx_segments: Vec::new(),
+            tx_segments_sent: 0,
             tx_done: vec![TxId(0); 8192].into(),
             rx_ready: vec![RxId(0); RX_BATCH_SIZE].into(),
             rx_done: Vec::with_capacity(RX_BATCH_SIZE),
@@ -1895,6 +1897,8 @@ enum WorkerError {
     UnexpectedPacketOrder(#[source] PacketOrderError),
     #[error("unknown rndis message type: {0}")]
     UnknownRndisMessageType(u32),
+    #[error("junk after rndis packet message: {0:#x}")]
+    NonRndisPacketAfterPacket(u32),
     #[error("memory access error")]
     Access(#[from] AccessError),
     #[error("rndis message too small")]
@@ -2285,37 +2289,19 @@ impl SendBuffer {
     }
 }
 
-struct PendingControlMessages {
-    control_messages: Vec<ControlMessage>,
-    total_len: usize,
-}
-
 impl<T: RingMem> NetChannel<T> {
-    /// Process a single RNDIS message.
+    /// Process a single non-packet RNDIS message.
     fn handle_rndis_message(
         &mut self,
-        buffers: &ChannelBuffers,
         state: &mut ActiveState,
-        id: TxId,
         message_type: u32,
         mut reader: PacketReader<'_>,
-        segments: &mut Vec<TxSegment>,
-        pending_control_messages: &mut Option<PendingControlMessages>,
     ) -> Result<bool, WorkerError> {
         let is_packet = match message_type {
-            rndisprot::MESSAGE_TYPE_PACKET_MSG => {
-                self.handle_rndis_packet_message(
-                    id,
-                    reader,
-                    &buffers.mem,
-                    segments,
-                    &mut state.stats,
-                )?;
-                true
-            }
             rndisprot::MESSAGE_TYPE_HALT_MSG => false,
             n => {
-                let pending_control_messages = pending_control_messages
+                let control = state
+                    .primary
                     .as_mut()
                     .ok_or(WorkerError::NotSupportedOnSubChannel(n))?;
 
@@ -2329,25 +2315,66 @@ impl<T: RingMem> NetChannel<T> {
                 }
                 // Do not let the queue get too large--the guest should not be
                 // sending very many control messages at a time.
-                if CONTROL_MESSAGE_MAX_QUEUED_BYTES - pending_control_messages.total_len
-                    < reader.len()
-                {
+                if CONTROL_MESSAGE_MAX_QUEUED_BYTES - control.control_messages_len < reader.len() {
                     return Err(WorkerError::TooManyControlMessages);
                 }
 
-                pending_control_messages.total_len += reader.len();
-                pending_control_messages
-                    .control_messages
-                    .push(ControlMessage {
-                        message_type,
-                        data: reader.read_all()?.into(),
-                    });
+                control.control_messages_len += reader.len();
+                control.control_messages.push_back(ControlMessage {
+                    message_type,
+                    data: reader.read_all()?.into(),
+                });
 
                 false
                 // The queue will be processed in the main dispatch loop.
             }
         };
         Ok(is_packet)
+    }
+
+    /// Process RNDIS packet messages, which may contain multiple RNDIS packets
+    /// in a single vmbus message.
+    ///
+    /// On entry, the reader has already read the RNDIS message header of the
+    /// first RNDIS packet in the message.
+    fn handle_rndis_packet_messages(
+        &mut self,
+        buffers: &ChannelBuffers,
+        state: &mut ActiveState,
+        id: TxId,
+        mut message_len: usize,
+        mut reader: PacketReader<'_>,
+        segments: &mut Vec<TxSegment>,
+    ) -> Result<usize, WorkerError> {
+        // There may be multiple RNDIS packets in a single message, concatenated
+        // with each other. Consume them until there is no more data in the
+        // RNDIS message.
+        let mut num_packets = 0;
+        loop {
+            let next_message_offset = message_len
+                .checked_sub(size_of::<rndisprot::MessageHeader>())
+                .ok_or(WorkerError::RndisMessageTooSmall)?;
+
+            self.handle_rndis_packet_message(
+                id,
+                reader.clone(),
+                &buffers.mem,
+                segments,
+                &mut state.stats,
+            )?;
+            num_packets += 1;
+
+            reader.skip(next_message_offset)?;
+            if reader.len() == 0 {
+                break;
+            }
+            let header: rndisprot::MessageHeader = reader.read_plain()?;
+            if header.message_type != rndisprot::MESSAGE_TYPE_PACKET_MSG {
+                return Err(WorkerError::NonRndisPacketAfterPacket(header.message_type));
+            }
+            message_len = header.message_length as usize;
+        }
+        Ok(num_packets)
     }
 
     /// Process an RNDIS package message (used to send an Ethernet frame).
@@ -5027,7 +5054,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         }
 
                         // Check the incoming ring for tx, but only if there are enough
-                        // free tx packets.
+                        // free tx packets and no pending tx segments.
                         let (mut recv, mut send) = self.queue.split();
                         if state.free_tx_packets.len() >= self.adapter.free_tx_packet_threshold
                             && data.tx_segments.is_empty()
@@ -5273,10 +5300,16 @@ impl<T: 'static + RingMem> NetChannel<T> {
         data: &mut ProcessingData,
         queue_state: &mut QueueState,
     ) -> Result<bool, WorkerError> {
+        if !data.tx_segments.is_empty() {
+            // There are still segments pending transmission. Skip polling the
+            // ring until they are sent to increase backpressure and minimize
+            // unnecessary wakeups.
+            return Ok(false);
+        }
         let mut total_packets = 0;
         let mut did_some_work = false;
         loop {
-            if state.free_tx_packets.is_empty() || !data.tx_segments.is_empty() {
+            if state.free_tx_packets.is_empty() {
                 break;
             }
             let packet = if let Some(packet) = self.try_next_packet(
@@ -5292,62 +5325,24 @@ impl<T: 'static + RingMem> NetChannel<T> {
             did_some_work = true;
             match packet.data {
                 PacketData::RndisPacket(_) => {
-                    assert!(data.tx_segments.is_empty());
                     let id = state.free_tx_packets.pop().unwrap();
-                    // Only create a list of pending control messages for the Primary Channel
-                    let mut pending_control_messages =
-                        state
-                            .primary
-                            .as_ref()
-                            .map(|primary| PendingControlMessages {
-                                total_len: primary.control_messages_len,
-                                control_messages: Vec::new(),
-                            });
-                    let result: Result<usize, WorkerError> = self.handle_rndis(
-                        buffers,
-                        id,
-                        state,
-                        &packet,
-                        &mut data.tx_segments,
-                        &mut pending_control_messages,
-                    );
-                    let num_packets = match result {
+                    let result: Result<usize, WorkerError> =
+                        self.handle_rndis(buffers, id, state, &packet, &mut data.tx_segments);
+                    match result {
                         Ok(num_packets) => {
-                            if let Some(pending_control_messages) =
-                                pending_control_messages.as_mut()
-                            {
-                                // Add control messages to primary channel state control message queue.
-                                let control = state.primary.as_mut().unwrap();
-                                control.control_messages_len = pending_control_messages.total_len;
-                                control
-                                    .control_messages
-                                    .extend(pending_control_messages.control_messages.drain(..));
+                            total_packets += num_packets as u64;
+                            if num_packets == 0 {
+                                self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
                             }
-                            num_packets
                         }
                         Err(err) => {
                             tracelimit::error_ratelimited!(
                                 err = &err as &dyn std::error::Error,
                                 "failed to handle RNDIS packet"
                             );
-                            // Drop any segments generated prior to the error.
-                            data.tx_segments.clear();
                             self.complete_tx_packet(state, id, protocol::Status::FAILURE)?;
-                            continue;
                         }
                     };
-                    total_packets += num_packets as u64;
-                    state.pending_tx_packets[id.0 as usize].pending_packet_count += num_packets;
-
-                    if num_packets != 0 {
-                        if self.transmit_segments(state, data, queue_state, id, num_packets)?
-                            < num_packets
-                        {
-                            state.stats.tx_stalled.increment();
-                        }
-                    } else {
-                        self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
-                    }
                 }
                 PacketData::RndisPacketComplete(_completion) => {
                     data.rx_done.clear();
@@ -5437,60 +5432,67 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 }
             }
         }
+        if total_packets > 0 && !self.transmit_segments(state, data, queue_state)? {
+            state.stats.tx_stalled.increment();
+        }
         state.stats.tx_packets_per_wake.add_sample(total_packets);
         Ok(did_some_work)
     }
 
+    // Transmit any pending segments. Returns Ok(true) if work was done--if any
+    // segments were transmitted.
     fn transmit_pending_segments(
         &mut self,
         state: &mut ActiveState,
         data: &mut ProcessingData,
         queue_state: &mut QueueState,
     ) -> Result<bool, WorkerError> {
-        if data.tx_segments.is_empty() {
+        let count = data.tx_segments.len();
+        if count == 0 {
             return Ok(false);
         }
-        let net_backend::TxSegmentType::Head(metadata) = &data.tx_segments[0].ty else {
-            unreachable!()
-        };
-        let id = metadata.id;
-        let num_packets = state.pending_tx_packets[id.0 as usize].pending_packet_count;
-        let packets_sent = self.transmit_segments(state, data, queue_state, id, num_packets)?;
-        Ok(num_packets == packets_sent)
+        self.transmit_segments(state, data, queue_state)?;
+        Ok(data.tx_segments.len() < count)
     }
 
+    /// Returns true if all pending segments were transmitted.
     fn transmit_segments(
         &mut self,
         state: &mut ActiveState,
         data: &mut ProcessingData,
         queue_state: &mut QueueState,
-        id: TxId,
-        num_packets: usize,
-    ) -> Result<usize, WorkerError> {
+    ) -> Result<bool, WorkerError> {
+        let segments = &data.tx_segments[data.tx_segments_sent..];
         let (sync, segments_sent) = queue_state
             .queue
-            .tx_avail(&data.tx_segments)
+            .tx_avail(segments)
             .map_err(WorkerError::Endpoint)?;
 
-        assert!(segments_sent <= data.tx_segments.len());
-
-        let packets_sent = if segments_sent == data.tx_segments.len() {
-            num_packets
-        } else {
-            net_backend::packet_count(&data.tx_segments[..segments_sent])
-        };
-
-        data.tx_segments.drain(..segments_sent);
+        let mut segments = &segments[..segments_sent];
+        data.tx_segments_sent += segments_sent;
 
         if sync {
-            state.pending_tx_packets[id.0 as usize].pending_packet_count -= packets_sent;
+            // Complete the packets now.
+            while let Some(head) = segments.first() {
+                let net_backend::TxSegmentType::Head(metadata) = &head.ty else {
+                    unreachable!()
+                };
+                let id = metadata.id;
+                let pending_tx_packet = &mut state.pending_tx_packets[id.0 as usize];
+                pending_tx_packet.pending_packet_count -= 1;
+                if pending_tx_packet.pending_packet_count == 0 {
+                    self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
+                }
+                segments = &segments[metadata.segment_count as usize..];
+            }
         }
 
-        if state.pending_tx_packets[id.0 as usize].pending_packet_count == 0 {
-            self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
+        let all_sent = data.tx_segments_sent == data.tx_segments.len();
+        if all_sent {
+            data.tx_segments.clear();
+            data.tx_segments_sent = 0;
         }
-
-        Ok(packets_sent)
+        Ok(all_sent)
     }
 
     fn handle_rndis(
@@ -5500,9 +5502,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
         state: &mut ActiveState,
         packet: &Packet<'_>,
         segments: &mut Vec<TxSegment>,
-        pending_control_messages: &mut Option<PendingControlMessages>,
     ) -> Result<usize, WorkerError> {
-        let mut num_packets = 0;
+        let mut total_packets = 0;
         let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
         assert!(tx_packet.pending_packet_count == 0);
         tx_packet.transaction_id = packet
@@ -5519,28 +5520,32 @@ impl<T: 'static + RingMem> NetChannel<T> {
             .map_err(WorkerError::GpaDirectError)?;
 
         let mut reader = packet.rndis_reader(&buffers.mem);
-        // There may be multiple RNDIS packets in a single
-        // message, concatenated with each other. Consume
-        // them until there is no more data in the RNDIS
-        // message.
-        while reader.len() > 0 {
-            let mut this_reader = reader.clone();
-            let header: rndisprot::MessageHeader = this_reader.read_plain()?;
-            if self.handle_rndis_message(
+        let header: rndisprot::MessageHeader = reader.read_plain()?;
+        if header.message_type == rndisprot::MESSAGE_TYPE_PACKET_MSG {
+            let start = segments.len();
+            match self.handle_rndis_packet_messages(
                 buffers,
                 state,
                 id,
-                header.message_type,
-                this_reader,
+                header.message_length as usize,
+                reader,
                 segments,
-                pending_control_messages,
-            )? {
-                num_packets += 1;
+            ) {
+                Ok(n) => {
+                    state.pending_tx_packets[id.0 as usize].pending_packet_count += n;
+                    total_packets += n;
+                }
+                Err(err) => {
+                    // Roll back any segments added for this message.
+                    segments.truncate(start);
+                    return Err(err);
+                }
             }
-            reader.skip(header.message_length as usize)?;
+        } else {
+            self.handle_rndis_message(state, header.message_type, reader)?;
         }
 
-        Ok(num_packets)
+        Ok(total_packets)
     }
 
     fn try_send_tx_packet(
