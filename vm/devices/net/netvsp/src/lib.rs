@@ -100,7 +100,6 @@ use vmbus_channel::gpadl_ring::gpadl_channel;
 use vmbus_ring as ring;
 use vmbus_ring::OutgoingPacketType;
 use vmbus_ring::RingMem;
-use vmbus_ring::gparange::GpnList;
 use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -403,6 +402,7 @@ struct ProcessingData {
     rx_ready: Box<[RxId]>,
     rx_done: Vec<RxId>,
     transfer_pages: Vec<ring::TransferPageRange>,
+    external_data: MultiPagedRangeBuf,
 }
 
 impl ProcessingData {
@@ -413,6 +413,7 @@ impl ProcessingData {
             rx_ready: vec![RxId(0); RX_BATCH_SIZE].into(),
             rx_done: Vec::with_capacity(RX_BATCH_SIZE),
             transfer_pages: Vec::with_capacity(RX_BATCH_SIZE),
+            external_data: MultiPagedRangeBuf::new(),
         }
     }
 }
@@ -2005,21 +2006,14 @@ enum PacketData {
 struct Packet<'a> {
     data: PacketData,
     transaction_id: Option<u64>,
-    external_data: MultiPagedRangeBuf<GpnList>,
-    send_buffer_suballocation: PagedRange<'a>,
+    external_data: &'a MultiPagedRangeBuf,
 }
 
-type PacketReader<'a> = PagedRangesReader<
-    'a,
-    std::iter::Chain<std::iter::Once<PagedRange<'a>>, MultiPagedRangeIter<'a>>,
->;
+type PacketReader<'a> = PagedRangesReader<'a, MultiPagedRangeIter<'a>>;
 
 impl Packet<'_> {
     fn rndis_reader<'a>(&'a self, mem: &'a GuestMemory) -> PacketReader<'a> {
-        PagedRanges::new(
-            std::iter::once(self.send_buffer_suballocation).chain(self.external_data.iter()),
-        )
-        .reader(mem)
+        PagedRanges::new(self.external_data.iter()).reader(mem)
     }
 }
 
@@ -2031,9 +2025,11 @@ fn read_packet_data<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
 
 fn parse_packet<'a, T: RingMem>(
     packet_ref: &queue::PacketRef<'_, T>,
-    send_buffer: Option<&'a SendBuffer>,
+    send_buffer: Option<&SendBuffer>,
     version: Option<Version>,
+    external_data: &'a mut MultiPagedRangeBuf,
 ) -> Result<Packet<'a>, PacketError> {
+    external_data.clear();
     let packet = match packet_ref.as_ref() {
         IncomingPacket::Data(data) => data,
         IncomingPacket::Completion(completion) => {
@@ -2055,15 +2051,13 @@ fn parse_packet<'a, T: RingMem>(
             return Ok(Packet {
                 data,
                 transaction_id: Some(completion.transaction_id()),
-                external_data: MultiPagedRangeBuf::empty(),
-                send_buffer_suballocation: PagedRange::empty(),
+                external_data,
             });
         }
     };
 
     let mut reader = packet.reader();
     let header: protocol::MessageHeader = reader.read_plain().map_err(PacketError::Access)?;
-    let mut send_buffer_suballocation = PagedRange::empty();
     let data = match header.message_type {
         protocol::MESSAGE_TYPE_INIT => PacketData::Init(read_packet_data(&mut reader)?),
         protocol::MESSAGE1_TYPE_SEND_NDIS_VERSION if version >= Some(Version::V1) => {
@@ -2084,7 +2078,7 @@ fn parse_packet<'a, T: RingMem>(
         protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET if version >= Some(Version::V1) => {
             let message: protocol::Message1SendRndisPacket = read_packet_data(&mut reader)?;
             if message.send_buffer_section_index != 0xffffffff {
-                send_buffer_suballocation = send_buffer
+                let send_buffer_suballocation = send_buffer
                     .ok_or(PacketError::InvalidSendBufferIndex)?
                     .gpadl
                     .first()
@@ -2094,6 +2088,8 @@ fn parse_packet<'a, T: RingMem>(
                         message.send_buffer_section_size as usize,
                     )
                     .ok_or(PacketError::InvalidSendBufferIndex)?;
+
+                external_data.push_range(send_buffer_suballocation);
             }
             PacketData::RndisPacket(message)
         }
@@ -2111,13 +2107,13 @@ fn parse_packet<'a, T: RingMem>(
         }
         typ => return Err(PacketError::UnknownType(typ)),
     };
+    packet
+        .read_external_ranges(external_data)
+        .map_err(PacketError::ExternalData)?;
     Ok(Packet {
         data,
         transaction_id: packet.transaction_id(),
-        external_data: packet
-            .read_external_ranges()
-            .map_err(PacketError::ExternalData)?,
-        send_buffer_suballocation,
+        external_data,
     })
 }
 
@@ -2357,7 +2353,7 @@ impl<T: RingMem> NetChannel<T> {
             .clone()
             .into_inner()
             .paged_ranges()
-            .find(|r| !r.is_empty())
+            .next()
             .ok_or(WorkerError::RndisMessageTooSmall)?;
         let mut data = reader.into_inner();
         let request: rndisprot::Packet = headers.reader(mem).read_plain()?;
@@ -4598,14 +4594,14 @@ impl<T: RingMem + 'static> Worker<T> {
 impl<T: 'static + RingMem> NetChannel<T> {
     fn try_next_packet<'a>(
         &mut self,
-        send_buffer: Option<&'a SendBuffer>,
+        send_buffer: Option<&SendBuffer>,
         version: Option<Version>,
+        external_data: &'a mut MultiPagedRangeBuf,
     ) -> Result<Option<Packet<'a>>, WorkerError> {
         let (mut read, _) = self.queue.split();
         let packet = match read.try_read() {
-            Ok(packet) => {
-                parse_packet(&packet, send_buffer, version).map_err(WorkerError::Packet)?
-            }
+            Ok(packet) => parse_packet(&packet, send_buffer, version, external_data)
+                .map_err(WorkerError::Packet)?,
             Err(queue::TryReadError::Empty) => return Ok(None),
             Err(queue::TryReadError::Queue(err)) => return Err(err.into()),
         };
@@ -4618,11 +4614,12 @@ impl<T: 'static + RingMem> NetChannel<T> {
         &mut self,
         send_buffer: Option<&'a SendBuffer>,
         version: Option<Version>,
+        external_data: &'a mut MultiPagedRangeBuf,
     ) -> Result<Packet<'a>, WorkerError> {
         let (mut read, _) = self.queue.split();
         let mut packet_ref = read.read().await?;
-        let packet =
-            parse_packet(&packet_ref, send_buffer, version).map_err(WorkerError::Packet)?;
+        let packet = parse_packet(&packet_ref, send_buffer, version, external_data)
+            .map_err(WorkerError::Packet)?;
         if matches!(packet.data, PacketData::RndisPacket(_)) {
             // In WorkerState::Init if an rndis packet is received, assume it is MESSAGE_TYPE_INITIALIZE_MSG
             tracing::trace!(target: "netvsp/vmbus", "detected rndis initialization message");
@@ -4680,8 +4677,13 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 .wait_ready(ring::PacketSize::completion(protocol::PACKET_SIZE_V61))
                 .await?;
 
+            let mut external_data = MultiPagedRangeBuf::new();
             let packet = self
-                .next_packet(None, initializing.as_ref().map(|x| x.version))
+                .next_packet(
+                    None,
+                    initializing.as_ref().map(|x| x.version),
+                    &mut external_data,
+                )
                 .await?;
 
             if let Some(initializing) = &mut *initializing {
@@ -5261,9 +5263,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
             if state.free_tx_packets.is_empty() || !data.tx_segments.is_empty() {
                 break;
             }
-            let packet = if let Some(packet) =
-                self.try_next_packet(buffers.send_buffer.as_ref(), Some(buffers.version))?
-            {
+            let packet = if let Some(packet) = self.try_next_packet(
+                buffers.send_buffer.as_ref(),
+                Some(buffers.version),
+                &mut data.external_data,
+            )? {
                 packet
             } else {
                 break;
