@@ -59,9 +59,12 @@ impl SimpleFlowNode for Node {
             build_params: OpenvmmHclBuildParams {
                 target: target.clone(),
                 profile: OpenvmmHclShip,
-                features: (OpenhclIgvmRecipe::X64)
-                    .recipe_details(true)
-                    .openvmm_hcl_features,
+                features: (match target.common_arch().unwrap() {
+                    CommonArch::X86_64 => OpenhclIgvmRecipe::X64,
+                    CommonArch::Aarch64 => OpenhclIgvmRecipe::Aarch64,
+                })
+                .recipe_details(true)
+                .openvmm_hcl_features,
                 no_split_dbg_info: false,
             },
             openvmm_hcl_output: v,
