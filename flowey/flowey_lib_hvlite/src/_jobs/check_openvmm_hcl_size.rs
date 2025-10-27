@@ -10,6 +10,7 @@ use crate::build_openvmm_hcl;
 use crate::build_openvmm_hcl::OpenvmmHclBuildParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile::OpenvmmHclShip;
 use crate::run_cargo_build::common::CommonArch;
+use crate::run_cargo_build::common::CommonPlatform;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::download_gh_artifact;
@@ -50,7 +51,10 @@ impl SimpleFlowNode for Node {
         } = request;
 
         let xtask = ctx.reqv(|v| crate::build_xtask::Request {
-            target: target.clone(),
+            target: CommonTriple::Common {
+                arch: CommonArch::X86_64,
+                platform: CommonPlatform::LinuxMusl,
+            },
             xtask: v,
         });
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
