@@ -73,7 +73,6 @@ impl OpenHclDiagHandler {
         })
     }
 
-    #[allow(dead_code)]
     pub(crate) async fn run_detached_vtl2_command(
         &self,
         command: impl AsRef<str>,

@@ -970,10 +970,10 @@ impl<T: PetriVmmBackend> PetriVm<T> {
 
         let res = self
             .openhcl_diag()?
-            .run_vtl2_command("sh", &["-c", "/cidata/pipette 2>&1 | logger &"])
+            .run_detached_vtl2_command("sh", &["-c", "/cidata/pipette 2>&1 | logger &"])
             .await?;
 
-        if !res.exit_status.success() {
+        if !res.success() {
             anyhow::bail!("Failed to spawn VTL 2 pipette: {:?}", res);
         }
 
