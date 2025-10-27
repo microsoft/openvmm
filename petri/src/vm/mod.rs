@@ -975,7 +975,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             .run_vtl2_command("sh", &["-c", "/cidata/pipette | logger &"])
             .await?;
 
-        if !res.success() {
+        if !res.exit_status.success() {
             anyhow::bail!("Failed to spawn VTL 2 pipette: {:?}", res);
         }
 
