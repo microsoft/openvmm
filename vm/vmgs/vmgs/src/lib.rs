@@ -38,7 +38,7 @@ pub use vmgs_impl::save_restore;
 /// VMGS helper functions
 pub mod vmgs_helpers {
     pub use crate::vmgs_impl::get_active_header;
-    pub use crate::vmgs_impl::read_headers;
+    pub use crate::vmgs_impl::validate_and_read_headers;
     pub use crate::vmgs_impl::validate_header;
 }
 
