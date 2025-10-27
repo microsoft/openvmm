@@ -1516,9 +1516,9 @@ impl<T: RingMem> ProcessLoop<T> {
             );
         } else {
             // Trigger the LINT1 interrupt vector on the LAPIC of the BSP.
-            self.set_debug_interrupt
-                .as_ref()
-                .map(|callback| callback(notification.vtl));
+            if let Some(callback) = self.set_debug_interrupt.as_ref() {
+                callback(notification.vtl)
+            }
         }
 
         Ok(())

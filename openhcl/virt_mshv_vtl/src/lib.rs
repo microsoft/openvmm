@@ -1934,6 +1934,7 @@ impl UhPartition {
     pub fn assert_debug_interrupt(&self, _vtl: u8) {
         #[cfg(guest_arch = "x86_64")]
         const LINT_INDEX_1: u8 = 1;
+        #[cfg(guest_arch = "x86_64")]
         match self.inner.isolation {
             IsolationType::Snp => {
                 tracing::error!(?_vtl, "Debug interrupts cannot be injected into SNP VMs",);
