@@ -1204,7 +1204,7 @@ impl PipelineJob<'_> {
         self
     }
 
-    /// Only run the job if the specified condition is true.
+    /// (ADO+Local Only) Only run the job if the specified condition is true.
     pub fn with_condition(self, cond: UseParameter<bool>) -> Self {
         self.pipeline.jobs[self.job_idx].cond_param_idx = Some(cond.idx);
         self

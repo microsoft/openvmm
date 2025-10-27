@@ -229,6 +229,11 @@ fn direct_run_do_work(
             pipeline_param_idx,
         } in parameters_used
         {
+            log::trace!(
+                "resolving parameter idx {}, flowey_var {:?}",
+                pipeline_param_idx,
+                flowey_var
+            );
             let (desc, value) = match &parameters[*pipeline_param_idx] {
                 Parameter::Bool {
                     name: _,
@@ -311,18 +316,19 @@ fn direct_run_do_work(
 
         if let Some(cond_param_idx) = cond_param_idx {
             let Parameter::Bool {
-                name,
+                name: _,
                 description: _,
                 kind: _,
-                default: _,
+                default,
             } = &parameters[cond_param_idx]
             else {
                 panic!("cond param is guaranteed to be bool by type system")
             };
 
-            // Vars should have had their default already applied, so this should never fail.
-            let (data, _secret) = in_mem_var_db.get_var(name);
-            let should_run: bool = serde_json::from_slice(&data).unwrap();
+            // In the direct run case (the local backend), conditional parameters
+            // are always just resolved to their defaults. Don't check the var_db
+            // for their value.
+            let should_run = default.expect("cond param must have default when running locally");
 
             if !should_run {
                 log::warn!("job condition was false - skipping job...");
