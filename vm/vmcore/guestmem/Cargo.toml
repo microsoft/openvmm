@@ -18,5 +18,12 @@ minircu = { workspace = true, optional = true }
 thiserror.workspace = true
 zerocopy.workspace = true
 
+[[bench]]
+name = "perf"
+harness = false
+
+[dev-dependencies]
+criterion.workspace = true
+
 [lints]
 workspace = true

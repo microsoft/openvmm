@@ -2735,6 +2735,7 @@ dependencies = [
 name = "guestmem"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "inspect",
  "minircu",
  "pal_event",
