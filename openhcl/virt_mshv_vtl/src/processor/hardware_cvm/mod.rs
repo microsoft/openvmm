@@ -1983,16 +1983,16 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             return match reg {
                 HvX64RegisterName::Cr0 => {
                     if intercept_control.cr0_write() {
-                        true
-                    } else {
                         (B::cr0(self, vtl) ^ value) & configured_intercepts.cr0_mask != 0
+                    } else {
+                        false
                     }
                 }
                 HvX64RegisterName::Cr4 => {
                     if intercept_control.cr4_write() {
-                        true
-                    } else {
                         (B::cr4(self, vtl) ^ value) & configured_intercepts.cr4_mask != 0
+                    } else {
+                        false
                     }
                 }
                 HvX64RegisterName::Xfem => intercept_control.xcr0_write(),
