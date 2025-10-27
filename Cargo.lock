@@ -4314,6 +4314,7 @@ version = "0.0.0"
 name = "minircu"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "event-listener",
  "libc",
  "pal_async",
