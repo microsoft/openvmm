@@ -972,7 +972,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
 
         let res = self
             .openhcl_diag()?
-            .run_detached_vtl2_command("sh", &["-c", "/cidata/pipette 2>&1 | logger &"])
+            .run_vtl2_command("sh", &["-c", "/cidata/pipette | logger &"])
             .await?;
 
         if !res.success() {
