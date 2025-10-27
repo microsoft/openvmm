@@ -11,6 +11,7 @@ use crate::driver::save_restore::SavedNamespaceData;
 use crate::queue_pair::Issuer;
 use crate::queue_pair::RequestError;
 use crate::queue_pair::admin_cmd;
+use futures::StreamExt;
 use guestmem::GuestMemory;
 use guestmem::ranges::PagedRange;
 use inspect::Inspect;
@@ -73,7 +74,7 @@ impl Namespace {
     pub(super) async fn new(
         driver: &VmTaskDriver,
         admin: Arc<Issuer>,
-        rescan_event: Arc<event_listener::Event>,
+        mut rescan_event: mesh::Receiver<()>,
         controller_identify: Arc<spec::IdentifyController>,
         io_issuers: &Arc<IoIssuers>,
         nsid: u32,
@@ -97,7 +98,7 @@ impl Namespace {
     fn new_from_identify(
         driver: &VmTaskDriver,
         admin: Arc<Issuer>,
-        rescan_event: Arc<event_listener::Event>,
+        mut rescan_event: mesh::Receiver<()>,
         controller_identify: Arc<spec::IdentifyController>,
         io_issuers: &Arc<IoIssuers>,
         nsid: u32,
@@ -160,7 +161,7 @@ impl Namespace {
                 let state = state.clone();
                 async move {
                     state
-                        .poll_for_rescans(&mut ctx, &admin, nsid, &rescan_event)
+                        .poll_for_rescans(&mut ctx, &admin, nsid, &mut rescan_event)
                         .await
                 }
             })
@@ -540,7 +541,7 @@ impl Namespace {
     pub(super) fn restore(
         driver: &VmTaskDriver,
         admin: Arc<Issuer>,
-        rescan_event: Arc<event_listener::Event>,
+        mut rescan_event: mesh::Receiver<()>,
         identify_ctrl: Arc<spec::IdentifyController>,
         io_issuers: &Arc<IoIssuers>,
         saved_state: &SavedNamespaceData,
@@ -565,10 +566,9 @@ impl DynamicState {
         ctx: &mut CancelContext,
         admin: &Issuer,
         nsid: u32,
-        rescan_event: &event_listener::Event,
+        rescan_event: &mut mesh::Receiver<()>,
     ) {
         loop {
-            let listen = rescan_event.listen();
             tracing::debug!("rescan");
             // Query again even the first time through the loop to make sure
             // we didn't miss the initial rescan notification.
@@ -603,7 +603,7 @@ impl DynamicState {
                 }
             }
 
-            if ctx.until_cancelled(listen).await.is_err() {
+            if ctx.until_cancelled(rescan_event.next()).await.is_err() {
                 break;
             }
         }
