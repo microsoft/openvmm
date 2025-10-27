@@ -45,7 +45,7 @@ impl SimpleFlowNode for Node {
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let openvmm_repo_path = crate::run_cargo_nextest_run::get_openvmm_repo_path(ctx);
+        let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
         let default_nextest_config_file = crate::run_cargo_nextest_run::default_nextest_config_file(
             openvmm_repo_path.clone(),

@@ -11,11 +11,6 @@ use flowey_lib_common::run_cargo_nextest_run::NextestRunKind;
 use flowey_lib_common::run_cargo_nextest_run::TestResults;
 use std::collections::BTreeMap;
 
-/// Shared helpers for resolving nextest-related paths and environment for HvLite flowey nodes.
-pub fn get_openvmm_repo_path(ctx: &mut NodeCtx<'_>) -> ReadVar<PathBuf> {
-    ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir)
-}
-
 pub fn default_nextest_config_file(
     openvmm_repo_path: ReadVar<PathBuf>,
     ctx: &mut NodeCtx<'_>,
@@ -27,8 +22,6 @@ pub fn base_env() -> BTreeMap<String, String> {
     [
         // Used by the test_with_tracing macro in test runners
         ("RUST_LOG", "trace,mesh_node=info"),
-        // Used by the process spawned for VMM tests
-        ("OPENVMM_LOG", "debug,mesh_node=info"),
     ]
     .into_iter()
     .map(|(a, b)| (a.to_owned(), b.to_owned()))
@@ -137,18 +130,12 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let openvmm_repo_path = get_openvmm_repo_path(ctx);
+        let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
         let default_nextest_config_file =
             default_nextest_config_file(openvmm_repo_path.clone(), ctx);
 
-        let base_env = [
-            // Used by the test_with_tracing macro in test runners
-            ("RUST_LOG", "trace"),
-        ]
-        .into_iter()
-        .map(|(a, b)| (a.to_owned(), b.to_owned()))
-        .collect::<BTreeMap<_, _>>();
+        let base_env = base_env();
 
         for Request {
             friendly_name,

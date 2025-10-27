@@ -94,8 +94,7 @@ impl SimpleFlowNode for Node {
                 let cmd = rt.read(cmd);
                 let output_dir = rt.read(output_dir);
 
-                let (status, stdout) =
-                    run_command(&cmd, &working_dir, /* capture_stdout: */ true)?;
+                let (status, stdout) = run_command(&cmd, &working_dir, true)?;
 
                 if !status.success() {
                     anyhow::bail!(
