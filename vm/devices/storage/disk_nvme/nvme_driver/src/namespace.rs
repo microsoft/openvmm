@@ -74,7 +74,7 @@ impl Namespace {
     pub(super) async fn new(
         driver: &VmTaskDriver,
         admin: Arc<Issuer>,
-        mut rescan_event: mesh::Receiver<()>,
+        rescan_event: mesh::Receiver<()>,
         controller_identify: Arc<spec::IdentifyController>,
         io_issuers: &Arc<IoIssuers>,
         nsid: u32,
@@ -541,7 +541,7 @@ impl Namespace {
     pub(super) fn restore(
         driver: &VmTaskDriver,
         admin: Arc<Issuer>,
-        mut rescan_event: mesh::Receiver<()>,
+        rescan_event: mesh::Receiver<()>,
         identify_ctrl: Arc<spec::IdentifyController>,
         io_issuers: &Arc<IoIssuers>,
         saved_state: &SavedNamespaceData,
