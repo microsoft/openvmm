@@ -316,19 +316,18 @@ fn direct_run_do_work(
 
         if let Some(cond_param_idx) = cond_param_idx {
             let Parameter::Bool {
-                name: _,
+                name,
                 description: _,
                 kind: _,
-                default,
+                default: _,
             } = &parameters[cond_param_idx]
             else {
                 panic!("cond param is guaranteed to be bool by type system")
             };
 
-            // In the direct run case (the local backend), conditional parameters
-            // are always just resolved to their defaults. Don't check the var_db
-            // for their value.
-            let should_run = default.expect("cond param must have default when running locally");
+            // Vars should have had their default already applied, so this should never fail.
+            let (data, _secret) = in_mem_var_db.get_var(name);
+            let should_run: bool = serde_json::from_slice(&data).unwrap();
 
             if !should_run {
                 log::warn!("job condition was false - skipping job...");
