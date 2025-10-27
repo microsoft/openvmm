@@ -582,7 +582,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     )
                     .unwrap(),
                     device_id: self.device_id.clone(),
-                    // TODO: See the description above, save the vector once resolved.
                     namespaces,
                     worker_data: s,
                 })
@@ -747,9 +746,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         // Restore namespace(s).
         for ns in &saved_state.namespaces {
-            // TODO: Current approach is to re-query namespace data after servicing
-            // and this array will be empty. Once we confirm that we can process
-            // namespace change notification AEN, the restore code will be re-added.
             this.namespaces.push(Arc::new(Namespace::restore(
                 &driver,
                 admin.issuer().clone(),
