@@ -436,6 +436,7 @@ impl Wq {
     pub const fn entry_size(oob_len: usize, sge_count: usize) -> u32 {
         let len = size_of::<WqeHeader>() + oob_len + size_of::<Sge>() * sge_count;
         let len = (len + WQE_ALIGNMENT - 1) & !(WQE_ALIGNMENT - 1);
+        assert!(len <= 512, "WQE size too large");
         len as u32
     }
 
