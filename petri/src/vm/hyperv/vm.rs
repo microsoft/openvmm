@@ -224,7 +224,7 @@ impl HyperVVM {
             // and attach it to the log.
             match tempfile::NamedTempFile::new()
                 .and_then(|x| x.keep().map_err(|e| e.error))
-                .and_then(|dest| std::fs::copy(path, &dest.1).map(|_| dest.1))
+                .and_then(|dest| fs_err::copy(path, &dest.1).map(|_| dest.1))
             {
                 Err(e) => {
                     tracing::warn!(
@@ -551,13 +551,16 @@ impl HyperVVM {
     async fn remove_inner(&mut self) -> anyhow::Result<()> {
         if !self.destroyed {
             let res_off = hvc::hvc_ensure_off(&self.vmid).await;
-            let res_remove = powershell::run_remove_vm(&self.vmid).await;
 
-            self.flush_logs().await?;
+            // Flush logs before we remove the VM so we can capture any
+            // interesting files before they get deleted.
+            let res_flush = self.flush_logs().await;
+            let res_remove = powershell::run_remove_vm(&self.vmid).await;
 
             res_off?;
             res_remove?;
             self.destroyed = true;
+            res_flush?;
         }
 
         Ok(())
