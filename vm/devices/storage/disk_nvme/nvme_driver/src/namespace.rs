@@ -570,8 +570,11 @@ impl DynamicState {
     ) {
         loop {
             tracing::debug!("rescan");
-            // Query again even the first time through the loop to make sure
-            // we didn't miss the initial rescan notification.
+
+            if ctx.until_cancelled(rescan_event.next()).await.is_err() {
+                break;
+            }
+
             match identify_namespace(admin, nsid).await {
                 Ok(identify) => {
                     if identify.nsze == 0 {
@@ -601,10 +604,6 @@ impl DynamicState {
                         "failed to query namespace during rescan"
                     );
                 }
-            }
-
-            if ctx.until_cancelled(rescan_event.next()).await.is_err() {
-                break;
             }
         }
     }
