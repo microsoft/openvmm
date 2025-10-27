@@ -79,6 +79,7 @@ impl Namespace {
         io_issuers: &Arc<IoIssuers>,
         nsid: u32,
     ) -> Result<Self, NamespaceError> {
+        tracing::info!("TRYING TO CREATE A NEW NAMESPACE OBJECT FOR NSID {}", nsid);
         let identify = identify_namespace(&admin, nsid)
             .await
             .map_err(NamespaceError::Request)?;
@@ -571,7 +572,11 @@ impl DynamicState {
         loop {
             tracing::debug!("rescan");
 
-            if ctx.until_cancelled(rescan_event.next()).await.is_err() {
+            // When the sender is closed, the future will resolve to None and
+            // gracefully exit this loop.
+            let listen = ctx.until_cancelled(rescan_event.next()).await;
+            if listen.is_err() || listen.unwrap().is_none() {
+                tracing::debug!("rescan task exiting");
                 break;
             }
 
