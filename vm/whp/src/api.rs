@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 use super::abi::*;
+use guid::Guid;
 use std::ffi::c_void;
-use winapi::shared::guiddef::GUID;
 use winapi::shared::winerror::HRESULT;
 use winapi::um::winnt::DEVICE_POWER_STATE;
 use winapi::um::winnt::HANDLE;
@@ -254,7 +254,7 @@ pal::delayload!("WinHvPlatform.dll" {
     ) -> HRESULT;
 
     pub fn WHvAllocateVpciResource(
-        ProviderId: Option<&GUID>,
+        ProviderId: Option<&Guid>,
         Flags: WHV_ALLOCATE_VPCI_RESOURCE_FLAGS,
         ResourceDescriptor: *const c_void,
         ResourceDescriptorSizeInBytes: u32,
