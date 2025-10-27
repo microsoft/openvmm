@@ -27,7 +27,7 @@ static mut HANDLERS: [Option<Box<dyn Fn() + 'static>>; 256] = [const { None }; 2
 static MUTEX: Mutex<()> = Mutex::new(());
 
 fn common_handler(_stack_frame: InterruptStackFrame, interrupt: u8) {
-    // SAFETY: Handlers are initialized to no_op and only set via set_handler which is
+    // SAFETY: Handlers are initialized to None and only set via set_handler which is
     // protected by a mutex.
     unsafe {
         if let Some(handler) = &HANDLERS[interrupt as usize] {
