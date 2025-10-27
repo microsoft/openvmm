@@ -21,7 +21,7 @@ pub fn default_nextest_config_file(
 pub fn base_env() -> BTreeMap<String, String> {
     [
         // Used by the test_with_tracing macro in test runners
-        ("RUST_LOG", "trace,mesh_node=info"),
+        ("RUST_LOG", "trace"),
     ]
     .into_iter()
     .map(|(a, b)| (a.to_owned(), b.to_owned()))
