@@ -268,7 +268,7 @@ mod windows {
 
     impl From<Guid> for win_etw_provider::GUID {
         fn from(guid: Guid) -> Self {
-            win_etw_provider::GUID {
+            Self {
                 data1: guid.data1,
                 data2: guid.data2,
                 data3: guid.data3,
