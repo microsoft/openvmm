@@ -33,7 +33,7 @@ mark statements that do not contain secrets and can be logged in a CVM.
 
 Examples:
 
-```rust
+```rust,ignore
 use cvm_tracing::{CVM_ALLOWED, CVM_CONFIDENTIAL};
 
 tracing::info!(CVM_ALLOWED, foo, ?bar, "This statement will be logged in a CVM");

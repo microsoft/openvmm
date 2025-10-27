@@ -660,11 +660,12 @@ impl IntoPipeline for CheckinGatesCli {
                 }
             };
 
+            let build_openhcl_job_tag = |arch_tag| format!("build openhcl [{arch_tag}-linux]");
             let job = pipeline
                 .new_job(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                     FlowArch::X86_64,
-                    format!("build openhcl [{arch_tag}-linux]"),
+                    build_openhcl_job_tag(arch_tag),
                 )
                 .gh_set_pool(crate::pipelines_shared::gh_pools::default_self_hosted(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -728,6 +729,7 @@ impl IntoPipeline for CheckinGatesCli {
                             },
                             done: ctx.new_done_handle(),
                             pipeline_name: "openvmm-ci.yaml".into(),
+                            job_name: build_openhcl_job_tag(arch_tag),
                         },
                     )
                     .finish();

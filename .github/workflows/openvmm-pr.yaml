@@ -518,7 +518,7 @@ jobs:
     - name: collect openvmm_hcl files for analysis
       run: |-
         flowey e 10 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
-        flowey v 10 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:8:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:101:27' --is-raw-string write-to-env github floweyvar1
+        flowey v 10 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:8:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:109:27' --is-raw-string write-to-env github floweyvar1
       shell: bash
     - id: flowey_lib_hvlite___jobs__check_openvmm_hcl_size__2
       uses: actions/upload-artifact@v4
@@ -570,7 +570,7 @@ jobs:
     - name: get merge commit
       run: flowey e 10 flowey_lib_common::git_merge_commit 0
       shell: bash
-    - name: get action id
+    - name: get action id by commit
       run: |-
         flowey e 10 flowey_lib_common::gh_workflow_id 0
         flowey e 10 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 0

@@ -1205,9 +1205,6 @@ impl PipelineJob<'_> {
     }
 
     /// Only run the job if the specified condition is true.
-    ///
-    /// When running locally, the `cond`'s default value will be used to
-    /// determine if the job will be run.
     pub fn with_condition(self, cond: UseParameter<bool>) -> Self {
         self.pipeline.jobs[self.job_idx].cond_param_idx = Some(cond.idx);
         self

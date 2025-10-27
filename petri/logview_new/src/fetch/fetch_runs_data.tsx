@@ -382,10 +382,10 @@ export async function fetchRunDetails(
   queryClient: QueryClient
 ): Promise<RunDetailsData> {
   try {
-    let allTests: TestResult[] = [];
+    let allXmlData = "";
     let continuationToken: string | null = null;
-    let creationTime: Date | null = null;
 
+    // Collect all XML data first
     do {
       // Build URL with continuation token if we have one
       // TODO: If hierarchical namespaces are supported this fetch call might go by much faster. Try this out in a non-prod environment first to try it out
@@ -402,27 +402,19 @@ export async function fetchRunDetails(
       }
 
       const data = await response.text();
-      const pageResults = parseRunDetails(data, runNumber, queryClient);
 
-      if (!creationTime && pageResults.creationTime) {
-        creationTime = pageResults.creationTime;
-      }
-
-      // Merge tests from this page
-      allTests.push(...pageResults.tests);
+      // NOTE: This is not a proper concatenation of XML data. It will be poorly
+      // formatted. However, since we use regex to parse Name elements later
+      // (instead of DOM element) this works just fine. 
+      allXmlData += data;
 
       // Check for NextMarker using regex instead of DOMParser (more memory efficient)
       const nextMarkerMatch = data.match(/<NextMarker>([^<]+)<\/NextMarker>/);
       continuationToken = nextMarkerMatch ? nextMarkerMatch[1] : null;
     } while (continuationToken);
 
-    // Sort all tests by name
-    allTests.sort((a, b) => a.name.localeCompare(b.name));
-    return {
-      creationTime: creationTime ?? undefined,
-      runNumber,
-      tests: allTests,
-    };
+    // Parse all collected data at once.
+    return parseRunDetails(allXmlData, runNumber, queryClient);
   } catch (error) {
     console.error(`Error fetching run details`, error);
     throw error;

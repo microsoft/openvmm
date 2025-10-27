@@ -26,6 +26,7 @@ pub struct Config {
     pub floppy_disks: Vec<floppy_resources::FloppyDiskConfig>,
     pub ide_disks: Vec<ide_resources::IdeDeviceConfig>,
     pub pcie_root_complexes: Vec<PcieRootComplexConfig>,
+    pub pcie_devices: Vec<PcieDeviceConfig>,
     pub vpci_devices: Vec<VpciDeviceConfig>,
     pub memory: MemoryConfig,
     pub processor_topology: ProcessorTopologyConfig,
@@ -183,6 +184,12 @@ pub struct PcieRootComplexConfig {
 #[derive(Debug, MeshPayload)]
 pub struct PcieRootPortConfig {
     pub name: String,
+}
+
+#[derive(Debug, MeshPayload)]
+pub struct PcieDeviceConfig {
+    pub port_name: String,
+    pub resource: Resource<PciDeviceHandleKind>,
 }
 
 #[derive(Debug, MeshPayload)]
