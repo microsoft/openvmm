@@ -102,6 +102,7 @@ impl MultiPagedRangeBuf {
         // initialize all the data to make updating it easier.
         let mut buf: Vec<u64> = std::mem::take(&mut self.buf).into();
         buf.resize(new_size, 0);
+        // Initialize the rest of the capacity that `Vec` allocated.
         buf.resize(buf.capacity(), 0);
         self.buf = buf.into_boxed_slice();
     }
@@ -243,9 +244,10 @@ mod tests {
             len: 1,
             offset: 0x1000,
         };
-        let mut buf = Vec::new();
-        buf.push(u64::from_le_bytes(hdr.as_bytes().try_into().unwrap()));
-        buf.push(0xdead_beef);
+        let buf = vec![
+            u64::from_le_bytes(hdr.as_bytes().try_into().unwrap()),
+            0xdead_beef,
+        ];
 
         // validate() should not accept the buffer
         let err = MultiPagedRangeBuf::from_range_buffer(1, buf).unwrap_err();
