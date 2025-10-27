@@ -867,9 +867,10 @@ async fn handle_asynchronous_events(
                 // have changed, the first entry is FFFFFFh, and the rest are 0.
                 // This notably does not handle that case as it is unlikely that
                 // we even have that many namespaces.
+                let notifier_guard = rescan_notifiers.read();
                 for nsid in list.iter().filter(|&&nsid| nsid != 0) {
                     tracing::info!(namespaces = ?list, "notifying listeners of changed namespaces");
-                    if let Some(notifiers) = rescan_notifiers.write().get_mut(nsid) {
+                    if let Some(notifiers) = notifier_guard.get(nsid) {
                         notifiers.iter().for_each(|n| n.send(()));
                     }
                 }
