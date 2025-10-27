@@ -131,7 +131,6 @@ impl FlowNode for Node {
         ctx.import::<crate::download_cargo_nextest::Node>();
         ctx.import::<crate::install_cargo_nextest::Node>();
         ctx.import::<crate::install_rust::Node>();
-        ctx.import::<crate::gen_cargo_nextest_list_cmd::Node>();
         ctx.import::<crate::gen_cargo_nextest_run_cmd::Node>();
     }
 
