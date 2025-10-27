@@ -107,9 +107,10 @@ pub enum GuestStateLifetime {
 pub enum GuestStateEncryptionPolicy {
     /// Use the best encryption available, allowing fallback.
     ///
-    /// VMs will be created as or migrated to the best encryption available,
+    /// VMs will be created using the best encryption available,
     /// attempting GspKey, then GspById, and finally leaving the data
-    /// unencrypted if neither are available.
+    /// unencrypted if neither are available. VMs will not be migrated,
+    /// existing encryption will be left as-is.
     #[default]
     Auto,
     /// Prefer (or require, if strict) no encryption.
