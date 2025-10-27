@@ -28,7 +28,9 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use parking_lot::RwLock;
 use save_restore::NvmeDriverWorkerSavedState;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use task_control::AsyncRun;
@@ -68,7 +70,7 @@ pub struct NvmeDriver<T: DeviceBacking> {
     #[inspect(skip)]
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
-    rescan_event: Arc<event_listener::Event>,
+    rescan_event: Arc<RwLock<HashMap<usize, mesh::Sender<()>>>>,
     /// NVMe namespaces associated with this driver.
     #[inspect(skip)]
     namespaces: Vec<Arc<Namespace>>,
@@ -536,15 +538,18 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&self, nsid: u32) -> Result<Namespace, NamespaceError> {
-        Namespace::new(
+        let (send, recv) = mesh::channel::<()>();
+        let namespace = Namespace::new(
             &self.driver,
             self.admin.as_ref().unwrap().clone(),
-            self.rescan_event.clone(),
+            recv,
             self.identify.clone().unwrap(),
             &self.io_issuers,
             nsid,
         )
-        .await
+        .await?;
+        self.rescan_event.write().insert(nsid as usize, send);
+        Ok(namespace)
     }
 
     /// Returns the number of CPUs that are in fallback mode (that are using a
@@ -572,21 +577,17 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .await?
         {
             Ok(s) => {
-                // TODO: The decision is to re-query namespace data after the restore.
-                // Leaving the code in place so it can be restored in future.
-                // The reason is uncertainty about namespace change during servicing.
-                // ------
-                // for ns in &self.namespaces {
-                //     s.namespaces.push(ns.save()?);
-                // }
+                let mut namespaces = vec![];
+                for ns in &self.namespaces {
+                    namespaces.push(ns.save()?);
+                }
                 Ok(NvmeDriverSavedState {
                     identify_ctrl: spec::IdentifyController::read_from_bytes(
                         self.identify.as_ref().unwrap().as_bytes(),
                     )
                     .unwrap(),
                     device_id: self.device_id.clone(),
-                    // TODO: See the description above, save the vector once resolved.
-                    namespaces: vec![],
+                    namespaces,
                     worker_data: s,
                 })
             }
@@ -750,17 +751,16 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         // Restore namespace(s).
         for ns in &saved_state.namespaces {
-            // TODO: Current approach is to re-query namespace data after servicing
-            // and this array will be empty. Once we confirm that we can process
-            // namespace change notification AEN, the restore code will be re-added.
+            let (send, recv) = mesh::channel::<()>();
             this.namespaces.push(Arc::new(Namespace::restore(
                 &driver,
                 admin.issuer().clone(),
-                this.rescan_event.clone(),
+                recv,
                 this.identify.clone().unwrap(),
                 &this.io_issuers,
                 ns,
             )?));
+            this.rescan_event.write().insert(ns.nsid as usize, send);
         }
 
         task.insert(&this.driver, "nvme_worker", state);
@@ -777,7 +777,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
 async fn handle_asynchronous_events(
     admin: &Issuer,
-    rescan_event: &event_listener::Event,
+    rescan_event: &Arc<RwLock<HashMap<usize, mesh::Sender<()>>>>,
 ) -> anyhow::Result<()> {
     loop {
         let dw0 = admin
@@ -805,9 +805,16 @@ async fn handle_asynchronous_events(
                     .await
                     .context("failed to query changed namespace list")?;
 
-                if list[0] != 0 {
-                    // For simplicity, tell all namespaces to rescan.
-                    rescan_event.notify(usize::MAX);
+                for nsid in list {
+                    if nsid == 0 {
+                        // End of list or there were too many namespaces to
+                        // notify!
+                        break;
+                    }
+                    tracing::info!(nsid, "notifying namespace change");
+                    if let Some(sender) = rescan_event.read().get(&(nsid as usize)) {
+                        sender.send(());
+                    }
                 }
             }
             event_type => {
