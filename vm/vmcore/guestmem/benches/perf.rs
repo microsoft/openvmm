@@ -33,6 +33,7 @@ impl PerfGuestMemory {
     }
 }
 
+// SAFETY: implements the trait with a valid mapping.
 unsafe impl GuestMemoryAccess for PerfGuestMemory {
     fn mapping(&self) -> Option<NonNull<u8>> {
         self.memory.mapping()
