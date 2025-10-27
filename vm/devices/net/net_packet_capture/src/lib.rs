@@ -538,7 +538,7 @@ impl Queue for PacketCaptureQueue {
 
                 if !self.pcap.write_packet(
                     &buf[..len],
-                    metadata.len as u32,
+                    metadata.len,
                     snaplen as u32,
                     &timestamp,
                 ) {
