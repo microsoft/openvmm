@@ -18,7 +18,6 @@ pub use arm64::*;
 #[cfg(target_arch = "x86_64")]
 pub use x64::*;
 
-use guid::Guid;
 use std::alloc::Layout;
 use std::ffi::c_void;
 use std::fmt;
@@ -33,6 +32,7 @@ use std::ptr::null_mut;
 use winapi::shared::ntdef::LUID;
 use winapi::shared::winerror;
 use winapi::um::winnt::DEVICE_POWER_STATE;
+use windows_sys::core::GUID;
 use winerror::ERROR_BAD_PATHNAME;
 
 /// Functions to get the WHP platform's capabilities.
@@ -906,7 +906,7 @@ pub struct VpciResource(OwnedHandle);
 
 impl VpciResource {
     pub fn new(
-        provider: Option<&Guid>,
+        provider: Option<&GUID>,
         flags: abi::WHV_ALLOCATE_VPCI_RESOURCE_FLAGS,
         descriptor: &VpciResourceDescriptor<'_>,
     ) -> Result<Self> {

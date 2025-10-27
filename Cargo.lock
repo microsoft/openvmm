@@ -9811,9 +9811,9 @@ name = "whp"
 version = "0.0.0"
 dependencies = [
  "criterion",
- "guid",
  "pal",
  "winapi",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
