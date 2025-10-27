@@ -1833,7 +1833,7 @@ mod tests {
             id: TxId(tx_id),
             segment_count: segment_count as u8,
             len: packet_len as u32,
-            flags: net_backend::TxFlags::default().with_offload_tcp_segmentation(true),
+            flags: net_backend::TxFlags::new().with_offload_tcp_segmentation(true),
             ..Default::default()
         };
 
