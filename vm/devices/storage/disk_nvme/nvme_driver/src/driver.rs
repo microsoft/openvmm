@@ -71,7 +71,7 @@ pub struct NvmeDriver<T: DeviceBacking> {
     #[inspect(skip)]
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
-    rescan_notifiers: Arc<RwLock<HashMap<usize, Vec<mesh::Sender<()>>>>>,
+    rescan_notifiers: Arc<RwLock<HashMap<u32, Vec<mesh::Sender<()>>>>>,
     /// NVMe namespaces associated with this driver.
     #[inspect(skip)]
     namespaces: Vec<Arc<Namespace>>,
@@ -553,7 +553,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // Append the sender to the list of notifiers for this nsid.
         let mut notifiers = self.rescan_notifiers.write();
         notifiers
-            .entry(nsid as usize)
+            .entry(nsid)
             .and_modify(|v| v.push(send.clone()))
             .or_insert_with(|| vec![send]);
         Ok(namespace)
@@ -715,7 +715,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             let admin = admin.issuer().clone();
             let rescan_notifiers = this.rescan_notifiers.clone();
             async move {
-                if let Err(err) = handle_asynchronous_events(&admin, &rescan_event)
+                if let Err(err) = handle_asynchronous_events(&admin, rescan_notifiers)
                     .instrument(tracing::info_span!("async_event_handler"))
                     .await
                 {
@@ -812,7 +812,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             )?));
             this.rescan_notifiers
                 .write()
-                .entry(ns.nsid as usize)
+                .entry(ns.nsid)
                 .and_modify(|v| v.push(send.clone()))
                 .or_insert_with(|| vec![send]);
         }
@@ -832,7 +832,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
 async fn handle_asynchronous_events(
     admin: &Issuer,
-    rescan_notifiers: Arc<RwLock<HashMap<usize, Vec<mesh::Sender<()>>>>>,
+    rescan_notifiers: Arc<RwLock<HashMap<u32, Vec<mesh::Sender<()>>>>>,
 ) -> anyhow::Result<()> {
     tracing::info!("starting asynchronous event handler task");
     loop {
@@ -867,9 +867,10 @@ async fn handle_asynchronous_events(
                 // have changed, the first entry is FFFFFFh, and the rest are 0.
                 // This notably does not handle that case as it is unlikely that
                 // we even have that many namespaces.
-                for &nsid in list.iter().take_while(|&&nsid| nsid != 0) {
-                    if let Some(notifiers) = rescan_notifiers.write().get_mut(&(nsid as usize)) {
-                        let _ = notifiers.iter().map(|n| n.send(()));
+                for nsid in list.iter().filter(|&&nsid| nsid != 0) {
+                    tracing::info!(namespaces = ?list, "notifying listeners of changed namespaces");
+                    if let Some(notifiers) = rescan_notifiers.write().get_mut(nsid) {
+                        notifiers.iter().for_each(|n| n.send(()));
                     }
                 }
             }
