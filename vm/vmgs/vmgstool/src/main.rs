@@ -571,7 +571,7 @@ fn vhdfiledisk_create(
         .map_err(Error::VmgsFile)?
         .flatten();
     let needs_resize =
-        !exists || existing_size.is_some_and(|existing_size| file_size != existing_size);
+        !exists || existing_size.is_none_or(|existing_size| file_size != existing_size);
 
     // resize the file if necessary
     let default_label = if file_size == VMGS_DEFAULT_CAPACITY {
@@ -1420,13 +1420,33 @@ mod tests {
         let buf: Vec<u8> = (0..255).collect();
         let (_dir, path) = new_path();
 
-        test_vmgs_create(&path, None, false, None).await.unwrap();
-
+        // create an empty (zero-length) file
         {
-            let result = test_vmgs_open(&path, OpenMode::ReadOnly, None).await;
-            matches!(result, Err(Error::ZeroSize));
+            fs_err::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
         }
 
+        // verify the file is zero size
+        {
+            let result = test_vmgs_open(&path, OpenMode::ReadOnly, None).await;
+            assert!(matches!(result, Err(Error::ZeroSize)));
+        }
+
+        // create an empty vhd of default size
+        {
+            vhdfiledisk_create(&path, None, true).unwrap();
+        }
+
+        // verify the file is empty (with non-zero size)
+        {
+            let result = test_vmgs_open(&path, OpenMode::ReadOnly, None).await;
+            assert!(matches!(result, Err(Error::EmptyFile)));
+        }
+
+        // write some invalid data to the file
         {
             let mut file = fs_err::OpenOptions::new()
                 .read(true)
@@ -1437,9 +1457,22 @@ mod tests {
             file.write_all(&buf).unwrap();
         }
 
+        // verify the vmgs is identified as corrupted
         {
             let result = test_vmgs_open(&path, OpenMode::ReadOnly, None).await;
-            matches!(result, Err(Error::VmgsFile(_)));
+            matches!(result, Err(Error::Vmgs(vmgs::Error::CorruptFormat(_))));
+        }
+
+        // create a valid vmgs
+        {
+            test_vmgs_create(&path, None, true, None).await.unwrap();
+        }
+
+        // sanity check that the positive case works
+        {
+            test_vmgs_open(&path, OpenMode::ReadOnly, None)
+                .await
+                .unwrap();
         }
     }
 
