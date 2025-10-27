@@ -2681,6 +2681,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_resources",
+ "cvm_tracing",
  "futures",
  "futures-concurrency",
  "get_protocol",
@@ -3667,6 +3668,15 @@ name = "kmsg_defs"
 version = "0.0.0"
 
 [[package]]
+name = "kmsg_writer"
+version = "0.0.0"
+dependencies = [
+ "fs-err",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "kvm"
 version = "0.0.0"
 dependencies = [
@@ -3854,7 +3864,10 @@ version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
  "hvdef",
+ "igvm_defs",
  "inspect",
+ "memory_range",
+ "mesh_protobuf",
  "open_enum",
  "static_assertions",
  "zerocopy 0.8.25",
@@ -4802,6 +4815,7 @@ dependencies = [
  "nvme_resources",
  "nvme_spec",
  "nvme_test",
+ "page_pool_alloc",
  "pal_async",
  "parking_lot",
  "pci_core",
@@ -4827,6 +4841,7 @@ dependencies = [
  "mesh",
  "nvme_spec",
  "vm_resource",
+ "zerocopy 0.8.25",
 ]
 
 [[package]]
@@ -4991,6 +5006,7 @@ dependencies = [
  "igvm_defs",
  "loader_defs",
  "memory_range",
+ "mesh_protobuf",
  "minimal_rt",
  "minimal_rt_build",
  "safe_intrinsics",
@@ -5238,7 +5254,7 @@ dependencies = [
  "serial_core",
  "serial_pl011",
  "storvsp",
- "tpm",
+ "tpm_device",
  "uidevices",
  "vm_resource",
  "vmbus_serial_guest",
@@ -5287,7 +5303,7 @@ dependencies = [
  "serial_pl011",
  "serial_socket",
  "storvsp",
- "tpm",
+ "tpm_device",
  "uidevices",
  "virtio",
  "virtio_net",
@@ -7497,23 +7513,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
-name = "tpm"
+name = "tpm_device"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "bitfield-struct 0.11.0",
+ "base64 0.22.1",
  "chipset_device",
  "chipset_device_resources",
  "cvm_tracing",
  "getrandom 0.3.3",
  "guestmem",
+ "guid",
  "inspect",
  "mesh",
  "ms-tpm-20-ref",
  "open_enum",
  "pal_async",
  "parking_lot",
+ "sha2",
  "thiserror 2.0.16",
+ "tpm_lib",
+ "tpm_protocol",
  "tpm_resources",
  "tracelimit",
  "tracing",
@@ -7523,9 +7543,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "tpm_guest_tests"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "parking_lot",
+ "serde_json",
+ "tpm_lib",
+ "tpm_protocol",
+ "zerocopy 0.8.25",
+]
+
+[[package]]
+name = "tpm_lib"
+version = "0.0.0"
+dependencies = [
+ "cvm_tracing",
+ "getrandom 0.3.3",
+ "inspect",
+ "ms-tpm-20-ref",
+ "thiserror 2.0.16",
+ "tpm_protocol",
+ "tracelimit",
+ "tracing",
+ "zerocopy 0.8.25",
+]
+
+[[package]]
+name = "tpm_protocol"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "thiserror 2.0.16",
+ "zerocopy 0.8.25",
+]
+
+[[package]]
 name = "tpm_resources"
 version = "0.0.0"
 dependencies = [
+ "guid",
  "inspect",
  "mesh",
  "vm_resource",
@@ -7903,6 +7960,7 @@ dependencies = [
  "inspect",
  "kmsg",
  "kmsg_defs",
+ "kmsg_writer",
  "libc",
  "loader",
  "loader_defs",
@@ -7912,6 +7970,7 @@ dependencies = [
  "memory_range",
  "mesh",
  "mesh_process",
+ "mesh_protobuf",
  "mesh_tracing",
  "mesh_worker",
  "net_backend",
@@ -7948,7 +8007,7 @@ dependencies = [
  "test_with_tracing",
  "thiserror 2.0.16",
  "time",
- "tpm",
+ "tpm_device",
  "tpm_resources",
  "tracelimit",
  "tracing",
@@ -9073,6 +9132,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "fs-err",
  "futures",
  "futures-concurrency",
  "getrandom 0.3.3",
@@ -9279,6 +9339,8 @@ dependencies = [
  "build_rs_guest_arch",
  "cache_topology",
  "chipset",
+ "chipset_device_resources",
+ "closeable_mutex",
  "cvm_tracing",
  "futures",
  "futures-concurrency",

@@ -126,13 +126,13 @@ impl SimpleFlowNode for Node {
 }
 
 fn run_command(
-    cmd: &crate::gen_cargo_nextest_run_cmd::Command,
+    cmd: &crate::gen_cargo_nextest_run_cmd::Script,
     working_dir: &PathBuf,
     capture_stdout: bool,
 ) -> anyhow::Result<(ExitStatus, Option<String>)> {
-    let mut command = std::process::Command::new(&cmd.argv0);
+    let mut command = std::process::Command::new(&cmd.commands[0].0);
     command
-        .args(&cmd.args)
+        .args(&cmd.commands[0].1)
         .envs(&cmd.env)
         .current_dir(working_dir);
 
@@ -144,7 +144,7 @@ fn run_command(
 
     let mut child = command
         .spawn()
-        .with_context(|| format!("failed to spawn '{}'", cmd.argv0.to_string_lossy()))?;
+        .with_context(|| format!("failed to spawn '{}'", &cmd.commands[0].0.to_string_lossy()))?;
 
     if capture_stdout {
         let output = child.wait_with_output()?;

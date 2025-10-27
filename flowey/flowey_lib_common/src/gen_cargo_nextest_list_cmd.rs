@@ -27,7 +27,7 @@ flowey_request! {
         /// Additional env vars set when executing the tests.
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
         /// Generated cargo-nextest list command
-        pub command: WriteVar<gen_cargo_nextest_run_cmd::Command>,
+        pub command: WriteVar<gen_cargo_nextest_run_cmd::Script>,
     }
 }
 
@@ -54,7 +54,7 @@ impl FlowNode for Node {
             command: list_cmd,
         } in requests
         {
-            let run_cmd = ctx.reqv(|v| gen_cargo_nextest_run_cmd::Request {
+            let run_script = ctx.reqv(|v| gen_cargo_nextest_run_cmd::Request {
                 run_kind_deps: gen_cargo_nextest_run_cmd::RunKindDeps::RunFromArchive {
                     archive_file,
                     nextest_bin,
@@ -65,6 +65,7 @@ impl FlowNode for Node {
                 tool_config_files: Vec::new(), // Ignored
                 nextest_profile,
                 extra_env,
+                extra_commands: None,
                 nextest_filter_expr,
                 run_ignored,
                 fail_fast: None,
@@ -73,19 +74,32 @@ impl FlowNode for Node {
             });
 
             ctx.emit_rust_step("generate nextest list command", |ctx| {
-                let run_cmd = run_cmd.claim(ctx);
+                let run_script = run_script.claim(ctx);
                 let list_cmd = list_cmd.claim(ctx);
                 move |rt| {
-                    let mut cmd = rt.read(run_cmd);
-                    cmd.args = cmd
-                        .args
-                        .into_iter()
-                        .map(|arg| if arg == "run" { "list".into() } else { arg })
+                    let mut script = rt.read(run_script);
+                    let run_cmd_args: Vec<_> = script
+                        .commands
+                        .first()
+                        .unwrap()
+                        .1
+                        .iter()
+                        .map(|arg| {
+                            if arg == "run" {
+                                "list".into()
+                            } else {
+                                arg.clone()
+                            }
+                        })
                         .collect();
-                    cmd.args.extend(["--message-format".into(), "json".into()]);
 
-                    rt.write(list_cmd, &cmd);
-                    log::info!("Generated command: {}", cmd);
+                    script.commands[0].1 = run_cmd_args;
+                    script.commands[0]
+                        .1
+                        .extend(["--message-format".into(), "json".into()]);
+
+                    rt.write(list_cmd, &script);
+                    log::info!("Generated command: {}", script);
 
                     Ok(())
                 }

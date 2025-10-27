@@ -18,3 +18,37 @@ export interface RunMetadata {
   ghPr?: string;
   prTitle?: string;
 }
+
+export interface TestResult {
+  name: string;
+  status: "passed" | "failed";
+  path: string;
+  duration?: number;
+}
+
+export interface RunDetailsData {
+  creationTime?: Date;
+  runNumber: string;
+  tests: TestResult[];
+}
+
+// Mapping of PR number (as string) -> PR title
+export type PullRequestTitles = Record<string, string>;
+
+
+export interface TestRunInfo {
+    runNumber: string;
+    creationTime?: Date;
+    status: 'passed' | 'failed' | 'unknown';
+}
+
+export interface TestData {
+    architecture: string;
+    name: string;
+    failedCount: number;
+    totalCount: number;
+}
+
+// Concurrency settings when fetching test results
+export const CONCURRENCY_FOREGROUND = 15;
+export const CONCURRENCY_BACKGROUND = 5;

@@ -264,3 +264,10 @@
   text-wrap: nowrap;
   font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
 }
+
+.common-architecture-name {
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+  font-size: 1rem;
+  color: #000000;
+  word-break: break-word;
+}

@@ -141,7 +141,7 @@ pub fn get_current_thread_affinity(cpu_set: &mut CpuSet) -> io::Result<()> {
 
 /// Returns the number of the processor the current thread was running on during the call to this function.
 pub fn get_cpu_number() -> u32 {
-    // SAFETY: Calling external code.
+    // SAFETY: Function has no preconditions.
     unsafe { libc::sched_getcpu() as u32 }
 }
 

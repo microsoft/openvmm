@@ -4,9 +4,6 @@
 //! Provides ways to describe a machine's cache topology and to query it from
 //! the current running machine.
 
-// UNSAFETY: needed to call Win32 functions to query cache topology
-#![cfg_attr(windows, expect(unsafe_code))]
-
 use thiserror::Error;
 
 /// A machine's cache topology.
@@ -63,6 +60,8 @@ impl CacheTopology {
 }
 
 #[cfg(windows)]
+// UNSAFETY: needed to call Win32 functions to query cache topology
+#[expect(unsafe_code)]
 mod windows {
     use super::CacheTopology;
     use crate::Cache;

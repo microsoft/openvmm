@@ -63,7 +63,7 @@ mdbook serve
 
 **Error:**
 
-```
+```text
 2024-10-29 16:26:22 [INFO] (mdbook::book): Book building has started
 error: manifest path `./mdbook-openvmm-shim/Cargo.toml` does not exist
 ```
@@ -77,7 +77,7 @@ Ensure you have changed your working-directory to the `Guide/` folder (e.g: via
 
 **Error:**
 
-```
+```text
 2024-10-29 16:35:49 [INFO] (mdbook::book): Book building has started
 2024-10-29 16:35:49 [WARN] (mdbook::preprocess::cmd): The command wasn't found, is the "admonish" preprocessor installed?
 2024-10-29 16:35:49 [WARN] (mdbook::preprocess::cmd):   Command: cargo run --quiet --manifest-path ./mdbook-openvmm-shim/Cargo.toml mdbook-admonish

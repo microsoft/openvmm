@@ -280,16 +280,14 @@ impl GhPrTriggers {
 #[derive(Debug, Clone, PartialEq)]
 pub enum GhRunnerOsLabel {
     UbuntuLatest,
+    Ubuntu2404,
     Ubuntu2204,
-    Ubuntu2004,
     WindowsLatest,
+    Windows2025,
     Windows2022,
-    Windows2019,
-    MacOsLatest,
-    MacOs14,
-    MacOs13,
-    MacOs12,
-    MacOs11,
+    Ubuntu2404Arm,
+    Ubuntu2204Arm,
+    Windows11Arm,
     Custom(String),
 }
 
@@ -1232,9 +1230,6 @@ impl PipelineJob<'_> {
     }
 
     /// Only run the job if the specified condition is true.
-    ///
-    /// When running locally, the `cond`'s default value will be used to
-    /// determine if the job will be run.
     pub fn with_condition(self, cond: UseParameter<bool>) -> Self {
         self.pipeline.jobs[self.job_idx].cond_param_idx = Some(cond.idx);
         self

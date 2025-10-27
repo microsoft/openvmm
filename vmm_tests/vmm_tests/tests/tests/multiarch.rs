@@ -293,7 +293,7 @@ async fn reboot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
 #[vmm_test(
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
-    //hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
@@ -301,6 +301,11 @@ async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
 ) -> Result<(), anyhow::Error> {
     let (mut vm, agent) = config.run().await?;
     let shell = agent.windows_shell();
+
+    // VBS should be off by default
+    let output = cmd!(shell, "systeminfo").output().await?;
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    assert!(!output_str.contains("Virtualization-based security: Status: Running"));
 
     // Enable VBS
     cmd!(shell, "reg")
@@ -474,86 +479,4 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
         MachineArch::Aarch64 => assert!(matches!(halt_reason, PetriHaltReason::Reset)),
     }
     Ok(())
-}
-
-#[vmm_test(
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
-)]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_gp_small<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-    _: (),
-    driver: pal_async::DefaultDriver,
-) -> anyhow::Result<()> {
-    memstat::idle_test(
-        config,
-        memstat::TestVPCount::SmallVPCount,
-        memstat::WaitPeriodSec::ShortWait,
-        driver,
-    )
-    .await
-}
-
-// We can't get a VTL 2 pipette with release build CVM debugging restrictions,
-// so only run these tests in debug builds.
-#[cfg(debug_assertions)]
-#[vmm_test(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
-)]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_cvm_small<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-    _: (),
-    driver: pal_async::DefaultDriver,
-) -> anyhow::Result<()> {
-    memstat::idle_test(
-        config,
-        memstat::TestVPCount::SmallVPCount,
-        memstat::WaitPeriodSec::ShortWait,
-        driver,
-    )
-    .await
-}
-
-#[vmm_test(
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
-)]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_gp_heavy<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-    _: (),
-    driver: pal_async::DefaultDriver,
-) -> anyhow::Result<()> {
-    memstat::idle_test(
-        config,
-        memstat::TestVPCount::LargeVPCount,
-        memstat::WaitPeriodSec::LongWait,
-        driver,
-    )
-    .await
-}
-
-// We can't get a VTL 2 pipette with release build CVM debugging restrictions,
-// so only run these tests in debug builds.
-#[cfg(debug_assertions)]
-#[vmm_test(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
-)]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_cvm_heavy<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-    _: (),
-    driver: pal_async::DefaultDriver,
-) -> anyhow::Result<()> {
-    memstat::idle_test(
-        config,
-        memstat::TestVPCount::LargeVPCount,
-        memstat::WaitPeriodSec::LongWait,
-        driver,
-    )
-    .await
 }
