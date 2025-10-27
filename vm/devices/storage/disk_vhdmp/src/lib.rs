@@ -26,7 +26,7 @@ use vm_resource::declare_static_resolver;
 use vm_resource::kind::DiskHandleKind;
 
 mod virtdisk {
-    #![expect(non_snake_case, dead_code)]
+    #![expect(non_snake_case, dead_code, clippy::upper_case_acronyms)]
 
     use std::os::windows::prelude::*;
     use windows_sys::Win32::Security::SECURITY_DESCRIPTOR;

@@ -70,7 +70,7 @@ pub fn enable_tracing() -> anyhow::Result<()> {
     // TODO: include the process name and maybe a VM ID?
     #[cfg(windows)]
     let sub = sub.with(
-        { win_etw_tracing::TracelogSubscriber::new(OPENHCL_PROVIDER_GUID, "Microsoft.HvLite") }
+        win_etw_tracing::TracelogSubscriber::new(OPENHCL_PROVIDER_GUID, "Microsoft.HvLite")
             .map_err(|e| anyhow!("failed to start ETW provider: {:?}", e))?,
     );
 
