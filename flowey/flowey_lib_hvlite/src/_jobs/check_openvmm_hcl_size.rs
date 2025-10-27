@@ -21,6 +21,7 @@ flowey_request! {
         pub target: CommonTriple,
         pub done: WriteVar<SideEffect>,
         pub pipeline_name: String,
+        pub job_name: String,
     }
 }
 
@@ -45,6 +46,7 @@ impl SimpleFlowNode for Node {
             target,
             done,
             pipeline_name,
+            job_name,
         } = request;
 
         let xtask = ctx.reqv(|v| crate::build_xtask::Request {
@@ -76,11 +78,17 @@ impl SimpleFlowNode for Node {
             base_branch: "main".into(),
         });
 
-        let merge_run = ctx.reqv(|v| gh_workflow_id::Request {
-            repo_path: openvmm_repo_path.clone(),
-            github_commit_hash: merge_commit,
-            gh_workflow: v,
-            pipeline_name,
+        let merge_run = ctx.reqv(|v| {
+            gh_workflow_id::Request::WithStatusAndJob(gh_workflow_id::QueryWithStatusAndJob {
+                params: gh_workflow_id::WorkflowQueryParams {
+                    github_commit_hash: merge_commit,
+                    repo_path: openvmm_repo_path.clone(),
+                    pipeline_name,
+                    gh_workflow: v,
+                },
+                gh_run_status: gh_workflow_id::GhRunStatus::Completed,
+                gh_run_job_name: job_name,
+            })
         });
 
         let run_id = merge_run.map(ctx, |r| r.id);
