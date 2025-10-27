@@ -28,7 +28,9 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use parking_lot::RwLock;
 use save_restore::NvmeDriverWorkerSavedState;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use task_control::AsyncRun;
@@ -68,7 +70,7 @@ pub struct NvmeDriver<T: DeviceBacking> {
     #[inspect(skip)]
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
-    rescan_event: Arc<event_listener::Event>,
+    rescan_notifiers: Arc<RwLock<HashMap<usize, Vec<mesh::Sender<()>>>>>,
     /// NVMe namespaces associated with this driver.
     #[inspect(skip)]
     namespaces: Vec<Arc<Namespace>>,
@@ -284,7 +286,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             identify: None,
             driver,
             io_issuers,
-            rescan_event: Default::default(),
+            rescan_notifiers: Default::default(),
             namespaces: vec![],
             nvme_keepalive: false,
             bounce_buffer,
@@ -469,9 +471,10 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // Spawn a task to handle asynchronous events.
         let async_event_task = self.driver.spawn("nvme_async_event", {
             let admin = admin.issuer().clone();
-            let rescan_event = self.rescan_event.clone();
+            let rescan_notifiers = self.rescan_notifiers.clone();
             async move {
-                if let Err(err) = handle_asynchronous_events(&admin, &rescan_event).await {
+                if let Err(err) = handle_asynchronous_events(&admin, rescan_notifiers.clone()).await
+                {
                     tracing::error!(
                         error = err.as_ref() as &dyn std::error::Error,
                         "asynchronous event failure, not processing any more"
@@ -536,15 +539,23 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&self, nsid: u32) -> Result<Namespace, NamespaceError> {
-        Namespace::new(
+        let (send, recv) = mesh::channel::<()>();
+        let namespace = Namespace::new(
             &self.driver,
             self.admin.as_ref().unwrap().clone(),
-            self.rescan_event.clone(),
+            recv,
             self.identify.clone().unwrap(),
             &self.io_issuers,
             nsid,
         )
-        .await
+        .await?;
+        // Append the sender to the list of notifiers for this nsid.
+        let mut notifiers = self.rescan_notifiers.write();
+        notifiers
+            .entry(nsid as usize)
+            .and_modify(|v| v.push(send.clone()))
+            .or_insert_with(|| vec![send]);
+        Ok(namespace)
     }
 
     /// Returns the number of CPUs that are in fallback mode (that are using a
@@ -644,7 +655,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             )),
             driver: driver.clone(),
             io_issuers,
-            rescan_event: Default::default(),
+            rescan_notifiers: Default::default(),
             namespaces: vec![],
             nvme_keepalive: true,
             bounce_buffer,
@@ -694,9 +705,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // Spawn a task to handle asynchronous events.
         let async_event_task = this.driver.spawn("nvme_async_event", {
             let admin = admin.issuer().clone();
-            let rescan_event = this.rescan_event.clone();
+            let rescan_notifiers = this.rescan_notifiers.clone();
             async move {
-                if let Err(err) = handle_asynchronous_events(&admin, &rescan_event).await {
+                if let Err(err) = handle_asynchronous_events(&admin, rescan_notifiers).await {
                     tracing::error!(
                         error = err.as_ref() as &dyn std::error::Error,
                         "asynchronous event failure, not processing any more"
@@ -752,15 +763,22 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         for ns in &saved_state.namespaces {
             // TODO: Current approach is to re-query namespace data after servicing
             // and this array will be empty. Once we confirm that we can process
-            // namespace change notification AEN, the restore code will be re-added.
+            // namespace change notification AEN, the restore code will be
+            // re-added.
+            let (send, recv) = mesh::channel::<()>();
             this.namespaces.push(Arc::new(Namespace::restore(
                 &driver,
                 admin.issuer().clone(),
-                this.rescan_event.clone(),
+                recv,
                 this.identify.clone().unwrap(),
                 &this.io_issuers,
                 ns,
             )?));
+            this.rescan_notifiers
+                .write()
+                .entry(ns.nsid as usize)
+                .and_modify(|v| v.push(send.clone()))
+                .or_insert_with(|| vec![send]);
         }
 
         task.insert(&this.driver, "nvme_worker", state);
@@ -777,7 +795,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
 async fn handle_asynchronous_events(
     admin: &Issuer,
-    rescan_event: &event_listener::Event,
+    rescan_notifiers: Arc<RwLock<HashMap<usize, Vec<mesh::Sender<()>>>>>,
 ) -> anyhow::Result<()> {
     loop {
         let dw0 = admin
@@ -805,9 +823,16 @@ async fn handle_asynchronous_events(
                     .await
                     .context("failed to query changed namespace list")?;
 
-                if list[0] != 0 {
-                    // For simplicity, tell all namespaces to rescan.
-                    rescan_event.notify(usize::MAX);
+                // Notify only the namespaces that have changed.
+                // NOTE: The nvme spec states that the changed namespace list
+                // can contain up to 1024 changed namespaces. If more than that
+                // have changed, the first entry is FFFFFFh, and the rest are 0.
+                // This notably does not handle that case as it is unlikely that
+                // we even have that many namespaces.
+                for &nsid in list.iter().take_while(|&&nsid| nsid != 0) {
+                    if let Some(notifiers) = rescan_notifiers.write().get_mut(&(nsid as usize)) {
+                        let _ = notifiers.iter().map(|n| n.send(()));
+                    }
                 }
             }
             event_type => {
