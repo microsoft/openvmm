@@ -47,6 +47,7 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
         // SAFETY: the pointer is managed carefully and is not deallocated until the end of the test.
         let ptr = unsafe { alloc(layout) };
         let gpn = (ptr as u64) >> 12;
+        // toggle the enable bit of the SIMP register
         let reg = (gpn << 12) | 0x1;
 
         // SAFETY: we are writing to a valid MSR.
@@ -63,6 +64,27 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
         // SAFETY: we are writing to a valid MSR.
         unsafe { self.write_msr(hvdef::HV_X64_MSR_SINT0, reg.into())? };
         log::info!("Successfully set the SINT0 register.");
+        Ok(())
+    }
+
+    fn signal_intercept_handled(&mut self) -> TmkResult<()> {
+        // SAFETY: we are reading from a valid MSR.
+        let simp_page = unsafe { self.read_msr(hvdef::HV_X64_MSR_SIMP)? };
+
+        if (simp_page & 0b1) == 0 {
+            // return error if SIMP is not enabled
+            return Err(TmkError::InvalidRegisterValue);
+        }
+
+        let simp_page_address = (simp_page & 0xFFFFFFFFFFFFF000) as *mut hvdef::HvMessage;
+
+        // SAFETY: we are creating a mutable reference to a valid memory region
+        // which is populated with valid data by a paravisor/hypervisor.
+        let messages: &mut [hvdef::HvMessage] =
+            unsafe { core::slice::from_raw_parts_mut(simp_page_address, 16) };
+
+        // on hyper-v the hypervisor messages are received on SINT0
+        messages[0].header.typ = hvdef::HvMessageType::HvMessageTypeNone;
         Ok(())
     }
 }

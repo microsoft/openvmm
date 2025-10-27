@@ -6,6 +6,8 @@ use core::arch::asm;
 use spin::Mutex;
 
 use crate::context::InterruptPlatformTrait;
+use crate::context::PlatformInstance;
+use crate::context::PlatformInstanceConfig;
 use crate::context::SecureInterceptPlatformTrait;
 use crate::context::VirtualProcessorPlatformTrait;
 use crate::context::VtlPlatformTrait;
@@ -42,7 +44,8 @@ where
     T: InterruptPlatformTrait
         + SecureInterceptPlatformTrait
         + VtlPlatformTrait
-        + VirtualProcessorPlatformTrait<T>,
+        + VirtualProcessorPlatformTrait<T>
+        + PlatformInstance,
 {
     use hvdef::Vtl;
 
@@ -66,9 +69,16 @@ where
         tmk_assert!(r.is_ok(), "setup_secure_intercept should succeed");
 
         let r = ctx.set_interrupt_idx(0x30, move || {
+            let mut config = PlatformInstanceConfig::new();
+            config.set_vtl(Vtl::Vtl1);
+            let mut ctx = T::new_platform_instance(config);
+            let r = ctx.initialise_platform_instance();
+            tmk_assert!(r.is_ok(), "initialise_platform_instance should succeed");
             log::info!("interrupt handled for 0x30!");
             let mut status = FAULT_CALLED.lock();
             *status = true;
+            let r = ctx.signal_intercept_handled();
+            tmk_assert!(r.is_ok(), "signal_intercept_handled should succeed");
         });
         tmk_assert!(r.is_ok(), "set_interrupt_idx should succeed");
 

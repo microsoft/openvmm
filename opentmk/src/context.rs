@@ -15,6 +15,14 @@ use hvdef::Vtl;
 
 use crate::tmkdefs::TmkResult;
 
+/// Trait representing a generic platform instance.
+pub trait PlatformInstance {
+    /// Builds and returns a platform-specific instance.
+    fn new_platform_instance(config: PlatformInstanceConfig) -> Self;
+    /// Initialises the platform instance.
+    fn initialise_platform_instance(&mut self) -> TmkResult<()>;
+}
+
 #[cfg(nightly)]
 /// Trait for platforms that support secure-world intercepts.
 pub trait SecureInterceptPlatformTrait {
@@ -26,6 +34,9 @@ pub trait SecureInterceptPlatformTrait {
     ///
     /// Returns `Ok(())` on success or an error wrapped in `TmkResult`.
     fn setup_secure_intercept(&mut self, interrupt_idx: u8) -> TmkResult<()>;
+
+    /// Signals to the platform that the intercept has been handled
+    fn signal_intercept_handled(&mut self) -> TmkResult<()>;
 }
 
 #[cfg(nightly)]
@@ -161,5 +172,40 @@ impl<T> VpExecToken<T> {
     pub fn get(mut self) -> (u32, Vtl, Option<Box<dyn FnOnce(&mut T)>>) {
         let cmd = self.cmd.take();
         (self.vp_index, self.vtl, cmd)
+    }
+}
+
+/// Struct representing configuration for a platform instance.
+/// It provides single key value pairs for platform-specific settings.
+pub struct PlatformInstanceConfig {
+    map: alloc::collections::BTreeMap<&'static str, serde_json::Value>,
+}
+
+impl PlatformInstanceConfig {
+    /// Creates a new empty configuration.
+    pub fn new() -> Self {
+        PlatformInstanceConfig {
+            map: alloc::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Sets the VTL for this configuration.
+    pub fn set_vtl(&mut self, vtl: Vtl) -> &mut Self {
+        self.map.insert(
+            "vtl",
+            serde_json::Value::Number(serde_json::Number::from(vtl as u8)),
+        );
+        self
+    }
+
+    /// Gets the VTL from this configuration, if set.
+    pub fn get_vtl(&self) -> Option<Vtl> {
+        self.map.get("vtl").and_then(|v| {
+            v.as_u64().map(|n| match n {
+                0 => Vtl::Vtl0,
+                1 => Vtl::Vtl1,
+                _ => Vtl::Vtl0,
+            })
+        })
     }
 }
