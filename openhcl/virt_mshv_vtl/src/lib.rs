@@ -1931,15 +1931,16 @@ impl UhPartition {
     }
 
     /// Trigger the LINT1 interrupt vector on the LAPIC of the BSP.
-    pub fn assert_debug_interrupt(&self, vtl: u8) {
+    pub fn assert_debug_interrupt(&self, _vtl: u8) {
         #[cfg(guest_arch = "x86_64")]
+        const LINT_INDEX_1: u8 = 1;
         match self.inner.isolation {
             IsolationType::Snp => {
-                tracing::error!(?vtl, "Debug interrupts cannot be injected into SNP VMs",);
+                tracing::error!(?_vtl, "Debug interrupts cannot be injected into SNP VMs",);
             }
             _ => {
                 let bsp_index = VpIndex::new(0);
-                self.pulse_lint(bsp_index, Vtl::try_from(vtl).unwrap(), 1)
+                self.pulse_lint(bsp_index, Vtl::try_from(_vtl).unwrap(), LINT_INDEX_1)
             }
         }
     }
