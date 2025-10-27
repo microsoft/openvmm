@@ -1207,6 +1207,9 @@ impl PipelineJob<'_> {
     /// Only run the job if the specified condition is true.
     pub fn with_condition(self, cond: UseParameter<bool>) -> Self {
         self.pipeline.jobs[self.job_idx].cond_param_idx = Some(cond.idx);
+        self.pipeline.parameters[cond.idx]
+            .used_by_jobs
+            .insert(self.job_idx);
         self
     }
 

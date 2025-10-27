@@ -2735,6 +2735,7 @@ dependencies = [
 name = "guestmem"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "inspect",
  "minircu",
  "pal_event",
@@ -3943,14 +3944,12 @@ dependencies = [
  "headervec",
  "libc",
  "lx",
- "ntapi",
  "pal",
  "parking_lot",
  "static_assertions",
  "tempfile",
  "tracing",
  "widestring",
- "winapi",
  "windows 0.62.0",
  "zerocopy 0.8.25",
 ]
@@ -4314,6 +4313,7 @@ version = "0.0.0"
 name = "minircu"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "event-listener",
  "libc",
  "pal_async",
