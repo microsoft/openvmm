@@ -92,8 +92,16 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
 #[cfg(nightly)]
 impl InterruptPlatformTrait for HvTestCtx {
     /// Install an interrupt handler for the supplied vector on x86-64.
-    fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn()) -> TmkResult<()> {
-        crate::arch::interrupt::set_handler(interrupt_idx, handler);
+    fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn(HvTestCtx)) -> TmkResult<()> {
+        let current_vtl = self.get_current_vtl()?;
+        crate::arch::interrupt::set_handler(
+            interrupt_idx,
+            Box::new(move || {
+                let mut ctx = HvTestCtx::new();
+                _ = ctx.init(current_vtl);
+                handler(ctx);
+            }),
+        );
         Ok(())
     }
 

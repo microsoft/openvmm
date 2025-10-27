@@ -15,8 +15,6 @@ use hvdef::Vtl;
 use hvdef::hypercall::HvInputVtl;
 use spin::Mutex;
 
-use crate::context::PlatformInstance;
-use crate::context::PlatformInstanceConfig;
 use crate::context::VirtualProcessorPlatformTrait;
 use crate::context::VtlPlatformTrait;
 use crate::platform::hyperv::arch::hypercall::HvCall;
@@ -78,20 +76,6 @@ pub(crate) fn vtl_transform(vtl: Vtl) -> HvInputVtl {
     HvInputVtl::new()
         .with_target_vtl_value(vtl)
         .with_use_target_vtl(true)
-}
-
-impl PlatformInstance for HvTestCtx {
-    fn new_platform_instance(config: PlatformInstanceConfig) -> Self {
-        HvTestCtx {
-            hvcall: HvCall::new(),
-            my_vp_idx: 0,
-            my_vtl: config.get_vtl().unwrap_or(Vtl::Vtl0),
-        }
-    }
-
-    fn initialise_platform_instance(&mut self) -> TmkResult<()> {
-        self.init(self.my_vtl)
-    }
 }
 
 #[cfg_attr(target_arch = "aarch64", expect(dead_code))] // xtask-fmt allow-target-arch sys-crate

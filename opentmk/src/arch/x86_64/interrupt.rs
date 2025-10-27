@@ -4,6 +4,8 @@
 //! x86_64-specific interrupt handling implementation.
 //!
 
+use alloc::boxed::Box;
+
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::structures::idt::InterruptDescriptorTable;
@@ -21,24 +23,25 @@ lazy_static! {
     };
 }
 
-static mut HANDLERS: [fn(); 256] = [no_op; 256];
+static mut HANDLERS: [Option<Box<dyn Fn() + 'static>>; 256] = [const { None }; 256];
 static MUTEX: Mutex<()> = Mutex::new(());
-fn no_op() {}
 
 fn common_handler(_stack_frame: InterruptStackFrame, interrupt: u8) {
     // SAFETY: Handlers are initialized to no_op and only set via set_handler which is
     // protected by a mutex.
     unsafe {
-        HANDLERS[interrupt as usize]();
+        if let Some(handler) = &HANDLERS[interrupt as usize] {
+            handler()
+        }
     }
 }
 
 /// Sets the handler for a specific interrupt number.
-pub fn set_handler(interrupt: u8, handler: fn()) {
+pub fn set_handler(interrupt: u8, handler: Box<dyn Fn() + 'static>) {
     let _lock = MUTEX.lock();
     // SAFETY: handlers is protected by a mutex.
     unsafe {
-        HANDLERS[interrupt as usize] = handler;
+        HANDLERS[interrupt as usize] = Some(handler);
     }
 }
 

@@ -15,14 +15,6 @@ use hvdef::Vtl;
 
 use crate::tmkdefs::TmkResult;
 
-/// Trait representing a generic platform instance.
-pub trait PlatformInstance {
-    /// Builds and returns a platform-specific instance.
-    fn new_platform_instance(config: PlatformInstanceConfig) -> Self;
-    /// Initialises the platform instance.
-    fn initialise_platform_instance(&mut self) -> TmkResult<()>;
-}
-
 #[cfg(nightly)]
 /// Trait for platforms that support secure-world intercepts.
 pub trait SecureInterceptPlatformTrait {
@@ -48,7 +40,7 @@ pub trait InterruptPlatformTrait {
     /// * `interrupt_idx` – IDT/GIC index to program  
     /// * `handler` – Function that will be executed when the interrupt
     ///   fires.
-    fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn()) -> TmkResult<()>;
+    fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn(Self)) -> TmkResult<()>;
 
     /// Finalises platform specific interrupt setup (enables the table,
     /// unmasks lines, etc.).
@@ -172,40 +164,5 @@ impl<T> VpExecToken<T> {
     pub fn get(mut self) -> (u32, Vtl, Option<Box<dyn FnOnce(&mut T)>>) {
         let cmd = self.cmd.take();
         (self.vp_index, self.vtl, cmd)
-    }
-}
-
-/// Struct representing configuration for a platform instance.
-/// It provides single key value pairs for platform-specific settings.
-pub struct PlatformInstanceConfig {
-    map: alloc::collections::BTreeMap<&'static str, serde_json::Value>,
-}
-
-impl PlatformInstanceConfig {
-    /// Creates a new empty configuration.
-    pub fn new() -> Self {
-        PlatformInstanceConfig {
-            map: alloc::collections::BTreeMap::new(),
-        }
-    }
-
-    /// Sets the VTL for this configuration.
-    pub fn set_vtl(&mut self, vtl: Vtl) -> &mut Self {
-        self.map.insert(
-            "vtl",
-            serde_json::Value::Number(serde_json::Number::from(vtl as u8)),
-        );
-        self
-    }
-
-    /// Gets the VTL from this configuration, if set.
-    pub fn get_vtl(&self) -> Option<Vtl> {
-        self.map.get("vtl").and_then(|v| {
-            v.as_u64().map(|n| match n {
-                0 => Vtl::Vtl0,
-                1 => Vtl::Vtl1,
-                _ => Vtl::Vtl0,
-            })
-        })
     }
 }
