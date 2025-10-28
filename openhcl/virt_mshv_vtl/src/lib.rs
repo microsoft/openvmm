@@ -585,7 +585,6 @@ impl GetReferenceTime for TscReferenceTimeSource {
     }
 }
 
-#[cfg(guest_arch = "aarch64")]
 impl virt::irqcon::ControlGic for UhPartitionInner {
     fn set_spi_irq(&self, irq_id: u32, high: bool) {
         if let Err(err) = self.hcl.request_interrupt(
@@ -606,7 +605,6 @@ impl virt::irqcon::ControlGic for UhPartitionInner {
     }
 }
 
-#[cfg(guest_arch = "aarch64")]
 impl virt::Aarch64Partition for UhPartition {
     fn control_gic(&self, vtl: Vtl) -> Arc<dyn virt::irqcon::ControlGic> {
         debug_assert!(vtl == Vtl::Vtl0);
