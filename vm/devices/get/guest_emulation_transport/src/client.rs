@@ -401,6 +401,12 @@ impl GuestEmulationTransportClient {
             .notify(msg::Msg::SetGpaAllocator(gpa_allocator));
     }
 
+    /// Set the the callback to trigger the debug interrupt.
+    pub fn set_debug_interrupt_callback(&mut self, callback: Box<dyn Fn(u8) + Send + Sync>) {
+        self.control
+            .notify(msg::Msg::SetDebugInterruptCallback(callback));
+    }
+
     /// Send the attestation request to the IGVM agent on the host.
     pub async fn igvm_attest(
         &self,

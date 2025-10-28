@@ -103,6 +103,7 @@ use user_driver::DmaClient;
 use virt::IsolationType;
 use virt::PartitionCapabilities;
 use virt::VpIndex;
+use virt::X86Partition;
 use virt::irqcon::IoApicRouting;
 use virt::irqcon::MsiRequest;
 use virt::x86::apic_software_device::ApicSoftwareDevices;
@@ -844,7 +845,7 @@ impl virt::Partition for UhPartition {
     }
 }
 
-impl virt::X86Partition for UhPartition {
+impl X86Partition for UhPartition {
     fn ioapic_routing(&self) -> Arc<dyn IoApicRouting> {
         self.inner.clone()
     }
@@ -1926,6 +1927,22 @@ impl UhPartition {
             inner: Arc::downgrade(&self.inner),
             begin: *range.start(),
             end: *range.end(),
+        }
+    }
+
+    /// Trigger the LINT1 interrupt vector on the LAPIC of the BSP.
+    pub fn assert_debug_interrupt(&self, _vtl: u8) {
+        #[cfg(guest_arch = "x86_64")]
+        const LINT_INDEX_1: u8 = 1;
+        #[cfg(guest_arch = "x86_64")]
+        match self.inner.isolation {
+            IsolationType::Snp => {
+                tracing::error!(?_vtl, "Debug interrupts cannot be injected into SNP VMs",);
+            }
+            _ => {
+                let bsp_index = VpIndex::new(0);
+                self.pulse_lint(bsp_index, Vtl::try_from(_vtl).unwrap(), LINT_INDEX_1)
+            }
         }
     }
 
