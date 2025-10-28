@@ -1809,33 +1809,41 @@ impl GuestMemory {
         &self,
         gpa: u64,
     ) -> Result<T, GuestMemoryError> {
-        // Note that this is const, so the match below will compile out.
+        self.with_op(
+            Some((gpa, size_of::<T>() as u64)),
+            GuestMemoryOperation::Read,
+            || self.read_plain_inner(gpa),
+        )
+    }
+
+    fn read_plain_inner<T: FromBytes + Immutable + KnownLayout>(
+        &self,
+        gpa: u64,
+    ) -> Result<T, GuestMemoryBackingError> {
         let len = size_of::<T>();
-        self.with_op(Some((gpa, len as u64)), GuestMemoryOperation::Read, || {
-            self.run_on_mapping(
-                AccessType::Read,
-                gpa,
-                len,
-                (),
-                |(), src| {
-                    // SAFETY: src..src+len is guaranteed to point to a reserved VA
-                    // range.
-                    unsafe { sparse_mmap::try_read_volatile(src.cast::<T>()) }
-                },
-                |()| {
-                    let mut obj = std::mem::MaybeUninit::<T>::zeroed();
-                    // SAFETY: dest..dest+len is guaranteed by the caller to point to a
-                    // valid buffer for writes.
-                    unsafe {
-                        self.inner
-                            .imp
-                            .read_fallback(gpa, obj.as_mut_ptr().cast(), len)?;
-                    }
-                    // SAFETY: `obj` was fully initialized by `read_fallback`.
-                    Ok(unsafe { obj.assume_init() })
-                },
-            )
-        })
+        self.run_on_mapping(
+            AccessType::Read,
+            gpa,
+            len,
+            (),
+            |(), src| {
+                // SAFETY: src..src+len is guaranteed to point to a reserved VA
+                // range.
+                unsafe { sparse_mmap::try_read_volatile(src.cast::<T>()) }
+            },
+            |()| {
+                let mut obj = std::mem::MaybeUninit::<T>::zeroed();
+                // SAFETY: dest..dest+len is guaranteed by the caller to point to a
+                // valid buffer for writes.
+                unsafe {
+                    self.inner
+                        .imp
+                        .read_fallback(gpa, obj.as_mut_ptr().cast(), len)?;
+                }
+                // SAFETY: `obj` was fully initialized by `read_fallback`.
+                Ok(unsafe { obj.assume_init() })
+            },
+        )
     }
 
     fn probe_page_for_lock(
@@ -1851,10 +1859,9 @@ impl GuestMemory {
         if with_kernel_access {
             self.inner.imp.expose_va(gpa, 1)?;
         }
-        let mut b = [0];
         // FUTURE: check the correct bitmap for the access type, which needs to
         // be passed in.
-        self.read_at_inner(gpa, &mut b)?;
+        self.read_plain_inner::<u8>(gpa)?;
         // SAFETY: the read_at call includes a check that ensures that
         // `gpa` is in the VA range.
         let page = unsafe { ptr.as_ptr().add(offset as usize) };
@@ -1885,10 +1892,8 @@ impl GuestMemory {
     pub fn probe_gpns(&self, gpns: &[u64]) -> Result<(), GuestMemoryError> {
         self.with_op(None, GuestMemoryOperation::Probe, || {
             for &gpn in gpns {
-                let mut b = [0];
-                self.read_at_inner(
+                self.read_plain_inner::<u8>(
                     gpn_to_gpa(gpn).map_err(GuestMemoryBackingError::gpn)?,
-                    &mut b,
                 )?;
             }
             Ok(())

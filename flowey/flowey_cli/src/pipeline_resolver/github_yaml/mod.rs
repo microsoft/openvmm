@@ -94,12 +94,18 @@ pub fn github_yaml(
             ref gh_global_env,
             ref gh_pool,
             ref gh_permissions,
-            cond_param_idx: _,
+            cond_param_idx,
             ref parameters_used,
             ref artifacts_used,
             ref artifacts_published,
             ado_variables: _,
         } = graph[job_idx];
+
+        if cond_param_idx.is_some() {
+            anyhow::bail!(
+                "conditional params are not supported in GitHub backend, use `gh_dangerous_override_if` instead"
+            );
+        }
 
         let flowey_bin = platform.binary("flowey");
         let (steps, req_db) = resolve_flow_as_github_yaml_steps(

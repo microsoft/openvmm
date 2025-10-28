@@ -13,6 +13,7 @@ use chipset_device_resources::IRQ_LINE_SET;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
+use firmware_uefi::LogLevel;
 use firmware_uefi::UefiCommandSet;
 use floppy_resources::FloppyDiskConfig;
 use futures::FutureExt;
@@ -28,6 +29,7 @@ use hvlite_defs::config::Aarch64TopologyConfig;
 use hvlite_defs::config::ArchTopologyConfig;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
+use hvlite_defs::config::EfiDiagnosticsLogLevelType;
 use hvlite_defs::config::GicConfig;
 use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::HypervisorConfig;
@@ -35,6 +37,7 @@ use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
 use hvlite_defs::config::PcieDeviceConfig;
 use hvlite_defs::config::PcieRootComplexConfig;
+use hvlite_defs::config::PcieSwitchConfig;
 use hvlite_defs::config::PmuGsivConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialPipes;
@@ -78,6 +81,7 @@ use pci_core::PciInterruptPin;
 use pci_core::msi::MsiInterruptSet;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
+use pcie::switch::GenericPcieSwitch;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::SimpleScsiDisk;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
@@ -172,6 +176,7 @@ impl Manifest {
             ide_disks: config.ide_disks,
             pcie_root_complexes: config.pcie_root_complexes,
             pcie_devices: config.pcie_devices,
+            pcie_switches: config.pcie_switches,
             vpci_devices: config.vpci_devices,
             hypervisor: config.hypervisor,
             memory: config.memory,
@@ -200,6 +205,11 @@ impl Manifest {
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
+            efi_diagnostics_log_level: match config.efi_diagnostics_log_level {
+                EfiDiagnosticsLogLevelType::Default => LogLevel::make_default(),
+                EfiDiagnosticsLogLevelType::Info => LogLevel::make_info(),
+                EfiDiagnosticsLogLevelType::Full => LogLevel::make_full(),
+            },
         }
     }
 }
@@ -215,6 +225,7 @@ pub struct Manifest {
     ide_disks: Vec<IdeDeviceConfig>,
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pcie_devices: Vec<PcieDeviceConfig>,
+    pcie_switches: Vec<PcieSwitchConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
     memory: MemoryConfig,
     processor_topology: ProcessorTopologyConfig,
@@ -243,6 +254,7 @@ pub struct Manifest {
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
+    efi_diagnostics_log_level: LogLevel,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -1142,6 +1154,7 @@ impl InitializedVm {
                         } else {
                             UefiCommandSet::Aarch64
                         },
+                        diagnostics_log_level: cfg.efi_diagnostics_log_level,
                     },
                     logger,
                     nvram_storage: {
@@ -1805,6 +1818,24 @@ impl InitializedVm {
                 ecam_address += ecam_size;
                 low_mmio_address -= low_mmio_size;
                 high_mmio_address += rc.high_mmio_size;
+            }
+
+            for switch in cfg.pcie_switches {
+                let device_name = format!("pcie-switch:{}", switch.name);
+                let switch_device = chipset_builder
+                    .arc_mutex_device(device_name)
+                    .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
+                    .add(|_services| {
+                        let definition = pcie::switch::GenericPcieSwitchDefinition {
+                            name: switch.name.clone().into(),
+                            downstream_port_count: switch.num_downstream_ports as usize,
+                        };
+                        GenericPcieSwitch::new(definition)
+                    })?;
+
+                let bus_id = vmotherboard::BusId::new(&switch.name);
+                chipset_builder
+                    .register_weak_mutex_pcie_enumerator(bus_id, Box::new(switch_device));
             }
         }
 
@@ -3053,6 +3084,7 @@ impl LoadedVm {
             ide_disks: vec![],           // TODO
             pcie_root_complexes: vec![], // TODO
             pcie_devices: vec![],        // TODO
+            pcie_switches: vec![],       // TODO
             vpci_devices: vec![],        // TODO
             memory: self.inner.memory_cfg,
             processor_topology: self.inner.processor_topology.to_config(),
@@ -3081,6 +3113,7 @@ impl LoadedVm {
             generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
+            efi_diagnostics_log_level: Default::default(),
         };
         RestartState {
             hypervisor: self.inner.hypervisor,
