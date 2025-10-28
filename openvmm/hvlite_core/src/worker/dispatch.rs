@@ -1891,19 +1891,21 @@ impl InitializedVm {
             // Start the vmbus kernel proxy if it's in use.
             #[cfg(windows)]
             if let Some(proxy_handle) = vmbus_cfg.vmbusproxy_handle {
-                vmbus_proxy = Some(
-                    vmbus_server::ProxyIntegration::start(
-                        &vmbus_driver,
-                        proxy_handle,
-                        vmbus_server::ProxyServerInfo::new(vmbus.control(), None, None),
-                        vtl2_vmbus.as_ref().map(|server| {
-                            vmbus_server::ProxyServerInfo::new(server.control().clone(), None, None)
-                        }),
-                        Some(&gm),
+                vmbus_proxy =
+                    Some(
+                        vmbus_server::ProxyIntegration::builder(
+                            &vmbus_driver,
+                            proxy_handle,
+                            vmbus_server::ProxyServerInfo::new(vmbus.control()),
+                        )
+                        .vtl2_server(vtl2_vmbus.as_ref().map(|server| {
+                            vmbus_server::ProxyServerInfo::new(server.control().clone())
+                        }))
+                        .memory(Some(&gm))
+                        .build()
+                        .await
+                        .context("failed to start the vmbus proxy")?,
                     )
-                    .await
-                    .context("failed to start the vmbus proxy")?,
-                )
             }
 
             let vmbus = VmbusServerHandle::new(&vmbus_driver, state_units.add("vmbus"), vmbus)
