@@ -12,7 +12,7 @@
 
 .virtualized-table-header-container {
   position: sticky;
-  top: 4rem;
+  top: 3rem;
   z-index: 999;
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.1);
 }
@@ -38,9 +38,9 @@
   background: white;
   box-sizing: border-box;
   text-transform: uppercase;
-  padding: 6px 8px;
+  padding: 0 8px 4px 8px;
   font-weight: 600;
-  font-size: 1rem;
+  font-size: 0.9rem;
 }
 
 .virtualized-table th.sortable {
@@ -48,13 +48,13 @@
   user-select: none;
   z-index: 1;
   position: sticky;
-  top: 4rem;
+  top: 3rem;
 }
 
 .virtualized-table th.sortable:hover {
   background-color: #e9ecef;
   position: sticky;
-  top: 4rem;
+  top: 3rem;
 }
 
 .virtualized-table-header-content {
@@ -65,7 +65,7 @@
   min-width: 0;
   font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
   position: sticky;
-  top: 4rem;
+  top: 3rem;
 }
 
 /* Virtualized table styles */
@@ -90,7 +90,7 @@
 }
 
 .virtualized-table-row td {
-  padding: 0.6rem 0.4rem;
+  padding: 0.45rem 0.4rem;
   vertical-align: middle;
   font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
   font-size: 1.1rem;
