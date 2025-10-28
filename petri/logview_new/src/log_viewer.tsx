@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Menu } from './menu';
 import { Link, useParams, useLocation, useNavigate } from 'react-router-dom';
