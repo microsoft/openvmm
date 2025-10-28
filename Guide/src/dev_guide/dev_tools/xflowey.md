@@ -34,14 +34,15 @@ working on OpenVMM automation.
 ## Table of Contents
 
 1. [Core Concepts](#core-concepts)
-2. [Pipelines](#pipelines)
-3. [Artifacts](#artifacts)
+2. [Emitting Steps](#emitting-steps)
+3. [Runtime Services](#runtime-services)
 4. [Flowey Nodes](#flowey-nodes)
 5. [Variables: ReadVar and WriteVar](#variables-readvar-and-writevar)
-6. [Emitting Steps](#emitting-steps)
-7. [Runtime Services](#runtime-services)
-8. [Node Design Philosophy](#node-design-philosophy)
-9. [Common Patterns](#common-patterns)
+6. [Node Design Philosophy](#node-design-philosophy)
+7. [Common Patterns](#common-patterns)
+8. [Artifacts](#artifacts)
+9. [Pipelines](#pipelines)
+10. [Additional Resources](#additional-resources)
 
 ---
 
@@ -95,15 +96,13 @@ Always run `cargo xflowey regen` after modifying pipeline definitions to ensure 
 This separation allows flowey to:
 - Validate the entire workflow before execution
 - Generate static YAML for CI systems (ADO, GitHub Actions)
-- Optimize step ordering and parallelization
 - Catch dependency errors at build-time rather than runtime
 
 ### Backend Abstraction
 
 Flowey supports multiple execution backends:
 
-- **Local**: Runs directly on your development machine via bash or direct
-  execution
+- **Local**: Runs directly on your development machine 
 - **ADO (Azure DevOps)**: Generates ADO Pipeline YAML
 - **GitHub Actions**: Generates GitHub Actions workflow YAML
 
@@ -112,122 +111,153 @@ Nodes should be written to work across ALL backends whenever possible. Relying o
 backend-specific steps (via `emit_ado_step` or `emit_gh_step`) should be 
 avoided unless absolutely necessary. Most automation logic should be 
 backend-agnostic, using `emit_rust_step` for cross-platform Rust code that 
-works everywhere.
+works everywhere. 
 ```
 ---
 
-## Pipelines
+## Emitting Steps
 
-A **Pipeline** is the top-level construct that defines a complete automation
-workflow. Pipelines consist of one or more **Jobs**, each of which runs a set
-of **Nodes** to accomplish specific tasks.
+Nodes emit **steps** - units of work that will be executed at runtime. Different
+step types exist for different purposes.
 
-For detailed examples of defining pipelines, see the [IntoPipeline trait documentation](https://docs.rs/flowey_core/latest/flowey_core/pipeline/trait.IntoPipeline.html).
+### Rust Steps
 
-### Pipeline Jobs
+Rust steps execute Rust code at runtime and are the most common step type in flowey.
 
-Each `PipelineJob` represents a unit of work that:
-- Runs on a specific platform and architecture
-- Can depend on artifacts from other jobs
-- Can be conditionally executed based on parameters
-- Emits a sequence of steps that accomplish the job's goals
+**`emit_rust_step`**: The primary method for emitting steps that run Rust code. Steps can claim variables, read inputs, perform work, and write outputs. Returns an optional `ReadVar<SideEffect>` that other steps can use as a dependency.
 
-Jobs are configured using a builder pattern:
+**`emit_minor_rust_step`**: Similar to `emit_rust_step` but for steps that cannot fail (no `Result` return) and don't need visibility in CI logs. Used for simple transformations and glue logic. Using minor steps also improve performance, since there is a slight cost to starting and ending a 'step' in GitHub and ADO. During the build stage, minor steps that are adjacent to each other will get merged into one giant CI step.
 
-```rust
-let job = pipeline
-    .new_job(platform, arch, "my-job")
-    .with_timeout_in_minutes(60)
-    .with_condition(some_param)
-    .ado_set_pool("my-pool")
-    .gh_set_pool(GhRunner::UbuntuLatest)
-    .dep_on(|ctx| {
-        // Define what nodes this job depends on
-        some_node::Request { /* ... */ }
-    })
-    .finish();
+**`emit_rust_stepv`**: Convenience method that combines creating a new variable and emitting a step in one call. The step's return value is automatically written to the new variable.
+
+For detailed examples of Rust steps, see the [`NodeCtx` emit methods documentation](https://docs.rs/flowey_core/latest/flowey_core/node/struct.NodeCtx.html).
+
+### ADO Steps
+
+**`emit_ado_step`**: Emits a step that generates Azure DevOps Pipeline YAML. Takes a closure that returns a YAML string snippet which is interpolated into the generated pipeline.
+
+For ADO step examples, see the [`NodeCtx::emit_ado_step` documentation](https://docs.rs/flowey_core/latest/flowey_core/node/struct.NodeCtx.html#method.emit_ado_step).
+
+### GitHub Steps
+
+**`emit_gh_step`**: Creates a GitHub Actions step using the fluent `GhStepBuilder` API. Supports specifying the action, parameters, outputs, dependencies, and permissions. Returns a builder that must be finalized with `.finish(ctx)`.
+
+For GitHub step examples, see the [`GhStepBuilder` documentation](https://docs.rs/flowey_core/latest/flowey_core/node/steps/github/struct.GhStepBuilder.html).
+
+### Side Effect Steps
+
+**`emit_side_effect_step`**: Creates a dependency relationship without executing code. Useful for aggregating multiple side effect dependencies into a single side effect. More efficient than emitting an empty Rust step.
+
+For side effect step examples, see the [`NodeCtx::emit_side_effect_step` documentation](https://docs.rs/flowey_core/latest/flowey_core/node/struct.NodeCtx.html#method.emit_side_effect_step).
+
+### StepCtx vs NodeCtx
+
+- **`NodeCtx`**: Used when emitting steps. Provides `emit_*` methods, `new_var()`,
+  `req()`, etc.
+  
+- **`StepCtx`**: Used inside step closures. Provides access to `claim()` for
+  variables, and basic environment info (`backend()`, `platform()`).
+
+---
+
+## Runtime Services
+
+Runtime services provide the API available during step execution (inside the
+closures passed to `emit_rust_step`, etc.).
+
+### RustRuntimeServices
+
+`RustRuntimeServices` is the primary runtime service available in Rust steps. It provides:
+
+**Variable Operations:**
+- Reading and writing flowey variables
+- Secret handling (automatic secret propagation for safety)
+- Support for reading values of any type that implements `ReadVarValue`
+
+**Environment Queries:**
+- Backend identification (Local, ADO, or GitHub)
+- Platform detection (Windows, Linux, macOS)
+- Architecture information (x86_64, Aarch64)
+
+#### Secret Variables and CI Backend Integration
+
+Flowey provides built-in support for handling sensitive data like API keys, tokens, and credentials through **secret variables**. Secret variables are treated specially to prevent accidental exposure in logs and CI outputs.
+
+**How Secret Handling Works**
+
+When a variable is marked as secret, flowey ensures:
+- The value is not logged or printed in step output
+- CI backends (ADO, GitHub Actions) are instructed to mask the value in their logs
+- Secret status is automatically propagated to prevent leaks
+
+**Automatic Secret Propagation**
+
+To prevent accidental leaks, flowey uses conservative automatic secret propagation:
+
+```admonish warning 
+If a step reads a secret value, **all subsequent writes from that step are automatically marked as secret** by default. This prevents accidentally leaking secrets through derived values.
 ```
 
-### Pipeline Parameters
-
-Parameters allow runtime configuration of pipelines:
+For example:
 
 ```rust
-// Define a boolean parameter
-let use_cache = pipeline.new_parameter_bool(
-    "use_cache",
-    "Whether to use caching",
-    ParameterKind::Stable,
-    Some(true) // default value
-);
-
-// Use the parameter in a job
-let job = pipeline.new_job(...)
-    .dep_on(|ctx| {
-        let use_cache = ctx.use_parameter(use_cache);
-        // use_cache is now a ReadVar<bool>
-    })
-    .finish();
+ctx.emit_rust_step("process token", |ctx| {
+    let secret_token = secret_token.claim(ctx);
+    let output_var = output_var.claim(ctx);
+    |rt| {
+        let token = rt.read(secret_token);  // Reading a secret
+        
+        // This write is AUTOMATICALLY marked as secret
+        // (even though we're just writing "done")
+        rt.write(output_var, &"done".to_string());
+        
+        Ok(())
+    }
+});
 ```
 
-Parameter types:
-- Boolean parameters
-- String parameters with optional validation
-- Numeric (i64) parameters with optional validation
+If you need to write non-secret data after reading a secret, use `write_not_secret()`:
 
-#### Stable vs Unstable Parameters
+```rust
+rt.write_not_secret(output_var, &"done".to_string());
+```
 
-Every parameter in flowey must be declared as either **Stable** or **Unstable** using `ParameterKind`. This classification determines the parameter's visibility and API stability:
+**Best Practices for Secrets**
 
-**Stable Parameters (`ParameterKind::Stable`)**
+1. **Never use `ReadVar::from_static()` for secrets** - static values are encoded in plain text in the generated YAML
+2. **Always use `write_secret()`** when writing sensitive data like tokens, passwords, or keys
+5. **Minimize secret lifetime** - read secrets as late as possible and don't pass them through more variables than necessary
 
-Stable parameters represent a **public, stable API** for the pipeline:
+### AdoStepServices
 
-- **External Visibility**: The parameter name is exposed as-is in the generated CI YAML, making it callable by external pipelines and users.
-- **API Contract**: Once a parameter is marked stable, its name and behavior should be maintained for backward compatibility. Removing or renaming a stable parameter is a breaking change.
-- **Use Cases**: 
-  - Parameters that control major pipeline behavior (e.g., `enable_tests`, `build_configuration`)
-  - Parameters intended for use by other teams or external automation
-  - Parameters documented as part of the pipeline's public interface
+`AdoStepServices` provides integration with Azure DevOps-specific features when emitting ADO YAML steps:
 
-**Unstable Parameters (`ParameterKind::Unstable`)**
+**ADO Variable Bridge:**
+- Convert ADO runtime variables (like `BUILD.SOURCEBRANCH`) into flowey vars
+- Convert flowey vars back into ADO variables for use in YAML
+- Handle secret variables appropriately
 
-Unstable parameters are for **internal use** and experimentation:
+**Repository Resources:**
+- Resolve repository IDs declared as pipeline resources
+- Access repository information in ADO-specific steps
 
-- **Internal Only**: The parameter name is prefixed with `__unstable_` in the generated YAML (e.g., `__unstable_debug_mode`), signaling that it's not part of the stable API.
-- **No Stability Guarantee**: Unstable parameters can be renamed, removed, or have their behavior changed without notice. External consumers should not depend on them.
-- **Use Cases**:
-  - Experimental features or debugging flags
-  - Internal pipeline configuration that may change frequently
-  - Parameters for development/testing that shouldn't be used in production
+### GhStepBuilder
 
+`GhStepBuilder` is a fluent builder for constructing GitHub Actions steps with:
 
-## Artifacts
+**Step Configuration:**
+- Specifying the action to use (e.g., `actions/checkout@v4`)
+- Adding input parameters via `.with()`
+- Capturing step outputs into flowey variables
+- Setting conditional execution based on variables
 
-**Artifacts** are the mechanism for passing data between jobs in a pipeline.
-When one job produces output that another job needs, that output is packaged as
-an artifact.
+**Dependency Management:**
+- Declaring side-effect dependencies via `.run_after()`
+- Ensuring steps run in the correct order
 
-### Typed vs Untyped Artifacts
-
-**Typed artifacts (preferred)** provide type-safe artifact handling by defining
-a custom type that implements the `Artifact` trait. **Untyped artifacts** provide
-simple directory-based artifacts for simpler cases.
-
-For detailed examples of defining and using artifacts, see the [Artifact trait documentation](https://docs.rs/flowey_core/latest/flowey_core/pipeline/trait.Artifact.html).
-
-Key concepts:
-- The `Artifact` trait works by serializing your type to JSON in a format that reflects a directory structure
-- Use `#[serde(rename = "file.exe")]` to specify exact file names
-- Typed artifacts ensure compile-time type safety when passing data between jobs
-- Untyped artifacts are simpler but don't provide type guarantees
-
-### How Artifacts Create Dependencies
-
-When you use an artifact in a job, flowey automatically:
-1. Creates a dependency from the consuming job to the producing job
-2. Ensures the producing job runs first
-3. Handles artifact upload/download between jobs (on CI backends)
+**Permissions:**
+- Declaring required GITHUB_TOKEN permissions
+- Automatic permission aggregation at the job level
 
 ---
 
@@ -381,152 +411,6 @@ For examples of using SideEffect, see the [`SideEffect` type documentation](http
 
 ---
 
-## Emitting Steps
-
-Nodes emit **steps** - units of work that will be executed at runtime. Different
-step types exist for different purposes.
-
-### Rust Steps
-
-Rust steps execute Rust code at runtime and are the most common step type in flowey.
-
-**`emit_rust_step`**: The primary method for emitting steps that run Rust code. Steps can claim variables, read inputs, perform work, and write outputs. Returns an optional `ReadVar<SideEffect>` that other steps can use as a dependency.
-
-**`emit_minor_rust_step`**: Similar to `emit_rust_step` but for steps that cannot fail (no `Result` return) and don't need visibility in CI logs. Used for simple transformations and glue logic. Using minor steps also improve performance, since there is a slight cost to starting and ending a 'step' in GitHub and ADO. During the build stage, minor steps that are adjacent to each other will get merged into one giant CI step.
-
-**`emit_rust_stepv`**: Convenience method that combines creating a new variable and emitting a step in one call. The step's return value is automatically written to the new variable.
-
-For detailed examples of Rust steps, see the [`NodeCtx` emit methods documentation](https://docs.rs/flowey_core/latest/flowey_core/node/struct.NodeCtx.html).
-
-### ADO Steps
-
-**`emit_ado_step`**: Emits a step that generates Azure DevOps Pipeline YAML. Takes a closure that returns a YAML string snippet which is interpolated into the generated pipeline.
-
-For ADO step examples, see the [`NodeCtx::emit_ado_step` documentation](https://docs.rs/flowey_core/latest/flowey_core/node/struct.NodeCtx.html#method.emit_ado_step).
-
-### GitHub Steps
-
-**`emit_gh_step`**: Creates a GitHub Actions step using the fluent `GhStepBuilder` API. Supports specifying the action, parameters, outputs, dependencies, and permissions. Returns a builder that must be finalized with `.finish(ctx)`.
-
-For GitHub step examples, see the [`GhStepBuilder` documentation](https://docs.rs/flowey_core/latest/flowey_core/node/steps/github/struct.GhStepBuilder.html).
-
-### Side Effect Steps
-
-**`emit_side_effect_step`**: Creates a dependency relationship without executing code. Useful for aggregating multiple side effect dependencies into a single side effect. More efficient than emitting an empty Rust step.
-
-For side effect step examples, see the [`NodeCtx::emit_side_effect_step` documentation](https://docs.rs/flowey_core/latest/flowey_core/node/struct.NodeCtx.html#method.emit_side_effect_step).
-
-### StepCtx vs NodeCtx
-
-- **`NodeCtx`**: Used when emitting steps. Provides `emit_*` methods, `new_var()`,
-  `req()`, etc.
-  
-- **`StepCtx`**: Used inside step closures. Provides access to `claim()` for
-  variables, and basic environment info (`backend()`, `platform()`).
-
----
-
-## Runtime Services
-
-Runtime services provide the API available during step execution (inside the
-closures passed to `emit_rust_step`, etc.).
-
-### RustRuntimeServices
-
-`RustRuntimeServices` is the primary runtime service available in Rust steps. It provides:
-
-**Variable Operations:**
-- Reading and writing flowey variables
-- Secret handling (automatic secret propagation for safety)
-- Support for reading values of any type that implements `ReadVarValue`
-
-**Environment Queries:**
-- Backend identification (Local, ADO, or GitHub)
-- Platform detection (Windows, Linux, macOS)
-- Architecture information (x86_64, Aarch64)
-
-#### Secret Variables and CI Backend Integration
-
-Flowey provides built-in support for handling sensitive data like API keys, tokens, and credentials through **secret variables**. Secret variables are treated specially to prevent accidental exposure in logs and CI outputs.
-
-**How Secret Handling Works**
-
-When a variable is marked as secret, flowey ensures:
-- The value is not logged or printed in step output
-- CI backends (ADO, GitHub Actions) are instructed to mask the value in their logs
-- Secret status is automatically propagated to prevent leaks
-
-**Automatic Secret Propagation**
-
-To prevent accidental leaks, flowey uses conservative automatic secret propagation:
-
-```admonish warning 
-If a step reads a secret value, **all subsequent writes from that step are automatically marked as secret** by default. This prevents accidentally leaking secrets through derived values.
-```
-
-For example:
-
-```rust
-ctx.emit_rust_step("process token", |ctx| {
-    let secret_token = secret_token.claim(ctx);
-    let output_var = output_var.claim(ctx);
-    |rt| {
-        let token = rt.read(secret_token);  // Reading a secret
-        
-        // This write is AUTOMATICALLY marked as secret
-        // (even though we're just writing "done")
-        rt.write(output_var, &"done".to_string());
-        
-        Ok(())
-    }
-});
-```
-
-If you need to write non-secret data after reading a secret, use `write_not_secret()`:
-
-```rust
-rt.write_not_secret(output_var, &"done".to_string());
-```
-
-**Best Practices for Secrets**
-
-1. **Never use `ReadVar::from_static()` for secrets** - static values are encoded in plain text in the generated YAML
-2. **Always use `write_secret()`** when writing sensitive data like tokens, passwords, or keys
-5. **Minimize secret lifetime** - read secrets as late as possible and don't pass them through more variables than necessary
-
-### AdoStepServices
-
-`AdoStepServices` provides integration with Azure DevOps-specific features when emitting ADO YAML steps:
-
-**ADO Variable Bridge:**
-- Convert ADO runtime variables (like `BUILD.SOURCEBRANCH`) into flowey vars
-- Convert flowey vars back into ADO variables for use in YAML
-- Handle secret variables appropriately
-
-**Repository Resources:**
-- Resolve repository IDs declared as pipeline resources
-- Access repository information in ADO-specific steps
-
-### GhStepBuilder
-
-`GhStepBuilder` is a fluent builder for constructing GitHub Actions steps with:
-
-**Step Configuration:**
-- Specifying the action to use (e.g., `actions/checkout@v4`)
-- Adding input parameters via `.with()`
-- Capturing step outputs into flowey variables
-- Setting conditional execution based on variables
-
-**Dependency Management:**
-- Declaring side-effect dependencies via `.run_after()`
-- Ensuring steps run in the correct order
-
-**Permissions:**
-- Declaring required GITHUB_TOKEN permissions
-- Automatic permission aggregation at the job level
-
----
-
 ## Node Design Philosophy
 
 Flowey nodes are designed around several key principles:
@@ -616,6 +500,120 @@ The macro automatically derives `Serialize`, `Deserialize`, and implements the `
 For complete syntax and examples, see the [`flowey_request!` macro documentation](https://docs.rs/flowey_core/latest/flowey_core/macro.flowey_request.html).
 
 ---
+
+## Artifacts
+
+**Artifacts** are the mechanism for passing data between jobs in a pipeline.
+When one job produces output that another job needs, that output is packaged as
+an artifact.
+
+### Typed vs Untyped Artifacts
+
+**Typed artifacts (preferred)** provide type-safe artifact handling by defining
+a custom type that implements the `Artifact` trait. **Untyped artifacts** provide
+simple directory-based artifacts for simpler cases.
+
+For detailed examples of defining and using artifacts, see the [Artifact trait documentation](https://docs.rs/flowey_core/latest/flowey_core/pipeline/trait.Artifact.html).
+
+Key concepts:
+- The `Artifact` trait works by serializing your type to JSON in a format that reflects a directory structure
+- Use `#[serde(rename = "file.exe")]` to specify exact file names
+- Typed artifacts ensure compile-time type safety when passing data between jobs
+- Untyped artifacts are simpler but don't provide type guarantees
+
+### How Artifacts Create Dependencies
+
+When you use an artifact in a job, flowey automatically:
+1. Creates a dependency from the consuming job to the producing job
+2. Ensures the producing job runs first
+3. Handles artifact upload/download between jobs (on CI backends)
+
+---
+
+## Pipelines
+
+A **Pipeline** is the top-level construct that defines a complete automation
+workflow. Pipelines consist of one or more **Jobs**, each of which runs a set
+of **Nodes** to accomplish specific tasks.
+
+For detailed examples of defining pipelines, see the [IntoPipeline trait documentation](https://docs.rs/flowey_core/latest/flowey_core/pipeline/trait.IntoPipeline.html).
+
+### Pipeline Jobs
+
+Each `PipelineJob` represents a unit of work that:
+- Runs on a specific platform and architecture
+- Can depend on artifacts from other jobs
+- Can be conditionally executed based on parameters
+- Emits a sequence of steps that accomplish the job's goals
+
+Jobs are configured using a builder pattern:
+
+```rust
+let job = pipeline
+    .new_job(platform, arch, "my-job")
+    .with_timeout_in_minutes(60)
+    .with_condition(some_param)
+    .ado_set_pool("my-pool")
+    .gh_set_pool(GhRunner::UbuntuLatest)
+    .dep_on(|ctx| {
+        // Define what nodes this job depends on
+        some_node::Request { /* ... */ }
+    })
+    .finish();
+```
+
+### Pipeline Parameters
+
+Parameters allow runtime configuration of pipelines:
+
+```rust
+// Define a boolean parameter
+let use_cache = pipeline.new_parameter_bool(
+    "use_cache",
+    "Whether to use caching",
+    ParameterKind::Stable,
+    Some(true) // default value
+);
+
+// Use the parameter in a job
+let job = pipeline.new_job(...)
+    .dep_on(|ctx| {
+        let use_cache = ctx.use_parameter(use_cache);
+        // use_cache is now a ReadVar<bool>
+    })
+    .finish();
+```
+
+Parameter types:
+- Boolean parameters
+- String parameters with optional validation
+- Numeric (i64) parameters with optional validation
+
+#### Stable vs Unstable Parameters
+
+Every parameter in flowey must be declared as either **Stable** or **Unstable** using `ParameterKind`. This classification determines the parameter's visibility and API stability:
+
+**Stable Parameters (`ParameterKind::Stable`)**
+
+Stable parameters represent a **public, stable API** for the pipeline:
+
+- **External Visibility**: The parameter name is exposed as-is in the generated CI YAML, making it callable by external pipelines and users.
+- **API Contract**: Once a parameter is marked stable, its name and behavior should be maintained for backward compatibility. Removing or renaming a stable parameter is a breaking change.
+- **Use Cases**: 
+  - Parameters that control major pipeline behavior (e.g., `enable_tests`, `build_configuration`)
+  - Parameters intended for use by other teams or external automation
+  - Parameters documented as part of the pipeline's public interface
+
+**Unstable Parameters (`ParameterKind::Unstable`)**
+
+Unstable parameters are for **internal use** and experimentation:
+
+- **Internal Only**: The parameter name is prefixed with `__unstable_` in the generated YAML (e.g., `__unstable_debug_mode`), signaling that it's not part of the stable API.
+- **No Stability Guarantee**: Unstable parameters can be renamed, removed, or have their behavior changed without notice. External consumers should not depend on them.
+- **Use Cases**:
+  - Experimental features or debugging flags
+  - Internal pipeline configuration that may change frequently
+  - Parameters for development/testing that shouldn't be used in production
 
 ## Additional Resources
 
