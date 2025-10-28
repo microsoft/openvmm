@@ -547,9 +547,9 @@ fn recover(context: &mut Context, failure: AccessFailure) -> bool {
     // SAFETY: linker-defined symbols.
     #[cfg(target_os = "macos")]
     unsafe extern "C" {
-        #[link_name = "\x01section$start$__DATA$__try_copy"]
+        #[link_name = "\x01section$start$__TEXT$__try_copy"]
         static START_TRY_COPY: [RecoveryDescriptor; 0];
-        #[link_name = "\x01section$end$__DATA$__try_copy"]
+        #[link_name = "\x01section$end$__TEXT$__try_copy"]
         static STOP_TRY_COPY: [RecoveryDescriptor; 0];
     }
 
@@ -608,6 +608,7 @@ fn recover(context: &mut Context, failure: AccessFailure) -> bool {
 #[cfg(target_os = "linux")]
 macro_rules! recovery_section {
     () => {
+        // a = allocate, R = retain: don't discard on linking.
         "try_copy,\"aR\""
     };
 }
@@ -615,6 +616,7 @@ macro_rules! recovery_section {
 #[cfg(target_os = "windows")]
 macro_rules! recovery_section {
     () => {
+        // d = data, r = read-only
         ".rdata.trycopy@b,\"dr\""
     };
 }
@@ -622,7 +624,9 @@ macro_rules! recovery_section {
 #[cfg(target_os = "macos")]
 macro_rules! recovery_section {
     () => {
-        "__DATA,__try_copy,regular,no_dead_strip"
+        // __TEXT = read-only segment, regular = regular section, no_dead_strip
+        // = don't discard on linking.
+        "__TEXT,__try_copy,regular,no_dead_strip"
     };
 }
 
