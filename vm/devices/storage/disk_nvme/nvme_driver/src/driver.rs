@@ -474,8 +474,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             let admin = admin.issuer().clone();
             let rescan_notifiers = self.rescan_notifiers.clone();
             async move {
-                if let Err(err) = handle_asynchronous_events(&admin, rescan_notifiers.clone()).await
-                {
+                if let Err(err) = handle_asynchronous_events(&admin, rescan_notifiers).await {
                     tracing::error!(
                         error = err.as_ref() as &dyn std::error::Error,
                         "asynchronous event failure, not processing any more"
@@ -862,6 +861,7 @@ async fn handle_asynchronous_events(
                     .context("failed to query changed namespace list")?;
 
                 // Notify only the namespaces that have changed.
+
                 // NOTE: The nvme spec states - If more than 1,024 namespaces have
                 // changed attributes since the last time the log page was read,
                 // the first entry in the log page shall be set to
