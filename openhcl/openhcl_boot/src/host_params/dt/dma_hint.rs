@@ -125,8 +125,8 @@ pub fn vtl2_calculate_dma_hint(
         let mut max_vp_count = vp_count as u16; // Smallest VP count entry in the table that is greater than vp_count, or vp_count itself.
 
         let lookup_table = match vtl2_gpa_pool_lookup_table {
-            Vtl2GpaPoolLookupTable::Release => LOOKUP_TABLE_RELEASE.into_iter(),
-            Vtl2GpaPoolLookupTable::Debug => LOOKUP_TABLE_DEBUG.into_iter(),
+            Vtl2GpaPoolLookupTable::Release => LOOKUP_TABLE_RELEASE.iter(),
+            Vtl2GpaPoolLookupTable::Debug => LOOKUP_TABLE_DEBUG.iter(),
         };
 
         // Take a first loop over the table. Ideally the table contains an exact match
@@ -295,7 +295,7 @@ mod test {
 
     #[test]
     fn test_vtl2_calculate_dma_hint_exact_matches() {
-        for (mode, table) in vec![
+        for (mode, table) in [
             (Vtl2GpaPoolLookupTable::Release, LOOKUP_TABLE_RELEASE.iter()),
             (Vtl2GpaPoolLookupTable::Debug, LOOKUP_TABLE_DEBUG.iter()),
         ] {
