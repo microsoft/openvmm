@@ -1113,14 +1113,22 @@ pub struct VpciChannel {
 pub struct VpciConfigSpace {
     offset: VpciConfigSpaceOffset,
     control_mmio: Box<dyn ControlMmioIntercept>,
+    vtom: Option<u64>,
+    control_mmio_vtom: Option<Box<dyn ControlMmioIntercept>>,
 }
 
 impl VpciConfigSpace {
     /// Create New PCI Config space
-    pub fn new(control_mmio: Box<dyn ControlMmioIntercept>) -> Self {
+    pub fn new(
+        control_mmio: Box<dyn ControlMmioIntercept>,
+        vtom: Option<u64>,
+        control_mmio_vtom: Option<Box<dyn ControlMmioIntercept>>,
+    ) -> Self {
         Self {
             offset: VpciConfigSpaceOffset::new(),
             control_mmio,
+            vtom,
+            control_mmio_vtom,
         }
     }
 
@@ -1130,13 +1138,22 @@ impl VpciConfigSpace {
     }
 
     fn map(&mut self, addr: u64) {
-        tracing::debug!(addr, "mapping config space");
+        tracing::error!(addr, "mapping config space");
+        // mask out the vtom bit if it was set
+        let addr = addr & !self.vtom.unwrap_or(0);
+
         self.offset.0.store(addr, Ordering::Relaxed);
         self.control_mmio.map(addr);
+
+        // also map above vtom
+        if let Some(vtom) = self.vtom {
+            let addr = addr | vtom;
+            self.control_mmio_vtom.as_mut().unwrap().map(addr | vtom);
+        }
     }
 
     fn unmap(&mut self) {
-        tracing::debug!(
+        tracing::error!(
             addr = self.offset.0.load(Ordering::Relaxed),
             "unmapping config space"
         );
@@ -1146,6 +1163,9 @@ impl VpciConfigSpace {
         //
         // This is idempotent. See [`impl_device_range!`].
         self.control_mmio.unmap();
+        if let Some(control_mmio_vtom) = &mut self.control_mmio_vtom {
+            control_mmio_vtom.unmap();
+        }
         self.offset
             .0
             .store(VpciConfigSpaceOffset::INVALID, Ordering::Relaxed);
@@ -1352,6 +1372,8 @@ mod tests {
         }
         let config_space = VpciConfigSpace::new(
             ExternallyManagedMmioIntercepts.new_io_region("test", 2 * HV_PAGE_SIZE),
+            None,
+            None,
         );
         let mut state = VpciChannel {
             msi_mapper: VpciInterruptMapper::new(msi_mapper),

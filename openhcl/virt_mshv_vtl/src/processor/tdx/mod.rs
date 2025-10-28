@@ -2060,6 +2060,7 @@ impl UhProcessor<'_, TdxBacked> {
                 } else {
                     let is_write = ept_info.access_mask() & 0b10 != 0;
                     if self.check_mem_fault(intercepted_vtl, gpa, is_write, ept_info) {
+                        tracing::error!(?gpa, is_write, "emulating access");
                         self.emulate(
                             dev,
                             self.backing.vtls[intercepted_vtl]

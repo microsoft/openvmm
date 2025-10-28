@@ -44,6 +44,7 @@ impl MemoryAccess for DirectMmioInstance {
     }
 
     fn read(&mut self, addr: u64) -> u32 {
+        tracing::error!("MMIO read via /dev/mem at addr {:#x}", addr);
         let offset = addr
             .checked_sub(self.gpa())
             .and_then(|o| o.try_into().ok())
@@ -62,6 +63,11 @@ impl MemoryAccess for DirectMmioInstance {
     }
 
     fn write(&mut self, addr: u64, value: u32) {
+        tracing::error!(
+            "MMIO write via /dev/mem at addr {:#x} value {:#x}",
+            addr,
+            value
+        );
         let offset = addr
             .checked_sub(self.gpa())
             .and_then(|o| o.try_into().ok())
@@ -107,6 +113,7 @@ impl MemoryAccess for HypercallMmioInstance {
 
     fn read(&mut self, addr: u64) -> u32 {
         let mut data = [0; 4];
+        tracing::error!("MMIO read via hypercall at addr {:#x}", addr);
         match self.1.mmio_read(addr, &mut data) {
             Ok(()) => u32::from_ne_bytes(data),
             Err(err) => {
@@ -122,6 +129,11 @@ impl MemoryAccess for HypercallMmioInstance {
 
     fn write(&mut self, addr: u64, value: u32) {
         let data = value.to_ne_bytes();
+        tracing::error!(
+            "MMIO write via hypercall at addr {:#x} value {:#x}",
+            addr,
+            value
+        );
         if let Err(err) = self.1.mmio_write(addr, &data) {
             tracelimit::error_ratelimited!(
                 addr,
