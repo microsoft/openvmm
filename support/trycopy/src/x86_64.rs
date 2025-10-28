@@ -364,20 +364,19 @@ macro_rules! try_cmpxchg {
             desired: $ty,
         ) -> Result<bool, Fault> {
             let actual;
-            let result: i32;
+            let result: i8;
             // SAFETY: caller ensured.
             unsafe {
                 core::arch::asm! {
                     "2:",
                     $asm,
                     "setz cl",
-                    "movzx ecx, cl",
                     "3:",
                     recovery_descriptor!("2b", "3b", "."),
                     dest = in(reg) dest,
                     desired = in($reg_kind) desired,
                     inout($ax) *expected => actual,
-                    lateout("rcx") result,
+                    lateout("cl") result,
                     options(nostack),
                 }
             };
