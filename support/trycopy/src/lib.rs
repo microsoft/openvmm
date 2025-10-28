@@ -644,7 +644,7 @@ macro_rules! recovery_descriptor {
             ".pushsection ",
             crate::recovery_section!(),
             "\n",
-            ".align 4\n",
+            ".balign 4\n",
             ".long ",
             $start,
             " - .\n",
