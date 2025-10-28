@@ -6,8 +6,9 @@
 use super::common_yaml::BashCommands;
 use super::common_yaml::check_generated_yaml_and_json;
 use super::common_yaml::write_generated_yaml_and_json;
-use super::generic::ResolvedJobArtifact;
 use super::generic::ResolvedJobUseParameter;
+use super::generic::ResolvedPublishedArtifact;
+use super::generic::ResolvedUsedArtifact;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
 use crate::cli::pipeline::CheckMode;
@@ -375,7 +376,10 @@ EOF
 
         // next, emit GitHub steps to create dirs for artifacts which will be
         // published
-        for ResolvedJobArtifact { flowey_var, name } in artifacts_published {
+        for ResolvedPublishedArtifact {
+            flowey_var, name, ..
+        } in artifacts_published
+        {
             writeln!(
                 flowey_bootstrap_bash,
                 r#"mkdir -p "$AgentTempDirNormal/publish_artifacts/{name}""#
@@ -399,7 +403,7 @@ EOF
 
         // lastly, emit GitHub steps that report the dirs for any artifacts which
         // are used by this job
-        for ResolvedJobArtifact { flowey_var, name } in artifacts_used {
+        for ResolvedUsedArtifact { flowey_var, name } in artifacts_used {
             let var_db_inject_cmd = bootstrap_bash_var_db_inject(flowey_var, true);
             match platform.kind() {
                 FlowPlatformKind::Windows => {
@@ -434,13 +438,14 @@ EOF
 
         // ..and once that's done, the last order of business is to emit some
         // GitHub steps to publish the various artifacts created by this job
-        for ResolvedJobArtifact {
+        for ResolvedPublishedArtifact {
             flowey_var: _,
             name,
+            force_upload,
         } in artifacts_published
         {
             gh_steps.push({
-                let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
+                let mut map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                         name: 🌼📦 Publish {name}
                         uses: actions/upload-artifact@v4
@@ -451,6 +456,9 @@ EOF
                     "#
                 ))
                 .unwrap();
+                if *force_upload {
+                    map.insert("if".into(), serde_yaml::Value::String("always()".into()));
+                }
                 map.into()
             });
         }

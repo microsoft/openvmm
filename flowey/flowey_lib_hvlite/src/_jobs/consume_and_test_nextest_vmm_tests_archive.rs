@@ -55,8 +55,12 @@ flowey_request! {
 
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
-        /// If provided, also publish junit.xml test results as an artifact.
-        pub artifact_dir: Option<ReadVar<PathBuf>>,
+        /// Copy the junit xml file to the provided directory.
+        pub junit_xml_output_dir: ReadVar<PathBuf>,
+        /// Copy the nextest-list.json to the provided directory.
+        pub nextest_list_json_output_dir: ReadVar<PathBuf>,
+        /// Copy full test results (all logs, dumps, etc) to the provided directory.
+        pub test_results_full_output_dir: ReadVar<PathBuf>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -74,6 +78,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
         ctx.import::<crate::install_vmm_tests_deps::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
+        ctx.import::<crate::run_cargo_nextest_list::Node>();
         ctx.import::<crate::run_prep_steps::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
@@ -90,7 +95,9 @@ impl SimpleFlowNode for Node {
             test_artifacts,
             fail_job_on_test_fail,
             needs_prep_run,
-            artifact_dir,
+            junit_xml_output_dir,
+            nextest_list_json_output_dir,
+            test_results_full_output_dir,
             done,
         } = request;
 
@@ -195,14 +202,14 @@ impl SimpleFlowNode for Node {
         }
 
         let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
-            nextest_archive_file: nextest_vmm_tests_archive,
-            nextest_profile,
-            nextest_filter_expr,
+            nextest_archive_file: nextest_vmm_tests_archive.clone(),
+            nextest_profile: nextest_profile.clone(),
+            nextest_filter_expr: nextest_filter_expr.clone(),
             nextest_working_dir: None,
             nextest_config_file: None,
             nextest_bin: None,
             target: None,
-            extra_env,
+            extra_env: extra_env.clone(),
             pre_run_deps,
             results: v,
         });
@@ -212,16 +219,57 @@ impl SimpleFlowNode for Node {
         let test_log_path = test_log_path.depending_on(ctx, &results);
 
         let junit_xml = results.map(ctx, |r| r.junit_xml);
-        let reported_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
-            junit_xml,
-            test_label: junit_test_label,
-            attachments: BTreeMap::from([("logs".to_string(), (test_log_path, false))]),
-            output_dir: artifact_dir,
-            done: v,
+        let archive_file = nextest_vmm_tests_archive.map(ctx, |x| x.archive_file);
+        // Run_ignored option is set to true so that we can dump all the tests that were built, instead of just the ones that were run.
+        let nextest_list_json = ctx.reqv(|v| crate::run_cargo_nextest_list::Request {
+            archive_file,
+            nextest_bin: None,
+            target: None,
+            working_dir: None,
+            config_file: None,
+            nextest_profile: nextest_profile.as_str().to_owned(),
+            nextest_filter_expr: nextest_filter_expr.clone(),
+            run_ignored: true,
+            extra_env: Some(extra_env),
+            output_dir: test_log_path.clone(),
+            pre_run_deps: vec![],
+            output_file: v,
         });
 
+        let mut side_effects = Vec::new();
+
+        // Publish JUnit XML
+        side_effects.push(ctx.reqv(|v| {
+            flowey_lib_common::publish_test_results::Request::PublishJunitXml {
+                junit_xml,
+                test_label: junit_test_label.clone(),
+                output_dir: Some(junit_xml_output_dir),
+                done: v,
+            }
+        }));
+
+        // Publish test logs
+        side_effects.push(ctx.reqv(|v| {
+            flowey_lib_common::publish_test_results::Request::PublishTestLogs {
+                test_label: junit_test_label.clone(),
+                attachments: BTreeMap::from([("logs".to_string(), (test_log_path, false))]),
+                output_dir: test_results_full_output_dir,
+                done: v,
+            }
+        }));
+
+        // Publish nextest-list.json
+        side_effects.push(ctx.reqv(|v| {
+            flowey_lib_common::publish_test_results::Request::PublishNextestListJson {
+                nextest_list_json,
+                test_label: junit_test_label,
+                output_dir: nextest_list_json_output_dir,
+                done: v,
+            }
+        }));
+
         ctx.emit_rust_step("report test results to overall pipeline status", |ctx| {
-            reported_results.claim(ctx);
+            side_effects.claim(ctx);
             done.claim(ctx);
 
             let results = results.clone().claim(ctx);
