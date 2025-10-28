@@ -385,9 +385,38 @@ pub mod caps {
         /// variants on an as-needed basis!
         pub enum CapabilityId: u8 {
             #![expect(missing_docs)] // self explanatory variants
+            MSI             = 0x05,
             VENDOR_SPECIFIC = 0x09,
             PCI_EXPRESS     = 0x10,
             MSIX            = 0x11,
+        }
+    }
+
+    /// MSI
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod msi {
+        open_enum::open_enum! {
+            /// Offsets into the MSI Capability Header
+            ///
+            /// Based on PCI Local Bus Specification Rev 3.0, Section 6.8.1
+            ///
+            /// | Offset    | Bits 31-24    | Bits 23-16    | Bits 15-8     | Bits 7-0              |
+            /// |-----------|---------------|---------------|---------------|-----------------------|
+            /// | Cap + 0x0 | Message Control            | Next Pointer  | Capability ID (0x05)  |
+            /// | Cap + 0x4 | Message Address (32-bit or lower 32-bit of 64-bit)                  |
+            /// | Cap + 0x8 | Message Address Upper 32-bit (64-bit capable only)                  |
+            /// | Cap + 0xC | Message Data  |               |               |                       |
+            /// | Cap + 0x10| Mask Bits (Per-vector masking capable only)                         |
+            /// | Cap + 0x14| Pending Bits (Per-vector masking capable only)                      |
+            pub enum MsiCapabilityHeader: u16 {
+                CONTROL_CAPS = 0x00,
+                MSG_ADDR_LO  = 0x04,
+                MSG_ADDR_HI  = 0x08,
+                MSG_DATA_32  = 0x08,  // For 32-bit address capable
+                MSG_DATA_64  = 0x0C,  // For 64-bit address capable
+                MASK_BITS    = 0x10,  // 64-bit + per-vector masking
+                PENDING_BITS = 0x14,  // 64-bit + per-vector masking
+            }
         }
     }
 
