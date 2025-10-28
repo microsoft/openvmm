@@ -608,7 +608,7 @@ fn recover(context: &mut Context, failure: AccessFailure) -> bool {
 #[cfg(target_os = "linux")]
 macro_rules! recovery_section {
     () => {
-        "try_copy,\"a\""
+        "try_copy,\"aR\""
     };
 }
 
