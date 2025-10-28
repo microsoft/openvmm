@@ -862,16 +862,24 @@ async fn handle_asynchronous_events(
                     .context("failed to query changed namespace list")?;
 
                 // Notify only the namespaces that have changed.
-                // NOTE: The nvme spec states that the changed namespace list
-                // can contain up to 1024 changed namespaces. If more than that
-                // have changed, the first entry is FFFFFFh, and the rest are 0.
-                // This notably does not handle that case as it is unlikely that
-                // we even have that many namespaces.
+                // NOTE: The nvme spec states - If more than 1,024 namespaces have
+                // changed attributes since the last time the log page was read,
+                // the first entry in the log page shall be set to
+                // FFFFFFFFh and the remainder of the list shall be zero filled.
                 let notifier_guard = rescan_notifiers.read();
-                for nsid in list.iter().filter(|&&nsid| nsid != 0) {
-                    tracing::info!(namespaces = ?list, "notifying listeners of changed namespaces");
-                    if let Some(notifiers) = notifier_guard.get(nsid) {
+                if list[0] == 0xFFFFFFFF && list[1] == 0 {
+                    // More than 1024 namespaces changed - notify all registered namespaces
+                    tracing::info!("more than 1024 namespaces changed, notifying all listeners");
+                    for notifiers in notifier_guard.values() {
                         notifiers.iter().for_each(|n| n.send(()));
+                    }
+                } else {
+                    // Notify specific namespaces that have changed
+                    for nsid in list.iter().filter(|&&nsid| nsid != 0) {
+                        tracing::info!(nsid, "notifying listeners of changed namespace");
+                        if let Some(notifiers) = notifier_guard.get(nsid) {
+                            notifiers.iter().for_each(|n| n.send(()));
+                        }
                     }
                 }
             }
