@@ -82,6 +82,7 @@ impl RateLimiter {
     ///
     /// `missed_events` is `Some(n)` if there were any missed events or if this
     /// event is the last one before rate limiting kicks in.
+    #[cold]
     pub fn event_with_config(
         &self,
         period_ms: Option<u32>,

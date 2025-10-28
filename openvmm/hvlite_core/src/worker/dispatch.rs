@@ -13,6 +13,7 @@ use chipset_device_resources::IRQ_LINE_SET;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
+use firmware_uefi::LogLevel;
 use firmware_uefi::UefiCommandSet;
 use floppy_resources::FloppyDiskConfig;
 use futures::FutureExt;
@@ -28,6 +29,7 @@ use hvlite_defs::config::Aarch64TopologyConfig;
 use hvlite_defs::config::ArchTopologyConfig;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
+use hvlite_defs::config::EfiDiagnosticsLogLevelType;
 use hvlite_defs::config::GicConfig;
 use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::HypervisorConfig;
@@ -200,6 +202,11 @@ impl Manifest {
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
+            efi_diagnostics_log_level: match config.efi_diagnostics_log_level {
+                EfiDiagnosticsLogLevelType::Default => LogLevel::make_default(),
+                EfiDiagnosticsLogLevelType::Info => LogLevel::make_info(),
+                EfiDiagnosticsLogLevelType::Full => LogLevel::make_full(),
+            },
         }
     }
 }
@@ -243,6 +250,7 @@ pub struct Manifest {
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
+    efi_diagnostics_log_level: LogLevel,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -1142,6 +1150,7 @@ impl InitializedVm {
                         } else {
                             UefiCommandSet::Aarch64
                         },
+                        diagnostics_log_level: cfg.efi_diagnostics_log_level,
                     },
                     logger,
                     nvram_storage: {
@@ -3081,6 +3090,7 @@ impl LoadedVm {
             generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
+            efi_diagnostics_log_level: Default::default(),
         };
         RestartState {
             hypervisor: self.inner.hypervisor,
