@@ -3658,12 +3658,6 @@ impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> chipset_device::io::IoResult {
         data.fill(!0);
         if self.is_allowed(addr, data.len()) {
-            tracing::error!(
-                CVM_ALLOWED,
-                ?addr,
-                data_len = data.len(),
-                "unhandled MMIO read forwarded to host"
-            );
             if let Err(err) = self.mshv_hvcall.mmio_read(addr, data) {
                 tracelimit::error_ratelimited!(
                     CVM_ALLOWED,
@@ -3678,12 +3672,6 @@ impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> chipset_device::io::IoResult {
         if self.is_allowed(addr, data.len()) {
-            tracing::error!(
-                CVM_ALLOWED,
-                ?addr,
-                data_len = data.len(),
-                "unhandled MMIO write forwarded to host"
-            );
             if let Err(err) = self.mshv_hvcall.mmio_write(addr, data) {
                 tracelimit::error_ratelimited!(
                     CVM_ALLOWED,
