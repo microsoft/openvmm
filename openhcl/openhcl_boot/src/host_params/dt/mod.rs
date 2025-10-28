@@ -550,7 +550,11 @@ fn topology_from_host_dt(
         } else {
             // No external source defined the pool size, use heuristics to decide.
             let mem_size = vtl2_ram.iter().map(|e| e.range.len()).sum();
-            Some(vtl2_calculate_dma_hint(parsed.cpu_count(), mem_size))
+            Some(vtl2_calculate_dma_hint(
+                options.vtl2_gpa_pool_lookup_table,
+                parsed.cpu_count(),
+                mem_size,
+            ))
         }
     };
     if let Some(vtl2_gpa_pool_size) = vtl2_gpa_pool_size {

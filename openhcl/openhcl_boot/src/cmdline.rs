@@ -17,6 +17,17 @@ use underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME;
 /// supported in openhcl_boot.
 const ENABLE_VTL2_GPA_POOL: &str = "OPENHCL_ENABLE_VTL2_GPA_POOL=";
 
+/// Lookup table for calculating VTL2 GPA pool size.
+///
+/// * `release`: Use the release version of the lookup table.
+/// * `debug`: Use the debug version of the lookup table.
+///
+/// The debug profiles require more VTL2 memory, and thus the heuristics in the
+/// lookup table are different.
+///
+/// If not specified, then `release` is used.
+const VTL2_GPA_POOL_LOOKUP_TABLE: &str = "OPENHCL_VTL2_GPA_POOL_LOOKUP_TABLE=";
+
 /// Options controlling sidecar.
 ///
 /// * `off`: Disable sidecar support.
@@ -29,6 +40,12 @@ const SIDECAR: &str = "OPENHCL_SIDECAR=";
 /// Disable NVME keep alive regardless if the host supports it.
 const DISABLE_NVME_KEEP_ALIVE: &str = "OPENHCL_DISABLE_NVME_KEEP_ALIVE=";
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Vtl2GpaPoolLookupTable {
+    Release,
+    Debug,
+}
+
 #[derive(Debug, PartialEq)]
 pub struct BootCommandLineOptions {
     pub confidential_debug: bool,
@@ -36,6 +53,7 @@ pub struct BootCommandLineOptions {
     pub sidecar: bool,
     pub sidecar_logging: bool,
     pub disable_nvme_keep_alive: bool,
+    pub vtl2_gpa_pool_lookup_table: Vtl2GpaPoolLookupTable,
 }
 
 impl BootCommandLineOptions {
@@ -46,6 +64,7 @@ impl BootCommandLineOptions {
             sidecar: true, // sidecar is enabled by default
             sidecar_logging: false,
             disable_nvme_keep_alive: false,
+            vtl2_gpa_pool_lookup_table: Vtl2GpaPoolLookupTable::Release,
         }
     }
 }
@@ -81,6 +100,20 @@ impl BootCommandLineOptions {
                 let arg = arg.split_once('=').map(|(_, arg)| arg);
                 if arg.is_some_and(|a| a != "0") {
                     self.disable_nvme_keep_alive = true;
+                }
+            } else if arg.starts_with(VTL2_GPA_POOL_LOOKUP_TABLE) {
+                if let Some((_, arg)) = arg.split_once('=') {
+                    for arg in arg.split(',') {
+                        match arg {
+                            "debug" => {
+                                self.vtl2_gpa_pool_lookup_table = Vtl2GpaPoolLookupTable::Debug
+                            }
+                            "release" => {
+                                self.vtl2_gpa_pool_lookup_table = Vtl2GpaPoolLookupTable::Release
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
         }

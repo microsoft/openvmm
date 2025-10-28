@@ -3,6 +3,8 @@
 
 //! Calculate DMA hint value if not provided by host.
 
+use crate::boot_logger::log;
+use crate::cmdline::Vtl2GpaPoolLookupTable;
 use igvm_defs::PAGE_SIZE_4K;
 
 /// Lookup table for VTL2 DMA hint calculation. This table is used to retrofit
@@ -36,8 +38,7 @@ use igvm_defs::PAGE_SIZE_4K;
 ///
 /// The table is sorted by VP count, then by assigned memory.
 /// (vp_count, vtl2_memory_mb, dma_hint_mb)
-#[cfg(not(debug_assertions))]
-const LOOKUP_TABLE: &[(u16, u16, u16); 38] = &[
+const LOOKUP_TABLE_RELEASE: &[(u16, u16, u16); 38] = &[
     (2, 96, 2),
     (2, 98, 4),
     (2, 100, 4),
@@ -81,8 +82,7 @@ const LOOKUP_TABLE: &[(u16, u16, u16); 38] = &[
 /// DEV/TEST ONLY variant of the lookup table above. Since the IGVM manifest specifies additional
 /// VTL2 memory for dev (well above what is required for release configs), allow the heuristics
 /// to still kick in.
-#[cfg(debug_assertions)]
-const LOOKUP_TABLE: &[(u16, u16, u16); 3] = &[
+const LOOKUP_TABLE_DEBUG: &[(u16, u16, u16); 3] = &[
     (4, 496, 32),    // 4 VP, default memory for dev, allocate some memory for DMA.
     (16, 768, 128), // 16 VP "heavy", with extra memory above what is required for dev, allocate some memory for DMA.
     (32, 1024, 256), // 32 VP "very heavy", with extra memory above what is required for dev, allocate some memory for DMA.
@@ -101,8 +101,13 @@ const RATIO: u32 = 1_000;
 fn round_up_to_2mb(pages_4k: u64) -> u64 {
     (pages_4k + (PAGES_PER_2MB - 1)) & !(PAGES_PER_2MB - 1)
 }
+
 /// Returns calculated DMA hint value, in 4k pages.
-pub fn vtl2_calculate_dma_hint(vp_count: usize, mem_size: u64) -> u64 {
+pub fn vtl2_calculate_dma_hint(
+    vtl2_gpa_pool_lookup_table: Vtl2GpaPoolLookupTable,
+    vp_count: usize,
+    mem_size: u64,
+) -> u64 {
     let mut dma_hint_4k = 0;
     // Sanity check for the calculated memory size.
     if mem_size > 0 && mem_size < MAX_DMA_HINT_MEM_SIZE {
@@ -119,9 +124,14 @@ pub fn vtl2_calculate_dma_hint(vp_count: usize, mem_size: u64) -> u64 {
         let mut min_vp_count: u16 = 1; // Biggest VP count entry in the table that is less than vp_count.
         let mut max_vp_count = vp_count as u16; // Smallest VP count entry in the table that is greater than vp_count, or vp_count itself.
 
+        let lookup_table = match vtl2_gpa_pool_lookup_table {
+            Vtl2GpaPoolLookupTable::Release => LOOKUP_TABLE_RELEASE.into_iter(),
+            Vtl2GpaPoolLookupTable::Debug => LOOKUP_TABLE_DEBUG.into_iter(),
+        };
+
         // Take a first loop over the table. Ideally the table contains an exact match
         // for the given VP count and memory size. If not, gather data for extrapolation.
-        for (vp_lookup, vtl2_memory_mb, dma_hint_mb) in LOOKUP_TABLE {
+        for (vp_lookup, vtl2_memory_mb, dma_hint_mb) in lookup_table.clone() {
             match (*vp_lookup).cmp(&(vp_count as u16)) {
                 core::cmp::Ordering::Less => {
                     // Current entry has fewer VPs than requested.
@@ -172,8 +182,7 @@ pub fn vtl2_calculate_dma_hint(vp_count: usize, mem_size: u64) -> u64 {
                 ?max_ratio_1000th,
                 "Exact match not found, extrapolating DMA hint",
             );
-            LOOKUP_TABLE
-                .iter()
+            lookup_table
                 .filter(|(vp_lookup, _, _)| {
                     *vp_lookup == min_vp_count || *vp_lookup == max_vp_count
                 })
@@ -188,6 +197,13 @@ pub fn vtl2_calculate_dma_hint(vp_count: usize, mem_size: u64) -> u64 {
         }
 
         if dma_hint_4k == 0 {
+            // Didn't find an exact match for vp_count, try to extrapolate.
+            dma_hint_4k = (mem_size_mb as u64 * RATIO as u64 * (ONE_MB / PAGE_SIZE_4K))
+                / ((min_ratio_1000th + max_ratio_1000th) as u64 / 2u64);
+
+            // And then round up to 2MiB.
+            dma_hint_4k = round_up_to_2mb(dma_hint_4k);
+
             #[cfg(test)]
             tracing::debug!(
                 ?min_vp_count,
@@ -196,27 +212,28 @@ pub fn vtl2_calculate_dma_hint(vp_count: usize, mem_size: u64) -> u64 {
                 ?max_vtl2_memory_mb,
                 ?min_ratio_1000th,
                 ?max_ratio_1000th,
-                "Extrapolating VTL2 DMA hint",
+                ?dma_hint_4k,
+                "Extrapolated VTL2 DMA hint",
             );
-            // Didn't find an exact match for vp_count, try to extrapolate.
-            dma_hint_4k = (mem_size_mb as u64 * RATIO as u64 * (ONE_MB / PAGE_SIZE_4K))
-                / ((min_ratio_1000th + max_ratio_1000th) as u64 / 2u64);
 
-            // And then round up to 2MiB.
-            dma_hint_4k = round_up_to_2mb(dma_hint_4k);
+            log!(
+                "Extrapolated VTL2 DMA hint: {} pages ({} MiB) for {} VPs and {} MiB VTL2 memory",
+                dma_hint_4k,
+                dma_hint_4k * PAGE_SIZE_4K / ONE_MB,
+                vp_count,
+                mem_size_mb
+            );
+        } else {
+            log!(
+                "Found exact VTL2 DMA hint: {} pages ({} MiB) for {} VPs and {} MiB VTL2 memory",
+                dma_hint_4k,
+                dma_hint_4k * PAGE_SIZE_4K / ONE_MB,
+                vp_count,
+                mem_size_mb
+            );
         }
     }
 
-    #[cfg(test)]
-    tracing::debug!(
-        ?vp_count,
-        ?mem_size,
-        ?dma_hint_4k,
-        "Calculated VTL2 DMA hint (0n{} vp, 0x{:x} mem -> 0x{:x} pages)",
-        vp_count,
-        mem_size,
-        dma_hint_4k,
-    );
     dma_hint_4k
 }
 
@@ -227,68 +244,74 @@ mod test {
 
     const ONE_MB: u64 = 0x10_0000;
 
-    #[cfg(not(debug_assertions))]
     #[test]
     fn test_vtl2_calculate_dma_hint_release() {
         assert_eq!(
-            vtl2_calculate_dma_hint(2, 0x620_0000),
+            vtl2_calculate_dma_hint(Vtl2GpaPoolLookupTable::Release, 2, 0x620_0000),
             4 * ONE_MB / PAGE_SIZE_4K
         );
         assert_eq!(
-            vtl2_calculate_dma_hint(4, 0x6E0_0000),
+            vtl2_calculate_dma_hint(Vtl2GpaPoolLookupTable::Release, 4, 0x6E0_0000),
             6 * ONE_MB / PAGE_SIZE_4K
         );
 
         // Test VP count higher than max from LOOKUP_TABLE.
         assert_eq!(
-            vtl2_calculate_dma_hint(112, 0x700_0000),
+            vtl2_calculate_dma_hint(Vtl2GpaPoolLookupTable::Release, 112, 0x700_0000),
             22 * ONE_MB / PAGE_SIZE_4K
         );
 
         // Test unusual VP count.
         assert_eq!(
-            vtl2_calculate_dma_hint(52, 0x600_0000),
+            vtl2_calculate_dma_hint(Vtl2GpaPoolLookupTable::Release, 52, 0x600_0000),
             8 * ONE_MB / PAGE_SIZE_4K
         );
         assert_eq!(
-            vtl2_calculate_dma_hint(52, 0x800_0000),
+            vtl2_calculate_dma_hint(Vtl2GpaPoolLookupTable::Release, 52, 0x800_0000),
             10 * ONE_MB / PAGE_SIZE_4K
         );
     }
 
-    #[cfg(debug_assertions)]
     #[test]
     fn test_vtl2_calculate_dma_hint_debug() {
         assert_eq!(
-            vtl2_calculate_dma_hint(4, 0x1F00_0000),
+            vtl2_calculate_dma_hint(Vtl2GpaPoolLookupTable::Debug, 4, 0x1F00_0000),
             32 * ONE_MB / PAGE_SIZE_4K
         );
         assert_eq!(
-            vtl2_calculate_dma_hint(64, 0x4000_0000),
+            vtl2_calculate_dma_hint(Vtl2GpaPoolLookupTable::Debug, 64, 0x4000_0000),
             256 * ONE_MB / PAGE_SIZE_4K
         );
         // Test VP count higher than max from LOOKUP_TABLE.
         assert_eq!(
-            vtl2_calculate_dma_hint(128, 0x4000_0000),
+            vtl2_calculate_dma_hint(Vtl2GpaPoolLookupTable::Debug, 128, 0x4000_0000),
             256 * ONE_MB / PAGE_SIZE_4K
         );
         assert_eq!(
-            vtl2_calculate_dma_hint(128, 0x8000_0000),
+            vtl2_calculate_dma_hint(Vtl2GpaPoolLookupTable::Debug, 128, 0x8000_0000),
             512 * ONE_MB / PAGE_SIZE_4K
         );
     }
 
     #[test]
     fn test_vtl2_calculate_dma_hint_exact_matches() {
-        for (vp_count, vtl2_memory_mb, dma_hint_mb) in LOOKUP_TABLE {
-            let calculated_dma_hint_4k =
-                vtl2_calculate_dma_hint(*vp_count as usize, (*vtl2_memory_mb as u64) * ONE_MB);
-            let expected_dma_hint_4k = (*dma_hint_mb as u64) * ONE_MB / PAGE_SIZE_4K;
-            assert_eq!(
-                calculated_dma_hint_4k, expected_dma_hint_4k,
-                "Failed exact match test for vp_count={}, vtl2_memory_mb={}",
-                vp_count, vtl2_memory_mb
-            );
+        for (mode, table) in vec![
+            (Vtl2GpaPoolLookupTable::Release, LOOKUP_TABLE_RELEASE.iter()),
+            (Vtl2GpaPoolLookupTable::Debug, LOOKUP_TABLE_DEBUG.iter()),
+        ] {
+            for (vp_count, vtl2_memory_mb, dma_hint_mb) in table {
+                let calculated_dma_hint_4k = vtl2_calculate_dma_hint(
+                    mode,
+                    *vp_count as usize,
+                    (*vtl2_memory_mb as u64) * ONE_MB,
+                );
+                let expected_dma_hint_4k = (*dma_hint_mb as u64) * ONE_MB / PAGE_SIZE_4K;
+                assert_eq!(
+                    calculated_dma_hint_4k, expected_dma_hint_4k,
+                    "Failed exact match test for vp_count={}, vtl2_memory_mb={}",
+                    vp_count, vtl2_memory_mb
+                );
+            }
         }
     }
 }
