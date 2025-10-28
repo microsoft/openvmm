@@ -41,8 +41,8 @@ async fn test_gdma(driver: DefaultDriver) {
         &mut ExternallyManagedMmioIntercepts,
     );
     let dma_client = mem.dma_client();
-    let device = EmulatedDevice::new(device, msi_set, dma_client);
-    let dma_client = device.dma_client();
+    let device = EmulatedDevice::new(device, msi_set, dma_client, None);
+    let dma_client = device.ephemeral_dma_client();
     let buffer = dma_client.allocate_dma_buffer(6 * PAGE_SIZE).unwrap();
 
     let mut gdma = GdmaDriver::new(&driver, device, 1, Some(buffer))
@@ -66,7 +66,7 @@ async fn test_gdma(driver: DefaultDriver) {
     let vport = port_config.vport;
     let buffer = Arc::new(
         gdma.device()
-            .dma_client()
+            .ephemeral_dma_client()
             .allocate_dma_buffer(0x5000)
             .unwrap(),
     );
@@ -180,10 +180,10 @@ async fn test_gdma_save_restore(driver: DefaultDriver) {
     );
     let dma_client = mem.dma_client();
 
-    let device = EmulatedDevice::new(device, msi_set, dma_client);
+    let device = EmulatedDevice::new(device, msi_set, dma_client, None);
     let cloned_device = device.clone();
 
-    let dma_client = device.dma_client();
+    let dma_client = device.ephemeral_dma_client();
     let gdma_buffer = dma_client.allocate_dma_buffer(6 * PAGE_SIZE).unwrap();
 
     let saved_state = {

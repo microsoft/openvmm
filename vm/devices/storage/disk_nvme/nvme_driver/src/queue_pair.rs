@@ -216,7 +216,14 @@ impl<T: AerHandler> QueuePair<T> {
             } else {
                 PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE
             };
-        let dma_client = device.dma_client();
+
+        let dma_client = if let Some(dma_client) = device.persistent_dma_client() {
+            tracing::info!("using persistent dma client");
+            dma_client
+        } else {
+            tracing::error!("no persistent dma client, falling back to ephemeral client");
+            device.ephemeral_dma_client()
+        };
 
         let mem = dma_client
             .allocate_dma_buffer(total_size)

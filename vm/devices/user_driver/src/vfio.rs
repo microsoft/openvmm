@@ -56,7 +56,8 @@ pub struct VfioDevice {
     interrupts: Vec<Option<InterruptState>>,
     #[inspect(skip)]
     config_space: vfio_sys::RegionInfo,
-    dma_client: Arc<dyn DmaClient>,
+    ephemeral_dma_client: Arc<dyn DmaClient>,
+    persistent_dma_client: Option<Arc<dyn DmaClient>>,
 }
 
 #[derive(Inspect)]
@@ -73,9 +74,17 @@ impl VfioDevice {
     pub async fn new(
         driver_source: &VmTaskDriverSource,
         pci_id: impl AsRef<str>,
-        dma_client: Arc<dyn DmaClient>,
+        ephemeral_dma_client: Arc<dyn DmaClient>,
+        persistent_dma_client: Option<Arc<dyn DmaClient>>,
     ) -> anyhow::Result<Self> {
-        Self::restore(driver_source, pci_id, false, dma_client).await
+        Self::restore(
+            driver_source,
+            pci_id,
+            false,
+            ephemeral_dma_client,
+            persistent_dma_client,
+        )
+        .await
     }
 
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
@@ -84,7 +93,8 @@ impl VfioDevice {
         driver_source: &VmTaskDriverSource,
         pci_id: impl AsRef<str>,
         keepalive: bool,
-        dma_client: Arc<dyn DmaClient>,
+        ephemeral_dma_client: Arc<dyn DmaClient>,
+        persistent_dma_client: Option<Arc<dyn DmaClient>>,
     ) -> anyhow::Result<Self> {
         let pci_id = pci_id.as_ref();
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
@@ -131,7 +141,8 @@ impl VfioDevice {
             config_space,
             driver_source: driver_source.clone(),
             interrupts: Vec::new(),
-            dma_client,
+            ephemeral_dma_client,
+            persistent_dma_client,
         };
 
         // Ensure bus master enable and memory space enable are set, and that
@@ -232,8 +243,12 @@ impl DeviceBacking for VfioDevice {
         (*self).map_bar(n)
     }
 
-    fn dma_client(&self) -> Arc<dyn DmaClient> {
-        self.dma_client.clone()
+    fn ephemeral_dma_client(&self) -> Arc<dyn DmaClient> {
+        self.ephemeral_dma_client.clone()
+    }
+
+    fn persistent_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
+        self.persistent_dma_client.clone()
     }
 
     fn max_interrupt_count(&self) -> u32 {

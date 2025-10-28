@@ -37,7 +37,8 @@ use user_driver::memory::PAGE_SIZE64;
 pub struct EmulatedDevice<T, U> {
     device: Arc<Mutex<T>>,
     controller: Arc<MsiController>,
-    dma_client: Arc<U>,
+    persistent_dma_client: Option<Arc<U>>,
+    ephemeral_dma_client: Arc<U>,
     bar0_len: usize,
 }
 
@@ -79,7 +80,8 @@ impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> Clone for EmulatedDevice<T
         Self {
             device: self.device.clone(),
             controller: self.controller.clone(),
-            dma_client: self.dma_client.clone(),
+            ephemeral_dma_client: self.ephemeral_dma_client.clone(),
+            persistent_dma_client: self.persistent_dma_client.clone(),
             bar0_len: self.bar0_len,
         }
     }
@@ -88,7 +90,12 @@ impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> Clone for EmulatedDevice<T
 impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
     /// Creates a new emulated device, wrapping `device` of type T, using the provided MSI Interrupt Set. Dma_client should point to memory
     /// shared with the device.
-    pub fn new(mut device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
+    pub fn new(
+        mut device: T,
+        msi_set: MsiInterruptSet,
+        ephemeral_dma_client: Arc<U>,
+        persistent_dma_client: Option<Arc<U>>,
+    ) -> Self {
         // Connect an interrupt controller.
         let controller = MsiController::new(msi_set.len());
         msi_set.connect(&controller);
@@ -123,7 +130,8 @@ impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
         Self {
             device: Arc::new(Mutex::new(device)),
             controller,
-            dma_client,
+            ephemeral_dma_client,
+            persistent_dma_client,
             bar0_len,
         }
     }
@@ -158,8 +166,14 @@ impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + Send + DmaClie
         })
     }
 
-    fn dma_client(&self) -> Arc<dyn DmaClient> {
-        self.dma_client.clone()
+    fn persistent_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
+        self.persistent_dma_client
+            .clone()
+            .map(|arc| arc as Arc<dyn DmaClient>)
+    }
+
+    fn ephemeral_dma_client(&self) -> Arc<dyn DmaClient> {
+        self.ephemeral_dma_client.clone()
     }
 
     fn max_interrupt_count(&self) -> u32 {

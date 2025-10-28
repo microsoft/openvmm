@@ -502,7 +502,7 @@ impl<T: PciConfigSpace + MmioIntercept + InspectMut, U: DmaClient> NvmeTestEmula
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
     pub fn new(device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
         Self {
-            device: EmulatedDevice::new(device, msi_set, dma_client.clone()),
+            device: EmulatedDevice::new(device, msi_set, dma_client.clone(), None),
             mocked_response_u32: Arc::new(Mutex::new(None)),
             mocked_response_u64: Arc::new(Mutex::new(None)),
         }
@@ -533,8 +533,12 @@ impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + DmaClient> Dev
         })
     }
 
-    fn dma_client(&self) -> Arc<dyn DmaClient> {
-        self.device.dma_client()
+    fn ephemeral_dma_client(&self) -> Arc<dyn DmaClient> {
+        self.device.ephemeral_dma_client()
+    }
+
+    fn persistent_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
+        self.device.persistent_dma_client()
     }
 
     fn max_interrupt_count(&self) -> u32 {

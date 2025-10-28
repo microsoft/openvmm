@@ -662,7 +662,10 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .map_interrupt(0, 0)
             .context("failed to map interrupt 0")?;
 
-        let dma_client = worker.device.dma_client();
+        let dma_client = worker
+            .device
+            .persistent_dma_client()
+            .expect("must have persistent dma client to restore memory");
         let restored_memory = dma_client
             .attach_pending_buffers()
             .context("failed to restore allocations")?;

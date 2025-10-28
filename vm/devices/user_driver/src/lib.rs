@@ -30,8 +30,11 @@ pub trait DeviceBacking: 'static + Send + Inspect {
     /// Maps a BAR.
     fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers>;
 
-    /// DMA Client for the device.
-    fn dma_client(&self) -> Arc<dyn DmaClient>;
+    /// DMA Client for memory that does not persist across servicing for the device
+    fn ephemeral_dma_client(&self) -> Arc<dyn DmaClient>;
+
+    /// DMA Client for memory that persists across servicing for the device
+    fn persistent_dma_client(&self) -> Option<Arc<dyn DmaClient>>;
 
     /// Returns the maximum number of interrupts that can be mapped.
     fn max_interrupt_count(&self) -> u32;

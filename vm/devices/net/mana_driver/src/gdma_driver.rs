@@ -292,7 +292,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let dma_buffer = match dma_buffer {
             Some(buffer) => buffer,
             None => {
-                let dma_client = device.dma_client();
+                let dma_client = device.ephemeral_dma_client();
                 dma_client
                     .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
                     .context("failed to allocate DMA buffer")?

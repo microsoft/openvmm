@@ -29,7 +29,7 @@ pub struct FuzzEmulatedDevice<T: InspectMut, U> {
 impl<T: PciConfigSpace + MmioIntercept + InspectMut, U: DmaClient> FuzzEmulatedDevice<T, U> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
     pub fn new(device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
-        let device = EmulatedDevice::new(device, msi_set, dma_client);
+        let device = EmulatedDevice::new(device, msi_set, dma_client, None);
 
         Self { device }
     }
@@ -49,8 +49,12 @@ impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + DmaClient> Dev
         self.device.map_bar(n)
     }
 
-    fn dma_client(&self) -> Arc<dyn DmaClient> {
-        self.device.dma_client()
+    fn ephemeral_dma_client(&self) -> Arc<dyn DmaClient> {
+        self.device.ephemeral_dma_client()
+    }
+
+    fn persistent_dma_client(&self) -> Option<Arc<dyn DmaClient>> {
+        self.device.persistent_dma_client()
     }
 
     /// Arbitrarily decide to passthrough or return arbitrary value.
