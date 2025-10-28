@@ -240,8 +240,6 @@ impl BasicNic {
                      queue_pairs,
                  }| {
                     assert!(endpoint.is_ordered());
-                    // An extra slot is needed because when setting the requested_num_queues state
-                    // in the netvsp device the subchannel count is incremented by one.
                     let tasks: Vec<VportTask> = (0..(queue_pairs + 1))
                         .map(|_| VportTask {
                             task: TaskControl::new(TxRxState),
@@ -337,7 +335,7 @@ impl BasicNic {
                     .context("failed to allocate cq")?;
 
                 let mut placed = false;
-                // Make the top 32 bits a the vport index
+                // Make the top 32 bits the vport index
                 let mut wq_handle = req.vport << 32;
                 wq_handle |= self.next_wq_handle.fetch_add(1, Ordering::Relaxed);
                 for task in vport.tasks.iter_mut() {
