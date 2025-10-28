@@ -40,7 +40,7 @@
   text-transform: uppercase;
   padding: 6px 8px;
   font-weight: 600;
-  font-size: 0.83rem;
+  font-size: 1rem;
 }
 
 .virtualized-table th.sortable {
@@ -90,8 +90,8 @@
 }
 
 .virtualized-table-row td {
-  padding: 0.7rem 0.5rem;
+  padding: 0.8rem 0.4rem;
   vertical-align: middle;
   font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
-  font-size: 0.9rem;
+  font-size: 1.1rem;
 }

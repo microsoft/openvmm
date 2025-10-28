@@ -107,47 +107,6 @@ export function LogViewer(): React.JSX.Element {
         return () => document.removeEventListener('keydown', handleKeyDown);
     }, [selectedRow, logEntries]);
 
-    const handleRowClick = (originalIndex: number, logId: string, event: React.MouseEvent) => {
-        if ((event.target as HTMLElement).closest('a')) return; // ignore clicks on links
-
-        // Detect if user is performing a text selection inside this row. If so,
-        // Don't do anything.
-        const sel = window.getSelection();
-        const isSelectingText = !!sel && !sel.isCollapsed && sel.toString().trim().length > 0;
-        const currentTarget = event.currentTarget as HTMLElement | null;
-        let selectionInsideRow = false;
-        if (isSelectingText && currentTarget && sel && sel.rangeCount > 0) {
-            const range = sel.getRangeAt(0);
-            const common = range.commonAncestorContainer;
-            selectionInsideRow = currentTarget.contains(common.nodeType === 1 ? common as Node : common.parentElement as Node);
-            return;
-        }
-
-        const params = new URLSearchParams(location.search);
-
-        // If already selected and the user is dragging/selecting text inside the row, keep selection & ensure URL param is present.
-        if (selectedRow === logId && selectionInsideRow) {
-            if (!params.get('log')) {
-                params.set('log', originalIndex.toString());
-                navigate(`${location.pathname}?${params.toString()}`, { replace: true });
-            }
-            return; // do not toggle off
-        }
-
-        if (selectedRow === logId) {
-            // Plain click on an already selected row (no text selection) -> toggle off
-            setSelectedRow(null);
-            params.delete('log');
-            navigate(params.toString() ? `${location.pathname}?${params.toString()}` : location.pathname, { replace: true });
-            return;
-        }
-
-        // Selecting a new row
-        setSelectedRow(logId);
-        params.set('log', originalIndex.toString());
-        navigate(`${location.pathname}?${params.toString()}`, { replace: true });
-    };
-
     // Capture the initial ?log param once per runId/testName change
     useEffect(() => {
         initializedFromUrlRef.current = false;
@@ -228,7 +187,15 @@ export function LogViewer(): React.JSX.Element {
                         }}
                         onRowClick={(row, event) => {
                             const logId = `log-${row.original.index}`;
-                            handleRowClick(row.original.index, logId, event);
+                            handleRowClick(
+                                row.original.index,
+                                logId,
+                                event,
+                                selectedRow,
+                                setSelectedRow,
+                                location,
+                                navigate
+                            );
                         }}
                         scrollToIndex={pendingScrollIndex}
                     />
@@ -250,6 +217,73 @@ export function LogViewer(): React.JSX.Element {
             )}
         </div>
     );
+}
+
+/**
+ * Handles row click events in the log viewer.
+ * 
+ * This function manages row selection with the following behaviors:
+ * - Ignores clicks on links within the row
+ * - Detects and ignores text selection (dragging) to allow users to copy text
+ * - Toggles row selection on/off when clicking the same row
+ * - Updates URL query parameters to reflect the selected log entry
+ * - Maintains selection state when user is selecting text within a row
+ * 
+ * @param originalIndex - The original index of the log entry
+ * @param logId - The ID of the log row (e.g., "log-123")
+ * @param event - The React mouse event from the click
+ * @param selectedRow - The currently selected row ID (or null if none selected)
+ * @param setSelectedRow - State setter function to update the selected row
+ * @param location - React Router location object for URL manipulation
+ * @param navigate - React Router navigate function for URL updates
+ */
+function handleRowClick(
+    originalIndex: number,
+    logId: string,
+    event: React.MouseEvent,
+    selectedRow: string | null,
+    setSelectedRow: (row: string | null) => void,
+    location: ReturnType<typeof useLocation>,
+    navigate: ReturnType<typeof useNavigate>
+) {
+    if ((event.target as HTMLElement).closest('a')) return; // ignore clicks on links
+
+    // Detect if user is performing a text selection inside this row. If so,
+    // Don't do anything.
+    const sel = window.getSelection();
+    const isSelectingText = !!sel && !sel.isCollapsed && sel.toString().trim().length > 0;
+    const currentTarget = event.currentTarget as HTMLElement | null;
+    let selectionInsideRow = false;
+    if (isSelectingText && currentTarget && sel && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0);
+        const common = range.commonAncestorContainer;
+        selectionInsideRow = currentTarget.contains(common.nodeType === 1 ? common as Node : common.parentElement as Node);
+        return;
+    }
+
+    const params = new URLSearchParams(location.search);
+
+    // If already selected and the user is dragging/selecting text inside the row, keep selection & ensure URL param is present.
+    if (selectedRow === logId && selectionInsideRow) {
+        if (!params.get('log')) {
+            params.set('log', originalIndex.toString());
+            navigate(`${location.pathname}?${params.toString()}`, { replace: true });
+        }
+        return; // do not toggle off
+    }
+
+    if (selectedRow === logId) {
+        // Plain click on an already selected row (no text selection) -> toggle off
+        setSelectedRow(null);
+        params.delete('log');
+        navigate(params.toString() ? `${location.pathname}?${params.toString()}` : location.pathname, { replace: true });
+        return;
+    }
+
+    // Selecting a new row
+    setSelectedRow(logId);
+    params.set('log', originalIndex.toString());
+    navigate(`${location.pathname}?${params.toString()}`, { replace: true });
 }
 
 /**

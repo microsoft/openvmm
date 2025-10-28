@@ -6,9 +6,9 @@ export const defaultSorting = [
 ];
 
 export const columnWidthMap = {
-    relative: 100,
+    relative: 110,
     severity: 80,
-    source: 80,
+    source: 100,
     screenshot: 100,
 };
 
