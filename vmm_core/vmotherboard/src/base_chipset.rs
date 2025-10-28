@@ -884,9 +884,9 @@ mod weak_mutex_pci {
                     name.clone(),
                     WeakMutexPciDeviceWrapper(dev),
                 )
-                .map_err(|(_, existing_dev)| PciConflict {
+                .map_err(|occ_err| PciConflict {
                     bdf: (bus, device, function),
-                    reason: PciConflictReason::ExistingDev(existing_dev),
+                    reason: PciConflictReason::ExistingDev(occ_err.existing_device_name),
                     conflict_dev: name,
                 })
         }
@@ -911,9 +911,9 @@ mod weak_mutex_pci {
                     name.clone(),
                     WeakMutexPciDeviceWrapper(dev),
                 )
-                .map_err(|(_, existing_dev)| PciConflict {
+                .map_err(|occ_err| PciConflict {
                     bdf: (bus, device, function),
-                    reason: PciConflictReason::ExistingDev(existing_dev),
+                    reason: PciConflictReason::ExistingDev(occ_err.existing_device_name),
                     conflict_dev: name,
                 })
         }

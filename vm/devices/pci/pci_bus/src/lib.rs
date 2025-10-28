@@ -35,6 +35,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use thiserror::Error;
 use vmcore::device_state::ChangeDeviceState;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -213,6 +214,16 @@ pub struct GenericPciBus {
     state: GenericPciBusState,
 }
 
+/// Error indicating that a PCI slot is already occupied.
+#[derive(Debug, Error)]
+#[error("PCI slot already occupied by device '{existing_device_name}'")]
+pub struct PciSlotOccupiedError<D> {
+    /// Name of the existing device occupying the slot.
+    pub existing_device_name: Arc<str>,
+    /// The device that was attempted to be added.
+    pub device: D,
+}
+
 impl GenericPciBus {
     /// Create a new [`GenericPciBus`] with the specified (4-byte) IO ports.
     pub fn new(
@@ -238,8 +249,7 @@ impl GenericPciBus {
         }
     }
 
-    /// Try to add a PCI device, returning (device, existing_device_name) if the
-    /// slot is already occupied.
+    /// Try to add a PCI device.
     pub fn add_pci_device<D: GenericPciBusDevice>(
         &mut self,
         bus: u8,
@@ -247,7 +257,7 @@ impl GenericPciBus {
         function: u8,
         name: impl AsRef<str>,
         dev: D,
-    ) -> Result<(), (D, Arc<str>)> {
+    ) -> Result<(), PciSlotOccupiedError<D>> {
         let key = PciAddr {
             bus,
             device,
@@ -255,7 +265,10 @@ impl GenericPciBus {
         };
 
         if let Some((name, _)) = self.pci_devices.get(&key) {
-            return Err((dev, name.clone()));
+            return Err(PciSlotOccupiedError {
+                existing_device_name: name.clone(),
+                device: dev,
+            });
         }
 
         self.pci_devices
@@ -734,7 +747,6 @@ impl core::fmt::Display for AddressRegister {
 
 mod save_restore {
     use super::*;
-    use thiserror::Error;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
     use vmcore::save_restore::SaveRestore;
