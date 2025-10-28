@@ -73,9 +73,9 @@ jobs:
               // Post a warning comment
               const comment = `⚠️ **Unsafe Code Detected**
 
-This PR modifies files containing \`unsafe\` Rust code. Extra scrutiny is required during review.
+              This PR modifies files containing \`unsafe\` Rust code. Extra scrutiny is required during review.
 
-For more on why we check whole files, instead of just diffs, check out [the Rustonomicon](https://doc.rust-lang.org/nomicon/working-with-unsafe.html)`;
+              For more on why we check whole files, instead of just diffs, check out [the Rustonomicon](https://doc.rust-lang.org/nomicon/working-with-unsafe.html)`;
               
               // Check if we already posted this comment
               const { data: comments } = await github.rest.issues.listComments({
