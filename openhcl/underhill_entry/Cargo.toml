@@ -26,7 +26,7 @@ openssl_crypto_only.workspace = true
 
 anyhow.workspace = true
 mimalloc.workspace = true
-tracing = { workspace = true, features = ["release_max_level_debug"] }
+tracing = { workspace = true, features = ["release_max_level_info"] }
 
 [lints]
 workspace = true
