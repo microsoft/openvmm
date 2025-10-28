@@ -170,12 +170,6 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
         self
     }
 
-    /// Pagetables that are reported as type [`MemoryVtlType::VTL2_TDX_PAGE_TABLES`].
-    pub fn with_page_tables(mut self, page_tables: MemoryRange) -> Self {
-        self.page_tables = Some(page_tables);
-        self
-    }
-
     /// Log buffer that is reported as type [`MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER`].
     pub fn with_log_buffer(mut self, log_buffer: MemoryRange) -> Self {
         self.log_buffer = Some(log_buffer);
@@ -362,6 +356,91 @@ impl AddressSpaceManager {
         allocated
     }
 
+    /// Truncate a memory range, with allocation policy deciding whether
+    /// free the low part or high part.
+    pub fn truncate_range(
+        &mut self,
+        range: AllocatedRange,
+        len: u64,
+        allocation_policy: AllocationPolicy,
+    ) {
+        //TODO babayet2 ASSERT 4k or align
+        //get index of range to modify
+        //let index = self.address_space.iter().position(range).exepct("allocated range must be present");
+
+        let index = self
+            .address_space
+            .iter()
+            .position(|r| r.range.start() == range.range.start())
+            .unwrap();
+
+        let (used, remainder) = match allocation_policy {
+            AllocationPolicy::LowMemory => {
+                // Allocate from the beginning (low addresses)
+                range.range.split_at_offset(len)
+            }
+            AllocationPolicy::HighMemory => {
+                // Allocate from the end (high addresses)
+                let offset = range.range.len() - len;
+                let (remainder, used) = range.range.split_at_offset(offset);
+                (used, remainder)
+            }
+        };
+
+        let remainder = if !remainder.is_empty() {
+            Some(AddressRange {
+                range: remainder,
+                vnode: range.vnode,
+                usage: AddressUsage::Free,
+            })
+        } else {
+            None
+        };
+
+        if let Some(remainder) = remainder {
+            let (free_range, free_index) = match allocation_policy {
+                AllocationPolicy::LowMemory => {
+                    let next = self.address_space.get(index + 1);
+                    if next.is_some()
+                        && next.unwrap().usage == AddressUsage::Free
+                        && next.unwrap().range.start() == remainder.range.end()
+                    {
+                        (MemoryRange::new(remainder.range.start()..next.unwrap().range.end()), index + 1)
+                    } else {
+                        (remainder.range, index + 1)
+                    }
+                }
+                AllocationPolicy::HighMemory => {
+                    // When allocating from high memory, the remainder goes
+                    // before the allocated range
+                    let prev = self.address_space.get(index - 1);
+                    if prev.is_some()
+                        && prev.unwrap().usage == AddressUsage::Free
+                        && prev.unwrap().range.end() == remainder.range.start()
+                    {
+                        (MemoryRange::new(prev.unwrap().range.start()..remainder.range.end()), index - 1)
+                    } else {
+                        (remainder.range, index - 1)
+                    }
+                }
+            };
+
+            let usage = self.address_space[index].usage;
+
+            self.address_space[index] = AddressRange {
+                range: used,
+                vnode: range.vnode,
+                usage,
+            };
+
+            self.address_space[free_index] = AddressRange {
+                range: free_range,
+                vnode: range.vnode,
+                usage: AddressUsage::Free,
+            };
+        }
+    }
+
     /// Allocate a new range of memory with the given type and policy. None is
     /// returned if the allocation was unable to be satisfied.
     ///
@@ -423,6 +502,9 @@ impl AddressSpaceManager {
                     AllocationType::SidecarNode => {
                         AddressUsage::Reserved(ReservedMemoryType::SidecarNode)
                     }
+                    AllocationType::TdxPageTables => {
+                        AddressUsage::Reserved(ReservedMemoryType::TdxPageTables)
+                    }
                 },
                 allocation_policy,
             )
@@ -463,6 +545,7 @@ impl AddressSpaceManager {
 pub enum AllocationType {
     GpaPool,
     SidecarNode,
+    TdxPageTables,
 }
 
 pub enum AllocationPolicy {

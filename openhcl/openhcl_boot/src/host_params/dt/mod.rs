@@ -501,15 +501,6 @@ impl PartitionInfo {
             ));
         }
 
-        // Only specify pagetables as a reserved region on TDX, as they are used
-        // for AP startup via the mailbox protocol. On other platforms, the
-        // memory is free to be reclaimed.
-        if params.isolation_type == IsolationType::Tdx {
-            assert!(params.page_tables.is_some());
-            address_space_builder = address_space_builder
-                .with_page_tables(params.page_tables.expect("always present on tdx"));
-        }
-
         address_space_builder
             .init()
             .expect("failed to initialize address space manager");

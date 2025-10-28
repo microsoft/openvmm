@@ -50,7 +50,7 @@ pub struct PageTableEntry {
 }
 
 impl core::fmt::Debug for PageTableEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PageTableEntry")
             .field("entry", &self.entry)
             .field("is_present", &self.is_present())
@@ -304,6 +304,8 @@ pub struct PageTableBuilder<'a> {
     page_table: &'a mut [PageTable],
     /// a reference to a mutable slice of u8s, used to store and return the final page table bytes
     flattened_page_table: &'a mut [u8],
+    /// TODO(babayet2)
+    ranges: Option<&'a [(u64, u64)]>,
 }
 
 impl PteOps for PageTableBuilderParams {
@@ -346,6 +348,7 @@ impl<'a> PageTableBuilder<'a> {
                 },
                 page_table,
                 flattened_page_table,
+                ranges: None,
             })
         }
     }
@@ -368,6 +371,11 @@ impl<'a> PageTableBuilder<'a> {
         self.params.start_gpa = start_gpa;
         self.params.size = size;
         Ok(self)
+    }
+
+    pub fn with_ranges(mut self, ranges: &'a [(u64, u64)]) -> Self {
+        self.ranges = Some(ranges);
+        self
     }
 
     pub fn with_local_map(mut self, start_va: u64, size: u64) -> Result<Self, Error> {
@@ -414,6 +422,7 @@ impl<'a> PageTableBuilder<'a> {
         let PageTableBuilder {
             page_table,
             flattened_page_table,
+            ranges,
             params,
         } = self;
 
@@ -530,7 +539,13 @@ impl<'a> PageTableBuilder<'a> {
             }
         };
 
-        link_tables(start_va, end_va, true);
+        if !ranges.is_some() {
+            link_tables(start_va, end_va, true);
+        } else {
+            for range in ranges.unwrap() {
+                link_tables(range.0, range.1, true);
+            }
+        }
 
         // Create local map area if present.
         if let Some((local_map_start, local_map_size)) = params.local_map {

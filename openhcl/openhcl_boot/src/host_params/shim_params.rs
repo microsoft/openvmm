@@ -101,8 +101,6 @@ pub struct ShimParams {
     /// Memory used by the shim.
     pub used: MemoryRange,
     pub bounce_buffer: Option<MemoryRange>,
-    /// Page tables region used by the shim.
-    pub page_tables: Option<MemoryRange>,
     /// Log buffer region used by the shim.
     pub log_buffer: MemoryRange,
     /// Memory to be used for the heap.
@@ -133,8 +131,6 @@ impl ShimParams {
             used_end,
             bounce_buffer_start,
             bounce_buffer_size,
-            page_tables_start,
-            page_tables_size,
             log_buffer_start,
             log_buffer_size,
             heap_start_offset,
@@ -148,13 +144,6 @@ impl ShimParams {
         } else {
             let base = shim_base_address.wrapping_add_signed(bounce_buffer_start);
             Some(MemoryRange::new(base..base + bounce_buffer_size))
-        };
-
-        let page_tables = if page_tables_size == 0 {
-            None
-        } else {
-            let base = shim_base_address.wrapping_add_signed(page_tables_start);
-            Some(MemoryRange::new(base..base + page_tables_size))
         };
 
         let log_buffer = {
@@ -189,7 +178,6 @@ impl ShimParams {
                     ..shim_base_address.wrapping_add_signed(used_end),
             ),
             bounce_buffer,
-            page_tables,
             log_buffer,
             heap,
         }

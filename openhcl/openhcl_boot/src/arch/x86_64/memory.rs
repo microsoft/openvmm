@@ -5,21 +5,36 @@
 
 use super::address_space::LocalMap;
 use super::address_space::init_local_map;
+use crate::AddressSpaceManager;
 use crate::ShimParams;
 use crate::arch::TdxHypercallPage;
 use crate::arch::x86_64::address_space::tdx_share_large_page;
 use crate::host_params::PartitionInfo;
 use crate::host_params::shim_params::IsolationType;
 use crate::hypercall::hvcall;
+use crate::memory::AllocationPolicy;
+use crate::memory::AllocationType;
+use crate::off_stack;
+use arrayvec::ArrayVec;
+use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
+use page_table::x64::PAGE_TABLE_MAX_BYTES;
+use page_table::x64::PAGE_TABLE_MAX_COUNT;
+use page_table::x64::PageTable;
+use page_table::x64::PageTableBuilder;
 use sha2::Digest;
 use sha2::Sha384;
 use x86defs::X64_LARGE_PAGE_SIZE;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
+use zerocopy::FromZeros;
 
 /// On isolated systems, transitions all VTL2 RAM to be private and accepted, with the appropriate
 /// VTL permissions applied.
-pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInfo) {
+pub fn setup_vtl2_memory(
+    shim_params: &ShimParams,
+    partition_info: &PartitionInfo,
+    address_space: &mut AddressSpaceManager,
+) {
     // Only if the partition is VBS-isolated, accept memory and apply vtl 2 protections here.
     // Non-isolated partitions can undergo servicing, and additional information
     // would be needed to determine whether vtl 2 protections should be applied
@@ -125,6 +140,71 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
     // hypercall IO pages. ram_buffer must not be used again beyond this point
     // TODO: find an approach that does not require re-using the ram_buffer
     if shim_params.isolation_type == IsolationType::Tdx {
+        let page_table_region = address_space
+            .allocate(
+                None,
+                PAGE_TABLE_MAX_BYTES as u64,
+                AllocationType::TdxPageTables,
+                AllocationPolicy::LowMemory,
+            )
+            .expect("allocation of space for TDX page tables must succeed");
+
+        const MAX_RANGE_COUNT: usize = 64;
+        let mut ranges = off_stack!(
+            ArrayVec::<(u64, u64), MAX_RANGE_COUNT>,
+            ArrayVec::new_const()
+        );
+
+        let vtl2_ram = address_space
+            .vtl2_ranges()
+            .filter_map(|(range, typ)| match typ {
+                MemoryVtlType::VTL2_RAM => Some((range.start(), range.end())),
+                _ => None,
+            });
+
+        ranges.extend(vtl2_ram);
+
+        let mut page_table_work_buffer =
+            off_stack!(ArrayVec<PageTable, PAGE_TABLE_MAX_COUNT>, ArrayVec::new_const());
+        for _ in 0..PAGE_TABLE_MAX_COUNT {
+            page_table_work_buffer.push(PageTable::new_zeroed());
+        }
+        let mut page_table = off_stack!(ArrayVec<u8, PAGE_TABLE_MAX_BYTES>, ArrayVec::new_const());
+        for _ in 0..PAGE_TABLE_MAX_BYTES {
+            page_table.push(0);
+        }
+
+        let page_table_builder = PageTableBuilder::new(
+            page_table_region.range.start(),
+            page_table_work_buffer.as_mut_slice(),
+            page_table.as_mut_slice(),
+        )
+        .expect("page table builder must return no error")
+        .with_ranges(ranges.as_slice());
+
+        let page_tables = page_table_builder
+            .build()
+            .expect("page table construction must succeed");
+
+        address_space.truncate_range(
+            page_table_region,
+            page_tables.len() as u64,
+            AllocationPolicy::LowMemory,
+        );
+
+        //TODO safety comment
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                page_tables.as_ptr(),
+                page_table_region.range.start() as *mut u8,
+                page_tables.len(),
+            );
+        }
+
+        crate::arch::tdx::tdx_prepare_ap_trampoline(
+                page_table_region.range.start()
+        );
+
         let free_buffer = ram_buffer.as_mut_ptr() as u64;
         assert!(free_buffer.is_multiple_of(X64_LARGE_PAGE_SIZE));
         // SAFETY: The bottom 2MB region of the ram_buffer is unused by the shim
