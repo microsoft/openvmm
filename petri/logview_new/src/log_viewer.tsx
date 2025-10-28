@@ -290,7 +290,7 @@ function handleRowClick(
  * Creates a keyboard event handler for log viewer shortcuts.
  * 
  * Handles two copy shortcuts:
- * - Ctrl+C (or Cmd+C): Copy JSON representation of selected log line
+ * - Ctrl+C (or Cmd+C): Copy plain text representation of selected log line
  * - Ctrl+Shift+C (or Cmd+Shift+C): Copy deep link to selected log line
  * 
  * @param selectedRow - The ID of the currently selected row (e.g., "log-123")
@@ -337,22 +337,29 @@ function createKeyboardHandler(selectedRow: string | null, logEntries: LogEntry[
             return;
         }
 
-        // Plain Ctrl+C => copy JSON representation of the selected log line only
+        // Plain Ctrl+C => copy plain text representation of the selected log line
         e.preventDefault();
-        const jsonObj: Record<string, any> = {
-            index: entry.index,
-            timestamp: entry.timestamp,
-            relative: entry.relative,
-            severity: entry.severity,
-            source: entry.source,
-            message: entry.messageText.trim(),
+        
+        // Decode HTML entities in the message text
+        const decodeHtml = (html: string): string => {
+            const txt = document.createElement('textarea');
+            txt.innerHTML = html;
+            return txt.value;
         };
-        if (entry.screenshot) jsonObj.screenshot = entry.screenshot;
-        const jsonBlock = JSON.stringify(jsonObj, null, 2);
-        navigator.clipboard?.writeText(jsonBlock).catch(() => {
+        
+        let textBlock = `timestamp: ${entry.timestamp}\n`;
+        textBlock += `relative: ${entry.relative}\n`;
+        textBlock += `severity: ${entry.severity}\n`;
+        textBlock += `source: ${decodeHtml(entry.source)}\n`;
+        textBlock += `message: ${decodeHtml(entry.messageText.trim())}`;
+        if (entry.screenshot) {
+            textBlock += `\nscreenshot: ${entry.screenshot}`;
+        }
+        
+        navigator.clipboard?.writeText(textBlock).catch(() => {
             try {
                 const ta = document.createElement('textarea');
-                ta.value = jsonBlock; ta.style.position = 'fixed'; ta.style.opacity = '0';
+                ta.value = textBlock; ta.style.position = 'fixed'; ta.style.opacity = '0';
                 document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
             } catch { /* no-op */ }
         });
