@@ -57,6 +57,7 @@ pub struct VpciBusDevice {
     config_space_offset: VpciConfigSpaceOffset,
     #[inspect(with = "|&x| u32::from(x)")]
     current_slot: SlotNumber,
+    vtom: Option<u64>,
 }
 
 /// An error creating a VPCI bus.
@@ -95,6 +96,7 @@ impl VpciBusDevice {
             device,
             config_space_offset,
             current_slot: SlotNumber::from(0),
+            vtom,
         };
 
         Ok((this, channel))
@@ -172,6 +174,11 @@ impl ChipsetDevice for VpciBusDevice {
 
 impl MmioIntercept for VpciBusDevice {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
+        tracing::error!(addr, "VPCI bus MMIO read");
+
+        // strip vtom
+        let addr = addr & !self.vtom.unwrap_or(0);
+
         let reg = match self.register(addr, data.len()) {
             Ok(reg) => reg,
             Err(err) => return IoResult::Err(err),
@@ -200,6 +207,11 @@ impl MmioIntercept for VpciBusDevice {
     }
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
+        tracing::error!(addr, "VPCI bus MMIO write");
+
+        // strip vtom
+        let addr = addr & !self.vtom.unwrap_or(0);
+
         let reg = match self.register(addr, data.len()) {
             Ok(reg) => reg,
             Err(err) => return IoResult::Err(err),
