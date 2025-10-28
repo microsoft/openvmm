@@ -12,10 +12,9 @@ Some particularly notable pipelines:
 - `cargo xflowey build-igvm` - primarily dev-tool used to build OpenHCL IGVM files locally
 - `cargo xflowey restore-packages` - restores external packages needed to compile and run OpenVMM / OpenHCL
 
-> **Note**: While `cargo xflowey` technically has the ability to run CI pipelines 
-> locally (e.g., `cargo xflowey ci checkin-gates`), this functionality is 
-> currently broken and should not be relied upon. Use CI pipelines in their 
-> intended environments (Azure DevOps or GitHub Actions).
+```admonish warning
+While `cargo xflowey` technically has the ability to run CI pipelines locally (e.g., `cargo xflowey ci checkin-gates`), this functionality is currently broken and should not be relied upon. Use CI pipelines in their intended environments (Azure DevOps or GitHub Actions).
+```
 
 ## `xflowey` vs `xtask`
 
@@ -52,25 +51,52 @@ working on OpenVMM automation.
 
 Flowey operates in two distinct phases:
 
-1. **Build-Time (Resolution Phase)**: When you run `cargo xflowey`, flowey
-   constructs a directed acyclic graph (DAG) of steps by:
-   - Instantiating all nodes
-   - Processing their requests
-   - Resolving dependencies between nodes via variables
-   - Determining the execution order
+1. **Build-Time (Resolution Phase)**: When you run `cargo xflowey regen`, flowey:
+   - Reads `.flowey.toml` to determine which pipelines to regenerate
+   - Builds the flowey binary (e.g., `flowey-hvlite`) via `cargo build`
+   - Runs the flowey binary with `pipeline <backend> --out <file> <cmd>` for each pipeline definition
+   - During this invocation, flowey constructs a directed acyclic graph (DAG) by:
+     - Instantiating all nodes defined in the pipeline
+     - Processing their requests
+     - Resolving dependencies between nodes via variables and artifacts
+     - Determining the execution order
+     - Performing flowey-specific validations (dependency resolution, type checking, etc.)
+   - Generates YAML files for CI systems (ADO, GitHub Actions) at the paths specified in `.flowey.toml`
 
-2. **Runtime (Execution Phase)**: The generated flow is executed, and steps run
-   in the computed order. During runtime:
+2. **Runtime (Execution Phase)**: The generated YAML is executed by the CI system (or locally via `cargo xflowey <pipeline>`). Steps run in the order determined at build-time:
    - Variables are read and written with actual values
    - Commands are executed
    - Artifacts are published/consumed
    - Side effects occur
 
+```admonish note
+**Understanding the Workflow:**
+
+The `.flowey.toml` file at the repo root defines which pipelines to generate and where. For example:
+```toml
+[[pipeline.flowey_hvlite.github]]
+file = ".github/workflows/openvmm-pr.yaml"
+cmd = ["ci", "checkin-gates", "--config=pr"]
+```
+
+When you run `cargo xflowey regen`:
+1. It reads `.flowey.toml` 
+2. Builds the `flowey-hvlite` binary
+3. Runs `flowey-hvlite pipeline github --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr`
+4. This generates/updates the YAML file with the resolved pipeline
+
+**Key Distinction:**
+- `cargo build -p flowey-hvlite` - Only compiles the flowey code to verify it builds successfully. **Does not** construct the DAG or generate YAML files.
+- `cargo xflowey regen` - Compiles the code **and** runs the full build-time resolution to construct the DAG, validate the pipeline, and regenerate all YAML files defined in `.flowey.toml`.
+
+Always run `cargo xflowey regen` after modifying pipeline definitions to ensure the generated YAML files reflect your changes.
+```
+
 This separation allows flowey to:
 - Validate the entire workflow before execution
-- Generate YAML for CI systems (ADO, GitHub Actions)
+- Generate static YAML for CI systems (ADO, GitHub Actions)
 - Optimize step ordering and parallelization
-- Catch dependency errors at build-time
+- Catch dependency errors at build-time rather than runtime
 
 ### Backend Abstraction
 
@@ -81,13 +107,13 @@ Flowey supports multiple execution backends:
 - **ADO (Azure DevOps)**: Generates ADO Pipeline YAML
 - **GitHub Actions**: Generates GitHub Actions workflow YAML
 
-**Important**: Nodes should be written to work across ALL backends whenever 
-possible. Relying on `ctx.backend()` to query the backend or manually emitting 
+```admonish warning: 
+Nodes should be written to work across ALL backends whenever possible. Relying on `ctx.backend()` to query the backend or manually emitting 
 backend-specific steps (via `emit_ado_step` or `emit_gh_step`) should be 
 avoided unless absolutely necessary. Most automation logic should be 
 backend-agnostic, using `emit_rust_step` for cross-platform Rust code that 
 works everywhere.
-
+```
 ---
 
 ## Pipelines
@@ -96,20 +122,7 @@ A **Pipeline** is the top-level construct that defines a complete automation
 workflow. Pipelines consist of one or more **Jobs**, each of which runs a set
 of **Nodes** to accomplish specific tasks.
 
-### Defining a Pipeline
-
-```rust
-fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
-    let mut pipeline = Pipeline::new();
-    
-    // Define a job that runs on Linux x86_64
-    let job = pipeline
-        .new_job(FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu), FlowArch::X86_64, "build")
-        .finish();
-    
-    Ok(pipeline)
-}
-```
+For detailed examples of defining pipelines, see the [IntoPipeline trait documentation](https://docs.rs/flowey_core/latest/flowey_core/pipeline/trait.IntoPipeline.html).
 
 ### Pipeline Jobs
 
@@ -135,20 +148,6 @@ let job = pipeline
     .finish();
 ```
 
-### Backend-Specific Configuration
-
-**ADO-specific:**
-- `ado_set_pool()`: Specify agent pool
-- `ado_set_pr_triggers()`: Configure PR triggers
-- `ado_set_ci_triggers()`: Configure CI triggers
-- `ado_add_resources_repository()`: Add repository resources
-
-**GitHub Actions-specific:**
-- `gh_set_pool()`: Specify runner (GitHub-hosted or self-hosted)
-- `gh_set_pr_triggers()`: Configure PR triggers
-- `gh_set_ci_triggers()`: Configure CI triggers
-- `gh_grant_permissions()`: Grant GITHUB_TOKEN permissions
-
 ### Pipeline Parameters
 
 Parameters allow runtime configuration of pipelines:
@@ -172,11 +171,36 @@ let job = pipeline.new_job(...)
 ```
 
 Parameter types:
-- `new_parameter_bool()`: Boolean parameters
-- `new_parameter_string()`: String parameters with optional validation
-- `new_parameter_num()`: Numeric (i64) parameters with optional validation
+- Boolean parameters
+- String parameters with optional validation
+- Numeric (i64) parameters with optional validation
 
----
+#### Stable vs Unstable Parameters
+
+Every parameter in flowey must be declared as either **Stable** or **Unstable** using `ParameterKind`. This classification determines the parameter's visibility and API stability:
+
+**Stable Parameters (`ParameterKind::Stable`)**
+
+Stable parameters represent a **public, stable API** for the pipeline:
+
+- **External Visibility**: The parameter name is exposed as-is in the generated CI YAML, making it callable by external pipelines and users.
+- **API Contract**: Once a parameter is marked stable, its name and behavior should be maintained for backward compatibility. Removing or renaming a stable parameter is a breaking change.
+- **Use Cases**: 
+  - Parameters that control major pipeline behavior (e.g., `enable_tests`, `build_configuration`)
+  - Parameters intended for use by other teams or external automation
+  - Parameters documented as part of the pipeline's public interface
+
+**Unstable Parameters (`ParameterKind::Unstable`)**
+
+Unstable parameters are for **internal use** and experimentation:
+
+- **Internal Only**: The parameter name is prefixed with `__unstable_` in the generated YAML (e.g., `__unstable_debug_mode`), signaling that it's not part of the stable API.
+- **No Stability Guarantee**: Unstable parameters can be renamed, removed, or have their behavior changed without notice. External consumers should not depend on them.
+- **Use Cases**:
+  - Experimental features or debugging flags
+  - Internal pipeline configuration that may change frequently
+  - Parameters for development/testing that shouldn't be used in production
+
 
 ## Artifacts
 
@@ -187,123 +211,16 @@ an artifact.
 ### Typed vs Untyped Artifacts
 
 **Typed artifacts (preferred)** provide type-safe artifact handling by defining
-a custom type that implements the `Artifact` trait. This type describes the 
-structure of files that will be published and consumed.
+a custom type that implements the `Artifact` trait. **Untyped artifacts** provide
+simple directory-based artifacts for simpler cases.
 
-#### The Artifact Trait
+For detailed examples of defining and using artifacts, see the [Artifact trait documentation](https://docs.rs/flowey_core/latest/flowey_core/pipeline/trait.Artifact.html).
 
-The `Artifact` trait is the foundation of typed artifacts:
-
-The trait works by serializing your type to JSON in a format that reflects a 
-directory structure:
-- Each JSON key is a file name (use `#[serde(rename = "file.exe")]`)
-- Each value is either a string containing the path to the file, or another 
-  JSON object representing a subdirectory
-- Optional fields allow for conditional file inclusion
-
-#### Example: Defining a Typed Artifact
-
-Here's a real-world example from the codebase:
-
-```rust
-use flowey::node::prelude::*;
-
-#[derive(Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum PipetteOutput {
-    LinuxBin {
-        #[serde(rename = "pipette")]
-        bin: PathBuf,
-        #[serde(rename = "pipette.dbg")]
-        dbg: PathBuf,
-    },
-    WindowsBin {
-        #[serde(rename = "pipette.exe")]
-        exe: PathBuf,
-        #[serde(rename = "pipette.pdb")]
-        pdb: PathBuf,
-    },
-}
-
-impl Artifact for PipetteOutput {}
-```
-
-This enum represents either a Linux build (with `pipette` binary and `pipette.dbg`
-debug symbols) or a Windows build (with `pipette.exe` and `pipette.pdb`). The 
-`#[serde(rename = "...")]` attributes specify the exact file names that will 
-appear in the published artifact.
-
-#### Using Typed Artifacts in Pipelines
-
-```rust
-// In pipeline definition - create the artifact handles
-let (publish_pipette, use_pipette) = pipeline.new_typed_artifact::<PipetteOutput>("pipette");
-
-// In producer job - write the artifact
-let job1 = pipeline.new_job(...)
-    .dep_on(|ctx| {
-        let pipette = ctx.publish_typed_artifact(publish_pipette);
-        // pipette is a WriteVar<PipetteOutput>
-        
-        // In a node, write the appropriate variant:
-        ctx.emit_rust_step("build pipette", |ctx| {
-            let pipette = pipette.claim(ctx);
-            move |rt| {
-                let output = PipetteOutput::WindowsBin {
-                    exe: PathBuf::from("path/to/pipette.exe"),
-                    pdb: PathBuf::from("path/to/pipette.pdb"),
-                };
-                rt.write(pipette, &output);
-                Ok(())
-            }
-        });
-    })
-    .finish();
-
-// In consumer job - read the artifact
-let job2 = pipeline.new_job(...)
-    .dep_on(|ctx| {
-        let pipette = ctx.use_typed_artifact(&use_pipette);
-        // pipette is a ReadVar<PipetteOutput>
-        
-        ctx.emit_rust_step("use pipette", |ctx| {
-            let pipette = pipette.claim(ctx);
-            move |rt| {
-                let output = rt.read(pipette);
-                match output {
-                    PipetteOutput::WindowsBin { exe, pdb } => {
-                        // Use the Windows binaries
-                    }
-                    PipetteOutput::LinuxBin { bin, dbg } => {
-                        // Use the Linux binaries
-                    }
-                }
-                Ok(())
-            }
-        });
-    })
-    .finish();
-```
-
-#### Untyped Artifacts
-
-**Untyped artifacts** provide simple directory-based artifacts for cases where
-you don't need type safety:
-
-```rust
-let (publish, use_artifact) = pipeline.new_artifact("my-artifact");
-
-// Producer gets a path to an empty directory to populate
-let artifact_dir = ctx.publish_artifact(publish);  // ReadVar<PathBuf>
-
-// Consumer gets a path to the populated directory
-let artifact_dir = ctx.use_artifact(&use_artifact);  // ReadVar<PathBuf>
-```
-
-Use untyped artifacts when:
-- The artifact structure is simple or ad-hoc
-- You don't need compile-time guarantees about file names/structure
-- The artifact is primarily used by a single node
+Key concepts:
+- The `Artifact` trait works by serializing your type to JSON in a format that reflects a directory structure
+- Use `#[serde(rename = "file.exe")]` to specify exact file names
+- Typed artifacts ensure compile-time type safety when passing data between jobs
+- Untyped artifacts are simpler but don't provide type guarantees
 
 ### How Artifacts Create Dependencies
 
@@ -321,118 +238,63 @@ emit steps, and can depend on other nodes.
 
 ### The Node/Request Pattern
 
-Every node has an associated **Request** type that defines what the node can do:
+Every node has an associated **Request** type that defines what operations the node can perform. Requests are defined using the `flowey_request!` macro and registered with `new_flow_node!` or `new_simple_flow_node!` macros.
 
-```rust
-// Define the node
-new_flow_node!(struct Node);
+**Key concepts:**
+- Each node is a struct registered with `new_flow_node!` or `new_simple_flow_node!`
+- Request types define the node's API using `flowey_request!` macro
+- Requests often include `WriteVar` parameters for outputs
 
-// Define requests using the flowey_request! macro
-flowey_request! {
-    pub enum Request {
-        InstallRust(String),           // Install specific version
-        EnsureInstalled(WriteVar<SideEffect>),  // Ensure it's installed
-        GetCargoHome(WriteVar<PathBuf>),        // Get CARGO_HOME path
-    }
-}
-```
+For complete examples, see the [`FlowNode` trait documentation](https://docs.rs/flowey_core/latest/flowey_core/node/trait.FlowNode.html).
 
 ### FlowNode vs SimpleFlowNode
 
-**Use `FlowNode`** when you need to:
-- Aggregate multiple requests and process them together
-- Resolve conflicts between requests
-- Perform complex request validation
+Flowey provides two node implementation patterns:
 
-**Use `SimpleFlowNode`** when:
-- Each request can be processed independently
-- No aggregation logic is needed
-- Simpler, less boilerplate
+**FlowNode** - for nodes that need to process multiple requests together:
+- Receives all requests as a `Vec<Request>`
+- Can aggregate common requirements across requests and consolidate them into a single step to reduce repeated work
+- Can resolve conflicts between requests
 
-```rust
-// FlowNode - processes all requests together
-impl FlowNode for Node {
-    type Request = Request;
-    
-    fn imports(ctx: &mut ImportCtx<'_>) {
-        // Declare node dependencies
-        ctx.import::<other_node::Node>();
-    }
-    
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        // Process all requests, aggregate common requirements
-        // Emit steps to accomplish the work
-        Ok(())
-    }
-}
+**SimpleFlowNode** - for nodes where each request is independent:
+- Processes one request at a time
+- Simpler implementation, less boilerplate
+- Ideal for straightforward operations
 
-// SimpleFlowNode - processes one request at a time
-impl SimpleFlowNode for Node {
-    type Request = Request;
-    
-    fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<other_node::Node>();
-    }
-    
-    fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        // Process single request
-        Ok(())
-    }
-}
-```
+For detailed comparisons and examples, see the [`FlowNode`](https://docs.rs/flowey_core/latest/flowey_core/node/trait.FlowNode.html) and [`SimpleFlowNode`](https://docs.rs/flowey_core/latest/flowey_core/node/trait.SimpleFlowNode.html) documentation.
 
 ### Node Registration
 
-Nodes are automatically registered using macros:
+Nodes are automatically registered using macros that handle most of the boilerplate:
 - `new_flow_node!(struct Node)` - registers a FlowNode
 - `new_simple_flow_node!(struct Node)` - registers a SimpleFlowNode
 - `flowey_request!` - defines the Request type and implements `IntoRequest`
 
 ### The imports() Method
 
-The `imports()` method declares which other nodes this node might depend on:
-
-```rust
-fn imports(ctx: &mut ImportCtx<'_>) {
-    ctx.import::<install_rust::Node>();
-    ctx.import::<install_git::Node>();
-}
-```
-
-This allows flowey to:
+The `imports()` method declares which other nodes this node might depend on. This enables flowey to:
 - Validate that all dependencies are available
 - Build the complete dependency graph
 - Catch missing dependencies at build-time
 
+```admonish warning
+Flowey does not catch unused imports today as part of its build-time validation step.
+```
+
+**Why declare imports?** Flowey needs to know the full set of potentially-used nodes at compilation time to properly resolve the dependency graph.
+
+For more on node imports, see the [`FlowNode::imports` documentation](https://docs.rs/flowey_core/latest/flowey_core/node/trait.FlowNode.html#tymethod.imports).
+
 ### The emit() Method
 
-The `emit()` method is where the node's actual logic lives:
+The `emit()` method is where a node's actual logic lives. For `FlowNode`, it receives all requests together and must:
+1. Aggregate and validate requests (ensuring consistency where needed)
+2. Emit steps to perform the work
+3. Wire up dependencies between steps via variables
 
-```rust
-fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-    // 1. Aggregate and validate requests
-    let mut version = None;
-    let mut ensure_installed = Vec::new();
-    
-    for req in requests {
-        match req {
-            Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
-            Request::EnsureInstalled(var) => ensure_installed.push(var),
-        }
-    }
-    
-    // 2. Emit steps to do the work
-    ctx.emit_rust_step("install rust", |ctx| {
-        let ensure_installed = ensure_installed.claim(ctx);
-        move |rt| {
-            // Runtime logic here
-            Ok(())
-        }
-    });
-    
-    Ok(())
-}
-```
+For `SimpleFlowNode`, the equivalent `process_request()` method processes one request at a time.
+
+For complete implementation examples, see the [`FlowNode::emit` documentation](https://docs.rs/flowey_core/latest/flowey_core/node/trait.FlowNode.html#tymethod.emit).
 
 ---
 
@@ -459,31 +321,9 @@ execution model:
 - This ensures there's exactly one producer for each variable
 - Flowey can use this to build a valid DAG (no cycles, no conflicts)
 
-```rust
-let (read, write) = ctx.new_var::<String>();
-
-// Later, in a step:
-rt.write(write, &"hello".to_string());  // write is consumed here
-```
-
 ### Claiming Variables
 
 Before a step can use a `ReadVar` or `WriteVar`, it must **claim** it:
-
-```rust
-ctx.emit_rust_step("my step", |ctx| {
-    // Claim variables for this step
-    let read_var = some_read_var.claim(ctx);
-    let write_var = some_write_var.claim(ctx);
-    
-    // Return the runtime closure
-    move |rt| {
-        let value = rt.read(read_var);
-        rt.write(write_var, &modified_value);
-        Ok(())
-    }
-});
-```
 
 Claiming serves several purposes:
 1. Registers that this step depends on (or produces) this variable
@@ -510,48 +350,34 @@ let version = ReadVar::from_static("1.2.3".to_string());
 // WARNING: Never use this for secrets!
 ```
 
+This can be used as an escape hatch when you have Request (that expects a value to be determined at runtime), but in a given instance you know the value is known at build-time. 
+
 ### Variable Operations
 
-ReadVar provides several useful operations:
+`ReadVar` provides several useful operations for transforming and combining variables:
 
-```rust
-// Transform a value
-let uppercase = lowercase.map(ctx, |s| s.to_uppercase());
+**Transform operations:**
+- **`map()`**: Apply a function to transform a `ReadVar<T>` into a `ReadVar<U>`. Useful for deriving new values from existing variables (e.g., extracting a filename from a path, converting to uppercase).
 
-// Combine two variables
-let combined = var1.zip(ctx, var2);  // ReadVar<(T, U)>
+**Combining operations:**
+- **`zip()`**: Combine two ReadVars into a single `ReadVar<(T, U)>`. Useful when a step needs access to multiple values simultaneously.
 
-// Discard the value, keep only the dependency
-let side_effect = var.into_side_effect();  // ReadVar<SideEffect>
+**Dependency operations:**
+- **`into_side_effect()`**: Discard the value but keep the dependency. Converts `ReadVar<T>` to `ReadVar<SideEffect>`, useful when you only care that a step ran, not what it produced.
+- **`depending_on()`**: Create a new ReadVar that has an explicit dependency on another variable. Ensures ordering without actually using the dependent value.
 
-// Create a dependency without using the value
-let dependent = var.depending_on(ctx, &other_var);
-```
+For detailed examples of each operation, see the [`ReadVar` documentation](https://docs.rs/flowey_core/latest/flowey_core/node/struct.ReadVar.html).
 
 ### The SideEffect Type
 
-`SideEffect` is an alias for `()` that represents a dependency without data:
+`SideEffect` is an alias for `()` that represents a dependency without data. It's used when you need to express that one step must run before another, but the first step doesn't produce any value that the second step needs to consume.
 
-```rust
-// This step produces a side effect (e.g., installs a tool)
-let installed = ctx.emit_rust_step("install tool", |ctx| {
-    let done = done.claim(ctx);
-    move |rt| {
-        // install the tool
-        rt.write(done, &());  // SideEffect is ()
-        Ok(())
-    }
-});
+**Key concepts:**
+- Represents "something happened" without carrying data
+- Enables explicit dependency ordering between steps
+- Commonly used for installation, initialization, or cleanup steps
 
-// Other steps can depend on this happening
-ctx.emit_rust_step("use tool", |ctx| {
-    installed.claim(ctx);  // Ensures install happens first
-    move |rt| {
-        // use the tool
-        Ok(())
-    }
-});
-```
+For examples of using SideEffect, see the [`SideEffect` type documentation](https://docs.rs/flowey_core/latest/flowey_core/node/type.SideEffect.html).
 
 ---
 
@@ -562,85 +388,33 @@ step types exist for different purposes.
 
 ### Rust Steps
 
-**`emit_rust_step`**: Emits a step that runs Rust code at runtime. This is the
-most common step type.
+Rust steps execute Rust code at runtime and are the most common step type in flowey.
 
-```rust
-ctx.emit_rust_step("build the project", |ctx| {
-    let source_dir = source_dir.claim(ctx);
-    let output = output.claim(ctx);
-    
-    move |rt| {
-        let source = rt.read(source_dir);
-        let result = build_project(&source)?;
-        rt.write(output, &result);
-        Ok(())
-    }
-});
-```
+**`emit_rust_step`**: The primary method for emitting steps that run Rust code. Steps can claim variables, read inputs, perform work, and write outputs. Returns an optional `ReadVar<SideEffect>` that other steps can use as a dependency.
 
-**`emit_minor_rust_step`**: Like `emit_rust_step`, but for steps that:
-- Cannot fail (closure returns `T` not `anyhow::Result<T>`)
-- Don't need to be visible in CI logs as separate steps
+**`emit_minor_rust_step`**: Similar to `emit_rust_step` but for steps that cannot fail (no `Result` return) and don't need visibility in CI logs. Used for simple transformations and glue logic. Using minor steps also improve performance, since there is a slight cost to starting and ending a 'step' in GitHub and ADO. During the build stage, minor steps that are adjacent to each other will get merged into one giant CI step.
 
-This reduces log clutter for trivial operations like variable transformations.
+**`emit_rust_stepv`**: Convenience method that combines creating a new variable and emitting a step in one call. The step's return value is automatically written to the new variable.
 
-**`emit_rust_stepv`**: A convenience method that creates a new variable and
-returns it:
-
-```rust
-// Instead of:
-let (read, write) = ctx.new_var();
-ctx.emit_rust_step("compute value", |ctx| {
-    let write = write.claim(ctx);
-    move |rt| {
-        rt.write(write, &compute());
-        Ok(())
-    }
-});
-
-// You can write:
-let read = ctx.emit_rust_stepv("compute value", |ctx| {
-    move |rt| Ok(compute())
-});
-```
+For detailed examples of Rust steps, see the [`NodeCtx` emit methods documentation](https://docs.rs/flowey_core/latest/flowey_core/node/struct.NodeCtx.html).
 
 ### ADO Steps
 
-**`emit_ado_step`**: Emits an Azure DevOps YAML step.
+**`emit_ado_step`**: Emits a step that generates Azure DevOps Pipeline YAML. Takes a closure that returns a YAML string snippet which is interpolated into the generated pipeline.
 
-```rust
-ctx.emit_ado_step("checkout code", |ctx| {
-    move |rt| {
-        r#"
-        - checkout: self
-          clean: true
-        "#.to_string()
-    }
-});
-```
+For ADO step examples, see the [`NodeCtx::emit_ado_step` documentation](https://docs.rs/flowey_core/latest/flowey_core/node/struct.NodeCtx.html#method.emit_ado_step).
 
 ### GitHub Steps
 
-**`emit_gh_step`**: Builds a GitHub Actions step using `GhStepBuilder`.
+**`emit_gh_step`**: Creates a GitHub Actions step using the fluent `GhStepBuilder` API. Supports specifying the action, parameters, outputs, dependencies, and permissions. Returns a builder that must be finalized with `.finish(ctx)`.
 
-```rust
-ctx.emit_gh_step("Checkout code", "actions/checkout@v4")
-    .with("fetch-depth", "0")
-    .finish(ctx);
-```
+For GitHub step examples, see the [`GhStepBuilder` documentation](https://docs.rs/flowey_core/latest/flowey_core/node/steps/github/struct.GhStepBuilder.html).
 
 ### Side Effect Steps
 
-**`emit_side_effect_step`**: Creates a dependency relationship without executing
-any code. Useful for resolving multiple side effects into one.
+**`emit_side_effect_step`**: Creates a dependency relationship without executing code. Useful for aggregating multiple side effect dependencies into a single side effect. More efficient than emitting an empty Rust step.
 
-```rust
-ctx.emit_side_effect_step(
-    vec![dependency1, dependency2],  // use these
-    vec![output_side_effect],        // resolve this
-);
-```
+For side effect step examples, see the [`NodeCtx::emit_side_effect_step` documentation](https://docs.rs/flowey_core/latest/flowey_core/node/struct.NodeCtx.html#method.emit_side_effect_step).
 
 ### StepCtx vs NodeCtx
 
@@ -659,65 +433,97 @@ closures passed to `emit_rust_step`, etc.).
 
 ### RustRuntimeServices
 
-Available in Rust steps via the `rt` parameter:
+`RustRuntimeServices` is the primary runtime service available in Rust steps. It provides:
 
-```rust
-move |rt: &mut RustRuntimeServices<'_>| {
-    // Read variables
-    let value = rt.read(some_var);
-    
-    // Write variables
-    rt.write(output_var, &result);
-    rt.write_secret(secret_var, &secret);  // Mark as secret
-    
-    // Query environment
-    let backend = rt.backend();    // Local, ADO, or Github
-    let platform = rt.platform();  // Windows, Linux, MacOs
-    let arch = rt.arch();          // X86_64, Aarch64
-    
-    Ok(())
-}
+**Variable Operations:**
+- Reading and writing flowey variables
+- Secret handling (automatic secret propagation for safety)
+- Support for reading values of any type that implements `ReadVarValue`
+
+**Environment Queries:**
+- Backend identification (Local, ADO, or GitHub)
+- Platform detection (Windows, Linux, macOS)
+- Architecture information (x86_64, Aarch64)
+
+#### Secret Variables and CI Backend Integration
+
+Flowey provides built-in support for handling sensitive data like API keys, tokens, and credentials through **secret variables**. Secret variables are treated specially to prevent accidental exposure in logs and CI outputs.
+
+**How Secret Handling Works**
+
+When a variable is marked as secret, flowey ensures:
+- The value is not logged or printed in step output
+- CI backends (ADO, GitHub Actions) are instructed to mask the value in their logs
+- Secret status is automatically propagated to prevent leaks
+
+**Automatic Secret Propagation**
+
+To prevent accidental leaks, flowey uses conservative automatic secret propagation:
+
+```admonish warning 
+If a step reads a secret value, **all subsequent writes from that step are automatically marked as secret** by default. This prevents accidentally leaking secrets through derived values.
 ```
 
-**Important**: If a step reads a secret value, all subsequent writes from that
-step are marked as secret by default (to prevent accidental leaks). Use
-`write_not_secret()` if you need to override this.
+For example:
+
+```rust
+ctx.emit_rust_step("process token", |ctx| {
+    let secret_token = secret_token.claim(ctx);
+    let output_var = output_var.claim(ctx);
+    |rt| {
+        let token = rt.read(secret_token);  // Reading a secret
+        
+        // This write is AUTOMATICALLY marked as secret
+        // (even though we're just writing "done")
+        rt.write(output_var, &"done".to_string());
+        
+        Ok(())
+    }
+});
+```
+
+If you need to write non-secret data after reading a secret, use `write_not_secret()`:
+
+```rust
+rt.write_not_secret(output_var, &"done".to_string());
+```
+
+**Best Practices for Secrets**
+
+1. **Never use `ReadVar::from_static()` for secrets** - static values are encoded in plain text in the generated YAML
+2. **Always use `write_secret()`** when writing sensitive data like tokens, passwords, or keys
+5. **Minimize secret lifetime** - read secrets as late as possible and don't pass them through more variables than necessary
 
 ### AdoStepServices
 
-Available in ADO steps for interacting with ADO-specific features:
+`AdoStepServices` provides integration with Azure DevOps-specific features when emitting ADO YAML steps:
 
-```rust
-move |rt: &mut AdoStepServices<'_>| {
-    // Get ADO variable as flowey var
-    rt.set_var(flowey_var, AdoRuntimeVar::BUILD__SOURCE_BRANCH);
-    
-    // Set ADO variable from flowey var
-    let ado_var = rt.get_var(flowey_var);
-    
-    // Resolve repository ID
-    let repo = rt.resolve_repository_id(repo_id);
-    
-    "- task: SomeTask@1".to_string()
-}
-```
+**ADO Variable Bridge:**
+- Convert ADO runtime variables (like `BUILD.SOURCEBRANCH`) into flowey vars
+- Convert flowey vars back into ADO variables for use in YAML
+- Handle secret variables appropriately
+
+**Repository Resources:**
+- Resolve repository IDs declared as pipeline resources
+- Access repository information in ADO-specific steps
 
 ### GhStepBuilder
 
-Builder for GitHub Actions steps:
+`GhStepBuilder` is a fluent builder for constructing GitHub Actions steps with:
 
-```rust
-ctx.emit_gh_step("Azure Login", "Azure/login@v2")
-    .with("client-id", client_id)           // Add parameter
-    .with("tenant-id", tenant_id)
-    .output("token", token_var)             // Capture output
-    .run_after(some_side_effect)            // Add dependency
-    .requires_permission(                   // Declare permission needed
-        GhPermission::IdToken,
-        GhPermissionValue::Write
-    )
-    .finish(ctx);
-```
+**Step Configuration:**
+- Specifying the action to use (e.g., `actions/checkout@v4`)
+- Adding input parameters via `.with()`
+- Capturing step outputs into flowey variables
+- Setting conditional execution based on variables
+
+**Dependency Management:**
+- Declaring side-effect dependencies via `.run_after()`
+- Ensuring steps run in the correct order
+
+**Permissions:**
+- Declaring required GITHUB_TOKEN permissions
+- Automatic permission aggregation at the job level
 
 ---
 
@@ -746,20 +552,6 @@ through side effects.
 Nodes should work across all backends when possible. Backend-specific behavior
 should be isolated and documented.
 
-```rust
-match ctx.backend() {
-    FlowBackend::Local => {
-        // Local-specific logic
-    }
-    FlowBackend::Ado => {
-        // ADO-specific logic
-    }
-    FlowBackend::Github => {
-        // GitHub-specific logic
-    }
-}
-```
-
 ### 4. Separation of Concerns
 
 Keep node definition (request types, dependencies) separate from step
@@ -783,107 +575,45 @@ Use Rust's type system to prevent errors at build-time:
 
 ### Request Aggregation and Validation
 
-When processing multiple requests, use helper functions to ensure consistency:
+When a FlowNode receives multiple requests, it often needs to ensure certain values are consistent across all requests while collecting others. The `same_across_all_reqs` helper function simplifies this pattern by validating that a value is identical across all requests.
 
-```rust
-fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-    let mut version = None;
-    let mut ensure_installed = Vec::new();
-    
-    for req in requests {
-        match req {
-            Request::Version(v) => {
-                // Ensure all requests agree on the version
-                same_across_all_reqs("Version", &mut version, v)?;
-            }
-            Request::EnsureInstalled(v) => {
-                ensure_installed.push(v);
-            }
-        }
-    }
-    
-    let version = version.ok_or(anyhow::anyhow!("Missing required request: Version"))?;
-    
-    // ... emit steps using aggregated requests
-}
-```
+**Key concepts:**
+- Iterate through all requests and separate them by type
+- Use `same_across_all_reqs` to validate values that must be consistent
+- Collect values that can have multiple instances (like output variables)
+- Validate that required values were provided
+
+For a complete example, see the [`same_across_all_reqs` documentation](https://docs.rs/flowey_core/latest/flowey_core/node/user_facing/fn.same_across_all_reqs.html).
 
 ### Conditional Execution Based on Backend/Platform
 
-```rust
-// Only emit this step on Windows
-if ctx.platform() == FlowPlatform::Windows {
-    ctx.emit_rust_step("windows-specific step", |ctx| {
-        move |rt| {
-            // Windows-specific logic
-            Ok(())
-        }
-    });
-}
+Nodes can query the current backend and platform to emit platform-specific or backend-specific steps. This allows nodes to adapt their behavior based on the execution environment.
 
-// Different behavior per backend
-match ctx.backend() {
-    FlowBackend::Local => {
-        // Check if tool is already installed
-    }
-    FlowBackend::Ado | FlowBackend::Github => {
-        // Always install the tool
-    }
-}
-```
+**Key concepts:**
+- Use `ctx.backend()` to check if running locally, on ADO, or on GitHub Actions
+- Use `ctx.platform()` to check the operating system (Windows, Linux, macOS)
+- Use `ctx.arch()` to check the architecture (x86_64, Aarch64)
+- Emit different steps or use different tool configurations based on these values
 
-### Working with Persistent Directories
+**When to use:**
+- Installing platform-specific tools or dependencies
+- Using different commands on Windows vs Unix systems
+- Optimizing for local development vs CI environments
 
-Some nodes need to persist data between runs (e.g., caches). Use
-`ctx.persistent_dir()`:
-
-```rust
-if let Some(cache_dir) = ctx.persistent_dir() {
-    // Have a persistent directory, can cache things
-    ctx.emit_rust_step("restore from cache", |ctx| {
-        let cache_dir = cache_dir.claim(ctx);
-        move |rt| {
-            let dir = rt.read(cache_dir);
-            // Restore from cache
-            Ok(())
-        }
-    });
-} else {
-    // No persistent storage available, skip caching
-}
-```
+For more on backend and platform APIs, see the [`NodeCtx` documentation](https://docs.rs/flowey_core/latest/flowey_core/node/struct.NodeCtx.html).
 
 ### Using the flowey_request! Macro
 
-The `flowey_request!` macro supports several formats:
+The `flowey_request!` macro generates the Request type and associated boilerplate for a node. It supports three main formats to accommodate different node complexity levels.
 
-```rust
-// Enum with separate struct per variant (recommended for complex requests)
-flowey_request! {
-    pub enum_struct Request {
-        Install { version: String, components: Vec<String> },
-        Check(pub WriteVar<bool>),
-        GetPath(pub WriteVar<PathBuf>),
-    }
-}
-// This generates Request::Install(req::Install), Request::Check(req::Check), etc.
+**Format options:**
+- **`enum_struct`**: Recommended for complex requests. Creates an enum where each variant is a separate struct in a `req` module, providing better organization
+- **`enum`**: Simple enum for straightforward request types
+- **`struct`**: Single request type for nodes that only do one thing
 
-// Simple enum (for simple requests)
-flowey_request! {
-    pub enum Request {
-        Install { version: String },
-        Check(WriteVar<bool>),
-    }
-}
+The macro automatically derives `Serialize`, `Deserialize`, and implements the `IntoRequest` trait.
 
-// Struct (for nodes with a single request type)
-flowey_request! {
-    pub struct Request {
-        pub input: ReadVar<String>,
-        pub output: WriteVar<String>,
-    }
-}
-```
+For complete syntax and examples, see the [`flowey_request!` macro documentation](https://docs.rs/flowey_core/latest/flowey_core/macro.flowey_request.html).
 
 ---
 
