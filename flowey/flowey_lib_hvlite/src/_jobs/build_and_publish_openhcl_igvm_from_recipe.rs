@@ -142,13 +142,13 @@ impl SimpleFlowNode for Node {
             }
             if all_same {
                 if let Some(custom_target) = unique_target {
-                    did_publish.push(
-                        ctx.reqv(|v| build_and_publish_openvmm_hcl_baseline::Request {
+                    did_publish.push(ctx.reqv(|v| {
+                        build_and_publish_openvmm_hcl_baseline::Request {
                             target: custom_target,
                             artifact_dir: sizecheck_artifact,
                             done: v,
-                        }),
-                    );
+                        }
+                    }));
                 }
             } else {
                 return Err(anyhow::anyhow!(
