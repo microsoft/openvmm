@@ -686,13 +686,12 @@ pub fn alloc_shared_memory(size: usize) -> io::Result<OwnedHandle> {
 mod tests {
     use super::SparseMapping;
     use super::alloc_shared_memory;
-    use crate::initialize_try_copy;
     use crate::try_copy;
     use windows_sys::Win32::System::Memory::PAGE_READWRITE;
 
     #[test]
     fn test_shared_mem_split() {
-        initialize_try_copy();
+        trycopy::initialize_try_copy();
 
         let shmem = alloc_shared_memory(0x100000).unwrap();
         let sparse = SparseMapping::new(0x100000).unwrap();
