@@ -10,7 +10,7 @@ import { LogEntry } from "../data_defs";
  * If architecture is empty/undefined we omit that path element.
  * Returns the resolved URL and raw text (may be empty string if file exists but is blank).
  */
-export async function fetchPetriLog(
+export async function fetchLog(
   runId: string,
   architecture: string | undefined,
   testNameRemainder: string
@@ -20,11 +20,10 @@ export async function fetchPetriLog(
   if (architecture) parts.push(architecture);
   if (testNameRemainder) parts.push(testNameRemainder);
   const url = `https://openvmmghtestresults.blob.core.windows.net/results/${parts.join("/")}/petri.jsonl`;
-  console.log("[fetchPetriLog] Fetching", url);
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(
-      `Failed to fetch petri log (${response.status} ${response.statusText}) for ${url}`
+      `Failed to fetch log (${response.status} ${response.statusText}) for ${url}`
     );
   }
   const text = await response.text();
@@ -35,7 +34,7 @@ export async function fetchPetriLog(
 // petri.jsonl parsing (raw records only)
 // --------------------------------------------
 
-export interface RawPetriRecord {
+export interface RawLogRecord {
   timestamp: string;
   message?: string;
   severity?: string;
@@ -52,28 +51,21 @@ export interface RawPetriRecord {
  * - Sorts ascending by timestamp (stable)
  * Throws on first parse error to surface corrupt data quickly.
  */
-export function parsePetriLogText(text: string): RawPetriRecord[] {
+export function parseLogText(text: string): RawLogRecord[] {
   if (!text) return [];
   const lines = text
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
 
-  const records: RawPetriRecord[] = [];
+  const records: RawLogRecord[] = [];
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
     try {
       const obj = JSON.parse(raw);
-      if (obj && typeof obj === "object" && obj.timestamp) {
-        records.push(obj as RawPetriRecord);
-      } else {
-        // Still push to avoid silent data loss; timestamp-less entries sort to front
-        records.push(obj as RawPetriRecord);
-      }
+      records.push(obj as RawLogRecord);
     } catch (e) {
-      throw new Error(
-        `Failed to parse petri.jsonl line ${i + 1}: ${(e as Error).message}`
-      );
+      console.error(`Failed to parse log`);
     }
   }
 
@@ -204,18 +196,18 @@ function ansiToHtml(str: string): string {
 /**
  * High-level fetch + process for LogViewer. Produces display-ready entries.
  */
-export async function fetchProcessedPetriLog(
+export async function fetchProcessedLog(
   runId: string,
   architecture: string | undefined,
   testNameRemainder: string
 ): Promise<LogEntry[]> {
-  const { url, text } = await fetchPetriLog(
+  const { url, text } = await fetchLog(
     runId,
     architecture,
     testNameRemainder
   );
   if (!text) return [];
-  const raw = parsePetriLogText(text);
+  const raw = parseLogText(text);
   const entries: LogEntry[] = [];
   let start: string | null = null;
   for (let i = 0; i < raw.length; i++) {

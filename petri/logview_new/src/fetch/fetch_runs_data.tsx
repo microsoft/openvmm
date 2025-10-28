@@ -15,6 +15,7 @@ import {
   fetchMissingPRTitles,
   getAllGithubPullRequests,
 } from "./fetch_git_data";
+import { fetchProcessedLog } from "./fetch_logs_data";
 
 const GET_RUNS_URL =
   "https://openvmmghtestresults.blob.core.windows.net/results?restype=container&comp=list&showonly=files&include=metadata&prefix=runs/";
@@ -242,7 +243,7 @@ function opportunisticPrefetching(
           });
         } catch (e) {
           console.warn(
-            `[opportunisticPrefetching] Prefetch failed for run ${runNumber}`,
+            `[opportunisticPrefetching] Prefetch failed for run`,
             e
           );
         }
@@ -372,7 +373,40 @@ function parseRunDetails(
   // Sort tests by name
   tests.sort((a, b) => a.name.localeCompare(b.name));
 
-  // TODO: Prefetch petri.jsonl files for failed tests here in later PRs
+    // Prefetch petri.jsonl ONLY for failed tests (background, non-blocking)
+  try {
+    const prefetchPromises: Promise<unknown>[] = [];
+    for (const test of tests) {
+      if (test.status !== "failed") continue; // only failed tests
+      const firstSlash = test.name.indexOf("/");
+      if (firstSlash === -1) continue; // malformed name
+      const architecture = test.name.slice(0, firstSlash);
+      const remainder = test.name.slice(firstSlash + 1); // may contain further slashes
+      const queryKey = ["petriLog", runNumber, architecture, remainder];
+      prefetchPromises.push(
+        queryClient.prefetchQuery({
+          queryKey,
+          queryFn: () =>
+            fetchProcessedLog(runNumber, architecture, remainder),
+          staleTime: Infinity, // Never go stale. This data never changes.
+          gcTime: Infinity,
+        })
+      );
+    }
+    if (prefetchPromises.length) {
+      Promise.allSettled(prefetchPromises).then((res) => {
+        const failed = res.filter((r) => r.status === "rejected").length;
+        if (failed) {
+          console.warn(
+            `[parseRunDetails] ${failed} petri.jsonl prefetches failed`
+          );
+        }
+      });
+    }
+  } catch (e) {
+    console.warn("[parseRunDetails] Prefetch phase error", e);
+  }
+  
   return {
     creationTime: creationTime ?? undefined,
     runNumber,
@@ -482,7 +516,7 @@ export async function fetchTestAnalysis(
 
       return runId;
     } catch (e) {
-      console.warn(`[fetchTestAnalysis] Prefetch failed for run ${runId}`, e);
+      console.warn(`[fetchTestAnalysis] Prefetch failed for run`, e);
       fetchedCount++;
       if (onProgress) {
         onProgress(fetchedCount, totalToFetch);

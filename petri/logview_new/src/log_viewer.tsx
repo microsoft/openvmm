@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Menu } from './menu';
 import { Link, useParams, useLocation, useNavigate } from 'react-router-dom';
 import { VirtualizedTable } from './virtualized_table';
-import { fetchProcessedPetriLog } from './fetch/fetch_logs_data';
+import { fetchProcessedLog } from './fetch/fetch_logs_data';
 import { useQuery } from '@tanstack/react-query';
 import { SortingState } from '@tanstack/react-table';
 import './styles/common.css';
@@ -84,7 +84,7 @@ export function LogViewer(): React.JSX.Element {
     // Fetch the relevant data
     const { data: logEntries, isSuccess } = useQuery({
         queryKey: ["petriLog", runId, architecture, testName],
-        queryFn: () => fetchProcessedPetriLog(runId, architecture, testName),
+        queryFn: () => fetchProcessedLog(runId, architecture, testName),
         staleTime: Infinity, // never goes stale
         gcTime: Infinity,
     });
