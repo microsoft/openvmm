@@ -115,11 +115,6 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
                 None
             };
 
-        tracing::info!(
-            "persistent allocator exists: {}",
-            persistent_dma_client.is_some()
-        );
-
         let nvme_driver = if let Some(saved_state) = saved_state {
             let vfio_device = VfioDevice::restore(
                 driver_source,
