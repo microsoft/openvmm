@@ -108,10 +108,10 @@ pub fn initialize_try_copy() {
 
 /// Copies `count` elements from `src` to `dest`, returning an error if an
 /// access violation occurs. The source and destination may overlap.
-/// 
+///
 /// No guarantees are made about the access width used to perform the copy or
 /// the order in which the accesses are made. In the case of failure, some of
-/// the bytes (even partial elements) may already have been copied. 
+/// the bytes (even partial elements) may already have been copied.
 ///
 /// If [`initialize_try_copy`] has not been called and a fault occurs, the
 /// process will be terminated according to the platform's default behavior.
@@ -120,7 +120,7 @@ pub fn initialize_try_copy() {
 /// `src` and `dest` must point to reserved addresses, which may or may not
 /// actually be backed. `dest` cannot point to memory that would violate Rust's
 /// aliasing rules.
-/// 
+///
 /// Note that this creates a bitwise copy of the data, even if `T` is not
 /// `Copy`. The caller must ensure that subsequent uses of `src` or `dest` do
 /// not cause undefined behavior.
@@ -143,18 +143,18 @@ pub unsafe fn try_copy<T>(src: *const T, dest: *mut T, count: usize) -> Result<(
 
 /// Sets `count * size_of::<T>()` bytes of memory at `dest` to the byte value
 /// `val`, returning an error if an access violation occurs.
-/// 
+///
 /// No guarantees are made about the access width used to perform the set or the
 /// order in which the accesses are made. In the case of failure, some of the
 /// bytes may already have been set.
-/// 
+///
 /// If [`initialize_try_copy`] has not been called and a fault occurs, the
 /// process will be terminated according to the platform's default behavior.
-/// 
+///
 /// # Safety
 /// `dest` must point to reserved addresses, which may or may not be backed.
 /// `dest` cannot point to memory that would violate Rust's aliasing rules.
-/// 
+///
 /// Note that if the written bytes are not a valid representation of `T`,
 /// subsequent uses of the memory may be undefined behavior.
 pub unsafe fn try_write_bytes<T>(dest: *mut T, val: u8, count: usize) -> Result<(), MemoryError> {
@@ -245,13 +245,11 @@ pub unsafe fn try_compare_exchange<T: Copy>(
 ///
 /// # Safety
 /// `src` must point to a reserved address, which may or may not be backed.
-/// 
+///
 /// Note that this creates a bitwise copy of the data, even if `T` is not
 /// `Copy`. The caller must ensure that subsequent uses of the returned value
 /// do not cause undefined behavior.
-pub unsafe fn try_read_volatile<T>(
-    src: *const T,
-) -> Result<T, MemoryError> {
+pub unsafe fn try_read_volatile<T>(src: *const T) -> Result<T, MemoryError> {
     let mut dest = MaybeUninit::<T>::uninit();
     // SAFETY: guaranteed by caller
     let ret = unsafe {
@@ -299,14 +297,11 @@ pub unsafe fn try_read_volatile<T>(
 /// # Safety
 /// `dest` must point to a reserved address, which may or may not be backed.
 /// `dest` cannot point to memory that would violate Rust's aliasing rules.
-/// 
+///
 /// Note that this creates a bitwise copy of the data, even if `T` is not
 /// `Copy`. The caller must ensure that subsequent uses of `dest` do not
 /// cause undefined behavior.
-pub unsafe fn try_write_volatile<T>(
-    dest: *mut T,
-    value: &T,
-) -> Result<(), MemoryError> {
+pub unsafe fn try_write_volatile<T>(dest: *mut T, value: &T) -> Result<(), MemoryError> {
     // SAFETY: guaranteed by caller
     let ret = unsafe {
         match size_of::<T>() {
@@ -361,7 +356,11 @@ impl MemoryError {
     fn from_last_failure(src: Option<*const u8>, dest: *mut u8, len: usize) -> Self {
         let failure = LAST_ACCESS_FAILURE.get();
         let (offset, is_write) = if failure.address.is_null() {
-            // In the case of a general protection fault (#GP) the provided address is zero.
+            // In the case of a general protection fault (#GP) the provided
+            // address is zero.
+            //
+            // TODO: get the failure offset from the routine that actually
+            // faulted rather than relying on the kernel.
             (0, src.is_none())
         } else if (dest..dest.wrapping_add(len)).contains(&failure.address) {
             (failure.address as usize - dest as usize, true)
@@ -475,6 +474,8 @@ unsafe fn install_signal_handlers() {
             ..core::mem::zeroed()
         };
         for signal in [libc::SIGSEGV, libc::SIGBUS] {
+            // TODO: chain to previous handler. Doing so safely and correctly
+            // might require running this code before `main`, via a constructor.
             libc::sigaction(signal, &act, std::ptr::null_mut());
         }
     }
