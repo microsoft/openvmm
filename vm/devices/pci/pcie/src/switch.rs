@@ -103,8 +103,8 @@ impl DownstreamSwitchPort {
             type0_sub_system_id: 0,
         };
         Self {
-            port: PcieDownstreamPort::new_with_multi_function(
-                name,
+            port: PcieDownstreamPort::new(
+                name.into().to_string(),
                 hardware_ids,
                 DevicePortType::DownstreamSwitchPort,
                 multi_function,
@@ -364,7 +364,8 @@ impl GenericPcieSwitch {
             // Found the matching port, try to connect to it using the port's name
             downstream_port
                 .port
-                .add_pcie_device(port_name.as_ref(), name, dev)
+                .add_pcie_device(&port_name, name, dev)
+                .map_err(|e| e.to_string().into())
         } else {
             // No downstream port found with matching port number
             Err(format!("port {} not found", port).into())

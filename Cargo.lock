@@ -5571,6 +5571,7 @@ dependencies = [
 name = "pcie"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "chipset_device",
  "inspect",
  "pal_async",

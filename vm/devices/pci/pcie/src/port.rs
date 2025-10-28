@@ -3,6 +3,7 @@
 
 //! Common PCIe port implementation shared between different port types.
 
+use anyhow::bail;
 use chipset_device::io::IoResult;
 use inspect::Inspect;
 use pci_bus::GenericPciBusDevice;
@@ -19,7 +20,7 @@ use std::sync::Arc;
 #[derive(Inspect)]
 pub struct PcieDownstreamPort {
     /// The name of this port.
-    pub name: Arc<str>,
+    pub name: String,
 
     /// The configuration space emulator for this port.
     pub cfg_space: ConfigSpaceType1Emulator,
@@ -30,18 +31,9 @@ pub struct PcieDownstreamPort {
 }
 
 impl PcieDownstreamPort {
-    /// Creates a new PCIe port with the specified hardware configuration.
+    /// Creates a new PCIe port with the specified hardware configuration and optional multi-function flag.
     pub fn new(
-        name: impl Into<Arc<str>>,
-        hardware_ids: HardwareIds,
-        port_type: DevicePortType,
-    ) -> Self {
-        Self::new_with_multi_function(name, hardware_ids, port_type, false)
-    }
-
-    /// Creates a new PCIe port with the specified hardware configuration and multi-function flag.
-    pub fn new_with_multi_function(
-        name: impl Into<Arc<str>>,
+        name: impl Into<String>,
         hardware_ids: HardwareIds,
         port_type: DevicePortType,
         multi_function: bool,
@@ -179,12 +171,12 @@ impl PcieDownstreamPort {
         port_name: &str,
         device_name: &str,
         device: Box<dyn GenericPciBusDevice>,
-    ) -> Result<(), Arc<str>> {
+    ) -> anyhow::Result<()> {
         // Only connect if the name exactly matches this port's name
-        if port_name == self.name.as_ref() {
+        if port_name == self.name.as_str() {
             // Check if there's already a device connected
             if self.link.is_some() {
-                return Err("port is already occupied".into());
+                bail!("port is already occupied");
             }
 
             // Connect the device to this port
@@ -193,6 +185,6 @@ impl PcieDownstreamPort {
         }
 
         // If the name doesn't match, fail immediately (no forwarding)
-        Err("port name does not match".into())
+        bail!("port name does not match")
     }
 }

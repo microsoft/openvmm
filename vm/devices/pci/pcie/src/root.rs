@@ -352,7 +352,12 @@ impl RootPort {
             type0_sub_system_id: 0,
         };
         Self {
-            port: PcieDownstreamPort::new(name, hardware_ids, DevicePortType::RootPort),
+            port: PcieDownstreamPort::new(
+                name.into().to_string(),
+                hardware_ids,
+                DevicePortType::RootPort,
+                false,
+            ),
         }
     }
 
@@ -364,12 +369,9 @@ impl RootPort {
         dev: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Arc<str>> {
         let port_name = self.port.name.clone();
-        match self
-            .port
-            .add_pcie_device(port_name.as_ref(), name.as_ref(), dev)
-        {
+        match self.port.add_pcie_device(&port_name, name.as_ref(), dev) {
             Ok(()) => Ok(()),
-            Err(_returned_device) => {
+            Err(_error) => {
                 // If the connection failed, it means the port is already occupied
                 // We need to get the name of the existing device
                 if let Some((existing_name, _)) = &self.port.link {

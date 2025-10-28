@@ -18,6 +18,8 @@ const PAGE_OFFSET_MASK: u64 = PAGE_SIZE64 - 1;
 const PAGE_SHIFT: u32 = PAGE_SIZE.trailing_zeros();
 
 const VENDOR_ID: u16 = 0x1414;
+
+// Microsoft Device IDs assigned to OpenVMM virtual bridges and switch ports.
 const ROOT_PORT_DEVICE_ID: u16 = 0xC030;
 const UPSTREAM_SWITCH_PORT_DEVICE_ID: u16 = 0xC031;
 const DOWNSTREAM_SWITCH_PORT_DEVICE_ID: u16 = 0xC032;
