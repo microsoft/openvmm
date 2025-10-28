@@ -950,8 +950,8 @@ mod weak_mutex_pci {
         ) -> Result<(), PcieConflict> {
             self.lock()
                 .add_pcie_device(port, &name, Box::new(WeakMutexPciDeviceWrapper(dev)))
-                .map_err(|existing_dev_name| PcieConflict {
-                    reason: PcieConflictReason::ExistingDev(existing_dev_name),
+                .map_err(|err| PcieConflict {
+                    reason: PcieConflictReason::ExistingDev(err.to_string().into()),
                     conflict_dev: name,
                 })
         }

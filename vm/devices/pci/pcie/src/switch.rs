@@ -14,6 +14,7 @@ use crate::DOWNSTREAM_SWITCH_PORT_DEVICE_ID;
 use crate::UPSTREAM_SWITCH_PORT_DEVICE_ID;
 use crate::VENDOR_ID;
 use crate::port::PcieDownstreamPort;
+use anyhow::{Context, bail};
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::pci::PciConfigSpace;
@@ -358,17 +359,18 @@ impl GenericPcieSwitch {
         port: u8,
         name: &str,
         dev: Box<dyn GenericPciBusDevice>,
-    ) -> Result<(), Arc<str>> {
+    ) -> anyhow::Result<()> {
         // Find the specific downstream port that matches the port number
         if let Some((port_name, downstream_port)) = self.downstream_ports.get_mut(&port) {
             // Found the matching port, try to connect to it using the port's name
             downstream_port
                 .port
-                .add_pcie_device(port_name, name, dev)
-                .map_err(|e| e.to_string().into())
+                .add_pcie_device(port_name.as_ref(), name, dev)
+                .context("failed to add PCIe device to downstream port")?;
+            Ok(())
         } else {
             // No downstream port found with matching port number
-            Err(format!("port {} not found", port).into())
+            bail!("port {} not found", port);
         }
     }
 }
@@ -551,7 +553,7 @@ mod tests {
         );
         let result = switch.add_pcie_device(99, "invalid-dev", Box::new(invalid_device)); // Use invalid port number
         assert!(result.is_err());
-        // add_pcie_device returns an error string on failure,
+        // add_pcie_device returns an anyhow::Error on failure,
         // so we just verify that the connection failed
         assert!(result.is_err());
     }

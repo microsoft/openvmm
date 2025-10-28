@@ -378,7 +378,7 @@ impl RootPort {
                     Err(existing_name.clone())
                 } else {
                     // This shouldn't happen if add_pcie_device works correctly
-                    Err("unknown".into())
+                    panic!("Port connection failed but no existing device found")
                 }
             }
         }
