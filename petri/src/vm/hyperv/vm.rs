@@ -219,8 +219,14 @@ impl HyperVVM {
                 return;
             };
             // Messages end with a period, exclude it
-            let path = &event.message[path_start..event.message.len() - 1];
-            self.logger.trace_attachment(Path::new(path));
+            let path = Path::new(&event.message[path_start..event.message.len() - 1]);
+            let filename = path.file_name().and_then(|x| x.to_str()).unwrap();
+            if let Err(e) = self.logger.copy_attachment(filename, path) {
+                tracing::warn!(
+                    error = e.as_ref() as &dyn std::error::Error,
+                    "failed to copy hyper-v crash dump file"
+                );
+            }
         }
     }
 
