@@ -102,6 +102,7 @@ impl ProxyServerInfo {
     }
 }
 
+/// Specifies the options for creating a `ProxyIntegration`.
 pub struct ProxyIntegrationBuilder<'a, T: SpawnDriver + Clone> {
     driver: &'a T,
     handle: ProxyHandle,
@@ -169,6 +170,7 @@ pub struct ProxyIntegration {
 }
 
 impl ProxyIntegration {
+    /// Creates a new `ProxyIntegrationBuilder`.
     pub fn builder<T: SpawnDriver + Clone>(
         driver: &T,
         handle: ProxyHandle,
