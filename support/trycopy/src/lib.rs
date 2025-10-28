@@ -93,10 +93,6 @@ use x86_64::*;
 
 use std::mem::MaybeUninit;
 use thiserror::Error;
-use zerocopy::FromBytes;
-use zerocopy::Immutable;
-use zerocopy::IntoBytes;
-use zerocopy::KnownLayout;
 
 /// Must be called before using [`try_copy`] or other `try_` functions with a
 /// memory buffer that could fault.
@@ -110,22 +106,24 @@ pub fn initialize_try_copy() {
     });
 }
 
-/// Copies `count` elements from `src` to `dest`. `src` and `dest` may overlap.
-/// Fails on access violation/SIGSEGV. Note that on case of failure, some of the
-/// bytes (even partial elements) may already have been copied.
+/// Copies `count` elements from `src` to `dest`, returning an error if an
+/// access violation occurs. The source and destination may overlap.
+/// 
+/// No guarantees are made about the access width used to perform the copy or
+/// the order in which the accesses are made. In the case of failure, some of
+/// the bytes (even partial elements) may already have been copied. 
 ///
-/// This also fails if initialize_try_copy has not been called.
+/// If [`initialize_try_copy`] has not been called and a fault occurs, the
+/// process will be terminated according to the platform's default behavior.
 ///
 /// # Safety
-///
-/// This routine is safe to use if the memory pointed to by `src` or `dest` is
-/// being concurrently mutated.
-///
-/// WARNING: This routine should only be used when you know that `src` and
-/// `dest` are valid, reserved addresses but you do not know if they are mapped
-/// with the appropriate protection. For example, this routine is useful if
-/// `dest` is a sparse mapping where some pages are mapped with
-/// PAGE_NOACCESS/PROT_NONE, and some are mapped with PAGE_READWRITE/PROT_WRITE.
+/// `src` and `dest` must point to reserved addresses, which may or may not
+/// actually be backed. `dest` cannot point to memory that would violate Rust's
+/// aliasing rules.
+/// 
+/// Note that this creates a bitwise copy of the data, even if `T` is not
+/// `Copy`. The caller must ensure that subsequent uses of `src` or `dest` do
+/// not cause undefined behavior.
 pub unsafe fn try_copy<T>(src: *const T, dest: *mut T, count: usize) -> Result<(), MemoryError> {
     let len = count * size_of::<T>();
     // SAFETY: guaranteed by caller.
@@ -143,22 +141,22 @@ pub unsafe fn try_copy<T>(src: *const T, dest: *mut T, count: usize) -> Result<(
     }
 }
 
-/// Writes `count` bytes of the value `val` to `dest`. Fails on access
-/// violation/SIGSEGV. Note that on case of failure, some of the bytes (even
-/// partial elements) may already have been written.
-///
-/// This also fails if initialize_try_copy has not been called.
-///
+/// Sets `count * size_of::<T>()` bytes of memory at `dest` to the byte value
+/// `val`, returning an error if an access violation occurs.
+/// 
+/// No guarantees are made about the access width used to perform the set or the
+/// order in which the accesses are made. In the case of failure, some of the
+/// bytes may already have been set.
+/// 
+/// If [`initialize_try_copy`] has not been called and a fault occurs, the
+/// process will be terminated according to the platform's default behavior.
+/// 
 /// # Safety
-///
-/// This routine is safe to use if the memory pointed to by `dest` is being
-/// concurrently mutated.
-///
-/// WARNING: This routine should only be used when you know that `dest` is
-/// valid, reserved addresses but you do not know if they are mapped with the
-/// appropriate protection. For example, this routine is useful if `dest` is a
-/// sparse mapping where some pages are mapped with PAGE_NOACCESS/PROT_NONE, and
-/// some are mapped with PAGE_READWRITE/PROT_WRITE.
+/// `dest` must point to reserved addresses, which may or may not be backed.
+/// `dest` cannot point to memory that would violate Rust's aliasing rules.
+/// 
+/// Note that if the written bytes are not a valid representation of `T`,
+/// subsequent uses of the memory may be undefined behavior.
 pub unsafe fn try_write_bytes<T>(dest: *mut T, val: u8, count: usize) -> Result<(), MemoryError> {
     let len = count * size_of::<T>();
     // SAFETY: guaranteed by caller.
@@ -183,22 +181,17 @@ pub unsafe fn try_write_bytes<T>(dest: *mut T, val: u8, count: usize) -> Result<
 /// is under-aligned.
 ///
 /// # Safety
-///
-/// This routine is safe to use if the memory pointed to by `dest` is being
-/// concurrently mutated.
-///
-/// WARNING: This routine should only be used when you know that `dest` is
-/// valid, reserved addresses but you do not know if they are mapped with the
-/// appropriate protection. For example, this routine is useful if `dest` is a
-/// sparse mapping where some pages are mapped with PAGE_NOACCESS/PROT_NONE, and
-/// some are mapped with PAGE_READWRITE/PROT_WRITE.
-pub unsafe fn try_compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
+/// `dest` must point to a reserved address, which may or may not be backed.
+/// `dest` cannot point to memory that would violate Rust's aliasing rules.
+pub unsafe fn try_compare_exchange<T: Copy>(
     dest: *mut T,
     mut current: T,
     new: T,
 ) -> Result<Result<T, T>, MemoryError> {
     const {
         assert!(matches!(size_of::<T>(), 1 | 2 | 4 | 8));
+        // This `T` must be at least as aligned as the primitive type's natural
+        // alignment (which is its size).
         assert!(align_of::<T>() >= size_of::<T>());
     };
     // SAFETY: guaranteed by caller
@@ -241,7 +234,8 @@ pub unsafe fn try_compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownL
     }
 }
 
-/// Reads the value at `src` using one or more read instructions.
+/// Reads the value at `src` using one or more read instructions, failing if an
+/// access violation occurs.
 ///
 /// If `T` is 1, 2, 4, or 8 bytes in size, then exactly one read instruction is
 /// used.
@@ -250,16 +244,12 @@ pub unsafe fn try_compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownL
 /// read was unsuccessful.
 ///
 /// # Safety
-///
-/// This routine is safe to use if the memory pointed to by `src` is being
-/// concurrently mutated.
-///
-/// WARNING: This routine should only be used when you know that `src` is
-/// valid, reserved addresses but you do not know if they are mapped with the
-/// appropriate protection. For example, this routine is useful if `src` is a
-/// sparse mapping where some pages are mapped with PAGE_NOACCESS/PROT_NONE, and
-/// some are mapped with PAGE_READWRITE/PROT_WRITE.
-pub unsafe fn try_read_volatile<T: FromBytes + Immutable + KnownLayout>(
+/// `src` must point to a reserved address, which may or may not be backed.
+/// 
+/// Note that this creates a bitwise copy of the data, even if `T` is not
+/// `Copy`. The caller must ensure that subsequent uses of the returned value
+/// do not cause undefined behavior.
+pub unsafe fn try_read_volatile<T>(
     src: *const T,
 ) -> Result<T, MemoryError> {
     let mut dest = MaybeUninit::<T>::uninit();
@@ -297,7 +287,8 @@ pub unsafe fn try_read_volatile<T: FromBytes + Immutable + KnownLayout>(
     }
 }
 
-/// Writes `value` at `dest` using one or more write instructions.
+/// Writes `value` at `dest` using one or more write instructions, failing if an
+/// access violation occurs.
 ///
 /// If `T` is 1, 2, 4, or 8 bytes in size, then exactly one write instruction is
 /// used.
@@ -306,16 +297,13 @@ pub unsafe fn try_read_volatile<T: FromBytes + Immutable + KnownLayout>(
 /// write was unsuccessful.
 ///
 /// # Safety
-///
-/// This routine is safe to use if the memory pointed to by `dest` is being
-/// concurrently mutated.
-///
-/// WARNING: This routine should only be used when you know that `dest` is
-/// valid, reserved addresses but you do not know if they are mapped with the
-/// appropriate protection. For example, this routine is useful if `dest` is a
-/// sparse mapping where some pages are mapped with PAGE_NOACCESS/PROT_NONE, and
-/// some are mapped with PAGE_READWRITE/PROT_WRITE.
-pub unsafe fn try_write_volatile<T: IntoBytes + Immutable + KnownLayout>(
+/// `dest` must point to a reserved address, which may or may not be backed.
+/// `dest` cannot point to memory that would violate Rust's aliasing rules.
+/// 
+/// Note that this creates a bitwise copy of the data, even if `T` is not
+/// `Copy`. The caller must ensure that subsequent uses of `dest` do not
+/// cause undefined behavior.
+pub unsafe fn try_write_volatile<T>(
     dest: *mut T,
     value: &T,
 ) -> Result<(), MemoryError> {

@@ -7683,7 +7683,6 @@ dependencies = [
  "libc",
  "thiserror 2.0.16",
  "windows-sys 0.61.0",
- "zerocopy 0.8.25",
 ]
 
 [[package]]
