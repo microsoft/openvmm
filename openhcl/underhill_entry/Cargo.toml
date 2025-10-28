@@ -26,6 +26,10 @@ openssl_crypto_only.workspace = true
 
 anyhow.workspace = true
 mimalloc.workspace = true
+tracing = { workspace = true, features = ["release_max_level_debug"] }
 
 [lints]
 workspace = true
+
+[package.metadata.xtask.unused-deps]
+ignored = ["tracing"] # Present to specify features

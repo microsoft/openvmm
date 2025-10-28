@@ -8089,6 +8089,7 @@ dependencies = [
  "anyhow",
  "mimalloc",
  "openssl_crypto_only",
+ "tracing",
  "underhill_core",
  "underhill_crash",
  "underhill_dump",
