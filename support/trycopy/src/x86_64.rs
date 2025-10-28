@@ -325,7 +325,7 @@ try_read!(pub(crate) try_read32, u32, "mov {out:e}, dword ptr [{src}]");
 try_read!(pub(crate) try_read64, u64, "mov {out}, qword ptr [{src}]");
 
 macro_rules! try_write {
-    ($vis:vis $func:ident, $ty:ty, $reg_kind:tt, $asm:expr) => {
+    ($vis:vis $func:ident, $ty:ty, $asm:expr) => {
         /// # Safety
         /// `dest` must be an address that's reserved and can be written to
         /// without violating Rust's aliasing rules.
@@ -348,10 +348,10 @@ macro_rules! try_write {
     };
 }
 
-try_write!(pub(crate) try_write8, u8, reg_byte, "mov byte ptr [{dest}], {val:l}");
-try_write!(pub(crate) try_write16, u16, reg, "mov word ptr [{dest}], {val:x}");
-try_write!(pub(crate) try_write32, u32, reg, "mov dword ptr [{dest}], {val:e}");
-try_write!(pub(crate) try_write64, u64, reg, "mov qword ptr [{dest}], {val}");
+try_write!(pub(crate) try_write8, u8, "mov byte ptr [{dest}], {val:l}");
+try_write!(pub(crate) try_write16, u16, "mov word ptr [{dest}], {val:x}");
+try_write!(pub(crate) try_write32, u32, "mov dword ptr [{dest}], {val:e}");
+try_write!(pub(crate) try_write64, u64, "mov qword ptr [{dest}], {val}");
 
 macro_rules! try_cmpxchg {
     ($vis:vis $func:ident, $ty:ty, $ax:tt, $reg_kind:tt, $asm:expr) => {

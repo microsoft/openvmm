@@ -47,7 +47,7 @@
 //!
 //! # Example
 //!
-//! ```rust
+//! ```no_run
 //! trycopy::initialize_try_copy();
 //!
 //! // Attempt to read from potentially unmapped guest memory

@@ -7,7 +7,6 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-
 thiserror.workspace = true
 zerocopy.workspace = true
 

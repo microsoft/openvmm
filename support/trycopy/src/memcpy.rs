@@ -8,7 +8,7 @@ use super::Fault;
 
 /// Copy memory from `src` to `dest` in chunks in the forward direction, using
 /// the provided functions for copying 1, 8, and 32 bytes at a time.
-/// 
+///
 /// `copy1`, `copy8`, and `copy32` can assume that `length` is non-zero and a
 /// multiple of 1, 8, and 32 respectively.
 pub(crate) fn try_copy_forward_with(
@@ -33,16 +33,15 @@ pub(crate) fn try_copy_forward_with(
         src = src.wrapping_add(this);
         length &= 7;
     }
-    if length > 0 {
-        copy1(dest, src, length)
-    } else {
-        Ok(())
+    if length >= 1 {
+        copy1(dest, src, length)?;
     }
+    Ok(())
 }
 
 /// Set memory at `dest` to byte `c` in chunks, using the provided functions
 /// for setting 1, 8, and 32 bytes at a time.
-/// 
+///
 /// `set1`, `set8`, and `set32_zero` can assume that `length` is non-zero and a
 /// multiple of 1, 8, and 32 respectively. Note that `set32_zero` is used for
 /// setting 32-byte chunks to zero only.
@@ -67,8 +66,7 @@ pub(crate) fn try_memset_with(
         length &= 7;
     }
     if length >= 1 {
-        set1(dest, c, length)
-    } else {
-        Ok(())
+        set1(dest, c, length)?;
     }
+    Ok(())
 }
