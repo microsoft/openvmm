@@ -1414,7 +1414,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.16",
  "vm_resource",
- "winapi",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -2735,6 +2735,7 @@ dependencies = [
 name = "guestmem"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "inspect",
  "minircu",
  "pal_event",
@@ -2751,7 +2752,7 @@ dependencies = [
  "inspect",
  "mesh_protobuf",
  "thiserror 2.0.16",
- "winapi",
+ "win_etw_provider",
  "windows 0.62.0",
  "windows-sys 0.61.0",
  "zerocopy 0.8.25",
@@ -3943,14 +3944,12 @@ dependencies = [
  "headervec",
  "libc",
  "lx",
- "ntapi",
  "pal",
  "parking_lot",
  "static_assertions",
  "tempfile",
  "tracing",
  "widestring",
- "winapi",
  "windows 0.62.0",
  "zerocopy 0.8.25",
 ]
@@ -4314,6 +4313,7 @@ version = "0.0.0"
 name = "minircu"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "event-listener",
  "libc",
  "pal_async",
@@ -9122,6 +9122,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "fs-err",
  "futures",
  "futures-concurrency",
  "getrandom 0.3.3",
@@ -9328,6 +9329,8 @@ dependencies = [
  "build_rs_guest_arch",
  "cache_topology",
  "chipset",
+ "chipset_device_resources",
+ "closeable_mutex",
  "cvm_tracing",
  "futures",
  "futures-concurrency",
@@ -9808,8 +9811,10 @@ name = "whp"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "guid",
  "pal",
  "winapi",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]

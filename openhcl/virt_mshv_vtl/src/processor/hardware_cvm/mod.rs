@@ -68,7 +68,7 @@ use zerocopy::IntoBytes;
 impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     fn validate_register_access(
         &mut self,
-        vtl: GuestVtl,
+        target_vtl: GuestVtl,
         name: hvdef::HvRegisterName,
     ) -> HvResult<()> {
         match name.into() {
@@ -122,14 +122,14 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::R15
             | HvX64RegisterName::Pat => {
                 // Architectural registers can only be accessed by a higher VTL.
-                if vtl >= self.intercepted_vtl {
+                if target_vtl >= self.intercepted_vtl {
                     return Err(HvError::AccessDenied);
                 }
                 Ok(())
             }
             HvX64RegisterName::TscAux => {
                 // Architectural registers can only be accessed by a higher VTL.
-                if vtl >= self.intercepted_vtl {
+                if target_vtl >= self.intercepted_vtl {
                     return Err(HvError::AccessDenied);
                 }
 
@@ -140,7 +140,13 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 }
             }
             HvX64RegisterName::PendingEvent0 => {
-                if vtl >= self.intercepted_vtl {
+                if target_vtl >= self.intercepted_vtl {
+                    return Err(HvError::InvalidParameter);
+                }
+                Ok(())
+            }
+            HvX64RegisterName::VsmVina => {
+                if target_vtl == GuestVtl::Vtl0 {
                     return Err(HvError::InvalidParameter);
                 }
                 Ok(())
@@ -149,7 +155,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::CrInterceptCr0Mask
             | HvX64RegisterName::CrInterceptCr4Mask
             | HvX64RegisterName::CrInterceptIa32MiscEnableMask => {
-                if vtl != GuestVtl::Vtl1 {
+                if target_vtl != GuestVtl::Vtl1 {
                     return Err(HvError::AccessDenied);
                 }
                 Ok(())

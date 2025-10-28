@@ -13,6 +13,7 @@ use chipset_device_resources::IRQ_LINE_SET;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
+use firmware_uefi::LogLevel;
 use firmware_uefi::UefiCommandSet;
 use floppy_resources::FloppyDiskConfig;
 use futures::FutureExt;
@@ -28,11 +29,13 @@ use hvlite_defs::config::Aarch64TopologyConfig;
 use hvlite_defs::config::ArchTopologyConfig;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
+use hvlite_defs::config::EfiDiagnosticsLogLevelType;
 use hvlite_defs::config::GicConfig;
 use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
+use hvlite_defs::config::PcieDeviceConfig;
 use hvlite_defs::config::PcieRootComplexConfig;
 use hvlite_defs::config::PmuGsivConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
@@ -170,6 +173,7 @@ impl Manifest {
             floppy_disks: config.floppy_disks,
             ide_disks: config.ide_disks,
             pcie_root_complexes: config.pcie_root_complexes,
+            pcie_devices: config.pcie_devices,
             vpci_devices: config.vpci_devices,
             hypervisor: config.hypervisor,
             memory: config.memory,
@@ -198,6 +202,11 @@ impl Manifest {
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
+            efi_diagnostics_log_level: match config.efi_diagnostics_log_level {
+                EfiDiagnosticsLogLevelType::Default => LogLevel::make_default(),
+                EfiDiagnosticsLogLevelType::Info => LogLevel::make_info(),
+                EfiDiagnosticsLogLevelType::Full => LogLevel::make_full(),
+            },
         }
     }
 }
@@ -212,6 +221,7 @@ pub struct Manifest {
     floppy_disks: Vec<FloppyDiskConfig>,
     ide_disks: Vec<IdeDeviceConfig>,
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
+    pcie_devices: Vec<PcieDeviceConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
     memory: MemoryConfig,
     processor_topology: ProcessorTopologyConfig,
@@ -240,6 +250,7 @@ pub struct Manifest {
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
+    efi_diagnostics_log_level: LogLevel,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -1139,6 +1150,7 @@ impl InitializedVm {
                         } else {
                             UefiCommandSet::Aarch64
                         },
+                        diagnostics_log_level: cfg.efi_diagnostics_log_level,
                     },
                     logger,
                     nvram_storage: {
@@ -1803,6 +1815,21 @@ impl InitializedVm {
                 low_mmio_address -= low_mmio_size;
                 high_mmio_address += rc.high_mmio_size;
             }
+        }
+
+        for dev_cfg in cfg.pcie_devices {
+            vmm_core::device_builder::build_pcie_device(
+                &mut chipset_builder,
+                dev_cfg.port_name.into(),
+                &driver_source,
+                &resolver,
+                &gm,
+                dev_cfg.resource,
+                partition.clone().into_doorbell_registration(Vtl::Vtl0),
+                Some(&mapper),
+                partition.clone().into_msi_target(Vtl::Vtl0),
+            )
+            .await?;
         }
 
         if let Some(vmbus_cfg) = cfg.vmbus {
@@ -3034,6 +3061,7 @@ impl LoadedVm {
             floppy_disks: vec![],        // TODO
             ide_disks: vec![],           // TODO
             pcie_root_complexes: vec![], // TODO
+            pcie_devices: vec![],        // TODO
             vpci_devices: vec![],        // TODO
             memory: self.inner.memory_cfg,
             processor_topology: self.inner.processor_topology.to_config(),
@@ -3062,6 +3090,7 @@ impl LoadedVm {
             generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
+            efi_diagnostics_log_level: Default::default(),
         };
         RestartState {
             hypervisor: self.inner.hypervisor,

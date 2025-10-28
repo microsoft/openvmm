@@ -56,6 +56,8 @@ pub mod service;
 #[cfg(not(feature = "fuzzing"))]
 mod service;
 
+pub use crate::service::diagnostics::LogLevel;
+
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -126,6 +128,7 @@ pub struct UefiConfig {
     pub initial_generation_id: [u8; 16],
     pub use_mmio: bool,
     pub command_set: UefiCommandSet,
+    pub diagnostics_log_level: LogLevel,
 }
 
 /// Various runtime objects used by the UEFI device + underlying services.
@@ -211,7 +214,9 @@ impl UefiDevice {
                     generation_id_deps,
                 ),
                 time: service::time::TimeServices::new(time_source),
-                diagnostics: service::diagnostics::DiagnosticsServices::new(),
+                diagnostics: service::diagnostics::DiagnosticsServices::new(
+                    cfg.diagnostics_log_level,
+                ),
             },
         };
 

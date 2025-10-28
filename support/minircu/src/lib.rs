@@ -113,7 +113,6 @@ use std::future::poll_fn;
 use std::ops::Deref;
 use std::pin::pin;
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering::Acquire;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::Ordering::Release;
 use std::sync::atomic::Ordering::SeqCst;
@@ -309,7 +308,10 @@ impl RcuDomain {
     where
         F: FnOnce() -> R,
     {
-        self.tls.with(|x| x.run(self.data, f))
+        self.tls.with(|x| {
+            let _guard = x.enter(self.data);
+            f()
+        })
     }
 
     /// Quiesce the current thread.
@@ -500,30 +502,41 @@ impl RcuDomain {
 }
 
 impl ThreadData {
-    fn run<F, R>(&self, data: &'static RcuData, f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
+    #[must_use]
+    fn enter(&self, data: &'static RcuData) -> impl '_ + Drop {
+        struct ExitOnDrop<'a>(&'a ThreadData, &'static RcuData, u64);
+        impl<'a> Drop for ExitOnDrop<'a> {
+            fn drop(&mut self) {
+                self.0.exit(self.1, self.2);
+            }
+        }
+
         // Mark the thread as busy.
         let seq = self.current_seq.load(Relaxed);
         self.current_seq.store(seq | SEQ_MASK_BUSY, Relaxed);
         if seq < SEQ_FIRST {
-            // The thread was quiesced or not registered. Register it now.
-            if seq == SEQ_NONE {
-                self.start(data, seq);
-            } else {
-                debug_assert!(seq == SEQ_QUIESCED || seq & SEQ_MASK_BUSY != 0, "{seq:#x}");
-            }
-            // Use a full memory barrier to ensure the write side observes that
-            // the thread is no longer quiesced before calling `f`.
-            fence(SeqCst);
+            self.enter_slow(data, seq);
         }
-        // Ensure accesses in `f` are bounded by setting the busy bit. Note that
-        // this and other fences are just compiler fences; the write side must
-        // call `membarrier` to dynamically turn them into processor memory
-        // barriers, so to speak.
-        sys::access_fence(Acquire);
-        let r = f();
+        // Ensure the busy bit set is visible to the write side before
+        // operating on any RCU data.
+        sys::access_fence(SeqCst);
+        ExitOnDrop(self, data, seq)
+    }
+
+    #[cold]
+    fn enter_slow(&self, data: &'static RcuData, seq: u64) {
+        // The thread was quiesced or not registered. Register it now.
+        if seq == SEQ_NONE {
+            self.start(data, seq);
+        } else {
+            debug_assert!(seq == SEQ_QUIESCED || seq & SEQ_MASK_BUSY != 0, "{seq:#x}");
+        }
+        // Use a full memory barrier to ensure the write side observes that
+        // the thread is no longer quiesced before calling `f`.
+        fence(SeqCst);
+    }
+
+    fn exit(&self, data: &'static RcuData, seq: u64) {
         sys::access_fence(Release);
         // Clear the busy bit.
         self.current_seq.store(seq, Relaxed);
@@ -536,10 +549,9 @@ impl ThreadData {
             // wake up any waiters.
             self.update_seq(data, seq, new_seq);
         }
-        r
     }
 
-    #[inline(never)]
+    #[cold]
     fn start(&self, data: &'static RcuData, seq: u64) {
         if seq == SEQ_NONE {
             // Add the thread to the list of known threads in this domain.
@@ -555,7 +567,7 @@ impl ThreadData {
         }
     }
 
-    #[inline(never)]
+    #[cold]
     fn update_seq(&self, data: &'static RcuData, seq: u64, new_seq: u64) {
         if seq & SEQ_MASK_BUSY != 0 {
             // Nested call. Skip.
