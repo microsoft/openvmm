@@ -50,9 +50,15 @@ impl SimpleFlowNode for Node {
             job_name,
         } = request;
 
+        let arch = match ctx.arch() {
+            FlowArch::X86_64 => CommonArch::X86_64,
+            FlowArch::Aarch64 => CommonArch::Aarch64,
+            _ => panic!("unsupported arch"),
+        };
+
         let xtask = ctx.reqv(|v| crate::build_xtask::Request {
             target: CommonTriple::Common {
-                arch: CommonArch::X86_64,
+                arch,
                 platform: CommonPlatform::LinuxMusl,
             },
             xtask: v,
