@@ -2741,6 +2741,7 @@ dependencies = [
  "pal_event",
  "sparse_mmap",
  "thiserror 2.0.16",
+ "trycopy",
  "zerocopy 0.8.25",
 ]
 
@@ -6877,13 +6878,12 @@ dependencies = [
 name = "sparse_mmap"
 version = "0.0.0"
 dependencies = [
- "cc",
- "criterion",
  "getrandom 0.3.3",
  "libc",
  "pal",
  "parking_lot",
  "thiserror 2.0.16",
+ "trycopy",
  "windows-sys 0.61.0",
  "zerocopy 0.8.25",
 ]
@@ -7676,6 +7676,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "trycopy"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "libc",
+ "thiserror 2.0.16",
+ "windows-sys 0.61.0",
+ "zerocopy 0.8.25",
+]
+
+[[package]]
 name = "typed-path"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8234,8 +8245,8 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "safeatomic",
- "sparse_mmap",
  "tracing",
+ "trycopy",
  "uevent",
  "vfio-bindings",
  "vfio_sys",
