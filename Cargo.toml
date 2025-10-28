@@ -625,6 +625,8 @@ opt-level = 3
 bitvec = { git = "https://github.com/smalis-msft/bitvec", branch = "set-aliased-previous-val" }
 # Pending <https://github.com/influxdata/pbjson/pull/94>
 pbjson-build = { git = "https://github.com/jstarks/pbjson", branch = "aliases" }
+tracing = { git = "https://github.com/jstarks/tracing", branch = "less_code" }
+tracing-core = { git = "https://github.com/jstarks/tracing", branch = "less_code" }
 
 [workspace.lints.rust]
 # Lint groups need a priority lower than individual lints so they get applied first.
