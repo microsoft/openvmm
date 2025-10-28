@@ -2936,9 +2936,6 @@ impl Hcl {
 
         let caps = match self.isolation {
             IsolationType::None | IsolationType::Vbs => caps,
-            // TODO SNP: Return actions may be useful, but with alternate injection many of these need
-            // cannot actually be processed by the hypervisor without returning to VTL2.
-            // Filter them out for now.
             IsolationType::Snp => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available()),
