@@ -7591,7 +7591,7 @@ dependencies = [
 [[package]]
 name = "tracing"
 version = "0.1.41"
-source = "git+https://github.com/jstarks/tracing?branch=less_code#47b7e9deee8084979b3d7beb91e5613d0500c07e"
+source = "git+https://github.com/jstarks/tracing?branch=less_code#418b0aca62453c09c8f75b1ad447de4da7f770d2"
 dependencies = [
  "pin-project-lite",
  "tracing-attributes",
@@ -7612,7 +7612,7 @@ dependencies = [
 [[package]]
 name = "tracing-core"
 version = "0.1.34"
-source = "git+https://github.com/jstarks/tracing?branch=less_code#47b7e9deee8084979b3d7beb91e5613d0500c07e"
+source = "git+https://github.com/jstarks/tracing?branch=less_code#418b0aca62453c09c8f75b1ad447de4da7f770d2"
 dependencies = [
  "once_cell",
  "valuable",
