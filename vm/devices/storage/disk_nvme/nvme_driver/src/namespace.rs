@@ -575,7 +575,6 @@ impl DynamicState {
 
             // If the event is cancelled or the sender is dropped, exit the loop
             // gracefully.
-            // TODO: Could this not just depend on the sender being dropped?
             if matches!(event, Err(_) | Ok(None)) {
                 tracing::debug!("rescan task exiting");
                 break;
