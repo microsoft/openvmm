@@ -338,7 +338,15 @@ impl BasicNic {
                 // Make the top 32 bits the vport index
                 let mut wq_handle = req.vport << 32;
                 wq_handle |= self.next_wq_handle.fetch_add(1, Ordering::Relaxed);
-                for task in vport.tasks.iter_mut() {
+                    let placed = vport.tasks.iter_mut().any(|task| {
+                        let queue_slot = if is_send { &mut task.queue_cfg.tx } else { &mut task.queue_cfg.rx };
+                        if queue_slot.is_none() {
+                            *queue_slot = Some((wq_id, cq_id, wq_handle));
+                            true
+                        } else {
+                            false
+                        }
+                    });
                     if is_send {
                         if task.queue_cfg.tx.is_none() {
                             task.queue_cfg.tx = Some((wq_id, cq_id, wq_handle));
