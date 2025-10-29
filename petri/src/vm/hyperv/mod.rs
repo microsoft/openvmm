@@ -176,14 +176,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         let PetriVmResources { driver, log_source } = resources;
 
-        let mut temp_dir = tempfile::tempdir()?;
-        if should_keep_vm_after_test() {
-            // TODO: Per the note on `disable_cleanup`, it would be ideal to
-            // call `keep()` instead. That means we'd need to change how we
-            // store this object, so make a tactical change for now.
-            // `PETRI_PRESERVE_VM` is essentially a dev/test only feature anyways.
-            temp_dir.disable_cleanup(true);
-        }
+        let temp_dir = tempfile::tempdir()?;
 
         let (
             guest_state_isolation_type,
@@ -887,14 +880,4 @@ async fn make_temp_diff_disk(
     tracing::debug!(?path, ?parent_path, "creating differencing vhd");
     blocking::unblock(move || disk_vhdmp::Vhd::create_diff(&path, &parent_path)).await?;
     Ok(())
-}
-
-/// For manual dev/test scenarios, it is useful to keep the Hyper-V VM around.
-/// (petri has done all the work to set it up, and a dev may want to debug issues
-/// manually).
-///
-pub(crate) fn should_keep_vm_after_test() -> bool {
-    std::env::var("PETRI_PRESERVE_VM")
-        .ok()
-        .is_none_or(|v| v.is_empty() || v == "0")
 }

@@ -13,7 +13,6 @@ use crate::PetriLogFile;
 use crate::PetriLogSource;
 use crate::PetriVmFramebufferAccess;
 use crate::VmScreenshotMeta;
-use crate::vm::hyperv::should_keep_vm_after_test;
 use anyhow::Context;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
@@ -610,7 +609,10 @@ impl HyperVVM {
 
 impl Drop for HyperVVM {
     fn drop(&mut self) {
-        if should_keep_vm_after_test() {
+        if std::env::var("PETRI_PRESERVE_VM")
+            .ok()
+            .is_none_or(|v| v.is_empty() || v == "0")
+        {
             let _ = futures::executor::block_on(self.remove_inner());
         }
     }
