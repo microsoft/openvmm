@@ -5,6 +5,7 @@
 
 pub use self::read_only::ReadOnlyCapability;
 
+use crate::spec::caps::CapabilityId;
 use inspect::Inspect;
 use vmcore::save_restore::ProtobufSaveRestore;
 
@@ -17,6 +18,9 @@ pub mod read_only;
 pub trait PciCapability: Send + Sync + Inspect + ProtobufSaveRestore {
     /// A descriptive label for use in Save/Restore + Inspect output
     fn label(&self) -> &str;
+
+    /// Returns the PCI capability ID for this capability
+    fn capability_id(&self) -> CapabilityId;
 
     /// Length of the capability structure
     fn len(&self) -> usize;

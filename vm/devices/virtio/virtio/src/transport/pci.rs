@@ -34,6 +34,7 @@ use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
 use pci_core::cfg_space_emu::IntxInterrupt;
 use pci_core::msi::RegisterMsi;
+use pci_core::spec::caps::CapabilityId;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
@@ -131,18 +132,22 @@ impl VirtioPciDevice {
         let mut caps: Vec<Box<dyn PciCapability>> = vec![
             Box::new(ReadOnlyCapability::new(
                 "virtio-common",
+                CapabilityId::VENDOR_SPECIFIC,
                 VirtioCapability::new(VIRTIO_PCI_CAP_COMMON_CFG, 0, 0, 0, 56),
             )),
             Box::new(ReadOnlyCapability::new(
                 "virtio-notify",
+                CapabilityId::VENDOR_SPECIFIC,
                 VirtioNotifyCapability::new(0, 0, 56, 4),
             )),
             Box::new(ReadOnlyCapability::new(
                 "virtio-pci-isr",
+                CapabilityId::VENDOR_SPECIFIC,
                 VirtioCapability::new(VIRTIO_PCI_CAP_ISR_CFG, 0, 0, 60, 4),
             )),
             Box::new(ReadOnlyCapability::new(
                 "virtio-pci-device",
+                CapabilityId::VENDOR_SPECIFIC,
                 VirtioCapability::new(
                     VIRTIO_PCI_CAP_DEVICE_CFG,
                     0,
@@ -189,6 +194,7 @@ impl VirtioPciDevice {
 
             caps.push(Box::new(ReadOnlyCapability::new(
                 "virtio-pci-shm",
+                CapabilityId::VENDOR_SPECIFIC,
                 VirtioCapability64::new(
                     VIRTIO_PCI_CAP_SHARED_MEMORY_CFG,
                     4, // BAR 4
@@ -765,7 +771,7 @@ pub(crate) mod capabilities {
         #[test]
         fn common_check() {
             let common =
-                ReadOnlyCapability::new("common", VirtioCapability::new(0x13, 2, 0, 0x100, 0x200));
+                ReadOnlyCapability::new("common", CapabilityId::VENDOR_SPECIFIC, VirtioCapability::new(0x13, 2, 0, 0x100, 0x200));
             assert_eq!(common.read_u32(0), 0x13100009);
             assert_eq!(common.read_u32(4), 2);
             assert_eq!(common.read_u32(8), 0x100);
@@ -776,6 +782,7 @@ pub(crate) mod capabilities {
         fn notify_check() {
             let notify = ReadOnlyCapability::new(
                 "notify",
+                CapabilityId::VENDOR_SPECIFIC,
                 VirtioNotifyCapability::new(0x123, 2, 0x100, 0x200),
             );
             assert_eq!(notify.read_u32(0), 0x2140009);

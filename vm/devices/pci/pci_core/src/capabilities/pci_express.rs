@@ -125,6 +125,10 @@ impl PciCapability for PciExpressCapability {
         "pci-express"
     }
 
+    fn capability_id(&self) -> CapabilityId {
+        CapabilityId::PCI_EXPRESS
+    }
+
     fn len(&self) -> usize {
         // Implement the full PCI Express Capability structure (PCI Spec, Section 7.5.3):
         // 0x00: PCIe Capabilities (2 bytes) + Next Pointer (1 byte) + Capability ID (1 byte)

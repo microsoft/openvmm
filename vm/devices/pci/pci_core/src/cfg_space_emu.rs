@@ -9,6 +9,7 @@
 use crate::PciInterruptPin;
 use crate::bar_mapping::BarMappings;
 use crate::capabilities::PciCapability;
+use crate::spec::caps::CapabilityId;
 use crate::spec::cfg_space;
 use crate::spec::hwid::HardwareIds;
 use chipset_device::io::IoError;
@@ -570,6 +571,13 @@ impl ConfigSpaceType0Emulator {
     pub fn find_bar(&self, address: u64) -> Option<(u8, u16)> {
         self.active_bars.find(address)
     }
+
+    /// Checks if this device is a PCIe device by looking for the PCI Express capability.
+    pub fn is_pcie_device(&self) -> bool {
+        self.capabilities
+            .iter()
+            .any(|cap| cap.capability_id() == CapabilityId::PCI_EXPRESS)
+    }
 }
 
 #[derive(Debug, Inspect)]
@@ -897,6 +905,13 @@ impl ConfigSpaceType1Emulator {
 
         IoResult::Ok
     }
+
+    /// Checks if this device is a PCIe device by looking for the PCI Express capability.
+    pub fn is_pcie_device(&self) -> bool {
+        self.capabilities
+            .iter()
+            .any(|cap| cap.capability_id() == CapabilityId::PCI_EXPRESS)
+    }
 }
 
 mod save_restore {
@@ -1017,6 +1032,8 @@ mod save_restore {
 mod tests {
     use super::*;
     use crate::capabilities::read_only::ReadOnlyCapability;
+    use crate::capabilities::pci_express::PciExpressCapability;
+    use crate::spec::caps::pci_express::DevicePortType;
     use crate::spec::hwid::ClassCode;
     use crate::spec::hwid::ProgrammingInterface;
     use crate::spec::hwid::Subclass;
@@ -1049,7 +1066,7 @@ mod tests {
         assert_eq!(read_cfg(&emu, 0), 0x2222_1111);
         assert_eq!(read_cfg(&emu, 4) & 0x10_0000, 0); // Capabilities pointer
 
-        let emu = create_type1_emulator(vec![Box::new(ReadOnlyCapability::new("foo", 0))]);
+        let emu = create_type1_emulator(vec![Box::new(ReadOnlyCapability::new("foo", CapabilityId::VENDOR_SPECIFIC, 0))]);
         assert_eq!(read_cfg(&emu, 0), 0x2222_1111);
         assert_eq!(read_cfg(&emu, 4) & 0x10_0000, 0x10_0000); // Capabilities pointer
     }
@@ -1185,5 +1202,115 @@ mod tests {
         );
         emu.write_u32(0x4, MMIO_DISABLED).unwrap();
         assert!(emu.assigned_prefetch_range().is_none());
+    }
+
+    #[test]
+    fn test_type1_is_pcie_device() {
+        // Test Type 1 device without PCIe capability
+        let emu = create_type1_emulator(vec![Box::new(ReadOnlyCapability::new("foo", CapabilityId::VENDOR_SPECIFIC, 0))]);
+        assert!(!emu.is_pcie_device());
+
+        // Test Type 1 device with PCIe capability
+        let emu = create_type1_emulator(vec![Box::new(PciExpressCapability::new(
+            DevicePortType::RootPort,
+            None,
+        ))]);
+        assert!(emu.is_pcie_device());
+
+        // Test Type 1 device with multiple capabilities including PCIe
+        let emu = create_type1_emulator(vec![
+            Box::new(ReadOnlyCapability::new("foo", CapabilityId::VENDOR_SPECIFIC, 0)),
+            Box::new(PciExpressCapability::new(DevicePortType::Endpoint, None)),
+            Box::new(ReadOnlyCapability::new("bar", CapabilityId::VENDOR_SPECIFIC, 0)),
+        ]);
+        assert!(emu.is_pcie_device());
+    }
+
+    #[test]
+    fn test_type0_is_pcie_device() {
+        // Test Type 0 device without PCIe capability
+        let emu = ConfigSpaceType0Emulator::new(
+            HardwareIds {
+                vendor_id: 0x1111,
+                device_id: 0x2222,
+                revision_id: 1,
+                prog_if: ProgrammingInterface::NONE,
+                sub_class: Subclass::NONE,
+                base_class: ClassCode::UNCLASSIFIED,
+                type0_sub_vendor_id: 0,
+                type0_sub_system_id: 0,
+            },
+            vec![Box::new(ReadOnlyCapability::new("foo", CapabilityId::VENDOR_SPECIFIC, 0))],
+            DeviceBars::new(),
+        );
+        assert!(!emu.is_pcie_device());
+
+        // Test Type 0 device with PCIe capability
+        let emu = ConfigSpaceType0Emulator::new(
+            HardwareIds {
+                vendor_id: 0x1111,
+                device_id: 0x2222,
+                revision_id: 1,
+                prog_if: ProgrammingInterface::NONE,
+                sub_class: Subclass::NONE,
+                base_class: ClassCode::UNCLASSIFIED,
+                type0_sub_vendor_id: 0,
+                type0_sub_system_id: 0,
+            },
+            vec![Box::new(PciExpressCapability::new(
+                DevicePortType::Endpoint,
+                None,
+            ))],
+            DeviceBars::new(),
+        );
+        assert!(emu.is_pcie_device());
+
+        // Test Type 0 device with multiple capabilities including PCIe
+        let emu = ConfigSpaceType0Emulator::new(
+            HardwareIds {
+                vendor_id: 0x1111,
+                device_id: 0x2222,
+                revision_id: 1,
+                prog_if: ProgrammingInterface::NONE,
+                sub_class: Subclass::NONE,
+                base_class: ClassCode::UNCLASSIFIED,
+                type0_sub_vendor_id: 0,
+                type0_sub_system_id: 0,
+            },
+            vec![
+                Box::new(ReadOnlyCapability::new("foo", CapabilityId::VENDOR_SPECIFIC, 0)),
+                Box::new(PciExpressCapability::new(DevicePortType::Endpoint, None)),
+                Box::new(ReadOnlyCapability::new("bar", CapabilityId::VENDOR_SPECIFIC, 0)),
+            ],
+            DeviceBars::new(),
+        );
+        assert!(emu.is_pcie_device());
+
+        // Test Type 0 device with no capabilities
+        let emu = ConfigSpaceType0Emulator::new(
+            HardwareIds {
+                vendor_id: 0x1111,
+                device_id: 0x2222,
+                revision_id: 1,
+                prog_if: ProgrammingInterface::NONE,
+                sub_class: Subclass::NONE,
+                base_class: ClassCode::UNCLASSIFIED,
+                type0_sub_vendor_id: 0,
+                type0_sub_system_id: 0,
+            },
+            vec![],
+            DeviceBars::new(),
+        );
+        assert!(!emu.is_pcie_device());
+    }
+
+    #[test]
+    fn test_capability_ids() {
+        // Test that capabilities return the correct capability IDs
+        let pcie_cap = PciExpressCapability::new(DevicePortType::Endpoint, None);
+        assert_eq!(pcie_cap.capability_id(), CapabilityId::PCI_EXPRESS);
+
+        let read_only_cap = ReadOnlyCapability::new("test", CapabilityId::VENDOR_SPECIFIC, 0u32);
+        assert_eq!(read_only_cap.capability_id(), CapabilityId::VENDOR_SPECIFIC);
     }
 }

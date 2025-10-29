@@ -130,7 +130,7 @@ pub struct GenericPcieSwitchDefinition {
     pub name: Arc<str>,
     /// The number of downstream ports to create.
     /// TODO: implement physical slot number, link and slot stuff
-    pub downstream_port_count: usize,
+    pub downstream_port_count: u8,
 }
 
 /// A PCI Express switch emulator that implements a complete switch with upstream and downstream ports.

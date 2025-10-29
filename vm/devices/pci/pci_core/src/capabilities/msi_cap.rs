@@ -120,6 +120,10 @@ impl PciCapability for MsiCapability {
         "msi"
     }
 
+    fn capability_id(&self) -> CapabilityId {
+        CapabilityId::MSI
+    }
+
     fn len(&self) -> usize {
         self.len_bytes()
     }

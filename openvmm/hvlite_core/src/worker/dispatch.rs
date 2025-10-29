@@ -1828,7 +1828,7 @@ impl InitializedVm {
                     .add(|_services| {
                         let definition = pcie::switch::GenericPcieSwitchDefinition {
                             name: switch.name.clone().into(),
-                            downstream_port_count: switch.num_downstream_ports as usize,
+                            downstream_port_count: switch.num_downstream_ports,
                         };
                         GenericPcieSwitch::new(definition)
                     })?;
