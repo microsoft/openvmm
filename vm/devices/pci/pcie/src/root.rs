@@ -405,28 +405,6 @@ impl RootPort {
         self.port
             .forward_cfg_write_with_routing(bus, device_function, cfg_offset, value)
     }
-
-    /// Gets a reference to the MSI interrupt set for this root port.
-    /// This can be used to connect the root port's MSI interrupts to an interrupt controller.
-    pub fn msi_set(&self) -> &pci_core::msi::MsiInterruptSet {
-        self.port.msi_set()
-    }
-
-    /// Gets a mutable reference to the MSI interrupt set for this root port.
-    /// This can be used to connect the root port's MSI interrupts to an interrupt controller.
-    pub fn msi_set_mut(&mut self) -> &mut pci_core::msi::MsiInterruptSet {
-        self.port.msi_set_mut()
-    }
-
-    /// Gets a reference to the configuration space emulator for this root port.
-    pub fn cfg_space(&self) -> &pci_core::cfg_space_emu::ConfigSpaceType1Emulator {
-        &self.port.cfg_space
-    }
-
-    /// Gets a mutable reference to the configuration space emulator for this root port.
-    pub fn cfg_space_mut(&mut self) -> &mut pci_core::cfg_space_emu::ConfigSpaceType1Emulator {
-        &mut self.port.cfg_space
-    }
 }
 
 mod save_restore {

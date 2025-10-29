@@ -87,12 +87,12 @@ pub struct DownstreamSwitchPort {
 
 impl DownstreamSwitchPort {
     /// Constructs a new [`DownstreamSwitchPort`] emulator.
-    pub fn new(name: impl Into<Arc<str>>) -> Self {
-        Self::new_with_multi_function(name, false)
-    }
-
-    /// Constructs a new [`DownstreamSwitchPort`] emulator with multi-function flag.
-    pub fn new_with_multi_function(name: impl Into<Arc<str>>, multi_function: bool) -> Self {
+    ///
+    /// # Arguments
+    /// * `name` - The name for this downstream switch port
+    /// * `multi_function` - Whether this port should have the multi-function flag set (default: false)
+    pub fn new(name: impl Into<Arc<str>>, multi_function: Option<bool>) -> Self {
+        let multi_function = multi_function.unwrap_or(false);
         let hardware_ids = HardwareIds {
             vendor_id: VENDOR_ID,
             device_id: DOWNSTREAM_SWITCH_PORT_DEVICE_ID,
@@ -121,23 +121,6 @@ impl DownstreamSwitchPort {
     /// Get a mutable reference to the configuration space emulator.
     pub fn cfg_space_mut(&mut self) -> &mut ConfigSpaceType1Emulator {
         &mut self.port.cfg_space
-    }
-
-    /// Get a mutable reference to the underlying PCIe port.
-    pub fn port_mut(&mut self) -> &mut PcieDownstreamPort {
-        &mut self.port
-    }
-
-    /// Gets a reference to the MSI interrupt set for this downstream switch port.
-    /// This can be used to connect the port's MSI interrupts to an interrupt controller.
-    pub fn msi_set(&self) -> &pci_core::msi::MsiInterruptSet {
-        self.port.msi_set()
-    }
-
-    /// Gets a mutable reference to the MSI interrupt set for this downstream switch port.
-    /// This can be used to connect the port's MSI interrupts to an interrupt controller.
-    pub fn msi_set_mut(&mut self) -> &mut pci_core::msi::MsiInterruptSet {
-        self.port.msi_set_mut()
     }
 }
 
@@ -180,10 +163,7 @@ impl GenericPcieSwitch {
         let downstream_ports = (0..definition.downstream_port_count)
             .map(|i| {
                 let port_name = format!("{}-downstream-{}", definition.name, i);
-                let port = DownstreamSwitchPort::new_with_multi_function(
-                    port_name.clone(),
-                    multi_function,
-                );
+                let port = DownstreamSwitchPort::new(port_name.clone(), Some(multi_function));
                 (i as u8, (port_name.into(), port))
             })
             .collect();
@@ -485,7 +465,7 @@ mod tests {
 
     #[test]
     fn test_downstream_switch_port_creation() {
-        let port = DownstreamSwitchPort::new("test-downstream-port");
+        let port = DownstreamSwitchPort::new("test-downstream-port", None);
         assert!(port.port.link.is_none());
 
         // Verify that we can read the vendor/device ID from config space
@@ -496,6 +476,51 @@ mod tests {
             .unwrap();
         let expected = (DOWNSTREAM_SWITCH_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
         assert_eq!(vendor_device_id, expected);
+    }
+
+    #[test]
+    fn test_downstream_switch_port_multi_function_options() {
+        // Test with default multi_function (false)
+        let port_default = DownstreamSwitchPort::new("test-port-default", None);
+        let mut header_type_value: u32 = 0;
+        port_default
+            .cfg_space()
+            .read_u32(0x0C, &mut header_type_value)
+            .unwrap();
+        let header_type_field = (header_type_value >> 16) & 0xFF;
+        assert_eq!(
+            header_type_field & 0x80,
+            0x00,
+            "Multi-function bit should NOT be set with None parameter"
+        );
+
+        // Test with explicit multi_function false
+        let port_false = DownstreamSwitchPort::new("test-port-false", Some(false));
+        let mut header_type_value_false: u32 = 0;
+        port_false
+            .cfg_space()
+            .read_u32(0x0C, &mut header_type_value_false)
+            .unwrap();
+        let header_type_field_false = (header_type_value_false >> 16) & 0xFF;
+        assert_eq!(
+            header_type_field_false & 0x80,
+            0x00,
+            "Multi-function bit should NOT be set with Some(false)"
+        );
+
+        // Test with explicit multi_function true
+        let port_true = DownstreamSwitchPort::new("test-port-true", Some(true));
+        let mut header_type_value_true: u32 = 0;
+        port_true
+            .cfg_space()
+            .read_u32(0x0C, &mut header_type_value_true)
+            .unwrap();
+        let header_type_field_true = (header_type_value_true >> 16) & 0xFF;
+        assert_eq!(
+            header_type_field_true & 0x80,
+            0x80,
+            "Multi-function bit should be set with Some(true)"
+        );
     }
 
     #[test]
