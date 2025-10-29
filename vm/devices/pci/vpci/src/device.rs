@@ -1048,14 +1048,27 @@ pub struct VpciChannel {
 pub struct VpciConfigSpace {
     offset: VpciConfigSpaceOffset,
     control_mmio: Box<dyn ControlMmioIntercept>,
+    vtom: Option<VpciConfigSpaceVtom>,
+}
+
+/// The vtom info used by config space.
+pub struct VpciConfigSpaceVtom {
+    /// The vtom bit.
+    pub vtom: u64,
+    /// The mmio control region to be registered with vtom.
+    pub control_mmio: Box<dyn ControlMmioIntercept>,
 }
 
 impl VpciConfigSpace {
-    /// Create New PCI Config space
-    pub fn new(control_mmio: Box<dyn ControlMmioIntercept>) -> Self {
+    /// Create New PCI Config space.
+    pub fn new(
+        control_mmio: Box<dyn ControlMmioIntercept>,
+        vtom: Option<VpciConfigSpaceVtom>,
+    ) -> Self {
         Self {
             offset: VpciConfigSpaceOffset::new(),
             control_mmio,
+            vtom,
         }
     }
 
@@ -1065,13 +1078,22 @@ impl VpciConfigSpace {
     }
 
     fn map(&mut self, addr: u64) {
-        tracing::debug!(addr, "mapping config space");
+        tracing::trace!(addr, "mapping config space");
+
+        // Remove the vtom bit if set
+        let vtom_bit = self.vtom.as_ref().map(|v| v.vtom).unwrap_or(0);
+        let addr = addr & !vtom_bit;
+
         self.offset.0.store(addr, Ordering::Relaxed);
         self.control_mmio.map(addr);
+
+        if let Some(vtom) = self.vtom.as_mut() {
+            vtom.control_mmio.map(addr | vtom_bit);
+        }
     }
 
     fn unmap(&mut self) {
-        tracing::debug!(
+        tracing::trace!(
             addr = self.offset.0.load(Ordering::Relaxed),
             "unmapping config space"
         );
@@ -1081,6 +1103,9 @@ impl VpciConfigSpace {
         //
         // This is idempotent. See [`impl_device_range!`].
         self.control_mmio.unmap();
+        if let Some(vtom) = self.vtom.as_mut() {
+            vtom.control_mmio.unmap();
+        }
         self.offset
             .0
             .store(VpciConfigSpaceOffset::INVALID, Ordering::Relaxed);
@@ -1287,6 +1312,7 @@ mod tests {
         }
         let config_space = VpciConfigSpace::new(
             ExternallyManagedMmioIntercepts.new_io_region("test", 2 * HV_PAGE_SIZE),
+            None,
         );
         let mut state = VpciChannel {
             msi_mapper: VpciInterruptMapper::new(msi_mapper),

@@ -2861,6 +2861,7 @@ async fn new_underhill_vm(
                                 .context("failed to create direct mmio accessor")?,
                         )
                     },
+                    vtom,
                 );
 
                 // Allow NVMe devices.
@@ -2990,6 +2991,7 @@ async fn new_underhill_vm(
                     let device = Arc::new(device);
                     Ok((device.clone(), VpciInterruptMapper::new(device)))
                 },
+                vtom,
             )
             .await?;
         }
