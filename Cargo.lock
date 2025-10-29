@@ -1091,7 +1091,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "azure_profiler_proto",
- "build_rs_guest_arch",
  "cvm_tracing",
  "diag_proto",
  "fs-err",
@@ -1414,7 +1413,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.16",
  "vm_resource",
- "windows-sys 0.61.0",
+ "winapi",
 ]
 
 [[package]]
@@ -2752,7 +2751,7 @@ dependencies = [
  "inspect",
  "mesh_protobuf",
  "thiserror 2.0.16",
- "win_etw_provider",
+ "winapi",
  "windows 0.62.0",
  "windows-sys 0.61.0",
  "zerocopy 0.8.25",
@@ -5573,6 +5572,7 @@ dependencies = [
 name = "pcie"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "chipset_device",
  "inspect",
  "pal_async",
@@ -9813,10 +9813,8 @@ name = "whp"
 version = "0.0.0"
 dependencies = [
  "criterion",
- "guid",
  "pal",
  "winapi",
- "windows-sys 0.61.0",
 ]
 
 [[package]]

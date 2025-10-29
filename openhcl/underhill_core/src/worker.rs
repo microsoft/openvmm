@@ -2797,7 +2797,7 @@ async fn new_underhill_vm(
         0..=1,
         0,
         "bsp",
-        Arc::new(virt::irqcon::ApicLintLineTarget::new(
+        Arc::new(vmm_core::emuplat::apic::ApicLintLineTarget::new(
             partition.clone(),
             Vtl::Vtl0,
         )),

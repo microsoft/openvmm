@@ -11,8 +11,6 @@ unstable_whp = []
 
 [dependencies]
 pal.workspace = true
-windows-sys.workspace = true
-guid.workspace = true
 
 [target.'cfg(windows)'.dependencies.winapi]
 workspace = true

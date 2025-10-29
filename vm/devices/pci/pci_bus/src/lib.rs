@@ -66,12 +66,63 @@ pub mod standard_x86_io_ports {
 ///
 /// This is also the reason why the read/write methods are fallible: the PCI bus
 /// should be resilient to backing devices unexpectedly going offline.
+///
+/// PCI devices can optionally implement routing functionality (like switches and bridges)
+/// by providing implementations for the forwarding methods.
 pub trait GenericPciBusDevice: 'static + Send {
     /// Dispatch a PCI config space read to the device with the given address.
     fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult>;
 
     /// Dispatch a PCI config space write to the device with the given address.
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult>;
+
+    /// Forward a PCI configuration space read to a downstream device.
+    ///
+    /// Default implementation returns `None`, indicating this device doesn't support routing.
+    /// Routing components like switches and bridges should override this method.
+    ///
+    /// # Parameters
+    /// - `bus`: Target bus number for the downstream device
+    /// - `device_function`: Combined device and function number (device << 3 | function)
+    /// - `offset`: Configuration space offset within the target device
+    /// - `value`: Pointer to receive the read value
+    ///
+    /// # Returns
+    /// `Some(IoResult)` if the routing component handled the forward, `None` if
+    /// the component doesn't support routing or the target is not reachable.
+    fn pci_cfg_read_forward(
+        &mut self,
+        _bus: u8,
+        _device_function: u8,
+        _offset: u16,
+        _value: &mut u32,
+    ) -> Option<IoResult> {
+        None
+    }
+
+    /// Forward a PCI configuration space write to a downstream device.
+    ///
+    /// Default implementation returns `None`, indicating this device doesn't support routing.
+    /// Routing components like switches and bridges should override this method.
+    ///
+    /// # Parameters
+    /// - `bus`: Target bus number for the downstream device
+    /// - `device_function`: Combined device and function number (device << 3 | function)
+    /// - `offset`: Configuration space offset within the target device
+    /// - `value`: Value to write to the target device
+    ///
+    /// # Returns
+    /// `Some(IoResult)` if the routing component handled the forward, `None` if
+    /// the component doesn't support routing or the target is not reachable.
+    fn pci_cfg_write_forward(
+        &mut self,
+        _bus: u8,
+        _device_function: u8,
+        _offset: u16,
+        _value: u32,
+    ) -> Option<IoResult> {
+        None
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Inspect)]
