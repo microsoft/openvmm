@@ -195,6 +195,17 @@ pub fn tdx_prepare_ap_trampoline() {
 }
 
 pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
+
+    // plan
+    // use task selector as a gate to continue: set it to 1 to go
+    // in shim, wait until it is set to 0 to continue
+    // reponse will be in idtr_limit
+    //
+    // move mailbox spinloop to the end
+    // e.g. tdvmcall to read AP just reads it into ESI then continues
+    //
+    //
+    //
     // Update the TDX Trampoline Context for AP Startup
     tdx_prepare_ap_trampoline();
 
