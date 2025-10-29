@@ -279,7 +279,7 @@ macro_rules! try_read {
 try_read!(pub(crate) try_read8, u8, "ldrb {out:w}, [{src}]");
 try_read!(pub(crate) try_read16, u16, "ldrh {out:w}, [{src}]");
 try_read!(pub(crate) try_read32, u32, "ldr {out:w}, [{src}]");
-try_read!(pub(crate) try_read64, u64, "ldr {out}, [{src}]");
+try_read!(pub(crate) try_read64, u64, "ldr {out:x}, [{src}]");
 
 macro_rules! try_write {
     ($vis:vis $func:ident, $ty:ty, $asm:expr) => {
@@ -308,7 +308,7 @@ macro_rules! try_write {
 try_write!(pub(crate) try_write8, u8, "strb {val:w}, [{dest}]");
 try_write!(pub(crate) try_write16, u16, "strh {val:w}, [{dest}]");
 try_write!(pub(crate) try_write32, u32, "str {val:w}, [{dest}]");
-try_write!(pub(crate) try_write64, u64, "str {val}, [{dest}]");
+try_write!(pub(crate) try_write64, u64, "str {val:x}, [{dest}]");
 
 macro_rules! try_cmpxchg {
     ($vis:vis $func:ident, $ty:ty, $asm:expr) => {
@@ -354,4 +354,4 @@ macro_rules! try_cmpxchg {
 try_cmpxchg!(pub(crate) try_cmpxchg8, u8, "casalb {expected:w}, {desired:w}, [{dest}]");
 try_cmpxchg!(pub(crate) try_cmpxchg16, u16, "casalh {expected:w}, {desired:w}, [{dest}]");
 try_cmpxchg!(pub(crate) try_cmpxchg32, u32, "casal {expected:w}, {desired:w}, [{dest}]");
-try_cmpxchg!(pub(crate) try_cmpxchg64, u64, "casal {expected}, {desired}, [{dest}]");
+try_cmpxchg!(pub(crate) try_cmpxchg64, u64, "casal {expected:x}, {desired:x}, [{dest}]");

@@ -322,7 +322,7 @@ macro_rules! try_read {
 try_read!(pub(crate) try_read8, u8, "movzx {out:e}, byte ptr [{src}]");
 try_read!(pub(crate) try_read16, u16, "movzx {out:e}, word ptr [{src}]");
 try_read!(pub(crate) try_read32, u32, "mov {out:e}, dword ptr [{src}]");
-try_read!(pub(crate) try_read64, u64, "mov {out}, qword ptr [{src}]");
+try_read!(pub(crate) try_read64, u64, "mov {out:r}, qword ptr [{src}]");
 
 macro_rules! try_write {
     ($vis:vis $func:ident, $ty:ty, $asm:expr) => {
@@ -351,7 +351,7 @@ macro_rules! try_write {
 try_write!(pub(crate) try_write8, u8, "mov byte ptr [{dest}], {val:l}");
 try_write!(pub(crate) try_write16, u16, "mov word ptr [{dest}], {val:x}");
 try_write!(pub(crate) try_write32, u32, "mov dword ptr [{dest}], {val:e}");
-try_write!(pub(crate) try_write64, u64, "mov qword ptr [{dest}], {val}");
+try_write!(pub(crate) try_write64, u64, "mov qword ptr [{dest}], {val:r}");
 
 macro_rules! try_cmpxchg {
     ($vis:vis $func:ident, $ty:ty, $ax:tt, $reg_kind:tt, $asm:expr) => {
@@ -395,4 +395,4 @@ macro_rules! try_cmpxchg {
 try_cmpxchg!(pub(crate) try_cmpxchg8, u8, "al", reg_byte, "cmpxchg byte ptr [{dest}], {desired}");
 try_cmpxchg!(pub(crate) try_cmpxchg16, u16, "ax", reg, "cmpxchg word ptr [{dest}], {desired:x}");
 try_cmpxchg!(pub(crate) try_cmpxchg32, u32, "eax", reg, "cmpxchg dword ptr [{dest}], {desired:e}");
-try_cmpxchg!(pub(crate) try_cmpxchg64, u64, "rax", reg, "cmpxchg qword ptr [{dest}], {desired}");
+try_cmpxchg!(pub(crate) try_cmpxchg64, u64, "rax", reg, "cmpxchg qword ptr [{dest}], {desired:r}");
