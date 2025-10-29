@@ -2148,6 +2148,7 @@ impl InitializedVm {
                                 &mut services.register_mmio(),
                                 vmbus,
                                 crate::partition::VpciDevice::interrupt_mapper(hv_device),
+                                None,
                             )
                             .await
                         })
