@@ -12,6 +12,15 @@ Some particularly notable pipelines:
 - `cargo xflowey build-igvm` - primarily dev-tool used to build OpenHCL IGVM files locally
 - `cargo xflowey restore-packages` - restores external packages needed to compile and run OpenVMM / OpenHCL
 
+## `xflowey` vs `xtask`
+
+In a nutshell:
+
+- `cargo xtask`: implements novel, standalone tools/utilities
+- `cargo xflowey`: orchestrates invoking a sequence of tools/utilities, without
+  doing any non-trivial data processing itself
+
+
 ```admonish warning
 While `cargo xflowey` technically has the ability to run CI pipelines locally (e.g., `cargo xflowey ci checkin-gates`), this functionality is currently broken and should not be relied upon. Use CI pipelines in their intended environments (Azure DevOps or GitHub Actions).
 ```
@@ -30,15 +39,13 @@ Traditional CI/CD pipelines using YAML-based configuration (e.g., Azure DevOps P
 
 **Maintainability Challenges**
 - YAML lacks type safety, making it easy to introduce subtle bugs (typos in variable names, incorrect data types, etc.)
-- No compile-time validation means errors only surface at runtime, often deep into a pipeline execution
+- No compile-time validation means errors only surface at runtime
 - Refactoring is risky and error-prone without automated tools to catch breaking changes
 - Code duplication is common because YAML lacks good abstraction mechanisms
 - Testing pipeline logic requires actually running the pipeline, making iteration slow and expensive
 
 **Platform Lock-In**
 - Pipelines are tightly coupled to their specific CI backend (ADO, GitHub Actions, etc.)
-- Moving between platforms requires complete rewrites of pipeline configuration
-- Backend-specific features and syntax create vendor lock-in
 - Multi-platform support means maintaining multiple, divergent YAML files
 
 **Local Development Gaps**
@@ -55,15 +62,6 @@ Flowey addresses these issues by treating automation as **first-class Rust code*
 - **Portability**: Write once, generate YAML for any backend (ADO, GitHub Actions, or run locally)
 - **Reusability**: Nodes are composable building blocks that can be shared across pipelines
 - **Local Execution**: The same pipeline definition can run locally or in CI
-
-## `xflowey` vs `xtask`
-
-In a nutshell:
-
-- `cargo xtask`: implements novel, standalone tools/utilities
-- `cargo xflowey`: orchestrates invoking a sequence of tools/utilities, without
-  doing any non-trivial data processing itself
-
 ---
 
 # Flowey Developer Guide
@@ -73,22 +71,82 @@ working on OpenVMM automation.
 
 ## Table of Contents
 
-1. [Core Concepts](#core-concepts)
-2. [Variables: ReadVar and WriteVar](#variables-readvar-and-writevar)
-3. [Emitting Steps](#emitting-steps)
+1. [Flowey Fundamentals](#flowey-fundamentals)
+2. [Two-Phase Execution Model](#two-phase-execution-model)
+3. [Steps](#steps)
 4. [Runtime Services](#runtime-services)
-5. [Flowey Nodes](#flowey-nodes)
-6. [Node Design Philosophy](#node-design-philosophy)
-7. [Common Patterns](#common-patterns)
-8. [Artifacts](#artifacts)
-9. [Pipelines](#pipelines)
-10. [Additional Resources](#additional-resources)
+5. [Variables](#variables)
+6. [Flowey Nodes](#flowey-nodes)
+7. [Node Design Philosophy](#node-design-philosophy)
+8. [Common Patterns](#common-patterns)
+9. [Artifacts](#artifacts)
+10. [Pipelines](#pipelines)
 
 ---
 
-## Core Concepts
+## Flowey Fundamentals
 
-### Two-Phase Execution Model
+Before diving into how flowey works, let's establish the key building blocks that form the foundation of flowey's automation model. These concepts are flowey's Rust-based abstractions for common CI/CD workflow primitives.
+
+### The Automation Workflow Model
+
+In traditional CI/CD systems, workflows are defined using YAML with implicit dependencies and global state. Flowey takes a fundamentally different approach: **automation workflows are modeled as a directed acyclic graph (DAG) of typed, composable Rust components**. Each component has explicit inputs and outputs, and dependencies are tracked through the type system.
+
+### Core Building Blocks
+
+Flowey's model consists of a hierarchy of components:
+
+**[Pipelines](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/trait.IntoPipeline.html)** are the top-level construct that defines a complete automation workflow. A pipeline specifies what work needs to be done and how it should be organized. Pipelines can target different execution backends (local machine, Azure DevOps, GitHub Actions) and generate appropriate configuration for each.
+
+**[Jobs](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/struct.PipelineJob.html)** represent units of work that run on a specific platform (Windows, Linux, macOS) and architecture (x86_64, Aarch64). Jobs can run in parallel when they don't depend on each other, or sequentially when one job's output is needed by another. Each job is isolated and runs in its own environment.
+
+**[Nodes](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.FlowNode.html)** are reusable units of automation logic that perform specific tasks (e.g., "install Rust toolchain", "run cargo build", "publish test results"). Nodes are invoked by jobs and emit one or more steps to accomplish their purpose. Nodes can depend on other nodes, forming a composable ecosystem of automation building blocks.
+
+**Steps** are the individual units of work that execute at runtime. A step might run a shell command, execute Rust code, or interact with the CI backend. Steps are emitted by nodes during the build-time phase and executed in dependency order during runtime.
+
+### Connecting the Pieces
+
+These building blocks are connected through three key mechanisms:
+
+**[Variables (`ReadVar`/`WriteVar`)](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.ReadVar.html)** enable data flow between steps. A `WriteVar<T>` represents a promise to produce a value of type `T` at runtime, while a `ReadVar<T>` represents a dependency on that value. Variables enforce write-once semantics (each value has exactly one producer) and create explicit dependencies in the DAG. For example, a "build" step might write a binary path to a `WriteVar<PathBuf>`, and a "test" step would read from the corresponding `ReadVar<PathBuf>`.
+
+**[Artifacts](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/trait.Artifact.html)** enable data transfer between jobs. Since jobs may run on different machines or at different times, artifacts package up files (like compiled binaries, test results, or build outputs) for transfer. Flowey automatically handles uploading artifacts at the end of producing jobs and downloading them at the start of consuming jobs, abstracting away backend-specific artifact APIs.
+
+**[Side Effects](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/type.SideEffect.html)** represent dependencies without data. Sometimes step B needs to run after step A, but A doesn't produce any data that B consumes (e.g., "install dependencies" must happen before "run tests", even though the test step doesn't directly use the installation output). Side effects are represented as `ReadVar<SideEffect>` and establish ordering constraints in the DAG without transferring actual values.
+
+### Putting It Together
+
+Here's how these pieces relate:
+
+```
+Pipeline
+  ├─ Job 1 (Linux x86_64)
+  │   ├─ Node A (install Rust) 
+  │   │   └─ Step: Run rustup install
+  │   │       └─ Produces: WriteVar<SideEffect> (installation complete)
+  │   └─ Node B (build project)
+  │       └─ Step: Run cargo build
+  │           └─ Consumes: ReadVar<SideEffect> (installation complete)
+  │           └─ Produces: WriteVar<PathBuf> (binary path) → Artifact
+  │
+  └─ Job 2 (Windows x86_64)
+      └─ Node C (run tests)
+          └─ Step: Run binary with test inputs
+              └─ Consumes: ReadVar<PathBuf> (binary path) ← Artifact
+              └─ Produces: WriteVar<PathBuf> (test results)
+```
+
+In this example:
+- The **Pipeline** defines two jobs that run on different platforms
+- **Job 1** installs Rust and builds the project, with step dependencies expressed through variables
+- **Job 2** runs tests using the binary from Job 1, with the binary transferred via an artifact
+- **Variables** create dependencies within a job (build depends on install)
+- **Artifacts** create dependencies between jobs (Job 2 depends on Job 1's output)
+- **Side Effects** represent the "Rust is installed" state without carrying data
+
+---
+
+## Two-Phase Execution Model
 
 Flowey operates in two distinct phases:
 
@@ -96,7 +154,7 @@ Flowey operates in two distinct phases:
    - Reads `.flowey.toml` to determine which pipelines to regenerate
    - Builds the flowey binary (e.g., `flowey-hvlite`) via `cargo build`
    - Runs the flowey binary with `pipeline <backend> --out <file> <cmd>` for each pipeline definition
-   - During this invocation, flowey constructs a **directed acyclic graph (DAG)** - a graph structure that represents the execution order of work, where each node represents a unit of work and edges represent dependencies between them. By:
+   - During this invocation, flowey constructs a **directed acyclic graph (DAG)** by:
      - Instantiating all nodes (reusable units of automation logic) defined in the pipeline
      - Processing their requests
      - Resolving dependencies between nodes via variables and artifacts
@@ -108,11 +166,9 @@ Flowey operates in two distinct phases:
    - Variables are read and written with actual values
    - Commands are executed
    - Artifacts (data packages passed between jobs) are published/consumed
-   - Side effects occur
+   - Side effects (dependencies) are resolved
 
 ```admonish note
-**Understanding the Workflow:**
-
 The `.flowey.toml` file at the repo root defines which pipelines to generate and where. For example:
 ```toml
 [[pipeline.flowey_hvlite.github]]
@@ -131,12 +187,7 @@ When you run `cargo xflowey regen`:
 - `cargo xflowey regen` - Compiles the code **and** runs the full build-time resolution to construct the DAG, validate the pipeline, and regenerate all YAML files defined in `.flowey.toml`.
 
 Always run `cargo xflowey regen` after modifying pipeline definitions to ensure the generated YAML files reflect your changes.
-```
 
-This separation allows flowey to:
-- Validate the entire workflow before execution
-- Generate static YAML for CI systems (ADO, GitHub Actions)
-- Catch dependency errors at build-time rather than runtime
 
 ### Backend Abstraction
 
@@ -147,179 +198,15 @@ Flowey supports multiple execution backends:
 - **GitHub Actions**: Generates GitHub Actions workflow YAML
 
 ```admonish warning: 
-Nodes should be written to work across ALL backends whenever possible. Relying on `ctx.backend()` to query the backend or manually emitting 
-backend-specific steps (via `emit_ado_step` or `emit_gh_step`) should be 
-avoided unless absolutely necessary. Most automation logic should be 
-backend-agnostic, using `emit_rust_step` for cross-platform Rust code that 
-works everywhere. 
+Nodes should be written to work across ALL backends whenever possible. Relying on `ctx.backend()` to query the backend or manually emitting backend-specific steps (via `emit_ado_step` or `emit_gh_step`) should be avoided unless absolutely necessary. Most automation logic should be backend-agnostic, using `emit_rust_step` for cross-platform Rust code that works everywhere. 
 ```
 
 ---
 
-## Variables: ReadVar and WriteVar
+## Steps
 
-[**`ReadVar`**](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.ReadVar.html) and [**`WriteVar`**](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.WriteVar.html) are flowey's solution to the problem of declaring
-variables at build-time that will hold values produced during pipeline runtime.
-
-### The Problem They Solve
-
-When constructing the pipeline graph, we don't yet know the values that will be
-produced during execution (e.g., paths to built binaries, git commit hashes,
-etc.). We need a way to:
-1. Declare "this step will produce a value"
-2. Declare "this step will consume that value"
-3. Let flowey infer the execution order from these dependencies
-
-### Write-Once Semantics
-
-`WriteVar<T>` can only be written to **once**. This is fundamental to flowey's
-execution model:
-
-- Writing to a `WriteVar` consumes it (the type is not `Clone`)
-- This ensures there's exactly one producer for each variable
-- Flowey can use this to build a valid DAG (no cycles, no conflicts)
-
-### Claiming Variables
-
-Before a step can use a [`ReadVar`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.ReadVar.html) or [`WriteVar`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.WriteVar.html), it must **claim** it. Claiming serves several purposes:
-1. Registers that this step depends on (or produces) this variable
-2. Converts `ReadVar<T, VarNotClaimed>` to `ReadVar<T, VarClaimed>`
-3. Allows flowey to track variable usage for graph construction
-
-Variables can only be claimed inside step closures using the `claim()` method.
-
-**Example of the nested closure pattern:**
-
-```rust
-// During node's emit() - this runs at BUILD-TIME
-let input_var: ReadVar<String> = /* ... */;
-let output_var: WriteVar<i32> = ctx.new_var();
-
-ctx.emit_rust_step("process data", |ctx| {
-    // OUTER CLOSURE: Runs at build-time during graph construction
-    // This is where you claim variables to establish dependencies
-    let input_var = input_var.claim(ctx);
-    let output_var = output_var.claim(ctx);
-    
-    // Return the INNER CLOSURE which will run at runtime
-    |rt| {
-        // INNER CLOSURE: Runs at RUNTIME during pipeline execution
-        // This is where you actually read/write variable values
-        let input = rt.read(input_var);
-        let result = input.len() as i32;
-        rt.write(output_var, &result);
-        
-        Ok(())
-    }
-});
-```
-
-**Why the nested closure dance?**
-
-The nested closure pattern is fundamental to flowey's two-phase execution model:
-
-1. **Build-Time (Outer Closure)**: When flowey constructs the DAG, the outer closure runs to:
-   - Claim variables, which registers dependencies in the graph
-   - Determine what this step depends on (reads) and produces (writes)
-   - Allow flowey to validate the dependency graph and determine execution order
-   - The outer closure returns the inner closure for later execution
-
-2. **Runtime (Inner Closure)**: When the pipeline actually executes, the inner closure runs to:
-   - Read actual values from claimed `ReadVar`s
-   - Perform the real work (computations, running commands, etc.)
-   - Write actual values to claimed `WriteVar`s
-
-This separation ensures flowey can:
-- **Validate dependencies before execution**: All claims happen during graph construction, catching errors like missing dependencies or cycles at build-time
-- **Determine execution order**: By analyzing claimed variables, flowey knows which steps depend on which others
-- **Generate correct YAML**: The generated CI YAML reflects the dependency structure discovered during claiming
-- **Catch type errors early**: The Rust type system prevents reading/writing unclaimed variables
-
-The type system enforces this separation: `claim()` requires `StepCtx` (only available in the outer closure), while `read()`/`write()` require `RustRuntimeServices` (only available in the inner closure).
-
-### ClaimedReadVar and ClaimedWriteVar
-
-These are type aliases for claimed variables:
-- [`ClaimedReadVar<T>`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/type.ClaimedReadVar.html) = `ReadVar<T, VarClaimed>`
-- [`ClaimedWriteVar<T>`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/type.ClaimedWriteVar.html) = `WriteVar<T, VarClaimed>`
-
-Only claimed variables can be read/written at runtime.
-
-**Implementation Detail: Zero-Sized Types (ZSTs)**
-
-The claim state markers [`VarClaimed`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/enum.VarClaimed.html) and [`VarNotClaimed`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/enum.VarNotClaimed.html) are zero-sized types (ZSTs) - they exist purely at the type level and have no runtime representation or memory footprint. This is a pure type-level transformation that happens at compile time.
-
-This design is crucial because without this type-level transform, Rust couldn't statically verify that all variables used in a runtime block have been claimed by that block
-
-The type system ensures that `claim()` is the only way to convert from `VarNotClaimed` to `VarClaimed`, and this conversion can only happen within the outer closure where `StepCtx` is available.
-
-### Static Values vs Runtime Values
-
-Sometimes you know a value at build-time:
-
-```rust
-// Create a ReadVar with a static value
-let version = ReadVar::from_static("1.2.3".to_string());
-
-// This is encoded directly in the pipeline, not computed at runtime
-// WARNING: Never use this for secrets!
-```
-
-This can be used as an escape hatch when you have a Request (that expects a value to be determined at runtime), but in a given instance you know the value is known at build-time. 
-
-### Variable Operations
-
-`ReadVar` provides several useful operations for transforming and combining variables:
-
-**Transform operations:**
-- **`map()`**: Apply a function to transform a `ReadVar<T>` into a `ReadVar<U>`. Useful for deriving new values from existing variables (e.g., extracting a filename from a path, converting to uppercase).
-
-**Combining operations:**
-- **`zip()`**: Combine two ReadVars into a single `ReadVar<(T, U)>`. Useful when a step needs access to multiple values simultaneously.
-
-**Dependency operations:**
-- **`into_side_effect()`**: Discard the value but keep the dependency. Converts `ReadVar<T>` to `ReadVar<SideEffect>`, useful when you only care that a step ran, not what it produced.
-- **`depending_on()`**: Create a new ReadVar that has an explicit dependency on another variable. Ensures ordering without actually using the dependent value.
-
-For detailed examples of each operation, see the [`ReadVar` documentation](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.ReadVar.html).
-
-### The SideEffect Type
-
-`SideEffect` is an alias for `()` that represents a dependency without data. It's used when you need to express that one step must run before another, but the first step doesn't produce any value that the second step needs to consume.
-
-**Key concepts:**
-- Represents "something happened" without carrying data
-- Enables explicit dependency ordering between steps
-- Commonly used for installation, initialization, or cleanup steps
-
-For examples of using SideEffect, see the [`SideEffect` type documentation](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/type.SideEffect.html).
-
----
-
-## Emitting Steps
-
-Nodes emit **steps** - units of work that will be executed at runtime. Different
+**Steps** are units of work that will be executed at runtime. Different
 step types exist for different purposes.
-
-### NodeCtx vs StepCtx
-
-Before diving into step types, it's important to understand these two context types:
-
-- [**`NodeCtx`**](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.NodeCtx.html): Used when emitting steps (during the build-time phase). Provides `emit_*` methods, `new_var()`, `req()`, etc.
-  
-- [**`StepCtx`**](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.StepCtx.html): Used inside step closures (during runtime execution). Provides access to `claim()` for variables, and basic environment info (`backend()`, `platform()`).
-
-### Isolated Working Directories and Path Immutability
-
-```admonish warning title="Critical Constraint"
-**Each step gets its own fresh local working directory.** This avoids the "single global working directory dumping ground" common in bash + YAML systems.
-
-However, while flowey variables enforce sharing XOR mutability at the type-system level, **developers must manually enforce this at the filesystem level**:
-
-**Steps must NEVER modify the contents of paths referenced by `ReadVar<PathBuf>`.**
-```
-
-When you write a path to `WriteVar<PathBuf>`, you're creating an immutable contract. Other steps reading that path must treat it as read-only. If you need to modify files from a `ReadVar<PathBuf>`, copy them to your step's working directory.
 
 ### Rust Steps
 
@@ -350,6 +237,18 @@ For GitHub step examples, see the [`GhStepBuilder` documentation](https://openvm
 **`emit_side_effect_step`**: Creates a dependency relationship without executing code. Useful for aggregating multiple side effect dependencies into a single side effect. More efficient than emitting an empty Rust step.
 
 For side effect step examples, see the [`NodeCtx::emit_side_effect_step` documentation](https://openvmm.dev/rustdoc/linux/flowey_core/node/struct.NodeCtx.html#method.emit_side_effect_step).
+
+### Isolated Working Directories and Path Immutability
+
+```admonish warning title="Critical Constraint"
+**Each step gets its own fresh local working directory.** This avoids the "single global working directory dumping ground" common in bash + YAML systems.
+
+However, while flowey variables enforce sharing XOR mutability at the type-system level, **developers must manually enforce this at the filesystem level**:
+
+**Steps must NEVER modify the contents of paths referenced by `ReadVar<PathBuf>`.**
+```
+
+When you write a path to `WriteVar<PathBuf>`, you're creating an immutable contract. Other steps reading that path must treat it as read-only. If you need to modify files from a `ReadVar<PathBuf>`, copy them to your step's working directory.
 
 ---
 
@@ -454,19 +353,114 @@ rt.write_not_secret(output_var, &"done".to_string());
 
 ---
 
+## Variables
+
+### Claiming Variables
+
+Before a step can use a [`ReadVar`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.ReadVar.html) or [`WriteVar`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.WriteVar.html), it must **claim** it. Claiming serves several purposes:
+1. Registers that this step depends on (or produces) this variable
+2. Converts `ReadVar<T, VarNotClaimed>` to `ReadVar<T, VarClaimed>`
+3. Allows flowey to track variable usage for graph construction
+
+Variables can only be claimed inside step closures using the `claim()` method.
+
+**Nested closure pattern and related contexts:**
+
+```rust
+// Inside a SimpleFlowNode's process_request() method
+fn process_request(&self, request: Self::Request, ctx: &mut NodeCtx<'_>) {
+    // Assume a single Request provided an input ReadVar and output WriteVar
+    let input_var: ReadVar<String> = /* from one of the requests */;
+    let output_var: WriteVar<i32> = /* from one of the request */
+
+    // Declare a step (still build-time). This adds a node to the DAG.
+    ctx.emit_rust_step("compute length", |step| {
+        // step : StepCtx  (outer closure, build-time)
+        // Claim dependencies so the graph knows: this step READS input_var, WRITES output_var.
+        let input_var = input_var.claim(step);
+        let output_var = output_var.claim(step);
+
+        // Return the runtime closure.
+        move |rt| {
+            // rt : RustRuntimeServices (runtime phase)
+            let input = rt.read(input_var);      // consume value
+            let len = input.len() as i32;
+            rt.write(output_var, &len);          // fulfill promise
+            Ok(())
+        }
+    });
+}
+```
+
+**Why the nested closure dance?**
+
+The nested closure pattern is fundamental to flowey's two-phase execution model:
+
+1. **Build-Time (Outer Closure)**: When flowey constructs the DAG, the outer closure runs to:
+   - Claim variables, which registers dependencies in the graph
+   - Determine what this step depends on (reads) and produces (writes)
+   - Allow flowey to validate the dependency graph and determine execution order
+   - The outer closure returns the inner closure for later execution
+
+2. **Runtime (Inner Closure)**: When the pipeline actually executes, the inner closure runs to:
+   - Read actual values from claimed `ReadVar`s
+   - Perform the real work (computations, running commands, etc.)
+   - Write actual values to claimed `WriteVar`s
+
+- [**`NodeCtx`**](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.NodeCtx.html): Used when emitting steps (during the build-time phase). Provides `emit_*` methods, `new_var()`, `req()`, etc.
+  
+- [**`StepCtx`**](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.StepCtx.html): Used inside step closures (during runtime execution). Provides access to `claim()` for variables, and basic environment info (`backend()`, `platform()`).
+
+The type system enforces this separation: `claim()` requires `StepCtx` (only available in the outer closure), while `read()`/`write()` require `RustRuntimeServices` (only available in the inner closure).
+
+### ClaimedReadVar and ClaimedWriteVar
+
+These are type aliases for claimed variables:
+- [`ClaimedReadVar<T>`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/type.ClaimedReadVar.html) = `ReadVar<T, VarClaimed>`
+- [`ClaimedWriteVar<T>`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/type.ClaimedWriteVar.html) = `WriteVar<T, VarClaimed>`
+
+Only claimed variables can be read/written at runtime.
+
+**Implementation Detail: Zero-Sized Types (ZSTs)**
+
+The claim state markers [`VarClaimed`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/enum.VarClaimed.html) and [`VarNotClaimed`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/enum.VarNotClaimed.html) are zero-sized types (ZSTs) - they exist purely at the type level. It allows Rust to statically verify that all variables used in a runtime block have been claimed by that block. 
+
+The type system ensures that `claim()` is the only way to convert from `VarNotClaimed` to `VarClaimed`, and this conversion can only happen within the outer closure where `StepCtx` is available.
+
+### Static Values vs Runtime Values
+
+Sometimes you know a value at build-time:
+
+```rust
+// Create a ReadVar with a static value
+let version = ReadVar::from_static("1.2.3".to_string());
+
+// This is encoded directly in the pipeline, not computed at runtime
+// WARNING: Never use this for secrets!
+```
+
+This can be used as an escape hatch when you have a Request (that expects a value to be determined at runtime), but in a given instance you know the value is known at build-time. 
+
+### Variable Operations
+
+`ReadVar` provides operations for transforming and combining variables:
+
+- **`map()`**: Transform a `ReadVar<T>` into a `ReadVar<U>`
+- **`zip()`**: Combine two ReadVars into `ReadVar<(T, U)>`
+- **`into_side_effect()`**: Convert `ReadVar<T>` to `ReadVar<SideEffect>` when you only care about ordering, not the value
+- **`depending_on()`**: Create a new ReadVar with an explicit dependency
+
+For detailed examples, see the [`ReadVar` documentation](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.ReadVar.html).
+
+---
+
 ## Flowey Nodes
 
-A [**`FlowNode`**](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.FlowNode.html) is a reusable unit of automation logic. Nodes process requests,
-emit steps, and can depend on other nodes.
+At a conceptual level, a Flowey node is analogous to a strongly typed function: you "invoke" it by submitting one or more Request values (its parameters), and it responds by emitting steps that perform work and produce outputs (values written to `WriteVar`s, published artifacts, or side-effect dependencies).
 
 ### The Node/Request Pattern
 
 Every node has an associated **Request** type that defines what operations the node can perform. Requests are defined using the [`flowey_request!`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.flowey_request.html) macro and registered with [`new_flow_node!`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.new_flow_node.html) or [`new_simple_flow_node!`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.new_simple_flow_node.html) macros.
-
-**Key concepts:**
-- Each node is a struct registered with [`new_flow_node!`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.new_flow_node.html) or [`new_simple_flow_node!`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.new_simple_flow_node.html)
-- Request types define the node's API using [`flowey_request!`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.flowey_request.html) macro
-- Requests often include [`WriteVar`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.WriteVar.html) parameters for outputs
 
 For complete examples, see the [`FlowNode` trait documentation](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.FlowNode.html).
 
@@ -604,15 +598,6 @@ implementation (runtime logic):
 - **Node definition**: What the node does, what it depends on
 - **Step implementation**: How it does it
 
-### 5. Type Safety
-
-Use Rust's type system to prevent errors at build-time:
-
-- Typed artifacts ensure type-safe data passing
-- [`WriteVar`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.WriteVar.html) can only be written once (enforced by the type system)
-- Claimed variables ensure variables are claimed before use
-- Request validation happens during [`emit()`](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.FlowNode.html#tymethod.emit), not at runtime
-
 ---
 
 ## Common Patterns
@@ -646,42 +631,9 @@ Nodes can query the current backend and platform to emit platform-specific or ba
 
 For more on backend and platform APIs, see the [`NodeCtx` documentation](https://openvmm.dev/rustdoc/linux/flowey_core/node/struct.NodeCtx.html).
 
-### Using the flowey_request! Macro
-
-The `flowey_request!` macro generates the Request type and associated boilerplate for a node. It supports three main formats to accommodate different node complexity levels.
-
-**Format options:**
-- **`enum_struct`**: Recommended for complex requests. Creates an enum where each variant is a separate struct in a `req` module, providing better organization
-- **`enum`**: Simple enum for straightforward request types
-- **`struct`**: Single request type for nodes that only do one thing
-
-The macro automatically derives `Serialize`, `Deserialize`, and implements the `IntoRequest` trait.
-
-For complete syntax and examples, see the [`flowey_request!` macro documentation](https://openvmm.dev/rustdoc/linux/flowey_core/macro.flowey_request.html).
-
----
-
 ## Artifacts
 
-**Artifacts** are first-class citizens in flowey, designed to abstract away the many footguns and complexities of CI system artifact handling. Flowey treats artifacts as typed data that flows between pipeline jobs, with automatic dependency management .
-
-### The Problem with Raw CI Artifacts
-
-Traditional CI systems have numerous artifact-related footguns that can cause subtle, hard-to-debug failures:
-
-**Name Collision Issues**
-- If you upload an artifact mid-way through a job, then a later step fails, re-running that job will fail when trying to upload the artifact again due to name collision with the previous run
-- Artifact names must be globally unique within a pipeline run, requiring manual name management
-- Different CI backends have different artifact naming rules and restrictions
-
-**Manual Dependency Management**
-- Nothing prevents you from trying to download an artifact before the job that produces it has run
-- Job ordering must be manually specified and kept in sync with artifact dependencies
-- Mistakes only surface at runtime, often after significant CI time has been consumed
-
-### Flowey's Artifact Abstraction
-
-Flowey solves these problems by making artifacts a core part of the pipeline definition at build-time:
+Artifacts enable typed data transfer between jobs with automatic dependency management, abstracting away CI system complexities like name collisions and manual job ordering.
 
 ### Typed vs Untyped Artifacts
 
@@ -734,21 +686,11 @@ At **runtime**, the artifact `ReadVar<PathBuf>` and `WriteVar<PathBuf>` work jus
 
 ## Pipelines
 
-A **Pipeline** is the top-level construct that defines a complete automation
-workflow. Pipelines consist of one or more **Jobs**, each of which runs a set
-of **Nodes** to accomplish specific tasks.
-
-For detailed examples of defining pipelines, see the [IntoPipeline trait documentation](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/trait.IntoPipeline.html).
+Pipelines define complete automation workflows consisting of jobs that run nodes. See the [IntoPipeline trait documentation](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/trait.IntoPipeline.html) for detailed examples.
 
 ### Pipeline Jobs
 
-Each [`PipelineJob`](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/struct.PipelineJob.html) represents a unit of work that:
-- Runs on a specific platform and architecture
-- Can depend on artifacts from other jobs
-- Can be conditionally executed based on parameters
-- Emits a sequence of steps that accomplish the job's goals
-
-Jobs are configured using a builder pattern:
+[`PipelineJob`](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/struct.PipelineJob.html) instances are configured using a builder pattern:
 
 ```rust
 let job = pipeline
@@ -766,22 +708,24 @@ let job = pipeline
 
 ### Pipeline Parameters
 
-Parameters allow runtime configuration of pipelines:
+Parameters allow runtime configuration of pipelines. In Azure DevOps, parameters appear as editable fields in the Run pipeline UI (name, description, default).  
+<img src="images/Parameters.png" alt="Azure DevOps parameter UI" width="450" />
+
 
 ```rust
 // Define a boolean parameter
-let use_cache = pipeline.new_parameter_bool(
-    "use_cache",
-    "Whether to use caching",
+let verbose = pipeline.new_parameter_bool(
+    "verbose",
+    "Run with verbose output",
     ParameterKind::Stable,
-    Some(true) // default value
+    Some(false) // default value
 );
 
 // Use the parameter in a job
 let job = pipeline.new_job(...)
     .dep_on(|ctx| {
-        let use_cache = ctx.use_parameter(use_cache);
-        // use_cache is now a ReadVar<bool>
+        let verbose = ctx.use_parameter(verbose);
+        // verbose is now a ReadVar<bool>
     })
     .finish();
 ```
@@ -816,9 +760,3 @@ Unstable parameters are for **internal use** and experimentation:
   - Experimental features or debugging flags
   - Internal pipeline configuration that may change frequently
   - Parameters for development/testing that shouldn't be used in production
-
-## Additional Resources
-
-- **Example nodes**: See `flowey/flowey_lib_common/src/` for many real-world examples
-- **Pipeline examples**: See `flowey/flowey_hvlite/src/pipelines/` for complete pipelines
-- **Core types**: Defined in `flowey/flowey_core/src/`
