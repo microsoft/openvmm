@@ -761,12 +761,12 @@ impl OffloadConfig {
             if self.lso4 {
                 lso.ipv4_encapsulation = rndisprot::NDIS_ENCAPSULATION_IEEE_802_3;
                 lso.ipv4_max_offload_size = MAX_OFFLOAD_SIZE;
-                lso.ipv4_min_segment_count = 2;
+                lso.ipv4_min_segment_count = rndisprot::LSO_MIN_SEGMENT_COUNT;
             }
             if self.lso6 {
                 lso.ipv6_encapsulation = rndisprot::NDIS_ENCAPSULATION_IEEE_802_3;
                 lso.ipv6_max_offload_size = MAX_OFFLOAD_SIZE;
-                lso.ipv6_min_segment_count = 2;
+                lso.ipv6_min_segment_count = rndisprot::LSO_MIN_SEGMENT_COUNT;
                 lso.ipv6_flags = rndisprot::Ipv6LsoFlags::new()
                     .with_ip_extension_headers_supported(rndisprot::NDIS_OFFLOAD_SUPPORTED)
                     .with_tcp_options_supported(rndisprot::NDIS_OFFLOAD_SUPPORTED);
@@ -1901,6 +1901,8 @@ enum WorkerError {
     RndisMessageTooSmall,
     #[error("unsupported rndis behavior")]
     UnsupportedRndisBehavior,
+    #[error("invalid lso packet with insufficient segments: {0}")]
+    InvalidLsoPacketInsufficientSegments(u32),
     #[error("vmbus queue error")]
     Queue(#[from] queue::Error),
     #[error("too many control messages")]
@@ -2485,6 +2487,14 @@ impl<T: RingMem> NetChannel<T> {
                 gpa: range.start,
                 len: range.len() as u32,
             });
+        }
+
+        if metadata.offload_tcp_segmentation {
+            if segments.len() < rndisprot::LSO_MIN_SEGMENT_COUNT as usize {
+                return Err(WorkerError::InvalidLsoPacketInsufficientSegments(
+                    segments.len() as u32,
+                ));
+            }
         }
 
         metadata.segment_count = segments.len() - start;

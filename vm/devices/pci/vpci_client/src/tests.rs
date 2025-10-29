@@ -80,6 +80,7 @@ async fn test_negotiate_version(driver: DefaultDriver) {
         device,
         &mut ExternallyManagedMmioIntercepts,
         VpciInterruptMapper::new(msi_controller),
+        None,
     )
     .unwrap();
 
