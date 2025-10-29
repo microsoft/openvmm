@@ -419,7 +419,7 @@ function filterLog(logs: LogEntry[] | undefined, query: string): LogEntry[] {
             } else if (prefix === 'severity') {
                 return log.severity.toLowerCase().includes(term);
             } else if (prefix === 'message') {
-                return log.message.includes(term);
+                return log.message.toLowerCase().includes(term);
             } else {
                 return (
                     log.source.toLowerCase().includes(token.toLowerCase()) ||
