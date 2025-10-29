@@ -23,6 +23,28 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use vmcore::line_interrupt::LineInterrupt;
 
+/// Result type for common header emulator operations
+#[derive(Debug)]
+pub enum CommonHeaderResult {
+    /// The access was handled by the common header emulator
+    Handled,
+    /// The access is not handled by common header, caller should handle it
+    Unhandled,
+    /// The access failed with an error
+    Failed(IoError),
+}
+
+impl PartialEq for CommonHeaderResult {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Handled, Self::Handled) => true,
+            (Self::Unhandled, Self::Unhandled) => true,
+            (Self::Failed(_), Self::Failed(_)) => true, // Consider all failures equal for testing
+            _ => false,
+        }
+    }
+}
+
 const SUPPORTED_COMMAND_BITS: u16 = cfg_space::Command::new()
     .with_pio_enabled(true)
     .with_mmio_enabled(true)
@@ -321,16 +343,16 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
 
     // ===== Configuration Space Read/Write Functions =====
 
-    /// Read from the common config space header fields. Returns Ok(()) if the offset
-    /// was handled by common fields, Err(()) if it should be handled by type-specific logic.
-    pub fn read_common_header(&self, offset: u16, value: &mut u32) -> Result<(), ()> {
-        use cfg_space::HeaderType00; // Use HeaderType00 constants for common fields
+    /// Read from the config space. `offset` must be 32-bit aligned.
+    /// Returns CommonHeaderResult indicating if handled, unhandled, or failed.
+    pub fn read_u32(&self, offset: u16, value: &mut u32) -> CommonHeaderResult {
+        use cfg_space::CommonHeader;
 
-        *value = match HeaderType00(offset) {
-            HeaderType00::DEVICE_VENDOR => {
+        *value = match CommonHeader(offset) {
+            CommonHeader::DEVICE_VENDOR => {
                 (self.hardware_ids.device_id as u32) << 16 | self.hardware_ids.vendor_id as u32
             }
-            HeaderType00::STATUS_COMMAND => {
+            CommonHeader::STATUS_COMMAND => {
                 let mut status =
                     cfg_space::Status::new().with_capabilities_list(!self.capabilities.is_empty());
 
@@ -342,13 +364,13 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
 
                 (status.into_bits() as u32) << 16 | self.state.command.into_bits() as u32
             }
-            HeaderType00::CLASS_REVISION => {
+            CommonHeader::CLASS_REVISION => {
                 (u8::from(self.hardware_ids.base_class) as u32) << 24
                     | (u8::from(self.hardware_ids.sub_class) as u32) << 16
                     | (u8::from(self.hardware_ids.prog_if) as u32) << 8
                     | self.hardware_ids.revision_id as u32
             }
-            HeaderType00::BIST_HEADER => {
+            CommonHeader::BIST_HEADER => {
                 let mut v = 0u32; // latency timer would go here if we stored it
                 if self.multi_function_bit {
                     // enable top-most bit of the header register
@@ -356,43 +378,55 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                 }
                 v
             }
-            HeaderType00::BAR0
-            | HeaderType00::BAR1
-            | HeaderType00::BAR2
-            | HeaderType00::BAR3
-            | HeaderType00::BAR4
-            | HeaderType00::BAR5
-                if offset < HeaderType00::BAR0.0 + (N as u16 * 4) =>
-            {
-                // BAR registers within our supported range
-                let bar_index = (offset - HeaderType00::BAR0.0) as usize / 4;
-                if let Some(bar_value) = self.read_bar(bar_index) {
-                    bar_value
+            // Capabilities space - handled by common emulator
+            _ if (0x40..0x100).contains(&offset) => {
+                if let Some((cap_index, cap_offset)) =
+                    self.get_capability_index_and_offset(offset - 0x40)
+                {
+                    let mut value = self.capabilities[cap_index].read_u32(cap_offset);
+                    if cap_offset == 0 {
+                        let next = if cap_index < self.capabilities.len() - 1 {
+                            offset as u32 + self.capabilities[cap_index].len() as u32
+                        } else {
+                            0
+                        };
+                        assert!(value & 0xff00 == 0);
+                        value |= next << 8;
+                    }
+                    value
                 } else {
-                    return Err(());
+                    // Failed access - invalid capability offset
+                    tracelimit::warn_ratelimited!(offset, "unhandled config space read");
+                    return CommonHeaderResult::Failed(IoError::InvalidRegister);
                 }
             }
-            HeaderType00::RESERVED_CAP_PTR => {
-                if self.capabilities.is_empty() {
-                    0
+            // Extended capabilities space - handled by common emulator
+            _ if (0x100..0x1000).contains(&offset) => {
+                if self.is_pcie_device() {
+                    0xffff
                 } else {
-                    0x40
+                    // Failed access - extended capabilities on non-PCIe device
+                    tracelimit::warn_ratelimited!(offset, "unhandled extended config space read");
+                    return CommonHeaderResult::Failed(IoError::InvalidRegister);
                 }
             }
-            HeaderType00::LATENCY_INTERRUPT => self.read_interrupt_line_pin(),
-            _ => return Err(()),
+            // Unhandled access - not part of common header, caller should handle
+            _ => {
+                return CommonHeaderResult::Unhandled;
+            }
         };
 
-        Ok(())
+        // Handled access
+        CommonHeaderResult::Handled
     }
 
-    /// Write to the common config space header fields. Returns Ok(()) if the offset
-    /// was handled by common fields, Err(()) if it should be handled by type-specific logic.
-    pub fn write_common_header(&mut self, offset: u16, val: u32) -> Result<(), ()> {
-        use cfg_space::HeaderType00; // Use HeaderType00 constants for common fields
+    /// Write to the config space. `offset` must be 32-bit aligned.
+    /// Returns CommonHeaderResult indicating if handled, unhandled, or failed.
+    pub fn write_u32(&mut self, offset: u16, val: u32) -> CommonHeaderResult {
+        use cfg_space::CommonHeader;
 
-        match HeaderType00(offset) {
-            HeaderType00::STATUS_COMMAND => {
+        match CommonHeader(offset) {
+            CommonHeader::STATUS_COMMAND => {
                 let mut command = cfg_space::Command::from_bits(val as u16);
                 if command.into_bits() & !SUPPORTED_COMMAND_BITS != 0 {
                     tracelimit::warn_ratelimited!(offset, val, "setting invalid command bits");
@@ -410,36 +444,49 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                 }
 
                 self.state.command = command;
-                Ok(())
             }
-            HeaderType00::BIST_HEADER => {
+            CommonHeader::BIST_HEADER => {
                 // BIST_HEADER - allow writes to latency timer if we supported it
                 // For now, just ignore these writes
-                Ok(())
             }
-            HeaderType00::BAR0
-            | HeaderType00::BAR1
-            | HeaderType00::BAR2
-            | HeaderType00::BAR3
-            | HeaderType00::BAR4
-            | HeaderType00::BAR5
-                if offset < HeaderType00::BAR0.0 + (N as u16 * 4) =>
-            {
-                // BAR registers within our supported range
-                let bar_index = (offset - HeaderType00::BAR0.0) as usize / 4;
-                if self.write_bar(bar_index, val) {
-                    Ok(())
+            // Capabilities space - handled by common emulator
+            _ if (0x40..0x100).contains(&offset) => {
+                if let Some((cap_index, cap_offset)) =
+                    self.get_capability_index_and_offset(offset - 0x40)
+                {
+                    self.capabilities[cap_index].write_u32(cap_offset, val);
                 } else {
-                    // BAR write was ignored (MMIO enabled or out of range)
-                    Ok(())
+                    // Failed access - invalid capability offset
+                    tracelimit::warn_ratelimited!(
+                        offset,
+                        value = val,
+                        "unhandled config space write"
+                    );
+                    return CommonHeaderResult::Failed(IoError::InvalidRegister);
                 }
             }
-            HeaderType00::LATENCY_INTERRUPT => {
-                self.write_interrupt_line(val);
-                Ok(())
+            // Extended capabilities space - handled by common emulator
+            _ if (0x100..0x1000).contains(&offset) => {
+                if self.is_pcie_device() {
+                    // For now, just ignore writes to extended config space
+                } else {
+                    // Failed access - extended capabilities on non-PCIe device
+                    tracelimit::warn_ratelimited!(
+                        offset,
+                        value = val,
+                        "unhandled extended config space write"
+                    );
+                    return CommonHeaderResult::Failed(IoError::InvalidRegister);
+                }
             }
-            _ => Err(()),
+            // Unhandled access - not part of common header, caller should handle
+            _ => {
+                return CommonHeaderResult::Unhandled;
+            }
         }
+
+        // Handled access
+        CommonHeaderResult::Handled
     }
 
     /// Read from capabilities space. `offset` must be 32-bit aligned and >= 0x40.
@@ -1538,6 +1585,100 @@ mod save_restore {
             Ok(())
         }
     }
+
+    impl<const N: usize> SaveRestore for ConfigSpaceCommonHeaderEmulator<N> {
+        type SavedState = state::SavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            let ConfigSpaceCommonHeaderEmulatorState {
+                command,
+                base_addresses,
+                interrupt_line,
+            } = self.state;
+
+            // Convert to 6-element array, padding with zeros if needed
+            let mut saved_base_addresses = [0u32; 6];
+            for (i, &addr) in base_addresses.iter().enumerate() {
+                if i < 6 {
+                    saved_base_addresses[i] = addr;
+                }
+            }
+
+            let saved_state = state::SavedState {
+                command: command.into_bits(),
+                base_addresses: saved_base_addresses,
+                interrupt_line,
+                latency_timer: 0, // Not used in common header, always 0
+                capabilities: self
+                    .capabilities
+                    .iter_mut()
+                    .map(|cap| {
+                        let id = cap.label().to_owned();
+                        Ok((id, cap.save()?))
+                    })
+                    .collect::<Result<_, _>>()?,
+            };
+
+            Ok(saved_state)
+        }
+
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            let state::SavedState {
+                command,
+                base_addresses,
+                interrupt_line,
+                latency_timer: _, // Ignore latency_timer field
+                capabilities,
+            } = state;
+
+            // Convert from 6-element array, taking only what we need
+            let mut restored_base_addresses = {
+                const ZERO: u32 = 0;
+                [ZERO; N]
+            };
+            for (i, &addr) in base_addresses.iter().enumerate() {
+                if i < N {
+                    restored_base_addresses[i] = addr;
+                }
+            }
+
+            self.state = ConfigSpaceCommonHeaderEmulatorState {
+                command: cfg_space::Command::from_bits(command),
+                base_addresses: restored_base_addresses,
+                interrupt_line,
+            };
+
+            if command & !SUPPORTED_COMMAND_BITS != 0 {
+                return Err(RestoreError::InvalidSavedState(
+                    ConfigSpaceRestoreError::InvalidConfigBits.into(),
+                ));
+            }
+
+            self.sync_command_register(self.state.command);
+            for (id, entry) in capabilities {
+                tracing::debug!(save_id = id.as_str(), "restoring pci common header capability");
+
+                // yes, yes, this is O(n^2), but devices never have more than a
+                // handful of caps, so it's totally fine.
+                let mut restored = false;
+                for cap in self.capabilities.iter_mut() {
+                    if cap.label() == id {
+                        cap.restore(entry)?;
+                        restored = true;
+                        break;
+                    }
+                }
+
+                if !restored {
+                    return Err(RestoreError::InvalidSavedState(
+                        ConfigSpaceRestoreError::InvalidCap(id).into(),
+                    ));
+                }
+            }
+
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2062,5 +2203,89 @@ mod tests {
             common_emu_pcie.read_extended_capabilities(0x1000, &mut value),
             IoResult::Err(IoError::InvalidRegister)
         ));
+    }
+
+    #[test]
+    fn test_common_header_emulator_save_restore() {
+        use vmcore::save_restore::SaveRestore;
+
+        // Test Type 0 common header emulator save/restore
+        let hardware_ids = HardwareIds {
+            vendor_id: 0x1111,
+            device_id: 0x2222,
+            revision_id: 1,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::NONE,
+            base_class: ClassCode::UNCLASSIFIED,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        };
+
+        let bars = DeviceBars::new().bar0(4096, BarMemoryKind::Dummy);
+
+        let mut common_emu: ConfigSpaceCommonHeaderEmulatorType0 =
+            ConfigSpaceCommonHeaderEmulator::new(hardware_ids, vec![], bars);
+
+        // Modify some state
+        let mut test_val = 0u32;
+        let result = common_emu.write_u32(0x04, 0x0007); // Enable some command bits
+        assert_eq!(result, CommonHeaderResult::Handled);
+        let result = common_emu.read_u32(0x04, &mut test_val);
+        assert_eq!(result, CommonHeaderResult::Handled);
+        assert_eq!(test_val & 0x0007, 0x0007);
+
+        // Save the state
+        let saved_state = common_emu.save().expect("save should succeed");
+
+        // Reset the emulator
+        common_emu.reset();
+        let result = common_emu.read_u32(0x04, &mut test_val);
+        assert_eq!(result, CommonHeaderResult::Handled);
+        assert_eq!(test_val & 0x0007, 0x0000); // Should be reset
+
+        // Restore the state
+        common_emu.restore(saved_state).expect("restore should succeed");
+        let result = common_emu.read_u32(0x04, &mut test_val);
+        assert_eq!(result, CommonHeaderResult::Handled);
+        assert_eq!(test_val & 0x0007, 0x0007); // Should be restored
+
+        // Test Type 1 common header emulator save/restore
+        let hardware_ids = HardwareIds {
+            vendor_id: 0x3333,
+            device_id: 0x4444,
+            revision_id: 1,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
+            base_class: ClassCode::BRIDGE,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        };
+
+        let bars = DeviceBars::new(); // No BARs for Type 1
+
+        let mut common_emu_type1: ConfigSpaceCommonHeaderEmulatorType1 =
+            ConfigSpaceCommonHeaderEmulator::new(hardware_ids, vec![], bars);
+
+        // Modify some state
+        let result = common_emu_type1.write_u32(0x04, 0x0003); // Enable some command bits
+        assert_eq!(result, CommonHeaderResult::Handled);
+        let result = common_emu_type1.read_u32(0x04, &mut test_val);
+        assert_eq!(result, CommonHeaderResult::Handled);
+        assert_eq!(test_val & 0x0003, 0x0003);
+
+        // Save the state
+        let saved_state = common_emu_type1.save().expect("save should succeed");
+
+        // Reset the emulator
+        common_emu_type1.reset();
+        let result = common_emu_type1.read_u32(0x04, &mut test_val);
+        assert_eq!(result, CommonHeaderResult::Handled);
+        assert_eq!(test_val & 0x0003, 0x0000); // Should be reset
+
+        // Restore the state
+        common_emu_type1.restore(saved_state).expect("restore should succeed");
+        let result = common_emu_type1.read_u32(0x04, &mut test_val);
+        assert_eq!(result, CommonHeaderResult::Handled);
+        assert_eq!(test_val & 0x0003, 0x0003); // Should be restored
     }
 }
