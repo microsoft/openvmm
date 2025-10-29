@@ -127,6 +127,18 @@ impl DownstreamSwitchPort {
     pub fn port_mut(&mut self) -> &mut PcieDownstreamPort {
         &mut self.port
     }
+
+    /// Gets a reference to the MSI interrupt set for this downstream switch port.
+    /// This can be used to connect the port's MSI interrupts to an interrupt controller.
+    pub fn msi_set(&self) -> &pci_core::msi::MsiInterruptSet {
+        self.port.msi_set()
+    }
+
+    /// Gets a mutable reference to the MSI interrupt set for this downstream switch port.
+    /// This can be used to connect the port's MSI interrupts to an interrupt controller.
+    pub fn msi_set_mut(&mut self) -> &mut pci_core::msi::MsiInterruptSet {
+        self.port.msi_set_mut()
+    }
 }
 
 /// A PCI Express switch definition used for creating switch instances.

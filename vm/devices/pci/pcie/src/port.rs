@@ -7,8 +7,10 @@ use anyhow::bail;
 use chipset_device::io::IoResult;
 use inspect::Inspect;
 use pci_bus::GenericPciBusDevice;
+use pci_core::capabilities::msi_cap::MsiCapability;
 use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
+use pci_core::msi::MsiInterruptSet;
 use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::HardwareIds;
 use std::sync::Arc;
@@ -28,6 +30,10 @@ pub struct PcieDownstreamPort {
     /// The connected device, if any.
     #[inspect(skip)]
     pub link: Option<(Arc<str>, Box<dyn GenericPciBusDevice>)>,
+
+    /// MSI interrupt set for this port.
+    #[inspect(skip)]
+    pub msi_set: MsiInterruptSet,
 }
 
 impl PcieDownstreamPort {
@@ -38,16 +44,38 @@ impl PcieDownstreamPort {
         port_type: DevicePortType,
         multi_function: bool,
     ) -> Self {
+        let mut msi_set = MsiInterruptSet::new();
+
+        // Create MSI capability with 1 message (multiple_message_capable=0), 64-bit addressing, no per-vector masking
+        let msi_capability = MsiCapability::new(0, true, false, &mut msi_set);
+
         let cfg_space = ConfigSpaceType1Emulator::new(
             hardware_ids,
-            vec![Box::new(PciExpressCapability::new(port_type, None))],
+            vec![
+                Box::new(PciExpressCapability::new(port_type, None)),
+                Box::new(msi_capability),
+            ],
         )
         .with_multi_function_bit(multi_function);
+
         Self {
             name: name.into(),
             cfg_space,
             link: None,
+            msi_set,
         }
+    }
+
+    /// Gets a reference to the MSI interrupt set for this port.
+    /// This can be used to connect the port's MSI interrupts to an interrupt controller.
+    pub fn msi_set(&self) -> &MsiInterruptSet {
+        &self.msi_set
+    }
+
+    /// Gets a mutable reference to the MSI interrupt set for this port.
+    /// This can be used to connect the port's MSI interrupts to an interrupt controller.
+    pub fn msi_set_mut(&mut self) -> &mut MsiInterruptSet {
+        &mut self.msi_set
     }
 
     /// Forward a configuration space read to the connected device.
