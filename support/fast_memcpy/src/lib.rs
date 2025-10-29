@@ -117,11 +117,11 @@ unsafe fn copy_two<T>(dest: *mut T, src: *const T, len: usize) {
 /// Overlap is allowed, but the copy is done forwards, so `dest` must be
 /// before `src` or non-overlapping.
 unsafe fn copy_loop_dest_aligned_forward<T>(dest: *mut T, src: *const T, len: usize) {
-    debug_assert!(dest.is_aligned());
-    debug_assert!(!overlaps(dest.cast(), src.cast(), len) || dest.addr() <= src.addr());
-    debug_assert!(len >= size_of::<T>());
-
     unsafe {
+        debug_assert!(dest.is_aligned());
+        debug_assert!(!overlaps(dest.cast(), src.cast(), len) || dest.addr() <= src.addr());
+        debug_assert!(len >= size_of::<T>());
+
         // Save the tail now in case it is overlapping.
         let tail = src.byte_add(len - size_of::<T>()).read_unaligned();
         // Copy until the last chunk.
@@ -146,11 +146,11 @@ unsafe fn copy_loop_dest_aligned_forward<T>(dest: *mut T, src: *const T, len: us
 /// Overlap is allowed, but the copy is done backwards, so `dest` must be after
 /// `src` or non-overlapping.
 unsafe fn copy_loop_dest_aligned_backward<T>(dest: *mut T, src: *const T, len: usize) {
-    debug_assert!(dest.is_aligned());
-    debug_assert!(!overlaps(dest.cast(), src.cast(), len) || dest.addr() >= src.addr());
-    debug_assert!(len >= size_of::<T>());
-
     unsafe {
+        debug_assert!(dest.byte_add(len).is_aligned());
+        debug_assert!(!overlaps(dest.cast(), src.cast(), len) || dest.addr() >= src.addr());
+        debug_assert!(len >= size_of::<T>());
+
         // Save the head now in case it is overlapping.
         let head = src.read_unaligned();
         // Copy until the last chunk.

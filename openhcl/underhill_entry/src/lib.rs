@@ -3,13 +3,14 @@
 
 //! The entry point for the underhill environment.
 
+#![forbid(unsafe_code)]
 #![cfg(target_os = "linux")]
 
 // Use mimalloc instead of the system malloc for performance.
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-// musl's malloc implementation is slow on x86_64, so we use memcpy crate to
+// musl's memcpy implementation is slow on x86_64, so we use memcpy crate to
 // provide an optimized implementation.
 //
 // xtask-fmt allow-target-arch sys-crate
