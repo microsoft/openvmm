@@ -10,6 +10,7 @@ use crate::build_openvmm_hcl;
 use crate::build_openvmm_hcl::OpenvmmHclBuildParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile::OpenvmmHclShip;
 use crate::run_cargo_build::common::CommonArch;
+use crate::run_cargo_build::common::CommonPlatform;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::download_gh_artifact;
@@ -49,8 +50,17 @@ impl SimpleFlowNode for Node {
             job_name,
         } = request;
 
+        let arch = match ctx.arch() {
+            FlowArch::X86_64 => CommonArch::X86_64,
+            FlowArch::Aarch64 => CommonArch::Aarch64,
+            _ => panic!("unsupported arch"),
+        };
+
         let xtask = ctx.reqv(|v| crate::build_xtask::Request {
-            target: target.clone(),
+            target: CommonTriple::Common {
+                arch,
+                platform: CommonPlatform::LinuxMusl,
+            },
             xtask: v,
         });
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
@@ -59,9 +69,12 @@ impl SimpleFlowNode for Node {
             build_params: OpenvmmHclBuildParams {
                 target: target.clone(),
                 profile: OpenvmmHclShip,
-                features: (OpenhclIgvmRecipe::X64)
-                    .recipe_details(true)
-                    .openvmm_hcl_features,
+                features: (match target.common_arch().unwrap() {
+                    CommonArch::X86_64 => OpenhclIgvmRecipe::X64,
+                    CommonArch::Aarch64 => OpenhclIgvmRecipe::Aarch64,
+                })
+                .recipe_details(true)
+                .openvmm_hcl_features,
                 no_split_dbg_info: false,
             },
             openvmm_hcl_output: v,

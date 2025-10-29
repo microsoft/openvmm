@@ -57,9 +57,7 @@ async function getGithubPullRequestsPage(
     });
     if (!res.ok) {
       console.warn(
-        "[getGithubPullRequests] Non-OK response",
-        res.status,
-        res.statusText
+        "[getGithubPullRequests] Non-OK response"
       );
       return {};
     }
