@@ -4,7 +4,7 @@
 //! Runtime support for the UEFI application environment.
 
 #![cfg(target_os = "uefi")]
-// UNSAFETY: Raw assembly needed for panic handling to abort. test
+// UNSAFETY: Raw assembly needed for panic handling to abort.
 #![expect(unsafe_code)]
 
 #[panic_handler]
