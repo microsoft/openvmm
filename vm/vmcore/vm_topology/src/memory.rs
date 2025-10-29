@@ -152,10 +152,6 @@ impl MemoryLayout {
         combined_gaps.sort();
         validate_ranges(&combined_gaps)?;
 
-        for gap in combined_gaps.iter() {
-            println!("combined gap: {:?}", gap);
-        }
-
         let mut ram = Vec::new();
         let mut remaining = ram_size;
         let mut remaining_gaps = combined_gaps.iter().cloned();
