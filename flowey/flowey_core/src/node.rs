@@ -2658,7 +2658,7 @@ macro_rules! new_flow_node_base {
 pub trait FlowNode {
     /// The request type that defines what operations this node can perform.
     ///
-    /// Use the [`flowey_request!`] macro to define this type.
+    /// Use the [`crate::flowey_request!`] macro to define this type.
     type Request: Serialize + DeserializeOwned;
 
     /// A list of nodes that this node is capable of taking a dependency on.

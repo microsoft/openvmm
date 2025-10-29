@@ -108,7 +108,7 @@ Flowey's model consists of a hierarchy of components:
 
 These building blocks are connected through three key mechanisms:
 
-**[Variables (`ReadVar`/`WriteVar`)](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.ReadVar.html)** enable data flow between steps. A `WriteVar<T>` represents a promise to produce a value of type `T` at runtime, while a `ReadVar<T>` represents a dependency on that value. Variables enforce write-once semantics (each value has exactly one producer) and create explicit dependencies in the DAG. For example, a "build" step might write a binary path to a `WriteVar<PathBuf>`, and a "test" step would read from the corresponding `ReadVar<PathBuf>`.
+**[Variables (`ReadVar`/`WriteVar`)](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.ReadVar.html)** enable data flow between steps. A `WriteVar<T>` represents a promise to produce a value of type `T` at runtime, while a `ReadVar<T>` represents a dependency on that value. Variables enforce write-once semantics (each value has exactly one producer) and create explicit dependencies in the DAG. For example, a "build" step might write a binary path to a `WriteVar<PathBuf>`, and a "test" step would read from the corresponding `ReadVar<PathBuf>`. This echoes Rust’s “shared XOR mutable” ownership rule: a value has either one writer or multiple readers, never both concurrently.
 
 **[Artifacts](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/trait.Artifact.html)** enable data transfer between jobs. Since jobs may run on different machines or at different times, artifacts package up files (like compiled binaries, test results, or build outputs) for transfer. Flowey automatically handles uploading artifacts at the end of producing jobs and downloading them at the start of consuming jobs, abstracting away backend-specific artifact APIs.
 
@@ -198,8 +198,10 @@ Flowey supports multiple execution backends:
 - **GitHub Actions**: Generates GitHub Actions workflow YAML
 
 ```admonish warning: 
-Nodes should be written to work across ALL backends whenever possible. Relying on `ctx.backend()` to query the backend or manually emitting backend-specific steps (via `emit_ado_step` or `emit_gh_step`) should be avoided unless absolutely necessary. Most automation logic should be backend-agnostic, using `emit_rust_step` for cross-platform Rust code that works everywhere. 
+Nodes should be written to work across ALL backends whenever possible. Relying on `ctx.backend()` to query the backend or manually emitting backend-specific steps (via `emit_ado_step` or `emit_gh_step`) should be avoided unless absolutely necessary. Most automation logic should be backend-agnostic, using `emit_rust_step` for cross-platform Rust code that works everywhere. Writing cross-platform flowey code enables locally testing pipelines which can be invaluable when iterating over CI changes. 
 ```
+
+If a node only supports certain backends, it should immediately fast‑fail with a clear error (“<Node> not supported on <backend>”) instead of silently proceeding. That failure signals it’s time either to add the missing backend support or introduce a multi‑platform abstraction/meta‑node that delegates to platform‑specific nodes.
 
 ---
 
@@ -648,21 +650,37 @@ struct MyArtifact {
     #[serde(rename = "metadata.json")]
     metadata: PathBuf,
 }
+
+let (pub_artifact, use_artifact) = pipeline.new_typed_artifact("my-files");
 ```
 
 **Untyped artifacts** provide simple directory-based artifacts for simpler cases:
 
 ```rust
-let artifact = pipeline.new_artifact("my-files");
+let (pub_artifact, use_artifact) = pipeline.new_artifact("my-files");
 ```
 
 For detailed examples of defining and using artifacts, see the [Artifact trait documentation](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/trait.Artifact.html).
 
+Both `pipeline.new_typed_artifact("name")` and `pipeline.new_artifact("name")` return a tuple of handles: `(pub_artifact, use_artifact)`. When defining a job you convert them with the job context:
+```rust
+// In a producing job:
+let artifact_out = ctx.publish_artifact(pub_artifact);
+// artifact_out : WriteVar<MyArtifact>   (typed)
+// or WriteVar<PathBuf> for untyped
+
+// In a consuming job:
+let artifact_in = ctx.use_artifact(use_artifact);
+// artifact_in : ReadVar<MyArtifact>     (typed)
+// or ReadVar<PathBuf> for untyped
+```
+After conversion, you treat the returned `WriteVar` / `ReadVar` like any other flowey variable (claim them in steps, write/read values). 
 Key concepts:
 - The `Artifact` trait works by serializing your type to JSON in a format that reflects a directory structure
 - Use `#[serde(rename = "file.exe")]` to specify exact file names
 - Typed artifacts ensure compile-time type safety when passing data between jobs
 - Untyped artifacts are simpler but don't provide type guarantees
+- Tuple handles must be lifted with `ctx.publish_artifact(...)` / `ctx.use_artifact(...)` to become flowey variables
 
 ### How Flowey Manages Artifacts Under the Hood
 
@@ -674,8 +692,6 @@ During the **pipeline resolution phase** (build-time), flowey:
    - For ADO: Uses `PublishPipelineArtifact` and `DownloadPipelineArtifact` tasks
    - For GitHub Actions: Uses `actions/upload-artifact` and `actions/download-artifact`
    - For local execution: Uses filesystem copying
-4. **Handles artifact naming automatically** to avoid collisions while keeping names human-readable
-5. **Validates the artifact flow** to ensure all dependencies can be satisfied
 
 At **runtime**, the artifact `ReadVar<PathBuf>` and `WriteVar<PathBuf>` work just like any other flowey variable:
 - Producing jobs write artifact files to the path from `WriteVar<PathBuf>`
@@ -729,11 +745,6 @@ let job = pipeline.new_job(...)
     })
     .finish();
 ```
-
-Parameter types:
-- Boolean parameters
-- String parameters with optional validation
-- Numeric (i64) parameters with optional validation
 
 #### Stable vs Unstable Parameters
 
