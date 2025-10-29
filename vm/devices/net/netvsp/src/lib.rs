@@ -761,12 +761,12 @@ impl OffloadConfig {
             if self.lso4 {
                 lso.ipv4_encapsulation = rndisprot::NDIS_ENCAPSULATION_IEEE_802_3;
                 lso.ipv4_max_offload_size = MAX_OFFLOAD_SIZE;
-                lso.ipv4_min_segment_count = rndisprot::MIN_SEGMENT_COUNT;
+                lso.ipv4_min_segment_count = rndisprot::LSO_MIN_SEGMENT_COUNT;
             }
             if self.lso6 {
                 lso.ipv6_encapsulation = rndisprot::NDIS_ENCAPSULATION_IEEE_802_3;
                 lso.ipv6_max_offload_size = MAX_OFFLOAD_SIZE;
-                lso.ipv6_min_segment_count = rndisprot::MIN_SEGMENT_COUNT;
+                lso.ipv6_min_segment_count = rndisprot::LSO_MIN_SEGMENT_COUNT;
                 lso.ipv6_flags = rndisprot::Ipv6LsoFlags::new()
                     .with_ip_extension_headers_supported(rndisprot::NDIS_OFFLOAD_SUPPORTED)
                     .with_tcp_options_supported(rndisprot::NDIS_OFFLOAD_SUPPORTED);
@@ -2480,7 +2480,7 @@ impl<T: RingMem> NetChannel<T> {
         }
 
         if metadata.offload_tcp_segmentation {
-            if segments.len() < rndisprot::MIN_SEGMENT_COUNT as usize {
+            if segments.len() < rndisprot::LSO_MIN_SEGMENT_COUNT as usize {
                 return Err(WorkerError::InvalidLsoPacketInsufficientSegments(
                     segments.len() as u32,
                 ));
