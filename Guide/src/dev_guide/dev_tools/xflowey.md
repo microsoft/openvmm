@@ -158,7 +158,7 @@ works everywhere.
 
 ## Variables: ReadVar and WriteVar
 
-**ReadVar** and **WriteVar** are flowey's solution to the problem of declaring
+[**`ReadVar`**](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.ReadVar.html) and [**`WriteVar`**](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.WriteVar.html) are flowey's solution to the problem of declaring
 variables at build-time that will hold values produced during pipeline runtime.
 
 ### The Problem They Solve
@@ -181,7 +181,7 @@ execution model:
 
 ### Claiming Variables
 
-Before a step can use a `ReadVar` or `WriteVar`, it must **claim** it. Claiming serves several purposes:
+Before a step can use a [`ReadVar`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.ReadVar.html) or [`WriteVar`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.WriteVar.html), it must **claim** it. Claiming serves several purposes:
 1. Registers that this step depends on (or produces) this variable
 2. Converts `ReadVar<T, VarNotClaimed>` to `ReadVar<T, VarClaimed>`
 3. Allows flowey to track variable usage for graph construction
@@ -240,14 +240,14 @@ The type system enforces this separation: `claim()` requires `StepCtx` (only ava
 ### ClaimedReadVar and ClaimedWriteVar
 
 These are type aliases for claimed variables:
-- `ClaimedReadVar<T> = ReadVar<T, VarClaimed>`
-- `ClaimedWriteVar<T> = WriteVar<T, VarClaimed>`
+- [`ClaimedReadVar<T>`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/type.ClaimedReadVar.html) = `ReadVar<T, VarClaimed>`
+- [`ClaimedWriteVar<T>`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/type.ClaimedWriteVar.html) = `WriteVar<T, VarClaimed>`
 
 Only claimed variables can be read/written at runtime.
 
 **Implementation Detail: Zero-Sized Types (ZSTs)**
 
-The claim state markers `VarClaimed` and `VarNotClaimed` are zero-sized types (ZSTs) - they exist purely at the type level and have no runtime representation or memory footprint. This is a pure type-level transformation that happens at compile time.
+The claim state markers [`VarClaimed`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/enum.VarClaimed.html) and [`VarNotClaimed`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/enum.VarNotClaimed.html) are zero-sized types (ZSTs) - they exist purely at the type level and have no runtime representation or memory footprint. This is a pure type-level transformation that happens at compile time.
 
 This design is crucial because without this type-level transform, Rust couldn't statically verify that all variables used in a runtime block have been claimed by that block
 
@@ -305,9 +305,9 @@ step types exist for different purposes.
 
 Before diving into step types, it's important to understand these two context types:
 
-- **`NodeCtx`**: Used when emitting steps (during the build-time phase). Provides `emit_*` methods, `new_var()`, `req()`, etc.
+- [**`NodeCtx`**](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.NodeCtx.html): Used when emitting steps (during the build-time phase). Provides `emit_*` methods, `new_var()`, `req()`, etc.
   
-- **`StepCtx`**: Used inside step closures (during runtime execution). Provides access to `claim()` for variables, and basic environment info (`backend()`, `platform()`).
+- [**`StepCtx`**](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.StepCtx.html): Used inside step closures (during runtime execution). Provides access to `claim()` for variables, and basic environment info (`backend()`, `platform()`).
 
 ### Isolated Working Directories and Path Immutability
 
@@ -360,12 +360,12 @@ closures passed to `emit_rust_step`, etc.).
 
 ### RustRuntimeServices
 
-`RustRuntimeServices` is the primary runtime service available in Rust steps. It provides:
+[`RustRuntimeServices`](https://openvmm.dev/rustdoc/linux/flowey_core/node/steps/rust/struct.RustRuntimeServices.html) is the primary runtime service available in Rust steps. It provides:
 
 **Variable Operations:**
 - Reading and writing flowey variables
 - Secret handling (automatic secret propagation for safety)
-- Support for reading values of any type that implements `ReadVarValue`
+- Support for reading values of any type that implements [`ReadVarValue`](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.ReadVarValue.html)
 
 **Environment Queries:**
 - Backend identification (Local, ADO, or GitHub)
@@ -423,7 +423,7 @@ rt.write_not_secret(output_var, &"done".to_string());
 
 ### AdoStepServices
 
-`AdoStepServices` provides integration with Azure DevOps-specific features when emitting ADO YAML steps:
+[`AdoStepServices`](https://openvmm.dev/rustdoc/linux/flowey_core/node/steps/ado/struct.AdoStepServices.html) provides integration with Azure DevOps-specific features when emitting ADO YAML steps:
 
 **ADO Variable Bridge:**
 - Convert ADO runtime variables (like `BUILD.SOURCEBRANCH`) into flowey vars
@@ -436,7 +436,7 @@ rt.write_not_secret(output_var, &"done".to_string());
 
 ### GhStepBuilder
 
-`GhStepBuilder` is a fluent builder for constructing GitHub Actions steps with:
+[`GhStepBuilder`](https://openvmm.dev/rustdoc/linux/flowey_core/node/steps/github/struct.GhStepBuilder.html) is a fluent builder for constructing GitHub Actions steps with:
 
 **Step Configuration:**
 - Specifying the action to use (e.g., `actions/checkout@v4`)
@@ -456,17 +456,17 @@ rt.write_not_secret(output_var, &"done".to_string());
 
 ## Flowey Nodes
 
-A **FlowNode** is a reusable unit of automation logic. Nodes process requests,
+A [**`FlowNode`**](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.FlowNode.html) is a reusable unit of automation logic. Nodes process requests,
 emit steps, and can depend on other nodes.
 
 ### The Node/Request Pattern
 
-Every node has an associated **Request** type that defines what operations the node can perform. Requests are defined using the `flowey_request!` macro and registered with `new_flow_node!` or `new_simple_flow_node!` macros.
+Every node has an associated **Request** type that defines what operations the node can perform. Requests are defined using the [`flowey_request!`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.flowey_request.html) macro and registered with [`new_flow_node!`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.new_flow_node.html) or [`new_simple_flow_node!`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.new_simple_flow_node.html) macros.
 
 **Key concepts:**
-- Each node is a struct registered with `new_flow_node!` or `new_simple_flow_node!`
-- Request types define the node's API using `flowey_request!` macro
-- Requests often include `WriteVar` parameters for outputs
+- Each node is a struct registered with [`new_flow_node!`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.new_flow_node.html) or [`new_simple_flow_node!`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.new_simple_flow_node.html)
+- Request types define the node's API using [`flowey_request!`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.flowey_request.html) macro
+- Requests often include [`WriteVar`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.WriteVar.html) parameters for outputs
 
 For complete examples, see the [`FlowNode` trait documentation](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.FlowNode.html).
 
@@ -474,7 +474,7 @@ For complete examples, see the [`FlowNode` trait documentation](https://openvmm.
 
 Flowey provides two node implementation patterns with a fundamental difference in their Request structure and complexity:
 
-**SimpleFlowNode** - for straightforward, function-like operations:
+[**`SimpleFlowNode`**](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.SimpleFlowNode.html) - for straightforward, function-like operations:
 - Uses a **single struct Request** type
 - Processes one request at a time independently
 - Behaves like a "plain old function" that resolves its single request type
@@ -484,7 +484,7 @@ Flowey provides two node implementation patterns with a fundamental difference i
 
 **Example use case**: A node that runs `cargo build` - each request is independent and just needs to know what to build.
 
-**FlowNode** - for complex nodes requiring coordination and non-local configuration:
+[**`FlowNode`**](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.FlowNode.html) - for complex nodes requiring coordination and non-local configuration:
 - Often uses an **enum Request** with multiple variants
 - Receives all requests as a `Vec<Request>` and processes them together
 - Can aggregate, optimize, and consolidate multiple requests into fewer steps
@@ -539,9 +539,9 @@ For detailed comparisons and examples, see the [`FlowNode`](https://openvmm.dev/
 ### Node Registration
 
 Nodes are automatically registered using macros that handle most of the boilerplate:
-- `new_flow_node!(struct Node)` - registers a FlowNode
-- `new_simple_flow_node!(struct Node)` - registers a SimpleFlowNode
-- `flowey_request!` - defines the Request type and implements `IntoRequest`
+- [`new_flow_node!(struct Node)`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.new_flow_node.html) - registers a FlowNode
+- [`new_simple_flow_node!(struct Node)`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.new_simple_flow_node.html) - registers a SimpleFlowNode
+- [`flowey_request!`](https://openvmm.dev/rustdoc/linux/flowey_core/macro.flowey_request.html) - defines the Request type and implements [`IntoRequest`](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.IntoRequest.html)
 
 ### The imports() Method
 
@@ -560,12 +560,12 @@ For more on node imports, see the [`FlowNode::imports` documentation](https://op
 
 ### The emit() Method
 
-The `emit()` method is where a node's actual logic lives. For `FlowNode`, it receives all requests together and must:
+The [`emit()`](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.FlowNode.html#tymethod.emit) method is where a node's actual logic lives. For [`FlowNode`](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.FlowNode.html), it receives all requests together and must:
 1. Aggregate and validate requests (ensuring consistency where needed)
 2. Emit steps to perform the work
 3. Wire up dependencies between steps via variables
 
-For `SimpleFlowNode`, the equivalent `process_request()` method processes one request at a time.
+For [`SimpleFlowNode`](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.SimpleFlowNode.html), the equivalent [`process_request()`](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.SimpleFlowNode.html#tymethod.process_request) method processes one request at a time.
 
 For complete implementation examples, see the [`FlowNode::emit` documentation](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.FlowNode.html#tymethod.emit).
 
@@ -609,9 +609,9 @@ implementation (runtime logic):
 Use Rust's type system to prevent errors at build-time:
 
 - Typed artifacts ensure type-safe data passing
-- `WriteVar` can only be written once (enforced by the type system)
-- `ClaimVar` ensures variables are claimed before use
-- Request validation happens during `emit()`, not at runtime
+- [`WriteVar`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.WriteVar.html) can only be written once (enforced by the type system)
+- Claimed variables ensure variables are claimed before use
+- Request validation happens during [`emit()`](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.FlowNode.html#tymethod.emit), not at runtime
 
 ---
 
@@ -742,7 +742,7 @@ For detailed examples of defining pipelines, see the [IntoPipeline trait documen
 
 ### Pipeline Jobs
 
-Each `PipelineJob` represents a unit of work that:
+Each [`PipelineJob`](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/struct.PipelineJob.html) represents a unit of work that:
 - Runs on a specific platform and architecture
 - Can depend on artifacts from other jobs
 - Can be conditionally executed based on parameters
@@ -793,9 +793,9 @@ Parameter types:
 
 #### Stable vs Unstable Parameters
 
-Every parameter in flowey must be declared as either **Stable** or **Unstable** using `ParameterKind`. This classification determines the parameter's visibility and API stability:
+Every parameter in flowey must be declared as either **Stable** or **Unstable** using [`ParameterKind`](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/enum.ParameterKind.html). This classification determines the parameter's visibility and API stability:
 
-**Stable Parameters (`ParameterKind::Stable`)**
+**Stable Parameters ([`ParameterKind::Stable`](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/enum.ParameterKind.html#variant.Stable))**
 
 Stable parameters represent a **public, stable API** for the pipeline:
 
@@ -806,7 +806,7 @@ Stable parameters represent a **public, stable API** for the pipeline:
   - Parameters intended for use by other teams or external automation
   - Parameters documented as part of the pipeline's public interface
 
-**Unstable Parameters (`ParameterKind::Unstable`)**
+**Unstable Parameters ([`ParameterKind::Unstable`](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/enum.ParameterKind.html#variant.Unstable))**
 
 Unstable parameters are for **internal use** and experimentation:
 
