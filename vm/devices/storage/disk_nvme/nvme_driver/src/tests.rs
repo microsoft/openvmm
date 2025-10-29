@@ -250,7 +250,7 @@ async fn test_nvme_driver(driver: DefaultDriver, config: NvmeTestConfig) {
         return;
     }
 
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
+    let mut driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
         .await
         .unwrap();
     let namespace = driver.namespace(1).await.unwrap();
@@ -457,7 +457,7 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
         .await
         .unwrap();
     let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
+    let mut driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
         .await
         .unwrap();
     let namespace = driver.namespace(1).await.unwrap();

@@ -71,10 +71,10 @@ pub struct NvmeDriver<T: DeviceBacking> {
     #[inspect(skip)]
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
-    rescan_notifiers: Arc<RwLock<HashMap<u32, Vec<mesh::Sender<()>>>>>,
-    /// NVMe namespaces associated with this driver.
+    rescan_notifiers: Arc<RwLock<HashMap<u32, mesh::Sender<()>>>>,
+    /// NVMe namespaces associated with this driver. Mapping nsid to the NS.
     #[inspect(skip)]
-    namespaces: Vec<Arc<Namespace>>,
+    namespaces: HashMap<u32, Arc<Namespace>>,
     /// Keeps the controller connected (CC.EN==1) while servicing.
     nvme_keepalive: bool,
     bounce_buffer: bool,
@@ -288,7 +288,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             driver,
             io_issuers,
             rescan_notifiers: Default::default(),
-            namespaces: vec![],
+            namespaces: Default::default(),
             nvme_keepalive: false,
             bounce_buffer,
         })
@@ -538,23 +538,28 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     }
 
     /// Gets the namespace with namespace ID `nsid`.
-    pub async fn namespace(&self, nsid: u32) -> Result<Namespace, NamespaceError> {
+    pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
+        if let Some(ns) = self.namespaces.get(&nsid) {
+            return Ok(ns.clone());
+        }
+
         let (send, recv) = mesh::channel::<()>();
-        let namespace = Namespace::new(
-            &self.driver,
-            self.admin.as_ref().unwrap().clone(),
-            recv,
-            self.identify.clone().unwrap(),
-            &self.io_issuers,
-            nsid,
-        )
-        .await?;
+        let namespace = Arc::new(
+            Namespace::new(
+                &self.driver,
+                self.admin.as_ref().unwrap().clone(),
+                recv,
+                self.identify.clone().unwrap(),
+                &self.io_issuers,
+                nsid,
+            )
+            .await?,
+        );
+        self.namespaces.insert(nsid, namespace.clone());
+
         // Append the sender to the list of notifiers for this nsid.
         let mut notifiers = self.rescan_notifiers.write();
-        notifiers
-            .entry(nsid)
-            .and_modify(|v| v.push(send.clone()))
-            .or_insert_with(|| vec![send]);
+        notifiers.insert(nsid, send);
         Ok(namespace)
     }
 
@@ -585,13 +590,10 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .await?
         {
             Ok(s) => {
-                // TODO: The decision is to re-query namespace data after the restore.
-                // Leaving the code in place so it can be restored in future.
-                // The reason is uncertainty about namespace change during servicing.
-                // ------
-                // for ns in &self.namespaces {
-                //     s.namespaces.push(ns.save()?);
-                // }
+                let mut namespaces = vec![];
+                for ns in self.namespaces.values() {
+                    namespaces.push(ns.save()?);
+                }
                 Ok(NvmeDriverSavedState {
                     identify_ctrl: spec::IdentifyController::read_from_bytes(
                         self.identify.as_ref().unwrap().as_bytes(),
@@ -599,7 +601,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     .unwrap(),
                     device_id: self.device_id.clone(),
                     // TODO: See the description above, save the vector once resolved.
-                    namespaces: vec![],
+                    namespaces,
                     worker_data: s,
                 })
             }
@@ -658,7 +660,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             driver: driver.clone(),
             io_issuers,
             rescan_notifiers: Default::default(),
-            namespaces: vec![],
+            namespaces: Default::default(),
             nvme_keepalive: true,
             bounce_buffer,
         };
@@ -796,24 +798,19 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         // Restore namespace(s).
         for ns in &saved_state.namespaces {
-            // TODO: Current approach is to re-query namespace data after servicing
-            // and this array will be empty. Once we confirm that we can process
-            // namespace change notification AEN, the restore code will be
-            // re-added.
             let (send, recv) = mesh::channel::<()>();
-            this.namespaces.push(Arc::new(Namespace::restore(
-                &driver,
-                admin.issuer().clone(),
-                recv,
-                this.identify.clone().unwrap(),
-                &this.io_issuers,
-                ns,
-            )?));
-            this.rescan_notifiers
-                .write()
-                .entry(ns.nsid)
-                .and_modify(|v| v.push(send.clone()))
-                .or_insert_with(|| vec![send]);
+            this.namespaces.insert(
+                ns.nsid,
+                Arc::new(Namespace::restore(
+                    &driver,
+                    admin.issuer().clone(),
+                    recv,
+                    this.identify.clone().unwrap(),
+                    &this.io_issuers,
+                    ns,
+                )?),
+            );
+            this.rescan_notifiers.write().insert(ns.nsid, send);
         }
 
         task.insert(&this.driver, "nvme_worker", state);
@@ -831,7 +828,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
 async fn handle_asynchronous_events(
     admin: &Issuer,
-    rescan_notifiers: Arc<RwLock<HashMap<u32, Vec<mesh::Sender<()>>>>>,
+    rescan_notifiers: Arc<RwLock<HashMap<u32, mesh::Sender<()>>>>,
 ) -> anyhow::Result<()> {
     tracing::info!("starting asynchronous event handler task");
     loop {
@@ -871,14 +868,14 @@ async fn handle_asynchronous_events(
                     // More than 1024 namespaces changed - notify all registered namespaces
                     tracing::info!("more than 1024 namespaces changed, notifying all listeners");
                     for notifiers in notifier_guard.values() {
-                        notifiers.iter().for_each(|n| n.send(()));
+                        notifiers.send(());
                     }
                 } else {
                     // Notify specific namespaces that have changed
                     for nsid in list.iter().filter(|&&nsid| nsid != 0) {
                         tracing::info!(nsid, "notifying listeners of changed namespace");
-                        if let Some(notifiers) = notifier_guard.get(nsid) {
-                            notifiers.iter().for_each(|n| n.send(()));
+                        if let Some(notifier) = notifier_guard.get(nsid) {
+                            notifier.send(());
                         }
                     }
                 }
