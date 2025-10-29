@@ -3266,20 +3266,19 @@ impl Hcl {
         vector: u32,
         multicast: bool,
         target_processors: ProcessorSet<'_>,
-        posted_redirect: bool,
+        proxy_redirect: bool,
     ) -> Result<(), HvError> {
         let header = hvdef::hypercall::RetargetDeviceInterrupt {
             partition_id: HV_PARTITION_ID_SELF,
             device_id,
             entry,
-            flags: hvdef::hypercall::RetargetDeviceInterruptFlags::default()
-                .with_posted_redirect(posted_redirect)
-                .with_rsvd(0),
+            rsvd: 0,
             target_header: hvdef::hypercall::InterruptTarget {
                 vector,
                 flags: hvdef::hypercall::HvInterruptTargetFlags::default()
                     .with_multicast(multicast)
-                    .with_processor_set(true),
+                    .with_processor_set(true)
+                    .with_proxy_redirect(proxy_redirect),
                 // Always use a generic processor set to simplify construction. This hypercall is
                 // invoked relatively infrequently, the overhead should be acceptable.
                 mask_or_format: hvdef::hypercall::HV_GENERIC_SET_SPARSE_4K,

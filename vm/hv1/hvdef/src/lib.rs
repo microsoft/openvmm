@@ -1055,12 +1055,14 @@ pub mod hypercall {
     pub struct HvInterruptTargetFlags {
         pub multicast: bool,
         pub processor_set: bool,
-        #[bits(30)]
+        pub proxy_redirect: bool,
+        #[bits(29)]
         pub reserved: u32,
     }
 
     pub const HV_DEVICE_INTERRUPT_TARGET_MULTICAST: u32 = 1;
     pub const HV_DEVICE_INTERRUPT_TARGET_PROCESSOR_SET: u32 = 2;
+    pub const HV_DEVICE_INTERRUPT_TARGET_PROXY_REDIRECT: u32 = 4;
 
     pub const HV_GENERIC_SET_SPARSE_4K: u64 = 0;
     pub const HV_GENERIC_SET_ALL: u64 = 1;
@@ -1071,16 +1073,8 @@ pub mod hypercall {
         pub partition_id: u64,
         pub device_id: u64,
         pub entry: InterruptEntry,
-        pub flags: RetargetDeviceInterruptFlags,
-        pub target_header: InterruptTarget,
-    }
-
-    #[bitfield(u64)]
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-    pub struct RetargetDeviceInterruptFlags {
-        pub posted_redirect: bool,
-        #[bits(63)]
         pub rsvd: u64,
+        pub target_header: InterruptTarget,
     }
 
     #[bitfield(u8)]

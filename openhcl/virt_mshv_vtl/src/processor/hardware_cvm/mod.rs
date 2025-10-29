@@ -903,8 +903,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         )
     }
 
-    /// Request redirection of interrupts from lower-VTL owned devices to VTL2 via posted interrupt mechanism.
-    /// This is useful performance optimization when lower VTL doesn't have posted interrupt support.
+    /// Request redirection of interrupts from VTL0 owned devices to VTL2 via posted interrupt mechanism.
+    /// This is useful performance optimization when VTL0 doesn't have posted interrupt support.
     fn try_proxy_interrupt_redirection(
         &mut self,
         device_id: u64,
@@ -919,12 +919,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         }
 
         // Register the interrupt handler in VTL2 for only the first processor in the target set.
-        //
-        // This is safe because:
-        // 1. When forwarding the hypercall to the hypervisor, we expose only this single processor
-        //    in the target processor set.
-        // 2. And the hypervisor typically selects only a single (and often the first) processor from
-        //    the set when delivering posted interrupts, so this aligns with the expected behavior.
+        // This is safe because we expose only this single processor in the target processor set
+        // when forwarding the hypercall to the hypervisor.
 
         // Get the first processor from the target processor set.
         let first_processor_index = target_processors.iter().next()?;

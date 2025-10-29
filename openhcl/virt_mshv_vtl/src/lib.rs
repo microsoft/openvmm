@@ -1716,10 +1716,10 @@ impl<'a> UhProtoPartition<'a> {
             }
             hcl.set_snp_register_bitmap(bitmap);
         } else if isolation == IsolationType::Tdx {
-            // Configure proxy interrupt redirection if supported by hypervisor. This allows proxy interrupts
-            // for lower VTL devices to be delivered to VTL2 via posted interrupt mechanism when it cannot
-            // be directly posted to the lower VTL.
-            // This improves performance during device interrupt delivery to lower VTLs.
+            // Enable proxy interrupt redirection if supported by hypervisor. This allows proxy interrupts
+            // for VTL0 devices to be delivered to VTL2 via posted interrupt mechanism when it cannot
+            // be directly posted to the VTL0.
+            // This offers better performance for device interrupt delivery to VTL0.
             let caps = hcl.get_vsm_capabilities().map_err(Error::Hcl)?;
             hcl.set_proxy_interrupt_redirect(caps.proxy_interrupt_redirect_available());
         }
