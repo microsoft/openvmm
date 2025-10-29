@@ -2419,7 +2419,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             .probe_address(canonical_gpa);
 
         match address_type {
-            Some(AddressType::Mmio) => {
+            Some(AddressType::Mmio) | Some(AddressType::DeviceReserved) => {
                 // Emulate the access.
                 true
             }

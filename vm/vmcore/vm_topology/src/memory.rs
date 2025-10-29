@@ -34,6 +34,8 @@ pub struct MemoryLayout {
     ram: Vec<MemoryRangeWithNode>,
     #[cfg_attr(feature = "inspect", inspect(with = "inspect_ranges"))]
     mmio: Vec<MemoryRange>,
+    #[cfg_attr(feature = "inspect", inspect(with = "inspect_ranges"))]
+    device_reserved: Vec<MemoryRange>,
     /// The RAM range used by VTL2. This is not present in any of the stats
     /// above.
     vtl2_range: Option<MemoryRange>,
@@ -113,14 +115,17 @@ pub enum AddressType {
     Ram,
     /// The address describes mmio.
     Mmio,
+    /// The address describes a device reserved region.
+    DeviceReserved,
 }
 
 impl MemoryLayout {
     /// Makes a new memory layout for a guest with `ram_size` bytes of memory
     /// and MMIO gaps at the locations specified by `gaps`.
     ///
-    /// `ram_size` must be a multiple of the page size. Each gap must be
-    /// non-empty, and the gaps must be in order and non-overlapping.
+    /// `ram_size` must be a multiple of the page size. Each mmio and device
+    /// reserved gap must be non-empty, and the gaps must be in order and
+    /// non-overlapping.
     ///
     /// `vtl2_range` describes a range of memory reserved for VTL2.
     /// It is not reported in ram.
@@ -128,17 +133,32 @@ impl MemoryLayout {
     /// All RAM is assigned to NUMA node 0.
     pub fn new(
         ram_size: u64,
-        gaps: &[MemoryRange],
+        mmio_gaps: &[MemoryRange],
+        device_reserved: &[MemoryRange],
         vtl2_range: Option<MemoryRange>,
     ) -> Result<Self, Error> {
         if ram_size == 0 || ram_size & (PAGE_SIZE - 1) != 0 {
             return Err(Error::BadSize);
         }
 
-        validate_ranges(gaps)?;
+        validate_ranges(mmio_gaps)?;
+        validate_ranges(device_reserved)?;
+
+        let mut combined_gaps = mmio_gaps
+            .iter()
+            .chain(device_reserved)
+            .copied()
+            .collect::<Vec<_>>();
+        combined_gaps.sort();
+        validate_ranges(&combined_gaps)?;
+
+        for gap in combined_gaps.iter() {
+            println!("combined gap: {:?}", gap);
+        }
+
         let mut ram = Vec::new();
         let mut remaining = ram_size;
-        let mut remaining_gaps = gaps.iter().cloned();
+        let mut remaining_gaps = combined_gaps.iter().cloned();
         let mut last_end = 0;
 
         while remaining > 0 {
@@ -148,15 +168,22 @@ impl MemoryLayout {
                 (remaining, 0)
             };
 
-            ram.push(MemoryRangeWithNode {
-                range: MemoryRange::new(last_end..last_end + this),
-                vnode: 0,
-            });
+            if this > 0 {
+                ram.push(MemoryRangeWithNode {
+                    range: MemoryRange::new(last_end..last_end + this),
+                    vnode: 0,
+                });
+            }
             remaining -= this;
             last_end = next_end;
         }
 
-        Self::build(ram, gaps.to_vec(), vtl2_range)
+        Self::build(
+            ram,
+            mmio_gaps.to_vec(),
+            device_reserved.to_vec(),
+            vtl2_range,
+        )
     }
 
     /// Makes a new memory layout for a guest with the given mmio gaps and
@@ -170,7 +197,7 @@ impl MemoryLayout {
     ) -> Result<Self, Error> {
         validate_ranges_with_metadata(memory)?;
         validate_ranges(gaps)?;
-        Self::build(memory.to_vec(), gaps.to_vec(), None)
+        Self::build(memory.to_vec(), gaps.to_vec(), vec![], None)
     }
 
     /// Builds the memory layout.
@@ -179,6 +206,7 @@ impl MemoryLayout {
     fn build(
         ram: Vec<MemoryRangeWithNode>,
         mmio: Vec<MemoryRange>,
+        device_reserved: Vec<MemoryRange>,
         vtl2_range: Option<MemoryRange>,
     ) -> Result<Self, Error> {
         let mut all_ranges = ram
@@ -186,6 +214,7 @@ impl MemoryLayout {
             .map(|x| &x.range)
             .chain(&mmio)
             .chain(&vtl2_range)
+            .chain(&device_reserved)
             .copied()
             .collect::<Vec<_>>();
 
@@ -212,6 +241,7 @@ impl MemoryLayout {
         Ok(Self {
             ram,
             mmio,
+            device_reserved,
             vtl2_range,
         })
     }
@@ -308,7 +338,12 @@ impl MemoryLayout {
             .ram
             .iter()
             .map(|r| (&r.range, AddressType::Ram))
-            .chain(self.mmio.iter().map(|r| (r, AddressType::Mmio)));
+            .chain(self.mmio.iter().map(|r| (r, AddressType::Mmio)))
+            .chain(
+                self.device_reserved
+                    .iter()
+                    .map(|r| (r, AddressType::DeviceReserved)),
+            );
 
         for (range, address_type) in ranges {
             if range.contains_addr(address) {
@@ -350,7 +385,7 @@ mod tests {
             },
         ];
 
-        let layout = MemoryLayout::new(TB, mmio, None).unwrap();
+        let layout = MemoryLayout::new(TB, mmio, &[], None).unwrap();
         assert_eq!(
             layout.ram(),
             &[
@@ -397,12 +432,12 @@ mod tests {
 
     #[test]
     fn bad_layout() {
-        MemoryLayout::new(TB + 1, &[], None).unwrap_err();
+        MemoryLayout::new(TB + 1, &[], &[], None).unwrap_err();
         let mmio = &[
             MemoryRange::new(3 * GB..4 * GB),
             MemoryRange::new(GB..2 * GB),
         ];
-        MemoryLayout::new(TB, mmio, None).unwrap_err();
+        MemoryLayout::new(TB, mmio, &[], None).unwrap_err();
 
         MemoryLayout::new_from_ranges(&[], mmio).unwrap_err();
 
@@ -421,6 +456,58 @@ mod tests {
             MemoryRange::new(3 * GB..4 * GB),
         ];
         MemoryLayout::new_from_ranges(ram, mmio).unwrap_err();
+
+        let mmio = &[
+            MemoryRange::new(GB..2 * GB),
+            MemoryRange::new(3 * GB..4 * GB),
+        ];
+        let device_reserved = &[MemoryRange::new(GB..GB + MB)];
+        MemoryLayout::new(TB, mmio, device_reserved, None).unwrap_err();
+    }
+
+    #[test]
+    fn device_reserved() {
+        let mmio = &[MemoryRange::new(3 * GB..4 * GB)];
+        let device_reserved = &[
+            MemoryRange::new(2 * GB..3 * GB),
+            MemoryRange::new(5 * GB..6 * GB),
+        ];
+
+        let layout = MemoryLayout::new(TB, mmio, device_reserved, None).unwrap();
+        assert_eq!(
+            layout.ram(),
+            &[
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0..2 * GB),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(4 * GB..5 * GB),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(6 * GB..TB + 3 * GB),
+                    vnode: 0,
+                },
+            ]
+        );
+
+        assert_eq!(
+            layout.probe_address(2 * GB),
+            Some(AddressType::DeviceReserved)
+        );
+        assert_eq!(
+            layout.probe_address(2 * GB + MB),
+            Some(AddressType::DeviceReserved)
+        );
+        assert_eq!(
+            layout.probe_address(5 * GB),
+            Some(AddressType::DeviceReserved)
+        );
+        assert_eq!(
+            layout.probe_address(5 * GB + MB),
+            Some(AddressType::DeviceReserved)
+        );
     }
 
     #[test]

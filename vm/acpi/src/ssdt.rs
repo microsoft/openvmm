@@ -125,6 +125,7 @@ impl Ssdt {
     ) {
         let mut pcie = Device::new(encode_pcie_name(index).as_slice());
         pcie.add_object(&NamedObject::new(b"_HID", &EisaId(*b"PNP0A08")));
+        pcie.add_object(&NamedObject::new(b"_CID", &EisaId(*b"PNP0A03")));
         pcie.add_object(&NamedInteger::new(b"_UID", index.into()));
         pcie.add_object(&NamedInteger::new(b"_SEG", segment.into()));
         pcie.add_object(&NamedInteger::new(b"_BBN", start_bus.into()));

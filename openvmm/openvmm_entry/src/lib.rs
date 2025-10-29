@@ -92,6 +92,7 @@ use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
 use inspect::InspectionBuilder;
 use io::Read;
+use memory_range::MemoryRange;
 use mesh::CancelContext;
 use mesh::CellUpdater;
 use mesh::error::RemoteError;
@@ -707,34 +708,72 @@ fn vm_config_from_command_line(
         })
     }));
 
+    // If VTL2 is enabled, and we are not in VTL2 self allocate mode, provide an
+    // mmio gap for VTL2.
+    let use_vtl2_gap = opt.vtl2
+        && !matches!(
+            opt.igvm_vtl2_relocation_type,
+            Vtl2BaseAddressType::Vtl2Allocate { .. },
+        );
+
+    let is_arm = cfg!(guest_arch = "aarch64");
+    let is_x86 = cfg!(guest_arch = "x86_64");
+
+    let mmio_gaps: Vec<MemoryRange> = match (use_vtl2_gap, is_x86) {
+        (true, true) => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
+        (true, false) => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
+        (false, true) => DEFAULT_MMIO_GAPS_X86.into(),
+        (false, false) => DEFAULT_MMIO_GAPS_AARCH64.into(),
+    };
+    let mut device_reserved_gaps = Vec::new();
+
+    let mut low_mmio_start = mmio_gaps.first().context("expected mmio gap")?.start();
+    let mut high_mmio_end = mmio_gaps.last().context("expected second mmio gap")?.end();
+
+    let mut pcie_root_complexes = Vec::new();
+    for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
+        let ports = opt
+            .pcie_root_port
+            .iter()
+            .filter(|port_cli| port_cli.root_complex_name == rc_cli.name)
+            .map(|port_cli| PcieRootPortConfig {
+                name: port_cli.name.clone(),
+            })
+            .collect();
+
+        const ONE_MB: u64 = 1024 * 1024;
+        let low_mmio_size = (rc_cli.low_mmio as u64).next_multiple_of(ONE_MB);
+        let high_mmio_size = rc_cli
+            .high_mmio
+            .checked_next_multiple_of(ONE_MB)
+            .context("high mmio rounding error")?;
+
+        low_mmio_start = low_mmio_start
+            .checked_sub(low_mmio_size)
+            .context("low mmio underflow")?;
+        high_mmio_end = high_mmio_end
+            .checked_add(high_mmio_size)
+            .context("high mmio overflow")?;
+
+        let low_mmio = MemoryRange::new(low_mmio_start..low_mmio_start + low_mmio_size);
+        let high_mmio = MemoryRange::new(high_mmio_end - high_mmio_size..high_mmio_end);
+
+        device_reserved_gaps.push(low_mmio);
+        device_reserved_gaps.push(high_mmio);
+
+        pcie_root_complexes.push(PcieRootComplexConfig {
+            index: i as u32,
+            name: rc_cli.name.clone(),
+            segment: rc_cli.segment,
+            start_bus: rc_cli.start_bus,
+            end_bus: rc_cli.end_bus,
+            low_mmio,
+            high_mmio,
+            ports,
+        });
+    }
+
     let pcie_switches = build_switch_list(&opt.pcie_switch);
-
-    let pcie_root_complexes = opt
-        .pcie_root_complex
-        .iter()
-        .enumerate()
-        .map(|(i, cli)| {
-            let ports = opt
-                .pcie_root_port
-                .iter()
-                .filter(|port_cli| port_cli.root_complex_name == cli.name)
-                .map(|port_cli| PcieRootPortConfig {
-                    name: port_cli.name.clone(),
-                })
-                .collect();
-
-            PcieRootComplexConfig {
-                index: i as u32,
-                name: cli.name.clone(),
-                segment: cli.segment,
-                start_bus: cli.start_bus,
-                end_bus: cli.end_bus,
-                low_mmio_size: cli.low_mmio,
-                high_mmio_size: cli.high_mmio,
-                ports,
-            }
-        })
-        .collect();
 
     #[cfg(windows)]
     let vpci_resources: Vec<_> = opt
@@ -769,9 +808,6 @@ fn vm_config_from_command_line(
     } else {
         None
     };
-
-    let is_arm = cfg!(guest_arch = "aarch64");
-    let is_x86 = cfg!(guest_arch = "x86_64");
 
     let load_mode;
     let with_hv;
@@ -1207,24 +1243,6 @@ fn vm_config_from_command_line(
     let vtl0_vsock_listener = vsock_listener(opt.vsock_path.as_deref())?;
     let vtl2_vsock_listener = vsock_listener(opt.vtl2_vsock_path.as_deref())?;
 
-    // If VTL2 is enabled, and we are not in VTL2 self allocate mode, provide an
-    // mmio gap for VTL2.
-    let mmio_gaps = if opt.vtl2
-        && !matches!(
-            opt.igvm_vtl2_relocation_type,
-            Vtl2BaseAddressType::Vtl2Allocate { .. },
-        ) {
-        if is_x86 {
-            DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into()
-        } else {
-            DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into()
-        }
-    } else if is_x86 {
-        DEFAULT_MMIO_GAPS_X86.into()
-    } else {
-        DEFAULT_MMIO_GAPS_AARCH64.into()
-    };
-
     if let Some(path) = &opt.openhcl_dump_path {
         let (resource, task) = spawn_dump_handler(&spawner, path.clone(), None);
         task.detach();
@@ -1391,6 +1409,7 @@ fn vm_config_from_command_line(
         memory: MemoryConfig {
             mem_size: opt.memory,
             mmio_gaps,
+            device_reserved_gaps,
             prefetch_memory: opt.prefetch,
             pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
         },

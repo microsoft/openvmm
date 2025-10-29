@@ -5174,6 +5174,7 @@ dependencies = [
  "inspect_proto",
  "macaddr",
  "mcr_resources",
+ "memory_range",
  "mesh",
  "mesh_process",
  "mesh_rpc",
