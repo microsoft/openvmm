@@ -21,6 +21,10 @@ pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, len: usize) -> *
 #[cfg_attr(not(test), unsafe(no_mangle))]
 pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
     unsafe {
+        // Handle small sizes with specialized code. For some values, perform a
+        // single read+write of the appropriate size. For others, read+write
+        // potentially overlapping head and tail values to cover the entire
+        // range.
         match len {
             0 => {}
             1 => copy_one::<u8>(dest, src),
@@ -33,9 +37,12 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *m
             n if n <= 64 => copy_two::<[u128; 2]>(dest.cast(), src.cast(), len),
             n if n <= 128 => copy_two::<[u128; 4]>(dest.cast(), src.cast(), len),
             _ => {
+                // This is a big copy. Align `dest` so that writes, at least,
+                // are aligned. Then loop using 64-byte chunks, which gives the
+                // compiler some room to optimize.
                 if !overlaps(dest, src, len) {
-                    // Align `dest` by copying the head then proceeding at the
-                    // next aligned address.
+                    // Copy the first 16 bytes, then resume at the next aligned
+                    // address.
                     copy_one::<u128>(dest.cast(), src.cast());
                     let offset = 16 - dest.addr() % 16;
                     copy_loop_dest_aligned_forward::<[u128; 4]>(
@@ -44,7 +51,9 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *m
                         len - offset,
                     );
                 } else if dest.addr() <= src.addr() {
-                    // Save the head, then copy forward.
+                    // Save the first 16 bytes, writing them after the rest is
+                    // copied in the forward direction to avoid overwriting what
+                    // we're reading.
                     let head = src.cast::<u128>().read_unaligned();
                     let offset = 16 - dest.addr() % 16;
                     copy_loop_dest_aligned_forward::<[u128; 4]>(
@@ -55,7 +64,8 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *m
                     // Write the head now that the rest is copied.
                     dest.cast::<u128>().write_unaligned(head);
                 } else {
-                    // Align the end, then copy backward.
+                    // As before, but save the _last_ 16 bytes and copy
+                    // backwards to avoid overwriting what we're reading.
                     let tail = src.byte_add(len - 16).cast::<u128>().read_unaligned();
                     let offset = (dest.addr() + len) % 16;
                     copy_loop_dest_aligned_backward::<[u128; 4]>(
@@ -92,6 +102,7 @@ unsafe fn copy_one<T>(dest: *mut T, src: *const T) {
 /// two copies cover the entire range.
 unsafe fn copy_two<T>(dest: *mut T, src: *const T, len: usize) {
     unsafe {
+        // Read both ends first in case of overlap.
         let a = src.read_unaligned();
         let b = src.byte_add(len - size_of::<T>()).read_unaligned();
         dest.write_unaligned(a);
