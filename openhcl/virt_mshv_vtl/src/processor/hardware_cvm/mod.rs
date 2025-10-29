@@ -2090,18 +2090,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             let intercept_control = configured_intercepts.intercept_control;
             return match reg {
                 HvX64RegisterName::Cr0 => {
-                    if intercept_control.cr0_write() {
-                        true
-                    } else {
-                        (B::cr0(self, vtl) ^ value) & configured_intercepts.cr0_mask != 0
-                    }
+                    intercept_control.cr0_write()
+                        && (B::cr0(self, vtl) ^ value) & configured_intercepts.cr0_mask != 0
                 }
                 HvX64RegisterName::Cr4 => {
-                    if intercept_control.cr4_write() {
-                        true
-                    } else {
-                        (B::cr4(self, vtl) ^ value) & configured_intercepts.cr4_mask != 0
-                    }
+                    intercept_control.cr4_write()
+                        && (B::cr4(self, vtl) ^ value) & configured_intercepts.cr4_mask != 0
                 }
                 HvX64RegisterName::Xfem => intercept_control.xcr0_write(),
                 HvX64RegisterName::Gdtr => intercept_control.gdtr_write(),
