@@ -1091,7 +1091,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "azure_profiler_proto",
- "build_rs_guest_arch",
  "cvm_tracing",
  "diag_proto",
  "fs-err",
@@ -5571,6 +5570,7 @@ dependencies = [
 name = "pcie"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "chipset_device",
  "inspect",
  "pal_async",
