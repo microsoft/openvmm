@@ -1302,7 +1302,7 @@ pub enum PipelineBackendHint {
 ///
 /// # Complex Example with Parameters and Artifacts
 ///
-/// ```rust,no_run
+/// ```rust,ignore
 /// use flowey_core::pipeline::{IntoPipeline, Pipeline, PipelineBackendHint, ParameterKind};
 /// use flowey_core::node::{FlowPlatform, FlowPlatformLinuxDistro, FlowArch};
 ///
@@ -1331,9 +1331,8 @@ pub enum PipelineBackendHint {
 ///                 "build"
 ///             )
 ///             .with_timeout_in_minutes(30)
-///             .dep_on(|ctx| {
-///                 let _build_dir = ctx.publish_artifact(publish_build);
-///                 // Add node dependencies here
+///             .dep_on(|ctx| flowey_lib_hvlite::_jobs::example_node::Request {
+///                 output_dir: ctx.publish_artifact(publish_build),
 ///             })
 ///             .finish();
 ///         
@@ -1345,9 +1344,8 @@ pub enum PipelineBackendHint {
 ///                 "test"
 ///             )
 ///             .with_condition(enable_tests)
-///             .dep_on(|ctx| {
-///                 let _build_dir = ctx.use_artifact(&use_build);
-///                 // Add node dependencies here
+///             .dep_on(|ctx| flowey_lib_hvlite::_jobs::example_node2::Request {
+///                 input_dir: ctx.use_artifact(&use_build),
 ///             })
 ///             .finish();
 ///         
