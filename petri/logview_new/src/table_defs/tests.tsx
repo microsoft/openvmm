@@ -12,8 +12,8 @@ export const defaultSorting = [
 
 export const columnWidthMap = {
     architecture: 300,
-    failedCount: 80,
-    totalCount: 80,
+    failedCount: 50,
+    totalCount: 60,
     status: 60
 };
 
@@ -37,7 +37,7 @@ export const createColumns = (): ColumnDef<TestData>[] => {
         },
         {
             accessorKey: 'failedCount',
-            header: 'Failed',
+            header: 'Fail',
             enableSorting: true,
             cell: (info) => (
                 <div className="common-failed-count">{info.getValue<number>()}</div>
