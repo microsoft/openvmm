@@ -62,20 +62,6 @@ building/downloading some dependencies, or you can specify a custom
 In this case, all possible dependencies will be obtained since deriving them
 from a test filter is not yet supported.
 
-## Dev hooks
-
-You may find it useful to debug a VM after a test failure. This is possible
-for Hyper-V VMs. Set the `PETRI_PRESERVE_VM` environment variable to keep
-the petri framework from deleting the VM and its artifacts.
-
-```powershell
-$env:PETRI_PRESERVE_VM=1
-# Run tests
-Get-VM
-# Your VM should be here
-```
-
-
 ## Running VMM Tests (Manual)
 
 ```admonish tip
