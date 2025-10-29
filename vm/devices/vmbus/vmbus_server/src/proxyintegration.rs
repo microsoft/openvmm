@@ -207,11 +207,15 @@ impl ProxyIntegration {
     }
 }
 
+struct ChannelOpenState {
+    worker_result: mesh::OneshotReceiver<()>,
+    _wrapped_event: Option<WrappedEvent>,
+}
+
 #[derive(Default)]
 struct Channel {
     server_request_send: Option<mesh::Sender<ChannelServerRequest>>,
-    worker_result: Option<mesh::OneshotReceiver<()>>,
-    wrapped_event: Option<WrappedEvent>,
+    open_state: Option<ChannelOpenState>,
 }
 
 struct SavedStatePair {
@@ -336,8 +340,11 @@ impl ProxyTask {
             .ok_or_else(|| anyhow::anyhow!("channel revoked during open"))?;
 
         let recv = self.create_worker_thread(proxy_id);
-        channel.worker_result = Some(recv);
-        channel.wrapped_event = maybe_wrapped.into_wrapped();
+        channel.open_state = Some(ChannelOpenState {
+            worker_result: recv,
+            _wrapped_event: maybe_wrapped.into_wrapped(),
+        });
+
         Ok(())
     }
 
@@ -346,14 +353,14 @@ impl ProxyTask {
 
         // Wait for the worker task.
         // N.B. The channel may have been revoked.
-        let recv = self
+        let open_state = self
             .channels
             .lock()
             .get_mut(&proxy_id)
-            .and_then(|channel| channel.worker_result.take());
+            .and_then(|channel| channel.open_state.take());
 
-        if let Some(recv) = recv {
-            let _ = recv.await;
+        if let Some(open_state) = open_state {
+            let _ = open_state.worker_result.await;
         }
     }
 
@@ -414,7 +421,7 @@ impl ProxyTask {
         offer_key: OfferKey,
         vtl: u8,
         server_request_send: mesh::Sender<ChannelServerRequest>,
-    ) -> anyhow::Result<Option<(Option<WrappedEvent>, mesh::OneshotReceiver<()>)>> {
+    ) -> anyhow::Result<Option<ChannelOpenState>> {
         // A channel is considered saved in the "open" state if it is in any state that has an open
         // request. This is because the server will not notify the channel for the open in any of
         // those states after restore. In the Closing and ClosingReopen state it will notify the
@@ -455,7 +462,10 @@ impl ProxyTask {
 
         let recv = self.create_worker_thread(proxy_id);
 
-        Ok(Some((maybe_wrapped.into_wrapped(), recv)))
+        Ok(Some(ChannelOpenState {
+            worker_result: recv,
+            _wrapped_event: maybe_wrapped.into_wrapped(),
+        }))
     }
 
     async fn handle_offer(
@@ -586,7 +596,7 @@ impl ProxyTask {
             .context("failed to offer proxy channel")?;
 
         // Do not call restore if the device is requesting that the channel be reoffered.
-        let restore_result = if !offer.ChannelFlags.force_new_channel() {
+        let restored_open_state = if !offer.ChannelFlags.force_new_channel() {
             self.restore_channel_on_offer(
                 proxy_id,
                 OfferKey {
@@ -602,11 +612,6 @@ impl ProxyTask {
             None
         };
 
-        let (wrapped_event, worker_result) = match restore_result {
-            Some((wrapped_event, restore_result)) => (wrapped_event, Some(restore_result)),
-            None => (None, None),
-        };
-
         assert!(
             self.channels
                 .lock()
@@ -614,8 +619,7 @@ impl ProxyTask {
                     proxy_id,
                     Channel {
                         server_request_send: Some(server_request_send),
-                        worker_result,
-                        wrapped_event,
+                        open_state: restored_open_state,
                     },
                 )
                 .is_none(),
