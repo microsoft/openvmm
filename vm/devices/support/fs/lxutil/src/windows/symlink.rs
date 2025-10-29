@@ -154,6 +154,7 @@ pub fn read(link_file: &OwnedHandle) -> lx::Result<String> {
     let mut lx_target = vec![0u8; standard_info.EndOfFile as usize];
 
     let mut iosb = Default::default();
+    let byte_offset = 0;
 
     // SAFETY: Calling Win32 API with valid parameters.
     let status = unsafe {
@@ -165,7 +166,7 @@ pub fn read(link_file: &OwnedHandle) -> lx::Result<String> {
             &mut iosb,
             lx_target.as_mut_ptr().cast(),
             lx_target.capacity() as u32,
-            None,
+            Some(&byte_offset),
             None,
         )
     };
