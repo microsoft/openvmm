@@ -551,10 +551,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         .await?;
         // Append the sender to the list of notifiers for this nsid.
         let mut notifiers = self.rescan_notifiers.write();
-        notifiers
-            .entry(nsid)
-            .and_modify(|v| v.push(send.clone()))
-            .or_insert_with(|| vec![send]);
+        notifiers.entry(nsid).or_default().push(send);
         Ok(namespace)
     }
 

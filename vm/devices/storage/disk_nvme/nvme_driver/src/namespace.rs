@@ -15,7 +15,6 @@ use futures::StreamExt;
 use guestmem::GuestMemory;
 use guestmem::ranges::PagedRange;
 use inspect::Inspect;
-use mesh::CancelContext;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
 use std::sync::Arc;
