@@ -7,14 +7,13 @@ use super::PartitionInfo;
 use super::shim_params::ShimParams;
 use crate::boot_logger::log;
 use crate::cmdline::BootCommandLineOptions;
-use crate::cmdline::Vtl2GpaPoolConfig;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
 use crate::host_params::MAX_VTL2_RAM_RANGES;
-use crate::host_params::dt::dma_hint::vtl2_calculate_dma_hint;
+use crate::host_params::dt::dma_hint::pick_private_pool_size;
 use crate::host_params::mmio::select_vtl2_mmio_range;
 use crate::host_params::shim_params::IsolationType;
 use crate::memory::AddressSpaceManager;
@@ -524,41 +523,12 @@ fn topology_from_host_dt(
         .init()
         .expect("failed to initialize address space manager");
 
-    // Decide if we will reserve memory for a VTL2 private pool. See `Vtl2GpaPoolConfig` for
-    // details.
-    let vtl2_gpa_pool_size = match (options.enable_vtl2_gpa_pool, parsed.device_dma_page_count) {
-        (Vtl2GpaPoolConfig::Off, _) => {
-            // Command line explicitly disabled the pool.
-            log!("vtl2 gpa pool disabled via command line");
-
-            None
-        }
-        (Vtl2GpaPoolConfig::Pages(cmd_line_pages), _) => {
-            // Command line specified explicit size, use it.
-            log!(
-                "vtl2 gpa pool enabled via command line with pages: {}",
-                cmd_line_pages
-            );
-            Some(cmd_line_pages)
-        }
-        (Vtl2GpaPoolConfig::Heuristics(_), Some(dt_page_count)) => {
-            // Command line specified heuristics, and the host specified size via device tree. Use
-            // the DT.
-            log!(
-                "vtl2 gpa pool enabled via device tree with pages: {}",
-                dt_page_count
-            );
-            Some(dt_page_count)
-        }
-        (Vtl2GpaPoolConfig::Heuristics(table), None) => {
-            // Nothing more explicit, so use heuristics.
-            log!("vtl2 gpa pool coming from heuristics table: {:?}", table);
-            let mem_size = vtl2_ram.iter().map(|e| e.range.len()).sum();
-            Some(vtl2_calculate_dma_hint(table, parsed.cpu_count(), mem_size))
-        }
-    };
-
-    if let Some(vtl2_gpa_pool_size) = vtl2_gpa_pool_size {
+    if let Some(vtl2_gpa_pool_size) = pick_private_pool_size(
+        options.enable_vtl2_gpa_pool,
+        parsed.device_dma_page_count,
+        parsed.cpu_count(),
+        vtl2_ram.iter().map(|e| e.range.len()).sum(),
+    ) {
         // Reserve the specified number of pages for the pool. Use the used
         // ranges to figure out which VTL2 memory is free to allocate from.
         let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;

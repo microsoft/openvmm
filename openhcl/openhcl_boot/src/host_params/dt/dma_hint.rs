@@ -4,6 +4,7 @@
 //! Calculate DMA hint value if not provided by host.
 
 use crate::boot_logger::log;
+use crate::cmdline::Vtl2GpaPoolConfig;
 use crate::cmdline::Vtl2GpaPoolLookupTable;
 use igvm_defs::PAGE_SIZE_4K;
 
@@ -238,6 +239,47 @@ pub fn vtl2_calculate_dma_hint(
     dma_hint_4k
 }
 
+// Decide if we will reserve memory for a VTL2 private pool. See `Vtl2GpaPoolConfig` for
+// details.
+pub fn pick_private_pool_size(
+    cmdline: Vtl2GpaPoolConfig,
+    dt: Option<u64>,
+    vp_count: usize,
+    mem_size: u64,
+) -> Option<u64> {
+    match (cmdline, dt) {
+        (Vtl2GpaPoolConfig::Off, _) => {
+            // Command line explicitly disabled the pool.
+            log!("vtl2 gpa pool disabled via command line");
+
+            None
+        }
+        (Vtl2GpaPoolConfig::Pages(cmd_line_pages), _) => {
+            // Command line specified explicit size, use it.
+            log!(
+                "vtl2 gpa pool enabled via command line with pages: {}",
+                cmd_line_pages
+            );
+            Some(cmd_line_pages)
+        }
+        (Vtl2GpaPoolConfig::Heuristics(table), None)
+        | (Vtl2GpaPoolConfig::Heuristics(table), Some(0)) => {
+            // Nothing more explicit, so use heuristics.
+            log!("vtl2 gpa pool coming from heuristics table: {:?}", table);
+            Some(vtl2_calculate_dma_hint(table, vp_count, mem_size))
+        }
+        (Vtl2GpaPoolConfig::Heuristics(_), Some(dt_page_count)) => {
+            // Command line specified heuristics, and the host specified size via device tree. Use
+            // the DT.
+            log!(
+                "vtl2 gpa pool enabled via device tree with pages: {}",
+                dt_page_count
+            );
+            Some(dt_page_count)
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -313,6 +355,73 @@ mod test {
                     vp_count, vtl2_memory_mb
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_right_pages_source() {
+        // If these assertions fail, the test cases below may need to be updated.
+        assert_ne!(
+            vtl2_calculate_dma_hint(Vtl2GpaPoolLookupTable::Release, 16, 256 * ONE_MB),
+            1500
+        );
+        assert_ne!(
+            vtl2_calculate_dma_hint(Vtl2GpaPoolLookupTable::Debug, 16, 256 * ONE_MB),
+            1500
+        );
+
+        for (cmdline, dt, expected) in [
+            (Vtl2GpaPoolConfig::Off, Some(1000), None),
+            (Vtl2GpaPoolConfig::Pages(2000), Some(1000), Some(2000)),
+            (Vtl2GpaPoolConfig::Pages(2000), None, Some(2000)),
+            (
+                Vtl2GpaPoolConfig::Heuristics(Vtl2GpaPoolLookupTable::Release),
+                Some(1500),
+                Some(1500), // Device tree overrides heuristics.
+            ),
+            (
+                Vtl2GpaPoolConfig::Heuristics(Vtl2GpaPoolLookupTable::Debug),
+                Some(0),
+                Some(vtl2_calculate_dma_hint(
+                    Vtl2GpaPoolLookupTable::Debug,
+                    16,
+                    256 * ONE_MB,
+                )),
+            ),
+            (
+                Vtl2GpaPoolConfig::Heuristics(Vtl2GpaPoolLookupTable::Debug),
+                None,
+                Some(vtl2_calculate_dma_hint(
+                    Vtl2GpaPoolLookupTable::Debug,
+                    16,
+                    256 * ONE_MB,
+                )),
+            ),
+            (
+                Vtl2GpaPoolConfig::Heuristics(Vtl2GpaPoolLookupTable::Release),
+                Some(0),
+                Some(vtl2_calculate_dma_hint(
+                    Vtl2GpaPoolLookupTable::Release,
+                    16,
+                    256 * ONE_MB,
+                )),
+            ),
+            (
+                Vtl2GpaPoolConfig::Heuristics(Vtl2GpaPoolLookupTable::Release),
+                None,
+                Some(vtl2_calculate_dma_hint(
+                    Vtl2GpaPoolLookupTable::Release,
+                    16,
+                    256 * ONE_MB,
+                )),
+            ),
+        ] {
+            let result = pick_private_pool_size(cmdline, dt, 16, 256 * ONE_MB);
+            assert_eq!(
+                result, expected,
+                "Failed pick_private_pool_size test for cmdline={:?}, dt={:?}",
+                cmdline, dt
+            );
         }
     }
 }
