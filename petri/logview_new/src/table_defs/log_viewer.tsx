@@ -47,7 +47,7 @@ export function createColumns(
                 // NOTE: React normally escapes HTML to prevent XSS attacks.
                 // Using dangerouslySetInnerHTML bypasses that protection.
                 // This message data is NOT user controlled and comes from the
-                // logs. We add a link to the inspect attachment so we need to
+                // logs. We need to add a link to the inspect attachment so we need to
                 // treat this as html.
                 <div dangerouslySetInnerHTML={{ __html: info.row.original.message }} />
             ),
