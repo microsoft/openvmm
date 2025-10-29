@@ -83,8 +83,9 @@ const LOOKUP_TABLE_RELEASE: &[(u16, u16, u16); 38] = &[
 /// DEV/TEST ONLY variant of the lookup table above. Since the IGVM manifest specifies additional
 /// VTL2 memory for dev (well above what is required for release configs), allow the heuristics
 /// to still kick in.
-const LOOKUP_TABLE_DEBUG: &[(u16, u16, u16); 4] = &[
+const LOOKUP_TABLE_DEBUG: &[(u16, u16, u16); 5] = &[
     (4, 496, 10), // 4 VP, default memory for dev, allocate some memory for DMA (e.g. ~1 device).
+    (16, 512, 16), // 16 VP, 512 MB VTL2 memory is default "heavy" Hyper-V Petri VM. Allocate enough memory for ~3 NVMe devices.
     (16, 768, 64), // 16 VP "heavy", with extra memory above what is required for dev, allocate some memory for DMA.
     (32, 1024, 128), // 32 VP "very heavy", with extra memory above what is required for dev, allocate some memory for DMA.
     (32, 1536, 320), // 32 VP "very heavy", with much extra memory above what is required for dev, allocate lots of memory for DMA.
@@ -319,20 +320,20 @@ mod test {
     fn test_vtl2_calculate_dma_hint_debug() {
         assert_eq!(
             vtl2_calculate_dma_hint(Vtl2GpaPoolLookupTable::Debug, 4, 0x1F00_0000),
-            32 * ONE_MB / PAGE_SIZE_4K
+            10 * ONE_MB / PAGE_SIZE_4K
         );
         assert_eq!(
             vtl2_calculate_dma_hint(Vtl2GpaPoolLookupTable::Debug, 64, 0x4000_0000),
-            256 * ONE_MB / PAGE_SIZE_4K
+            160 * ONE_MB / PAGE_SIZE_4K
         );
         // Test VP count higher than max from LOOKUP_TABLE.
         assert_eq!(
             vtl2_calculate_dma_hint(Vtl2GpaPoolLookupTable::Debug, 128, 0x4000_0000),
-            256 * ONE_MB / PAGE_SIZE_4K
+            160 * ONE_MB / PAGE_SIZE_4K
         );
         assert_eq!(
             vtl2_calculate_dma_hint(Vtl2GpaPoolLookupTable::Debug, 128, 0x8000_0000),
-            512 * ONE_MB / PAGE_SIZE_4K
+            320 * ONE_MB / PAGE_SIZE_4K
         );
     }
 
