@@ -21,7 +21,7 @@ fn panic_handler(panic: &core::panic::PanicInfo<'_>) -> ! {
 
     println!("Could not shut down... falling back to invoking an undefined instruction");
 
-    // SAFETY: the undefined instruction trap handler in `guest_test_uefi` will not return foo
+    // SAFETY: the undefined instruction trap handler in `guest_test_uefi` will not return
     unsafe {
         #[cfg(target_arch = "x86_64")]
         core::arch::asm!("ud2");
