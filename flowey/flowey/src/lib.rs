@@ -4,7 +4,7 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
-//! The user-facing flowey API. testing
+//! The user-facing flowey API.
 //!
 //! Relying on `flowey_core` directly is not advised, as many APIs exposed at
 //! that level are only supposed to be used by flowey _infrastructure_ (e.g: in
