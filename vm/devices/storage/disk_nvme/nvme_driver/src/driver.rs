@@ -809,8 +809,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             this.rescan_notifiers
                 .write()
                 .entry(ns.nsid)
-                .and_modify(|v| v.push(send.clone()))
-                .or_insert_with(|| vec![send]);
+                .or_default()
+                .push(send);
         }
 
         task.insert(&this.driver, "nvme_worker", state);
