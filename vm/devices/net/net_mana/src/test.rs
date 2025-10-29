@@ -2,12 +2,10 @@
 // Licensed under the MIT License.
 
 #![cfg(test)]
-// UNSAFETY: This test module contains unsafe code to set some environment variables
-// for getting code coverage.
-#![expect(unsafe_code)]
 
 use crate::GuestDmaMode;
 use crate::ManaEndpoint;
+use crate::ManaTestConfiguration;
 use crate::QueueStats;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use gdma::VportConfig;
@@ -76,7 +74,15 @@ async fn test_lso(driver: DefaultDriver) {
     let header_length =
         (metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16) as usize;
     let packet_len: usize = num_segments * header_length;
-    let stats = test_endpoint_lso(driver, packet_len, num_segments, metadata, 1).await;
+    let stats = test_endpoint_lso(
+        driver,
+        packet_len,
+        num_segments,
+        metadata,
+        1,
+        ManaTestConfiguration::default(),
+    )
+    .await;
 
     assert_eq!(stats.tx_packets.get(), 1, "tx_packets increase");
     assert_eq!(stats.rx_packets.get(), 1, "rx_packets increase");
@@ -104,7 +110,15 @@ async fn test_lso_partial_bytes(driver: DefaultDriver) {
         (metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16) as usize;
     // Add a few bytes to header to mimic the head segment being larger than the header length.
     let packet_len: usize = num_segments * (header_length + 2);
-    let stats = test_endpoint_lso(driver, packet_len, num_segments, metadata, 1).await;
+    let stats = test_endpoint_lso(
+        driver,
+        packet_len,
+        num_segments,
+        metadata,
+        1,
+        ManaTestConfiguration::default(),
+    )
+    .await;
 
     assert_eq!(stats.tx_packets.get(), 1, "tx_packets increase");
     assert_eq!(stats.rx_packets.get(), 1, "rx_packets increase");
@@ -131,7 +145,15 @@ async fn test_lso_segment_coalescing(driver: DefaultDriver) {
     let header_length =
         (metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16) as usize;
     let packet_len: usize = num_segments * header_length;
-    let stats = test_endpoint_lso(driver, packet_len, num_segments, metadata, 1).await;
+    let stats = test_endpoint_lso(
+        driver,
+        packet_len,
+        num_segments,
+        metadata,
+        1,
+        ManaTestConfiguration::default(),
+    )
+    .await;
 
     assert_eq!(stats.tx_packets.get(), 1, "tx_packets increase");
     assert_eq!(stats.rx_packets.get(), 1, "rx_packets increase");
@@ -159,7 +181,15 @@ async fn test_lso_segment_coalescing_partial_bytes_in_header(driver: DefaultDriv
         (metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16) as usize;
     // Add a few bytes to header to mimic the head segment being larger than the header length.
     let packet_len: usize = num_segments * (header_length + 2);
-    let stats = test_endpoint_lso(driver, packet_len, num_segments, metadata, 1).await;
+    let stats = test_endpoint_lso(
+        driver,
+        packet_len,
+        num_segments,
+        metadata,
+        1,
+        ManaTestConfiguration::default(),
+    )
+    .await;
 
     assert_eq!(stats.tx_packets.get(), 1, "tx_packets increase");
     assert_eq!(stats.rx_packets.get(), 1, "rx_packets increase");
@@ -193,6 +223,7 @@ async fn test_lso_segment_coalescing_only_header(driver: DefaultDriver) {
         num_segments,
         metadata.clone(),
         0,
+        ManaTestConfiguration::default(),
     )
     .await;
 
@@ -201,24 +232,19 @@ async fn test_lso_segment_coalescing_only_header(driver: DefaultDriver) {
     assert_eq!(stats.tx_errors.get(), 0, "tx_errors remain the same");
     assert_eq!(stats.rx_errors.get(), 0, "rx_errors remain the same");
 
-    // Set the environment variable to allow LSO packet with only 1 SGE, for testing purposes.
-    // SAFETY: Setting environment variable for test purposes, to get code coverage.
-    unsafe {
-        std::env::set_var("ALLOW_LSO_PKT_WITH_ONE_SGE", "1");
-    }
-
+    // Allow LSO with only header segment for test coverage and check that it
+    // results in error stats incremented.
     let stats = test_endpoint_lso(
         driver.clone(),
         packet_len,
         num_segments,
         metadata.clone(),
         0,
+        ManaTestConfiguration {
+            allow_lso_pkt_with_one_sge: true,
+        },
     )
     .await;
-
-    unsafe {
-        std::env::remove_var("ALLOW_LSO_PKT_WITH_ONE_SGE");
-    }
 
     assert_eq!(stats.tx_packets.get(), 0, "tx_packets increase");
     assert_eq!(stats.rx_packets.get(), 0, "rx_packets increase");
@@ -306,6 +332,7 @@ async fn test_lso_split_headers(driver: DefaultDriver) {
         tx_segments,
         data_to_send,
         expected_num_received_packets,
+        ManaTestConfiguration::default(),
     )
     .await;
 
@@ -335,6 +362,7 @@ async fn test_lso_split_headers(driver: DefaultDriver) {
         tx_segments,
         data_to_send,
         expected_num_received_packets,
+        ManaTestConfiguration::default(),
     )
     .await;
 
@@ -365,6 +393,7 @@ async fn test_lso_split_headers(driver: DefaultDriver) {
         tx_segments,
         data_to_send,
         expected_num_received_packets,
+        ManaTestConfiguration::default(),
     )
     .await;
 
@@ -394,6 +423,7 @@ async fn test_lso_split_headers(driver: DefaultDriver) {
         tx_segments,
         data_to_send,
         expected_num_received_packets,
+        ManaTestConfiguration::default(),
     )
     .await;
 
@@ -435,6 +465,7 @@ async fn send_test_packet(
         tx_segments,
         data_to_send,
         expected_num_received_packets,
+        ManaTestConfiguration::default(),
     )
     .await;
 
@@ -489,6 +520,7 @@ async fn test_endpoint_lso(
     num_segments: usize,
     mut metadata: net_backend::TxMetadata,
     expected_num_recvd_packets: usize,
+    test_configuration: ManaTestConfiguration,
 ) -> QueueStats {
     let mut tx_segments = Vec::new();
     let segment_len = packet_len / num_segments;
@@ -519,6 +551,7 @@ async fn test_endpoint_lso(
         tx_segments,
         data_to_send,
         expected_num_recvd_packets,
+        test_configuration,
     )
     .await;
 
@@ -532,6 +565,7 @@ async fn test_endpoint(
     tx_segments: Vec<TxSegment>,
     data_to_send: Vec<u8>,
     expected_num_received_packets: usize,
+    test_configuration: ManaTestConfiguration,
 ) -> QueueStats {
     let tx_id = 1;
     let pages = 256; // 1MB
@@ -563,6 +597,7 @@ async fn test_endpoint(
     let thing = ManaDevice::new(&driver, device, 1, 1).await.unwrap();
     let vport = thing.new_vport(0, None, &dev_config).await.unwrap();
     let mut endpoint = ManaEndpoint::new(driver.clone(), vport, dma_mode).await;
+    endpoint.set_test_configuration(test_configuration);
     let mut queues = Vec::new();
     let pool = net_backend::tests::Bufs::new(payload_mem.clone());
     endpoint
@@ -691,6 +726,7 @@ async fn test_valid_packet(driver: DefaultDriver) {
         tx_segments,
         data_to_send,
         expected_num_received_packets,
+        ManaTestConfiguration::default(),
     )
     .await;
 
@@ -724,6 +760,7 @@ async fn test_tx_error_handling(driver: DefaultDriver) {
         tx_segments,
         data_to_send,
         expected_num_received_packets,
+        ManaTestConfiguration::default(),
     )
     .await;
 

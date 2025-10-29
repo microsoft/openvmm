@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg_attr(not(test), forbid(unsafe_code))]
+#![forbid(unsafe_code)]
 #![expect(missing_docs)]
 
 mod test;
@@ -87,6 +87,12 @@ const SPLIT_HEADER_BOUNCE_PAGE_LIMIT: u32 = 4;
 const RX_BOUNCE_BUFFER_PAGE_LIMIT: u32 = 64;
 const TX_BOUNCE_BUFFER_PAGE_LIMIT: u32 = 64;
 
+#[cfg(test)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ManaTestConfiguration {
+    pub allow_lso_pkt_with_one_sge: bool,
+}
+
 pub struct ManaEndpoint<T: DeviceBacking> {
     spawner: Box<dyn Spawn>,
     vport: Arc<Vport<T>>,
@@ -95,6 +101,8 @@ pub struct ManaEndpoint<T: DeviceBacking> {
     receive_update: mesh::Receiver<bool>,
     queue_tracker: Arc<(AtomicUsize, SlimEvent)>,
     bounce_buffer: bool,
+    #[cfg(test)]
+    test_configuration: ManaTestConfiguration,
 }
 
 struct QueueResources {
@@ -128,7 +136,14 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
                 GuestDmaMode::DirectDma => false,
                 GuestDmaMode::BounceBuffer => true,
             },
+            #[cfg(test)]
+            test_configuration: ManaTestConfiguration::default(),
         }
+    }
+
+    #[cfg(test)]
+    fn set_test_configuration(&mut self, config: ManaTestConfiguration) {
+        self.test_configuration = config;
     }
 }
 
@@ -364,6 +379,8 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
             tx_max: tx_max as usize,
             force_tx_header_bounce: false,
             stats: QueueStats::default(),
+            #[cfg(test)]
+            test_configuration: self.test_configuration,
         };
         self.queue_tracker.0.fetch_add(1, Ordering::AcqRel);
         queue.rx_avail(initial_rx);
@@ -587,6 +604,9 @@ pub struct ManaQueue<T: DeviceBacking> {
     force_tx_header_bounce: bool,
 
     stats: QueueStats,
+
+    #[cfg(test)]
+    test_configuration: ManaTestConfiguration,
 }
 
 impl<T: DeviceBacking> Drop for ManaQueue<T> {
@@ -1376,11 +1396,12 @@ impl<T: DeviceBacking> ManaQueue<T> {
 
             // Drop the LSO packet if it only has a header segment.
             // In production builds, this check always runs.
-            // In test builds, it can be bypassed with ALLOW_LSO_PKT_WITH_ONE_SGE environment variable.
+            // For tests, use test hooks to bypass this check for allowing code coverage.
             #[cfg(not(test))]
             let check_lso_segment_count = true;
             #[cfg(test)]
-            let check_lso_segment_count = std::env::var("ALLOW_LSO_PKT_WITH_ONE_SGE").is_err();
+            let check_lso_segment_count =
+                self.test_configuration.allow_lso_pkt_with_one_sge == false;
 
             if check_lso_segment_count && meta.offload_tcp_segmentation && sgl.len() == 1 {
                 tracelimit::error_ratelimited!(
