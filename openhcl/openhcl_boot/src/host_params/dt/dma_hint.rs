@@ -82,10 +82,11 @@ const LOOKUP_TABLE_RELEASE: &[(u16, u16, u16); 38] = &[
 /// DEV/TEST ONLY variant of the lookup table above. Since the IGVM manifest specifies additional
 /// VTL2 memory for dev (well above what is required for release configs), allow the heuristics
 /// to still kick in.
-const LOOKUP_TABLE_DEBUG: &[(u16, u16, u16); 3] = &[
-    (4, 496, 32),    // 4 VP, default memory for dev, allocate some memory for DMA.
-    (16, 768, 128), // 16 VP "heavy", with extra memory above what is required for dev, allocate some memory for DMA.
-    (32, 1024, 256), // 32 VP "very heavy", with extra memory above what is required for dev, allocate some memory for DMA.
+const LOOKUP_TABLE_DEBUG: &[(u16, u16, u16); 4] = &[
+    (4, 496, 10), // 4 VP, default memory for dev, allocate some memory for DMA (e.g. ~1 device).
+    (16, 768, 64), // 16 VP "heavy", with extra memory above what is required for dev, allocate some memory for DMA.
+    (32, 1024, 128), // 32 VP "very heavy", with extra memory above what is required for dev, allocate some memory for DMA.
+    (32, 1536, 320), // 32 VP "very heavy", with much extra memory above what is required for dev, allocate lots of memory for DMA.
 ];
 
 const ONE_MB: u64 = 1024 * 1024;
