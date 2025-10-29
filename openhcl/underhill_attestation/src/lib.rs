@@ -701,6 +701,7 @@ async fn get_derived_keys(
         };
 
     // Handle various sources of Guest State Protection
+    let existing_unencrypted = !vmgs.is_encrypted() && !vmgs.was_provisioned_this_boot();
     let is_gsp_by_id = key_protector_by_id.found_id && key_protector_by_id.inner.ported != 1;
     let is_gsp = key_protector.gsp[ingress_idx].gsp_length != 0;
     tracing::info!(
@@ -732,12 +733,13 @@ async fn get_derived_keys(
             response.extended_status_flags.no_rpc_server() || response.encrypted_gsp.length == 0;
 
         let no_gsp = no_gsp_available
-            // disable if auto and pre-existing guest state is encrypted using
-            // GspById to prevent encryption changes without explicit intent
+            // disable if auto and pre-existing guest state is not encrypted or
+            // encrypted using GspById to prevent encryption changes without
+            // explicit intent
             || (matches!(
                 guest_state_encryption_policy,
                 GuestStateEncryptionPolicy::Auto
-            ) && is_gsp_by_id)
+            ) && (is_gsp_by_id || existing_unencrypted))
             // disable per encryption policy (first boot only, unless strict)
             || (matches!(
                 guest_state_encryption_policy,
@@ -778,8 +780,7 @@ async fn get_derived_keys(
             || (matches!(
                 guest_state_encryption_policy,
                 GuestStateEncryptionPolicy::Auto
-            ) && !vmgs.is_encrypted()
-                && !vmgs.was_provisioned_this_boot())
+            ) && existing_unencrypted)
             // disable per encryption policy (first boot only, unless strict)
             || (matches!(
                 guest_state_encryption_policy,
