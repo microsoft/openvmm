@@ -199,12 +199,10 @@ mod tests {
             for offset in -1024..1024 {
                 let mut buf = data.clone();
                 let src_ptr = buf.as_ptr().wrapping_add(8000);
-                let dest_ptr = buf
-                    .as_mut_ptr()
-                    .wrapping_add(8000 + offset as isize as usize);
+                let dest_ptr = buf.as_mut_ptr().wrapping_offset(8000 + offset);
                 let expected = {
                     let mut expected = buf.clone();
-                    expected.copy_within(8000..8000 + len, (8000 as isize + offset) as usize);
+                    expected.copy_within(8000..8000 + len, (8000 + offset) as usize);
                     expected
                 };
                 unsafe {
