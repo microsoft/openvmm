@@ -61,16 +61,16 @@ async fn test_lso(driver: DefaultDriver) {
     let num_segments = 30;
     let mut metadata = net_backend::TxMetadata {
         id: TxId(1),
-        segment_count: num_segments,
+        segment_count: num_segments as u8,
         ..Default::default()
     };
 
-    metadata.offload_tcp_segmentation = true;
+    metadata.flags.set_offload_tcp_segmentation(true);
     metadata.l2_len = 14; // Ethernet header
     metadata.l3_len = 20; // IPv4 header
     metadata.l4_len = 20; // TCP header
     metadata.max_tcp_segment_size = 1460; // Typical MSS for Ethernet
-    metadata.l3_protocol = net_backend::L3Protocol::Ipv4;
+    metadata.flags.set_is_ipv4(true);
     let header_length =
         (metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16) as usize;
     let packet_len: usize = num_segments * header_length;
@@ -96,16 +96,16 @@ async fn test_lso_partial_bytes(driver: DefaultDriver) {
     let num_segments = 30;
     let mut metadata = net_backend::TxMetadata {
         id: TxId(1),
-        segment_count: num_segments,
+        segment_count: num_segments as u8,
         ..Default::default()
     };
 
-    metadata.offload_tcp_segmentation = true;
+    metadata.flags.set_offload_tcp_segmentation(true);
     metadata.l2_len = 14; // Ethernet header
     metadata.l3_len = 20; // IPv4 header
     metadata.l4_len = 20; // TCP header
     metadata.max_tcp_segment_size = 1460; // Typical MSS for Ethernet
-    metadata.l3_protocol = net_backend::L3Protocol::Ipv4;
+    metadata.flags.set_is_ipv4(true);
     let header_length =
         (metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16) as usize;
     // Add a few bytes to header to mimic the head segment being larger than the header length.
@@ -132,16 +132,16 @@ async fn test_lso_segment_coalescing(driver: DefaultDriver) {
     let num_segments = 36;
     let mut metadata = net_backend::TxMetadata {
         id: TxId(1),
-        segment_count: num_segments,
+        segment_count: num_segments as u8,
         ..Default::default()
     };
 
-    metadata.offload_tcp_segmentation = true;
+    metadata.flags.set_offload_tcp_segmentation(true);
     metadata.l2_len = 14; // Ethernet header
     metadata.l3_len = 20; // IPv4 header
     metadata.l4_len = 20; // TCP header
     metadata.max_tcp_segment_size = 1460; // Typical MSS for Ethernet
-    metadata.l3_protocol = net_backend::L3Protocol::Ipv4;
+    metadata.flags.set_is_ipv4(true);
     let header_length =
         (metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16) as usize;
     let packet_len: usize = num_segments * header_length;
@@ -167,16 +167,16 @@ async fn test_lso_segment_coalescing_partial_bytes_in_header(driver: DefaultDriv
     let num_segments = 36;
     let mut metadata = net_backend::TxMetadata {
         id: TxId(1),
-        segment_count: num_segments,
+        segment_count: num_segments as u8,
         ..Default::default()
     };
 
-    metadata.offload_tcp_segmentation = true;
+    metadata.flags.set_offload_tcp_segmentation(true);
     metadata.l2_len = 14; // Ethernet header
     metadata.l3_len = 20; // IPv4 header
     metadata.l4_len = 20; // TCP header
     metadata.max_tcp_segment_size = 1460; // Typical MSS for Ethernet
-    metadata.l3_protocol = net_backend::L3Protocol::Ipv4;
+    metadata.flags.set_is_ipv4(true);
     let header_length =
         (metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16) as usize;
     // Add a few bytes to header to mimic the head segment being larger than the header length.
@@ -202,16 +202,16 @@ async fn test_lso_segment_coalescing_only_header(driver: DefaultDriver) {
     let num_segments = 1;
     let mut metadata = net_backend::TxMetadata {
         id: TxId(1),
-        segment_count: num_segments,
+        segment_count: num_segments as u8,
         ..Default::default()
     };
 
-    metadata.offload_tcp_segmentation = true;
+    metadata.flags.set_offload_tcp_segmentation(true);
     metadata.l2_len = 14; // Ethernet header
     metadata.l3_len = 20; // IPv4 header
     metadata.l4_len = 20; // TCP header
     metadata.max_tcp_segment_size = 1460; // Typical MSS for Ethernet
-    metadata.l3_protocol = net_backend::L3Protocol::Ipv4;
+    metadata.flags.set_is_ipv4(true);
     let header_length =
         (metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16) as usize;
     let packet_len: usize = num_segments * header_length;
@@ -227,8 +227,8 @@ async fn test_lso_segment_coalescing_only_header(driver: DefaultDriver) {
     )
     .await;
 
-    assert_eq!(stats.tx_packets.get(), 0, "tx_packets increase");
-    assert_eq!(stats.rx_packets.get(), 0, "rx_packets increase");
+    assert_eq!(stats.tx_packets.get(), 0, "tx_packets remain the same");
+    assert_eq!(stats.rx_packets.get(), 0, "rx_packets remain the same");
     assert_eq!(stats.tx_errors.get(), 0, "tx_errors remain the same");
     assert_eq!(stats.rx_errors.get(), 0, "rx_errors remain the same");
 
@@ -246,9 +246,9 @@ async fn test_lso_segment_coalescing_only_header(driver: DefaultDriver) {
     )
     .await;
 
-    assert_eq!(stats.tx_packets.get(), 0, "tx_packets increase");
-    assert_eq!(stats.rx_packets.get(), 0, "rx_packets increase");
-    assert_eq!(stats.tx_errors.get(), 1, "tx_errors remain the same");
+    assert_eq!(stats.tx_packets.get(), 0, "tx_packets remain the same");
+    assert_eq!(stats.rx_packets.get(), 0, "rx_packets remain the same");
+    assert_eq!(stats.tx_errors.get(), 1, "tx_errors increase");
     assert_eq!(stats.rx_errors.get(), 0, "rx_errors remain the same");
 }
 
@@ -273,17 +273,17 @@ macro_rules! lso_split_headers {
             ..Default::default()
         };
 
-        metadata.offload_tcp_segmentation = true;
+        metadata.flags.set_offload_tcp_segmentation(true);
         metadata.l2_len = 14; // Ethernet header
         metadata.l3_len = 20; // IPv4 header
         metadata.l4_len = 20; // TCP header
         metadata.max_tcp_segment_size = 1460; // Typical MSS for Ethernet
-        metadata.l3_protocol = net_backend::L3Protocol::Ipv4;
+        metadata.flags.set_is_ipv4(true);
 
         let header_length =
             (metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16) as usize;
-        let packet_len: usize = $num_segments * header_length;
-        let segment_len = packet_len / $num_segments;
+        let packet_len: usize = $num_segments as usize * header_length;
+        let segment_len = packet_len / $num_segments as usize;
         // Reduce the header length to force split headers.
         let header_bytes_remaining = 10;
         let reduced_header_len: u32 = (header_length - header_bytes_remaining) as u32;
@@ -450,8 +450,8 @@ async fn send_test_packet(
     let tx_id = 1;
     let tx_metadata = net_backend::TxMetadata {
         id: TxId(tx_id),
-        segment_count: num_segments,
-        len: packet_len,
+        segment_count: num_segments as u8,
+        len: packet_len as u32,
         ..Default::default()
     };
     let expected_num_received_packets = 1;
@@ -525,10 +525,10 @@ async fn test_endpoint_lso(
     let mut tx_segments = Vec::new();
     let segment_len = packet_len / num_segments;
     assert_eq!(packet_len % num_segments, 0);
-    metadata.len = packet_len;
+    metadata.len = packet_len as u32;
     let data_to_send = (0..packet_len).map(|v| v as u8).collect::<Vec<u8>>();
 
-    metadata.offload_tcp_segmentation = true;
+    metadata.flags.set_offload_tcp_segmentation(true);
     tx_segments.push(TxSegment {
         ty: net_backend::TxSegmentType::Head(metadata),
         gpa: 0,
@@ -544,7 +544,7 @@ async fn test_endpoint_lso(
         });
     }
 
-    let stats = test_endpoint(
+    test_endpoint(
         driver,
         GuestDmaMode::DirectDma,
         packet_len,
@@ -553,9 +553,7 @@ async fn test_endpoint_lso(
         expected_num_recvd_packets,
         test_configuration,
     )
-    .await;
-
-    stats
+    .await
 }
 
 async fn test_endpoint(
@@ -708,16 +706,16 @@ async fn test_vport_with_query_filter_state(driver: DefaultDriver) {
 async fn test_valid_packet(driver: DefaultDriver) {
     let tx_id = 1;
     let expected_num_received_packets = 1;
-    let num_segments = 1;
+    let segment_count = 1;
     let packet_len = 1138;
     let metadata = net_backend::TxMetadata {
         id: TxId(tx_id),
-        segment_count: num_segments,
-        len: packet_len,
+        segment_count: segment_count as u8,
+        len: packet_len as u32,
         ..Default::default()
     };
 
-    let (data_to_send, tx_segments) = build_tx_segments(packet_len, num_segments, metadata);
+    let (data_to_send, tx_segments) = build_tx_segments(packet_len, segment_count, metadata);
 
     let stats = test_endpoint(
         driver,
@@ -734,37 +732,6 @@ async fn test_valid_packet(driver: DefaultDriver) {
     assert_eq!(stats.rx_packets.get(), 1, "rx_packets increase");
     assert_eq!(stats.tx_errors.get(), 0, "tx_errors remain the same");
     assert_eq!(stats.rx_errors.get(), 0, "rx_errors remain the same");
-}
-
-#[async_test]
-async fn test_tx_error_handling(driver: DefaultDriver) {
-    let tx_id = 1;
-    let expected_num_received_packets = 0;
-    let num_segments = 1;
-    let packet_len = 1138;
-    // LSO Enabled, but sending insufficient number of segments.
-    let metadata = net_backend::TxMetadata {
-        id: TxId(tx_id),
-        segment_count: num_segments,
-        len: packet_len,
-        offload_tcp_segmentation: true,
-        ..Default::default()
-    };
-
-    let (data_to_send, tx_segments) = build_tx_segments(packet_len, num_segments, metadata);
-
-    let stats = test_endpoint(
-        driver,
-        GuestDmaMode::DirectDma,
-        packet_len,
-        tx_segments,
-        data_to_send,
-        expected_num_received_packets,
-        ManaTestConfiguration::default(),
-    )
-    .await;
-
-    assert_eq!(stats.tx_packets.get(), 0, "tx_packets stay the same");
 }
 
 fn get_queue_stats(queue_stats: Option<&dyn net_backend::BackendQueueStats>) -> QueueStats {
