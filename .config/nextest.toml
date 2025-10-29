@@ -29,13 +29,6 @@ filter = 'package(~vmm_tests) and test(very_heavy)'
 # Mark very heavy tests as extra very heavy, as they include up to 32 vps.
 threads-required = 35
 
-[[profile.default.overrides]]
-# use fuzzy-matching for the package() to allow out-of-tree tests to use the
-# same profile
-filter = 'package(~vmm_tests) and test(very_heavy)'
-# Mark very heavy tests as extra very heavy, as they include up to 32 vps.
-threads-required = 35
-
 # Profile for CI runs.
 [profile.ci]
 # Set the default timeout to 1 second, with tests terminated after 10 seconds
