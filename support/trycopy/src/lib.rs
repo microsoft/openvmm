@@ -534,8 +534,12 @@ struct RecoveryDescriptor {
     recover: i32,
 }
 
-fn recover(context: &mut Context, failure: AccessFailure) -> bool {
-    // SAFETY: linker-defined symbols.
+/// Returns the recovery descriptor table, found by linker-defined symbols
+/// marking the start and end of the section.
+#[cfg(unix)]
+fn recovery_table() -> &'static [RecoveryDescriptor] {
+    // SAFETY: the linker automatically defines these symbols when the section
+    // is non-empty.
     #[cfg(target_os = "linux")]
     unsafe extern "C" {
         #[link_name = "__start_try_copy"]
@@ -544,38 +548,97 @@ fn recover(context: &mut Context, failure: AccessFailure) -> bool {
         static STOP_TRY_COPY: [RecoveryDescriptor; 0];
     }
 
-    // SAFETY: linker-defined symbols.
+    // SAFETY: the linker automatically defines these symbols when the section
+    // is non-empty.
     #[cfg(target_os = "macos")]
     unsafe extern "C" {
+        // The linker on macOS uses a special naming scheme for section symbols.
         #[link_name = "\x01section$start$__TEXT$__try_copy"]
         static START_TRY_COPY: [RecoveryDescriptor; 0];
         #[link_name = "\x01section$end$__TEXT$__try_copy"]
         static STOP_TRY_COPY: [RecoveryDescriptor; 0];
     }
 
-    // SAFETY: creating symbols in the specified section in order to locate the
-    // recovery descriptors.
-    #[cfg(windows)]
-    #[unsafe(link_section = ".rdata.trycopy@a")]
-    static START_TRY_COPY: [RecoveryDescriptor; 0] = [];
-    #[cfg(windows)]
-    #[unsafe(link_section = ".rdata.trycopy@c")]
-    static STOP_TRY_COPY: [RecoveryDescriptor; 0] = [];
-
     // SAFETY: accessing the trycopy section as defined above.
-    let table = unsafe {
+    unsafe {
         std::slice::from_raw_parts(
             START_TRY_COPY.as_ptr(),
             STOP_TRY_COPY
                 .as_ptr()
                 .offset_from_unsigned(START_TRY_COPY.as_ptr()),
         )
-    };
+    }
+}
 
+/// Returns the recovery descriptor table, found by finding the .section via the
+/// PE headers.
+///
+/// The more typical way to do this on Windows is to use the grouping feature of
+/// the linker to create symbols marking the start and end of the section, via
+/// something like `.trycopy$a` and `.trycopy$z`, with the elements in between
+/// in `.trycopy$b`.
+///
+/// However, Rust/LLVM inline asm (but not global asm) seems to drop the '$',
+/// so this doesn't work. So, we use a different technique.
+#[cfg(windows)]
+fn recovery_table() -> &'static [RecoveryDescriptor] {
+    /// Find a PE section by name.
+    fn find_section(name: [u8; 8]) -> Option<(*const u8, usize)> {
+        use windows_sys::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS64;
+        use windows_sys::Win32::System::Diagnostics::Debug::IMAGE_SECTION_HEADER;
+        use windows_sys::Win32::System::SystemServices::IMAGE_DOS_HEADER;
+
+        unsafe extern "C" {
+            safe static __ImageBase: IMAGE_DOS_HEADER;
+        }
+
+        let dos_header = &__ImageBase;
+        let base_ptr = &raw const __ImageBase;
+        // SAFETY: the current module must have valid PE headers.
+        let pe = unsafe {
+            &*base_ptr
+                .byte_add(dos_header.e_lfanew as usize)
+                .cast::<IMAGE_NT_HEADERS64>()
+        };
+        let number_of_sections: usize = pe.FileHeader.NumberOfSections.into();
+
+        // SAFETY: the section table is laid out in memory according to the PE format.
+        let sections = unsafe {
+            let base = (&raw const pe.OptionalHeader)
+                .byte_add(pe.FileHeader.SizeOfOptionalHeader.into())
+                .cast::<IMAGE_SECTION_HEADER>();
+            std::slice::from_raw_parts(base, number_of_sections)
+        };
+
+        sections.iter().find_map(|section| {
+            (section.Name == name).then_some({
+                // SAFETY: section data is valid according to the PE format.
+                unsafe {
+                    (
+                        base_ptr.byte_add(section.VirtualAddress as usize).cast(),
+                        section.Misc.VirtualSize as usize,
+                    )
+                }
+            })
+        })
+    }
+
+    let (start, len) = find_section(*b".trycopy").expect("could not find .trycopy section");
+    assert_eq!(len % size_of::<RecoveryDescriptor>(), 0);
+    // SAFETY: this section is made up solely of RecoveryDescriptor entries.
+    unsafe {
+        std::slice::from_raw_parts(
+            start.cast::<RecoveryDescriptor>(),
+            len / size_of::<RecoveryDescriptor>(),
+        )
+    }
+}
+
+fn recover(context: &mut Context, failure: AccessFailure) -> bool {
     let ip = get_context_ip(context);
 
     // Search for a matching recovery descriptor.
-    for r in table {
+    for r in recovery_table() {
         let reloc = |addr: &i32| -> usize {
             core::ptr::from_ref(addr)
                 .addr()
@@ -617,7 +680,7 @@ macro_rules! recovery_section {
 macro_rules! recovery_section {
     () => {
         // d = data, r = read-only
-        ".rdata.trycopy@b,\"dr\""
+        ".trycopy,\"dr\""
     };
 }
 

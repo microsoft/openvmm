@@ -686,8 +686,8 @@ pub fn alloc_shared_memory(size: usize) -> io::Result<OwnedHandle> {
 mod tests {
     use super::SparseMapping;
     use super::alloc_shared_memory;
-    use windows_sys::Win32::System::Memory::PAGE_READWRITE;
     use trycopy::try_copy;
+    use windows_sys::Win32::System::Memory::PAGE_READWRITE;
 
     #[test]
     fn test_shared_mem_split() {
