@@ -132,67 +132,6 @@ function formatRelative(start: string, current: string): string {
   return `${hr > 0 ? hr + "h " : ""}${min}m ${sec}s`;
 }
 
-// Map ANSI SGR codes to inline styles (subset used in original UI)
-const ANSI_STYLE_MAP: Record<string, string> = {
-  "1": "font-weight:bold",
-  "3": "font-style:italic",
-  "4": "text-decoration:underline",
-  "30": "color:black",
-  "31": "color:red",
-  "32": "color:green",
-  "33": "color:#b58900",
-  "34": "color:blue",
-  "35": "color:magenta",
-  "36": "color:cyan",
-  "37": "color:white",
-  "90": "color:gray",
-  "91": "color:lightcoral",
-  "92": "color:lightgreen",
-  "93": "color:gold",
-  "94": "color:lightskyblue",
-  "95": "color:plum",
-  "96": "color:lightcyan",
-  "97": "color:white",
-  "39": "color:inherit",
-};
-
-function ansiToHtml(str: string): string {
-  const ESC_REGEX = /\u001b\[([0-9;]*)m/g;
-  let html = "";
-  let lastIndex = 0;
-  let current: string[] = [];
-  const flush = (text: string) => {
-    if (!text) return;
-    const esc = escapeHtml(text);
-    if (current.length) {
-      html += `<span style="${current.join(";")}">${esc}</span>`;
-    } else {
-      html += esc;
-    }
-  };
-  for (const match of str.matchAll(ESC_REGEX)) {
-    const [full, codesStr] = match;
-    const idx = match.index || 0;
-    flush(str.slice(lastIndex, idx));
-    const codes = codesStr.split(";").filter((c) => c.length > 0);
-    for (const code of codes) {
-      if (code === "0") {
-        current = [];
-        continue;
-      }
-      const style = ANSI_STYLE_MAP[code];
-      if (style) {
-        const prop = style.split(":")[0];
-        current = current.filter((s) => !s.startsWith(prop));
-        current.push(style);
-      }
-    }
-    lastIndex = idx + full.length;
-  }
-  flush(str.slice(lastIndex));
-  return html;
-}
-
 /**
  * High-level fetch + process for LogViewer. Produces display-ready entries.
  */
@@ -223,7 +162,6 @@ export async function fetchProcessedLog(
     message = sevExtract.message;
     severity = sevExtract.severity;
 
-    let messageHtml = ansiToHtml(message);
     let screenshot: string | null = null;
     if (rec.attachment) {
       const attachmentUrl = new URL(rec.attachment, url).toString();
@@ -239,12 +177,12 @@ export async function fetchProcessedLog(
       }
       // Inspect attachment gets two links (inspect + raw); others single link
       if (rec.attachment.includes("inspect")) {
-        messageHtml +=
-          (messageHtml ? " " : "") +
+        message +=
+          (message ? " " : "") +
           `<a href="${attachmentUrl}" class="attachment" target="_blank" data-inspect="true">${escapeHtml(rec.attachment)}</a> <a href="${attachmentUrl}" class="attachment" target="_blank">[raw]</a>`;
       } else {
-        messageHtml +=
-          (messageHtml ? " " : "") +
+        message +=
+          (message ? " " : "") +
           `<a href="${attachmentUrl}" class="attachment" target="_blank">${escapeHtml(rec.attachment)}</a>`;
       }
     }
@@ -255,8 +193,7 @@ export async function fetchProcessedLog(
       relative: start ? formatRelative(start, timestamp) : "0m 0.000s",
       severity,
       source,
-      messageHtml,
-      messageText: messageHtml.replace(/<[^>]+>/g, "").toLowerCase(),
+      message,
       screenshot,
     });
   }

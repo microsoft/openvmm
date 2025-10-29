@@ -55,8 +55,7 @@ export interface LogEntry {
   relative: string;
   severity: string;
   source: string;
-  messageHtml: string; // sanitized HTML with ANSI styling & attachment links
-  messageText: string; // plain lowercase text for filtering
+  message: string; // message with attachment links
   screenshot: string | null;
 }
 

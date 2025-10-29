@@ -41,10 +41,10 @@ export function createColumns(
         },
         {
             id: 'message',
-            accessorFn: (row) => row.messageText, // Use text for sorting/filtering
+            accessorFn: (row) => row.message, // Use text for sorting/filtering
             header: 'Message',
             cell: (info) => (
-                <div dangerouslySetInnerHTML={{ __html: info.row.original.messageHtml }} />
+                <div dangerouslySetInnerHTML={{ __html: info.row.original.message }} />
             ),
             enableSorting: false, // Disable sorting for complex HTML content
         },
