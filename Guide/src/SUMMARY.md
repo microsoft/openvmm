@@ -37,6 +37,7 @@
 - [Developer Tools / Utilities](./dev_guide/dev_tools.md)
   - [`cargo xtask`](./dev_guide/dev_tools/xtask.md)
   - [`cargo xflowey`](./dev_guide/dev_tools/xflowey.md)
+    - [`flowey`](./dev_guide/dev_tools/flowey/flowey.md)
   - [VmgsTool](./dev_guide/dev_tools/vmgstool.md)
   - [update-rootfs.py]()
   - [igvmfilegen]()
