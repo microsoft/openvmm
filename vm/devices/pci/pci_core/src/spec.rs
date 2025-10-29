@@ -195,6 +195,29 @@ pub mod cfg_space {
     use zerocopy::KnownLayout;
 
     open_enum::open_enum! {
+        /// Common configuration space header registers shared between Type 0 and Type 1 headers.
+        ///
+        /// These registers appear at the same offsets in both header types and have the same
+        /// meaning and format.
+        ///
+        /// | Offset | Bits 31-24     | Bits 23-16 | Bits 15-8   | Bits 7-0        |
+        /// |--------|----------------|-------------|-------------|-----------------|
+        /// | 0x0    | Device ID      |             | Vendor ID   |                 |
+        /// | 0x4    | Status         |             | Command     |                 |
+        /// | 0x8    | Class code     |             |             | Revision ID     |
+        /// | 0xC    | BIST           | Header Type | Latency Timer | Cache Line Size |
+        pub enum CommonHeader: u16 {
+            DEVICE_VENDOR  = 0x00,
+            STATUS_COMMAND = 0x04,
+            CLASS_REVISION = 0x08,
+            BIST_HEADER    = 0x0C,
+        }
+    }
+
+    /// Size of the common header portion shared by all PCI header types.
+    pub const COMMON_HEADER_SIZE: u16 = 0x10;
+
+    open_enum::open_enum! {
         /// Offsets into the type 00h configuration space header.
         ///
         /// Table pulled from <https://wiki.osdev.org/PCI>
