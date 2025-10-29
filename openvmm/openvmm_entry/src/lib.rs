@@ -74,6 +74,7 @@ use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
 use hvlite_defs::config::PcieRootComplexConfig;
 use hvlite_defs::config::PcieRootPortConfig;
+use hvlite_defs::config::PcieSwitchConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialInformation;
 use hvlite_defs::config::VirtioBus;
@@ -207,6 +208,21 @@ struct VmResources {
 struct ConsoleState<'a> {
     device: &'a str,
     input: Box<dyn AsyncWrite + Unpin + Send>,
+}
+
+/// Build a flat list of switches with their parent port assignments.
+///
+/// This function converts hierarchical CLI switch definitions into a flat list
+/// where each switch specifies its parent port directly.
+fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<PcieSwitchConfig> {
+    all_switches
+        .iter()
+        .map(|switch_cli| PcieSwitchConfig {
+            name: switch_cli.name.clone(),
+            num_downstream_ports: switch_cli.num_downstream_ports,
+            parent_port: switch_cli.port_name.clone(),
+        })
+        .collect()
 }
 
 fn vm_config_from_command_line(
@@ -690,6 +706,8 @@ fn vm_config_from_command_line(
             resource: handle.into_resource(),
         })
     }));
+
+    let pcie_switches = build_switch_list(&opt.pcie_switch);
 
     let pcie_root_complexes = opt
         .pcie_root_complex
@@ -1367,6 +1385,7 @@ fn vm_config_from_command_line(
         floppy_disks,
         pcie_root_complexes,
         pcie_devices: Vec::new(),
+        pcie_switches,
         vpci_devices,
         ide_disks: Vec::new(),
         memory: MemoryConfig {

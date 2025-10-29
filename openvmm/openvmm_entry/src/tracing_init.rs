@@ -8,9 +8,6 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::format::Format;
 use tracing_subscriber::fmt::time::uptime;
 
-#[cfg(windows)]
-const OPENHCL_PROVIDER_GUID: guid::Guid = guid::guid!("22bc55fe-2116-5adc-12fb-3fadfd7e360c");
-
 /// Reads an environment variable, falling back to a legacy variable (replacing
 /// "OPENVMM_" with "HVLITE_") if the original is not set.
 fn legacy_openvmm_env(name: &str) -> Result<String, std::env::VarError> {
@@ -70,8 +67,15 @@ pub fn enable_tracing() -> anyhow::Result<()> {
     // TODO: include the process name and maybe a VM ID?
     #[cfg(windows)]
     let sub = sub.with(
-        win_etw_tracing::TracelogSubscriber::new(OPENHCL_PROVIDER_GUID, "Microsoft.HvLite")
-            .map_err(|e| anyhow!("failed to start ETW provider: {:?}", e))?,
+        win_etw_tracing::TracelogSubscriber::new(
+            winapi::shared::guiddef::GUID::from(
+                "22bc55fe-2116-5adc-12fb-3fadfd7e360c"
+                    .parse::<guid::Guid>()
+                    .unwrap(),
+            ),
+            "Microsoft.HvLite",
+        )
+        .map_err(|e| anyhow!("failed to start ETW provider: {:?}", e))?,
     );
 
     sub.try_init()

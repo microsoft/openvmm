@@ -18,7 +18,6 @@ pub use arm64::*;
 #[cfg(target_arch = "x86_64")]
 pub use x64::*;
 
-use guid::Guid;
 use std::alloc::Layout;
 use std::ffi::c_void;
 use std::fmt;
@@ -30,6 +29,7 @@ use std::os::windows::prelude::*;
 use std::ptr::NonNull;
 use std::ptr::null;
 use std::ptr::null_mut;
+use winapi::shared::guiddef::GUID;
 use winapi::shared::ntdef::LUID;
 use winapi::shared::winerror;
 use winapi::um::winnt::DEVICE_POWER_STATE;
@@ -906,7 +906,7 @@ pub struct VpciResource(OwnedHandle);
 
 impl VpciResource {
     pub fn new(
-        provider: Option<&Guid>,
+        provider: Option<&GUID>,
         flags: abi::WHV_ALLOCATE_VPCI_RESOURCE_FLAGS,
         descriptor: &VpciResourceDescriptor<'_>,
     ) -> Result<Self> {
@@ -939,7 +939,7 @@ impl VpciResource {
             };
             let mut handle = null_mut();
             check_hresult(api::WHvAllocateVpciResource(
-                provider.map(|g| windows_sys::core::GUID::from(*g)).as_ref(),
+                provider,
                 flags,
                 data.as_ptr().cast(),
                 data.len().try_into().unwrap(),
