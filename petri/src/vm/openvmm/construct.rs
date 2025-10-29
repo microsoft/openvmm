@@ -303,10 +303,10 @@ impl PetriVmConfigOpenVmm {
             hvlite_defs::config::MemoryConfig {
                 mem_size: startup_bytes,
                 mmio_gaps: match (firmware.is_openhcl(), arch) {
-                    (true, true) => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
-                    (true, false) => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
-                    (false, true) => DEFAULT_MMIO_GAPS_X86.into(),
-                    (false, false) => DEFAULT_MMIO_GAPS_AARCH64.into(),
+                    (true, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
+                    (true, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
+                    (false, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86.into(),
+                    (false, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64.into(),
                 },
                 device_reserved_gaps: vec![],
                 prefetch_memory: false,
