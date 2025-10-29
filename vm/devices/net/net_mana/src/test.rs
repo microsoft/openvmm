@@ -2,6 +2,9 @@
 // Licensed under the MIT License.
 
 #![cfg(test)]
+// UNSAFETY: This test module contains unsafe code to set some environment variables
+// for getting code coverage.
+#![expect(unsafe_code)]
 
 use crate::GuestDmaMode;
 use crate::ManaEndpoint;
@@ -99,7 +102,7 @@ async fn test_lso_partial_bytes(driver: DefaultDriver) {
     metadata.l3_protocol = net_backend::L3Protocol::Ipv4;
     let header_length =
         (metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16) as usize;
-    // Add a few bytes to header to mimick the head segment being larger than the header length.
+    // Add a few bytes to header to mimic the head segment being larger than the header length.
     let packet_len: usize = num_segments * (header_length + 2);
     let stats = test_endpoint_lso(driver, packet_len, num_segments, metadata, 1).await;
 
@@ -154,7 +157,7 @@ async fn test_lso_segment_coalescing_partial_bytes_in_header(driver: DefaultDriv
     metadata.l3_protocol = net_backend::L3Protocol::Ipv4;
     let header_length =
         (metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16) as usize;
-    // Add a few bytes to header to mimick the head segment being larger than the header length.
+    // Add a few bytes to header to mimic the head segment being larger than the header length.
     let packet_len: usize = num_segments * (header_length + 2);
     let stats = test_endpoint_lso(driver, packet_len, num_segments, metadata, 1).await;
 
@@ -184,11 +187,42 @@ async fn test_lso_segment_coalescing_only_header(driver: DefaultDriver) {
     let packet_len: usize = num_segments * header_length;
 
     // An LSO packet without any payload is considered bad packet and should be dropped.
-    let stats = test_endpoint_lso(driver, packet_len, num_segments, metadata, 0).await;
+    let stats = test_endpoint_lso(
+        driver.clone(),
+        packet_len,
+        num_segments,
+        metadata.clone(),
+        0,
+    )
+    .await;
 
     assert_eq!(stats.tx_packets.get(), 0, "tx_packets increase");
     assert_eq!(stats.rx_packets.get(), 0, "rx_packets increase");
     assert_eq!(stats.tx_errors.get(), 0, "tx_errors remain the same");
+    assert_eq!(stats.rx_errors.get(), 0, "rx_errors remain the same");
+
+    // Set the environment variable to allow LSO packet with only 1 SGE, for testing purposes.
+    // SAFETY: Setting environment variable for test purposes, to get code coverage.
+    unsafe {
+        std::env::set_var("ALLOW_LSO_PKT_WITH_ONE_SGE", "1");
+    }
+
+    let stats = test_endpoint_lso(
+        driver.clone(),
+        packet_len,
+        num_segments,
+        metadata.clone(),
+        0,
+    )
+    .await;
+
+    unsafe {
+        std::env::remove_var("ALLOW_LSO_PKT_WITH_ONE_SGE");
+    }
+
+    assert_eq!(stats.tx_packets.get(), 0, "tx_packets increase");
+    assert_eq!(stats.rx_packets.get(), 0, "rx_packets increase");
+    assert_eq!(stats.tx_errors.get(), 1, "tx_errors remain the same");
     assert_eq!(stats.rx_errors.get(), 0, "rx_errors remain the same");
 }
 

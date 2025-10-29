@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![forbid(unsafe_code)]
+#![cfg_attr(not(test), forbid(unsafe_code))]
 #![expect(missing_docs)]
 
 mod test;
@@ -1373,8 +1373,16 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 sgl[0].size,
                 header_len
             );
-            // Drop the LSO packet, if it only has a header segment.
-            if meta.offload_tcp_segmentation && sgl.len() == 1 {
+
+            // Drop the LSO packet if it only has a header segment.
+            // In production builds, this check always runs.
+            // In test builds, it can be bypassed with ALLOW_LSO_PKT_WITH_ONE_SGE environment variable.
+            #[cfg(not(test))]
+            let check_lso_segment_count = true;
+            #[cfg(test)]
+            let check_lso_segment_count = std::env::var("ALLOW_LSO_PKT_WITH_ONE_SGE").is_err();
+
+            if check_lso_segment_count && meta.offload_tcp_segmentation && sgl.len() == 1 {
                 tracelimit::error_ratelimited!(
                     sgl_len = sgl.len(),
                     "LSO packets should have more than one SGL entry"
