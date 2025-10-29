@@ -359,6 +359,27 @@ async fn servicing_keepalive_with_nvme_fault(
     apply_fault_with_keepalive(config, fault_configuration, fault_start_updater, igvm_file).await
 }
 
+/// Test servicing an OpenHCL VM from the current version to itself
+/// with NVMe keepalive support and a faulty controller that panics when
+/// IDENTIFY commands are received. This verifies namespace save/restore functionality.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_with_nvme_namespace_fault(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let mut fault_start_updater = CellUpdater::new(false);
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::IDENTIFY.0).match_cdw10(nvme_spec::Cdw10Identify::new().with_cns(nvme_spec::Cns::NAMESPACE.0).into(), nvme_spec::Cdw10Identify::new().with_cns(u8::MAX).into()).build(),
+                QueueFaultBehavior::Panic("Received a IDENTIFY command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
+            ),
+        );
+
+    apply_fault_with_keepalive(config, fault_configuration, fault_start_updater, igvm_file).await
+}
+
 /// Verifies that the driver awaits an existing AER instead of issuing a new one after servicing.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn servicing_keepalive_verify_no_duplicate_aers(
