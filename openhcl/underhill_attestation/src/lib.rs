@@ -883,9 +883,7 @@ async fn get_derived_keys(
         kek = !no_kek,
         gsp_available,
         gsp = !no_gsp,
-        gsp_by_id_available = gsp_by_id_available
-            .map(|v| v.to_string())
-            .unwrap_or("unknown".to_string()),
+        gsp_by_id_available = ?gsp_by_id_available,
         gsp_by_id = !no_gsp_by_id,
         "Encryption sources"
     );

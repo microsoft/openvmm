@@ -109,8 +109,8 @@ pub enum GuestStateEncryptionPolicy {
     ///
     /// VMs will be created using the best encryption available,
     /// attempting GspKey, then GspById, and finally leaving the data
-    /// unencrypted if neither are available. VMs will not be migrated,
-    /// existing encryption will be left as-is.
+    /// unencrypted if neither are available. VMs will not be migrated
+    /// to a different encryption method.
     #[default]
     Auto,
     /// Prefer (or require, if strict) no encryption.
