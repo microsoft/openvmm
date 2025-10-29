@@ -7,6 +7,7 @@ use super::PartitionInfo;
 use super::shim_params::ShimParams;
 use crate::boot_logger::log;
 use crate::cmdline::BootCommandLineOptions;
+use crate::cmdline::Vtl2GpaPoolConfig;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
@@ -523,40 +524,40 @@ fn topology_from_host_dt(
         .init()
         .expect("failed to initialize address space manager");
 
-    // Decide if we will reserve memory for a VTL2 private pool. This value comes from one
-    // of several sources:
-    //
-    // Source 1: The final command line. The external environment may specify a
-    //           value for VTL2 private pool size via the command line.
-    // Source 2: The device tree. The host may specify a value for VTL2 private
-    //           pool size via the device tree.
-    // Source 3: Heuristics. If neither the command line nor device tree specify
-    //           a value, we may decide to reserve a default size based on the
-    //           amount of VTL2 ram and number of vCPUs. The point of this method
-    //           is to account for cases where we retrofit the private pool into
-    //           existing deployments that do not specify it explicitly.
-    //
-    // If either of the external sources (command line or device tree) specify
-    // a size, we use the maximum of those two values. If neither specify a size,
-    // we use heuristics to decide if we should reserve a pool.
-    let vtl2_gpa_pool_size = {
-        let dt_page_count = parsed.device_dma_page_count;
-        let cmdline_page_count = options.enable_vtl2_gpa_pool;
+    // Decide if we will reserve memory for a VTL2 private pool. See `Vtl2GpaPoolConfig` for
+    // details.
+    let vtl2_gpa_pool_size = match (options.enable_vtl2_gpa_pool, parsed.device_dma_page_count) {
+        (Vtl2GpaPoolConfig::Off, _) => {
+            // Command line explicitly disabled the pool.
+            log!("vtl2 gpa pool disabled via command line");
 
-        if dt_page_count.is_some() || cmdline_page_count.is_some() {
-            // Any external source defined the pool size, use the maximum of all external sources.
-            let external = max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0));
-            if external == 0 { None } else { Some(external) }
-        } else {
-            // No external source defined the pool size, use heuristics to decide.
+            None
+        }
+        (Vtl2GpaPoolConfig::Pages(cmd_line_pages), _) => {
+            // Command line specified explicit size, use it.
+            log!(
+                "vtl2 gpa pool enabled via command line with pages: {}",
+                cmd_line_pages
+            );
+            Some(cmd_line_pages)
+        }
+        (Vtl2GpaPoolConfig::Heuristics(_), Some(dt_page_count)) => {
+            // Command line specified heuristics, and the host specified size via device tree. Use
+            // the DT.
+            log!(
+                "vtl2 gpa pool enabled via device tree with pages: {}",
+                dt_page_count
+            );
+            Some(dt_page_count)
+        }
+        (Vtl2GpaPoolConfig::Heuristics(table), None) => {
+            // Nothing more explicit, so use heuristics.
+            log!("vtl2 gpa pool coming from heuristics table: {:?}", table);
             let mem_size = vtl2_ram.iter().map(|e| e.range.len()).sum();
-            Some(vtl2_calculate_dma_hint(
-                options.vtl2_gpa_pool_lookup_table,
-                parsed.cpu_count(),
-                mem_size,
-            ))
+            Some(vtl2_calculate_dma_hint(table, parsed.cpu_count(), mem_size))
         }
     };
+
     if let Some(vtl2_gpa_pool_size) = vtl2_gpa_pool_size {
         // Reserve the specified number of pages for the pool. Use the used
         // ranges to figure out which VTL2 memory is free to allocate from.
