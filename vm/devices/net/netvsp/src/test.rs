@@ -549,7 +549,7 @@ impl TestNicDevice {
         let (ring_gpadl_id, page_array) = self.add_guest_pages(4).await;
         gpadl_map.add(
             ring_gpadl_id,
-            MultiPagedRangeBuf::new(1, page_array).unwrap(),
+            MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap(),
         );
 
         let host_to_guest_event = Arc::new(SlimEvent::new());
@@ -600,7 +600,7 @@ impl TestNicDevice {
         let (ring_gpadl_id, page_array) = self.add_guest_pages(4).await;
         gpadl_map.add(
             ring_gpadl_id,
-            MultiPagedRangeBuf::new(1, page_array).unwrap(),
+            MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap(),
         );
 
         let host_to_guest_event = Arc::new(SlimEvent::new());
@@ -712,7 +712,7 @@ impl TestNicDevice {
                     None
                 }
             })
-            .collect::<Vec<(GpadlId, MultiPagedRangeBuf<Vec<u64>>)>>();
+            .collect::<Vec<(GpadlId, MultiPagedRangeBuf)>>();
 
         mesh::CancelContext::new()
             .with_timeout(Duration::from_millis(1000))
@@ -726,12 +726,11 @@ impl TestNicDevice {
                             match request {
                                 vmbus_channel::bus::ChannelServerRequest::Restore(rpc) => {
                                     let gpadls = gpadl_map_contents.iter().map(|(gpadl_id, pages)| {
-                                        let pages = pages.clone();
                                         vmbus_channel::bus::RestoredGpadl {
                                             request: GpadlRequest {
                                                 id: *gpadl_id,
                                                 count: 1,
-                                                buf: pages.into_buffer(),
+                                                buf: pages.range_buffer().to_vec(),
                                             },
                                             accepted: true,
                                         }
@@ -1115,7 +1114,7 @@ impl<'a> TestNicChannel<'a> {
             * sub_allocation_size_for_mtu(DEFAULT_MTU) as usize)
             .div_ceil(PAGE_SIZE);
         let (gpadl_handle, page_array) = self.nic.add_guest_pages(min_buffer_pages).await;
-        let recv_range = MultiPagedRangeBuf::new(1, page_array).unwrap();
+        let recv_range = MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap();
         self.gpadl_map.add(gpadl_handle, recv_range);
         self.recv_buf_id = gpadl_handle;
 
@@ -1157,7 +1156,7 @@ impl<'a> TestNicChannel<'a> {
 
     pub async fn send_send_buffer_message(&mut self) {
         let (gpadl_handle, page_array) = self.nic.add_guest_pages(1).await;
-        let send_range = MultiPagedRangeBuf::new(1, page_array).unwrap();
+        let send_range = MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap();
         self.gpadl_map.add(gpadl_handle, send_range);
         self.send_buf_id = gpadl_handle;
 
@@ -1411,7 +1410,7 @@ impl RndisMessageParser {
         &self,
         data: &queue::DataPacket<'_, GpadlRingMem>,
         channel_type: u32,
-    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf<GpnList>) {
+    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf) {
         // Check for RNDIS packet
         let mut reader = data.reader();
         let header: protocol::MessageHeader = reader.read_plain().unwrap();
@@ -1423,12 +1422,14 @@ impl RndisMessageParser {
         assert_eq!(rndis_data.channel_type, channel_type);
 
         // Fetch RNDIS packet from external memory
-        let external_ranges = if let Some(id) = data.transfer_buffer_id() {
+        let mut external_ranges = MultiPagedRangeBuf::new();
+        if let Some(id) = data.transfer_buffer_id() {
             assert_eq!(id, 0);
 
-            data.read_transfer_ranges(self.buf.iter()).unwrap()
+            data.read_transfer_ranges(self.buf.first().unwrap(), &mut external_ranges)
+                .unwrap()
         } else {
-            data.read_external_ranges().unwrap()
+            data.read_external_ranges(&mut external_ranges).unwrap()
         };
         let mut direct_reader = PagedRanges::new(external_ranges.iter()).reader(&self.mem);
 
@@ -1439,18 +1440,18 @@ impl RndisMessageParser {
     pub fn parse_data_message(
         &self,
         data: &queue::DataPacket<'_, GpadlRingMem>,
-    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf<GpnList>) {
+    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf) {
         self.parse_message(data, protocol::DATA_CHANNEL_TYPE)
     }
 
     pub fn parse_control_message(
         &self,
         data: &queue::DataPacket<'_, GpadlRingMem>,
-    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf<GpnList>) {
+    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf) {
         self.parse_message(data, protocol::CONTROL_CHANNEL_TYPE)
     }
 
-    pub fn get<T>(&self, external_ranges: &MultiPagedRangeBuf<GpnList>) -> T
+    pub fn get<T>(&self, external_ranges: &MultiPagedRangeBuf) -> T
     where
         T: IntoBytes + FromBytes + Immutable + KnownLayout,
     {
@@ -1464,7 +1465,7 @@ impl RndisMessageParser {
         reader.read_plain::<T>().unwrap()
     }
 
-    pub fn get_data_packet_content<T>(&self, external_ranges: &MultiPagedRangeBuf<GpnList>) -> T
+    pub fn get_data_packet_content<T>(&self, external_ranges: &MultiPagedRangeBuf) -> T
     where
         T: IntoBytes + FromBytes + Immutable + KnownLayout,
     {
@@ -1786,7 +1787,7 @@ async fn initialize_rndis_no_sendbuffer(driver: DefaultDriver) {
     // Note: send_send_buffer_message() not called
     // Creating a Gpadl for the Rndis Init Message
     let (gpadl_handle, page_array) = channel.nic.add_guest_pages(1).await;
-    let send_range = MultiPagedRangeBuf::new(1, page_array).unwrap();
+    let send_range = MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap();
     channel.gpadl_map.add(gpadl_handle, send_range);
     channel.send_buf_id = gpadl_handle;
     channel
@@ -1849,7 +1850,7 @@ async fn initialize_rndis_no_sendbuffer_no_recvbuffer(driver: DefaultDriver) {
     // Note: send_send_buffer_message() not called
     // Creating a Gpadl for the Rndis Init Message
     let (gpadl_handle, page_array) = channel.nic.add_guest_pages(1).await;
-    let send_range = MultiPagedRangeBuf::new(1, page_array).unwrap();
+    let send_range = MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap();
     channel.gpadl_map.add(gpadl_handle, send_range);
     channel.send_buf_id = gpadl_handle;
     channel

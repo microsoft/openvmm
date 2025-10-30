@@ -4433,6 +4433,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bitfield-struct 0.11.0",
  "futures",
  "futures-concurrency",
  "guestmem",
@@ -8884,7 +8885,6 @@ dependencies = [
  "inspect",
  "inspect_counters",
  "pal_async",
- "smallvec",
  "thiserror 2.0.16",
  "vmbus_channel",
  "vmbus_ring",
@@ -9047,7 +9047,6 @@ dependencies = [
  "guestmem",
  "inspect",
  "safeatomic",
- "smallvec",
  "thiserror 2.0.16",
  "zerocopy 0.8.25",
 ]
