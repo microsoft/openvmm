@@ -523,29 +523,31 @@ fn topology_from_host_dt(
         .init()
         .expect("failed to initialize address space manager");
 
-    if let Some(vtl2_gpa_pool_size) = pick_private_pool_size(
-        options.enable_vtl2_gpa_pool,
-        parsed.device_dma_page_count,
-        parsed.cpu_count(),
-        vtl2_ram.iter().map(|e| e.range.len()).sum(),
-    ) {
-        // Reserve the specified number of pages for the pool. Use the used
-        // ranges to figure out which VTL2 memory is free to allocate from.
-        let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;
-
-        match address_space.allocate(
-            None,
-            pool_size_bytes,
-            AllocationType::GpaPool,
-            AllocationPolicy::LowMemory,
+    if params.isolation_type != IsolationType::None {
+        if let Some(vtl2_gpa_pool_size) = pick_private_pool_size(
+            options.enable_vtl2_gpa_pool,
+            parsed.device_dma_page_count,
+            parsed.cpu_count(),
+            vtl2_ram.iter().map(|e| e.range.len()).sum(),
         ) {
-            Some(pool) => {
-                log!("allocated VTL2 pool at {:#x?}", pool.range);
-            }
-            None => {
-                panic!("failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes");
-            }
-        };
+            // Reserve the specified number of pages for the pool. Use the used
+            // ranges to figure out which VTL2 memory is free to allocate from.
+            let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;
+
+            match address_space.allocate(
+                None,
+                pool_size_bytes,
+                AllocationType::GpaPool,
+                AllocationPolicy::LowMemory,
+            ) {
+                Some(pool) => {
+                    log!("allocated VTL2 pool at {:#x?}", pool.range);
+                }
+                None => {
+                    panic!("failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes");
+                }
+            };
+        }
     }
 
     Ok(PartitionTopology {
