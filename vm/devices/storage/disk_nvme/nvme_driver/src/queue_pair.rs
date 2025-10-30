@@ -36,6 +36,7 @@ use std::sync::Arc;
 use std::task::Poll;
 use thiserror::Error;
 use user_driver::DeviceBacking;
+use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
@@ -195,7 +196,6 @@ impl<T: AerHandler> QueuePair<T> {
     /// calls to [`QueuePair::sq_entries`] and [`QueuePair::cq_entries`] AFTER calling this routine.
     pub fn new(
         spawner: impl SpawnDriver,
-        device: &impl DeviceBacking,
         qid: u16,
         sq_entries: u16,
         cq_entries: u16,
@@ -203,6 +203,7 @@ impl<T: AerHandler> QueuePair<T> {
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
         bounce_buffer: bool,
         aer_handler: T,
+        dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
         // FUTURE: Consider splitting this into several allocations, rather than
         // allocating the sum total together. This can increase the likelihood
@@ -216,10 +217,6 @@ impl<T: AerHandler> QueuePair<T> {
             } else {
                 PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE
             };
-
-        let dma_client = device
-            .persistent_dma_client()
-            .unwrap_or(device.ephemeral_dma_client());
 
         let mem = dma_client
             .allocate_dma_buffer(total_size)

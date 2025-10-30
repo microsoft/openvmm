@@ -239,17 +239,19 @@ impl VfioNvmeDriverSpawner {
         let device = VfioDevice::new(
             driver_source,
             pci_id,
-            ephemeral_dma_client,
-            persistent_dma_client,
+            ephemeral_dma_client.clone(),
+            persistent_dma_client.clone(),
         )
         .instrument(tracing::info_span!("nvme_vfio_device_open", pci_id))
         .await
         .map_err(NvmeSpawnerError::Vfio)?;
 
+        let dma_client = persistent_dma_client.unwrap_or(ephemeral_dma_client);
+
         // TODO: For now, any isolation means use bounce buffering. This
         // needs to change when we have nvme devices that support DMA to
         // confidential memory.
-        nvme_driver::NvmeDriver::new(driver_source, vp_count, device, is_isolated)
+        nvme_driver::NvmeDriver::new(driver_source, vp_count, device, is_isolated, dma_client)
             .instrument(tracing::info_span!("nvme_driver_new", pci_id))
             .await
             .map_err(NvmeSpawnerError::DeviceInitFailed)

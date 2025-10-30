@@ -39,6 +39,7 @@ use tracing::Instrument;
 use tracing::Span;
 use tracing::info_span;
 use user_driver::DeviceBacking;
+use user_driver::DmaClient;
 use user_driver::backoff::Backoff;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
@@ -99,6 +100,7 @@ struct WorkerState {
     qsize: u16,
     #[inspect(skip)]
     async_event_task: Task<()>,
+    dma_client: Arc<dyn DmaClient>,
 }
 
 /// An error restoring from saved state.
@@ -202,13 +204,14 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         cpu_count: u32,
         device: T,
         bounce_buffer: bool,
+        dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
         let pci_id = device.id().to_owned();
         let mut this = Self::new_disabled(driver_source, cpu_count, device, bounce_buffer)
             .instrument(tracing::info_span!("nvme_new_disabled", pci_id))
             .await?;
         match this
-            .enable(cpu_count as u16)
+            .enable(cpu_count as u16, dma_client)
             .instrument(tracing::info_span!("nvme_enable", pci_id))
             .await
         {
@@ -293,7 +296,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     }
 
     /// Enables the device, aliasing the admin queue memory and adding IO queues.
-    async fn enable(&mut self, requested_io_queue_count: u16) -> anyhow::Result<()> {
+    async fn enable(
+        &mut self,
+        requested_io_queue_count: u16,
+        dma_client: Arc<dyn DmaClient>,
+    ) -> anyhow::Result<()> {
         const ADMIN_QID: u16 = 0;
 
         let task = &mut self.task.as_mut().unwrap();
@@ -315,7 +322,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // Start the admin queue pair.
         let admin = QueuePair::new(
             self.driver.clone(),
-            &worker.device,
             ADMIN_QID,
             admin_sqes,
             admin_cqes,
@@ -323,6 +329,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             worker.registers.clone(),
             self.bounce_buffer,
             AdminAerHandler::new(),
+            dma_client.clone(),
         )
         .context("failed to create admin queue pair")?;
 
@@ -485,6 +492,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             qsize,
             async_event_task,
             max_io_queues,
+            dma_client: dma_client.clone(),
         };
 
         self.admin = Some(admin.issuer().clone());
@@ -492,7 +500,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // Pre-create the IO queue 1 for CPU 0. The other queues will be created
         // lazily. Numbering for I/O queues starts with 1 (0 is Admin).
         let issuer = worker
-            .create_io_queue(&mut state, 0)
+            .create_io_queue(&mut state, 0, dma_client)
             .await
             .context("failed to create io queue 1")?;
 
@@ -723,6 +731,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             qsize: saved_state.worker_data.qsize,
             async_event_task,
             max_io_queues: saved_state.worker_data.max_io_queues,
+            dma_client: dma_client.clone(),
         };
 
         this.admin = Some(admin.issuer().clone());
@@ -907,8 +916,11 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
             loop {
                 match self.recv.next().await {
                     Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
-                        rpc.handle(async |cpu| self.create_io_issuer(state, cpu).await)
-                            .await
+                        rpc.handle(async |cpu| {
+                            self.create_io_issuer(state, cpu, state.dma_client.clone())
+                                .await
+                        })
+                        .await
                     }
                     Some(NvmeWorkerRequest::Save(rpc)) => {
                         rpc.handle(async |span| self.save(state).instrument(span).await)
@@ -923,14 +935,19 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
 }
 
 impl<T: DeviceBacking> DriverWorkerTask<T> {
-    async fn create_io_issuer(&mut self, state: &mut WorkerState, cpu: u32) {
+    async fn create_io_issuer(
+        &mut self,
+        state: &mut WorkerState,
+        cpu: u32,
+        dma_client: Arc<dyn DmaClient>,
+    ) {
         tracing::debug!(cpu, "issuer request");
         if self.io_issuers.per_cpu[cpu as usize].get().is_some() {
             return;
         }
 
         let issuer = match self
-            .create_io_queue(state, cpu)
+            .create_io_queue(state, cpu, dma_client)
             .instrument(info_span!("create_nvme_io_queue", cpu))
             .await
         {
@@ -979,6 +996,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         &mut self,
         state: &mut WorkerState,
         cpu: u32,
+        dma_client: Arc<dyn DmaClient>,
     ) -> Result<IoIssuer, DeviceError> {
         if self.io.len() >= state.max_io_queues as usize {
             return Err(DeviceError::NoMoreIoQueues(state.max_io_queues));
@@ -997,7 +1015,6 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
 
         let queue = QueuePair::new(
             self.driver.clone(),
-            &self.device,
             qid,
             state.qsize,
             state.qsize,
@@ -1005,6 +1022,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             self.registers.clone(),
             self.bounce_buffer,
             NoOpAerHandler,
+            dma_client,
         )
         .map_err(|err| DeviceError::IoQueuePairCreationFailure(err, qid))?;
 
