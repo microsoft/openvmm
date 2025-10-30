@@ -775,6 +775,7 @@ fn vm_config_from_command_line(
         });
     }
 
+    device_reserved_gaps.sort();
     let pcie_switches = build_switch_list(&opt.pcie_switch);
 
     #[cfg(windows)]
