@@ -153,9 +153,8 @@ impl Namespace {
         // NOTE: Detach `poll_for_rescans` task because its lifetime is not tied
         // to that of the Namespace object. `poll_for_rescans` terminates when the sender of
         // rescan_event is dropped. So lifetime of this task is tied to the NvmeDriver
-        // & `handle_asynchronous_events` task within the driver. Currently,
-        // this task *could* outlive the Namespace that created it. Task lifetime
-        // will be more tightly bound in future updates.
+        // & `handle_asynchronous_events` task within the driver. By driver
+        // design, this task can outlive the Namespace object.
         driver
             .spawn(format!("nvme_poll_rescan_{nsid}"), {
                 let state = state.clone();
