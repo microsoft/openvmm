@@ -559,6 +559,13 @@ fn recovery_table() -> &'static [RecoveryDescriptor] {
         static STOP_TRY_COPY: [RecoveryDescriptor; 0];
     }
 
+    // Ensure the section exists even if there no recovery descriptors get
+    // generated.
+    #[cfg_attr(target_os = "linux", unsafe(link_section = "try_copy"))]
+    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__try_copy,regular")]
+    #[used]
+    static ENSURE_EXISTS: [RecoveryDescriptor; 0] = [];
+
     // SAFETY: accessing the trycopy section as defined above.
     unsafe {
         std::slice::from_raw_parts(
@@ -623,7 +630,10 @@ fn recovery_table() -> &'static [RecoveryDescriptor] {
         })
     }
 
-    let (start, len) = find_section(*b".trycopy").expect("could not find .trycopy section");
+    let Some((start, len)) = find_section(*b".trycopy") else {
+        // No recovery descriptors.
+        return &[]
+    };
     assert_eq!(len % size_of::<RecoveryDescriptor>(), 0);
     // SAFETY: this section is made up solely of RecoveryDescriptor entries.
     unsafe {
