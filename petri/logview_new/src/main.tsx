@@ -11,6 +11,9 @@ import { Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { startDataPrefetching } from "./fetch/fetch_runs_data";
 import { RunDetails } from "./run_details";
+import { Tests } from "./tests";
+import { TestDetails } from "./test_details";
+import { LogViewer } from "./log_viewer";
 
 const queryClient = new QueryClient();
 
@@ -33,6 +36,9 @@ function Content() {
       <Route path="/" element={<Navigate to="/runs" replace />} />
       <Route path="runs" element={<Runs />} />
       <Route path="runs/:runId" element={<RunDetails />} />
+      <Route path="tests" element={<Tests />} />
+      <Route path="tests/:architecture/:testName" element={<TestDetails />} />
+      <Route path="runs/:runId/:architecture/:testName" element={<LogViewer />} />
     </Routes>
   );
 }

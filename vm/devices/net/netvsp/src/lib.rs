@@ -761,12 +761,12 @@ impl OffloadConfig {
             if self.lso4 {
                 lso.ipv4_encapsulation = rndisprot::NDIS_ENCAPSULATION_IEEE_802_3;
                 lso.ipv4_max_offload_size = MAX_OFFLOAD_SIZE;
-                lso.ipv4_min_segment_count = 2;
+                lso.ipv4_min_segment_count = rndisprot::LSO_MIN_SEGMENT_COUNT;
             }
             if self.lso6 {
                 lso.ipv6_encapsulation = rndisprot::NDIS_ENCAPSULATION_IEEE_802_3;
                 lso.ipv6_max_offload_size = MAX_OFFLOAD_SIZE;
-                lso.ipv6_min_segment_count = 2;
+                lso.ipv6_min_segment_count = rndisprot::LSO_MIN_SEGMENT_COUNT;
                 lso.ipv6_flags = rndisprot::Ipv6LsoFlags::new()
                     .with_ip_extension_headers_supported(rndisprot::NDIS_OFFLOAD_SUPPORTED)
                     .with_tcp_options_supported(rndisprot::NDIS_OFFLOAD_SUPPORTED);
@@ -1215,7 +1215,7 @@ impl VmbusDevice for Nic {
     ) -> Result<(), ChannelOpenError> {
         // Start the coordinator task if this is the primary channel.
         let state = if channel_idx == 0 {
-            self.insert_coordinator(1, false);
+            self.insert_coordinator(1, None);
             WorkerState::Init(None)
         } else {
             self.coordinator.stop().await;
@@ -1403,7 +1403,7 @@ impl Nic {
                 pending_send_size: 0,
                 restart: None,
                 can_use_ring_size_opt,
-                packet_filter: rndisprot::NDIS_PACKET_TYPE_NONE,
+                packet_filter: coordinator.active_packet_filter,
             },
             state,
             coordinator_send: self.coordinator_send.clone().unwrap(),
@@ -1422,9 +1422,13 @@ impl Nic {
     }
 }
 
+struct RestoreCoordinatorState {
+    active_packet_filter: u32,
+}
+
 impl Nic {
     /// If `restoring`, then restart the queues as soon as the coordinator starts.
-    fn insert_coordinator(&mut self, num_queues: u16, restoring: bool) {
+    fn insert_coordinator(&mut self, num_queues: u16, restoring: Option<RestoreCoordinatorState>) {
         let mut driver_builder = self.driver_source.builder();
         // Target each driver to VP 0 initially. This will be updated when the
         // channel is opened.
@@ -1444,7 +1448,7 @@ impl Nic {
             Coordinator {
                 recv,
                 channel_control: self.resources.channel_control.clone(),
-                restart: restoring,
+                restart: restoring.is_some(),
                 workers: (0..self.adapter.max_queues)
                     .map(|i| {
                         TaskControl::new(NetQueue {
@@ -1456,6 +1460,9 @@ impl Nic {
                     .collect(),
                 buffers: None,
                 num_queues,
+                active_packet_filter: restoring
+                    .map(|r| r.active_packet_filter)
+                    .unwrap_or(rndisprot::NDIS_PACKET_TYPE_NONE),
             },
         );
     }
@@ -1659,16 +1666,16 @@ impl Nic {
 
             // Insert the coordinator and mark that it should try to start the
             // network endpoint when it starts running.
-            self.insert_coordinator(states.len() as u16, true);
+            self.insert_coordinator(
+                states.len() as u16,
+                Some(RestoreCoordinatorState {
+                    active_packet_filter: saved_packet_filter,
+                }),
+            );
 
             for (channel_idx, (state, request)) in states.into_iter().zip(requests).enumerate() {
                 if let Some(state) = state {
                     self.insert_worker(channel_idx as u16, &request.unwrap(), state, false)?;
-                }
-            }
-            for worker in self.coordinator.state_mut().unwrap().workers.iter_mut() {
-                if let Some(worker_state) = worker.state_mut() {
-                    worker_state.channel.packet_filter = saved_packet_filter;
                 }
             }
         } else {
@@ -1894,6 +1901,8 @@ enum WorkerError {
     RndisMessageTooSmall,
     #[error("unsupported rndis behavior")]
     UnsupportedRndisBehavior,
+    #[error("invalid lso packet with insufficient segments: {0}")]
+    InvalidLsoPacketInsufficientSegments(u32),
     #[error("vmbus queue error")]
     Queue(#[from] queue::Error),
     #[error("too many control messages")]
@@ -2281,6 +2290,11 @@ impl SendBuffer {
     }
 }
 
+struct PendingControlMessages {
+    control_messages: Vec<ControlMessage>,
+    total_len: usize,
+}
+
 impl<T: RingMem> NetChannel<T> {
     /// Process a single RNDIS message.
     fn handle_rndis_message(
@@ -2291,6 +2305,7 @@ impl<T: RingMem> NetChannel<T> {
         message_type: u32,
         mut reader: PacketReader<'_>,
         segments: &mut Vec<TxSegment>,
+        pending_control_messages: &mut Option<PendingControlMessages>,
     ) -> Result<bool, WorkerError> {
         let is_packet = match message_type {
             rndisprot::MESSAGE_TYPE_PACKET_MSG => {
@@ -2305,8 +2320,7 @@ impl<T: RingMem> NetChannel<T> {
             }
             rndisprot::MESSAGE_TYPE_HALT_MSG => false,
             n => {
-                let control = state
-                    .primary
+                let pending_control_messages = pending_control_messages
                     .as_mut()
                     .ok_or(WorkerError::NotSupportedOnSubChannel(n))?;
 
@@ -2320,14 +2334,19 @@ impl<T: RingMem> NetChannel<T> {
                 }
                 // Do not let the queue get too large--the guest should not be
                 // sending very many control messages at a time.
-                if CONTROL_MESSAGE_MAX_QUEUED_BYTES - control.control_messages_len < reader.len() {
+                if CONTROL_MESSAGE_MAX_QUEUED_BYTES - pending_control_messages.total_len
+                    < reader.len()
+                {
                     return Err(WorkerError::TooManyControlMessages);
                 }
-                control.control_messages_len += reader.len();
-                control.control_messages.push_back(ControlMessage {
-                    message_type,
-                    data: reader.read_all()?.into(),
-                });
+
+                pending_control_messages.total_len += reader.len();
+                pending_control_messages
+                    .control_messages
+                    .push(ControlMessage {
+                        message_type,
+                        data: reader.read_all()?.into(),
+                    });
 
                 false
                 // The queue will be processed in the main dispatch loop.
@@ -2468,6 +2487,14 @@ impl<T: RingMem> NetChannel<T> {
                 gpa: range.start,
                 len: range.len() as u32,
             });
+        }
+
+        if metadata.offload_tcp_segmentation {
+            if segments.len() < rndisprot::LSO_MIN_SEGMENT_COUNT as usize {
+                return Err(WorkerError::InvalidLsoPacketInsufficientSegments(
+                    segments.len() as u32,
+                ));
+            }
         }
 
         metadata.segment_count = segments.len() - start;
@@ -3699,6 +3726,7 @@ struct Coordinator {
     workers: Vec<TaskControl<NetQueue, Worker<GpadlRingMem>>>,
     buffers: Option<Arc<ChannelBuffers>>,
     num_queues: u16,
+    active_packet_filter: u32,
 }
 
 /// Removing the VF may result in the guest sending messages to switch the data
@@ -3987,13 +4015,13 @@ impl Coordinator {
                 Message::Internal(CoordinatorMessage::Update(update_type)) => {
                     if update_type.filter_state {
                         self.stop_workers().await;
-                        let worker_0_packet_filter =
+                        self.active_packet_filter =
                             self.workers[0].state().unwrap().channel.packet_filter;
                         self.workers.iter_mut().skip(1).for_each(|worker| {
                             if let Some(state) = worker.state_mut() {
-                                state.channel.packet_filter = worker_0_packet_filter;
+                                state.channel.packet_filter = self.active_packet_filter;
                                 tracing::debug!(
-                                    packet_filter = ?worker_0_packet_filter,
+                                    packet_filter = ?self.active_packet_filter,
                                     channel_idx = state.channel_idx,
                                     "update packet filter"
                                 );
@@ -4441,7 +4469,7 @@ impl Coordinator {
             self.num_queues = num_queues;
         }
 
-        let worker_0_packet_filter = self.workers[0].state().unwrap().channel.packet_filter;
+        self.active_packet_filter = self.workers[0].state().unwrap().channel.packet_filter;
         // Provide the queue and receive buffer ranges for each worker.
         for ((worker, queue), rx_buffer) in self.workers.iter_mut().zip(queues).zip(rx_buffers) {
             worker.task_mut().queue_state = Some(QueueState {
@@ -4451,7 +4479,7 @@ impl Coordinator {
             });
             // Update the receive packet filter for the subchannel worker.
             if let Some(worker) = worker.state_mut() {
-                worker.channel.packet_filter = worker_0_packet_filter;
+                worker.channel.packet_filter = self.active_packet_filter;
                 // Clear any pending RxIds as buffers were redistributed.
                 if let Some(ready_state) = worker.state.ready_mut() {
                     ready_state.state.pending_rx_packets.clear();
@@ -5266,15 +5294,44 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 PacketData::RndisPacket(_) => {
                     assert!(data.tx_segments.is_empty());
                     let id = state.free_tx_packets.pop().unwrap();
-                    let result: Result<usize, WorkerError> =
-                        self.handle_rndis(buffers, id, state, &packet, &mut data.tx_segments);
+                    // Only create a list of pending control messages for the Primary Channel
+                    let mut pending_control_messages =
+                        state
+                            .primary
+                            .as_ref()
+                            .map(|primary| PendingControlMessages {
+                                total_len: primary.control_messages_len,
+                                control_messages: Vec::new(),
+                            });
+                    let result: Result<usize, WorkerError> = self.handle_rndis(
+                        buffers,
+                        id,
+                        state,
+                        &packet,
+                        &mut data.tx_segments,
+                        &mut pending_control_messages,
+                    );
                     let num_packets = match result {
-                        Ok(num_packets) => num_packets,
+                        Ok(num_packets) => {
+                            if let Some(pending_control_messages) =
+                                pending_control_messages.as_mut()
+                            {
+                                // Add control messages to primary channel state control message queue.
+                                let control = state.primary.as_mut().unwrap();
+                                control.control_messages_len = pending_control_messages.total_len;
+                                control
+                                    .control_messages
+                                    .extend(pending_control_messages.control_messages.drain(..));
+                            }
+                            num_packets
+                        }
                         Err(err) => {
                             tracelimit::error_ratelimited!(
                                 err = &err as &dyn std::error::Error,
                                 "failed to handle RNDIS packet"
                             );
+                            // Drop any segments generated prior to the error.
+                            data.tx_segments.clear();
                             self.complete_tx_packet(state, id, protocol::Status::FAILURE)?;
                             continue;
                         }
@@ -5443,6 +5500,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         state: &mut ActiveState,
         packet: &Packet<'_>,
         segments: &mut Vec<TxSegment>,
+        pending_control_messages: &mut Option<PendingControlMessages>,
     ) -> Result<usize, WorkerError> {
         let mut num_packets = 0;
         let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
@@ -5475,6 +5533,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 header.message_type,
                 this_reader,
                 segments,
+                pending_control_messages,
             )? {
                 num_packets += 1;
             }

@@ -18,7 +18,6 @@ pub const AZCOPY: &str = "10.27.1-20241113";
 pub const AZURE_CLI: &str = "2.56.0";
 pub const FUZZ: &str = "0.12.0";
 pub const GH_CLI: &str = "2.52.0";
-pub const LXUTIL: &str = "10.0.26100.1-240331-1435.ge-release";
 pub const MDBOOK: &str = "0.4.40";
 pub const MDBOOK_ADMONISH: &str = "1.18.0";
 pub const MDBOOK_MERMAID: &str = "0.14.0";
@@ -44,7 +43,6 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::download_lxutil::Node>();
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
         ctx.import::<crate::download_openvmm_deps::Node>();
@@ -64,7 +62,6 @@ impl FlowNode for Node {
 
     #[rustfmt::skip]
     fn emit(_requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        ctx.req(crate::download_lxutil::Request::Version(LXUTIL.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()));

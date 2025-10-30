@@ -164,7 +164,7 @@ export function VirtualizedTable<TData extends object>({
         ref={tableContainerRef}
         className="virtualized-table-body"
         style={{
-          height: `calc(100vh - 4rem - ${headerHeight}px)`,
+          height: `calc(100vh - 3rem - ${headerHeight}px)`,
         }}
       >
         <div

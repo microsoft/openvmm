@@ -6,7 +6,7 @@ name = "disk_nvme"
 edition.workspace = true
 rust-version.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[dependencies]
 disk_backend.workspace = true
 nvme_common.workspace = true
 nvme_driver.workspace = true
@@ -17,8 +17,6 @@ inspect.workspace = true
 pal.workspace = true
 
 async-trait.workspace = true
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
 
 [lints]
 workspace = true

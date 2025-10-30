@@ -22,7 +22,6 @@
 mod json_common;
 mod json_layer;
 mod kmsg_stream;
-mod kmsg_writer;
 
 use anyhow::Context;
 use cvm_tracing::CVM_ALLOWED;

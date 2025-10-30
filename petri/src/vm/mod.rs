@@ -15,6 +15,7 @@ use crate::disk_image::AgentImage;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
+use hvlite_defs::config::Vtl2BaseAddressType;
 use mesh::CancelContext;
 use pal_async::DefaultDriver;
 use pal_async::task::Spawn;
@@ -127,6 +128,8 @@ pub struct PetriVmConfig {
     pub vmgs: PetriVmgsResource,
     /// The boot device type for the VM
     pub boot_device_type: BootDeviceType,
+    /// Configure TPM state persistence
+    pub tpm_state_persistence: bool,
 }
 
 /// Resources used by a Petri VM during contruction and runtime
@@ -212,6 +215,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 agent_image: artifacts.agent_image,
                 openhcl_agent_image: artifacts.openhcl_agent_image,
                 vmgs: PetriVmgsResource::Ephemeral,
+                tpm_state_persistence: true,
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -474,6 +478,19 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Sets a custom OpenHCL IGVM VTL2 address type. This controls the behavior
+    /// of where VTL2 is placed in address space, and also the total size of memory
+    /// allocated for VTL2. VTL2 start will fail if `address_type` is specified
+    /// and leads to the loader allocating less memory than what is in the IGVM file.
+    pub fn with_vtl2_base_address_type(mut self, address_type: Vtl2BaseAddressType) -> Self {
+        self.config
+            .firmware
+            .openhcl_config_mut()
+            .expect("OpenHCL firmware is required to set custom VTL2 address type.")
+            .vtl2_base_address_type = Some(address_type);
+        self
+    }
+
     /// Sets a custom OpenHCL IGVM file to use.
     pub fn with_custom_openhcl(mut self, artifact: ResolvedArtifact<impl IsOpenhclIgvm>) -> Self {
         match &mut self.config.firmware {
@@ -649,6 +666,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// This overrides the default, which is determined by the firmware type.
     pub fn with_boot_device_type(mut self, boot: BootDeviceType) -> Self {
         self.config.boot_device_type = boot;
+        self
+    }
+
+    /// Enable or disable the TPM state persistence for the VM.
+    pub fn with_tpm_state_persistence(mut self, tpm_state_persistence: bool) -> Self {
+        self.config.tpm_state_persistence = tpm_state_persistence;
         self
     }
 
@@ -935,20 +958,25 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     }
 
     async fn launch_vtl2_pipette(&self) -> anyhow::Result<()> {
+        tracing::debug!("Launching VTL 2 pipette...");
+
         // Start pipette through DiagClient
         let res = self
             .openhcl_diag()?
-            .run_vtl2_command(
-                "sh",
-                &[
-                    "-c",
-                    "mkdir /cidata && mount LABEL=cidata /cidata && sh -c '/cidata/pipette &'",
-                ],
-            )
+            .run_vtl2_command("sh", &["-c", "mkdir /cidata && mount LABEL=cidata /cidata"])
             .await?;
 
         if !res.exit_status.success() {
-            anyhow::bail!("Failed to start VTL 2 pipette: {:?}", res);
+            anyhow::bail!("Failed to mount VTL 2 pipette drive: {:?}", res);
+        }
+
+        let res = self
+            .openhcl_diag()?
+            .run_detached_vtl2_command("sh", &["-c", "/cidata/pipette 2>&1 | logger &"])
+            .await?;
+
+        if !res.success() {
+            anyhow::bail!("Failed to spawn VTL 2 pipette: {:?}", res);
         }
 
         Ok(())
@@ -1184,6 +1212,9 @@ pub struct OpenHclConfig {
     /// from `command_line` so that petri can decide to use default log
     /// levels.
     pub log_levels: OpenHclLogConfig,
+    /// How to place VTL2 in address space. If `None`, the backend VMM
+    /// will decide on default behavior.
+    pub vtl2_base_address_type: Option<Vtl2BaseAddressType>,
 }
 
 impl OpenHclConfig {
@@ -1230,6 +1261,7 @@ impl Default for OpenHclConfig {
             vmbus_redirect: false,
             command_line: None,
             log_levels: OpenHclLogConfig::TestDefault,
+            vtl2_base_address_type: None,
         }
     }
 }

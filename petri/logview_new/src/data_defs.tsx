@@ -34,3 +34,32 @@ export interface RunDetailsData {
 
 // Mapping of PR number (as string) -> PR title
 export type PullRequestTitles = Record<string, string>;
+
+
+export interface TestRunInfo {
+    runNumber: string;
+    creationTime?: Date;
+    status: 'passed' | 'failed' | 'unknown';
+}
+
+export interface TestData {
+    architecture: string;
+    name: string;
+    failedCount: number;
+    totalCount: number;
+}
+
+export interface LogEntry {
+  index: number;
+  timestamp: string;
+  relative: string;
+  severity: string;
+  source: string;
+  messageHtml: string; // sanitized HTML with ANSI styling & attachment links
+  messageText: string; // plain lowercase text for filtering
+  screenshot: string | null;
+}
+
+// Concurrency settings when fetching test results
+export const CONCURRENCY_FOREGROUND = 15;
+export const CONCURRENCY_BACKGROUND = 5;

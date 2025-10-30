@@ -93,7 +93,7 @@ impl PetriVmConfigOpenVmm {
     }
 
     /// Enable TPM state persistence
-    pub fn with_tpm_state_persistence(mut self) -> Self {
+    pub fn with_tpm_state_persistence(mut self, tpm_state_persistence: bool) -> Self {
         if !self.firmware.is_openhcl() {
             panic!("TPM state persistence is only supported for OpenHCL.")
         };
@@ -102,7 +102,7 @@ impl PetriVmConfigOpenVmm {
 
         // Disable no_persistent_secrets implies preserving TPM states
         // across boots
-        ged.no_persistent_secrets = false;
+        ged.no_persistent_secrets = !tpm_state_persistence;
 
         self
     }

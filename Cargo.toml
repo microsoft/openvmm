@@ -44,6 +44,7 @@ members = [
   # tools
   "petri/make_imc_hive",
   "petri/petri-tool",
+  "vm/devices/tpm/tpm_guest_tests",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
@@ -113,6 +114,7 @@ inspect_proto = { path = "support/inspect_proto" }
 inspect_rlimit = { path = "support/inspect_rlimit" }
 inspect_task = { path = "support/inspect_task" }
 kmsg = { path = "support/kmsg" }
+kmsg_writer = { path = "support/kmsg_writer" }
 loan_cell = { path = "support/loan_cell" }
 local_clock = { path = "support/local_clock" }
 mesh = { path = "support/mesh" }
@@ -309,7 +311,9 @@ serial_core = { path = "vm/devices/serial/serial_core" }
 serial_pl011 = { path = "vm/devices/serial/serial_pl011" }
 serial_pl011_resources = { path = "vm/devices/serial/serial_pl011_resources" }
 serial_socket = { path = "vm/devices/serial/serial_socket" }
-tpm = { path = "vm/devices/tpm" }
+tpm_device = { path = "vm/devices/tpm/tpm_device" }
+tpm_lib = { path = "vm/devices/tpm/tpm_lib" }
+tpm_protocol = { path = "vm/devices/tpm/tpm_protocol" }
 tpm_resources = { path = "vm/devices/tpm_resources" }
 mcr_resources = { path = "vm/devices/mcr_resources" }
 uidevices = { path = "vm/devices/uidevices" }
@@ -532,7 +536,6 @@ thiserror = { version = "2", default-features = false }
 time = "0.3"
 toml_edit = "0.23"
 tracing = "0.1"
-tracing-core = "=0.1.30" # Pin to avoid binary size increase https://github.com/tokio-rs/tracing/issues/3182
 tracing-subscriber = "0.3.20"
 typed-path = "0.11"
 uefi = "0.35.0"
@@ -555,10 +558,6 @@ xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshel
 xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
 zerocopy = { version = "0.8.25", features = ["derive"]}
-
-[workspace.metadata.xtask.unused-deps]
-# Pulled in through "tracing", but we need to pin the version
-ignored = ["tracing-core"]
 
 [profile.release]
 panic = 'abort'
