@@ -256,7 +256,6 @@ pub fn pick_private_pool_size(
         (Vtl2GpaPoolConfig::Off, _) => {
             // Command line explicitly disabled the pool.
             log!("vtl2 gpa pool disabled via command line");
-
             None
         }
         (Vtl2GpaPoolConfig::Pages(cmd_line_pages), _) => {
