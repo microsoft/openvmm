@@ -938,8 +938,9 @@ impl VpciResource {
                 VpciResourceDescriptor::Opaque(d) => d,
             };
             let mut handle = null_mut();
+            let guid_win = provider.map(|g| windows_sys::core::GUID::from(*g));
             check_hresult(api::WHvAllocateVpciResource(
-                provider.map(|g| windows_sys::core::GUID::from(*g)).as_ref(),
+                guid_win.as_ref(),
                 flags,
                 data.as_ptr().cast(),
                 data.len().try_into().unwrap(),
