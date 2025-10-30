@@ -1155,7 +1155,6 @@ mod save_restore {
         InvalidCap(String),
     }
 
-    
     impl<const N: usize> SaveRestore for ConfigSpaceCommonHeaderEmulator<N> {
         type SavedState = state::SavedState;
 
