@@ -200,17 +200,17 @@ pub mod cfg_space {
         /// These registers appear at the same offsets in both header types and have the same
         /// meaning and format.
         ///
-        /// | Offset | Bits 31-24     | Bits 23-16 | Bits 15-8   | Bits 7-0        |
-        /// |--------|----------------|-------------|-------------|-----------------|
-        /// | 0x0    | Device ID      |             | Vendor ID   |                 |
-        /// | 0x4    | Status         |             | Command     |                 |
-        /// | 0x8    | Class code     |             |             | Revision ID     |
-        /// | 0xC    | BIST           | Header Type | Latency Timer | Cache Line Size |
+        /// | Offset | Bits 31-24     | Bits 23-16  | Bits 15-8   | Bits 7-0             |
+        /// |--------|----------------|-------------|-------------|----------------------|
+        /// | 0x0    | Device ID      |             | Vendor ID   |                      |
+        /// | 0x4    | Status         |             | Command     |                      |
+        /// | 0x8    | Class code     |             |             | Revision ID          |
+        /// | 0x34   | Reserved       |             |             | Capabilities Pointer |
         pub enum CommonHeader: u16 {
-            DEVICE_VENDOR  = 0x00,
-            STATUS_COMMAND = 0x04,
-            CLASS_REVISION = 0x08,
-            BIST_HEADER    = 0x0C,
+            DEVICE_VENDOR       = 0x00,
+            STATUS_COMMAND      = 0x04,
+            CLASS_REVISION      = 0x08,
+            RESERVED_CAP_PTR    = 0x34,
         }
     }
 

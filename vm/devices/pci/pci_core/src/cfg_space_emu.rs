@@ -417,13 +417,12 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                     | (u8::from(self.hardware_ids.prog_if) as u32) << 8
                     | self.hardware_ids.revision_id as u32
             }
-            CommonHeader::BIST_HEADER => {
-                let mut v = 0u32; // latency timer would go here if we stored it
-                if self.multi_function_bit {
-                    // enable top-most bit of the header register
-                    v |= 0x80 << 16;
+            CommonHeader::RESERVED_CAP_PTR => {
+                if self.capabilities.is_empty() {
+                    0
+                } else {
+                    0x40
                 }
-                v
             }
             // Capabilities space - handled by common emulator
             _ if (0x40..0x100).contains(&offset) => {
@@ -482,10 +481,6 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
                 }
 
                 self.state.command = command;
-            }
-            CommonHeader::BIST_HEADER => {
-                // BIST_HEADER - allow writes to latency timer if we supported it
-                // For now, just ignore these writes
             }
             // Capabilities space - handled by common emulator
             _ if (0x40..0x100).contains(&offset) => {
@@ -837,24 +832,6 @@ impl ConfigSpaceType0Emulator {
 
         // Handle Type 0 specific registers
         *value = match HeaderType00(offset) {
-            HeaderType00::CARDBUS_CIS_PTR => 0,
-            HeaderType00::SUBSYSTEM_ID => {
-                (self.common.hardware_ids().type0_sub_system_id as u32) << 16
-                    | self.common.hardware_ids().type0_sub_vendor_id as u32
-            }
-            HeaderType00::EXPANSION_ROM_BASE => 0,
-            HeaderType00::RESERVED_CAP_PTR => {
-                if self.common.capabilities().is_empty() {
-                    0
-                } else {
-                    0x40
-                }
-            }
-            HeaderType00::RESERVED => 0,
-            HeaderType00::LATENCY_INTERRUPT => {
-                // Read interrupt line from common header and return interrupt pin as 0 for now
-                self.common.interrupt_line() as u32
-            }
             HeaderType00::BIST_HEADER => {
                 let mut v = (self.state.latency_timer as u32) << 8;
                 if self.common.multi_function_bit() {
@@ -862,6 +839,17 @@ impl ConfigSpaceType0Emulator {
                     v |= 0x80 << 16;
                 }
                 v
+            }
+            HeaderType00::CARDBUS_CIS_PTR => 0,
+            HeaderType00::SUBSYSTEM_ID => {
+                (self.common.hardware_ids().type0_sub_system_id as u32) << 16
+                    | self.common.hardware_ids().type0_sub_vendor_id as u32
+            }
+            HeaderType00::EXPANSION_ROM_BASE => 0,
+            HeaderType00::RESERVED => 0,
+            HeaderType00::LATENCY_INTERRUPT => {
+                // Read interrupt line from common header and return interrupt pin as 0 for now
+                self.common.interrupt_line() as u32
             }
             _ => {
                 tracelimit::warn_ratelimited!(offset, "unexpected config space read");
@@ -958,6 +946,9 @@ struct ConfigSpaceType1EmulatorState {
     /// with the upper 32 bits of the base address of the prefetchable MMIO window
     /// assigned to the hierarchy under the bridge.
     prefetch_limit_upper: u32,
+    /// The bridge control register. Contains various control bits for bridge behavior
+    /// such as secondary bus reset, VGA enable, etc.
+    bridge_control: u16,
 }
 
 impl ConfigSpaceType1EmulatorState {
@@ -972,6 +963,7 @@ impl ConfigSpaceType1EmulatorState {
             prefetch_limit: 0,
             prefetch_base_upper: 0,
             prefetch_limit_upper: 0,
+            bridge_control: 0,
         }
     }
 }
@@ -1068,6 +1060,14 @@ impl ConfigSpaceType1Emulator {
 
         // Handle Type 1 specific registers
         *value = match HeaderType01(offset) {
+            HeaderType01::BIST_HEADER => {
+                // Header type 01 with optional multi-function bit
+                if self.common.multi_function_bit() {
+                    0x00810000 // Header type 01 with multi-function bit (bit 23)
+                } else {
+                    0x00010000 // Header type 01 without multi-function bit
+                }
+            }
             HeaderType01::LATENCY_BUS_NUMBERS => {
                 (self.state.subordinate_bus_number as u32) << 16
                     | (self.state.secondary_bus_number as u32) << 8
@@ -1087,14 +1087,10 @@ impl ConfigSpaceType1Emulator {
             HeaderType01::PREFETCH_LIMIT_UPPER => self.state.prefetch_limit_upper,
             HeaderType01::IO_RANGE_UPPER => 0,
             HeaderType01::EXPANSION_ROM_BASE => 0,
-            HeaderType01::BRDIGE_CTRL_INTERRUPT => 0,
-            HeaderType01::BIST_HEADER => {
-                // Header type 01 with optional multi-function bit
-                if self.common.multi_function_bit() {
-                    0x00810000 // Header type 01 with multi-function bit (bit 23)
-                } else {
-                    0x00010000 // Header type 01 without multi-function bit
-                }
+            HeaderType01::BRDIGE_CTRL_INTERRUPT => {
+                // Read interrupt line from common header and bridge control from state
+                // Bits 7-0: Interrupt Line, Bits 15-8: Interrupt Pin (0), Bits 31-16: Bridge Control
+                (self.state.bridge_control as u32) << 16 | self.common.interrupt_line() as u32
             }
             _ => {
                 tracelimit::warn_ratelimited!(offset, "unexpected config space read");
@@ -1120,6 +1116,10 @@ impl ConfigSpaceType1Emulator {
 
         // Handle Type 1 specific registers
         match HeaderType01(offset) {
+            HeaderType01::BIST_HEADER => {
+                // BIST_HEADER - Type 1 specific handling
+                // For now, just ignore these writes (latency timer would go here if supported)
+            }
             HeaderType01::LATENCY_BUS_NUMBERS => {
                 self.state.subordinate_bus_number = (val >> 16) as u8;
                 self.state.secondary_bus_number = (val >> 8) as u8;
@@ -1138,6 +1138,12 @@ impl ConfigSpaceType1Emulator {
             }
             HeaderType01::PREFETCH_LIMIT_UPPER => {
                 self.state.prefetch_limit_upper = val;
+            }
+            HeaderType01::BRDIGE_CTRL_INTERRUPT => {
+                // Delegate interrupt line writes to common header and store bridge control
+                // Bits 7-0: Interrupt Line, Bits 15-8: Interrupt Pin (ignored), Bits 31-16: Bridge Control
+                self.common.set_interrupt_line((val & 0xff) as u8);
+                self.state.bridge_control = (val >> 16) as u16;
             }
             // all other base regs are noops
             _ if offset < 0x40 && offset.is_multiple_of(4) => (),
@@ -1430,6 +1436,8 @@ mod save_restore {
             #[mesh(9)]
             pub prefetch_limit_upper: u32,
             #[mesh(10)]
+            pub bridge_control: u16,
+            #[mesh(11)]
             pub common_header: state::SavedState,
         }
     }
@@ -1448,6 +1456,7 @@ mod save_restore {
                 prefetch_limit,
                 prefetch_base_upper,
                 prefetch_limit_upper,
+                bridge_control,
             } = self.state;
 
             let saved_state = type1_state::SavedType1State {
@@ -1460,6 +1469,7 @@ mod save_restore {
                 prefetch_limit,
                 prefetch_base_upper,
                 prefetch_limit_upper,
+                bridge_control,
                 common_header: self.common.save()?,
             };
 
@@ -1477,6 +1487,7 @@ mod save_restore {
                 prefetch_limit,
                 prefetch_base_upper,
                 prefetch_limit_upper,
+                bridge_control,
                 common_header,
             } = state;
 
@@ -1490,6 +1501,7 @@ mod save_restore {
                 prefetch_limit,
                 prefetch_base_upper,
                 prefetch_limit_upper,
+                bridge_control,
             };
 
             self.common.restore(common_header)?;
