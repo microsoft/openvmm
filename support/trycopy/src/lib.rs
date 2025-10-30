@@ -562,7 +562,10 @@ fn recovery_table() -> &'static [RecoveryDescriptor] {
     // Ensure the section exists even if there no recovery descriptors get
     // generated.
     #[cfg_attr(target_os = "linux", unsafe(link_section = "try_copy"))]
-    #[cfg_attr(target_os = "macos", link_section = "__TEXT,__try_copy,regular")]
+    #[cfg_attr(
+        target_os = "macos",
+        unsafe(link_section = "__TEXT,__try_copy,regular")
+    )]
     #[used]
     static ENSURE_EXISTS: [RecoveryDescriptor; 0] = [];
 
@@ -632,7 +635,7 @@ fn recovery_table() -> &'static [RecoveryDescriptor] {
 
     let Some((start, len)) = find_section(*b".trycopy") else {
         // No recovery descriptors.
-        return &[]
+        return &[];
     };
     assert_eq!(len % size_of::<RecoveryDescriptor>(), 0);
     // SAFETY: this section is made up solely of RecoveryDescriptor entries.
