@@ -462,12 +462,13 @@ mod ioctls {
         pub r11_out: u64, // only supported as output
     }
 
-    #[repr(C, packed)]
+    #[repr(C)]
     #[derive(Copy, Clone)]
     pub struct mshv_map_device_int {
         pub vector: u32,
         pub apic_id: u32,
-        pub create_mapping: bool,
+        pub create_mapping: u8,
+        pub padding: [u8; 7],
     }
 
     ioctl_none!(
@@ -3389,10 +3390,14 @@ impl Hcl {
         let mut param = mshv_map_device_int {
             vector,
             apic_id,
-            create_mapping,
+            create_mapping: create_mapping.into(),
+            padding: [0; 7],
         };
 
         // SAFETY: following the IOCTL definition.
+        // Note: We return None on IOCTL failure rather than panicking, allowing the caller
+        // to gracefully fallback to normal proxy interrupt delivery if the kernel doesn't
+        // support interrupt redirection or if the mapping fails.
         let output = unsafe {
             hcl_map_redirected_device_interrupt(self.mshv_vtl.file.as_raw_fd(), &mut param)
         };

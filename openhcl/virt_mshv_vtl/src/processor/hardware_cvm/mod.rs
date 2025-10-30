@@ -954,11 +954,11 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 Some(set) => set,
                 None => {
                     // Undo interrupt vector mapping in VTL2 and fallback to proxy interrupt delivery
-                    self.vp.partition.hcl.map_redirected_device_interrupt(
-                        vector,
-                        first_apic_id,
-                        false,
-                    );
+                    self.vp
+                        .partition
+                        .hcl
+                        .map_redirected_device_interrupt(vector, first_apic_id, false)
+                        .expect("Failed to unmap VTL2 vector for proxy device interrupt");
                     return None;
                 }
             };
@@ -980,7 +980,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 self.vp
                     .partition
                     .hcl
-                    .map_redirected_device_interrupt(vector, first_apic_id, false);
+                    .map_redirected_device_interrupt(vector, first_apic_id, false)
+                    .expect("Failed to unmap VTL2 vector for proxy device interrupt");
                 None
             }
         }
