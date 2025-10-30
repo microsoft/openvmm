@@ -3197,6 +3197,14 @@ async fn new_underhill_vm(
             let private_pool_available = !runtime_params.private_pool_ranges().is_empty();
             let save_restore_supported = env_cfg.mana_keep_alive && private_pool_available;
 
+            if !save_restore_supported && nic_servicing_state.is_some() {
+                anyhow::bail!(
+                    "cannot restore networking state without private pool available and keep-alive enabled - private_pool_available: {}, mana_keep_alive: {}",
+                    private_pool_available,
+                    env_cfg.mana_keep_alive
+                );
+            }
+
             let save_state = uh_network_settings
                 .add_network(
                     nic_config.instance_id,
