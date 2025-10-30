@@ -39,6 +39,12 @@ use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
+/// Operation types for provisioning telemetry.
+#[derive(Debug)]
+enum LogOpType {
+    VmgsProvision,
+}
+
 /// Info about a specific VMGS file.
 #[derive(Debug)]
 pub struct VmgsFileInfo {
@@ -48,6 +54,17 @@ pub struct VmgsFileInfo {
     pub valid_bytes: u64,
     /// Whether this file is encrypted.
     pub encrypted: bool,
+}
+
+/// GSP types that can be used to encrypt a VMGS file.
+#[derive(Debug, Clone, Copy)]
+pub enum GspType {
+    /// No GSP
+    None,
+    /// GSP by ID
+    GspById,
+    /// GSP key
+    GspKey,
 }
 
 // Aggregates fully validated data from the FILE_TABLE and EXTENDED_FILE_TABLE
@@ -189,7 +206,11 @@ impl Vmgs {
         disk: Disk,
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Self, Error> {
-        tracing::debug!(CVM_ALLOWED, "formatting and initializing VMGS datastore");
+        tracing::info!(
+            CVM_ALLOWED,
+            op_type = ?LogOpType::VmgsProvision,
+            "formatting and initializing VMGS datastore"
+        );
         let storage = VmgsStorage::new_validated(disk).map_err(Error::Initialization)?;
         Self::format_new_inner(storage, logger).await
     }

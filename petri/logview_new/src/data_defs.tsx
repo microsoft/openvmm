@@ -1,0 +1,64 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+// Data types used across the app
+export interface RunData {
+  name: string;
+  creationTime: Date;
+  lastModified: Date;
+  etag: string;
+  contentLength: number;
+  metadata: RunMetadata;
+}
+
+export interface RunMetadata {
+  petriFailed: number;
+  petriPassed: number;
+  ghBranch: string;
+  ghPr?: string;
+  prTitle?: string;
+}
+
+export interface TestResult {
+  name: string;
+  status: "passed" | "failed";
+  path: string;
+  duration?: number;
+}
+
+export interface RunDetailsData {
+  creationTime?: Date;
+  runNumber: string;
+  tests: TestResult[];
+}
+
+// Mapping of PR number (as string) -> PR title
+export type PullRequestTitles = Record<string, string>;
+
+
+export interface TestRunInfo {
+    runNumber: string;
+    creationTime?: Date;
+    status: 'passed' | 'failed' | 'unknown';
+}
+
+export interface TestData {
+    architecture: string;
+    name: string;
+    failedCount: number;
+    totalCount: number;
+}
+
+export interface LogEntry {
+  index: number;
+  timestamp: string;
+  relative: string;
+  severity: string;
+  source: string;
+  message: string; // message with attachment links
+  screenshot: string | null;
+}
+
+// Concurrency settings when fetching test results
+export const CONCURRENCY_FOREGROUND = 15;
+export const CONCURRENCY_BACKGROUND = 5;

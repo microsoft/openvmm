@@ -10,16 +10,21 @@
 //! The EFI diagnostics buffer follows the specification of Project Mu's
 //! Advanced Logger package, whose relevant types are defined in the Hyper-V
 //! specification within the uefi_specs crate.
-
-// Re-export public types from submodules
-pub use formatting::EfiDiagnosticsLog;
-pub use formatting::log_diagnostic_ratelimited;
-pub use formatting::log_diagnostic_unrestricted;
-pub use processor::ProcessingError;
+//!
+//! This file specifically should only expose the public API of the service;
+//! internal implementation details should be in submodules.
 
 use crate::UefiDevice;
+use formatting::EfiDiagnosticsLog;
+use formatting::log_diagnostic_ratelimited;
+use formatting::log_diagnostic_unrestricted;
 use guestmem::GuestMemory;
 use inspect::Inspect;
+use mesh::payload::Protobuf;
+use processor::ProcessingError;
+use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
+use uefi_specs::hyperv::debug_level::DEBUG_INFO;
+use uefi_specs::hyperv::debug_level::DEBUG_WARN;
 
 mod formatting;
 mod message_accumulator;
@@ -29,6 +34,52 @@ mod processor;
 /// Default number of EfiDiagnosticsLogs emitted per period
 pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;
 
+/// Log level configuration - encapsulates a u32 mask where u32::MAX means log everything
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Protobuf)]
+#[mesh(transparent)]
+pub struct LogLevel(u32);
+
+impl LogLevel {
+    /// Create default log level configuration (ERROR and WARN only)
+    pub const fn make_default() -> Self {
+        Self(DEBUG_ERROR | DEBUG_WARN)
+    }
+
+    /// Create info log level configuration (ERROR, WARN, and INFO)
+    pub const fn make_info() -> Self {
+        Self(DEBUG_ERROR | DEBUG_WARN | DEBUG_INFO)
+    }
+
+    /// Create full log level configuration (all levels)
+    pub const fn make_full() -> Self {
+        Self(u32::MAX)
+    }
+
+    /// Checks if a raw debug level should be logged based on this log level configuration
+    pub fn should_log(self, raw_debug_level: u32) -> bool {
+        if self.0 == u32::MAX {
+            true // Log everything
+        } else {
+            (raw_debug_level & self.0) != 0
+        }
+    }
+}
+
+impl Default for LogLevel {
+    fn default() -> Self {
+        Self::make_default()
+    }
+}
+
+impl Inspect for LogLevel {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        let human_readable = formatting::debug_level_to_string(self.0);
+        req.respond()
+            .field("raw_value", self.0)
+            .field("debug_levels", human_readable.as_ref());
+    }
+}
+
 /// Definition of the diagnostics services state
 #[derive(Inspect)]
 pub struct DiagnosticsServices {
@@ -36,14 +87,17 @@ pub struct DiagnosticsServices {
     gpa: Option<u32>,
     /// Flag indicating if guest-initiated processing has occurred before
     has_guest_processed_before: bool,
+    /// Log level used for filtering
+    log_level: LogLevel,
 }
 
 impl DiagnosticsServices {
     /// Create a new instance of the diagnostics services
-    pub fn new() -> DiagnosticsServices {
+    pub fn new(log_level: LogLevel) -> DiagnosticsServices {
         DiagnosticsServices {
             gpa: None,
             has_guest_processed_before: false,
+            log_level,
         }
     }
 
@@ -82,6 +136,7 @@ impl DiagnosticsServices {
             &mut self.has_guest_processed_before,
             allow_reprocess,
             gm,
+            self.log_level,
             log_handler,
         )
     }
@@ -120,6 +175,7 @@ mod save_restore {
     use vmcore::save_restore::SaveRestore;
 
     mod state {
+        use super::LogLevel;
         use mesh::payload::Protobuf;
         use vmcore::save_restore::SavedStateRoot;
 
@@ -130,6 +186,8 @@ mod save_restore {
             pub gpa: Option<u32>,
             #[mesh(2)]
             pub did_flush: bool,
+            #[mesh(3)]
+            pub log_level: LogLevel,
         }
     }
 
@@ -140,13 +198,19 @@ mod save_restore {
             Ok(state::SavedState {
                 gpa: self.gpa,
                 did_flush: self.has_guest_processed_before,
+                log_level: self.log_level,
             })
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            let state::SavedState { gpa, did_flush } = state;
+            let state::SavedState {
+                gpa,
+                did_flush,
+                log_level,
+            } = state;
             self.gpa = gpa;
             self.has_guest_processed_before = did_flush;
+            self.log_level = log_level;
             Ok(())
         }
     }

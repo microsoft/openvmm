@@ -76,7 +76,7 @@ impl BumpAllocator {
 
     /// Enable allocations. This panics if allocations were ever previously
     /// enabled.
-    pub fn enable_alloc(&self) {
+    fn enable_alloc(&self) {
         let mut inner = self.inner.borrow_mut();
 
         inner.allow_alloc = match inner.allow_alloc {
@@ -91,7 +91,7 @@ impl BumpAllocator {
     }
 
     /// Disable allocations. Panics if the allocator was not previously enabled.
-    pub fn disable_alloc(&self) {
+    fn disable_alloc(&self) {
         let mut inner = self.inner.borrow_mut();
         inner.allow_alloc = match inner.allow_alloc {
             State::Allowed => panic!("allocations were never enabled"),
@@ -102,7 +102,7 @@ impl BumpAllocator {
         };
     }
 
-    pub fn log_stats(&self) {
+    fn log_stats(&self) {
         let inner = self.inner.borrow();
 
         // SAFETY: The pointers are within the same original allocation,
@@ -122,6 +122,19 @@ impl BumpAllocator {
             free
         );
     }
+}
+
+/// Run the provided closure with enabling the global bump allocator. This is
+/// only intended to be used for mesh_protobuf decode.
+///
+/// Note that if the global allocator was ever used before, this function will
+/// panic.
+pub fn with_global_alloc<T>(f: impl FnOnce() -> T) -> T {
+    ALLOCATOR.enable_alloc();
+    let val = f();
+    ALLOCATOR.disable_alloc();
+    ALLOCATOR.log_stats();
+    val
 }
 
 // SAFETY: The allocator points to a valid identity VA range via the

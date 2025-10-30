@@ -3,6 +3,7 @@
 
 //! Core processing logic for EFI diagnostics buffer
 
+use crate::service::diagnostics::LogLevel;
 use crate::service::diagnostics::formatting::EfiDiagnosticsLog;
 use crate::service::diagnostics::message_accumulator::AccumulationError;
 use crate::service::diagnostics::message_accumulator::MessageAccumulator;
@@ -56,12 +57,14 @@ pub enum ProcessingError {
 /// * `has_processed_before` - Mutable reference to the processing flag
 /// * `allow_reprocess` - If true, allows processing even if already processed for guest
 /// * `gm` - Guest memory to read diagnostics from
+/// * `log_level` - Log level for filtering
 /// * `log_handler` - Function to handle each parsed log entry
 pub fn process_diagnostics_internal<F>(
     gpa: &mut Option<u32>,
     has_processed_before: &mut bool,
     allow_reprocess: bool,
     gm: &GuestMemory,
+    log_level: LogLevel,
     log_handler: F,
 ) -> Result<(), ProcessingError>
 where
@@ -131,13 +134,17 @@ where
     gm.read_at(buffer_start_addr as u64, &mut buffer_data)?;
 
     // Process the buffer
-    process_buffer(&buffer_data, log_handler)?;
+    process_buffer(&buffer_data, log_level, log_handler)?;
 
     Ok(())
 }
 
 /// Process the log buffer and emit completed log entries
-fn process_buffer<F>(buffer_data: &[u8], mut log_handler: F) -> Result<(), ProcessingError>
+fn process_buffer<F>(
+    buffer_data: &[u8],
+    log_level: LogLevel,
+    mut log_handler: F,
+) -> Result<(), ProcessingError>
 where
     F: FnMut(EfiDiagnosticsLog<'_>, u32),
 {
@@ -149,7 +156,9 @@ where
         let entry = parse_entry(buffer_slice)?;
 
         // Process the entry through the accumulator
-        if let Some((log, raw_debug_level)) = accumulator.process_entry(&entry)? {
+        if let Some((log, raw_debug_level)) = accumulator.process_entry(&entry)?
+            && log_level.should_log(raw_debug_level)
+        {
             log_handler(log, raw_debug_level);
         }
 
@@ -162,7 +171,9 @@ where
     }
 
     // Process any remaining accumulated message
-    if let Some((log, raw_debug_level)) = accumulator.finalize_remaining() {
+    if let Some((log, raw_debug_level)) = accumulator.finalize_remaining()
+        && log_level.should_log(raw_debug_level)
+    {
         log_handler(log, raw_debug_level);
     }
 

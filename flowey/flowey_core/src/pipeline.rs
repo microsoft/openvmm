@@ -280,16 +280,14 @@ impl GhPrTriggers {
 #[derive(Debug, Clone, PartialEq)]
 pub enum GhRunnerOsLabel {
     UbuntuLatest,
+    Ubuntu2404,
     Ubuntu2204,
-    Ubuntu2004,
     WindowsLatest,
+    Windows2025,
     Windows2022,
-    Windows2019,
-    MacOsLatest,
-    MacOs14,
-    MacOs13,
-    MacOs12,
-    MacOs11,
+    Ubuntu2404Arm,
+    Ubuntu2204Arm,
+    Windows11Arm,
     Custom(String),
 }
 
@@ -600,6 +598,7 @@ impl Pipeline {
             platform,
             arch,
             cond_param_idx: None,
+            timeout_minutes: None,
             ado_pool: None,
             ado_variables: BTreeMap::new(),
             gh_override_if: None,
@@ -1196,12 +1195,21 @@ impl PipelineJob<'_> {
         self
     }
 
-    /// Only run the job if the specified condition is true.
+    /// Set a timeout for the job, in minutes.
     ///
-    /// When running locally, the `cond`'s default value will be used to
-    /// determine if the job will be run.
+    /// Not calling this will result in the platform's default timeout being used,
+    /// which is typically 60 minutes, but may vary.
+    pub fn with_timeout_in_minutes(self, timeout: u32) -> Self {
+        self.pipeline.jobs[self.job_idx].timeout_minutes = Some(timeout);
+        self
+    }
+
+    /// (ADO+Local Only) Only run the job if the specified condition is true.
     pub fn with_condition(self, cond: UseParameter<bool>) -> Self {
         self.pipeline.jobs[self.job_idx].cond_param_idx = Some(cond.idx);
+        self.pipeline.parameters[cond.idx]
+            .used_by_jobs
+            .insert(self.job_idx);
         self
     }
 
@@ -1310,6 +1318,7 @@ pub mod internal {
         pub platform: FlowPlatform,
         pub arch: FlowArch,
         pub cond_param_idx: Option<usize>,
+        pub timeout_minutes: Option<u32>,
         // backend specific
         pub ado_pool: Option<AdoPool>,
         pub ado_variables: BTreeMap<String, String>,

@@ -1217,7 +1217,7 @@ impl Gpadl {
             buf.resize(buf.len() + data.len() / 8, 0);
             buf[start..].as_mut_bytes().copy_from_slice(data);
             Ok(if buf.len() == buf.capacity() {
-                gparange::MultiPagedRangeBuf::<Vec<u64>>::validate(self.count as usize, buf)
+                gparange::validate_gpa_ranges(self.count as usize, buf)
                     .map_err(ChannelError::InvalidGpaRange)?;
                 self.state = GpadlState::Offered;
                 true

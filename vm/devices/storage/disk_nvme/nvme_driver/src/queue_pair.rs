@@ -218,9 +218,6 @@ impl<T: AerHandler> QueuePair<T> {
             };
         let dma_client = device.dma_client();
 
-        // TODO: Keepalive: Detect when the allocation came from outside
-        // the private pool and put the device in a degraded state, so it
-        // is possible to inspect that a servicing with keepalive will fail.
         let mem = dma_client
             .allocate_dma_buffer(total_size)
             .context("failed to allocate memory for queues")?;

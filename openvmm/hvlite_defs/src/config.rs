@@ -26,6 +26,8 @@ pub struct Config {
     pub floppy_disks: Vec<floppy_resources::FloppyDiskConfig>,
     pub ide_disks: Vec<ide_resources::IdeDeviceConfig>,
     pub pcie_root_complexes: Vec<PcieRootComplexConfig>,
+    pub pcie_devices: Vec<PcieDeviceConfig>,
+    pub pcie_switches: Vec<PcieSwitchConfig>,
     pub vpci_devices: Vec<VpciDeviceConfig>,
     pub memory: MemoryConfig,
     pub processor_topology: ProcessorTopologyConfig,
@@ -57,6 +59,7 @@ pub struct Config {
     pub rtc_delta_milliseconds: i64,
     /// allow the guest to reset without notifying the client
     pub automatic_guest_reset: bool,
+    pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
 }
 
 // ARM64 needs a larger low gap.
@@ -119,6 +122,7 @@ pub enum LoadMode {
         enable_vpci_boot: bool,
         uefi_console_mode: Option<UefiConsoleMode>,
         default_boot_always_attempt: bool,
+        bios_guid: Guid,
     },
     Pcat {
         firmware: RomFileLocation,
@@ -182,6 +186,19 @@ pub struct PcieRootComplexConfig {
 #[derive(Debug, MeshPayload)]
 pub struct PcieRootPortConfig {
     pub name: String,
+}
+
+#[derive(Debug, MeshPayload)]
+pub struct PcieSwitchConfig {
+    pub name: String,
+    pub num_downstream_ports: u8,
+    pub parent_port: String,
+}
+
+#[derive(Debug, MeshPayload)]
+pub struct PcieDeviceConfig {
+    pub port_name: String,
+    pub resource: Resource<PciDeviceHandleKind>,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -424,4 +441,15 @@ pub enum UefiConsoleMode {
     Com1,
     Com2,
     None,
+}
+
+#[derive(Copy, Clone, Debug, MeshPayload, Default)]
+pub enum EfiDiagnosticsLogLevelType {
+    /// Default log level
+    #[default]
+    Default,
+    /// Include INFO logs
+    Info,
+    /// All logs
+    Full,
 }

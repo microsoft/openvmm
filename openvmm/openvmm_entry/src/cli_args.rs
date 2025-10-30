@@ -168,6 +168,9 @@ flags:
     `vtl2`                         assign this disk to VTL2
     `uh`                           relay this disk to VTL0 through SCSI-to-OpenHCL (show to VTL0 as NVMe)
     `uh-nvme`                      relay this disk to VTL0 through NVMe-to-OpenHCL (show to VTL0 as NVMe)
+
+options:
+    `pcie_port=<name>`             present the disk using pcie under the specified port, incompatible with `vtl2`, `uh`, and `uh-nvme`
 "#)]
     #[clap(long)]
     pub nvme: Vec<DiskCli>,
@@ -550,6 +553,18 @@ flags:
     #[clap(long)]
     pub uefi_console_mode: Option<UefiConsoleModeCli>,
 
+    /// set the EFI diagnostics log level
+    #[clap(long_help = r#"
+Set the EFI diagnostics log level.
+
+options:
+    default                        default (ERROR and WARN only)
+    info                           info (ERROR, WARN, and INFO)
+    full                           full (all log levels)
+"#)]
+    #[clap(long, requires("uefi"))]
+    pub efi_diagnostics_log_level: Option<EfiDiagnosticsLogLevelCli>,
+
     /// Perform a default boot even if boot entries exist and fail
     #[clap(long)]
     pub default_boot_always_attempt: bool,
@@ -578,6 +593,34 @@ syntax: <root_complex_name>:<name>
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_port: Vec<PcieRootPortCli>,
+
+    /// Attach a PCI Express switch to the VM
+    #[clap(long_help = r#"
+Attach switches to root ports or other switches to create PCIe hierarchies.
+
+Examples:
+    # Connect switch0 directly to root port rp0
+    --pcie-switch rp0:switch0,num_downstream_ports=4
+
+    # Connect switch1 to downstream port 0 of switch0
+    --pcie-switch switch0-downstream-0:switch1,num_downstream_ports=2
+
+    # Create a 3-level hierarchy: rp0 -> switch0 -> switch1 -> switch2
+    --pcie-switch rp0:switch0
+    --pcie-switch switch0-downstream-0:switch1
+    --pcie-switch switch1-downstream-1:switch2
+
+syntax: <port_name>:<name>[,opt=arg,...]
+
+port_name can be:
+    - Root port name (e.g., "rp0") to connect directly to a root port
+    - Downstream port name (e.g., "switch0-downstream-1") to connect to another switch
+
+options:
+    `num_downstream_ports=<value>`    number of downstream ports, default 4
+"#)]
+    #[clap(long, conflicts_with("pcat"))]
+    pub pcie_switch: Vec<GenericPcieSwitchCli>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -904,6 +947,7 @@ pub struct DiskCli {
     pub read_only: bool,
     pub is_dvd: bool,
     pub underhill: Option<UnderhillDiskSource>,
+    pub pcie_port: Option<String>,
 }
 
 #[derive(Copy, Clone)]
@@ -923,6 +967,7 @@ impl FromStr for DiskCli {
         let mut is_dvd = false;
         let mut underhill = None;
         let mut vtl = DeviceVtl::Vtl0;
+        let mut pcie_port = None;
         for opt in opts {
             let mut s = opt.split('=');
             let opt = s.next().unwrap();
@@ -937,6 +982,13 @@ impl FromStr for DiskCli {
                 }
                 "uh" => underhill = Some(UnderhillDiskSource::Scsi),
                 "uh-nvme" => underhill = Some(UnderhillDiskSource::Nvme),
+                "pcie_port" => {
+                    let port = s.next();
+                    if port.is_none_or(|p| p.is_empty()) {
+                        anyhow::bail!("`pcie_port` requires a port name");
+                    }
+                    pcie_port = Some(String::from(port.unwrap()));
+                }
                 opt => anyhow::bail!("unknown option: '{opt}'"),
             }
         }
@@ -945,12 +997,17 @@ impl FromStr for DiskCli {
             anyhow::bail!("`uh` or `uh-nvme` is incompatible with `vtl2`");
         }
 
+        if pcie_port.is_some() && (underhill.is_some() || vtl != DeviceVtl::Vtl0 || is_dvd) {
+            anyhow::bail!("`pcie_port` is incompatible with `uh`, `uh-nvme`, `vtl2`, and `dvd`");
+        }
+
         Ok(DiskCli {
             vtl,
             kind,
             read_only,
             is_dvd,
             underhill,
+            pcie_port,
         })
     }
 }
@@ -1390,6 +1447,14 @@ pub enum UefiConsoleModeCli {
     None,
 }
 
+#[derive(Copy, Clone, Debug, Default, ValueEnum)]
+pub enum EfiDiagnosticsLogLevelCli {
+    #[default]
+    Default,
+    Info,
+    Full,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PcieRootComplexCli {
     pub name: String,
@@ -1500,6 +1565,58 @@ impl FromStr for PcieRootPortCli {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct GenericPcieSwitchCli {
+    pub port_name: String,
+    pub name: String,
+    pub num_downstream_ports: u8,
+}
+
+impl FromStr for GenericPcieSwitchCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut opts = s.split(',');
+        let names = opts.next().context("expected switch identifiers")?;
+        if names.is_empty() {
+            anyhow::bail!("must provide switch identifiers");
+        }
+
+        let mut s = names.split(':');
+        let port_name = s.next().context("expected name of parent port")?;
+        let switch_name = s.next().context("expected switch name")?;
+
+        if let Some(extra) = s.next() {
+            anyhow::bail!("unexpected token: '{extra}'")
+        }
+
+        let mut num_downstream_ports = 4u8; // Default value
+
+        for opt in opts {
+            let mut kv = opt.split('=');
+            let key = kv.next().context("expected option name")?;
+            let value = kv.next().context("expected option value")?;
+
+            if let Some(extra) = kv.next() {
+                anyhow::bail!("unexpected token: '{extra}'")
+            }
+
+            match key {
+                "num_downstream_ports" => {
+                    num_downstream_ports = value.parse().context("invalid num_downstream_ports")?;
+                }
+                _ => anyhow::bail!("unknown option: '{key}'"),
+            }
+        }
+
+        Ok(GenericPcieSwitchCli {
+            port_name: port_name.to_string(),
+            name: switch_name.to_string(),
+            num_downstream_ports,
+        })
+    }
+}
+
 /// Read a environment variable that may / may-not have a target-specific
 /// prefix. e.g: `default_value_from_arch_env("FOO")` would first try and read
 /// from `FOO`, and if that's not found, it will try `X86_64_FOO`.
@@ -1599,6 +1716,34 @@ mod tests {
             }
             _ => panic!("Expected Memory variant"),
         }
+    }
+
+    #[test]
+    fn test_parse_pcie_disk() {
+        assert_eq!(
+            DiskCli::from_str("mem:1G,pcie_port=p0").unwrap().pcie_port,
+            Some("p0".to_string())
+        );
+        assert_eq!(
+            DiskCli::from_str("file:path.vhdx,pcie_port=p0")
+                .unwrap()
+                .pcie_port,
+            Some("p0".to_string())
+        );
+        assert_eq!(
+            DiskCli::from_str("memdiff:file:path.vhdx,pcie_port=p0")
+                .unwrap()
+                .pcie_port,
+            Some("p0".to_string())
+        );
+
+        // Missing port name
+        assert!(DiskCli::from_str("file:disk.vhd,pcie_port=").is_err());
+
+        // Incompatible with various other disk fields
+        assert!(DiskCli::from_str("file:disk.vhd,pcie_port=p0,vtl2").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,pcie_port=p0,uh").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,pcie_port=p0,uh-nvme").is_err());
     }
 
     #[test]
@@ -2110,5 +2255,53 @@ mod tests {
         assert!(PcieRootPortCli::from_str("rp0,opt").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0:rp3").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0,rp3").is_err());
+    }
+
+    #[test]
+    fn test_pcie_switch_from_str() {
+        assert_eq!(
+            GenericPcieSwitchCli::from_str("rp0:switch0").unwrap(),
+            GenericPcieSwitchCli {
+                port_name: "rp0".to_string(),
+                name: "switch0".to_string(),
+                num_downstream_ports: 4,
+            }
+        );
+
+        assert_eq!(
+            GenericPcieSwitchCli::from_str("port1:my_switch,num_downstream_ports=4").unwrap(),
+            GenericPcieSwitchCli {
+                port_name: "port1".to_string(),
+                name: "my_switch".to_string(),
+                num_downstream_ports: 4,
+            }
+        );
+
+        assert_eq!(
+            GenericPcieSwitchCli::from_str("rp2:sw,num_downstream_ports=8").unwrap(),
+            GenericPcieSwitchCli {
+                port_name: "rp2".to_string(),
+                name: "sw".to_string(),
+                num_downstream_ports: 8,
+            }
+        );
+
+        // Test hierarchical connections
+        assert_eq!(
+            GenericPcieSwitchCli::from_str("switch0-downstream-1:child_switch").unwrap(),
+            GenericPcieSwitchCli {
+                port_name: "switch0-downstream-1".to_string(),
+                name: "child_switch".to_string(),
+                num_downstream_ports: 4,
+            }
+        );
+
+        // Error cases
+        assert!(GenericPcieSwitchCli::from_str("").is_err());
+        assert!(GenericPcieSwitchCli::from_str("switch0").is_err());
+        assert!(GenericPcieSwitchCli::from_str("rp0:switch0:extra").is_err());
+        assert!(GenericPcieSwitchCli::from_str("rp0:switch0,invalid_opt=value").is_err());
+        assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=bad").is_err());
+        assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=").is_err());
     }
 }

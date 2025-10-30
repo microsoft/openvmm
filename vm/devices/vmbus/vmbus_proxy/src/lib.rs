@@ -148,7 +148,8 @@ impl VmbusProxy {
     {
         // SAFETY: guaranteed by caller.
         let (r, (_, output)) = unsafe { self.file.ioctl(code, input, output).await };
-        r?;
+        let size = r?;
+        assert_eq!(size, output.len(), "ioctl returned unexpected size");
         Ok(output)
     }
 
@@ -187,7 +188,8 @@ impl VmbusProxy {
             }
         };
 
-        r?;
+        let size = r?;
+        assert_eq!(size, output.len(), "ioctl returned unexpected size");
         Ok(output)
     }
 
