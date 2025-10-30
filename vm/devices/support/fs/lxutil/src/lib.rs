@@ -1097,7 +1097,7 @@ pub enum SetTime {
     /// Don't change the time.
     #[default]
     Omit,
-    /// Set the time to the specified vale.
+    /// Set the time to the specified value.
     Set(std::time::Duration),
     /// Set the time to the current time.
     Now,
