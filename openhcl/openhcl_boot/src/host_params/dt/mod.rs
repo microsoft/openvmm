@@ -523,7 +523,7 @@ fn topology_from_host_dt(
         .init()
         .expect("failed to initialize address space manager");
 
-    if params.isolation_type != IsolationType::None {
+    if params.isolation_type == IsolationType::None {
         if let Some(vtl2_gpa_pool_size) = pick_private_pool_size(
             options.enable_vtl2_gpa_pool,
             parsed.device_dma_page_count,
