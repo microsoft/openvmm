@@ -38,6 +38,9 @@ use smoltcp::wire::IPV4_HEADER_LEN;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
+use smoltcp::wire::Ipv6Address;
+use smoltcp::wire::Ipv6Cidr;
+use smoltcp::wire::Ipv6Packet;
 use std::net::SocketAddrV4;
 use std::task::Context;
 use thiserror::Error;
@@ -80,6 +83,18 @@ pub struct ConsommeParams {
     /// Current list of DNS resolvers.
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
     pub nameservers: Vec<Ipv4Address>,
+    /// Current IPv6 network mask (if any).
+    #[inspect(with = "Option::is_some")]
+    pub net_mask_ipv6: Option<u8>,
+    /// Current IPv6 gateway address (if any).
+    #[inspect(with = "Option::is_some")]
+    pub gateway_ip_ipv6: Option<Ipv6Address>,
+    /// Current IPv6 address assigned to endpoint (if any).
+    #[inspect(with = "Option::is_some")]
+    pub client_ip_ipv6: Option<Ipv6Address>,
+    /// Current list of IPv6 DNS resolvers.
+    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
+    pub nameservers_ipv6: Vec<Ipv6Address>,
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -101,6 +116,10 @@ impl ConsommeParams {
             client_mac: EthernetAddress([0x0, 0x0, 0x0, 0x0, 0x1, 0x0]),
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
+            net_mask_ipv6: None,
+            gateway_ip_ipv6: None,
+            client_ip_ipv6: None,
+            nameservers_ipv6: Vec::new(),
         })
     }
 
@@ -117,6 +136,51 @@ impl ConsommeParams {
         self.client_ip.0[3] += 2;
         self.net_mask = cidr.netmask();
         Ok(())
+    }
+
+    pub fn set_cidr_ipv6(&mut self, cidr: &str) -> Result<(), InvalidCidr> {
+        let cidr: Ipv6Cidr = cidr.parse().map_err(|()| InvalidCidr)?;
+        let base_address = self.network_address(&cidr);
+
+        // Convert to a mutable 16-byte array
+        let mut gateway = base_address.0;
+        let mut client = base_address.0;
+
+        // Safely increment the last 16-bit chunk (no overflow)
+        increment_ipv6(&mut gateway, 1);
+        increment_ipv6(&mut client, 2);
+
+        self.gateway_ip_ipv6 = Some(Ipv6Address(gateway));
+        self.client_ip_ipv6 = Some(Ipv6Address(client));
+        self.prefix_len_ipv6 = Some(cidr.prefix_len());
+
+        Ok(())
+    }
+
+    fn network_address(&self, cidr: &Ipv6Cidr) -> Ipv6Address {
+        let mut bytes = cidr.address().0;
+        let prefix = cidr.prefix_len();
+
+        // Zero out host bits beyond prefix_len
+        if prefix < 128 {
+            let byte_index = prefix / 8;
+            let bit_index = prefix % 8;
+
+            if bit_index != 0 {
+                bytes[byte_index] &= 0xFF << (8 - bit_index);
+            }
+
+            for i in (byte_index + 1)..16 {
+                bytes[i] = 0;
+            }
+        }
+
+        Ipv6Address(bytes)
+    }
+
+    fn increment_ipv6(addr: &mut [u8; 16], n: u128) {
+        let val = u128::from_be_bytes(*addr).wrapping_add(n);
+        *addr = val.to_be_bytes();
     }
 }
 
@@ -385,6 +449,7 @@ impl<T: Client> Access<'_, T> {
         let frame = EthernetRepr::parse(&frame_packet)?;
         match frame.ethertype {
             EthernetProtocol::Ipv4 => self.handle_ipv4(&frame, frame_packet.payload(), checksum)?,
+            EthernetProtocol::Ipv6 => self.handle_ipv6(&frame, frame_packet.payload(), checksum)?,
             EthernetProtocol::Arp => self.handle_arp(&frame, frame_packet.payload())?,
             _ => return Err(DropReason::UnsupportedEthertype(frame.ethertype)),
         }
@@ -439,5 +504,14 @@ impl<T: Client> Access<'_, T> {
             p => return Err(DropReason::UnsupportedIpProtocol(p)),
         };
         Ok(())
+    }
+
+    fn handle_ipv6(
+        &mut self,
+        frame: &EthernetRepr,
+        payload: &[u8],
+        checksum: &ChecksumState,
+    ) -> Result<(), DropReason> {
+        Err(DropReason::UnsupportedEthertype(EthernetProtocol::Ipv6))
     }
 }
