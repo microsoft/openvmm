@@ -240,7 +240,7 @@ impl BasicNic {
                      queue_pairs,
                  }| {
                     assert!(endpoint.is_ordered());
-                    let tasks: Vec<VportTask> = (0..(queue_pairs + 1))
+                    let tasks: Vec<VportTask> = (0..queue_pairs)
                         .map(|_| VportTask {
                             task: TaskControl::new(TxRxState),
                             queue_cfg: QueueCfg { tx: None, rx: None },
@@ -351,18 +351,8 @@ impl BasicNic {
                     }
                 });
 
-                // If no existing task had an available slot, create a new one
                 if !placed {
-                    let mut new_task = VportTask {
-                        task: TaskControl::new(TxRxState),
-                        queue_cfg: QueueCfg { tx: None, rx: None },
-                    };
-                    if is_send {
-                        new_task.queue_cfg.tx = Some((wq_id, cq_id, wq_handle));
-                    } else {
-                        new_task.queue_cfg.rx = Some((wq_id, cq_id, wq_handle));
-                    }
-                    vport.tasks.push(new_task);
+                    anyhow::bail!("all queues are already configured for vport={}", req.vport);
                 }
 
                 let resp = ManaCreateWqobjResp {
