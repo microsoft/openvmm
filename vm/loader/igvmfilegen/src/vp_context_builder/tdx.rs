@@ -216,6 +216,52 @@ impl VpContextBuilder for TdxHardwareContext {
         // mov cr3, rax
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x0F, 0x22, 0xD8]);
 
+        //HACK: skip the stall on the BSP
+        // test esi, esi
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x85, 0xF6]);
+
+        // jz skip_stall_for_bsp
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
+        byte_offset += 1;
+        let skip_stall_for_bsp = byte_offset;
+
+
+        //BEGIN HACK: Spin until we get a message from the boot shim to continue
+        //The message is sent via padding_1
+        let debug_spinloop = byte_offset;
+        // mov eax, [padding_1]
+        // 401025:       8b 05 d5 0f 00 00       mov    eax,DWORD PTR [rip+0xfd5]        # 402000 <memory_location>
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x8B, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+
+        // test eax, eax
+        //401023:       85 c0                   test   eax,eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x85, 0xC0]);
+
+        // jz debug_spinloop
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
+        byte_offset += 1;
+        reset_page[byte_offset.wrapping_sub(1)] =
+            (debug_spinloop.wrapping_sub(byte_offset)) as u8;
+
+        // xor eax, eax
+        //40102b:       31 c0                   xor    eax,eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xC0]);
+
+        // mov [padding_1], eax
+        //401000:       89 05 fa 0f 00 00       mov    DWORD PTR [rip+0xffa],eax        # 402000 <memory_location>
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x89, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+        //END HACK
+
+        // skip_stall_for_bsp:
+        reset_page[skip_stall_for_bsp.wrapping_sub(1)] =
+            (byte_offset.wrapping_sub(skip_stall_for_bsp)) as u8;
+
         // Load descriptor tables and selectors, except CS which will be loaded in
         // the final jump.  If no GDT is specified, then skip loading all
         // selectors.
@@ -323,38 +369,8 @@ impl VpContextBuilder for TdxHardwareContext {
 
         // Read the APIC_ID of this AP with a TDG.VP.VMCALL hypercall
 
-        //BEGIN HACK: Spin until we get a message from the boot shim to continue
-        //The message is sent via the task_selector
-        let debug_spinloop = byte_offset;
-        // mov eax, [padding_1]
-        // 401025:       8b 05 d5 0f 00 00       mov    eax,DWORD PTR [rip+0xfd5]        # 402000 <memory_location>
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x8B, 0x05]);
-        relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
-            .wrapping_sub((byte_offset + 4) as u32);
-        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
-
-        // test eax, eax
-        //401023:       85 c0                   test   eax,eax
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x85, 0xC0]);
-
-        // jz debug_spinloop
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
-        byte_offset += 1;
-        reset_page[byte_offset.wrapping_sub(1)] =
-            (debug_spinloop.wrapping_sub(byte_offset)) as u8;
-
-        // xor eax, eax
-        //40102b:       31 c0                   xor    eax,eax
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xC0]);
-
-        // mov [padding_1], eax
-        //401000:       89 05 fa 0f 00 00       mov    DWORD PTR [rip+0xffa],eax        # 402000 <memory_location>
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x89, 0x05]);
-        relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
-            .wrapping_sub((byte_offset + 4) as u32);
-        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
-        //END HACK
-
+        //TODO this should be xor rax, rax
+        //leaving this for the test
         // xor eax, eax
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xC0]);
 
@@ -385,10 +401,10 @@ impl VpContextBuilder for TdxHardwareContext {
         // tdcall
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x66, 0x0F, 0x01, 0xCC]);
 
-        //BEGIN HACK: send a 32-bit message to the boot shim
-        //Write the value in EAX to padding_3
-        //401013:       b8 ef be ad de          mov    $0xdeadbeef,%eax
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0xB8, 0xEF, 0xBE, 0xAD, 0xDE]);
+        //BEGIN HACK: send a 32-bit message to the boot shim by writing EAX to padding_3
+        //send the apic_id in padding_3
+        //40102d:       44 89 d8                mov    eax,r11d
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x44, 0x89, 0xD8]);
 
         //mov [padding_3], eax
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x89, 0x05]);
@@ -397,25 +413,25 @@ impl VpContextBuilder for TdxHardwareContext {
         byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
         //END HACK
 
+
         //HACK: move the tdcall result into unused register r15d, s.t. it can be used at mailbox
         //spinloop at end of RV
         //401024:       45 89 df                mov    %r11d,%r15d
-        // xor r10, r10
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x45, 0x89, 0xDF]);
         //END HACK
 
-
-        /*
         //BEGIN HACK: Spin until we get a message from the boot shim to continue
-        //The message is sent via the task_selector
+        //The message is sent via padding_1
         let debug_spinloop = byte_offset;
         // mov eax, [padding_1]
+        // 401025:       8b 05 d5 0f 00 00       mov    eax,DWORD PTR [rip+0xfd5]        # 402000 <memory_location>
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x8B, 0x05]);
         relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
             .wrapping_sub((byte_offset + 4) as u32);
         byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
 
         // test eax, eax
+        //401023:       85 c0                   test   eax,eax
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x85, 0xC0]);
 
         // jz debug_spinloop
@@ -425,24 +441,16 @@ impl VpContextBuilder for TdxHardwareContext {
             (debug_spinloop.wrapping_sub(byte_offset)) as u8;
 
         // xor eax, eax
+        //40102b:       31 c0                   xor    eax,eax
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xC0]);
 
         // mov [padding_1], eax
+        //401000:       89 05 fa 0f 00 00       mov    DWORD PTR [rip+0xffa],eax        # 402000 <memory_location>
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x89, 0x05]);
         relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
             .wrapping_sub((byte_offset + 4) as u32);
         byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
         //END HACK
-
-        //BEGIN HACK: send a 32-bit message to the boot shim
-        //Write the value in EAX to padding_3
-        //mov [padding_3], eax
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x89, 0x05]);
-        relative_offset = (offset_of!(TdxTrampolineContext, padding_3) as u32)
-            .wrapping_sub((byte_offset + 4) as u32);
-        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
-        //END HACK
-        */
 
         // skip_tdcall_for_bsp:
         reset_page[skip_tdcall_for_bsp.wrapping_sub(1)] =
@@ -528,6 +536,37 @@ impl VpContextBuilder for TdxHardwareContext {
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
         byte_offset += 1;
         let l7_offset = byte_offset;
+        //BEGIN HACK: Spin until we get a message from the boot shim to continue
+        //The message is sent via padding_1
+        let debug_spinloop = byte_offset;
+        // mov eax, [padding_1]
+        // 401025:       8b 05 d5 0f 00 00       mov    eax,DWORD PTR [rip+0xfd5]        # 402000 <memory_location>
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x8B, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+
+        // test eax, eax
+        //401023:       85 c0                   test   eax,eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x85, 0xC0]);
+
+        // jz debug_spinloop
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
+        byte_offset += 1;
+        reset_page[byte_offset.wrapping_sub(1)] =
+            (debug_spinloop.wrapping_sub(byte_offset)) as u8;
+
+        // xor eax, eax
+        //40102b:       31 c0                   xor    eax,eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xC0]);
+
+        // mov [padding_1], eax
+        //401000:       89 05 fa 0f 00 00       mov    DWORD PTR [rip+0xffa],eax        # 402000 <memory_location>
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x89, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+        //END HACK
 
         //HACK: Moved mailbox spinloop here. More appropriate?
         //Spin until the kernel requests this AP to continue in the mailbox
