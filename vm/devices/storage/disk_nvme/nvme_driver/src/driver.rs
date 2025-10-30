@@ -604,7 +604,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     )
                     .unwrap(),
                     device_id: self.device_id.clone(),
-                    // TODO: See the description above, save the vector once resolved.
                     namespaces,
                     worker_data: s,
                 })
