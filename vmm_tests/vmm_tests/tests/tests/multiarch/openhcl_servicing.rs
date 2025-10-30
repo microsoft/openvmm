@@ -373,7 +373,7 @@ async fn servicing_keepalive_with_nvme_namespace_fault(
         .with_admin_queue_fault(
             AdminQueueFaultConfig::new().with_submission_queue_fault(
                 CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::IDENTIFY.0).match_cdw10(nvme_spec::Cdw10Identify::new().with_cns(nvme_spec::Cns::NAMESPACE.0).into(), nvme_spec::Cdw10Identify::new().with_cns(u8::MAX).into()).build(),
-                QueueFaultBehavior::Panic("Received a IDENTIFY command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
+                QueueFaultBehavior::Panic("Received an IDENTIFY command during servicing with keepalive enabled (And no namespaces were updated). THERE IS A BUG SOMEWHERE.".to_string()),
             ),
         );
 
