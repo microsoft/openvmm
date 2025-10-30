@@ -897,10 +897,10 @@ impl InitializedVm {
         )
         .context("invalid memory configuration")?;
 
-        if mem_layout.end_of_ram_or_mmio() > 1 << physical_address_size {
+        if mem_layout.end_of_layout() > 1 << physical_address_size {
             anyhow::bail!(
                 "memory layout ends at {:#x}, which exceeds the address with of {} bits",
-                mem_layout.end_of_ram_or_mmio(),
+                mem_layout.end_of_layout(),
                 physical_address_size
             );
         }

@@ -716,14 +716,16 @@ fn vm_config_from_command_line(
             Vtl2BaseAddressType::Vtl2Allocate { .. },
         );
 
-    let is_arm = cfg!(guest_arch = "aarch64");
-    let is_x86 = cfg!(guest_arch = "x86_64");
+    #[cfg(guest_arch = "aarch64")]
+    let arch = MachineArch::Aarch64;
+    #[cfg(guest_arch = "x86_64")]
+    let arch = MachineArch::X86_64;
 
-    let mmio_gaps: Vec<MemoryRange> = match (use_vtl2_gap, is_x86) {
-        (true, true) => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
-        (true, false) => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
-        (false, true) => DEFAULT_MMIO_GAPS_X86.into(),
-        (false, false) => DEFAULT_MMIO_GAPS_AARCH64.into(),
+    let mmio_gaps: Vec<MemoryRange> = match (use_vtl2_gap, arch) {
+        (true, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
+        (true, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
+        (false, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86.into(),
+        (false, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64.into(),
     };
     let mut device_reserved_gaps = Vec::new();
 
@@ -831,11 +833,7 @@ fn vm_config_from_command_line(
         } else {
             BaseChipsetType::UnenlightenedLinuxDirect
         },
-        if is_x86 {
-            MachineArch::X86_64
-        } else {
-            MachineArch::Aarch64
-        },
+        arch,
     );
 
     if framebuffer.is_some() {
@@ -887,7 +885,7 @@ fn vm_config_from_command_line(
         };
     } else if opt.pcat {
         // Emit a nice error early instead of complaining about missing firmware.
-        if !is_x86 {
+        if arch != MachineArch::X86_64 {
             anyhow::bail!("pcat not supported on this architecture");
         }
         with_hv = true;
@@ -1144,29 +1142,20 @@ fn vm_config_from_command_line(
         // load base vars from specified template, or use an empty set of base
         // vars if none was specified.
         let base_vars = match opt.secure_boot_template {
-            Some(template) => {
-                if is_x86 {
-                    match template {
-                        SecureBootTemplateCli::Windows => {
-                            hyperv_secure_boot_templates::x64::microsoft_windows()
-                        }
-                        SecureBootTemplateCli::UefiCa => {
-                            hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
-                        }
-                    }
-                } else if is_arm {
-                    match template {
-                        SecureBootTemplateCli::Windows => {
-                            hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                        }
-                        SecureBootTemplateCli::UefiCa => {
-                            hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
-                        }
-                    }
-                } else {
-                    anyhow::bail!("no secure boot template for current guest_arch")
+            Some(template) => match (arch, template) {
+                (MachineArch::X86_64, SecureBootTemplateCli::Windows) => {
+                    hyperv_secure_boot_templates::x64::microsoft_windows()
                 }
-            }
+                (MachineArch::X86_64, SecureBootTemplateCli::UefiCa) => {
+                    hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
+                }
+                (MachineArch::Aarch64, SecureBootTemplateCli::Windows) => {
+                    hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                }
+                (MachineArch::Aarch64, SecureBootTemplateCli::UefiCa) => {
+                    hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
+                }
+            },
             None => CustomVars::default(),
         };
 

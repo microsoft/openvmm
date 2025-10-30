@@ -319,9 +319,12 @@ impl MemoryLayout {
         )
     }
 
-    /// One past the last byte of RAM, or the highest mmio range.
-    pub fn end_of_ram_or_mmio(&self) -> u64 {
-        std::cmp::max(self.mmio.last().expect("mmio set").end(), self.end_of_ram())
+    /// One past the last byte of RAM, MMIO, or device reserved range.
+    pub fn end_of_layout(&self) -> u64 {
+        std::cmp::max(
+            std::cmp::max(self.mmio.last().expect("mmio set").end(), self.end_of_ram()),
+            self.device_reserved.last().map(|r| r.end()).unwrap_or(0),
+        )
     }
 
     /// Probe a given address to see if it is in the memory layout described by
@@ -402,6 +405,7 @@ mod tests {
         assert_eq!(layout.mmio(), mmio);
         assert_eq!(layout.ram_size(), TB);
         assert_eq!(layout.end_of_ram(), TB + 2 * GB);
+        assert_eq!(layout.end_of_layout(), TB + 2 * GB);
 
         let layout = MemoryLayout::new_from_ranges(ram, mmio).unwrap();
         assert_eq!(
@@ -424,6 +428,7 @@ mod tests {
         assert_eq!(layout.mmio(), mmio);
         assert_eq!(layout.ram_size(), TB);
         assert_eq!(layout.end_of_ram(), TB + 2 * GB);
+        assert_eq!(layout.end_of_layout(), TB + 2 * GB);
     }
 
     #[test]
@@ -467,6 +472,7 @@ mod tests {
         let device_reserved = &[
             MemoryRange::new(2 * GB..3 * GB),
             MemoryRange::new(5 * GB..6 * GB),
+            MemoryRange::new(2 * TB - GB..2 * TB),
         ];
 
         let layout = MemoryLayout::new(TB, mmio, device_reserved, None).unwrap();
@@ -487,6 +493,7 @@ mod tests {
                 },
             ]
         );
+        assert_eq!(layout.end_of_layout(), 2 * TB);
 
         assert_eq!(
             layout.probe_address(2 * GB),

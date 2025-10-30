@@ -113,7 +113,7 @@ async fn parse_guest_pci_devices(
 )]
 async fn pcie_root_emulation(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024;
-    const HIGH_MMIO_SIZE: u64 = 1 * 1024 * 1024 * 1024;
+    const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024;
 
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
