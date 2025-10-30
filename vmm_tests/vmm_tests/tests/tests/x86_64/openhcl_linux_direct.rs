@@ -214,7 +214,7 @@ async fn openhcl_linux_vtl2_ram_self_allocate(
         .with_vtl2_base_address_type(Vtl2BaseAddressType::Vtl2Allocate {
             size: Some(vtl2_ram_size),
         })
-        .with_openhcl_command_line("ENABLE_VTL2_GPA_POOL=off") // Private pool steals from reported memory usage, disable it for this test.
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=off") // Private pool steals from reported memory usage, disable it for this test.
         .run()
         .await?;
 

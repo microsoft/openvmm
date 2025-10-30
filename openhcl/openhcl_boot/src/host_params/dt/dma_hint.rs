@@ -39,7 +39,7 @@ use igvm_defs::PAGE_SIZE_4K;
 ///
 /// The table is sorted by VP count, then by assigned memory.
 /// (vp_count, vtl2_memory_mb, dma_hint_mb)
-const LOOKUP_TABLE_RELEASE: &[(u16, u16, u16); 38] = &[
+const LOOKUP_TABLE_RELEASE: &[(u16, u16, u16); 39] = &[
     (2, 96, 2),
     (2, 98, 4),
     (2, 100, 4),
@@ -53,6 +53,7 @@ const LOOKUP_TABLE_RELEASE: &[(u16, u16, u16); 38] = &[
     (8, 148, 10),
     (8, 170, 20),
     (8, 176, 20),
+    (16, 70, 2), // Default manifest is 70MiB. Allocate minimal space for a few NVMe queues.
     (16, 234, 12),
     (16, 256, 20), // There is another 16vp/256MB configuration that only requires 18 MB of DMA memory, pick the larger.
     (16, 268, 38),
