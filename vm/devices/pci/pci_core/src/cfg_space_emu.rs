@@ -247,17 +247,25 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
 
     /// Reset the common header state
     pub fn reset(&mut self) {
+        tracing::info!("ConfigSpaceCommonHeaderEmulator: resetting state");
         self.state = ConfigSpaceCommonHeaderEmulatorState::new();
 
+        tracing::info!("ConfigSpaceCommonHeaderEmulator: syncing command register after reset");
         self.sync_command_register(self.state.command);
 
+        tracing::info!(
+            "ConfigSpaceCommonHeaderEmulator: resetting {} capabilities",
+            self.capabilities.len()
+        );
         for cap in &mut self.capabilities {
             cap.reset();
         }
 
         if let Some(intx) = &mut self.intx_interrupt {
+            tracing::info!("ConfigSpaceCommonHeaderEmulator: resetting interrupt level");
             intx.set_level(false);
         }
+        tracing::info!("ConfigSpaceCommonHeaderEmulator: reset completed");
     }
 
     /// Get hardware IDs
@@ -312,12 +320,21 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
 
     /// Sync command register changes by updating both interrupt and MMIO state
     pub fn sync_command_register(&mut self, command: cfg_space::Command) {
+        tracing::info!(
+            "ConfigSpaceCommonHeaderEmulator: syncing command register - intx_disable={}, mmio_enabled={}",
+            command.intx_disable(),
+            command.mmio_enabled()
+        );
         self.update_intx_disable(command.intx_disable());
         self.update_mmio_enabled(command.mmio_enabled());
     }
 
     /// Update interrupt disable setting
     pub fn update_intx_disable(&mut self, disabled: bool) {
+        tracing::info!(
+            "ConfigSpaceCommonHeaderEmulator: updating intx_disable={}",
+            disabled
+        );
         if let Some(intx_interrupt) = &self.intx_interrupt {
             intx_interrupt.set_disabled(disabled)
         }
@@ -325,6 +342,10 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
 
     /// Update MMIO enabled setting and handle BAR mapping
     pub fn update_mmio_enabled(&mut self, enabled: bool) {
+        tracing::info!(
+            "ConfigSpaceCommonHeaderEmulator: updating mmio_enabled={}",
+            enabled
+        );
         if enabled {
             // For now, we need to work with the constraint that BarMappings expects 6 BARs
             // We'll pad with zeros for Type 1 (N=2) and use directly for Type 0 (N=6)
@@ -368,6 +389,11 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
     /// Returns CommonHeaderResult indicating if handled, unhandled, or failed.
     pub fn read_u32(&self, offset: u16, value: &mut u32) -> CommonHeaderResult {
         use cfg_space::CommonHeader;
+
+        tracing::trace!(
+            "ConfigSpaceCommonHeaderEmulator: read_u32 offset={:#x}",
+            offset
+        );
 
         *value = match CommonHeader(offset) {
             CommonHeader::DEVICE_VENDOR => {
@@ -417,6 +443,11 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
             }
         };
 
+        tracing::trace!(
+            "ConfigSpaceCommonHeaderEmulator: read_u32 offset={:#x} -> value={:#x}",
+            offset,
+            *value
+        );
         // Handled access
         CommonHeaderResult::Handled
     }
@@ -425,6 +456,12 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
     /// Returns CommonHeaderResult indicating if handled, unhandled, or failed.
     pub fn write_u32(&mut self, offset: u16, val: u32) -> CommonHeaderResult {
         use cfg_space::CommonHeader;
+
+        tracing::trace!(
+            "ConfigSpaceCommonHeaderEmulator: write_u32 offset={:#x} val={:#x}",
+            offset,
+            val
+        );
 
         match CommonHeader(offset) {
             CommonHeader::STATUS_COMMAND => {
@@ -1159,6 +1196,11 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            tracing::info!(
+                "ConfigSpaceCommonHeaderEmulator<{}>: starting save operation",
+                N
+            );
+
             let ConfigSpaceCommonHeaderEmulatorState {
                 command,
                 base_addresses,
@@ -1172,6 +1214,14 @@ mod save_restore {
                     saved_base_addresses[i] = addr;
                 }
             }
+
+            tracing::info!(
+                "ConfigSpaceCommonHeaderEmulator<{}>: saving state - command={:#x}, interrupt_line={}, base_addresses={:?}",
+                N,
+                command.into_bits(),
+                interrupt_line,
+                saved_base_addresses
+            );
 
             let saved_state = state::SavedState {
                 command: command.into_bits(),
@@ -1188,10 +1238,19 @@ mod save_restore {
                     .collect::<Result<_, _>>()?,
             };
 
+            tracing::info!(
+                "ConfigSpaceCommonHeaderEmulator<{}>: save operation completed successfully",
+                N
+            );
             Ok(saved_state)
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            tracing::info!(
+                "ConfigSpaceCommonHeaderEmulator<{}>: starting restore operation",
+                N
+            );
+
             let state::SavedState {
                 command,
                 base_addresses,
@@ -1199,6 +1258,14 @@ mod save_restore {
                 latency_timer: _, // Ignore latency_timer field
                 capabilities,
             } = state;
+
+            tracing::info!(
+                "ConfigSpaceCommonHeaderEmulator<{}>: restoring state - command={:#x}, interrupt_line={}, base_addresses={:?}",
+                N,
+                command,
+                interrupt_line,
+                base_addresses
+            );
 
             // Convert from 6-element array, taking only what we need
             let mut restored_base_addresses = {
@@ -1218,12 +1285,27 @@ mod save_restore {
             };
 
             if command & !SUPPORTED_COMMAND_BITS != 0 {
+                tracing::warn!(
+                    "ConfigSpaceCommonHeaderEmulator<{}>: invalid command bits found: {:#x}",
+                    N,
+                    command
+                );
                 return Err(RestoreError::InvalidSavedState(
                     ConfigSpaceRestoreError::InvalidConfigBits.into(),
                 ));
             }
 
+            tracing::info!(
+                "ConfigSpaceCommonHeaderEmulator<{}>: syncing command register",
+                N
+            );
             self.sync_command_register(self.state.command);
+
+            tracing::info!(
+                "ConfigSpaceCommonHeaderEmulator<{}>: restoring {} capabilities",
+                N,
+                capabilities.len()
+            );
             for (id, entry) in capabilities {
                 tracing::debug!(
                     save_id = id.as_str(),
@@ -1242,12 +1324,21 @@ mod save_restore {
                 }
 
                 if !restored {
+                    tracing::error!(
+                        "ConfigSpaceCommonHeaderEmulator<{}>: failed to find capability: {}",
+                        N,
+                        id
+                    );
                     return Err(RestoreError::InvalidSavedState(
                         ConfigSpaceRestoreError::InvalidCap(id).into(),
                     ));
                 }
             }
 
+            tracing::info!(
+                "ConfigSpaceCommonHeaderEmulator<{}>: restore operation completed successfully",
+                N
+            );
             Ok(())
         }
     }
@@ -1271,26 +1362,43 @@ mod save_restore {
         type SavedState = type0_state::SavedType0State;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            tracing::info!("ConfigSpaceType0Emulator: starting save operation");
+
             let ConfigSpaceType0EmulatorState { latency_timer } = self.state;
+
+            tracing::info!(
+                "ConfigSpaceType0Emulator: saving latency_timer={}",
+                latency_timer
+            );
 
             let saved_state = type0_state::SavedType0State {
                 latency_timer,
                 common_header: self.common.save()?,
             };
 
+            tracing::info!("ConfigSpaceType0Emulator: save operation completed successfully");
             Ok(saved_state)
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            tracing::info!("ConfigSpaceType0Emulator: starting restore operation");
+
             let type0_state::SavedType0State {
                 latency_timer,
                 common_header,
             } = state;
 
+            tracing::info!(
+                "ConfigSpaceType0Emulator: restoring latency_timer={}",
+                latency_timer
+            );
+
             self.state = ConfigSpaceType0EmulatorState { latency_timer };
 
+            tracing::info!("ConfigSpaceType0Emulator: delegating to common header restore");
             self.common.restore(common_header)?;
 
+            tracing::info!("ConfigSpaceType0Emulator: restore operation completed successfully");
             Ok(())
         }
     }

@@ -44,10 +44,25 @@ impl PcieDownstreamPort {
         port_type: DevicePortType,
         multi_function: bool,
     ) -> Self {
+        let port_name = name.into();
+        tracing::info!(
+            "PcieDownstreamPort: creating new PCIe port '{}' with type {:?}, multi_function={}",
+            port_name,
+            port_type,
+            multi_function
+        );
+
         let mut msi_set = MsiInterruptSet::new();
 
         // Create MSI capability with 1 message (multiple_message_capable=0), 64-bit addressing, no per-vector masking
         let msi_capability = MsiCapability::new(0, true, false, &mut msi_set);
+
+        tracing::info!(
+            "PcieDownstreamPort: '{}' creating config space with hardware_ids - vendor={:#x}, device={:#x}",
+            port_name,
+            hardware_ids.vendor_id,
+            hardware_ids.device_id
+        );
 
         let cfg_space = ConfigSpaceType1Emulator::new(
             hardware_ids,
@@ -58,8 +73,10 @@ impl PcieDownstreamPort {
         )
         .with_multi_function_bit(multi_function);
 
+        tracing::info!("PcieDownstreamPort: '{}' created successfully", port_name);
+
         Self {
-            name: name.into(),
+            name: port_name,
             cfg_space,
             link: None,
             msi_set,
