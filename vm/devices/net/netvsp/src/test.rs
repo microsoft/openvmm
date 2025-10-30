@@ -806,6 +806,18 @@ impl TestNicSubchannel {
     }
 }
 
+struct NvspMessage<T> {
+    header: protocol::MessageHeader,
+    data: T,
+    padding: &'static [u8],
+}
+
+impl<T: IntoBytes + Immutable + KnownLayout> NvspMessage<T> {
+    fn payload(&self) -> [&[u8]; 3] {
+        [self.header.as_bytes(), self.data.as_bytes(), self.padding]
+    }
+}
+
 struct TestNicChannel<'a> {
     pub mtu: u32,
     nic: &'a mut TestNicDevice,
