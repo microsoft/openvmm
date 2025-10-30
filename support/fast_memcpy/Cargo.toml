@@ -8,5 +8,12 @@ edition.workspace = true
 
 [dependencies]
 
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "perf"
+harness = false
+
 [lints]
 workspace = true

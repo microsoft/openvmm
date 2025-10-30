@@ -12,14 +12,14 @@
 #![expect(clippy::undocumented_unsafe_blocks)]
 
 /// Optimized memmove implementation.
-#[cfg_attr(not(test), unsafe(no_mangle))]
+//#[cfg_attr(not(test), unsafe(no_mangle))]
 pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
     // Our memcpy handles overlapping regions correctly.
     unsafe { memcpy(dest, src, len) }
 }
 
 /// Optimized memcpy implementation.
-#[cfg_attr(not(test), unsafe(no_mangle))]
+//#[cfg_attr(not(test), unsafe(no_mangle))]
 pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
     unsafe {
         // Handle small sizes with specialized code. For some values, perform a
