@@ -30,13 +30,13 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *m
             0 => {}
             1 => copy_one::<u8>(dest, src),
             2 => copy_one::<u16>(dest.cast(), src.cast()),
-            3 => copy_one::<[u8; 3]>(dest.cast(), src.cast()),
+            3 => copy_one::<U8x3>(dest.cast(), src.cast()),
             4 => copy_one::<u32>(dest.cast(), src.cast()),
             n if n < 8 => copy_two::<u32>(dest.cast(), src.cast(), len),
             n if n < 16 => copy_two::<u64>(dest.cast(), src.cast(), len),
-            n if n <= 32 => copy_two::<u128>(dest.cast(), src.cast(), len),
-            n if n <= 64 => copy_two::<[u128; 2]>(dest.cast(), src.cast(), len),
-            n if n <= 128 => copy_two::<[u128; 4]>(dest.cast(), src.cast(), len),
+            n if n <= 32 => copy_two::<U128>(dest.cast(), src.cast(), len),
+            n if n <= 64 => copy_two::<U128x2>(dest.cast(), src.cast(), len),
+            n if n <= 128 => copy_two::<U128x4>(dest.cast(), src.cast(), len),
             _ => {
                 // This is a big copy. Align `dest` so that writes, at least,
                 // are aligned. Then loop using 64-byte chunks, which gives the
@@ -44,9 +44,9 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *m
                 if !overlaps(dest, src, len) {
                     // Copy the first 16 bytes, then resume at the next aligned
                     // address.
-                    copy_one::<u128>(dest.cast(), src.cast());
+                    copy_one::<U128>(dest.cast(), src.cast());
                     let offset = 16 - dest.addr() % 16;
-                    copy_loop_dest_aligned_forward::<[u128; 4]>(
+                    copy_loop_dest_aligned_forward::<U128x4>(
                         dest.byte_add(offset).cast(),
                         src.byte_add(offset).cast(),
                         len - offset,
@@ -55,27 +55,27 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *m
                     // Save the first 16 bytes, writing them after the rest is
                     // copied in the forward direction to avoid overwriting what
                     // we're reading.
-                    let head = read_one(src.cast::<u128>());
+                    let head = read_one(src.cast::<U128>());
                     let offset = 16 - dest.addr() % 16;
-                    copy_loop_dest_aligned_forward::<[u128; 4]>(
+                    copy_loop_dest_aligned_forward::<U128x4>(
                         dest.byte_add(offset).cast(),
                         src.byte_add(offset).cast(),
                         len - offset,
                     );
                     // Write the head now that the rest is copied.
-                    write_one(dest.cast::<u128>(), head);
+                    write_one(dest.cast::<U128>(), head);
                 } else {
                     // As before, but save the _last_ 16 bytes and copy
                     // backwards to avoid overwriting what we're reading.
-                    let tail = read_one(src.byte_add(len - 16).cast::<u128>());
+                    let tail = read_one(src.byte_add(len - 16).cast::<U128>());
                     let offset = (dest.addr() + len) % 16;
-                    copy_loop_dest_aligned_backward::<[u128; 4]>(
+                    copy_loop_dest_aligned_backward::<U128x4>(
                         dest.cast(),
                         src.cast(),
                         len - offset,
                     );
                     // Write the tail now that the rest is copied.
-                    write_one(dest.byte_add(len - 16).cast::<u128>(), tail);
+                    write_one(dest.byte_add(len - 16).cast::<U128>(), tail);
                 }
             }
         }
@@ -98,15 +98,18 @@ trait Chunk: Copy {
     unsafe fn write_aligned(this: *mut Self, val: Self);
 }
 
+#[repr(packed)]
+struct Packed<T>(T);
+
 macro_rules! scalar {
     ($($ty:ty),* $(,)?) => {
         $(
         impl Chunk for $ty {
             unsafe fn read_unaligned(this: *const Self) -> Self {
-                unsafe { this.read_unaligned() }
+                unsafe { this.cast::<Packed<Self>>().read().0 }
             }
             unsafe fn write_unaligned(this: *mut Self, val: Self) {
-                unsafe { this.write_unaligned(val) }
+                unsafe { this.cast::<Packed<Self>>().write(Packed(val)) }
             }
             unsafe fn write_aligned(this: *mut Self, val: Self) {
                 unsafe { this.write(val) }
@@ -116,24 +119,85 @@ macro_rules! scalar {
     }
 }
 
-scalar!(u8, u16, u32, u64, u128);
+scalar!(u8, u16, u32, u64, U128, U8x3);
 
-impl<T: Chunk, const N: usize> Chunk for [T; N] {
+// Avoid using arrays to discourage the compiler from spilling to the stack.
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct U8x3(u8, u8, u8);
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct U128x2(U128, U128);
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct U128x4(U128, U128, U128, U128);
+
+// Use a SIMD type when possible to encourage better register use.
+#[cfg(target_arch = "x86_64")]
+type U128 = core::arch::x86_64::__m128i;
+#[cfg(target_arch = "aarch64")]
+type U128 = core::arch::aarch64::uint8x16_t;
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+type U128 = u128;
+
+// Read/write in pieces to discourage the compiler from copying to the stack.
+impl Chunk for U128x2 {
     unsafe fn read_unaligned(this: *const Self) -> Self {
-        unsafe { this.read_unaligned() }
+        unsafe {
+            let this = this.cast::<Packed<U128>>();
+            let a = this.read().0;
+            let b = this.add(1).read().0;
+            Self(a, b)
+        }
     }
     unsafe fn write_unaligned(this: *mut Self, val: Self) {
-        let this = this.cast::<T>();
-        #[expect(clippy::needless_range_loop, reason = "better codegen")]
-        for i in 0..N {
-            unsafe { write_one(this.add(i), val[i]) };
+        unsafe {
+            let Self(a, b) = val;
+            let this = this.cast::<Packed<U128>>();
+            this.write(Packed(a));
+            this.add(1).write(Packed(b));
         }
     }
     unsafe fn write_aligned(this: *mut Self, val: Self) {
-        let this = this.cast::<T>();
-        #[expect(clippy::needless_range_loop, reason = "better codegen")]
-        for i in 0..N {
-            unsafe { write_one_aligned(this.add(i), val[i]) };
+        unsafe {
+            let Self(a, b) = val;
+            let this = this.cast::<U128>();
+            this.write(a);
+            this.add(1).write(b);
+        }
+    }
+}
+
+// Read/write in pieces to discourage the compiler from copying to the stack.
+impl Chunk for U128x4 {
+    unsafe fn read_unaligned(this: *const Self) -> Self {
+        unsafe {
+            let this = this.cast::<Packed<U128>>();
+            let a = this.read().0;
+            let b = this.add(1).read().0;
+            let c = this.add(2).read().0;
+            let d = this.add(3).read().0;
+            Self(a, b, c, d)
+        }
+    }
+    unsafe fn write_unaligned(this: *mut Self, val: Self) {
+        unsafe {
+            let Self(a, b, c, d) = val;
+            let this = this.cast::<Packed<U128>>();
+            this.write(Packed(a));
+            this.add(1).write(Packed(b));
+            this.add(2).write(Packed(c));
+            this.add(3).write(Packed(d));
+        }
+    }
+    unsafe fn write_aligned(this: *mut Self, val: Self) {
+        unsafe {
+            let Self(a, b, c, d) = val;
+            let this = this.cast::<U128>();
+            this.write(a);
+            this.add(1).write(b);
+            this.add(2).write(c);
+            this.add(3).write(d);
         }
     }
 }
@@ -182,6 +246,7 @@ unsafe fn copy_two<T: Chunk>(dest: *mut T, src: *const T, len: usize) {
 ///
 /// Overlap is allowed, but the copy is done forwards, so `dest` must be
 /// before `src` or non-overlapping.
+#[inline(always)]
 unsafe fn copy_loop_dest_aligned_forward<T: Chunk>(dest: *mut T, src: *const T, len: usize) {
     unsafe {
         debug_assert!(dest.is_aligned());
@@ -211,6 +276,7 @@ unsafe fn copy_loop_dest_aligned_forward<T: Chunk>(dest: *mut T, src: *const T, 
 ///
 /// Overlap is allowed, but the copy is done backwards, so `dest` must be after
 /// `src` or non-overlapping.
+#[inline(always)]
 unsafe fn copy_loop_dest_aligned_backward<T: Chunk>(dest: *mut T, src: *const T, len: usize) {
     unsafe {
         debug_assert!(dest.byte_add(len).is_aligned());
@@ -272,7 +338,7 @@ mod tests {
                     expected
                 };
                 unsafe {
-                    super::memcpy(
+                    super::memmove(
                         core::hint::black_box(dest_ptr),
                         core::hint::black_box(src_ptr),
                         core::hint::black_box(len),
