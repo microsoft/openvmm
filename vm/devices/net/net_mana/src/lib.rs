@@ -42,7 +42,6 @@ use net_backend::BackendQueueStats;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
-use net_backend::L3Protocol;
 use net_backend::L4Protocol;
 use net_backend::MultiQueueSupport;
 use net_backend::Queue;
@@ -1002,13 +1001,13 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                 unreachable!()
             };
 
-            if let Some(tx) = self.handle_tx(&segments[i..i + meta.segment_count])? {
+            if let Some(tx) = self.handle_tx(&segments[i..i + meta.segment_count as usize])? {
                 commit = true;
                 self.posted_tx.push_back(tx);
             } else {
                 self.dropped_tx.push_back(meta.id);
             }
-            i += meta.segment_count;
+            i += meta.segment_count as usize;
         }
 
         if commit {
@@ -1109,15 +1108,15 @@ impl<T: DeviceBacking> ManaQueue<T> {
         oob.s_oob
             .set_vsq_frame((self.tx_wq.id() >> 10) as u16 & 0x3fff);
 
+        oob.s_oob.set_is_outer_ipv4(meta.flags.is_ipv4());
+        oob.s_oob.set_is_outer_ipv6(meta.flags.is_ipv6());
         oob.s_oob
-            .set_is_outer_ipv4(meta.l3_protocol == L3Protocol::Ipv4);
+            .set_comp_iphdr_csum(meta.flags.offload_ip_header_checksum());
         oob.s_oob
-            .set_is_outer_ipv6(meta.l3_protocol == L3Protocol::Ipv6);
+            .set_comp_tcp_csum(meta.flags.offload_tcp_checksum());
         oob.s_oob
-            .set_comp_iphdr_csum(meta.offload_ip_header_checksum);
-        oob.s_oob.set_comp_tcp_csum(meta.offload_tcp_checksum);
-        oob.s_oob.set_comp_udp_csum(meta.offload_udp_checksum);
-        if meta.offload_tcp_checksum {
+            .set_comp_udp_csum(meta.flags.offload_udp_checksum());
+        if meta.flags.offload_tcp_checksum() {
             oob.s_oob.set_trans_off(meta.l2_len as u16 + meta.l3_len);
         }
         let short_format = self.vp_offset <= 0xff;
@@ -1131,9 +1130,9 @@ impl<T: DeviceBacking> ManaQueue<T> {
 
         let mut bounce_buffer = self.tx_bounce_buffer.start_allocation();
         let tx = if self.rx_bounce_buffer.is_some() {
-            assert!(!meta.offload_tcp_segmentation);
+            assert!(!meta.flags.offload_tcp_segmentation());
             let gd_client_unit_data = 0;
-            let mut buf: ContiguousBuffer<'_, '_> = match bounce_buffer.allocate(meta.len as u32) {
+            let mut buf: ContiguousBuffer<'_, '_> = match bounce_buffer.allocate(meta.len) {
                 Ok(buf) => buf,
                 Err(err) => {
                     tracelimit::error_ratelimited!(
@@ -1155,7 +1154,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
             let sge = Sge {
                 address: buf.gpa,
                 mem_key: self.mem_key,
-                size: meta.len as u32,
+                size: meta.len,
             };
             let wqe_len = if short_format {
                 self.tx_wq
@@ -1174,7 +1173,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
         } else {
             let mut gd_client_unit_data = 0;
             let mut header_len = head.len;
-            let (header_segment_count, partial_bytes) = if meta.offload_tcp_segmentation {
+            let (header_segment_count, partial_bytes) = if meta.flags.offload_tcp_segmentation() {
                 header_len = (meta.l2_len as u16 + meta.l3_len + meta.l4_len as u16) as u32;
                 if header_len > PAGE_SIZE32 {
                     tracelimit::error_ratelimited!(
@@ -1276,7 +1275,8 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 1
             };
 
-            let mut segment_count = tail_sgl_offset + meta.segment_count - header_segment_count;
+            let mut segment_count =
+                tail_sgl_offset + meta.segment_count as usize - header_segment_count;
             let mut sgl_idx = tail_sgl_offset - 1;
             let sgl = if segment_count <= hardware_segment_limit {
                 for (tail, sge) in segments[header_segment_count..]
@@ -1362,7 +1362,9 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     .push(
                         &oob.s_oob,
                         sgl.iter().copied(),
-                        meta.offload_tcp_segmentation.then(|| sgl[0].size as u8),
+                        meta.flags
+                            .offload_tcp_segmentation()
+                            .then(|| sgl[0].size as u8),
                         gd_client_unit_data,
                     )
                     .unwrap()
@@ -1371,7 +1373,9 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     .push(
                         &oob,
                         sgl.iter().copied(),
-                        meta.offload_tcp_segmentation.then(|| sgl[0].size as u8),
+                        meta.flags
+                            .offload_tcp_segmentation()
+                            .then(|| sgl[0].size as u8),
                         gd_client_unit_data,
                     )
                     .unwrap()
@@ -1604,8 +1608,8 @@ mod tests {
         let tx_id = 1;
         let tx_metadata = net_backend::TxMetadata {
             id: TxId(tx_id),
-            segment_count: num_segments,
-            len: packet_len,
+            segment_count: num_segments as u8,
+            len: packet_len as u32,
             ..Default::default()
         };
         let expected_num_received_packets = 1;
@@ -1795,8 +1799,8 @@ mod tests {
         let packet_len = 1138;
         let metadata = net_backend::TxMetadata {
             id: TxId(tx_id),
-            segment_count: num_segments,
-            len: packet_len,
+            segment_count: num_segments as u8,
+            len: packet_len as u32,
             ..Default::default()
         };
 
@@ -1822,18 +1826,18 @@ mod tests {
     async fn test_tx_error_handling(driver: DefaultDriver) {
         let tx_id = 1;
         let expected_num_received_packets = 0;
-        let num_segments = 1;
+        let segment_count = 1;
         let packet_len = 1138;
         // LSO Enabled, but sending insufficient number of segments.
         let metadata = net_backend::TxMetadata {
             id: TxId(tx_id),
-            segment_count: num_segments,
-            len: packet_len,
-            offload_tcp_segmentation: true,
+            segment_count: segment_count as u8,
+            len: packet_len as u32,
+            flags: net_backend::TxFlags::new().with_offload_tcp_segmentation(true),
             ..Default::default()
         };
 
-        let (data_to_send, tx_segments) = build_tx_segments(packet_len, num_segments, metadata);
+        let (data_to_send, tx_segments) = build_tx_segments(packet_len, segment_count, metadata);
 
         let stats = test_endpoint(
             driver,

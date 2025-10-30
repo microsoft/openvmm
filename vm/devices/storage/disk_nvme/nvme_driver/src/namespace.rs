@@ -15,7 +15,6 @@ use futures::StreamExt;
 use guestmem::GuestMemory;
 use guestmem::ranges::PagedRange;
 use inspect::Inspect;
-use mesh::CancelContext;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -57,8 +56,6 @@ pub struct Namespace {
     controller_identify: Arc<spec::IdentifyController>,
     #[inspect(skip)]
     issuers: Arc<IoIssuers>,
-    #[inspect(skip)]
-    _cancel_rescan: mesh::Cancel,
 }
 
 #[derive(Debug, Inspect)]
@@ -151,19 +148,16 @@ impl Namespace {
             resize_event: Default::default(),
         });
 
-        // Spawn a task, but detach is so that it doesn't get dropped while NVMe
-        // request is in flight. Use a cancel context, whose cancel gets dropped
-        // when `self` gets dropped, so that it terminates after finishing any
-        // requests.
-        let (mut ctx, cancel_rescan) = CancelContext::new().with_cancel();
+        // NOTE: Detach `poll_for_rescans` task because its lifetime is not tied
+        // to that of the Namespace object. `poll_for_rescans` terminates when the sender of
+        // rescan_event is dropped. So lifetime of this task is tied to the NvmeDriver
+        // & `handle_asynchronous_events` task within the driver. Currently,
+        // this task *could* outlive the Namespace that created it. Task lifetime
+        // will be more tightly bound in future updates.
         driver
             .spawn(format!("nvme_poll_rescan_{nsid}"), {
                 let state = state.clone();
-                async move {
-                    state
-                        .poll_for_rescans(&mut ctx, &admin, nsid, rescan_event)
-                        .await
-                }
+                async move { state.poll_for_rescans(&admin, nsid, rescan_event).await }
             })
             .detach();
 
@@ -176,7 +170,6 @@ impl Namespace {
             reservation_capabilities,
             controller_identify,
             issuers: io_issuers.clone(),
-            _cancel_rescan: cancel_rescan,
         })
     }
 
@@ -563,7 +556,6 @@ impl Namespace {
 impl DynamicState {
     async fn poll_for_rescans(
         &self,
-        ctx: &mut CancelContext,
         admin: &Issuer,
         nsid: u32,
         mut rescan_event: mesh::Receiver<()>,
@@ -571,17 +563,17 @@ impl DynamicState {
         loop {
             tracing::debug!("rescan");
 
-            let event = ctx.until_cancelled(rescan_event.next()).await;
+            // This relies on a mesh channel so notifications will NOT be missed
+            // even if the task was not started when the first AEN was processed.
+            let event = rescan_event.next().await;
 
-            // If the event is cancelled or the sender is dropped, exit the loop
-            // gracefully.
-            if matches!(event, Err(_) | Ok(None)) {
+            // Once the sender is dropped, no more repoll signals can be received so
+            // there is no point in continuing.
+            if event.is_none() {
                 tracing::debug!("rescan task exiting");
                 break;
             }
 
-            // Query again even the first time through the loop to make sure
-            // we didn't miss the initial rescan notification.
             match identify_namespace(admin, nsid).await {
                 Ok(identify) => {
                     if identify.nsze == 0 {

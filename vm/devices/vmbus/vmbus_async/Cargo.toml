@@ -7,7 +7,6 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-smallvec.workspace = true
 vmbus_channel.workspace = true
 vmbus_ring.workspace = true
 

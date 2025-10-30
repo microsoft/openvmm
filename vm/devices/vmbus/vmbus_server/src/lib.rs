@@ -1019,9 +1019,10 @@ impl ServerTask {
 
         let channel = self.inner.channels.get_mut(&offer_id).unwrap();
         for gpadl in &gpadls {
-            if let Ok(buf) =
-                MultiPagedRangeBuf::new(gpadl.request.count.into(), gpadl.request.buf.clone())
-            {
+            if let Ok(buf) = MultiPagedRangeBuf::from_range_buffer(
+                gpadl.request.count.into(),
+                gpadl.request.buf.clone(),
+            ) {
                 channel.gpadls.add(gpadl.request.id, buf);
             }
         }
@@ -1556,7 +1557,7 @@ impl Notifier for ServerTaskInner {
             channels::Action::Gpadl(gpadl_id, count, buf) => {
                 channel.gpadls.add(
                     gpadl_id,
-                    MultiPagedRangeBuf::new(count.into(), buf.clone()).unwrap(),
+                    MultiPagedRangeBuf::from_range_buffer(count.into(), buf.clone()).unwrap(),
                 );
                 handle(
                     offer_id,
