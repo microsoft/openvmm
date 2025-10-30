@@ -2,22 +2,13 @@
 // Licensed under the MIT License.
 
 use guestmem::ranges::PagedRange;
-use smallvec::SmallVec;
-use smallvec::smallvec;
 use thiserror::Error;
 use zerocopy::FromBytes;
-use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
 const PAGE_SIZE: usize = 4096;
-
-pub type GpnList = SmallVec<[u64; 64]>;
-
-pub fn zeroed_gpn_list(len: usize) -> GpnList {
-    smallvec![FromZeros::new_zeroed(); len]
-}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
@@ -26,83 +17,44 @@ pub struct GpaRange {
     pub offset: u32,
 }
 
+/// Validates that `buf` contains `count` valid GPA ranges. Returns the number
+/// of `u64` entries actually used to describe those ranges.
+pub fn validate_gpa_ranges(count: usize, buf: &[u64]) -> Result<usize, Error> {
+    let mut rem: &[u64] = buf;
+    for _ in 0..count {
+        let (_, rest) = parse(rem)?;
+        rem = rest;
+    }
+    Ok(buf.len() - rem.len())
+}
+
 #[derive(Debug, Default, Clone)]
-pub struct MultiPagedRangeBuf<T: AsRef<[u64]>> {
-    buf: T,
+pub struct MultiPagedRangeBuf {
+    /// The buffer used to store the range data, concatenated. Each range
+    /// consists of a [`GpaRange`] header followed by the list of GPNs.
+    /// Note that `size_of::<GpaRange>() == size_of::<u64>()`.
+    buf: Box<[u64]>,
+    /// The number of u64 elements in the buffer that are valid. Data after this
+    /// point is initialized from Rust's point of view but is not logically part of
+    /// the ranges.
+    valid: usize,
+    /// The number of ranges stored in the buffer.
     count: usize,
 }
 
-impl<T: AsRef<[u64]>> MultiPagedRangeBuf<T> {
-    pub fn validate(count: usize, buf: &[u64]) -> Result<(), Error> {
-        let mut rem: &[u64] = buf;
-        for _ in 0..count {
-            let (_, rest) = parse(rem)?;
-            rem = rest;
-        }
-        Ok(())
+impl MultiPagedRangeBuf {
+    pub fn from_range_buffer(count: usize, mut buf: Vec<u64>) -> Result<Self, Error> {
+        let valid = validate_gpa_ranges(count, buf.as_ref())?;
+        buf.truncate(valid);
+        Ok(MultiPagedRangeBuf {
+            buf: buf.into_boxed_slice(),
+            valid,
+            count,
+        })
     }
 
-    pub fn new(count: usize, buf: T) -> Result<Self, Error> {
-        Self::validate(count, buf.as_ref())?;
-        Ok(MultiPagedRangeBuf { buf, count })
-    }
-
-    pub fn subrange(
-        &self,
-        offset: usize,
-        len: usize,
-    ) -> Result<MultiPagedRangeBuf<GpnList>, Error> {
-        if len == 0 {
-            return Ok(MultiPagedRangeBuf::<GpnList>::empty());
-        }
-
-        let mut sub_buf = GpnList::new();
-        let mut remaining_offset = offset;
-        let mut remaining_length = len;
-        let mut range_count = 0;
-        for range in self.iter() {
-            if let Some(n) = remaining_offset.checked_sub(range.len()) {
-                remaining_offset = n;
-                continue;
-            }
-            let cur_offset = std::mem::take(&mut remaining_offset);
-            // Determine how many bytes we can take from this range after applying cur_offset.
-            let available_here = range.len() - cur_offset;
-            let take_len = available_here.min(remaining_length);
-            let sub_range = range.subrange(cur_offset, take_len);
-
-            sub_buf.push(u64::from_le_bytes(
-                GpaRange {
-                    len: sub_range.len() as u32,
-                    offset: sub_range.offset() as u32,
-                }
-                .as_bytes()
-                .try_into()
-                .unwrap(),
-            ));
-            sub_buf.extend_from_slice(sub_range.gpns());
-            range_count += 1;
-            remaining_length -= sub_range.len();
-            if remaining_length == 0 {
-                break;
-            }
-        }
-
-        if remaining_length > 0 {
-            Err(Error::RangeTooSmall)
-        } else {
-            MultiPagedRangeBuf::<GpnList>::new(range_count, sub_buf)
-        }
-    }
-
-    pub fn empty() -> Self
-    where
-        T: Default,
-    {
-        Self {
-            buf: Default::default(),
-            count: 0,
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn iter(&self) -> MultiPagedRangeIter<'_> {
@@ -134,21 +86,78 @@ impl<T: AsRef<[u64]>> MultiPagedRangeBuf<T> {
     }
 
     pub fn range_buffer(&self) -> &[u64] {
-        self.buf.as_ref()
+        &self.buf[..self.valid]
     }
 
-    pub fn into_buffer(self) -> T {
-        self.buf
+    /// Clears the buffer and resets the range count to zero.
+    pub fn clear(&mut self) {
+        self.valid = 0;
+        self.count = 0;
+    }
+
+    fn ensure_space(&mut self, additional: usize) -> &mut [u64] {
+        let required = self.valid + additional;
+        if required > self.buf.len() {
+            self.resize_buffer(required);
+        }
+        &mut self.buf[self.valid..required]
+    }
+
+    #[cold]
+    fn resize_buffer(&mut self, new_size: usize) {
+        // Use `Vec`'s resizing logic to get appropriate growth behavior, but
+        // initialize all the data to make updating it easier.
+        let mut buf: Vec<u64> = std::mem::take(&mut self.buf).into();
+        buf.resize(new_size, 0);
+        // Initialize the rest of the capacity that `Vec` allocated.
+        buf.resize(buf.capacity(), 0);
+        self.buf = buf.into_boxed_slice();
+    }
+
+    /// Appends a new paged range to the buffer.
+    pub fn push_range(&mut self, range: PagedRange<'_>) {
+        let len = 1 + range.gpns().len();
+        let buf = self.ensure_space(len);
+        let hdr = GpaRange {
+            len: range.len() as u32,
+            offset: range.offset() as u32,
+        };
+        buf[0] = zerocopy::transmute!(hdr);
+        buf[1..].copy_from_slice(range.gpns());
+        self.count += 1;
+        self.valid += len;
+    }
+
+    /// Attempts to extend the buffer by `count` ranges, requiring `len` u64
+    /// entries in total. `f` is called to fill in the newly allocated
+    /// buffer space.
+    ///
+    /// If `f` returns an error, the buffer is restored to its
+    /// previous state and the error is propagated. If `f` returns `Ok(())`,
+    /// the newly added ranges are validated; if validation fails, the buffer
+    /// is restored and the validation error is returned inside `Ok(Err(_))`.
+    pub fn try_extend_with<E>(
+        &mut self,
+        len: usize,
+        count: usize,
+        f: impl FnOnce(&mut [u64]) -> Result<(), E>,
+    ) -> Result<Result<(), Error>, E> {
+        let buf = self.ensure_space(len);
+        f(buf)?;
+        let valid_len = match validate_gpa_ranges(count, buf) {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e)),
+        };
+        // Now that validation succeeded, update the buffer state. Failure
+        // before this may have expanded the buffer but did not affect the
+        // visible behavior of this object.
+        self.valid += valid_len;
+        self.count += count;
+        Ok(Ok(()))
     }
 }
 
-impl MultiPagedRangeBuf<&'static [u64]> {
-    pub const fn empty_const() -> Self {
-        Self { buf: &[], count: 0 }
-    }
-}
-
-impl<'a, T: AsRef<[u64]> + Default> IntoIterator for &'a MultiPagedRangeBuf<T> {
+impl<'a> IntoIterator for &'a MultiPagedRangeBuf {
     type Item = PagedRange<'a>;
     type IntoIter = MultiPagedRangeIter<'a>;
 
@@ -157,30 +166,13 @@ impl<'a, T: AsRef<[u64]> + Default> IntoIterator for &'a MultiPagedRangeBuf<T> {
     }
 }
 
-impl<'a> FromIterator<PagedRange<'a>> for MultiPagedRangeBuf<GpnList> {
-    fn from_iter<I: IntoIterator<Item = PagedRange<'a>>>(iter: I) -> MultiPagedRangeBuf<GpnList> {
-        let mut page_count = 0;
-        let buf: GpnList = iter
-            .into_iter()
-            .map(|range| {
-                let mut buf: GpnList = smallvec![u64::from_le_bytes(
-                    GpaRange {
-                        len: range.len() as u32,
-                        offset: range.offset() as u32,
-                    }
-                    .as_bytes()
-                    .try_into()
-                    .unwrap()
-                )];
-                buf.extend_from_slice(range.gpns());
-                page_count += 1;
-                buf
-            })
-            .collect::<Vec<GpnList>>()
-            .into_iter()
-            .flatten()
-            .collect();
-        MultiPagedRangeBuf::<GpnList>::new(page_count, buf).unwrap()
+impl<'a> FromIterator<PagedRange<'a>> for MultiPagedRangeBuf {
+    fn from_iter<I: IntoIterator<Item = PagedRange<'a>>>(iter: I) -> MultiPagedRangeBuf {
+        let mut this = MultiPagedRangeBuf::new();
+        for range in iter {
+            this.push_range(range);
+        }
+        this
     }
 }
 
@@ -254,7 +246,6 @@ fn parse(buf: &[u64]) -> Result<(PagedRange<'_>, &[u64]), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use guestmem::ranges::PagedRange;
 
     #[test]
     fn large_offset() {
@@ -263,56 +254,13 @@ mod tests {
             len: 1,
             offset: 0x1000,
         };
-        let mut buf: GpnList = GpnList::new();
-        buf.push(u64::from_le_bytes(hdr.as_bytes().try_into().unwrap()));
-        buf.push(0xdead_beef);
+        let buf = vec![
+            u64::from_le_bytes(hdr.as_bytes().try_into().unwrap()),
+            0xdead_beef,
+        ];
 
         // validate() should not accept the buffer
-        let err = MultiPagedRangeBuf::new(1, buf).unwrap_err();
+        let err = MultiPagedRangeBuf::from_range_buffer(1, buf).unwrap_err();
         assert!(matches!(err, Error::OffsetTooLarge));
-    }
-
-    // subrange should error when the requested span exceeds available bytes after offset.
-    #[test]
-    fn subrange_errors_when_span_beyond_total() {
-        // Build a single-range buffer with 200 bytes starting at offset 100 within its first page.
-        let gpns = [0x1000_u64];
-        let range = PagedRange::new(100, 200, &gpns).expect("valid paged range");
-        let ranges: MultiPagedRangeBuf<GpnList> = std::iter::once(range).collect();
-
-        // Request a subrange starting 50 bytes into the buffer, of length 200 bytes.
-        // Only 150 bytes remain (200 - 50), so this should be an error.
-        let err = ranges.subrange(50, 200).unwrap_err();
-        assert!(matches!(err, Error::RangeTooSmall));
-    }
-
-    // subrange across multiple ranges should split into partial
-    // pieces with correct offsets, lengths, and page lists.
-    #[test]
-    fn subrange_spans_multiple_ranges() {
-        let gpns1 = [1_u64, 2_u64];
-        let gpns2 = [3_u64, 4_u64];
-        // Two ranges: [100..400) over gpns1 and [0..500) over gpns2
-        let r1 = PagedRange::new(100, 300, &gpns1).expect("r1");
-        let r2 = PagedRange::new(0, 500, &gpns2).expect("r2");
-        let ranges: MultiPagedRangeBuf<GpnList> = vec![r1, r2].into_iter().collect();
-
-        // Take subrange starting 250 bytes into the concatenated ranges, length 200.
-        // This yields 50 bytes from r1 (offset 350) and 150 bytes from r2 (offset 0).
-        let sub = ranges.subrange(250, 200).expect("subrange ok");
-        assert_eq!(sub.range_count(), 2);
-
-        let mut it = sub.iter();
-        let a = it.next().expect("first slice");
-        assert_eq!(a.offset(), 350);
-        assert_eq!(a.len(), 50);
-        assert_eq!(a.gpns(), &gpns1[..1]);
-
-        let b = it.next().expect("second slice");
-        assert_eq!(b.offset(), 0);
-        assert_eq!(b.len(), 150);
-        assert_eq!(b.gpns(), &gpns2[..1]);
-
-        assert!(it.next().is_none());
     }
 }

@@ -354,7 +354,7 @@ function createKeyboardHandler(selectedRow: string | null, logEntries: LogEntry[
         textBlock += `relative: ${entry.relative}\n`;
         textBlock += `severity: ${entry.severity}\n`;
         textBlock += `source: ${decodeHtml(entry.source)}\n`;
-        textBlock += `message: ${decodeHtml(entry.messageText.trim())}`;
+        textBlock += `message: ${decodeHtml(entry.message.trim())}`;
         if (entry.screenshot) {
             textBlock += `\nscreenshot: ${entry.screenshot}`;
         }
@@ -419,12 +419,12 @@ function filterLog(logs: LogEntry[] | undefined, query: string): LogEntry[] {
             } else if (prefix === 'severity') {
                 return log.severity.toLowerCase().includes(term);
             } else if (prefix === 'message') {
-                return log.messageText.includes(term);
+                return log.message.toLowerCase().includes(term);
             } else {
                 return (
                     log.source.toLowerCase().includes(token.toLowerCase()) ||
                     log.severity.toLowerCase().includes(token.toLowerCase()) ||
-                    log.messageText.includes(token.toLowerCase())
+                    log.message.includes(token.toLowerCase())
                 );
             }
         });
