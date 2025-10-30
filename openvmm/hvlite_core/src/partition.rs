@@ -170,7 +170,7 @@ where
 {
     #[cfg(guest_arch = "x86_64")]
     fn into_lint_target(self: Arc<Self>, vtl: Vtl) -> Arc<dyn LineSetTarget> {
-        Arc::new(virt::irqcon::ApicLintLineTarget::new(self, vtl))
+        Arc::new(vmm_core::emuplat::apic::ApicLintLineTarget::new(self, vtl))
     }
 
     fn caps(&self) -> &PartitionCapabilities {

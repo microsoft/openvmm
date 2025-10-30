@@ -549,7 +549,7 @@ impl TestNicDevice {
         let (ring_gpadl_id, page_array) = self.add_guest_pages(4).await;
         gpadl_map.add(
             ring_gpadl_id,
-            MultiPagedRangeBuf::new(1, page_array).unwrap(),
+            MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap(),
         );
 
         let host_to_guest_event = Arc::new(SlimEvent::new());
@@ -600,7 +600,7 @@ impl TestNicDevice {
         let (ring_gpadl_id, page_array) = self.add_guest_pages(4).await;
         gpadl_map.add(
             ring_gpadl_id,
-            MultiPagedRangeBuf::new(1, page_array).unwrap(),
+            MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap(),
         );
 
         let host_to_guest_event = Arc::new(SlimEvent::new());
@@ -712,7 +712,7 @@ impl TestNicDevice {
                     None
                 }
             })
-            .collect::<Vec<(GpadlId, MultiPagedRangeBuf<Vec<u64>>)>>();
+            .collect::<Vec<(GpadlId, MultiPagedRangeBuf)>>();
 
         mesh::CancelContext::new()
             .with_timeout(Duration::from_millis(1000))
@@ -726,12 +726,11 @@ impl TestNicDevice {
                             match request {
                                 vmbus_channel::bus::ChannelServerRequest::Restore(rpc) => {
                                     let gpadls = gpadl_map_contents.iter().map(|(gpadl_id, pages)| {
-                                        let pages = pages.clone();
                                         vmbus_channel::bus::RestoredGpadl {
                                             request: GpadlRequest {
                                                 id: *gpadl_id,
                                                 count: 1,
-                                                buf: pages.into_buffer(),
+                                                buf: pages.range_buffer().to_vec(),
                                             },
                                             accepted: true,
                                         }
@@ -977,6 +976,35 @@ impl<'a> TestNicChannel<'a> {
             .await
     }
 
+    pub async fn read_rndis_packet_complete_message_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Option<protocol::Message1SendRndisPacketComplete> {
+        self.read_with_timeout(timeout, |packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE
+                );
+                let completion_data: protocol::Message1SendRndisPacketComplete =
+                    reader.read_plain().unwrap();
+                Some(completion_data)
+            }
+            _ => panic!("Unexpected packet!"),
+        })
+        .await
+        .unwrap_or(None)
+    }
+
+    pub async fn read_rndis_packet_complete_message(
+        &mut self,
+    ) -> Option<protocol::Message1SendRndisPacketComplete> {
+        self.read_rndis_packet_complete_message_with_timeout(Duration::from_millis(333))
+            .await
+    }
+
     pub async fn write(&mut self, packet: OutgoingPacket<'_, '_>) {
         let (_, mut writer) = self.queue.split();
         writer.write(packet).await.unwrap();
@@ -1086,7 +1114,7 @@ impl<'a> TestNicChannel<'a> {
             * sub_allocation_size_for_mtu(DEFAULT_MTU) as usize)
             .div_ceil(PAGE_SIZE);
         let (gpadl_handle, page_array) = self.nic.add_guest_pages(min_buffer_pages).await;
-        let recv_range = MultiPagedRangeBuf::new(1, page_array).unwrap();
+        let recv_range = MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap();
         self.gpadl_map.add(gpadl_handle, recv_range);
         self.recv_buf_id = gpadl_handle;
 
@@ -1128,7 +1156,7 @@ impl<'a> TestNicChannel<'a> {
 
     pub async fn send_send_buffer_message(&mut self) {
         let (gpadl_handle, page_array) = self.nic.add_guest_pages(1).await;
-        let send_range = MultiPagedRangeBuf::new(1, page_array).unwrap();
+        let send_range = MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap();
         self.gpadl_map.add(gpadl_handle, send_range);
         self.send_buf_id = gpadl_handle;
 
@@ -1251,6 +1279,61 @@ impl<'a> TestNicChannel<'a> {
         .expect("completion message");
     }
 
+    pub async fn send_rndis_multiplepacket_no_completion<T: IntoBytes + Immutable + KnownLayout>(
+        &mut self,
+        messages: Vec<T>,
+        extras: Vec<Vec<u8>>,
+    ) {
+        let mem = self.nic.mock_vmbus.memory.clone();
+        let gpadl_view = self.gpadl_map.clone().view().map(self.send_buf_id).unwrap();
+        let mut buf_writer = PagedRanges::new(&*gpadl_view).writer(&mem);
+        let mut total_message_length = 0;
+
+        for (message, extra) in messages.iter().zip(extras.iter()) {
+            let message_length = size_of::<rndisprot::MessageHeader>()
+                + size_of::<rndisprot::Packet>()
+                + extra.len();
+            total_message_length += message_length;
+
+            buf_writer
+                .write(
+                    rndisprot::MessageHeader {
+                        message_type: rndisprot::MESSAGE_TYPE_PACKET_MSG,
+                        message_length: message_length as u32,
+                    }
+                    .as_bytes(),
+                )
+                .unwrap();
+
+            buf_writer.write(message.as_bytes()).unwrap();
+            buf_writer.write(extra.as_bytes()).unwrap();
+        }
+
+        let message = NvspMessage {
+            header: protocol::MessageHeader {
+                message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET,
+            },
+            data: protocol::Message1SendRndisPacket {
+                channel_type: protocol::CONTROL_CHANNEL_TYPE,
+                send_buffer_section_index: 0xffffffff,
+                send_buffer_section_size: 0,
+            },
+            padding: &[],
+        };
+        let gpadl_map_view = self.gpadl_map.clone().view().map(self.send_buf_id).unwrap();
+        let gpa_range = gpadl_map_view
+            .first()
+            .unwrap()
+            .subrange(0, total_message_length);
+        self.write(OutgoingPacket {
+            transaction_id: self.transaction_id,
+            packet_type: OutgoingPacketType::GpaDirect(&[gpa_range]),
+            payload: &message.payload(),
+        })
+        .await;
+        self.transaction_id += 1;
+    }
+
     pub async fn connect_subchannel(&mut self, idx: u32) {
         self.subchannels
             .insert(idx, self.nic.connect_vmbus_subchannel(idx).await);
@@ -1327,7 +1410,7 @@ impl RndisMessageParser {
         &self,
         data: &queue::DataPacket<'_, GpadlRingMem>,
         channel_type: u32,
-    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf<GpnList>) {
+    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf) {
         // Check for RNDIS packet
         let mut reader = data.reader();
         let header: protocol::MessageHeader = reader.read_plain().unwrap();
@@ -1339,12 +1422,14 @@ impl RndisMessageParser {
         assert_eq!(rndis_data.channel_type, channel_type);
 
         // Fetch RNDIS packet from external memory
-        let external_ranges = if let Some(id) = data.transfer_buffer_id() {
+        let mut external_ranges = MultiPagedRangeBuf::new();
+        if let Some(id) = data.transfer_buffer_id() {
             assert_eq!(id, 0);
 
-            data.read_transfer_ranges(self.buf.iter()).unwrap()
+            data.read_transfer_ranges(self.buf.first().unwrap(), &mut external_ranges)
+                .unwrap()
         } else {
-            data.read_external_ranges().unwrap()
+            data.read_external_ranges(&mut external_ranges).unwrap()
         };
         let mut direct_reader = PagedRanges::new(external_ranges.iter()).reader(&self.mem);
 
@@ -1355,18 +1440,18 @@ impl RndisMessageParser {
     pub fn parse_data_message(
         &self,
         data: &queue::DataPacket<'_, GpadlRingMem>,
-    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf<GpnList>) {
+    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf) {
         self.parse_message(data, protocol::DATA_CHANNEL_TYPE)
     }
 
     pub fn parse_control_message(
         &self,
         data: &queue::DataPacket<'_, GpadlRingMem>,
-    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf<GpnList>) {
+    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf) {
         self.parse_message(data, protocol::CONTROL_CHANNEL_TYPE)
     }
 
-    pub fn get<T>(&self, external_ranges: &MultiPagedRangeBuf<GpnList>) -> T
+    pub fn get<T>(&self, external_ranges: &MultiPagedRangeBuf) -> T
     where
         T: IntoBytes + FromBytes + Immutable + KnownLayout,
     {
@@ -1380,7 +1465,7 @@ impl RndisMessageParser {
         reader.read_plain::<T>().unwrap()
     }
 
-    pub fn get_data_packet_content<T>(&self, external_ranges: &MultiPagedRangeBuf<GpnList>) -> T
+    pub fn get_data_packet_content<T>(&self, external_ranges: &MultiPagedRangeBuf) -> T
     where
         T: IntoBytes + FromBytes + Immutable + KnownLayout,
     {
@@ -1702,7 +1787,7 @@ async fn initialize_rndis_no_sendbuffer(driver: DefaultDriver) {
     // Note: send_send_buffer_message() not called
     // Creating a Gpadl for the Rndis Init Message
     let (gpadl_handle, page_array) = channel.nic.add_guest_pages(1).await;
-    let send_range = MultiPagedRangeBuf::new(1, page_array).unwrap();
+    let send_range = MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap();
     channel.gpadl_map.add(gpadl_handle, send_range);
     channel.send_buf_id = gpadl_handle;
     channel
@@ -1765,7 +1850,7 @@ async fn initialize_rndis_no_sendbuffer_no_recvbuffer(driver: DefaultDriver) {
     // Note: send_send_buffer_message() not called
     // Creating a Gpadl for the Rndis Init Message
     let (gpadl_handle, page_array) = channel.nic.add_guest_pages(1).await;
-    let send_range = MultiPagedRangeBuf::new(1, page_array).unwrap();
+    let send_range = MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap();
     channel.gpadl_map.add(gpadl_handle, send_range);
     channel.send_buf_id = gpadl_handle;
     channel
@@ -2391,24 +2476,8 @@ async fn rndis_handle_packet_errors(driver: DefaultDriver) {
         )
         .await;
 
-    // Expect a completion message with failure status.
-    channel
-        .read_with(|packet| match packet {
-            IncomingPacket::Completion(completion) => {
-                let mut reader = completion.reader();
-                let header: protocol::MessageHeader = reader.read_plain().unwrap();
-                assert_eq!(
-                    header.message_type,
-                    protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE
-                );
-                let completion_data: protocol::Message1SendRndisPacketComplete =
-                    reader.read_plain().unwrap();
-                assert_eq!(completion_data.status, protocol::Status::FAILURE);
-            }
-            _ => panic!("Unexpected packet"),
-        })
-        .await
-        .expect("completion message");
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::FAILURE);
 
     // Verify the channel is still processing packets by sending another (also invalid).
     channel
@@ -2429,23 +2498,8 @@ async fn rndis_handle_packet_errors(driver: DefaultDriver) {
         )
         .await;
 
-    channel
-        .read_with(|packet| match packet {
-            IncomingPacket::Completion(completion) => {
-                let mut reader = completion.reader();
-                let header: protocol::MessageHeader = reader.read_plain().unwrap();
-                assert_eq!(
-                    header.message_type,
-                    protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE
-                );
-                let completion_data: protocol::Message1SendRndisPacketComplete =
-                    reader.read_plain().unwrap();
-                assert_eq!(completion_data.status, protocol::Status::FAILURE);
-            }
-            _ => panic!("Unexpected packet"),
-        })
-        .await
-        .expect("completion message");
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::FAILURE);
 }
 
 #[async_test]
@@ -4586,6 +4640,157 @@ async fn set_rss_parameter_unused_first_queue(driver: DefaultDriver) {
             .payload(),
         })
         .await;
+}
+
+#[async_test]
+async fn rndis_send_single_packet_message(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let initialize_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(initialize_complete.request_id, 123);
+    assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
+    assert_eq!(initialize_complete.major_version, rndisprot::MAJOR_VERSION);
+    assert_eq!(initialize_complete.minor_version, rndisprot::MINOR_VERSION);
+
+    assert_eq!(endpoint_state.lock().stop_endpoint_counter, 1);
+
+    let frame = vec![0xCC; 60];
+    channel
+        .send_rndis_control_message_no_completion(
+            rndisprot::MESSAGE_TYPE_PACKET_MSG,
+            rndisprot::Packet {
+                data_offset: size_of::<rndisprot::MessageHeader>() as u32,
+                data_length: frame.len() as u32,
+                oob_data_offset: 0,
+                oob_data_length: 0,
+                num_oob_data_elements: 0,
+                per_packet_info_offset: 0,
+                per_packet_info_length: 0,
+                vc_handle: 0,
+                reserved: 0,
+            },
+            frame.as_slice(),
+        )
+        .await;
+
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
+}
+
+#[async_test]
+async fn rndis_send_multiple_packet_message(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let initialize_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(initialize_complete.request_id, 123);
+    assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
+    assert_eq!(initialize_complete.major_version, rndisprot::MAJOR_VERSION);
+    assert_eq!(initialize_complete.minor_version, rndisprot::MINOR_VERSION);
+
+    assert_eq!(endpoint_state.lock().stop_endpoint_counter, 1);
+
+    let extras = vec![vec![0xAA; 20], vec![0xBB; 20]];
+    let mut packets = vec![
+        rndisprot::Packet {
+            data_offset: size_of::<rndisprot::MessageHeader>() as u32,
+            data_length: extras[0].len() as u32,
+            oob_data_offset: 0,
+            oob_data_length: 0,
+            num_oob_data_elements: 0,
+            per_packet_info_offset: 0,
+            per_packet_info_length: 0,
+            vc_handle: 0,
+            reserved: 0,
+        },
+        rndisprot::Packet {
+            data_offset: size_of::<rndisprot::MessageHeader>() as u32,
+            data_length: extras[1].len() as u32,
+            oob_data_offset: 0,
+            oob_data_length: 0,
+            num_oob_data_elements: 0,
+            per_packet_info_offset: 0,
+            per_packet_info_length: 0,
+            vc_handle: 0,
+            reserved: 0,
+        },
+    ];
+    channel
+        .send_rndis_multiplepacket_no_completion(packets.clone(), extras.clone())
+        .await;
+
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
+
+    // Assign the second RNDIS packet an invalid length
+    packets[1].data_length = 0;
+
+    channel
+        .send_rndis_multiplepacket_no_completion(packets, extras)
+        .await;
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::FAILURE);
 }
 
 // Start with six queues (primary plus five subchannels) each with one receive

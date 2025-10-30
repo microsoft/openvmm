@@ -16,7 +16,6 @@ use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use ring::OutgoingPacketType;
 use ring::TransferPageRange;
-use smallvec::smallvec;
 use std::future::Future;
 use std::future::poll_fn;
 use std::ops::Deref;
@@ -31,11 +30,7 @@ use vmbus_ring::FlatRingMem;
 use vmbus_ring::IncomingPacketType;
 use vmbus_ring::IncomingRing;
 use vmbus_ring::RingMem;
-use vmbus_ring::gparange::GpnList;
 use vmbus_ring::gparange::MultiPagedRangeBuf;
-use vmbus_ring::gparange::zeroed_gpn_list;
-use zerocopy::FromBytes;
-use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
 /// A queue error.
@@ -247,8 +242,9 @@ impl<T: RingMem> DataPacket<'_, T> {
 
     fn read_transfer_page_ranges(
         &self,
-        transfer_buf: &MultiPagedRangeBuf<GpnList>,
-    ) -> Result<MultiPagedRangeBuf<GpnList>, AccessError> {
+        transfer_buf: PagedRange<'_>,
+        result: &mut MultiPagedRangeBuf,
+    ) -> Result<(), AccessError> {
         let len = self.external_data.0 as usize;
         let mut reader = self.external_data.1.reader(self.ring);
         let available_count = reader.len() / size_of::<TransferPageRange>();
@@ -256,75 +252,61 @@ impl<T: RingMem> DataPacket<'_, T> {
             return Err(AccessError::OutOfRange(0, 0));
         }
 
-        let mut buf: GpnList = smallvec![FromZeros::new_zeroed(); len];
-        reader.read(buf.as_mut_bytes())?;
-
-        // Construct an array of the form [#1 offset/length][page1][page2][...][#2 offset/length][page1][page2]...
-        // See MultiPagedRangeIter for more details.
-        let transfer_buf: GpnList = buf
-            .iter()
-            .map(|range| {
-                let range_data = TransferPageRange::read_from_prefix(range.as_bytes())
-                    .unwrap()
-                    .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-                let sub_range = transfer_buf
-                    .subrange(
-                        range_data.byte_offset as usize,
-                        range_data.byte_count as usize,
-                    )
-                    .map_err(|_| {
-                        AccessError::OutOfRange(
-                            range_data.byte_offset as usize,
-                            range_data.byte_count as usize,
-                        )
-                    })?;
-                Ok(sub_range.into_buffer())
-            })
-            .collect::<Result<Vec<GpnList>, AccessError>>()?
-            .into_iter()
-            .flatten()
-            .collect();
-        Ok(MultiPagedRangeBuf::new(len, transfer_buf).unwrap())
+        for _ in 0..len {
+            let range = reader.read_plain::<TransferPageRange>()?;
+            result.push_range(
+                transfer_buf
+                    .try_subrange(range.byte_offset as usize, range.byte_count as usize)
+                    .ok_or(AccessError::OutOfRange(
+                        range.byte_offset as usize,
+                        range.byte_count as usize,
+                    ))?,
+            );
+        }
+        Ok(())
     }
 
-    /// Reads the GPA direct range descriptors from the packet.
-    pub fn read_external_ranges(&self) -> Result<MultiPagedRangeBuf<GpnList>, ExternalDataError> {
+    /// Reads the GPA direct range descriptors from the packet, extending `buf`.
+    pub fn read_external_ranges(
+        &self,
+        buf: &mut MultiPagedRangeBuf,
+    ) -> Result<(), ExternalDataError> {
         if self.buffer_id.is_some() {
             return Err(ExternalDataError::WrongExternalDataType);
         } else if self.external_data.0 == 0 {
-            return Ok(MultiPagedRangeBuf::empty());
+            return Ok(());
         }
 
         let mut reader = self.external_data.1.reader(self.ring);
-        let len = reader.len() / 8;
-        let mut buf = zeroed_gpn_list(len);
-        reader
-            .read(buf.as_mut_bytes())
-            .map_err(ExternalDataError::Access)?;
-        MultiPagedRangeBuf::new(self.external_data.0 as usize, buf)
-            .map_err(ExternalDataError::GpaRange)
+        buf.try_extend_with(reader.len() / 8, self.external_data.0 as usize, |b| {
+            reader
+                .read(b.as_mut_bytes())
+                .map_err(ExternalDataError::Access)?;
+            Ok(())
+        })?
+        .map_err(ExternalDataError::GpaRange)?;
+        Ok(())
     }
 
-    /// Reads the transfer buffer ID from the packet, or None if this is not a transfer packet.
+    /// Returns the transfer buffer ID of the packet, or None if this is not a transfer packet.
     pub fn transfer_buffer_id(&self) -> Option<u16> {
         self.buffer_id
     }
 
-    /// Reads the transfer descriptors from the packet using the provided buffer. This buffer should be the one
-    /// associated with the value returned from transfer_buffer_id().
-    pub fn read_transfer_ranges<'a, I>(
+    /// Reads the transfer descriptors from the packet using the provided
+    /// buffer, extending `result`.
+    ///
+    /// This buffer should be the one associated with the value returned from
+    /// transfer_buffer_id().
+    pub fn read_transfer_ranges(
         &self,
-        transfer_buf: I,
-    ) -> Result<MultiPagedRangeBuf<GpnList>, AccessError>
-    where
-        I: Iterator<Item = PagedRange<'a>>,
-    {
-        if self.external_data.0 == 0 {
-            return Ok(MultiPagedRangeBuf::empty());
+        transfer_buf: PagedRange<'_>,
+        result: &mut MultiPagedRangeBuf,
+    ) -> Result<(), AccessError> {
+        if self.external_data.0 != 0 {
+            self.read_transfer_page_ranges(transfer_buf, result)?;
         }
-
-        let buf: MultiPagedRangeBuf<GpnList> = transfer_buf.collect();
-        self.read_transfer_page_ranges(&buf)
+        Ok(())
     }
 }
 
@@ -808,7 +790,8 @@ mod tests {
 
                     // Check the external ranges
                     assert_eq!(data.external_range_count(), 2);
-                    let external_data = data.read_external_ranges().unwrap();
+                    let mut external_data = MultiPagedRangeBuf::new();
+                    data.read_external_ranges(&mut external_data).unwrap();
                     let in_gpas: Vec<PagedRange<'_>> = external_data.iter().collect();
                     assert_eq!(in_gpas.len(), gpas.len());
 
@@ -863,8 +846,8 @@ mod tests {
 
                     // Check the external ranges
                     assert_eq!(data.external_range_count(), 1);
-                    let external_data_result = data.read_external_ranges();
-                    assert_eq!(data.read_external_ranges().is_err(), true);
+                    let mut external_data = MultiPagedRangeBuf::new();
+                    let external_data_result = data.read_external_ranges(&mut external_data);
                     match external_data_result {
                         Err(ExternalDataError::GpaRange(_)) => Ok(()),
                         _ => Err("should be out of range"),
@@ -884,7 +867,10 @@ mod tests {
 
         let gpadl_map = GpadlMap::new();
         let buf = vec![0x3000_u64, 1, 2, 3];
-        gpadl_map.add(GpadlId(13), MultiPagedRangeBuf::new(1, buf).unwrap());
+        gpadl_map.add(
+            GpadlId(13),
+            MultiPagedRangeBuf::from_range_buffer(1, buf).unwrap(),
+        );
 
         let ranges = vec![
             TransferPageRange {
@@ -932,8 +918,11 @@ mod tests {
                     assert_eq!(data.external_range_count(), 3);
                     let gpadl_map_view = gpadl_map.view();
                     assert_eq!(data.transfer_buffer_id().unwrap(), 13);
-                    let buffer_range = gpadl_map_view.map(GpadlId(13)).unwrap();
-                    let external_data = data.read_transfer_ranges(buffer_range.iter()).unwrap();
+                    let buffer_gpadl = gpadl_map_view.map(GpadlId(13)).unwrap();
+                    let buffer_range = buffer_gpadl.first().unwrap();
+                    let mut external_data = MultiPagedRangeBuf::new();
+                    data.read_transfer_ranges(buffer_range, &mut external_data)
+                        .unwrap();
                     let in_ranges: Vec<PagedRange<'_>> = external_data.iter().collect();
                     assert_eq!(in_ranges.len(), ranges.len());
                     assert_eq!(in_ranges[0].offset(), 0x10);

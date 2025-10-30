@@ -122,23 +122,21 @@ impl Offer {
                         .store(true, Ordering::Relaxed);
                     event.signal();
                 }
-                ChannelRequest::Gpadl(rpc) => {
-                    rpc.handle_sync(|gpadl| {
-                        match MultiPagedRangeBuf::new(gpadl.count.into(), gpadl.buf) {
-                            Ok(buf) => {
-                                gpadls.add(gpadl.id, buf);
-                                true
-                            }
-                            Err(err) => {
-                                tracelimit::error_ratelimited!(
-                                    error = &err as &dyn std::error::Error,
-                                    "failed to parse gpadl"
-                                );
-                                false
-                            }
+                ChannelRequest::Gpadl(rpc) => rpc.handle_sync(|gpadl| {
+                    match MultiPagedRangeBuf::from_range_buffer(gpadl.count.into(), gpadl.buf) {
+                        Ok(buf) => {
+                            gpadls.add(gpadl.id, buf);
+                            true
                         }
-                    })
-                }
+                        Err(err) => {
+                            tracelimit::error_ratelimited!(
+                                error = &err as &dyn std::error::Error,
+                                "failed to parse gpadl"
+                            );
+                            false
+                        }
+                    }
+                }),
                 ChannelRequest::TeardownGpadl(rpc) => {
                     let (id, response_send) = rpc.split();
                     if let Some(f) = gpadls.remove(

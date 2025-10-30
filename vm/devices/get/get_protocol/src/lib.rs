@@ -94,6 +94,7 @@ open_enum! {
         MODIFY_VTL2_SETTINGS_REV1 = 6,
         // --- GE ---
         BATTERY_STATUS = 7,
+        INJECT_DEBUG_INTERRUPT = 8,
     }
 }
 
@@ -1763,6 +1764,16 @@ impl BatteryStatusNotification {
         }
     }
 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct InjectDebugInterruptNotification {
+    pub message_header: HeaderGuestNotification,
+    pub vtl: u8,
+    pub _pad: u8,
+}
+
+const_assert_eq!(6, size_of::<InjectDebugInterruptNotification>());
 
 #[bitfield(u64)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]

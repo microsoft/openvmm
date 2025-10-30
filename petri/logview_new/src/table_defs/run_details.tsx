@@ -10,7 +10,7 @@ export const defaultSorting = [
 ];
 
 export const columnWidthMap = {
-  architecture: 300,
+  architecture: 320,
   status: 60,
 };
 
@@ -60,8 +60,7 @@ export const createColumns = (runId: string): ColumnDef<TestResult>[] => [
       const encodedRemainder = encodeURIComponent(restParts.join("/"));
       return (
         <Link
-          // to={`/runs/${runId}/${encodedArchitecture}/${encodedRemainder}`}
-          to={`/runs/${runId}`}
+          to={`/runs/${runId}/${encodedArchitecture}/${encodedRemainder}`}
           state={{ testResult: info.row.original }}
           className="common-table-link"
           title={`${fullTestName}`}

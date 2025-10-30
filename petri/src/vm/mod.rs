@@ -958,6 +958,8 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     }
 
     async fn launch_vtl2_pipette(&self) -> anyhow::Result<()> {
+        tracing::debug!("Launching VTL 2 pipette...");
+
         // Start pipette through DiagClient
         let res = self
             .openhcl_diag()?
@@ -970,7 +972,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
 
         let res = self
             .openhcl_diag()?
-            .run_detached_vtl2_command("sh", &["-c", "/cidata/pipette | logger &"])
+            .run_detached_vtl2_command("sh", &["-c", "/cidata/pipette 2>&1 | logger &"])
             .await?;
 
         if !res.success() {

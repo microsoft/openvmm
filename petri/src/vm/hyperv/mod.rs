@@ -312,7 +312,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             guest_state_isolation_type,
             memory.startup_bytes,
             vmgs_path.as_deref(),
-            log_source.log_file("hyperv")?,
+            log_source.clone(),
             driver.clone(),
         )
         .await?;

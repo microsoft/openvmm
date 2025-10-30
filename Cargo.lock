@@ -1091,7 +1091,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "azure_profiler_proto",
- "build_rs_guest_arch",
  "cvm_tracing",
  "diag_proto",
  "fs-err",
@@ -2735,6 +2734,7 @@ dependencies = [
 name = "guestmem"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "inspect",
  "minircu",
  "pal_event",
@@ -3943,14 +3943,12 @@ dependencies = [
  "headervec",
  "libc",
  "lx",
- "ntapi",
  "pal",
  "parking_lot",
  "static_assertions",
  "tempfile",
  "tracing",
  "widestring",
- "winapi",
  "windows 0.62.0",
  "zerocopy 0.8.25",
 ]
@@ -4314,6 +4312,7 @@ version = "0.0.0"
 name = "minircu"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "event-listener",
  "libc",
  "pal_async",
@@ -4434,6 +4433,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bitfield-struct 0.11.0",
  "futures",
  "futures-concurrency",
  "guestmem",
@@ -5571,6 +5571,7 @@ dependencies = [
 name = "pcie"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "chipset_device",
  "inspect",
  "pal_async",
@@ -8882,7 +8883,6 @@ dependencies = [
  "inspect",
  "inspect_counters",
  "pal_async",
- "smallvec",
  "thiserror 2.0.16",
  "vmbus_channel",
  "vmbus_ring",
@@ -9045,7 +9045,6 @@ dependencies = [
  "guestmem",
  "inspect",
  "safeatomic",
- "smallvec",
  "thiserror 2.0.16",
  "zerocopy 0.8.25",
 ]

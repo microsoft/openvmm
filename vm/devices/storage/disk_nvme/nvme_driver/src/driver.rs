@@ -28,7 +28,9 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use parking_lot::RwLock;
 use save_restore::NvmeDriverWorkerSavedState;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use task_control::AsyncRun;
@@ -36,6 +38,7 @@ use task_control::InspectTask;
 use task_control::TaskControl;
 use thiserror::Error;
 use tracing::Instrument;
+use tracing::Span;
 use tracing::info_span;
 use user_driver::DeviceBacking;
 use user_driver::backoff::Backoff;
@@ -68,7 +71,7 @@ pub struct NvmeDriver<T: DeviceBacking> {
     #[inspect(skip)]
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
-    rescan_event: Arc<event_listener::Event>,
+    rescan_notifiers: Arc<RwLock<HashMap<u32, Vec<mesh::Sender<()>>>>>,
     /// NVMe namespaces associated with this driver.
     #[inspect(skip)]
     namespaces: Vec<Arc<Namespace>>,
@@ -191,7 +194,7 @@ struct IoIssuer {
 enum NvmeWorkerRequest {
     CreateIssuer(Rpc<u32, ()>),
     /// Save worker state.
-    Save(Rpc<(), anyhow::Result<NvmeDriverWorkerSavedState>>),
+    Save(Rpc<Span, anyhow::Result<NvmeDriverWorkerSavedState>>),
 }
 
 impl<T: DeviceBacking> NvmeDriver<T> {
@@ -284,7 +287,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             identify: None,
             driver,
             io_issuers,
-            rescan_event: Default::default(),
+            rescan_notifiers: Default::default(),
             namespaces: vec![],
             nvme_keepalive: false,
             bounce_buffer,
@@ -469,9 +472,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // Spawn a task to handle asynchronous events.
         let async_event_task = self.driver.spawn("nvme_async_event", {
             let admin = admin.issuer().clone();
-            let rescan_event = self.rescan_event.clone();
+            let rescan_notifiers = self.rescan_notifiers.clone();
             async move {
-                if let Err(err) = handle_asynchronous_events(&admin, &rescan_event).await {
+                if let Err(err) = handle_asynchronous_events(&admin, rescan_notifiers).await {
                     tracing::error!(
                         error = err.as_ref() as &dyn std::error::Error,
                         "asynchronous event failure, not processing any more"
@@ -536,15 +539,20 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&self, nsid: u32) -> Result<Namespace, NamespaceError> {
-        Namespace::new(
+        let (send, recv) = mesh::channel::<()>();
+        let namespace = Namespace::new(
             &self.driver,
             self.admin.as_ref().unwrap().clone(),
-            self.rescan_event.clone(),
+            recv,
             self.identify.clone().unwrap(),
             &self.io_issuers,
             nsid,
         )
-        .await
+        .await?;
+        // Append the sender to the list of notifiers for this nsid.
+        let mut notifiers = self.rescan_notifiers.write();
+        notifiers.entry(nsid).or_default().push(send);
+        Ok(namespace)
     }
 
     /// Returns the number of CPUs that are in fallback mode (that are using a
@@ -564,11 +572,13 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         if self.identify.is_none() {
             return Err(save_restore::Error::InvalidState.into());
         }
+        let span = tracing::info_span!("nvme_driver_save", pci_id = self.device_id);
         self.nvme_keepalive = true;
         match self
             .io_issuers
             .send
-            .call(NvmeWorkerRequest::Save, ())
+            .call(NvmeWorkerRequest::Save, span.clone())
+            .instrument(span)
             .await?
         {
             Ok(s) => {
@@ -644,7 +654,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             )),
             driver: driver.clone(),
             io_issuers,
-            rescan_event: Default::default(),
+            rescan_notifiers: Default::default(),
             namespaces: vec![],
             nvme_keepalive: true,
             bounce_buffer,
@@ -670,6 +680,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .admin
             .as_ref()
             .map(|a| {
+                tracing::info!(
+                    id = a.qid,
+                    pending_commands_count = a.handler_data.pending_cmds.commands.len(),
+                    "restoring admin queue",
+                );
                 // Restore memory block for admin queue pair.
                 let mem_block = restored_memory
                     .iter()
@@ -685,18 +700,21 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     bounce_buffer,
                     AdminAerHandler::new(),
                 )
-                .unwrap()
+                .expect("failed to restore admin queue pair")
             })
-            .unwrap();
+            .expect("attempted to restore admin queue from empty state");
 
         let admin = worker.admin.insert(admin);
 
         // Spawn a task to handle asynchronous events.
         let async_event_task = this.driver.spawn("nvme_async_event", {
             let admin = admin.issuer().clone();
-            let rescan_event = this.rescan_event.clone();
+            let rescan_notifiers = this.rescan_notifiers.clone();
             async move {
-                if let Err(err) = handle_asynchronous_events(&admin, &rescan_event).await {
+                if let Err(err) = handle_asynchronous_events(&admin, rescan_notifiers)
+                    .instrument(tracing::info_span!("async_event_handler"))
+                    .await
+                {
                     tracing::error!(
                         error = err.as_ref() as &dyn std::error::Error,
                         "asynchronous event failure, not processing any more"
@@ -712,6 +730,21 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         };
 
         this.admin = Some(admin.issuer().clone());
+
+        tracing::info!(
+            state = saved_state
+                .worker_data
+                .io
+                .iter()
+                .map(|io_state| format!(
+                    "{{qid={}, pending_commands_count={}}}",
+                    io_state.queue_data.qid,
+                    io_state.queue_data.handler_data.pending_cmds.commands.len()
+                ))
+                .collect::<Vec<_>>()
+                .join(", "),
+            "restoring io queues",
+        );
 
         // Restore I/O queues.
         // Interrupt vector 0 is shared between Admin queue and I/O queue #1.
@@ -748,19 +781,36 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             })
             .collect();
 
+        tracing::info!(
+            namespaces = saved_state
+                .namespaces
+                .iter()
+                .map(|ns| format!("{{nsid={}, size={}}}", ns.nsid, ns.identify_ns.nsze))
+                .collect::<Vec<_>>()
+                .join(", "),
+            "restoring namespaces",
+        );
+
         // Restore namespace(s).
         for ns in &saved_state.namespaces {
             // TODO: Current approach is to re-query namespace data after servicing
             // and this array will be empty. Once we confirm that we can process
-            // namespace change notification AEN, the restore code will be re-added.
+            // namespace change notification AEN, the restore code will be
+            // re-added.
+            let (send, recv) = mesh::channel::<()>();
             this.namespaces.push(Arc::new(Namespace::restore(
                 &driver,
                 admin.issuer().clone(),
-                this.rescan_event.clone(),
+                recv,
                 this.identify.clone().unwrap(),
                 &this.io_issuers,
                 ns,
             )?));
+            this.rescan_notifiers
+                .write()
+                .entry(ns.nsid)
+                .or_default()
+                .push(send);
         }
 
         task.insert(&this.driver, "nvme_worker", state);
@@ -771,14 +821,16 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Change device's behavior when servicing.
     pub fn update_servicing_flags(&mut self, nvme_keepalive: bool) {
+        tracing::debug!(nvme_keepalive, "updating nvme servicing flags");
         self.nvme_keepalive = nvme_keepalive;
     }
 }
 
 async fn handle_asynchronous_events(
     admin: &Issuer,
-    rescan_event: &event_listener::Event,
+    rescan_notifiers: Arc<RwLock<HashMap<u32, Vec<mesh::Sender<()>>>>>,
 ) -> anyhow::Result<()> {
+    tracing::info!("starting asynchronous event handler task");
     loop {
         let dw0 = admin
             .issue_get_aen()
@@ -787,7 +839,7 @@ async fn handle_asynchronous_events(
 
         match spec::AsynchronousEventType(dw0.event_type()) {
             spec::AsynchronousEventType::NOTICE => {
-                tracing::info!("namespace attribute change event");
+                tracing::info!("received an async notice event (aen) from the controller");
 
                 // Clear the namespace list.
                 let mut list = [0u32; 1024];
@@ -805,9 +857,27 @@ async fn handle_asynchronous_events(
                     .await
                     .context("failed to query changed namespace list")?;
 
-                if list[0] != 0 {
-                    // For simplicity, tell all namespaces to rescan.
-                    rescan_event.notify(usize::MAX);
+                // Notify only the namespaces that have changed.
+
+                // NOTE: The nvme spec states - If more than 1,024 namespaces have
+                // changed attributes since the last time the log page was read,
+                // the first entry in the log page shall be set to
+                // FFFFFFFFh and the remainder of the list shall be zero filled.
+                let notifier_guard = rescan_notifiers.read();
+                if list[0] == 0xFFFFFFFF && list[1] == 0 {
+                    // More than 1024 namespaces changed - notify all registered namespaces
+                    tracing::info!("more than 1024 namespaces changed, notifying all listeners");
+                    for notifiers in notifier_guard.values() {
+                        notifiers.iter().for_each(|n| n.send(()));
+                    }
+                } else {
+                    // Notify specific namespaces that have changed
+                    for nsid in list.iter().filter(|&&nsid| nsid != 0) {
+                        tracing::info!(nsid, "notifying listeners of changed namespace");
+                        if let Some(notifiers) = notifier_guard.get(nsid) {
+                            notifiers.iter().for_each(|n| n.send(()));
+                        }
+                    }
                 }
             }
             event_type => {
@@ -869,7 +939,8 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
                             .await
                     }
                     Some(NvmeWorkerRequest::Save(rpc)) => {
-                        rpc.handle(async |_| self.save(state).await).await
+                        rpc.handle(async |span| self.save(state).instrument(span).await)
+                            .await
                     }
                     None => break,
                 }
@@ -899,7 +970,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     .enumerate()
                     .rev()
                     .find_map(|(i, issuer)| issuer.get().map(|issuer| (i, issuer)))
-                    .unwrap();
+                    .expect("unable to find an io issuer for fallback");
 
                 // Log the error as informational only when there is a lack of
                 // hardware resources from the device.
@@ -1054,11 +1125,36 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             None => None,
         };
 
-        let io = join_all(self.io.drain(..).map(async |q| q.save().await))
+        let io: Vec<IoQueueSavedState> = join_all(self.io.drain(..).map(async |q| q.save().await))
             .await
             .into_iter()
             .flatten()
             .collect();
+
+        // Log admin queue details
+        if let Some(ref admin_state) = admin {
+            tracing::info!(
+                id = admin_state.qid,
+                pending_commands_count = admin_state.handler_data.pending_cmds.commands.len(),
+                "saved admin queue",
+            );
+        }
+
+        // Log IO queues summary
+        if !io.is_empty() {
+            tracing::info!(
+                state = io
+                    .iter()
+                    .map(|io_state| format!(
+                        "{{qid={}, pending_commands_count={}}}",
+                        io_state.queue_data.qid,
+                        io_state.queue_data.handler_data.pending_cmds.commands.len()
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                "saved io queues",
+            );
+        }
 
         Ok(NvmeDriverWorkerSavedState {
             admin,
