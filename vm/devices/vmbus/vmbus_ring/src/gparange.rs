@@ -30,8 +30,15 @@ pub fn validate_gpa_ranges(count: usize, buf: &[u64]) -> Result<usize, Error> {
 
 #[derive(Debug, Default, Clone)]
 pub struct MultiPagedRangeBuf {
+    /// The buffer used to store the range data, concatenated. Each range
+    /// consists of a [`GpaRange`] header followed by the list of GPNs.
+    /// Note that `size_of::<GpaRange>() == size_of::<u64>()`.
     buf: Box<[u64]>,
+    /// The number of u64 elements in the buffer that are valid. Data after this
+    /// point is initialized from Rust's point of view but is not logically part of
+    /// the ranges.
     valid: usize,
+    /// The number of ranges stored in the buffer.
     count: usize,
 }
 
@@ -141,6 +148,9 @@ impl MultiPagedRangeBuf {
             Ok(v) => v,
             Err(e) => return Ok(Err(e)),
         };
+        // Now that validation succeeded, update the buffer state. Failure
+        // before this may have expanded the buffer but did not affect the
+        // visible behavior of this object.
         self.valid += valid_len;
         self.count += count;
         Ok(Ok(()))
