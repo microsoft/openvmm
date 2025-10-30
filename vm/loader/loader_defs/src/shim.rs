@@ -239,6 +239,8 @@ pub struct TdxTrampolineContext {
     pub transition_cr3: u32,
     /// Padding
     pub padding_3: u32,
+
+    //TODO spelling
     /// Statuc GDT
     pub static_gdt: [u8; 16],
 }

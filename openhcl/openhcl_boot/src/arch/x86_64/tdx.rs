@@ -7,6 +7,7 @@ use crate::arch::x86_64::address_space::TdxHypercallPage;
 use crate::arch::x86_64::address_space::tdx_unshare_large_page;
 use crate::host_params::PartitionInfo;
 use crate::hvcall;
+use crate::log;
 use crate::single_threaded::SingleThreaded;
 use core::arch::asm;
 use core::cell::Cell;
@@ -195,17 +196,6 @@ pub fn tdx_prepare_ap_trampoline() {
 }
 
 pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
-
-    // plan
-    // use task selector as a gate to continue: set it to 1 to go
-    // in shim, wait until it is set to 0 to continue
-    // reponse will be in idtr_limit
-    //
-    // move mailbox spinloop to the end
-    // e.g. tdvmcall to read AP just reads it into ESI then continues
-    //
-    //
-    //
     // Update the TDX Trampoline Context for AP Startup
     tdx_prepare_ap_trampoline();
 
@@ -217,8 +207,42 @@ pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
 
     // Start VPs on Tdx-isolated VMs by sending TDVMCALL-based hypercall HvCallStartVirtualProcessor
     for cpu in 1..partition_info.cpus.len() {
+        let context_ptr: *mut TdxTrampolineContext = RESET_VECTOR_PAGE as *mut TdxTrampolineContext;
+        // SAFETY: The TdxTrampolineContext is known to be stored at the architectural reset vector address
+        let mut tdxcontext: &mut TdxTrampolineContext = unsafe { context_ptr.as_mut().unwrap() };
+        //HACK: setting padding_1 to any value will resume RV execution, then the RV will reset the value to 0
+        //HACK: the RV will send responses to the shim using padding_3. It is up to the shim to clear this value
+        //tdxcontext.padding_1 = 0;
+        tdxcontext.padding_1 = 0;
+        tdxcontext.padding_3 = 0;
+        log!("ap_diag: starting VP {}", cpu as u32);
         hvcall()
             .tdx_start_vp(cpu as u32)
             .expect("start vp should not fail");
+
+        log!("ap_diag: issue APIC RD TDVMCALL");
+
+        //Issue: padding_1 is not getting reset
+        // It could be because the write back is failing, or we're stuck in the loop
+        //It looks like even when padding_1 is zero, we wont gate...
+
+        log!("padding_3 {}", tdxcontext.padding_3);
+        log!("setting padding_1");
+        tdxcontext.padding_1 = 1;
+        while tdxcontext.padding_1 == 1 {
+                core::hint::black_box(tdxcontext.padding_1);
+        }
+        log!("yo");
+       // loop {
+       //     log!("padding_3 {}", tdxcontext.padding_3);
+       //     log!("padding_1 {}", tdxcontext.padding_1);
+       //     for i in 1..1000000000 {
+       //         core::hint::black_box(i);
+       //     };
+       // };
+       // log!("padding_1 has been reset");
+        while tdxcontext.padding_3 == 0 {};
+
+        log!("ap_diag: APIC_ID = {}", tdxcontext.padding_3);
     }
 }

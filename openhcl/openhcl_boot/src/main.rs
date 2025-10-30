@@ -582,7 +582,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     // Enable logging ASAP. This is fine even when isolated, as we don't have
     // any access to secrets in the boot shim.
-    boot_logger_runtime_init(p.isolation_type, partition_info.com3_serial_available);
+    //HACK for local debugging, revert before pushing to CI
+    boot_logger_runtime_init(p.isolation_type, true);
     log!("openhcl_boot: logging enabled");
 
     // Confidential debug will show up in boot_options only if included in the
