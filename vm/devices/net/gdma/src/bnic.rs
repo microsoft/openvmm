@@ -334,33 +334,22 @@ impl BasicNic {
                     .alloc_cq(cq_region.clone(), req.cq_parent_qid)
                     .context("failed to allocate cq")?;
 
-                let mut placed = false;
                 // Make the top 32 bits the vport index
                 let mut wq_handle = req.vport << 32;
                 wq_handle |= self.next_wq_handle.fetch_add(1, Ordering::Relaxed);
-                    let placed = vport.tasks.iter_mut().any(|task| {
-                        let queue_slot = if is_send { &mut task.queue_cfg.tx } else { &mut task.queue_cfg.rx };
-                        if queue_slot.is_none() {
-                            *queue_slot = Some((wq_id, cq_id, wq_handle));
-                            true
-                        } else {
-                            false
-                        }
-                    });
-                    if is_send {
-                        if task.queue_cfg.tx.is_none() {
-                            task.queue_cfg.tx = Some((wq_id, cq_id, wq_handle));
-                            placed = true;
-                            break;
-                        }
+                let placed = vport.tasks.iter_mut().any(|task| {
+                    let queue_slot = if is_send {
+                        &mut task.queue_cfg.tx
                     } else {
-                        if task.queue_cfg.rx.is_none() {
-                            task.queue_cfg.rx = Some((wq_id, cq_id, wq_handle));
-                            placed = true;
-                            break;
-                        }
+                        &mut task.queue_cfg.rx
+                    };
+                    if queue_slot.is_none() {
+                        *queue_slot = Some((wq_id, cq_id, wq_handle));
+                        true
+                    } else {
+                        false
                     }
-                }
+                });
 
                 // If no existing task had an available slot, create a new one
                 if !placed {
