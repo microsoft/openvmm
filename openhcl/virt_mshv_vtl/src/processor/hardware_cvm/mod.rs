@@ -2419,9 +2419,14 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             .probe_address(canonical_gpa);
 
         match address_type {
-            Some(AddressType::Mmio) | Some(AddressType::DeviceReserved) => {
+            Some(AddressType::Mmio) => {
                 // Emulate the access.
                 true
+            }
+            Some(AddressType::DeviceReserved) => {
+                // We do not currently construct any DeviceReserved regions in OpenHCL
+                // so this should never happen.
+                panic!("unexpected device reserved range");
             }
             Some(AddressType::Ram) => {
                 let (access_check, access_type) = if is_write {

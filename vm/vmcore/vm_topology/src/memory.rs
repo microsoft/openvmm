@@ -198,7 +198,7 @@ impl MemoryLayout {
 
     /// Builds the memory layout.
     ///
-    /// `ram` and `mmio` must already be known to be sorted.
+    /// `ram` must already be known to be sorted.
     fn build(
         ram: Vec<MemoryRangeWithNode>,
         mmio: Vec<MemoryRange>,

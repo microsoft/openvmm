@@ -102,6 +102,7 @@ impl Ssdt {
     /// Device(\_SB.PCI<N>)
     /// {
     ///     Name(_HID, PNP0A08)
+    ///     Name(_CID, PNP0A03)
     ///     Name(_UID, <index>)
     ///     Name(_SEG, <segment>)
     ///     Name(_BBN, <bus number>)
