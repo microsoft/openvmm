@@ -662,15 +662,18 @@ struct UhVmNetworkSettings {
 }
 
 impl UhVmNetworkSettings {
-    async fn shutdown_vf_devices(
+    /// Encapsulates the common logic for beginning VF shutdown / save:
+    fn begin_vf_teardown(
         &mut self,
         vf_managers: &mut Vec<(Guid, Arc<HclNetworkVFManager>)>,
         remove_vtl0_vf: bool,
-        keep_vf_alive: bool,
+    ) -> (
+        Vec<(Guid, HclNetworkVFManagerShutdownInProgress)>,
+        Vec<(Guid, SpawnedUnit<ChannelUnit<netvsp::Nic>>)>,
     ) {
         // Notify VF managers of shutdown so that the subsequent teardown of
         // the NICs does not modify VF state.
-        let mut vf_managers = vf_managers
+        let vf_managers = vf_managers
             .drain(..)
             .map(move |(instance_id, manager)| {
                 (
@@ -708,6 +711,18 @@ impl UhVmNetworkSettings {
                 );
             }
         }
+
+        (vf_managers, nic_channels)
+    }
+
+    async fn shutdown_vf_devices(
+        &mut self,
+        vf_managers: &mut Vec<(Guid, Arc<HclNetworkVFManager>)>,
+        remove_vtl0_vf: bool,
+        keep_vf_alive: bool,
+    ) {
+        let (mut vf_managers, mut nic_channels) =
+            self.begin_vf_teardown(vf_managers, remove_vtl0_vf);
 
         // Close vmbus channels and drop all of the NICs.
         let mut endpoints: Vec<_> =
@@ -1018,53 +1033,16 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
     async fn save(&mut self) -> Vec<ManaSavedState> {
         let mut vf_managers: Vec<(Guid, Arc<HclNetworkVFManager>)> =
             self.vf_managers.drain().collect();
-
-        // Notify VF managers of shutdown so that the subsequent teardown of
-        // the NICs does not modify VF state.
-        let vf_managers = vf_managers
-            .drain(..)
-            .map(move |(instance_id, manager)| {
-                (
-                    instance_id,
-                    Arc::into_inner(manager).unwrap().shutdown_begin(false),
-                )
-            })
-            .collect::<Vec<(Guid, HclNetworkVFManagerShutdownInProgress)>>();
-
-        // Collect the instance_id of every vf_manager being shutdown
-        let instance_ids: Vec<Guid> = vf_managers
-            .iter()
-            .map(|(instance_id, _)| *instance_id)
-            .collect();
-
-        // Only remove the vmbus channels and NICs from the VF Managers
-        let mut nic_channels = Vec::new();
-        let mut i = 0;
-        while i < self.nics.len() {
-            if instance_ids.contains(&self.nics[i].0) {
-                let val = self.nics.remove(i);
-                nic_channels.push(val);
-            } else {
-                i += 1;
-            }
-        }
-
-        for instance_id in instance_ids {
-            if !nic_channels.iter().any(|(id, _)| *id == instance_id) {
-                tracing::error!(
-                    "No vmbus channel found that matches VF Manager instance_id: {instance_id}"
-                );
-            }
-        }
+        let (vf_managers, nic_channels) = self.begin_vf_teardown(&mut vf_managers, false);
 
         let mut endpoints: Vec<_> =
-            join_all(nic_channels.drain(..).map(async |(instance_id, channel)| {
-                async {
+            join_all(nic_channels.into_iter().map(|(instance_id, channel)| {
+                async move {
                     let nic = channel.remove().await.revoke().await;
+
                     nic.shutdown()
                 }
                 .instrument(tracing::info_span!("nic_shutdown", %instance_id))
-                .await
             }))
             .await;
 
