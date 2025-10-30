@@ -1034,16 +1034,16 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
     async fn save(&mut self) -> Vec<ManaSavedState> {
         let mut vf_managers: Vec<(Guid, Arc<HclNetworkVFManager>)> =
             self.vf_managers.drain().collect();
-        let (vf_managers, nic_channels) = self.begin_vf_teardown(&mut vf_managers, false);
+        let (vf_managers, mut nic_channels) = self.begin_vf_teardown(&mut vf_managers, false);
 
         let mut endpoints: Vec<_> =
-            join_all(nic_channels.into_iter().map(|(instance_id, channel)| {
-                async move {
+            join_all(nic_channels.drain(..).map(async |(instance_id, channel)| {
+                async {
                     let nic = channel.remove().await.revoke().await;
-
                     nic.shutdown()
                 }
                 .instrument(tracing::info_span!("nic_shutdown", %instance_id))
+                .await
             }))
             .await;
 
