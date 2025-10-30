@@ -138,7 +138,7 @@ pub(crate) use debug_log;
 /// Useful to capture the in-memory log before switching to a different
 /// environment where the in-memory log may be lost.
 pub fn boot_logger_write_memory_log_to_runtime() {
-    if let Some(buf) = BOOT_LOGGER.in_memory_logger.borrow_mut().as_ref() {
+    if let Some(buf) = BOOT_LOGGER.in_memory_logger.borrow().as_ref() {
         let mut logger = BOOT_LOGGER.logger.borrow_mut();
         let _ = logger.write_str("---- Boot Memory Log Start ----\n");
         let _ = logger.write_str(buf.contents());
