@@ -539,7 +539,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
-        if let Some(_) = self.namespaces.get(&nsid) {
+        if self.namespaces.contains_key(&nsid) {
             // Prevent multiple references to the same Namespace.
             // Allowing this could lead to undefined behavior if multiple components
             // concurrently read or write to the same namespace. To avoid this,
