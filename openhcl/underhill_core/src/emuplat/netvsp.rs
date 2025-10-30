@@ -140,7 +140,7 @@ async fn try_create_mana_device(
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
     // Restore the device if we have saved state from servicing, otherwise create a new one.
     let device = if mana_state.is_some() {
-        tracing::info!("Restoring VFIO device from saved state");
+        tracing::debug!("Restoring VFIO device from saved state");
         VfioDevice::restore(driver_source, pci_id, true, dma_client)
             .instrument(tracing::info_span!("restore_mana_vfio_device"))
             .await
@@ -695,15 +695,11 @@ impl HclNetworkVFManagerWorker {
                                     pci_id: self.vtl2_pci_id.clone(),
                                 })
                             } else {
-                                tracing::error!(
-                                    "Failed while saving MANA device state, returning None"
-                                );
+                                tracing::error!("Failed while saving MANA device state");
                                 None
                             }
                         } else {
-                            tracing::warn!(
-                                "no MANA device present when saving state, returning None"
-                            );
+                            tracing::warn!("no MANA device present when saving state");
                             None
                         }
                     })
@@ -1047,7 +1043,7 @@ impl HclNetworkVFManager {
 
         match save_state {
             Ok(None) => {
-                tracing::warn!("No MANA device present when saving state, returning None");
+                tracing::warn!("No MANA device present when saving state");
                 None
             }
             Ok(Some(state)) => Some(state),
