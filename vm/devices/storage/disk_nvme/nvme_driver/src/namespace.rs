@@ -22,6 +22,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use thiserror::Error;
+use user_driver::memory::PAGE_SIZE;
 use vmcore::vm_task::VmTaskDriver;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
@@ -404,6 +405,11 @@ impl Namespace {
             let len = size_of_val(&header)
                 + header.report.regctl.get() as usize
                     * size_of::<nvm::RegisteredControllerExtended>();
+
+            // TODO: For now, simply bail (otherwise issue_out will panic if > 1 page of data is needed).
+            if len > PAGE_SIZE {
+                break Err(RequestError::ReservationReportTooBig(len));
+            }
 
             if len > data.len() {
                 data.resize(len, 0);
