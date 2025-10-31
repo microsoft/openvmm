@@ -458,6 +458,8 @@ pub enum RequestError {
     Memory(#[source] GuestMemoryError),
     #[error("i/o too large for double buffering")]
     TooLarge,
+    #[error("reservation report is too large, requested size: {0} bytes")]
+    ReservationReportTooBig(usize),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
