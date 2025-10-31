@@ -61,6 +61,8 @@ enum HclNetworkVfManagerMessage {
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
     SaveState(Rpc<(), VfManagerSaveResult>),
 }
+
+#[expect(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum VfManagerSaveResult {
     Saved(ManaSavedState),
