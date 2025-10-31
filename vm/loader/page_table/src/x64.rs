@@ -3,9 +3,9 @@
 
 //! Methods to construct page tables on x64.
 
+use crate::Error;
 use crate::IdentityMapSize;
 use zerocopy::FromBytes;
-use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
@@ -17,6 +17,7 @@ const X64_PTE_DIRTY: u64 = 1 << 6;
 const X64_PTE_LARGE_PAGE: u64 = 1 << 7;
 
 const PAGE_TABLE_ENTRY_COUNT: usize = 512;
+const PAGE_TABLE_ENTRY_SIZE: usize = 8;
 
 const X64_PAGE_SHIFT: u64 = 12;
 const X64_PTE_BITS: u64 = 9;
@@ -30,13 +31,25 @@ pub const X64_LARGE_PAGE_SIZE: u64 = 0x200000;
 /// Number of bytes in a 1GB page for X64.
 pub const X64_1GB_PAGE_SIZE: u64 = 0x40000000;
 
+/// Maximum number of page tables created for an x64 identity map
+pub const PAGE_TABLE_MAX_COUNT: usize = 13;
+
+static_assertions::const_assert_eq!(
+    PAGE_TABLE_ENTRY_SIZE * PAGE_TABLE_ENTRY_COUNT,
+    X64_PAGE_SIZE as usize
+);
+const PAGE_TABLE_SIZE: usize = PAGE_TABLE_ENTRY_COUNT * PAGE_TABLE_ENTRY_SIZE;
+
+/// Maximum number of bytes needed to store an x64 identity map
+pub const PAGE_TABLE_MAX_BYTES: usize = PAGE_TABLE_MAX_COUNT * X64_PAGE_SIZE as usize;
+
 #[derive(Copy, Clone, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[repr(transparent)]
 pub struct PageTableEntry {
     pub(crate) entry: u64,
 }
 
-impl std::fmt::Debug for PageTableEntry {
+impl core::fmt::Debug for PageTableEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PageTableEntry")
             .field("entry", &self.entry)
@@ -130,9 +143,13 @@ impl PageTableEntry {
     const VALID_BITS: u64 = 0x000f_ffff_ffff_f000;
 
     /// Set an AMD64 PDE to either represent a leaf 2MB page or PDE.
-    /// This sets the PTE to preset, accessed, dirty, read write execute.
-    pub fn set_entry(&mut self, entry_type: PageTableEntryType) {
-        self.entry = X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE;
+    /// This sets the PTE to preset, accessed, dirty, execute.
+    pub fn set_entry(&mut self, entry_type: PageTableEntryType, read_only: bool) {
+        if read_only {
+            self.entry = X64_PTE_PRESENT | X64_PTE_ACCESSED;
+        } else {
+            self.entry = X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE;
+        }
 
         match entry_type {
             PageTableEntryType::Leaf1GbPage(address) => {
@@ -196,16 +213,12 @@ impl PageTableEntry {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Clone, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PageTable {
     entries: [PageTableEntry; PAGE_TABLE_ENTRY_COUNT],
 }
 
 impl PageTable {
-    // fn iter(&self) -> impl Iterator<Item = &PageTableEntry> {
-    //     self.entries.iter()
-    // }
-
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut PageTableEntry> {
         self.entries.iter_mut()
     }
@@ -217,7 +230,7 @@ impl PageTable {
     }
 }
 
-impl std::ops::Index<usize> for PageTable {
+impl core::ops::Index<usize> for PageTable {
     type Output = PageTableEntry;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -225,7 +238,7 @@ impl std::ops::Index<usize> for PageTable {
     }
 }
 
-impl std::ops::IndexMut<usize> for PageTable {
+impl core::ops::IndexMut<usize> for PageTable {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         &mut self.entries[index]
     }
@@ -275,16 +288,25 @@ pub fn calculate_pde_table_count(start_gpa: u64, size: u64) -> u64 {
 }
 
 #[derive(Debug, Clone)]
-pub struct PageTableBuilder {
+struct PageTableBuilderParams {
     page_table_gpa: u64,
     start_gpa: u64,
     size: u64,
     local_map: Option<(u64, u64)>,
     confidential_bit: Option<u32>,
     map_reset_vector: bool,
+    read_only: bool,
 }
 
-impl PteOps for PageTableBuilder {
+pub struct PageTableBuilder<'a> {
+    params: PageTableBuilderParams,
+    /// a reference to a mutable slice of PageTables, used as working memory for constructing the page table
+    page_table: &'a mut [PageTable],
+    /// a reference to a mutable slice of u8s, used to store and return the final page table bytes
+    flattened_page_table: &'a mut [u8],
+}
+
+impl PteOps for PageTableBuilderParams {
     fn get_addr_mask(&self) -> u64 {
         const ALL_ADDR_BITS: u64 = 0x000f_ffff_ffff_f000;
         ALL_ADDR_BITS & !self.get_confidential_mask()
@@ -299,175 +321,209 @@ impl PteOps for PageTableBuilder {
     }
 }
 
-impl PageTableBuilder {
-    pub fn new(page_table_gpa: u64) -> Self {
-        PageTableBuilder {
-            page_table_gpa,
-            start_gpa: 0,
-            size: 0,
-            local_map: None,
-            confidential_bit: None,
-            map_reset_vector: false,
+impl<'a> PageTableBuilder<'a> {
+    /// Creates a new instance of PageTableBuilder, taking required arguments for working buffers and the page table gpa.
+    pub fn new(
+        page_table_gpa: u64,
+        page_table: &'a mut [PageTable],
+        flattened_page_table: &'a mut [u8],
+    ) -> Result<Self, Error> {
+        if flattened_page_table.len() != (page_table.len() * PAGE_TABLE_SIZE) {
+            Err(Error::BadBufferSize {
+                bytes_buf: flattened_page_table.len(),
+                struct_buf: page_table.len() * PAGE_TABLE_SIZE,
+            })
+        } else {
+            Ok(PageTableBuilder {
+                params: PageTableBuilderParams {
+                    page_table_gpa,
+                    start_gpa: 0,
+                    size: 0,
+                    local_map: None,
+                    confidential_bit: None,
+                    read_only: false,
+                    map_reset_vector: false,
+                },
+                page_table,
+                flattened_page_table,
+            })
         }
     }
 
-    pub fn with_mapped_region(mut self, start_gpa: u64, size: u64) -> Self {
-        self.start_gpa = start_gpa;
-        self.size = size;
-        self
+    pub fn with_mapped_region(mut self, start_gpa: u64, size: u64) -> Result<Self, Error> {
+        const SIZE_512_GB: u64 = 0x8000000000;
+
+        if !size.is_multiple_of(X64_LARGE_PAGE_SIZE) {
+            return Err(Error::SizeAlignment(size));
+        }
+
+        if !start_gpa.is_multiple_of(X64_LARGE_PAGE_SIZE) {
+            return Err(Error::StartAlignment(start_gpa));
+        }
+
+        if size > SIZE_512_GB {
+            return Err(Error::MappingSize(size));
+        }
+
+        self.params.start_gpa = start_gpa;
+        self.params.size = size;
+        Ok(self)
     }
 
-    pub fn with_local_map(mut self, start_va: u64, size: u64) -> Self {
-        self.local_map = Some((start_va, size));
-        self
+    pub fn with_local_map(mut self, start_va: u64, size: u64) -> Result<Self, Error> {
+        if !start_va.is_multiple_of(X64_LARGE_PAGE_SIZE) {
+            return Err(Error::StartAlignment(start_va));
+        }
+
+        if !size.is_multiple_of(X64_LARGE_PAGE_SIZE) {
+            return Err(Error::SizeAlignment(size));
+        }
+
+        if size == 0 {
+            return Err(Error::MissingSize);
+        }
+        self.params.local_map = Some((start_va, size));
+        Ok(self)
     }
 
     pub fn with_confidential_bit(mut self, bit_position: u32) -> Self {
-        self.confidential_bit = Some(bit_position);
+        self.params.confidential_bit = Some(bit_position);
         self
     }
 
     /// Map the reset vector at page 0xFFFFF with a single page.
     pub fn with_reset_vector(mut self, map_reset_vector: bool) -> Self {
-        self.map_reset_vector = map_reset_vector;
+        self.params.map_reset_vector = map_reset_vector;
         self
     }
 
-    /// Build a set of X64 page tables identity mapping the given region. `size` must be less than 512GB.
+    /// Map all pages as read only.
+    pub fn with_read_only(mut self, read_only: bool) -> Self {
+        self.params.read_only = read_only;
+        self
+    }
+
+    /// Build a set of X64 page tables identity mapping the given regions.
     /// This creates up to 3+N page tables: 1 PML4E and up to 2 PDPTE tables, and N page tables counted at 1 per GB of size,
     /// for 2MB mappings.
-    pub fn build(self) -> Vec<u8> {
-        const SIZE_512_GB: u64 = 0x8000000000;
-
-        if self.size == 0 {
-            panic!("size not set");
+    pub fn build(self) -> Result<&'a [u8], Error> {
+        if self.params.size == 0 {
+            return Err(Error::MissingSize);
         }
 
-        if self.size > SIZE_512_GB {
-            panic!("more than 512 gb size not supported");
-        }
+        let PageTableBuilder {
+            page_table,
+            flattened_page_table,
+            params,
+        } = self;
 
-        if !self.size.is_multiple_of(X64_LARGE_PAGE_SIZE) {
-            panic!("size not 2mb aligned");
-        }
+        let start_va = params.start_gpa;
+        let end_va = start_va + params.size;
+        let page_table_gpa = params.page_table_gpa;
 
-        // start_gpa and size must be 2MB aligned.
-        if !self.start_gpa.is_multiple_of(X64_LARGE_PAGE_SIZE) {
-            panic!("start_gpa not 2mb aligned");
-        }
-
-        let start_va = self.start_gpa;
-        let end_va = start_va + self.size;
-        let page_table_gpa = self.page_table_gpa;
-
-        if let Some((local_map_start, local_map_size)) = self.local_map {
-            if local_map_start % X64_LARGE_PAGE_SIZE != 0 {
-                panic!("local map address not 2 mb aligned");
-            }
-
-            if local_map_size % X64_LARGE_PAGE_SIZE != 0 {
-                panic!("local map size not 2 mb aligned");
-            }
-
-            if local_map_size == 0 {
-                panic!("local map size cannot be 0");
-            }
-
+        if let Some((local_map_start, local_map_size)) = params.local_map {
             let local_map_end = local_map_start + local_map_size;
             if local_map_end > start_va && local_map_start < end_va {
-                panic!("local map overlaps with mapped region");
+                return Err(Error::OverlappingMappings);
             }
         }
 
         // Allocate single PML4E page table.
-        let mut page_table: Vec<PageTable> = Vec::new();
-        page_table.push(PageTable::new_zeroed());
-        let pml4_table_index = 0;
-        let confidential = self.confidential_bit.is_some();
+        let (mut page_table_index, pml4_table_index) = (0, 0);
+        let confidential = params.confidential_bit.is_some();
 
         let mut link_tables = |start_va: u64, end_va: u64, use_large_pages: bool| {
             let mut current_va = start_va;
             while current_va < end_va {
+                #[cfg(feature = "tracing")]
                 tracing::trace!(current_va);
 
                 let pdpte_table_index = {
-                    let next_index = page_table.len();
                     let pml4_entry = page_table[pml4_table_index].entry(current_va, 3);
                     if !pml4_entry.is_present() {
+                        page_table_index += 1;
                         // Allocate and link PDPTE table.
-                        let output_address = page_table_gpa + next_index as u64 * X64_PAGE_SIZE;
-                        let mut new_entry =
-                            Self::build_pte(PageTableEntryType::Pde(output_address));
-                        self.set_pte_confidentiality(&mut new_entry, confidential);
+                        let output_address =
+                            page_table_gpa + page_table_index as u64 * X64_PAGE_SIZE;
+                        let mut new_entry = PageTableBuilderParams::build_pte(
+                            PageTableEntryType::Pde(output_address),
+                        );
+                        params.set_pte_confidentiality(&mut new_entry, confidential);
                         *pml4_entry = new_entry;
-                        page_table.push(PageTable::new_zeroed());
-
-                        next_index
+                        page_table_index
                     } else {
-                        ((self.get_addr_from_pte(pml4_entry) - page_table_gpa) / X64_PAGE_SIZE)
+                        ((params.get_addr_from_pte(pml4_entry) - page_table_gpa) / X64_PAGE_SIZE)
                             .try_into()
                             .expect("Valid page table index")
                     }
                 };
 
+                #[cfg(feature = "tracing")]
                 tracing::trace!(pdpte_table_index);
 
                 let pde_table_index = {
-                    let next_index = page_table.len();
                     let pdpte_entry = page_table[pdpte_table_index].entry(current_va, 2);
                     if !pdpte_entry.is_present() {
+                        page_table_index += 1;
                         // Allocate and link PDE table.
-                        let output_address = page_table_gpa + next_index as u64 * X64_PAGE_SIZE;
-                        let mut new_entry =
-                            Self::build_pte(PageTableEntryType::Pde(output_address));
-                        self.set_pte_confidentiality(&mut new_entry, confidential);
+                        let output_address =
+                            page_table_gpa + page_table_index as u64 * X64_PAGE_SIZE;
+                        let mut new_entry = PageTableBuilderParams::build_pte(
+                            PageTableEntryType::Pde(output_address),
+                        );
+                        params.set_pte_confidentiality(&mut new_entry, confidential);
                         *pdpte_entry = new_entry;
-                        page_table.push(PageTable::new_zeroed());
 
-                        next_index
+                        page_table_index
                     } else {
-                        ((self.get_addr_from_pte(pdpte_entry) - page_table_gpa) / X64_PAGE_SIZE)
+                        ((params.get_addr_from_pte(pdpte_entry) - page_table_gpa) / X64_PAGE_SIZE)
                             .try_into()
                             .expect("Valid page table index")
                     }
                 };
 
+                #[cfg(feature = "tracing")]
                 tracing::trace!(pde_table_index);
 
-                let next_index = page_table.len();
                 let pde_entry = page_table[pde_table_index].entry(current_va, 1);
                 assert!(!pde_entry.is_present());
 
                 if use_large_pages {
                     assert!(!pde_entry.is_present());
 
-                    let mut new_entry =
-                        Self::build_pte(PageTableEntryType::Leaf2MbPage(current_va));
-                    self.set_pte_confidentiality(&mut new_entry, confidential);
+                    let mut new_entry = PageTableBuilderParams::build_pte(
+                        PageTableEntryType::Leaf2MbPage(current_va),
+                    );
+                    params.set_pte_confidentiality(&mut new_entry, confidential);
                     *pde_entry = new_entry;
                     current_va += X64_LARGE_PAGE_SIZE;
                 } else {
                     let pt_table_index = if !pde_entry.is_present() {
+                        page_table_index += 1;
                         // Allocate and link page table.
-                        let output_address = page_table_gpa + next_index as u64 * X64_PAGE_SIZE;
-                        let mut new_entry =
-                            Self::build_pte(PageTableEntryType::Pde(output_address));
-                        self.set_pte_confidentiality(&mut new_entry, confidential);
+                        let output_address =
+                            page_table_gpa + page_table_index as u64 * X64_PAGE_SIZE;
+                        let mut new_entry = PageTableBuilderParams::build_pte(
+                            PageTableEntryType::Pde(output_address),
+                        );
+                        params.set_pte_confidentiality(&mut new_entry, confidential);
                         *pde_entry = new_entry;
-                        page_table.push(PageTable::new_zeroed());
 
-                        next_index
+                        page_table_index
                     } else {
-                        ((self.get_addr_from_pte(pde_entry) - page_table_gpa) / X64_PAGE_SIZE)
+                        ((params.get_addr_from_pte(pde_entry) - page_table_gpa) / X64_PAGE_SIZE)
                             .try_into()
                             .expect("Valid page table index")
                     };
 
+                    #[cfg(feature = "tracing")]
                     tracing::trace!(pt_table_index);
 
                     let pt_entry = page_table[pt_table_index].entry(current_va, 0);
-                    let mut new_entry = Self::build_pte(PageTableEntryType::Leaf4kPage(current_va));
-                    self.set_pte_confidentiality(&mut new_entry, confidential);
+                    let mut new_entry = PageTableBuilderParams::build_pte(
+                        PageTableEntryType::Leaf4kPage(current_va),
+                    );
+                    params.set_pte_confidentiality(&mut new_entry, confidential);
                     *pt_entry = new_entry;
                     current_va += X64_PAGE_SIZE;
                 }
@@ -477,111 +533,176 @@ impl PageTableBuilder {
         link_tables(start_va, end_va, true);
 
         // Create local map area if present.
-        if let Some((local_map_start, local_map_size)) = self.local_map {
+        if let Some((local_map_start, local_map_size)) = params.local_map {
             link_tables(local_map_start, local_map_start + local_map_size, true);
         }
 
-        if self.map_reset_vector {
+        if params.map_reset_vector {
             // Map the reset vector pfn of 0xFFFFF
+            #[cfg(feature = "tracing")]
             tracing::trace!("identity mapping reset page 0xFFFFF");
             let reset_vector_addr = 0xFFFFF * X64_PAGE_SIZE;
             link_tables(reset_vector_addr, reset_vector_addr + X64_PAGE_SIZE, false);
         }
 
         // Flatten page table vec into u8 vec
-        flatten_page_table(page_table)
+        Ok(flatten_page_table(
+            page_table,
+            flattened_page_table,
+            page_table_index + 1,
+        ))
     }
 }
 
-/// Build a set of X64 page tables identity mapping the bottom address
-/// space with an optional address bias.
-///
-/// An optional PML4E entry may be linked, with arguments being (link_target_gpa, linkage_gpa).
-/// link_target_gpa represents the GPA of the PML4E to link into the built page table.
-/// linkage_gpa represents the GPA at which the linked PML4E should be linked.
-pub fn build_page_tables_64(
+#[derive(Debug, Clone)]
+struct IdentityMapBuilderParams {
     page_table_gpa: u64,
-    address_bias: u64,
     identity_map_size: IdentityMapSize,
+    address_bias: u64,
     pml4e_link: Option<(u64, u64)>,
-) -> Vec<u8> {
-    // Allocate page tables. There are up to 6 total page tables:
-    //      1 PML4E (Level 4) (omitted if the address bias is non-zero)
-    //      1 PDPTE (Level 3)
-    //      4 or 8 PDE tables (Level 2)
-    // Note that there are no level 1 page tables, as 2MB pages are used.
-    let leaf_page_table_count = match identity_map_size {
-        IdentityMapSize::Size4Gb => 4,
-        IdentityMapSize::Size8Gb => 8,
-    };
-    let page_table_count = leaf_page_table_count + if address_bias == 0 { 2 } else { 1 };
-    let mut page_table: Vec<PageTable> = vec![PageTable::new_zeroed(); page_table_count];
-    let mut page_table_allocator = page_table.iter_mut().enumerate();
+    read_only: bool,
+}
 
-    // Allocate single PDPTE table.
-    let pdpte_table = if address_bias == 0 {
-        // Allocate single PML4E page table.
-        let (_, pml4e_table) = page_table_allocator
-            .next()
-            .expect("pagetable should always be available, code bug if not");
+pub struct IdentityMapBuilder<'a> {
+    params: IdentityMapBuilderParams,
+    /// a reference to a mutable slice of PageTables, used as working memory for constructing the page table
+    page_table: &'a mut [PageTable],
+    /// a reference to a mutable slice of u8s, used to store and return the final page table bytes
+    flattened_page_table: &'a mut [u8],
+}
 
-        // PDPTE table is the next pagetable.
-        let (pdpte_table_index, pdpte_table) = page_table_allocator
-            .next()
-            .expect("pagetable should always be available, code bug if not");
-
-        // Set PML4E entry linking PML4E to PDPTE.
-        let output_address = page_table_gpa + pdpte_table_index as u64 * X64_PAGE_SIZE;
-        pml4e_table[0].set_entry(PageTableEntryType::Pde(output_address));
-
-        // Set PML4E entry to link the additional entry if specified.
-        if let Some((link_target_gpa, linkage_gpa)) = pml4e_link {
-            assert!((linkage_gpa & 0x7FFFFFFFFF) == 0);
-            pml4e_table[linkage_gpa as usize >> 39]
-                .set_entry(PageTableEntryType::Pde(link_target_gpa));
-        }
-
-        pdpte_table
-    } else {
-        // PDPTE table is the first table, if no PML4E.
-        page_table_allocator
-            .next()
-            .expect("pagetable should always be available, code bug if not")
-            .1
-    };
-
-    // Build PDEs that point to 2 MB pages.
-    let top_address = match identity_map_size {
-        IdentityMapSize::Size4Gb => 0x100000000u64,
-        IdentityMapSize::Size8Gb => 0x200000000u64,
-    };
-    let mut current_va = 0;
-
-    while current_va < top_address {
-        // Allocate a new PDE table
-        let (pde_table_index, pde_table) = page_table_allocator
-            .next()
-            .expect("pagetable should always be available, code bug if not");
-
-        // Link PDPTE table to PDE table (L3 to L2)
-        let pdpte_index = get_amd64_pte_index(current_va, 2);
-        let output_address = page_table_gpa + pde_table_index as u64 * X64_PAGE_SIZE;
-        let pdpte_entry = &mut pdpte_table[pdpte_index as usize];
-        assert!(!pdpte_entry.is_present());
-        pdpte_entry.set_entry(PageTableEntryType::Pde(output_address));
-
-        // Set all 2MB entries in this PDE table.
-        for entry in pde_table.iter_mut() {
-            entry.set_entry(PageTableEntryType::Leaf2MbPage(current_va + address_bias));
-            current_va += X64_LARGE_PAGE_SIZE;
+impl<'a> IdentityMapBuilder<'a> {
+    pub fn new(
+        page_table_gpa: u64,
+        identity_map_size: IdentityMapSize,
+        page_table: &'a mut [PageTable],
+        flattened_page_table: &'a mut [u8],
+    ) -> Result<Self, Error> {
+        if flattened_page_table.len() != (page_table.len() * PAGE_TABLE_SIZE) {
+            Err(Error::BadBufferSize {
+                bytes_buf: flattened_page_table.len(),
+                struct_buf: page_table.len() * PAGE_TABLE_SIZE,
+            })
+        } else {
+            Ok(IdentityMapBuilder {
+                params: IdentityMapBuilderParams {
+                    page_table_gpa,
+                    identity_map_size,
+                    address_bias: 0,
+                    pml4e_link: None,
+                    read_only: false,
+                },
+                page_table,
+                flattened_page_table,
+            })
         }
     }
 
-    // All pagetables should be used, code bug if not.
-    assert!(page_table_allocator.next().is_none());
+    pub fn with_address_bias(mut self, address_bias: u64) -> Self {
+        self.params.address_bias = address_bias;
+        self
+    }
 
-    // Flatten page table vec into u8 vec
-    flatten_page_table(page_table)
+    /// An optional PML4E entry may be linked, with arguments being (link_target_gpa, linkage_gpa).
+    /// link_target_gpa represents the GPA of the PML4E to link into the built page table.
+    /// linkage_gpa represents the GPA at which the linked PML4E should be linked.
+    pub fn with_pml4e_link(mut self, pml4e_link: (u64, u64)) -> Self {
+        self.params.pml4e_link = Some(pml4e_link);
+        self
+    }
+
+    pub fn with_read_only(mut self, read_only: bool) -> Self {
+        self.params.read_only = read_only;
+        self
+    }
+
+    /// Build a set of X64 page tables identity mapping the bottom address
+    /// space with an optional address bias.
+    pub fn build(self) -> &'a [u8] {
+        let IdentityMapBuilder {
+            page_table,
+            flattened_page_table,
+            params,
+        } = self;
+
+        // Allocate page tables. There are up to 6 total page tables:
+        //      1 PML4E (Level 4) (omitted if the address bias is non-zero)
+        //      1 PDPTE (Level 3)
+        //      4 or 8 PDE tables (Level 2)
+        // Note that there are no level 1 page tables, as 2MB pages are used.
+        let leaf_page_table_count = match params.identity_map_size {
+            IdentityMapSize::Size4Gb => 4,
+            IdentityMapSize::Size8Gb => 8,
+        };
+        let page_table_count = leaf_page_table_count + if params.address_bias == 0 { 2 } else { 1 };
+        let mut page_table_allocator = page_table.iter_mut().enumerate();
+
+        // Allocate single PDPTE table.
+        let pdpte_table = if params.address_bias == 0 {
+            // Allocate single PML4E page table.
+            let (_, pml4e_table) = page_table_allocator
+                .next()
+                .expect("pagetable should always be available, code bug if not");
+
+            // PDPTE table is the next pagetable.
+            let (pdpte_table_index, pdpte_table) = page_table_allocator
+                .next()
+                .expect("pagetable should always be available, code bug if not");
+
+            // Set PML4E entry linking PML4E to PDPTE.
+            let output_address = params.page_table_gpa + pdpte_table_index as u64 * X64_PAGE_SIZE;
+            pml4e_table.entries[0]
+                .set_entry(PageTableEntryType::Pde(output_address), params.read_only);
+
+            // Set PML4E entry to link the additional entry if specified.
+            if let Some((link_target_gpa, linkage_gpa)) = params.pml4e_link {
+                assert!((linkage_gpa & 0x7FFFFFFFFF) == 0);
+                pml4e_table.entries[linkage_gpa as usize >> 39]
+                    .set_entry(PageTableEntryType::Pde(link_target_gpa), params.read_only);
+            }
+
+            pdpte_table
+        } else {
+            // PDPTE table is the first table, if no PML4E.
+            page_table_allocator
+                .next()
+                .expect("pagetable should always be available, code bug if not")
+                .1
+        };
+
+        // Build PDEs that point to 2 MB pages.
+        let top_address = match params.identity_map_size {
+            IdentityMapSize::Size4Gb => 0x100000000u64,
+            IdentityMapSize::Size8Gb => 0x200000000u64,
+        };
+        let mut current_va = 0;
+
+        while current_va < top_address {
+            // Allocate a new PDE table
+            let (pde_table_index, pde_table) = page_table_allocator
+                .next()
+                .expect("pagetable should always be available, code bug if not");
+
+            // Link PDPTE table to PDE table (L3 to L2)
+            let pdpte_index = get_amd64_pte_index(current_va, 2);
+            let output_address = params.page_table_gpa + pde_table_index as u64 * X64_PAGE_SIZE;
+            let pdpte_entry = &mut pdpte_table.entries[pdpte_index as usize];
+            assert!(!pdpte_entry.is_present());
+            pdpte_entry.set_entry(PageTableEntryType::Pde(output_address), params.read_only);
+
+            // Set all 2MB entries in this PDE table.
+            for entry in pde_table.iter_mut() {
+                entry.set_entry(
+                    PageTableEntryType::Leaf2MbPage(current_va + params.address_bias),
+                    params.read_only,
+                );
+                current_va += X64_LARGE_PAGE_SIZE;
+            }
+        }
+
+        // Flatten page table vec into u8 vec
+        flatten_page_table(page_table, flattened_page_table, page_table_count)
+    }
 }
 
 /// Align an address up to the start of the next page.
@@ -599,13 +720,21 @@ pub fn align_up_to_1_gb_page_size(address: u64) -> u64 {
     (address + X64_1GB_PAGE_SIZE - 1) & !(X64_1GB_PAGE_SIZE - 1)
 }
 
-fn flatten_page_table(page_table: Vec<PageTable>) -> Vec<u8> {
-    let mut flat_tables = Vec::with_capacity(page_table.len() * X64_PAGE_SIZE as usize);
-    for table in page_table {
-        flat_tables.extend_from_slice(table.as_bytes());
+fn flatten_page_table<'a>(
+    page_table: &mut [PageTable],
+    flattened_page_table: &'a mut [u8],
+    page_table_count: usize,
+) -> &'a [u8] {
+    for (page_table, dst) in page_table
+        .iter()
+        .take(page_table_count)
+        .zip(flattened_page_table.chunks_mut(PAGE_TABLE_SIZE))
+    {
+        let src = page_table.as_bytes();
+        dst.copy_from_slice(src);
     }
 
-    flat_tables
+    &flattened_page_table[0..PAGE_TABLE_SIZE * page_table_count]
 }
 
 #[cfg(test)]
