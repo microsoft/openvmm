@@ -2296,40 +2296,45 @@ impl<T: RingMem> NetChannel<T> {
         state: &mut ActiveState,
         message_type: u32,
         mut reader: PacketReader<'_>,
-    ) -> Result<bool, WorkerError> {
-        let is_packet = match message_type {
-            rndisprot::MESSAGE_TYPE_HALT_MSG => false,
-            n => {
-                let control = state
-                    .primary
-                    .as_mut()
-                    .ok_or(WorkerError::NotSupportedOnSubChannel(n))?;
+    ) -> Result<(), WorkerError> {
+        assert_ne!(
+            message_type,
+            rndisprot::MESSAGE_TYPE_PACKET_MSG,
+            "handled elsewhere"
+        );
+        let control = state
+            .primary
+            .as_mut()
+            .ok_or(WorkerError::NotSupportedOnSubChannel(message_type))?;
 
-                // This is a control message that needs a response. Responding
-                // will require a suballocation to be available, which it may
-                // not be right now. Enqueue the suballocation to a queue and
-                // process the queue as suballocations become available.
-                const CONTROL_MESSAGE_MAX_QUEUED_BYTES: usize = 100 * 1024;
-                if reader.len() == 0 {
-                    return Err(WorkerError::RndisMessageTooSmall);
-                }
-                // Do not let the queue get too large--the guest should not be
-                // sending very many control messages at a time.
-                if CONTROL_MESSAGE_MAX_QUEUED_BYTES - control.control_messages_len < reader.len() {
-                    return Err(WorkerError::TooManyControlMessages);
-                }
+        if message_type == rndisprot::MESSAGE_TYPE_HALT_MSG {
+            // Currently ignored and does not require a response.
+            return Ok(());
+        }
 
-                control.control_messages_len += reader.len();
-                control.control_messages.push_back(ControlMessage {
-                    message_type,
-                    data: reader.read_all()?.into(),
-                });
+        // This is a control message that needs a response. Responding
+        // will require a suballocation to be available, which it may
+        // not be right now. Enqueue the suballocation to a queue and
+        // process the queue as suballocations become available.
+        const CONTROL_MESSAGE_MAX_QUEUED_BYTES: usize = 100 * 1024;
+        if reader.len() == 0 {
+            return Err(WorkerError::RndisMessageTooSmall);
+        }
+        // Do not let the queue get too large--the guest should not be
+        // sending very many control messages at a time.
+        if CONTROL_MESSAGE_MAX_QUEUED_BYTES - control.control_messages_len < reader.len() {
+            return Err(WorkerError::TooManyControlMessages);
+        }
 
-                false
-                // The queue will be processed in the main dispatch loop.
-            }
-        };
-        Ok(is_packet)
+        control.control_messages_len += reader.len();
+        control.control_messages.push_back(ControlMessage {
+            message_type,
+            data: reader.read_all()?.into(),
+        });
+
+        // The control message queue will be processed in the main dispatch
+        // loop.
+        Ok(())
     }
 
     /// Process RNDIS packet messages, which may contain multiple RNDIS packets
@@ -5447,12 +5452,13 @@ impl<T: 'static + RingMem> NetChannel<T> {
         data: &mut ProcessingData,
         queue_state: &mut QueueState,
     ) -> Result<bool, WorkerError> {
-        let count = data.tx_segments.len();
-        if count == 0 {
+        if data.tx_segments.is_empty() {
             return Ok(false);
         }
-        self.transmit_segments(state, data, queue_state)?;
-        Ok(data.tx_segments.len() < count)
+        let sent = data.tx_segments_sent;
+        let did_work =
+            self.transmit_segments(state, data, queue_state)? || data.tx_segments_sent > sent;
+        Ok(did_work)
     }
 
     /// Returns true if all pending segments were transmitted.
@@ -5505,7 +5511,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
     ) -> Result<usize, WorkerError> {
         let mut total_packets = 0;
         let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
-        assert!(tx_packet.pending_packet_count == 0);
+        assert_eq!(tx_packet.pending_packet_count, 0);
         tx_packet.transaction_id = packet
             .transaction_id
             .ok_or(WorkerError::MissingTransactionId)?;
