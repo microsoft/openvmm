@@ -631,6 +631,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     validate_vp_hw_ids(partition_info);
 
     setup_vtl2_memory(&p, partition_info);
+    //↑ ↑ ↓ ↓ ← → ← → B A
     setup_vtl2_vp(partition_info);
 
     verify_imported_regions_hash(&p);
