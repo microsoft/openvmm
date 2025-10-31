@@ -620,7 +620,6 @@ opt-level = 3
 [profile.dev.package.fast_memcpy]
 opt-level = 3
 overflow-checks = false
-debug-assertions = false
 
 [patch.crates-io]
 # Pending <https://github.com/ferrilab/bitvec/pull/273>
