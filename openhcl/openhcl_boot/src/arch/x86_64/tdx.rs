@@ -238,7 +238,7 @@ pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
     for cpu in 1..partition_info.cpus.len() {
         let context_ptr: *mut TdxTrampolineContext = RESET_VECTOR_PAGE as *mut TdxTrampolineContext;
         // SAFETY: The TdxTrampolineContext is known to be stored at the architectural reset vector address
-        let mut tdxcontext: &mut TdxTrampolineContext = unsafe { context_ptr.as_mut().unwrap() };
+        let tdxcontext: &mut TdxTrampolineContext = unsafe { context_ptr.as_mut().unwrap() };
         //HACK: setting padding_1 to any value will resume RV execution, then the RV will reset the value to 0
         //HACK: the RV will send responses to the shim using padding_3. It is up to the shim to clear this value
         tdxcontext.padding_1 = 0;
