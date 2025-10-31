@@ -35,6 +35,25 @@ pub enum MaxTraceLevel {
     Off,
 }
 
+impl MaxTraceLevel {
+    pub fn features(&self) -> Vec<String> {
+        let name = match self {
+            MaxTraceLevel::Trace => return Vec::new(),
+            MaxTraceLevel::Debug => "debug",
+            MaxTraceLevel::Info => "info",
+            MaxTraceLevel::Warn => "warn",
+            MaxTraceLevel::Error => "error",
+            MaxTraceLevel::Off => "off",
+        };
+        // Add both release and non-release variants of the feature
+        // regardless of the profile to work around `tracing` bugs.
+        vec![
+            format!("tracing/max_level_{}", name),
+            format!("tracing/release_max_level_{}", name),
+        ]
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct OpenvmmHclOutput {
     pub bin: PathBuf,
@@ -122,22 +141,7 @@ impl FlowNode for Node {
                 })
                 .collect::<Vec<String>>();
 
-            let max_trace_level = match max_trace_level {
-                MaxTraceLevel::Trace => None,
-                MaxTraceLevel::Debug => Some("debug"),
-                MaxTraceLevel::Info => Some("info"),
-                MaxTraceLevel::Warn => Some("warn"),
-                MaxTraceLevel::Error => Some("error"),
-                MaxTraceLevel::Off => Some("off"),
-            };
-            if let Some(level) = max_trace_level {
-                // Add both release and non-release variants of the feature
-                // regardless of the profile to work around `tracing` bugs.
-                features.extend([
-                    format!("tracing/release_max_level_{level}"),
-                    format!("tracing/max_level_{level}"),
-                ]);
-            }
+            features.extend(max_trace_level.features());
 
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "openvmm_hcl".into(),
