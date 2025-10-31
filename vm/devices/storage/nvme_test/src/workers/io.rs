@@ -291,6 +291,12 @@ impl IoHandler {
                         .write(&self.mem, &payload)
                         .expect("configured fault failure: failed to write custom payload");
                     }
+                    IoQueueFaultBehavior::Panic(message) => {
+                        panic!(
+                            "configured fault: io completion panic with sqid: {:?} command: {:?}, completion: {:?} and message: {}",
+                            &self.sqid, &command, &completion, &message
+                        );
+                    }
                 }
             }
 
