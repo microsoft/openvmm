@@ -225,7 +225,6 @@ impl VpContextBuilder for TdxHardwareContext {
         byte_offset += 1;
         let skip_stall_for_bsp = byte_offset;
 
-
         //BEGIN HACK: Spin until we get a message from the boot shim to continue
         //The message is sent via padding_1
         let debug_spinloop = byte_offset;
@@ -243,8 +242,7 @@ impl VpContextBuilder for TdxHardwareContext {
         // jz debug_spinloop
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
         byte_offset += 1;
-        reset_page[byte_offset.wrapping_sub(1)] =
-            (debug_spinloop.wrapping_sub(byte_offset)) as u8;
+        reset_page[byte_offset.wrapping_sub(1)] = (debug_spinloop.wrapping_sub(byte_offset)) as u8;
 
         // xor eax, eax
         //40102b:       31 c0                   xor    eax,eax
@@ -413,7 +411,6 @@ impl VpContextBuilder for TdxHardwareContext {
         byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
         //END HACK
 
-
         //HACK: move the tdcall result into unused register r15d, s.t. it can be used at mailbox
         //spinloop at end of RV
         //401024:       45 89 df                mov    %r11d,%r15d
@@ -437,8 +434,7 @@ impl VpContextBuilder for TdxHardwareContext {
         // jz debug_spinloop
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
         byte_offset += 1;
-        reset_page[byte_offset.wrapping_sub(1)] =
-            (debug_spinloop.wrapping_sub(byte_offset)) as u8;
+        reset_page[byte_offset.wrapping_sub(1)] = (debug_spinloop.wrapping_sub(byte_offset)) as u8;
 
         // xor eax, eax
         //40102b:       31 c0                   xor    eax,eax
@@ -553,8 +549,7 @@ impl VpContextBuilder for TdxHardwareContext {
         // jz debug_spinloop
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
         byte_offset += 1;
-        reset_page[byte_offset.wrapping_sub(1)] =
-            (debug_spinloop.wrapping_sub(byte_offset)) as u8;
+        reset_page[byte_offset.wrapping_sub(1)] = (debug_spinloop.wrapping_sub(byte_offset)) as u8;
 
         // xor eax, eax
         //40102b:       31 c0                   xor    eax,eax
@@ -646,7 +641,6 @@ impl VpContextBuilder for TdxHardwareContext {
 
         // mov ecx, esi
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x8B, 0xCE]);
-
 
         // mov rsi, [initialRsi]
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x48, 0x8B, 0x35]);
