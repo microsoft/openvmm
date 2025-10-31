@@ -88,18 +88,23 @@ impl PciExpressCapability {
                 .with_device_port_type(typ),
             device_capabilities: pci_express::DeviceCapabilities::new()
                 .with_function_level_reset(flr_handler.is_some()),
-            link_capabilities: pci_express::LinkCapabilities::new(),
+            link_capabilities: pci_express::LinkCapabilities::new()
+                .with_max_link_speed(0b0110) // PCIe 32.0 GT/s speed
+                .with_max_link_width(0b010000), // x16 link width
             slot_capabilities: pci_express::SlotCapabilities::new(),
             root_capabilities: pci_express::RootCapabilities::new(),
             device_capabilities_2: pci_express::DeviceCapabilities2::new(),
-            link_capabilities_2: pci_express::LinkCapabilities2::new(),
+            link_capabilities_2: pci_express::LinkCapabilities2::new()
+                .with_supported_link_speeds_vector(0b0011111), // Support speeds up to PCIe 5.0
             slot_capabilities_2: pci_express::SlotCapabilities2::new(),
             state: Arc::new(Mutex::new(PciExpressState::new())),
             flr_handler,
         }
     }
 
-    fn handle_device_control_write(&mut self, new_control: pci_express::DeviceControl) {
+    fn handle_device_control_status_write(&mut self, val: u32) {
+        // Device Control (2 bytes) + Device Status (2 bytes)
+        let new_control = pci_express::DeviceControl::from_bits(val as u16);
         let mut state = self.state.lock();
 
         // Check if FLR was initiated
@@ -117,14 +122,156 @@ impl PciExpressCapability {
 
         // Update the control register but clear the FLR bit as it's self-clearing
         state.device_control = new_control.with_initiate_function_level_reset(false);
+
+        // Handle Device Status - most bits are write-1-to-clear
+        let new_status = pci_express::DeviceStatus::from_bits((val >> 16) as u16);
+        let mut current_status = state.device_status;
+
+        // Clear bits that were written as 1 (write-1-to-clear semantics)
+        if new_status.correctable_error_detected() {
+            current_status.set_correctable_error_detected(false);
+        }
+        if new_status.non_fatal_error_detected() {
+            current_status.set_non_fatal_error_detected(false);
+        }
+        if new_status.fatal_error_detected() {
+            current_status.set_fatal_error_detected(false);
+        }
+        if new_status.unsupported_request_detected() {
+            current_status.set_unsupported_request_detected(false);
+        }
+
+        state.device_status = current_status;
+    }
+
+    fn handle_slot_control_status_write(&mut self, val: u32) {
+        // Slot Control (2 bytes) + Slot Status (2 bytes)
+        let new_slot_control = pci_express::SlotControl::from_bits(val as u16);
+        let mut state = self.state.lock();
+
+        // Mask slot control bits based on slot capabilities
+        // Only allow writes to bits that correspond to capabilities that are present
+        let mut masked_control = new_slot_control;
+
+        // If attention button is not present, attention button enable should be read-only (hardwired to 0)
+        if !self.slot_capabilities.attention_button_present() {
+            masked_control.set_attention_button_pressed_enable(false);
+        }
+
+        // If power controller is not present, power controller control should be read-only (hardwired to 0)
+        if !self.slot_capabilities.power_controller_present() {
+            masked_control.set_power_controller_control(false);
+        }
+
+        // If MRL sensor is not present, MRL sensor changed enable should be read-only (hardwired to 0)
+        if !self.slot_capabilities.mrl_sensor_present() {
+            masked_control.set_mrl_sensor_changed_enable(false);
+        }
+
+        // If attention indicator is not present, attention indicator control should be read-only (hardwired to 00b)
+        if !self.slot_capabilities.attention_indicator_present() {
+            masked_control.set_attention_indicator_control(0);
+        }
+
+        // If power indicator is not present, power indicator control should be read-only (hardwired to 00b)
+        if !self.slot_capabilities.power_indicator_present() {
+            masked_control.set_power_indicator_control(0);
+        }
+
+        // If hotplug is not capable, hotplug interrupt enable should be read-only (hardwired to 0)
+        if !self.slot_capabilities.hot_plug_capable() {
+            masked_control.set_hot_plug_interrupt_enable(false);
+        }
+
+        // If electromechanical interlock is not present, interlock control should be read-only (hardwired to 0)
+        if !self.slot_capabilities.electromechanical_interlock_present() {
+            masked_control.set_electromechanical_interlock_control(false);
+        }
+
+        // If no command completed support, command completed interrupt enable should be read-only (hardwired to 0)
+        if self.slot_capabilities.no_command_completed_support() {
+            masked_control.set_command_completed_interrupt_enable(false);
+        }
+
+        state.slot_control = masked_control;
+
+        // Slot Status upper 16 bits - handle RW1C and RO bits properly
+        let new_slot_status = pci_express::SlotStatus::from_bits((val >> 16) as u16);
+        let mut current_slot_status = state.slot_status;
+
+        // RW1C bits: writing 1 clears the bit, writing 0 leaves it unchanged
+        // Clear bits where a 1 was written (RW1C behavior)
+        if new_slot_status.attention_button_pressed() {
+            current_slot_status.set_attention_button_pressed(false);
+        }
+        if new_slot_status.power_fault_detected() {
+            current_slot_status.set_power_fault_detected(false);
+        }
+        if new_slot_status.mrl_sensor_changed() {
+            current_slot_status.set_mrl_sensor_changed(false);
+        }
+        if new_slot_status.presence_detect_changed() {
+            current_slot_status.set_presence_detect_changed(false);
+        }
+        if new_slot_status.command_completed() {
+            current_slot_status.set_command_completed(false);
+        }
+        if new_slot_status.data_link_layer_state_changed() {
+            current_slot_status.set_data_link_layer_state_changed(false);
+        }
+
+        // RO bits (mrl_sensor_state, presence_detect_state, electromechanical_interlock_status)
+        // are not modified - they remain as they were
+
+        state.slot_status = current_slot_status;
+    }
+
+    fn handle_link_control_status_write(&mut self, val: u32) {
+        // Link Control (2 bytes) + Link Status (2 bytes)
+        let new_link_control = pci_express::LinkControl::from_bits(val as u16);
+        let mut state = self.state.lock();
+
+        // Apply the new link control but ensure retrain_link always reads as 0
+        let mut masked_control = new_link_control;
+        masked_control.set_retrain_link(false); // retrain_link always reads as 0
+
+        state.link_control = masked_control;
+        // Link Status upper 16 bits - read-only, ignore any writes
     }
 
     /// Enable hotplug support for this PCIe capability.
     /// This configures the appropriate registers to support hotpluggable devices.
-    pub fn with_hotplug_support(self) -> Self {
-        // TODO: Add actual hotplug capability configuration here
-        // This would involve setting appropriate bits in slot capabilities,
-        // slot control, and other hotplug-related registers
+    /// Panics if called on device types other than RootPort or DownstreamSwitchPort.
+    pub fn with_hotplug_support(mut self) -> Self {
+        use pci_express::DevicePortType;
+
+        // Validate that hotplug is only enabled for appropriate port types
+        let port_type = self.pcie_capabilities.device_port_type();
+        match port_type {
+            DevicePortType::RootPort | DevicePortType::DownstreamSwitchPort => {
+                // Valid port types for hotplug support
+            }
+            DevicePortType::Endpoint | DevicePortType::UpstreamSwitchPort => {
+                panic!(
+                    "Hotplug support is not valid for device port type {:?}. \
+                     Only RootPort and DownstreamSwitchPort support hotplug.",
+                    port_type
+                );
+            }
+        }
+
+        // Enable hotplug capabilities in slot capabilities register
+        self.slot_capabilities = self
+            .slot_capabilities
+            .with_hot_plug_surprise(true)
+            .with_hot_plug_capable(true)
+            .with_physical_slot_number(0); // Will be set properly later
+
+        // Enable Data Link Layer Link Active Reporting when hotplug is enabled
+        self.link_capabilities = self
+            .link_capabilities
+            .with_data_link_layer_link_active_reporting(true);
+
         self
     }
 }
@@ -253,31 +400,7 @@ impl PciCapability for PciExpressCapability {
                 );
             }
             PciExpressCapabilityHeader::DEVICE_CTL_STS => {
-                // Lower 16 bits are Device Control (read-write)
-                // Upper 16 bits are Device Status (read-write, but some bits are read-only)
-                let new_control = pci_express::DeviceControl::from_bits(val as u16);
-                self.handle_device_control_write(new_control);
-
-                // Handle Device Status - most bits are write-1-to-clear
-                let new_status = pci_express::DeviceStatus::from_bits((val >> 16) as u16);
-                let mut state = self.state.lock();
-                let mut current_status = state.device_status;
-
-                // Clear bits that were written as 1 (write-1-to-clear semantics)
-                if new_status.correctable_error_detected() {
-                    current_status.set_correctable_error_detected(false);
-                }
-                if new_status.non_fatal_error_detected() {
-                    current_status.set_non_fatal_error_detected(false);
-                }
-                if new_status.fatal_error_detected() {
-                    current_status.set_fatal_error_detected(false);
-                }
-                if new_status.unsupported_request_detected() {
-                    current_status.set_unsupported_request_detected(false);
-                }
-
-                state.device_status = current_status;
+                self.handle_device_control_status_write(val);
             }
             PciExpressCapabilityHeader::LINK_CAPS => {
                 // Link Capabilities register is read-only
@@ -289,11 +412,7 @@ impl PciCapability for PciExpressCapability {
                 );
             }
             PciExpressCapabilityHeader::LINK_CTL_STS => {
-                // Link Control (2 bytes) + Link Status (2 bytes)
-                let mut state = self.state.lock();
-                state.link_control = pci_express::LinkControl::from_bits(val as u16);
-                // Link Status upper 16 bits - many bits are write-1-to-clear or read-only
-                // For simplicity, we'll treat it as read-only for now
+                self.handle_link_control_status_write(val);
             }
             PciExpressCapabilityHeader::SLOT_CAPS => {
                 // Slot Capabilities register is read-only
@@ -305,12 +424,7 @@ impl PciCapability for PciExpressCapability {
                 );
             }
             PciExpressCapabilityHeader::SLOT_CTL_STS => {
-                // Slot Control (2 bytes) + Slot Status (2 bytes)
-                let mut state = self.state.lock();
-                state.slot_control = pci_express::SlotControl::from_bits(val as u16);
-                // Slot Status upper 16 bits - many bits are write-1-to-clear
-                // For simplicity, we'll allow basic writes for now
-                state.slot_status = pci_express::SlotStatus::from_bits((val >> 16) as u16);
+                self.handle_slot_control_status_write(val);
             }
             PciExpressCapabilityHeader::ROOT_CTL_CAPS => {
                 // Root Control (2 bytes) + Root Capabilities (2 bytes)
@@ -631,8 +745,10 @@ mod tests {
     fn test_pci_express_capability_extended_registers() {
         let cap = PciExpressCapability::new(DevicePortType::Endpoint, None);
 
-        // Test that extended registers return 0 by default and don't crash
-        assert_eq!(cap.read_u32(0x0C), 0); // Link Capabilities
+        // Test that extended registers return proper default values and don't crash
+        // Link Capabilities should have default speed (0b0110) and width (0b010000)
+        let expected_link_caps = 0b0110 | (0b010000 << 4); // speed + (width << 4) = 6 + 256 = 262
+        assert_eq!(cap.read_u32(0x0C), expected_link_caps); // Link Capabilities
         assert_eq!(cap.read_u32(0x10), 0); // Link Control/Status
         assert_eq!(cap.read_u32(0x14), 0); // Slot Capabilities
         assert_eq!(cap.read_u32(0x18), 0); // Slot Control/Status
@@ -640,7 +756,9 @@ mod tests {
         assert_eq!(cap.read_u32(0x20), 0); // Root Status
         assert_eq!(cap.read_u32(0x24), 0); // Device Capabilities 2
         assert_eq!(cap.read_u32(0x28), 0); // Device Control/Status 2
-        assert_eq!(cap.read_u32(0x2C), 0); // Link Capabilities 2
+        // Link Capabilities 2 has supported_link_speeds_vector set to 0b0011111
+        let expected_link_caps_2 = 0b0011111 << 1; // supported_link_speeds_vector at bits 1-7 = 62
+        assert_eq!(cap.read_u32(0x2C), expected_link_caps_2); // Link Capabilities 2
         assert_eq!(cap.read_u32(0x30), 0); // Link Control/Status 2
         assert_eq!(cap.read_u32(0x34), 0); // Slot Capabilities 2
         assert_eq!(cap.read_u32(0x38), 0); // Slot Control/Status 2
@@ -660,11 +778,249 @@ mod tests {
 
     #[test]
     fn test_pci_express_capability_with_hotplug_support() {
+        // Test with RootPort (should work)
         let cap = PciExpressCapability::new(DevicePortType::RootPort, None);
         let cap_with_hotplug = cap.with_hotplug_support();
 
-        // For now, just verify that the method doesn't crash and returns the capability
+        // Verify that the method doesn't crash and returns the capability
         assert_eq!(cap_with_hotplug.label(), "pci-express");
         assert_eq!(cap_with_hotplug.len(), 0x3C);
+
+        // Verify hotplug capabilities are set
+        assert!(cap_with_hotplug.slot_capabilities.hot_plug_surprise());
+        assert!(cap_with_hotplug.slot_capabilities.hot_plug_capable());
+        assert_eq!(cap_with_hotplug.slot_capabilities.physical_slot_number(), 0);
+
+        // Test with DownstreamSwitchPort (should work)
+        let cap2 = PciExpressCapability::new(DevicePortType::DownstreamSwitchPort, None);
+        let cap2_with_hotplug = cap2.with_hotplug_support();
+
+        assert!(cap2_with_hotplug.slot_capabilities.hot_plug_surprise());
+        assert!(cap2_with_hotplug.slot_capabilities.hot_plug_capable());
+        assert_eq!(
+            cap2_with_hotplug.slot_capabilities.physical_slot_number(),
+            0
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Hotplug support is not valid for device port type Endpoint")]
+    fn test_pci_express_capability_with_hotplug_support_endpoint_panics() {
+        let cap = PciExpressCapability::new(DevicePortType::Endpoint, None);
+        cap.with_hotplug_support();
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Hotplug support is not valid for device port type UpstreamSwitchPort"
+    )]
+    fn test_pci_express_capability_with_hotplug_support_upstream_panics() {
+        let cap = PciExpressCapability::new(DevicePortType::UpstreamSwitchPort, None);
+        cap.with_hotplug_support();
+    }
+
+    #[test]
+    fn test_slot_control_write_protection() {
+        // Create a root port capability with hotplug support but limited slot capabilities
+        let mut cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+        cap = cap.with_hotplug_support();
+
+        // Modify slot capabilities to disable some features for testing
+        cap.slot_capabilities.set_attention_button_present(false);
+        cap.slot_capabilities.set_power_controller_present(false);
+        cap.slot_capabilities.set_mrl_sensor_present(false);
+        cap.slot_capabilities.set_attention_indicator_present(false);
+        cap.slot_capabilities.set_power_indicator_present(false);
+        cap.slot_capabilities.set_electromechanical_interlock_present(false);
+        cap.slot_capabilities.set_no_command_completed_support(true);
+
+        // Try to write to slot control register with all bits set
+        let slot_ctl_sts_offset = 0x18; // SLOT_CTL_STS offset
+        let val_to_write = 0xFFFFFFFF; // All bits set in both control and status
+
+        cap.write_u32(slot_ctl_sts_offset, val_to_write);
+
+        // Read back the slot control register (lower 16 bits)
+        let read_back = cap.read_u32(slot_ctl_sts_offset);
+        let slot_control_value = read_back as u16;
+        let slot_control = pci_express::SlotControl::from_bits(slot_control_value);
+
+        // Verify that features not present in capabilities were not set in control register
+        assert!(!slot_control.attention_button_pressed_enable(), "Attention button enable should be 0 when capability not present");
+        assert!(!slot_control.power_controller_control(), "Power controller control should be 0 when capability not present");
+        assert!(!slot_control.mrl_sensor_changed_enable(), "MRL sensor changed enable should be 0 when capability not present");
+        assert_eq!(slot_control.attention_indicator_control(), 0, "Attention indicator control should be 0 when capability not present");
+        assert_eq!(slot_control.power_indicator_control(), 0, "Power indicator control should be 0 when capability not present");
+        assert!(!slot_control.electromechanical_interlock_control(), "Electromechanical interlock control should be 0 when capability not present");
+        assert!(!slot_control.command_completed_interrupt_enable(), "Command completed interrupt enable should be 0 when no command completed support");
+
+        // However, hotplug interrupt enable should be settable since hotplug is capable
+        assert!(slot_control.hot_plug_interrupt_enable(), "Hotplug interrupt enable should be settable when hotplug capable");
+    }
+
+    #[test]
+    fn test_link_control_retrain_link_behavior() {
+        // Test that retrain_link always reads as 0 regardless of what is written
+        let mut cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+
+        let link_ctl_sts_offset = 0x10; // LINK_CTL_STS offset
+
+        // Write a value with retrain_link bit set (bit 5)
+        let write_val = 0x0020; // retrain_link bit (bit 5) = 1
+        cap.write_u32(link_ctl_sts_offset, write_val);
+
+        // Read back and verify retrain_link is always 0
+        let read_back = cap.read_u32(link_ctl_sts_offset);
+        let link_control = pci_express::LinkControl::from_bits(read_back as u16);
+
+        assert!(!link_control.retrain_link(), "retrain_link should always read as 0");
+
+        // Verify other bits can still be set (except retrain_link)
+        let write_val_2 = 0x0001; // aspm_control bit 0 = 1
+        cap.write_u32(link_ctl_sts_offset, write_val_2);
+
+        let read_back_2 = cap.read_u32(link_ctl_sts_offset);
+        let link_control_2 = pci_express::LinkControl::from_bits(read_back_2 as u16);
+
+        assert_eq!(link_control_2.aspm_control(), 1, "Other control bits should be settable");
+        assert!(!link_control_2.retrain_link(), "retrain_link should still read as 0");
+    }
+
+    #[test]
+    fn test_hotplug_link_capabilities() {
+        // Test that Data Link Layer Link Active Reporting is enabled with hotplug
+        let cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+        let cap_with_hotplug = cap.with_hotplug_support();
+
+        let link_caps_offset = 0x0C; // LINK_CAPS offset
+        let link_caps = cap_with_hotplug.read_u32(link_caps_offset);
+        let link_capabilities = pci_express::LinkCapabilities::from_bits(link_caps);
+
+        // Verify that Data Link Layer Link Active Reporting is enabled
+        assert!(link_capabilities.data_link_layer_link_active_reporting(), 
+                "Data Link Layer Link Active Reporting should be enabled for hotplug");
+
+        // Verify default speed and width are still correct
+        assert_eq!(link_capabilities.max_link_speed(), 0b0110, "Max link speed should be 0b0110 (PCIe 2.5 GT/s)");
+        assert_eq!(link_capabilities.max_link_width(), 0b010000, "Max link width should be 0b010000 (x16)");
+
+        // Test that non-hotplug capability doesn't have Data Link Layer Link Active Reporting
+        let cap_no_hotplug = PciExpressCapability::new(DevicePortType::RootPort, None);
+        let link_caps_no_hotplug = cap_no_hotplug.read_u32(link_caps_offset);
+        let link_capabilities_no_hotplug = pci_express::LinkCapabilities::from_bits(link_caps_no_hotplug);
+
+        assert!(!link_capabilities_no_hotplug.data_link_layer_link_active_reporting(),
+                "Data Link Layer Link Active Reporting should be disabled without hotplug");
+    }
+
+    #[test]
+    fn test_link_status_read_only() {
+        // Test that Link Status register is read-only and cannot be modified by writes
+        let mut cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+
+        let link_ctl_sts_offset = 0x10; // LINK_CTL_STS offset
+
+        // Set some initial link status values (this would normally be done by hardware)
+        {
+            let mut state = cap.state.lock();
+            state.link_status.set_current_link_speed(0b0001); // Set initial speed
+            state.link_status.set_negotiated_link_width(0b000001); // Set initial width
+            state.link_status.set_link_training(true); // Set link training active
+            state.link_status.set_data_link_layer_link_active(true); // Set DLL active
+        }
+
+        // Read initial values
+        let initial_read = cap.read_u32(link_ctl_sts_offset);
+        let initial_link_status = pci_express::LinkStatus::from_bits((initial_read >> 16) as u16);
+
+        // Verify initial values are set
+        assert_eq!(initial_link_status.current_link_speed(), 0b0001, "Initial link speed should be set");
+        assert_eq!(initial_link_status.negotiated_link_width(), 0b000001, "Initial link width should be set");
+        assert!(initial_link_status.link_training(), "Initial link training should be active");
+        assert!(initial_link_status.data_link_layer_link_active(), "Initial DLL should be active");
+
+        // Try to write different values to Link Status (upper 16 bits) while also writing to Link Control
+        let write_val = 0xFFFF0001; // Upper 16 bits all 1s (Link Status), lower 16 bits = 1 (Link Control)
+        cap.write_u32(link_ctl_sts_offset, write_val);
+
+        // Read back and verify Link Status hasn't changed
+        let after_write = cap.read_u32(link_ctl_sts_offset);
+        let final_link_status = pci_express::LinkStatus::from_bits((after_write >> 16) as u16);
+        let final_link_control = pci_express::LinkControl::from_bits(after_write as u16);
+
+        // Link Status should remain unchanged (read-only)
+        assert_eq!(final_link_status.current_link_speed(), initial_link_status.current_link_speed(), 
+                   "Link Status current_link_speed should be read-only");
+        assert_eq!(final_link_status.negotiated_link_width(), initial_link_status.negotiated_link_width(),
+                   "Link Status negotiated_link_width should be read-only");
+        assert_eq!(final_link_status.link_training(), initial_link_status.link_training(),
+                   "Link Status link_training should be read-only");
+        assert_eq!(final_link_status.data_link_layer_link_active(), initial_link_status.data_link_layer_link_active(),
+                   "Link Status data_link_layer_link_active should be read-only");
+
+        // But Link Control should be modifiable
+        assert_eq!(final_link_control.aspm_control(), 1, "Link Control should be writable");
+    }
+
+    #[test]
+    fn test_slot_status_rw1c_behavior() {
+        // Create a root port capability with hotplug support
+        let mut cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+        cap = cap.with_hotplug_support();
+
+        let slot_ctl_sts_offset = 0x18; // SLOT_CTL_STS offset
+
+        // First, simulate setting some status bits (this would normally be done by hardware)
+        {
+            let mut state = cap.state.lock();
+            state.slot_status.set_attention_button_pressed(true);
+            state.slot_status.set_power_fault_detected(true);
+            state.slot_status.set_mrl_sensor_changed(true);
+            state.slot_status.set_presence_detect_changed(true);
+            state.slot_status.set_command_completed(true);
+            state.slot_status.set_data_link_layer_state_changed(true);
+            // Set some RO bits too
+            state.slot_status.set_mrl_sensor_state(1);
+            state.slot_status.set_presence_detect_state(1);
+            state.slot_status.set_electromechanical_interlock_status(1);
+        }
+
+        // Read the initial status to verify all bits are set
+        let initial_read = cap.read_u32(slot_ctl_sts_offset);
+        let initial_status = pci_express::SlotStatus::from_bits((initial_read >> 16) as u16);
+        assert!(initial_status.attention_button_pressed(), "Initial attention button pressed should be set");
+        assert!(initial_status.power_fault_detected(), "Initial power fault detected should be set");
+        assert!(initial_status.mrl_sensor_changed(), "Initial MRL sensor changed should be set");
+        assert!(initial_status.presence_detect_changed(), "Initial presence detect changed should be set");
+        assert!(initial_status.command_completed(), "Initial command completed should be set");
+        assert!(initial_status.data_link_layer_state_changed(), "Initial data link layer state changed should be set");
+        assert_eq!(initial_status.mrl_sensor_state(), 1, "Initial MRL sensor state should be set");
+        assert_eq!(initial_status.presence_detect_state(), 1, "Initial presence detect state should be set");
+        assert_eq!(initial_status.electromechanical_interlock_status(), 1, "Initial electromechanical interlock status should be set");
+
+        // Write 1 to clear specific RW1C bits (upper 16 bits contain status)
+        // Write 1s only to some RW1C bits to test selective clearing
+        // Bit positions: attention_button_pressed(0), command_completed(4), data_link_layer_state_changed(8)
+        let write_val = (0b0000_0001_0001_0001_u16 as u32) << 16; // Clear bits 0, 4, and 8
+        cap.write_u32(slot_ctl_sts_offset, write_val);
+
+        // Read back and verify RW1C behavior
+        let after_write = cap.read_u32(slot_ctl_sts_offset);
+        let final_status = pci_express::SlotStatus::from_bits((after_write >> 16) as u16);
+
+        // RW1C bits that were written with 1 should be cleared
+        assert!(!final_status.attention_button_pressed(), "Attention button pressed should be cleared after write-1");
+        assert!(!final_status.command_completed(), "Command completed should be cleared after write-1");
+        assert!(!final_status.data_link_layer_state_changed(), "Data link layer state changed should be cleared after write-1");
+
+        // RW1C bits that were written with 0 should remain unchanged
+        assert!(final_status.power_fault_detected(), "Power fault detected should remain set (write-0)");
+        assert!(final_status.mrl_sensor_changed(), "MRL sensor changed should remain set (write-0)");
+        assert!(final_status.presence_detect_changed(), "Presence detect changed should remain set (write-0)");
+
+        // RO bits should remain unchanged regardless of what was written
+        assert_eq!(final_status.mrl_sensor_state(), 1, "MRL sensor state should remain unchanged (RO)");
+        assert_eq!(final_status.presence_detect_state(), 1, "Presence detect state should remain unchanged (RO)");
+        assert_eq!(final_status.electromechanical_interlock_status(), 1, "Electromechanical interlock status should remain unchanged (RO)");
     }
 }
