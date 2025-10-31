@@ -964,6 +964,15 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
         }
     }
 
+    /// Check if the AKCert NV index exists and has the platform_create attribute.
+    pub fn has_platform_akcert_index(&mut self) -> bool {
+        self.find_nv_index(TPM_NV_INDEX_AIK_CERT).is_ok_and(|res| {
+            res.is_some_and(|reply| {
+                TpmaNvBits::from(reply.nv_public.nv_public.attributes.0.get()).nv_platformcreate()
+            })
+        })
+    }
+
     /// Check if the nv index is present using NV_ReadPublic command.
     ///
     /// Returns Ok(Some(NvReadPublicReply)) if nv index is present.
