@@ -59,7 +59,13 @@ enum HclNetworkVfManagerMessage {
     HideVtl0VF(Rpc<bool, ()>),
     Inspect(inspect::Deferred),
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
-    SaveState(Rpc<(), Option<ManaSavedState>>),
+    SaveState(Rpc<(), VfManagerSaveResult>),
+}
+#[derive(Debug)]
+enum VfManagerSaveResult {
+    Saved(ManaSavedState),
+    DeviceMissing,
+    SaveFailed,
 }
 
 async fn create_mana_device(
@@ -689,18 +695,19 @@ impl HclNetworkVFManagerWorker {
                             // Leak the handle by stashing it away.
                             std::mem::forget(device);
 
-                            if let Ok(saved_state) = saved_state {
-                                Some(ManaSavedState {
+                            match saved_state {
+                                Ok(saved_state) => VfManagerSaveResult::Saved(ManaSavedState {
                                     mana_device: saved_state,
                                     pci_id: self.vtl2_pci_id.clone(),
-                                })
-                            } else {
-                                tracing::error!("Failed while saving MANA device state");
-                                None
+                                }),
+                                Err(_) => {
+                                    tracing::error!("Failed while saving MANA device state");
+                                    VfManagerSaveResult::SaveFailed
+                                }
                             }
                         } else {
                             tracing::warn!("no MANA device present when saving state");
-                            None
+                            VfManagerSaveResult::DeviceMissing
                         }
                     })
                     .await;
@@ -1042,11 +1049,15 @@ impl HclNetworkVFManager {
             .await;
 
         match save_state {
-            Ok(None) => {
-                tracing::warn!("No MANA device present when saving state");
+            Ok(VfManagerSaveResult::Saved(state)) => Some(state),
+            Ok(VfManagerSaveResult::DeviceMissing) => {
+                tracing::warn!("MANA device missing when saving state");
                 None
             }
-            Ok(Some(state)) => Some(state),
+            Ok(VfManagerSaveResult::SaveFailed) => {
+                tracing::error!("MANA device present but save failed");
+                None
+            }
             Err(err) => {
                 tracing::error!(
                     err = &err as &dyn std::error::Error,
