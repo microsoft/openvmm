@@ -20,7 +20,7 @@ pub(super) fn get_context_ip(ctx: &Context) -> usize {
 }
 
 pub(super) fn set_context_ip_and_result(ctx: &mut Context, ip: usize, result: Option<isize>) {
-    // This function also clears the direction flag to restore the ABI expectation. 
+    // This function also clears the direction flag to restore the ABI expectation.
     const DIRECTION_FLAG_MASK: u64 = 0x400;
     #[cfg(target_os = "linux")]
     {
@@ -28,7 +28,7 @@ pub(super) fn set_context_ip_and_result(ctx: &mut Context, ip: usize, result: Op
         if let Some(result) = result {
             ctx.gregs[libc::REG_RCX as usize] = result as _;
         }
-        ctx.gregs[libc::REG_EFL as usize] &= !DIRECTION_FLAG_MASK as libc::greg_t;   
+        ctx.gregs[libc::REG_EFL as usize] &= !DIRECTION_FLAG_MASK as libc::greg_t;
     }
     #[cfg(target_os = "windows")]
     {

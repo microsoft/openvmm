@@ -921,6 +921,23 @@ mod tests {
     }
 
     #[test]
+    fn test_try_memmove_nonoverlapping() {
+        initialize_try_copy();
+        let max = 8000;
+        let src = (0..max).map(|x| (x % 256) as u8).collect::<Vec<u8>>();
+        let mut dest = vec![0u8; max];
+        for i in 0..max {
+            let dest = &mut dest[max - i..];
+            let src = &src[max - i..];
+            dest.fill(0);
+            unsafe {
+                try_memmove(dest.as_mut_ptr(), src.as_ptr(), i).unwrap();
+            };
+            assert_eq!(dest, src);
+        }
+    }
+
+    #[test]
     fn test_try_memmove_overlapping() {
         initialize_try_copy();
 
@@ -945,11 +962,15 @@ mod tests {
     fn test_try_memset() {
         initialize_try_copy();
 
-        let mut buf = [0u8; 256];
-        unsafe { try_memset(buf.as_mut_ptr(), 0x5a, buf.len()).unwrap() };
-        assert_eq!(&buf, &[0x5a; 256]);
-
-        unsafe { try_memset(0x100 as *mut u8, 0x5a, 100).unwrap_err() };
+        for c in [0, 0x5f] {
+            for n in [
+                0, 1, 15, 16, 31, 32, 63, 64, 127, 128, 255, 256, 528, 1942, 4097,
+            ] {
+                let mut buf = vec![0u8; n];
+                unsafe { try_memset(buf.as_mut_ptr(), c, n).unwrap() };
+                assert_eq!(buf, vec![c; n]);
+            }
+        }
     }
 
     #[test]
