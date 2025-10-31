@@ -150,7 +150,7 @@ impl NvmeManager {
 enum Request {
     Inspect(inspect::Deferred),
     ForceLoadDriver(inspect::DeferredUpdate),
-    GetNamespace(Rpc<(String, u32), anyhow::Result<nvme_driver::Namespace>>),
+    GetNamespace(Rpc<(String, u32), anyhow::Result<Arc<nvme_driver::Namespace>>>),
     Save(Rpc<(), anyhow::Result<NvmeManagerSavedState>>),
     Shutdown {
         span: tracing::Span,
@@ -168,7 +168,7 @@ impl NvmeManagerClient {
         &self,
         pci_id: String,
         nsid: u32,
-    ) -> anyhow::Result<nvme_driver::Namespace> {
+    ) -> anyhow::Result<Arc<nvme_driver::Namespace>> {
         self.sender
             .call(Request::GetNamespace, (pci_id.clone(), nsid))
             .instrument(tracing::info_span!(
@@ -373,7 +373,7 @@ impl NvmeManagerWorker {
         pci_id: String,
         nsid: u32,
         context: NvmeWorkerContext,
-    ) -> anyhow::Result<nvme_driver::Namespace> {
+    ) -> anyhow::Result<Arc<nvme_driver::Namespace>> {
         // If the driver is already created, use it.
         let mut client: Option<NvmeDriverManagerClient> = None;
         {
@@ -625,7 +625,10 @@ mod tests {
 
     #[async_trait]
     impl NvmeDevice for MockNvmeDriver {
-        async fn namespace(&self, _nsid: u32) -> Result<Namespace, nvme_driver::NamespaceError> {
+        async fn namespace(
+            &mut self,
+            _nsid: u32,
+        ) -> Result<Arc<Namespace>, nvme_driver::NamespaceError> {
             // Record start time for concurrency analysis
             {
                 let mut start_times = self.namespace_start_times.write();
