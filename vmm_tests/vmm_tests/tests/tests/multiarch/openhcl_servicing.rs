@@ -497,3 +497,136 @@ async fn create_keepalive_test_config(
         .run()
         .await
 }
+
+/// Today this only tests that the nic can get an IP address via consomme's DHCP
+/// implementation.
+///
+/// FUTURE: Test traffic on the nic.
+async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
+    let sh = agent.unix_shell();
+    cmd!(sh, "ifconfig eth0 up").run().await?;
+    cmd!(sh, "udhcpc eth0").run().await?;
+    let output = cmd!(sh, "ifconfig eth0").read().await?;
+    // Validate that we see a mana nic with the expected MAC address and IPs.
+    assert!(output.contains("HWaddr 00:15:5D:12:12:12"));
+    assert!(output.contains("inet addr:10.0.0.2"));
+    assert!(output.contains("inet6 addr: fe80::215:5dff:fe12:1212/64"));
+
+    Ok(())
+}
+
+/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
+/// the MANA emulator), and vmbus relay. Perform servicing and validate that the
+/// nic is still functional.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(|b| b.with_nic())
+        .run()
+        .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
+        .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
+/// the MANA emulator), and vmbus relay. Perform servicing and validate that the
+/// nic is still functional.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing_keepalive(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(|b| b.with_nic())
+        .with_openhcl_command_line(
+            "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off OPENHCL_MANA_KEEP_ALIVE=1",
+        ) // disable sidecar until #1345 is fixed
+        .run()
+        .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    vm.restart_openhcl(
+        igvm_file,
+        OpenHclServicingFlags {
+            enable_mana_keepalive: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+// Test upgrading from 25_05 release to latest, then service again to go through keepalive path
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, RELEASE_25_05_LINUX_DIRECT_X64])]
+async fn mana_nic_servicing_keepalive_upgrade(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (to_igvm_file, from_igvm_file): (
+        ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,
+        ResolvedArtifact<RELEASE_25_05_LINUX_DIRECT_X64>,
+    ),
+) -> Result<(), anyhow::Error> {
+    // Start a VM using 25_05 release IGVM
+    let (mut vm, agent) = config
+        // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .with_custom_openhcl(from_igvm_file)
+        .with_vmbus_redirect(true)
+        .modify_backend(|b| b.with_nic())
+        .with_openhcl_command_line(
+            "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off OPENHCL_MANA_KEEP_ALIVE=1",
+        ) // disable sidecar until #1345 is fixed
+        .run()
+        .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    // Service to latest IGVM and make sure MANA nic still works
+    vm.restart_openhcl(
+        to_igvm_file.clone(),
+        OpenHclServicingFlags {
+            enable_mana_keepalive: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    // Service again to latest IGVM to test keepalive path
+    vm.restart_openhcl(
+        to_igvm_file,
+        OpenHclServicingFlags {
+            enable_mana_keepalive: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
