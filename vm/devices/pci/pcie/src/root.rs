@@ -50,6 +50,8 @@ pub struct GenericPcieRootComplex {
 pub struct GenericPcieRootPortDefinition {
     /// The name of the root port.
     pub name: Arc<str>,
+    /// Whether hotplug is enabled for this root port.
+    pub hotplug: bool,
 }
 
 /// A flat description of a PCIe switch without hierarchy.
@@ -60,6 +62,8 @@ pub struct GenericSwitchDefinition {
     pub num_downstream_ports: u8,
     /// The parent port this switch is connected to.
     pub parent_port: Arc<str>,
+    /// Whether hotplug is enabled for this switch.
+    pub hotplug: bool,
 }
 
 impl GenericSwitchDefinition {
@@ -68,11 +72,13 @@ impl GenericSwitchDefinition {
         name: impl Into<Arc<str>>,
         num_downstream_ports: u8,
         parent_port: impl Into<Arc<str>>,
+        hotplug: bool,
     ) -> Self {
         Self {
             name: name.into(),
             num_downstream_ports,
             parent_port: parent_port.into(),
+            hotplug,
         }
     }
 }
@@ -123,7 +129,7 @@ impl GenericPcieRootComplex {
                     "GenericPcieRootComplex: creating port {} at device number {:#x} with name '{}'",
                     i, device_number, definition.name
                 );
-                let emulator = RootPort::new(definition.name.clone());
+                let emulator = RootPort::new(definition.name.clone(), definition.hotplug);
                 (device_number, (definition.name, emulator))
             })
             .collect();
@@ -468,7 +474,7 @@ struct RootPort {
 
 impl RootPort {
     /// Constructs a new [`RootPort`] emulator.
-    pub fn new(name: impl Into<Arc<str>>) -> Self {
+    pub fn new(name: impl Into<Arc<str>>, hotplug: bool) -> Self {
         let name_str = name.into();
         tracing::info!("RootPort: creating new root port '{}'", name_str);
 
@@ -493,7 +499,7 @@ impl RootPort {
             name_str.to_string(),
             hardware_ids,
             DevicePortType::RootPort,
-            false,
+            hotplug,
         );
 
         tracing::info!("RootPort: '{}' created successfully", name_str);
@@ -609,6 +615,7 @@ mod tests {
         let port_defs = (0..port_count)
             .map(|i| GenericPcieRootPortDefinition {
                 name: format!("test-port-{}", i).into(),
+                hotplug: false,
             })
             .collect();
 
@@ -859,7 +866,7 @@ mod tests {
 
     #[test]
     fn test_root_port_invalid_bus_range_handling() {
-        let mut root_port = RootPort::new("test-port");
+        let mut root_port = RootPort::new("test-port", false);
 
         // Don't configure bus numbers, so the range should be 0..=0 (invalid)
         let bus_range = root_port.port.cfg_space.assigned_bus_range();

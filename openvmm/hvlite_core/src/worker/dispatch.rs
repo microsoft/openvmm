@@ -1786,6 +1786,7 @@ impl InitializedVm {
                                 .into_iter()
                                 .map(|rp_cfg| GenericPcieRootPortDefinition {
                                     name: rp_cfg.name.into(),
+                                    hotplug: rp_cfg.hotplug,
                                 })
                                 .collect();
 

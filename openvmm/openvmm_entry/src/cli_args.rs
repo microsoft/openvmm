@@ -588,8 +588,12 @@ options:
     /// Attach a PCI Express root port to the VM
     #[clap(long_help = r#"
 e.g: --pcie-root-port rc0:rc0rp0
+e.g: --pcie-root-port rc0:rc0rp0,hotplug
 
-syntax: <root_complex_name>:<name>
+syntax: <root_complex_name>:<name>[,hotplug]
+
+Options:
+    `hotplug`                      enable hotplug support for this root port
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_port: Vec<PcieRootPortCli>,
@@ -1534,6 +1538,7 @@ impl FromStr for PcieRootComplexCli {
 pub struct PcieRootPortCli {
     pub root_complex_name: String,
     pub name: String,
+    pub hotplug: bool,
 }
 
 impl FromStr for PcieRootPortCli {
@@ -1554,13 +1559,20 @@ impl FromStr for PcieRootPortCli {
             anyhow::bail!("unexpected token: '{extra}'")
         }
 
-        if let Some(extra) = opts.next() {
-            anyhow::bail!("unexpected token: '{extra}'")
+        let mut hotplug = false;
+
+        // Parse optional flags
+        for opt in opts {
+            match opt {
+                "hotplug" => hotplug = true,
+                _ => anyhow::bail!("unexpected option: '{opt}'"),
+            }
         }
 
         Ok(PcieRootPortCli {
             root_complex_name: rc_name.to_string(),
             name: rp_name.to_string(),
+            hotplug,
         })
     }
 }
@@ -1570,6 +1582,7 @@ pub struct GenericPcieSwitchCli {
     pub port_name: String,
     pub name: String,
     pub num_downstream_ports: u8,
+    pub hotplug: bool,
 }
 
 impl FromStr for GenericPcieSwitchCli {
@@ -1591,19 +1604,25 @@ impl FromStr for GenericPcieSwitchCli {
         }
 
         let mut num_downstream_ports = 4u8; // Default value
+        let mut hotplug = false;
 
         for opt in opts {
             let mut kv = opt.split('=');
             let key = kv.next().context("expected option name")?;
-            let value = kv.next().context("expected option value")?;
-
-            if let Some(extra) = kv.next() {
-                anyhow::bail!("unexpected token: '{extra}'")
-            }
 
             match key {
                 "num_downstream_ports" => {
+                    let value = kv.next().context("expected option value")?;
+                    if let Some(extra) = kv.next() {
+                        anyhow::bail!("unexpected token: '{extra}'")
+                    }
                     num_downstream_ports = value.parse().context("invalid num_downstream_ports")?;
+                }
+                "hotplug" => {
+                    if kv.next().is_some() {
+                        anyhow::bail!("hotplug option does not take a value")
+                    }
+                    hotplug = true;
                 }
                 _ => anyhow::bail!("unknown option: '{key}'"),
             }
@@ -1613,6 +1632,7 @@ impl FromStr for GenericPcieSwitchCli {
             port_name: port_name.to_string(),
             name: switch_name.to_string(),
             num_downstream_ports,
+            hotplug,
         })
     }
 }
@@ -2237,7 +2257,8 @@ mod tests {
             PcieRootPortCli::from_str("rc0:rc0rp0").unwrap(),
             PcieRootPortCli {
                 root_complex_name: "rc0".to_string(),
-                name: "rc0rp0".to_string()
+                name: "rc0rp0".to_string(),
+                hotplug: false,
             }
         );
 
@@ -2245,7 +2266,18 @@ mod tests {
             PcieRootPortCli::from_str("my_rc:port2").unwrap(),
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
-                name: "port2".to_string()
+                name: "port2".to_string(),
+                hotplug: false,
+            }
+        );
+
+        // Test with hotplug flag
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port2,hotplug").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port2".to_string(),
+                hotplug: true,
             }
         );
 
@@ -2254,7 +2286,7 @@ mod tests {
         assert!(PcieRootPortCli::from_str("rp0").is_err());
         assert!(PcieRootPortCli::from_str("rp0,opt").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0:rp3").is_err());
-        assert!(PcieRootPortCli::from_str("rc0:rp0,rp3").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,invalid_option").is_err());
     }
 
     #[test]
@@ -2265,6 +2297,7 @@ mod tests {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
+                hotplug: false,
             }
         );
 
@@ -2274,6 +2307,7 @@ mod tests {
                 port_name: "port1".to_string(),
                 name: "my_switch".to_string(),
                 num_downstream_ports: 4,
+                hotplug: false,
             }
         );
 
@@ -2283,6 +2317,7 @@ mod tests {
                 port_name: "rp2".to_string(),
                 name: "sw".to_string(),
                 num_downstream_ports: 8,
+                hotplug: false,
             }
         );
 
@@ -2293,6 +2328,29 @@ mod tests {
                 port_name: "switch0-downstream-1".to_string(),
                 name: "child_switch".to_string(),
                 num_downstream_ports: 4,
+                hotplug: false,
+            }
+        );
+
+        // Test hotplug flag
+        assert_eq!(
+            GenericPcieSwitchCli::from_str("rp0:switch0,hotplug").unwrap(),
+            GenericPcieSwitchCli {
+                port_name: "rp0".to_string(),
+                name: "switch0".to_string(),
+                num_downstream_ports: 4,
+                hotplug: true,
+            }
+        );
+
+        // Test hotplug with num_downstream_ports
+        assert_eq!(
+            GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=8,hotplug").unwrap(),
+            GenericPcieSwitchCli {
+                port_name: "rp0".to_string(),
+                name: "switch0".to_string(),
+                num_downstream_ports: 8,
+                hotplug: true,
             }
         );
 
@@ -2303,5 +2361,6 @@ mod tests {
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,invalid_opt=value").is_err());
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=bad").is_err());
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=").is_err());
+        assert!(GenericPcieSwitchCli::from_str("rp0:switch0,invalid_flag").is_err());
     }
 }
