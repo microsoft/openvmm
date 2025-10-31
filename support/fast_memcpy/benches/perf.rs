@@ -31,6 +31,7 @@ fn do_bench_memcpy(
         group.bench_function(BenchmarkId::new("len", len), |b| {
             let src = vec![0u8; len];
             let mut dest = vec![0u8; len];
+            // SAFETY: operating correctly on src/dest.
             b.iter(|| unsafe {
                 memcpy_fn(
                     core::hint::black_box(dest.as_mut_ptr()),
