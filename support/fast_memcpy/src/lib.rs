@@ -12,14 +12,14 @@
 #![expect(clippy::undocumented_unsafe_blocks)]
 
 /// Optimized memmove implementation.
-//#[cfg_attr(not(test), unsafe(no_mangle))]
+#[cfg_attr(replace_system_memcpy, unsafe(no_mangle))]
 pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
     // Our memcpy handles overlapping regions correctly.
     unsafe { memcpy(dest, src, len) }
 }
 
 /// Optimized memcpy implementation.
-//#[cfg_attr(not(test), unsafe(no_mangle))]
+#[cfg_attr(replace_system_memcpy, unsafe(no_mangle))]
 pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
     unsafe {
         // Handle small sizes with specialized code. For some values, perform a
@@ -98,7 +98,7 @@ trait Chunk: Copy {
     unsafe fn write_aligned(this: *mut Self, val: Self);
 }
 
-#[repr(packed)]
+#[repr(C, packed)]
 struct Packed<T>(T);
 
 macro_rules! scalar {
@@ -133,10 +133,13 @@ struct U128x2(U128, U128);
 struct U128x4(U128, U128, U128, U128);
 
 // Use a SIMD type when possible to encourage better register use.
+// xtask-fmt allow-target-arch sys-crate
 #[cfg(target_arch = "x86_64")]
 type U128 = core::arch::x86_64::__m128i;
+// xtask-fmt allow-target-arch sys-crate
 #[cfg(target_arch = "aarch64")]
 type U128 = core::arch::aarch64::uint8x16_t;
+// xtask-fmt allow-target-arch sys-crate
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 type U128 = u128;
 

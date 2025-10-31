@@ -25,7 +25,9 @@ fn do_bench_memcpy(
     mut group: criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     memcpy_fn: unsafe extern "C" fn(*mut u8, *const u8, usize) -> *mut u8,
 ) {
-    for &len in &[1usize, 2, 3, 4, 7, 8, 12, 24, 32, 48, 64, 256, 1024, 4096, 8000] {
+    for &len in &[
+        1usize, 2, 3, 4, 7, 8, 12, 24, 32, 48, 64, 256, 1024, 4096, 8000,
+    ] {
         group.bench_function(BenchmarkId::new("len", len), |b| {
             let src = vec![0u8; len];
             let mut dest = vec![0u8; len];

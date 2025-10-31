@@ -616,6 +616,7 @@ opt-level = 3
 [profile.dev.package.generator]
 opt-level = 3
 
+# memcpy needs to be optimized heavily regardless of the build profile
 [profile.dev.package.fast_memcpy]
 opt-level = 3
 overflow-checks = false

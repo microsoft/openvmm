@@ -6,6 +6,10 @@ name = "fast_memcpy"
 rust-version.workspace = true
 edition.workspace = true
 
+[features]
+# Export `memcpy` and `memmove`, replacing the system-provided implementation.
+replace_system_memcpy = []
+
 [dependencies]
 
 [dev-dependencies]
