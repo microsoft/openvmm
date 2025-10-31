@@ -9,11 +9,12 @@ use mesh::OneshotSender;
 use mesh::rpc::Rpc;
 use nvme_spec::Command;
 use nvme_spec::Completion;
+use std::sync::Arc;
 use std::time::Duration;
 
-/// Supported fault behaviour for NVMe queues
+/// Supported fault behaviour for NVMe admin queues
 #[derive(Debug, MeshPayload)]
-pub enum QueueFaultBehavior<T> {
+pub enum AdminQueueFaultBehavior<T> {
     /// Update the queue entry with the returned data
     Update(T),
     /// Drop the queue entry
@@ -30,6 +31,16 @@ pub enum QueueFaultBehavior<T> {
     CustomPayload(Vec<u8>),
     /// Verify that a command was seen.
     Verify(Option<OneshotSender<()>>),
+}
+
+/// Supported fault behaviour for NVMe IO queues
+#[derive(Debug, MeshPayload, Clone)]
+pub enum IoQueueFaultBehavior {
+    /// Writes the given payload to the PRP range. The test should ensure
+    /// that the payload is of valid size. If the size is too large, the fault
+    /// controller will panic. This behavior is not yet supported by the submission
+    /// queue fault.
+    CustomPayload(Vec<u8>),
 }
 
 /// Supported fault behaviour for PCI faults
@@ -198,9 +209,84 @@ pub struct AdminQueueFaultConfig {
     /// A map of NVME opcodes to the submission fault behavior for each. (This
     /// would ideally be a `HashMap`, but `mesh` doesn't support that type.
     /// Given that this is not performance sensitive, the lookup is okay)
-    pub admin_submission_queue_faults: Vec<(CommandMatch, QueueFaultBehavior<Command>)>,
+    pub admin_submission_queue_faults: Vec<(CommandMatch, AdminQueueFaultBehavior<Command>)>,
     /// A map of NVME opcodes to the completion fault behavior for each.
-    pub admin_completion_queue_faults: Vec<(CommandMatch, QueueFaultBehavior<Completion>)>,
+    pub admin_completion_queue_faults: Vec<(CommandMatch, AdminQueueFaultBehavior<Completion>)>,
+}
+
+/// A fault configuration to inject faults into the admin submission and completion queues.
+///
+/// This struct maintains a mapping from [`CommandMatch`] to [`QueueFaultBehavior`] for
+/// submission and completion queues. When a command match is found, (and `fault_active == true`)
+/// the associated fault is applied.
+/// Both submission and completion queue faults match on commands
+/// because completions do not contain enough identifying information to
+/// match against. If there is more than one match for a given command, the
+/// match defined first is prioritized. Faults are added via the
+/// `with_submission_queue_fault` and `with_completion_queue_fault` methods and
+/// can be chained. AdminQueueFaultConfig::new() creates an empty fault.
+///
+/// # Panics
+/// Panics if a duplicate `CommandMatch` is added for either submission or
+/// completion queues
+///
+/// # Example
+/// Panic on CREATE_IO_COMPLETION_QUEUE and delay before sending completion for 500ms after
+/// GET_LOG_PAGE command is processed.
+/// ```no_run
+/// use mesh::CellUpdater;
+/// use nvme_resources::fault::AdminQueueFaultConfig;
+/// use nvme_resources::fault::CommandMatch;
+/// use nvme_resources::fault::FaultConfiguration;
+/// use nvme_resources::fault::QueueFaultBehavior;
+/// use nvme_spec::Command;
+/// use std::time::Duration;
+/// use zerocopy::FromZeros;
+/// use zerocopy::IntoBytes;
+///
+/// pub fn build_admin_queue_fault() -> FaultConfiguration {
+///     let mut fault_start_updater = CellUpdater::new(false);
+///
+///     // Setup command matches
+///     let mut command_io_queue = Command::new_zeroed();
+///     let mut command_log_page = Command::new_zeroed();
+///     let mut mask = Command::new_zeroed();
+///
+///     command_io_queue.cdw0 = command_io_queue.cdw0.with_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0);
+///     command_log_page.cdw0 = command_log_page.cdw0.with_opcode(nvme_spec::AdminOpcode::GET_LOG_PAGE.0);
+///     mask.cdw0 = mask.cdw0.with_opcode(u8::MAX);
+///
+///     return FaultConfiguration::new(fault_start_updater.cell())
+///         .with_admin_queue_fault(
+///             AdminQueueFaultConfig::new().with_submission_queue_fault(
+///                 CommandMatch {
+///                     command: command_io_queue,
+///                     mask: mask.as_bytes().try_into().expect("mask should be 64 bytes"),
+///                 },
+///                 QueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command".to_string()),
+///             ).with_completion_queue_fault(
+///                 CommandMatch {
+///                     command: command_log_page,
+///                     mask: mask.as_bytes().try_into().expect("mask should be 64 bytes"),
+///                 },
+///                 QueueFaultBehavior::Delay(Duration::from_millis(500)),
+///             )
+///         );
+/// }
+/// ```
+#[derive(MeshPayload, Clone)]
+pub struct IoQueueFaultConfig {
+    /// A map of NVME opcodes to the completion fault behavior for each.
+    pub io_completion_queue_faults: Vec<(CommandMatch, IoQueueFaultBehavior)>,
+}
+
+impl IoQueueFaultConfig {
+    /// Create an empty IO queue fault configuration
+    pub fn new() -> Self {
+        Self {
+            io_completion_queue_faults: vec![],
+        }
+    }
 }
 
 /// A versatile definition to command match [`NVMe commands`](nvme_spec::Command)
@@ -308,6 +394,8 @@ pub struct FaultConfiguration {
     pub pci_fault: PciFaultConfig,
     /// Fault for test triggered namespace change notifications
     pub namespace_fault: NamespaceFaultConfig,
+    /// Fault to apply to all IO queues
+    pub io_fault: Arc<IoQueueFaultConfig>,
 }
 
 impl FaultConfiguration {
@@ -321,6 +409,7 @@ impl FaultConfiguration {
             admin_fault: AdminQueueFaultConfig::new(),
             pci_fault: PciFaultConfig::new(),
             namespace_fault: NamespaceFaultConfig::new(mesh::channel().1),
+            io_fault: Arc::new(IoQueueFaultConfig::new()),
         }
     }
 
@@ -374,7 +463,7 @@ impl AdminQueueFaultConfig {
     pub fn with_submission_queue_fault(
         mut self,
         pattern: CommandMatch,
-        behaviour: QueueFaultBehavior<Command>,
+        behaviour: AdminQueueFaultBehavior<Command>,
     ) -> Self {
         if self
             .admin_submission_queue_faults
@@ -399,7 +488,7 @@ impl AdminQueueFaultConfig {
     pub fn with_completion_queue_fault(
         mut self,
         pattern: CommandMatch,
-        behaviour: QueueFaultBehavior<Completion>,
+        behaviour: AdminQueueFaultBehavior<Completion>,
     ) -> Self {
         if self
             .admin_completion_queue_faults

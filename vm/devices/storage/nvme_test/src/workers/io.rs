@@ -16,6 +16,10 @@ use crate::workers::MAX_DATA_TRANSFER_SIZE;
 use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use inspect::Inspect;
+use nvme_resources::fault;
+use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::IoQueueFaultConfig;
+use nvme_spec::Command;
 use parking_lot::RwLock;
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -30,6 +34,7 @@ use task_control::StopTask;
 use thiserror::Error;
 use unicycle::FuturesUnordered;
 use vmcore::interrupt::Interrupt;
+use zerocopy::FromZeros;
 
 #[derive(Inspect)]
 pub struct IoHandler {
@@ -46,9 +51,11 @@ pub struct IoState {
     #[inspect(skip)]
     namespaces: BTreeMap<u32, Arc<Namespace>>,
     #[inspect(skip)]
-    ios: FuturesUnordered<Pin<Box<dyn Future<Output = IoResult> + Send>>>,
+    ios: FuturesUnordered<Pin<Box<dyn Future<Output = (IoResult, Command)> + Send>>>,
     io_count: usize,
     queue_state: IoQueueState,
+    #[inspect(skip)]
+    fault_configuration: Arc<IoQueueFaultConfig>,
 }
 
 #[derive(Inspect)]
@@ -70,6 +77,7 @@ impl IoState {
         cq_id: u16,
         interrupt: Option<Interrupt>,
         namespaces: BTreeMap<u32, Arc<Namespace>>,
+        fault_configuration: Arc<IoQueueFaultConfig>,
     ) -> Self {
         Self {
             sq: SubmissionQueue::new(doorbell.clone(), sq_id * 2, sq_gpa, sq_len, mem.clone()),
@@ -85,6 +93,7 @@ impl IoState {
             ios: FuturesUnordered::new(),
             io_count: 0,
             queue_state: IoQueueState::Active,
+            fault_configuration,
         }
     }
 
@@ -177,8 +186,8 @@ impl IoHandler {
             };
 
             enum Event {
-                Sq(Result<spec::Command, QueueError>),
-                Io(IoResult),
+                Sq(Result<Command, QueueError>),
+                Io((IoResult, Command)),
             }
 
             let next_sqe = async {
@@ -198,8 +207,8 @@ impl IoHandler {
             };
 
             let event = (next_sqe, next_io_completion).race().await;
-            let (cid, result) = match event {
-                Event::Io(io_result) => {
+            let (cid, result, command) = match event {
+                Event::Io((io_result, command)) => {
                     state.io_count -= 1;
                     let result = match io_result.result {
                         Ok(cr) => cr,
@@ -214,7 +223,7 @@ impl IoHandler {
                             err.into()
                         }
                     };
-                    (io_result.cid, result)
+                    (io_result.cid, result, command)
                 }
                 Event::Sq(r) => {
                     let command = r?;
@@ -224,19 +233,26 @@ impl IoHandler {
                         let ns = ns.clone();
                         let io = Box::pin(async move {
                             let result = ns.nvm_command(MAX_DATA_TRANSFER_SIZE, &command).await;
-                            IoResult {
-                                nsid: command.nsid,
-                                opcode: nvm::NvmOpcode(command.cdw0.opcode()),
-                                cid,
-                                result,
-                            }
+                            (
+                                IoResult {
+                                    nsid: command.nsid,
+                                    opcode: nvm::NvmOpcode(command.cdw0.opcode()),
+                                    cid,
+                                    result,
+                                },
+                                command,
+                            )
                         });
                         state.ios.push(io);
                         state.io_count += 1;
                         continue;
                     }
 
-                    (cid, spec::Status::INVALID_NAMESPACE_OR_FORMAT.into())
+                    (
+                        cid,
+                        spec::Status::INVALID_NAMESPACE_OR_FORMAT.into(),
+                        Command::new_zeroed(),
+                    )
                 }
             };
 
@@ -248,6 +264,7 @@ impl IoHandler {
                 cid,
                 status: spec::CompletionStatus::new().with_status(result.status.0),
             };
+
             if !state.cq.write(completion)? {
                 assert!(deleting);
                 tracelimit::warn_ratelimited!("dropped i/o completion during queue deletion");
