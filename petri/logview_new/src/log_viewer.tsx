@@ -155,6 +155,18 @@ export function LogViewer(): React.JSX.Element {
         return () => cancelAnimationFrame(id);
     }, [pendingScrollIndex]);
 
+    // When search filter changes and a row is selected, scroll to that row in
+    // the filtered results. Don't do anything when only the selected row changes.
+    useEffect(() => {
+        if (!selectedRow) return;
+        const targetIndex = parseInt(selectedRow.replace('log-', ''), 10);
+        if (isNaN(targetIndex)) return;
+        const displayIdx = filteredLogs.findIndex((l: LogEntry) => l.index === targetIndex);
+        if (displayIdx >= 0) {
+            setPendingScrollIndex(displayIdx);
+        }
+    }, [searchFilter, filteredLogs]);
+
     return (
         <div className="common-page-display">
             <div className="common-page-header">
@@ -424,7 +436,7 @@ function filterLog(logs: LogEntry[] | undefined, query: string): LogEntry[] {
                 return (
                     log.source.toLowerCase().includes(token.toLowerCase()) ||
                     log.severity.toLowerCase().includes(token.toLowerCase()) ||
-                    log.message.includes(token.toLowerCase())
+                    log.message.toLowerCase().includes(token.toLowerCase())
                 );
             }
         });

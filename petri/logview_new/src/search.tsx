@@ -68,7 +68,7 @@ export function SearchInput({
     usePersistentSearching,
   ]);
 
-  // Handle Ctrl/Cmd+F keyboard shortcut and Escape to clear
+  // Handle Ctrl/Cmd+F keyboard shortcut and Escape to clear/blur
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const isMac = navigator.platform.toUpperCase().includes("MAC");
@@ -82,8 +82,14 @@ export function SearchInput({
         actualRef.current?.select();
       }
 
-      if (e.key === "Escape" && value) {
-        onChange("");
+      if (e.key === "Escape") {
+        if (value) {
+          // If there's text, clear it
+          onChange("");
+        } else if (document.activeElement === actualRef.current) {
+          // If empty and search bar is focused, remove focus from it
+          actualRef.current?.blur();
+        }
       }
     };
 
