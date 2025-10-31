@@ -205,6 +205,19 @@ pub enum MaxTraceLevelCli {
     Off,
 }
 
+impl From<MaxTraceLevelCli> for MaxTraceLevel {
+    fn from(cli: MaxTraceLevelCli) -> Self {
+        match cli {
+            MaxTraceLevelCli::Trace => MaxTraceLevel::Trace,
+            MaxTraceLevelCli::Debug => MaxTraceLevel::Debug,
+            MaxTraceLevelCli::Info => MaxTraceLevel::Info,
+            MaxTraceLevelCli::Warn => MaxTraceLevel::Warn,
+            MaxTraceLevelCli::Error => MaxTraceLevel::Error,
+            MaxTraceLevelCli::Off => MaxTraceLevel::Off,
+        }
+    }
+}
+
 #[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
 pub enum BuildIgvmArch {
     X86_64,
@@ -354,14 +367,7 @@ impl IntoPipeline for BuildIgvmCli {
                     override_openvmm_hcl_feature,
                     custom_sidecar,
                     override_manifest,
-                    override_max_trace_level: max_trace_level.map(|lvl| match lvl {
-                        MaxTraceLevelCli::Trace => MaxTraceLevel::Trace,
-                        MaxTraceLevelCli::Debug => MaxTraceLevel::Debug,
-                        MaxTraceLevelCli::Info => MaxTraceLevel::Info,
-                        MaxTraceLevelCli::Warn => MaxTraceLevel::Warn,
-                        MaxTraceLevelCli::Error => MaxTraceLevel::Error,
-                        MaxTraceLevelCli::Off => MaxTraceLevel::Off,
-                    }),
+                    override_max_trace_level: max_trace_level.map(Into::into),
                     custom_openvmm_hcl,
                     custom_openhcl_boot,
                     custom_uefi,
