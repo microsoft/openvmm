@@ -1345,17 +1345,17 @@ impl<'a> TestNicChannel<'a> {
         let gpadl_view = self.gpadl_map.clone().view().map(self.send_buf_id).unwrap();
         let mut buf_writer = PagedRanges::new(&*gpadl_view).writer(&mem);
 
-        assert_eq!(lso || tcp_checksum || udp_checksum, true);
+        assert!(lso || tcp_checksum || udp_checksum);
         // Calculate packet info length based on the offloads requested
         let per_packet_info_offset = size_of::<rndisprot::Packet>() as u32;
         let mut per_packet_info_length = size_of::<rndisprot::PerPacketInfo>() as u32;
         if tcp_checksum || udp_checksum {
             per_packet_info_length += size_of::<rndisprot::TxTcpIpChecksumInfo>() as u32;
-            assert_eq!(lso, false);
+            assert!(!lso);
         }
         if lso {
             per_packet_info_length += size_of::<rndisprot::TcpLsoInfo>() as u32;
-            assert_eq!(tcp_checksum || udp_checksum, false);
+            assert!(!(tcp_checksum || udp_checksum));
         }
 
         let message_length = size_of::<rndisprot::MessageHeader>()
@@ -1390,13 +1390,14 @@ impl<'a> TestNicChannel<'a> {
         buf_writer.write(packet.as_bytes()).unwrap();
 
         // Write per-packet info for checksum offload
+        const TCP_HEADER_OFFSET: u16 = 34; // Ethernet (14) + IPv4 (20)
         if tcp_checksum || udp_checksum {
             let checksum_info = rndisprot::TxTcpIpChecksumInfo::new_zeroed()
                 .set_is_ipv4(true)
                 .set_tcp_checksum(tcp_checksum)
                 .set_udp_checksum(udp_checksum)
                 .set_ip_header_checksum(true)
-                .set_tcp_header_offset(34); // Ethernet (14) + IPv4 (20)
+                .set_tcp_header_offset(TCP_HEADER_OFFSET);
 
             buf_writer
                 .write(
@@ -1414,9 +1415,10 @@ impl<'a> TestNicChannel<'a> {
 
         // Write per-packet info for LSO
         if lso {
-            let maximum_segment_size = 1460; // 1500 MTU - 40 bytes (IP + TCP Headers). 8960 would be jumbo frames.
+            const NORMAL_MTU: u32 = 1460; // 1500 MTU - 40 bytes (IP + TCP Headers). 8960 would be jumbo frames.
+            let maximum_segment_size = NORMAL_MTU;
             let lso_info = rndisprot::TcpLsoInfo(
-                maximum_segment_size | (34 << 20), // MSS in low 20 bits, TCP header offset in bits 20-29
+                maximum_segment_size | ((TCP_HEADER_OFFSET as u32) << 20), // MSS in low 20 bits, TCP header offset in bits 20-29
             );
 
             buf_writer
