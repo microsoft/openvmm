@@ -5233,6 +5233,7 @@ name = "openvmm_hcl"
 version = "0.0.0"
 dependencies = [
  "openvmm_hcl_resources",
+ "tracing",
  "underhill_entry",
 ]
 

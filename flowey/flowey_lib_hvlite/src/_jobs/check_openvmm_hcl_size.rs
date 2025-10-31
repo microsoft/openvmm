@@ -19,7 +19,7 @@ use flowey_lib_common::git_merge_commit;
 
 flowey_request! {
     pub struct Request {
-        pub target: CommonTriple,
+        pub recipe: OpenhclIgvmRecipe,
         pub done: WriteVar<SideEffect>,
         pub pipeline_name: String,
         pub job_name: String,
@@ -44,38 +44,41 @@ impl SimpleFlowNode for Node {
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
-            target,
+            recipe,
             done,
             pipeline_name,
             job_name,
         } = request;
 
-        let arch = match ctx.arch() {
-            FlowArch::X86_64 => CommonArch::X86_64,
-            FlowArch::Aarch64 => CommonArch::Aarch64,
-            _ => panic!("unsupported arch"),
+        let xtask_target = CommonTriple::Common {
+            arch: match ctx.arch() {
+                FlowArch::X86_64 => CommonArch::X86_64,
+                FlowArch::Aarch64 => CommonArch::Aarch64,
+                arch => anyhow::bail!("unsupported arch {arch}"),
+            },
+            platform: match ctx.platform() {
+                FlowPlatform::Windows => CommonPlatform::WindowsMsvc,
+                FlowPlatform::Linux(_) => CommonPlatform::LinuxGnu,
+                FlowPlatform::MacOs => CommonPlatform::MacOs,
+                platform => anyhow::bail!("unsupported platform {platform}"),
+            },
         };
 
         let xtask = ctx.reqv(|v| crate::build_xtask::Request {
-            target: CommonTriple::Common {
-                arch,
-                platform: CommonPlatform::LinuxMusl,
-            },
+            target: xtask_target,
             xtask: v,
         });
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
+        let recipe = recipe.recipe_details(true);
+        let target = recipe.target;
         let built_openvmm_hcl = ctx.reqv(|v| build_openvmm_hcl::Request {
             build_params: OpenvmmHclBuildParams {
                 target: target.clone(),
                 profile: OpenvmmHclShip,
-                features: (match target.common_arch().unwrap() {
-                    CommonArch::X86_64 => OpenhclIgvmRecipe::X64,
-                    CommonArch::Aarch64 => OpenhclIgvmRecipe::Aarch64,
-                })
-                .recipe_details(true)
-                .openvmm_hcl_features,
+                features: recipe.openvmm_hcl_features,
                 no_split_dbg_info: false,
+                max_trace_level: recipe.max_trace_level,
             },
             openvmm_hcl_output: v,
         });

@@ -140,20 +140,26 @@ impl SimpleFlowNode for Node {
                     _ => {}
                 }
             }
-            if all_same {
-                if let Some(custom_target) = unique_target {
-                    did_publish.push(ctx.reqv(|v| {
-                        build_and_publish_openvmm_hcl_baseline::Request {
-                            target: custom_target,
-                            artifact_dir: sizecheck_artifact,
-                            done: v,
-                        }
-                    }));
-                }
-            } else {
-                return Err(anyhow::anyhow!(
+            if !all_same {
+                anyhow::bail!(
                     "All igvm_files must have the same custom_target for baseline build, but found differing targets."
-                ));
+                );
+            }
+            if let Some(custom_target) = unique_target {
+                let recipe = match custom_target.common_arch().unwrap() {
+                    crate::run_cargo_build::common::CommonArch::X86_64 => OpenhclIgvmRecipe::X64,
+                    crate::run_cargo_build::common::CommonArch::Aarch64 => {
+                        OpenhclIgvmRecipe::Aarch64
+                    }
+                };
+                did_publish.push(
+                    ctx.reqv(|v| build_and_publish_openvmm_hcl_baseline::Request {
+                        recipe,
+                        custom_target: Some(custom_target),
+                        artifact_dir: sizecheck_artifact,
+                        done: v,
+                    }),
+                );
             }
         }
 

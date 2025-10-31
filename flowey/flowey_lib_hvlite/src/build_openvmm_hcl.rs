@@ -25,6 +25,16 @@ pub enum OpenvmmHclBuildProfile {
     OpenvmmHclShip,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum MaxTraceLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+    Off,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct OpenvmmHclOutput {
     pub bin: PathBuf,
@@ -37,6 +47,7 @@ pub struct OpenvmmHclBuildParams {
     pub profile: OpenvmmHclBuildProfile,
     pub features: BTreeSet<OpenvmmHclFeature>,
     pub no_split_dbg_info: bool,
+    pub max_trace_level: MaxTraceLevel,
 }
 
 flowey_request! {
@@ -77,6 +88,7 @@ impl FlowNode for Node {
                 profile,
                 features,
                 no_split_dbg_info,
+                max_trace_level,
             },
             outvars,
         ) in requests
@@ -101,6 +113,32 @@ impl FlowNode for Node {
             // required due to ambient dependencies in openvmm_hcl's source code
             pre_build_deps.push(openhcl_deps_path.clone().into_side_effect());
 
+            let mut features = features
+                .into_iter()
+                .map(|f| match f {
+                    OpenvmmHclFeature::Gdb => "gdb".into(),
+                    OpenvmmHclFeature::Tpm => "tpm".into(),
+                    OpenvmmHclFeature::LocalOnlyCustom(s) => s,
+                })
+                .collect::<Vec<String>>();
+
+            let max_trace_level = match max_trace_level {
+                MaxTraceLevel::Trace => None,
+                MaxTraceLevel::Debug => Some("debug"),
+                MaxTraceLevel::Info => Some("info"),
+                MaxTraceLevel::Warn => Some("warn"),
+                MaxTraceLevel::Error => Some("error"),
+                MaxTraceLevel::Off => Some("off"),
+            };
+            if let Some(level) = max_trace_level {
+                // Add both release and non-release variants of the feature
+                // regardless of the profile to work around `tracing` bugs.
+                features.extend([
+                    format!("tracing/release_max_level_{level}"),
+                    format!("tracing/max_level_{level}"),
+                ]);
+            }
+
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "openvmm_hcl".into(),
                 out_name: "openvmm_hcl".into(),
@@ -114,19 +152,7 @@ impl FlowNode for Node {
                         crate::run_cargo_build::BuildProfile::UnderhillShip
                     }
                 },
-                features: CargoFeatureSet::Specific(
-                    features
-                        .iter()
-                        .map(|f| {
-                            match f {
-                                OpenvmmHclFeature::Gdb => "gdb",
-                                OpenvmmHclFeature::Tpm => "tpm",
-                                OpenvmmHclFeature::LocalOnlyCustom(s) => s,
-                            }
-                            .into()
-                        })
-                        .collect(),
-                ),
+                features: CargoFeatureSet::Specific(features),
                 target,
                 no_split_dbg_info,
                 extra_env: None,
