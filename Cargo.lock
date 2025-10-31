@@ -1413,7 +1413,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.16",
  "vm_resource",
- "winapi",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -2751,7 +2751,7 @@ dependencies = [
  "inspect",
  "mesh_protobuf",
  "thiserror 2.0.16",
- "winapi",
+ "win_etw_provider",
  "windows 0.62.0",
  "windows-sys 0.61.0",
  "zerocopy 0.8.25",
@@ -5013,7 +5013,9 @@ dependencies = [
  "sidecar_defs",
  "string_page_buf",
  "tdcall",
+ "test_with_tracing",
  "thiserror 2.0.16",
+ "tracing",
  "underhill_confidentiality",
  "x86defs",
  "zerocopy 0.8.25",
@@ -9810,8 +9812,10 @@ name = "whp"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "guid",
  "pal",
  "winapi",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
