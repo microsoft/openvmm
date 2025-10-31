@@ -156,7 +156,10 @@ export function LogViewer(): React.JSX.Element {
     }, [pendingScrollIndex]);
 
     // When search filter changes and a row is selected, scroll to that row in
-    // the filtered results. Don't do anything when only the selected row changes.
+    // the filtered results. Don't do anything when only the selected row
+    // changes.
+    // Whenever search filter changes, so does the set of filtered rows, so
+    // don't to include filtered rows in the dependency array.
     useEffect(() => {
         if (!selectedRow) return;
         const targetIndex = parseInt(selectedRow.replace('log-', ''), 10);
@@ -165,7 +168,7 @@ export function LogViewer(): React.JSX.Element {
         if (displayIdx >= 0) {
             setPendingScrollIndex(displayIdx);
         }
-    }, [searchFilter, filteredLogs]);
+    }, [searchFilter]);
 
     return (
         <div className="common-page-display">
