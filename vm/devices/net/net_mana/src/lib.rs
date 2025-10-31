@@ -1331,8 +1331,8 @@ impl<T: DeviceBacking> ManaQueue<T> {
                         // the header and should not exceed 256 bytes. Otherwise, it treats
                         // the WQE as "corrupt", disables the queue and return GDMA error.
                         // To meet the hardware requirements, do not coalesce SGE0 when LSO is enabled.
-                        let coalesce_sge_possible =
-                            !meta.flags.offload_tcp_segmentation() || tail_idx > header_segment_count;
+                        let coalesce_sge_possible = !meta.flags.offload_tcp_segmentation()
+                            || tail_idx > header_segment_count;
                         if !last_segment_bounced
                             && coalesce_sge_possible
                             && coalesce_possible
@@ -1403,11 +1403,6 @@ impl<T: DeviceBacking> ManaQueue<T> {
             let check_lso_segment_count = !self.test_configuration.allow_lso_pkt_with_one_sge;
 
             if check_lso_segment_count && meta.flags.offload_tcp_segmentation() && sgl.len() == 1 {
-                tracelimit::error_ratelimited!(
-                    sgl_len = sgl.len(),
-                    "LSO packets should have more than one SGL entry"
-                );
-
                 return Ok(None);
             }
 
