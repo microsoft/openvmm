@@ -10,6 +10,13 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+// musl's memcpy implementation is slow on x86_64, so we use memcpy crate to
+// provide an optimized implementation.
+//
+// xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "x86_64")]
+use fast_memcpy as _;
+
 // OpenVMM-HCL only needs libcrypto from openssl, not libssl.
 #[cfg(target_os = "linux")]
 openssl_crypto_only::openssl_crypto_only!();
