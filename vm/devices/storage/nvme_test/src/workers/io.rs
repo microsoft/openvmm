@@ -3,9 +3,11 @@
 
 //! I/O queue handler.
 
+use crate::command_match::match_command_pattern;
 use crate::error::CommandResult;
 use crate::error::NvmeError;
 use crate::namespace::Namespace;
+use crate::prp::PrpRange;
 use crate::queue::CompletionQueue;
 use crate::queue::DoorbellMemory;
 use crate::queue::QueueError;
@@ -17,7 +19,9 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use nvme_resources::fault;
+use nvme_resources::fault::CommandMatch;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::IoQueueFaultBehavior;
 use nvme_resources::fault::IoQueueFaultConfig;
 use nvme_spec::Command;
 use parking_lot::RwLock;
@@ -265,11 +269,47 @@ impl IoHandler {
                 status: spec::CompletionStatus::new().with_status(result.status.0),
             };
 
+            // Apply a completion queue fault only to synchronously processed admin commands
+            // (Ignore namespace change and sq delete complete events for now).
+            if state.fault_configuration.fault_active.get()
+                && let Some(fault) = Self::get_configured_fault_behavior(
+                    &state.fault_configuration.io_completion_queue_faults,
+                    &command,
+                )
+            {
+                match fault {
+                    IoQueueFaultBehavior::CustomPayload(payload) => {
+                        tracing::info!(
+                            "configured fault: admin completion custom payload write. completion: {:?}, payload size: {}",
+                            &completion,
+                            payload.len()
+                        );
+
+                        // Panic to avoid silent test failures.
+                        PrpRange::parse(&self.mem, payload.len(), command.dptr)
+                        .expect("configured fault failure: failed to parse PRP for custom payload write.")
+                        .write(&self.mem, &payload)
+                        .expect("configured fault failure: failed to write custom payload");
+                    }
+                }
+            }
+
             if !state.cq.write(completion)? {
                 assert!(deleting);
                 tracelimit::warn_ratelimited!("dropped i/o completion during queue deletion");
             }
         }
         Ok(())
+    }
+
+    /// Returns a mutable reference to the fault behavior for a given command if a fault is configured.
+    fn get_configured_fault_behavior(
+        fault_configs: &[(CommandMatch, IoQueueFaultBehavior)],
+        command: &Command,
+    ) -> Option<IoQueueFaultBehavior> {
+        fault_configs
+            .iter()
+            .find(|(pattern, _)| match_command_pattern(pattern, command))
+            .map(|(_, behavior)| behavior.clone())
     }
 }

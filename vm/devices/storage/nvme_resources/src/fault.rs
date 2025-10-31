@@ -3,6 +3,7 @@
 
 //! Provides an interface to programmatically and deterministically inject faults in the NVMe fault controller.
 
+use crate::fault;
 use mesh::Cell;
 use mesh::MeshPayload;
 use mesh::OneshotSender;
@@ -278,13 +279,15 @@ pub struct AdminQueueFaultConfig {
 pub struct IoQueueFaultConfig {
     /// A map of NVME opcodes to the completion fault behavior for each.
     pub io_completion_queue_faults: Vec<(CommandMatch, IoQueueFaultBehavior)>,
+    pub fault_active: Cell<bool>,
 }
 
 impl IoQueueFaultConfig {
     /// Create an empty IO queue fault configuration
-    pub fn new() -> Self {
+    pub fn new(fault_active: Cell<bool>) -> Self {
         Self {
             io_completion_queue_faults: vec![],
+            fault_active,
         }
     }
 }
@@ -405,11 +408,11 @@ impl FaultConfiguration {
         // For now, use a dummy mesh channel for namespace fault to avoid
         // test setup complexity & special cases in the AdminHandler run loop.
         Self {
-            fault_active,
+            fault_active: fault_active.clone(),
             admin_fault: AdminQueueFaultConfig::new(),
             pci_fault: PciFaultConfig::new(),
             namespace_fault: NamespaceFaultConfig::new(mesh::channel().1),
-            io_fault: Arc::new(IoQueueFaultConfig::new()),
+            io_fault: Arc::new(IoQueueFaultConfig::new(fault_active)),
         }
     }
 
