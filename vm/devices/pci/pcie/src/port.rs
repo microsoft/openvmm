@@ -43,13 +43,15 @@ impl PcieDownstreamPort {
         hardware_ids: HardwareIds,
         port_type: DevicePortType,
         multi_function: bool,
+        hotplug: bool,
     ) -> Self {
         let port_name = name.into();
         tracing::info!(
-            "PcieDownstreamPort: creating new PCIe port '{}' with type {:?}, multi_function={}",
+            "PcieDownstreamPort: creating new PCIe port '{}' with type {:?}, multi_function={}, hotplug={}",
             port_name,
             port_type,
-            multi_function
+            multi_function,
+            hotplug
         );
 
         let mut msi_set = MsiInterruptSet::new();
@@ -64,12 +66,15 @@ impl PcieDownstreamPort {
             hardware_ids.device_id
         );
 
+        let pci_express_capability = if hotplug {
+            PciExpressCapability::new(port_type, None).with_hotplug_support()
+        } else {
+            PciExpressCapability::new(port_type, None)
+        };
+
         let cfg_space = ConfigSpaceType1Emulator::new(
             hardware_ids,
-            vec![
-                Box::new(PciExpressCapability::new(port_type, None)),
-                Box::new(msi_capability),
-            ],
+            vec![Box::new(pci_express_capability), Box::new(msi_capability)],
         )
         .with_multi_function_bit(multi_function);
 

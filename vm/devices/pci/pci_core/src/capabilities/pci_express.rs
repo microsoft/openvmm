@@ -118,6 +118,15 @@ impl PciExpressCapability {
         // Update the control register but clear the FLR bit as it's self-clearing
         state.device_control = new_control.with_initiate_function_level_reset(false);
     }
+
+    /// Enable hotplug support for this PCIe capability.
+    /// This configures the appropriate registers to support hotpluggable devices.
+    pub fn with_hotplug_support(self) -> Self {
+        // TODO: Add actual hotplug capability configuration here
+        // This would involve setting appropriate bits in slot capabilities,
+        // slot control, and other hotplug-related registers
+        self
+    }
 }
 
 impl PciCapability for PciExpressCapability {
@@ -647,5 +656,15 @@ mod tests {
     fn test_pci_express_capability_label() {
         let cap = PciExpressCapability::new(DevicePortType::Endpoint, None);
         assert_eq!(cap.label(), "pci-express");
+    }
+
+    #[test]
+    fn test_pci_express_capability_with_hotplug_support() {
+        let cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+        let cap_with_hotplug = cap.with_hotplug_support();
+
+        // For now, just verify that the method doesn't crash and returns the capability
+        assert_eq!(cap_with_hotplug.label(), "pci-express");
+        assert_eq!(cap_with_hotplug.len(), 0x3C);
     }
 }

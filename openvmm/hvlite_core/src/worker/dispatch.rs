@@ -1830,6 +1830,7 @@ impl InitializedVm {
                         let definition = pcie::switch::GenericPcieSwitchDefinition {
                             name: switch.name.clone().into(),
                             downstream_port_count: switch.num_downstream_ports,
+                            hotplug: switch.hotplug,
                         };
                         GenericPcieSwitch::new(definition)
                     })?;

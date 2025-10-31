@@ -499,6 +499,7 @@ impl RootPort {
             name_str.to_string(),
             hardware_ids,
             DevicePortType::RootPort,
+            false,
             hotplug,
         );
 
