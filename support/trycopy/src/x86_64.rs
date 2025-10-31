@@ -396,7 +396,7 @@ macro_rules! try_cmpxchg {
     };
 }
 
-try_cmpxchg!(pub(crate) try_cmpxchg8, u8, "al", reg_byte, "cmpxchg byte ptr [{dest}], {desired}");
-try_cmpxchg!(pub(crate) try_cmpxchg16, u16, "ax", reg, "cmpxchg word ptr [{dest}], {desired:x}");
-try_cmpxchg!(pub(crate) try_cmpxchg32, u32, "eax", reg, "cmpxchg dword ptr [{dest}], {desired:e}");
-try_cmpxchg!(pub(crate) try_cmpxchg64, u64, "rax", reg, "cmpxchg qword ptr [{dest}], {desired:r}");
+try_cmpxchg!(pub(crate) try_cmpxchg8, u8, "al", reg_byte, "lock cmpxchg byte ptr [{dest}], {desired}");
+try_cmpxchg!(pub(crate) try_cmpxchg16, u16, "ax", reg, "lock cmpxchg word ptr [{dest}], {desired:x}");
+try_cmpxchg!(pub(crate) try_cmpxchg32, u32, "eax", reg, "lock cmpxchg dword ptr [{dest}], {desired:e}");
+try_cmpxchg!(pub(crate) try_cmpxchg64, u64, "rax", reg, "lock cmpxchg qword ptr [{dest}], {desired:r}");
