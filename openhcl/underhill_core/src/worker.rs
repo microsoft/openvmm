@@ -777,6 +777,7 @@ impl UhVmNetworkSettings {
                 AllocationVisibility::Private
             },
             persistent_allocations: false,
+            force_locked: true,
         })?;
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
@@ -1706,6 +1707,7 @@ async fn new_underhill_vm(
                     AllocationVisibility::Private
                 },
                 persistent_allocations: false,
+                force_locked: false,
             })
             .context("get dma client")?,
     );
@@ -1883,12 +1885,14 @@ async fn new_underhill_vm(
                 lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                 allocation_visibility: AllocationVisibility::Shared,
                 persistent_allocations: false,
+                force_locked: false,
             })?,
             private_dma_client: dma_manager.new_client(DmaClientParameters {
                 device_name: "partition-private".into(),
                 lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                 allocation_visibility: AllocationVisibility::Private,
                 persistent_allocations: false,
+                force_locked: false,
             })?,
         })
     } else {
@@ -2951,6 +2955,7 @@ async fn new_underhill_vm(
                             AllocationVisibility::Private
                         },
                         persistent_allocations: false,
+                        force_locked: false,
                     })?,
                     vpci_relay_mmio,
                     if use_mmio_hypercalls {
@@ -3189,6 +3194,7 @@ async fn new_underhill_vm(
                     lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
                     allocation_visibility: AllocationVisibility::Private,
                     persistent_allocations: false,
+                    force_locked: false,
                 })
                 .context("shutdown relay dma client")?,
             shutdown_guest,

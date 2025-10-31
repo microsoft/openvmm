@@ -151,6 +151,9 @@ pub struct DmaClientParameters {
     /// Whether allocations should be persistent. Persistent allocations can
     /// survive save/restore.
     pub persistent_allocations: bool,
+    /// Force the locked memory spawner to be used for allocations.
+    /// Only valid and enforced when `allocation_visibility` is `Private` and persistent_allocations is `false`.
+    pub force_locked: bool,
 }
 
 struct DmaManagerInner {
@@ -201,11 +204,13 @@ impl DmaManagerInner {
                 lower_vtl_policy,
                 allocation_visibility,
                 persistent_allocations,
+                force_locked,
             } = &params;
 
             struct ClientCreation<'a> {
                 allocation_visibility: AllocationVisibility,
                 persistent_allocations: bool,
+                force_locked: bool,
                 shared_spawner: Option<&'a PagePoolAllocatorSpawner>,
                 private_spawner: Option<&'a PagePoolAllocatorSpawner>,
             }
@@ -213,6 +218,7 @@ impl DmaManagerInner {
             let creation = ClientCreation {
                 allocation_visibility: *allocation_visibility,
                 persistent_allocations: *persistent_allocations,
+                force_locked: *force_locked,
                 shared_spawner: self.shared_spawner.as_ref(),
                 private_spawner: self.private_spawner.as_ref(),
             };
@@ -223,6 +229,7 @@ impl DmaManagerInner {
                     persistent_allocations: _,
                     shared_spawner: Some(shared),
                     private_spawner: _,
+                    force_locked: _,
                 } => {
                     // The shared pool is used by default if available, or if
                     // explicitly requested. All pages are accessible by all
@@ -239,6 +246,7 @@ impl DmaManagerInner {
                     persistent_allocations: _,
                     shared_spawner: None,
                     private_spawner: _,
+                    force_locked: _,
                 } => {
                     // No sources available that support shared visibility.
                     anyhow::bail!("no sources available for shared visibility")
@@ -248,6 +256,7 @@ impl DmaManagerInner {
                     persistent_allocations: true,
                     shared_spawner: _,
                     private_spawner: Some(private),
+                    force_locked: _,
                 } => match lower_vtl_policy {
                     LowerVtlPermissionPolicy::Any => {
                         // Only the private pool supports persistent
@@ -279,6 +288,7 @@ impl DmaManagerInner {
                     persistent_allocations: true,
                     shared_spawner: _,
                     private_spawner: None,
+                    force_locked: _,
                 } => {
                     // No sources available that support private persistence.
                     anyhow::bail!("no sources available for private persistent allocations")
@@ -288,6 +298,7 @@ impl DmaManagerInner {
                     persistent_allocations: false,
                     shared_spawner: _,
                     private_spawner,
+                    force_locked: false,
                 } => match lower_vtl_policy {
                     LowerVtlPermissionPolicy::Any => {
                         // No persistence needed means the `LockedMemorySpawner`
@@ -316,6 +327,21 @@ impl DmaManagerInner {
                         ))
                     }
                 },
+                ClientCreation {
+                    allocation_visibility: AllocationVisibility::Private,
+                    persistent_allocations: false,
+                    shared_spawner: _,
+                    private_spawner: _,
+                    force_locked: true,
+                } => DmaClientBacking::LockedMemoryLowerVtl(LowerVtlMemorySpawner::new(
+                    LockedMemorySpawner,
+                    self.lower_vtl
+                        .as_ref()
+                        .ok_or(anyhow::anyhow!(
+                            "lower vtl not available on hardware isolated platforms"
+                        ))?
+                        .clone(),
+                )),
             }
         };
 

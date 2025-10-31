@@ -92,6 +92,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
                     AllocationVisibility::Private
                 },
                 persistent_allocations: save_restore_supported,
+                force_locked: false,
             })
             .map_err(NvmeSpawnerError::DmaClient)?;
 
