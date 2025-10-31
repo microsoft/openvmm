@@ -19,7 +19,7 @@ use flowey_lib_common::git_merge_commit;
 
 flowey_request! {
     pub struct Request {
-        pub recipe: OpenhclIgvmRecipe,
+        pub target: CommonTriple,
         pub done: WriteVar<SideEffect>,
         pub pipeline_name: String,
         pub job_name: String,
@@ -44,7 +44,7 @@ impl SimpleFlowNode for Node {
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
-            recipe,
+            target,
             done,
             pipeline_name,
             job_name,
@@ -70,8 +70,12 @@ impl SimpleFlowNode for Node {
         });
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
-        let recipe = recipe.recipe_details(true);
-        let target = recipe.target;
+        let recipe = match target.common_arch().unwrap() {
+            CommonArch::X86_64 => OpenhclIgvmRecipe::X64,
+            CommonArch::Aarch64 => OpenhclIgvmRecipe::Aarch64,
+        }
+        .recipe_details(true);
+
         let built_openvmm_hcl = ctx.reqv(|v| build_openvmm_hcl::Request {
             build_params: OpenvmmHclBuildParams {
                 target: target.clone(),

@@ -723,9 +723,9 @@ impl IntoPipeline for CheckinGatesCli {
                     .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
                     .dep_on(
                         |ctx| flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::Request {
-                            recipe: match arch {
-                                CommonArch::X86_64 => OpenhclIgvmRecipe::X64,
-                                CommonArch::Aarch64 => OpenhclIgvmRecipe::Aarch64,
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxMusl,
                             },
                             done: ctx.new_done_handle(),
                             pipeline_name: "openvmm-ci.yaml".into(),

@@ -8,13 +8,13 @@ use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl;
 use crate::build_openvmm_hcl::OpenvmmHclBuildParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
+use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 
 flowey_request! {
     pub struct Request {
-        pub recipe: OpenhclIgvmRecipe,
-        pub custom_target: Option<CommonTriple>,
+        pub target: CommonTriple,
         pub artifact_dir: ReadVar<PathBuf>,
         pub done: WriteVar<SideEffect>,
     }
@@ -32,14 +32,17 @@ impl SimpleFlowNode for Node {
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
-            recipe,
-            custom_target,
+            target,
             done,
             artifact_dir,
         } = request;
 
-        let recipe = recipe.recipe_details(true);
-        let target = custom_target.unwrap_or(recipe.target);
+        let recipe = match target.common_arch().unwrap() {
+            CommonArch::X86_64 => OpenhclIgvmRecipe::X64,
+            CommonArch::Aarch64 => OpenhclIgvmRecipe::Aarch64,
+        }
+        .recipe_details(true);
+
         let baseline_hcl_build = ctx.reqv(|v| build_openvmm_hcl::Request {
             build_params: OpenvmmHclBuildParams {
                 target,
