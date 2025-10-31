@@ -111,7 +111,7 @@ unsafe fn try_copy_forward(dest: *mut u8, src: *const u8, length: usize) -> Resu
                 jne 2b
                 3:
                 ",
-                recovery_descriptor!("2b", "3f", "{bail}"),
+                recovery_descriptor!("2b", "3b", "{bail}"),
                 s1 = out(xmm_reg) _,
                 s2 = out(xmm_reg) _,
                 i = inout(reg) 0u64 => _,
