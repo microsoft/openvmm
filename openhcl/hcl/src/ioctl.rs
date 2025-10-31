@@ -394,6 +394,7 @@ mod ioctls {
     const MSHV_INVLPGB: u16 = 0x36;
     const MSHV_TLBSYNC: u16 = 0x37;
     const MSHV_KICKCPUS: u16 = 0x38;
+    const MSHV_MAP_REDIRECTED_DEVICE_INTERRUPT: u16 = 0x39;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -459,6 +460,15 @@ mod ioctls {
         pub r9: u64,
         pub r10_out: u64, // only supported as output
         pub r11_out: u64, // only supported as output
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    pub struct mshv_map_device_int {
+        pub vector: u32,
+        pub apic_id: u32,
+        pub create_mapping: u8,
+        pub padding: [u8; 7],
     }
 
     ioctl_none!(
@@ -615,6 +625,14 @@ mod ioctls {
         MSHV_IOCTL,
         MSHV_KICKCPUS,
         protocol::hcl_kick_cpus
+    );
+
+    ioctl_readwrite!(
+        /// Map or unmap VTL0 device interrupt in VTL2.
+        hcl_map_redirected_device_interrupt,
+        MSHV_IOCTL,
+        MSHV_MAP_REDIRECTED_DEVICE_INTERRUPT,
+        mshv_map_device_int
     );
 }
 
@@ -1603,6 +1621,7 @@ pub struct Hcl {
     isolation: IsolationType,
     snp_register_bitmap: [u8; 64],
     sidecar: Option<SidecarClient>,
+    proxy_interrupt_redirect: bool,
 }
 
 /// The isolation type for a partition.
@@ -1635,6 +1654,11 @@ impl Hcl {
     /// Returns true if DR6 is a shared register on this processor.
     pub fn dr6_shared(&self) -> bool {
         self.dr6_shared
+    }
+
+    /// Returns true if proxy interrupt redirection is supported.
+    pub fn proxy_interrupt_redirect(&self) -> bool {
+        self.proxy_interrupt_redirect
     }
 }
 
@@ -2347,6 +2371,7 @@ impl Hcl {
             isolation,
             snp_register_bitmap,
             sidecar,
+            proxy_interrupt_redirect: false,
         })
     }
 
@@ -2358,6 +2383,11 @@ impl Hcl {
     /// Initializes SNP register tweak bitmap
     pub fn set_snp_register_bitmap(&mut self, register_bitmap: [u8; 64]) {
         self.snp_register_bitmap = register_bitmap;
+    }
+
+    /// Set proxy interrupt redirection capability.
+    pub fn set_proxy_interrupt_redirect(&mut self, enable: bool) {
+        self.proxy_interrupt_redirect = enable;
     }
 
     /// Adds `vp_count` VPs.
@@ -2935,7 +2965,8 @@ impl Hcl {
             IsolationType::Tdx => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available())
-                .with_dr6_shared(true),
+                .with_dr6_shared(true)
+                .with_proxy_interrupt_redirect_available(caps.proxy_interrupt_redirect_available()),
         };
 
         assert_eq!(caps.dr6_shared(), self.dr6_shared());
@@ -3226,6 +3257,7 @@ impl Hcl {
         vector: u32,
         multicast: bool,
         target_processors: ProcessorSet<'_>,
+        proxy_redirect: bool,
     ) -> Result<(), HvError> {
         let header = hvdef::hypercall::RetargetDeviceInterrupt {
             partition_id: HV_PARTITION_ID_SELF,
@@ -3236,7 +3268,8 @@ impl Hcl {
                 vector,
                 flags: hvdef::hypercall::HvInterruptTargetFlags::default()
                     .with_multicast(multicast)
-                    .with_processor_set(true),
+                    .with_processor_set(true)
+                    .with_proxy_redirect(proxy_redirect),
                 // Always use a generic processor set to simplify construction. This hypercall is
                 // invoked relatively infrequently, the overhead should be acceptable.
                 mask_or_format: hvdef::hypercall::HV_GENERIC_SET_SPARSE_4K,
@@ -3344,6 +3377,33 @@ impl Hcl {
         // SAFETY: ioctl has no prerequisites.
         unsafe {
             hcl_kickcpus(self.mshv_vtl.file.as_raw_fd(), &data).expect("should always succeed");
+        }
+    }
+
+    /// Map or unmap guest device interrupt vector in VTL2 kernel
+    pub fn map_redirected_device_interrupt(
+        &self,
+        vector: u32,
+        apic_id: u32,
+        create_mapping: bool,
+    ) -> Option<u32> {
+        let mut param = mshv_map_device_int {
+            vector,
+            apic_id,
+            create_mapping: create_mapping.into(),
+            padding: [0; 7],
+        };
+
+        // SAFETY: following the IOCTL definition.
+        // Note: We return None on IOCTL failure rather than panicking, allowing the caller
+        // to gracefully fallback to normal proxy interrupt delivery if the kernel doesn't
+        // support interrupt redirection or if the mapping fails.
+        let output = unsafe {
+            hcl_map_redirected_device_interrupt(self.mshv_vtl.file.as_raw_fd(), &mut param)
+        };
+        match output {
+            Ok(_) => Some(param.vector),
+            Err(_) => None,
         }
     }
 }
