@@ -461,6 +461,7 @@ struct QueueStats {
     tx_packets: Counter,
     tx_lso_packets: Counter,
     tx_checksum_packets: Counter,
+    tx_invalid_lso_packets: Counter,
     tx_packets_per_wake: Histogram<10>,
     rx_packets_per_wake: Histogram<10>,
 }
@@ -2463,11 +2464,8 @@ impl<T: RingMem> NetChannel<T> {
                         metadata.max_tcp_segment_size = n.mss() as u16;
 
                         if request.data_length >= rndisprot::LSO_MAX_OFFLOAD_SIZE {
-                            // Not strictly enforced. Logging a warning in case packet is rejected.
-                            tracelimit::warn_ratelimited!(
-                                size = request.data_length,
-                                "LSO packet exceeds maximum supported offload size",
-                            );
+                            // Not strictly enforced.
+                            stats.tx_invalid_lso_packets.increment();
                         }
                     }
                     _ => {}
