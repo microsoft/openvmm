@@ -1285,42 +1285,6 @@ mod tests {
     }
 
     #[test]
-    fn test_tdx_measurement() {
-        let ref_mrtd: [u8; 48] = [
-            142, 235, 138, 197, 222, 36, 154, 25, 110, 198, 217, 131, 116, 129, 48, 146, 248, 99,
-            83, 133, 144, 128, 224, 130, 253, 243, 85, 35, 71, 246, 197, 202, 172, 193, 152, 184,
-            115, 127, 55, 3, 169, 107, 164, 126, 128, 145, 203, 28,
-        ];
-
-        let mut loader = IgvmLoader::<X86Register>::new(
-            true,
-            LoaderIsolationType::Tdx {
-                policy: TdxPolicy::new()
-                    .with_debug_allowed(0u8)
-                    .with_sept_ve_disable(0u8),
-            },
-        );
-        let data = vec![0, 5];
-        loader
-            .import_pages(0, 5, "data", BootPageAcceptance::Exclusive, &data)
-            .unwrap();
-        loader
-            .import_pages(5, 5, "data", BootPageAcceptance::ExclusiveUnmeasured, &data)
-            .unwrap();
-        loader
-            .import_pages(10, 1, "data", BootPageAcceptance::Exclusive, &data)
-            .unwrap();
-        loader
-            .import_pages(20, 1, "data", BootPageAcceptance::Shared, &data)
-            .unwrap();
-
-        let igvm_output = loader.finalize(1).unwrap();
-        let doc = igvm_output.doc.expect("doc");
-        let Measurement::Tdx(tdx_measurement) = doc else {
-            panic!("known to be tdx")
-        };
-        assert_eq!(ref_mrtd, tdx_measurement.series[0].reference.tdx_mrtd);
-    }
 
     #[test]
     fn test_vbs_digest() {

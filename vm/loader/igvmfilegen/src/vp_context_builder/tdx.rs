@@ -216,6 +216,50 @@ impl VpContextBuilder for TdxHardwareContext {
         // mov cr3, rax
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x0F, 0x22, 0xD8]);
 
+        //HACK: skip the stall on the BSP
+        // test esi, esi
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x85, 0xF6]);
+
+        // jz skip_stall_for_bsp
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
+        byte_offset += 1;
+        let skip_stall_for_bsp = byte_offset;
+
+        //BEGIN HACK: Spin until we get a message from the boot shim to continue
+        //The message is sent via padding_1
+        let debug_spinloop = byte_offset;
+        // mov eax, [padding_1]
+        // 401025:       8b 05 d5 0f 00 00       mov    eax,DWORD PTR [rip+0xfd5]        # 402000 <memory_location>
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x8B, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+
+        // test eax, eax
+        //401023:       85 c0                   test   eax,eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x85, 0xC0]);
+
+        // jz debug_spinloop
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
+        byte_offset += 1;
+        reset_page[byte_offset.wrapping_sub(1)] = (debug_spinloop.wrapping_sub(byte_offset)) as u8;
+
+        // xor eax, eax
+        //40102b:       31 c0                   xor    eax,eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xC0]);
+
+        // mov [padding_1], eax
+        //401000:       89 05 fa 0f 00 00       mov    DWORD PTR [rip+0xffa],eax        # 402000 <memory_location>
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x89, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+        //END HACK
+
+        // skip_stall_for_bsp:
+        reset_page[skip_stall_for_bsp.wrapping_sub(1)] =
+            (byte_offset.wrapping_sub(skip_stall_for_bsp)) as u8;
+
         // Load descriptor tables and selectors, except CS which will be loaded in
         // the final jump.  If no GDT is specified, then skip loading all
         // selectors.
@@ -314,15 +358,17 @@ impl VpContextBuilder for TdxHardwareContext {
         // test esi, esi
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x85, 0xF6]);
 
-        // Skip the mailbox spinloop if we are on the BSP
+        // Skip the mailbox tdcall if we are on the BSP
 
-        // jz skip_mailbox_for_bsp
+        // jz skip_tdcall_for_bsp
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
         byte_offset += 1;
-        let skip_mailbox_for_bsp = byte_offset;
+        let skip_tdcall_for_bsp = byte_offset;
 
         // Read the APIC_ID of this AP with a TDG.VP.VMCALL hypercall
 
+        //TODO this should be xor rax, rax
+        //leaving this for the test
         // xor eax, eax
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xC0]);
 
@@ -353,46 +399,58 @@ impl VpContextBuilder for TdxHardwareContext {
         // tdcall
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x66, 0x0F, 0x01, 0xCC]);
 
-        // Spin until the kernel requests this AP to continue in the mailbox
+        //BEGIN HACK: send a 32-bit message to the boot shim by writing EAX to padding_3
+        //send the apic_id in padding_3
+        //40102d:       44 89 d8                mov    eax,r11d
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x44, 0x89, 0xD8]);
 
-        let mailbox_spinloop = byte_offset;
-        // mov eax, [mailbox_apic_id]
+        //mov [padding_3], eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x89, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, padding_3) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+        //END HACK
+
+        //HACK: move the tdcall result into unused register r15d, s.t. it can be used at mailbox
+        //spinloop at end of RV
+        //401024:       45 89 df                mov    %r11d,%r15d
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x45, 0x89, 0xDF]);
+        //END HACK
+
+        //BEGIN HACK: Spin until we get a message from the boot shim to continue
+        //The message is sent via padding_1
+        let debug_spinloop = byte_offset;
+        // mov eax, [padding_1]
+        // 401025:       8b 05 d5 0f 00 00       mov    eax,DWORD PTR [rip+0xfd5]        # 402000 <memory_location>
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x8B, 0x05]);
-        relative_offset = (offset_of!(TdxTrampolineContext, mailbox_apic_id) as u32)
+        relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
             .wrapping_sub((byte_offset + 4) as u32);
         byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
 
-        //cmp r11d, eax
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x41, 0x39, 0xC3]);
+        // test eax, eax
+        //401023:       85 c0                   test   eax,eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x85, 0xC0]);
 
-        // jne mailbox_spinloop
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x75]);
+        // jz debug_spinloop
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
         byte_offset += 1;
-        reset_page[byte_offset.wrapping_sub(1)] =
-            (mailbox_spinloop.wrapping_sub(byte_offset)) as u8;
+        reset_page[byte_offset.wrapping_sub(1)] = (debug_spinloop.wrapping_sub(byte_offset)) as u8;
 
-        // xor ebx, ebx
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xDB]);
+        // xor eax, eax
+        //40102b:       31 c0                   xor    eax,eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xC0]);
 
-        // mov ebx, [mailbox_command]
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x8B, 0x1D]);
-        relative_offset = (offset_of!(TdxTrampolineContext, mailbox_command) as u32)
+        // mov [padding_1], eax
+        //401000:       89 05 fa 0f 00 00       mov    DWORD PTR [rip+0xffa],eax        # 402000 <memory_location>
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x89, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
             .wrapping_sub((byte_offset + 4) as u32);
         byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+        //END HACK
 
-        // mov dx, 01h
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0xBA, 0x01, 0x00]);
-
-        // cmp ebx, edx
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x39, 0xD3]);
-
-        // jne mailbox_spinloop
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x75]);
-        byte_offset += 1;
-
-        // skip_mailbox_for_bsp:
-        reset_page[skip_mailbox_for_bsp.wrapping_sub(1)] =
-            (byte_offset.wrapping_sub(skip_mailbox_for_bsp)) as u8;
+        // skip_tdcall_for_bsp:
+        reset_page[skip_tdcall_for_bsp.wrapping_sub(1)] =
+            (byte_offset.wrapping_sub(skip_tdcall_for_bsp)) as u8;
 
         // Execute TDG.MEM.PAGE.ACCEPT to accept the low 1 MB of the address
         // space.  This is only required if the start context is in VTL 0, and
@@ -474,6 +532,76 @@ impl VpContextBuilder for TdxHardwareContext {
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
         byte_offset += 1;
         let l7_offset = byte_offset;
+        //BEGIN HACK: Spin until we get a message from the boot shim to continue
+        //The message is sent via padding_1
+        let debug_spinloop = byte_offset;
+        // mov eax, [padding_1]
+        // 401025:       8b 05 d5 0f 00 00       mov    eax,DWORD PTR [rip+0xfd5]        # 402000 <memory_location>
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x8B, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+
+        // test eax, eax
+        //401023:       85 c0                   test   eax,eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x85, 0xC0]);
+
+        // jz debug_spinloop
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
+        byte_offset += 1;
+        reset_page[byte_offset.wrapping_sub(1)] = (debug_spinloop.wrapping_sub(byte_offset)) as u8;
+
+        // xor eax, eax
+        //40102b:       31 c0                   xor    eax,eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xC0]);
+
+        // mov [padding_1], eax
+        //401000:       89 05 fa 0f 00 00       mov    DWORD PTR [rip+0xffa],eax        # 402000 <memory_location>
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x89, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+        //END HACK
+
+        //HACK: Moved mailbox spinloop here. More appropriate?
+        //Spin until the kernel requests this AP to continue in the mailbox
+        let mailbox_spinloop = byte_offset;
+        // mov eax, [mailbox_apic_id]
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x8B, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, mailbox_apic_id) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+
+        //TODO changed this, using r15d instead
+        //40100b:       41 39 c7                cmp    %eax,%r15d
+        //cmp r15d, eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x41, 0x39, 0xC7]);
+
+        // jne mailbox_spinloop
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x75]);
+        byte_offset += 1;
+        reset_page[byte_offset.wrapping_sub(1)] =
+            (mailbox_spinloop.wrapping_sub(byte_offset)) as u8;
+
+        // xor ebx, ebx
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xDB]);
+
+        // mov ebx, [mailbox_command]
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x8B, 0x1D]);
+        relative_offset = (offset_of!(TdxTrampolineContext, mailbox_command) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+
+        // mov dx, 01h
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0xBA, 0x01, 0x00]);
+
+        // cmp ebx, edx
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x39, 0xD3]);
+
+        // jne mailbox_spinloop
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x75]);
+        byte_offset += 1;
+        //END HACK
 
         // xor rax, rax
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x48, 0x31, 0xC0]);

@@ -7,6 +7,7 @@ use crate::arch::x86_64::address_space::TdxHypercallPage;
 use crate::arch::x86_64::address_space::tdx_unshare_large_page;
 use crate::host_params::PartitionInfo;
 use crate::hvcall;
+use crate::log;
 use crate::single_threaded::SingleThreaded;
 use core::arch::asm;
 use core::cell::Cell;
@@ -194,6 +195,35 @@ pub fn tdx_prepare_ap_trampoline() {
     tdxcontext.cr4 |= x86defs::X64_CR4_PAE | x86defs::X64_CR4_MCE;
 }
 
+macro_rules! wait_for_rv {
+    ($rv: expr) => {
+        while $rv.padding_1 == 1 {
+            core::hint::black_box($rv.padding_1);
+        }
+    };
+}
+
+macro_rules! continue_rv {
+    ($rv: expr) => {
+        $rv.padding_1 = 1;
+        //confirm that the RV recieved its continue message
+        wait_for_rv!($rv);
+    };
+}
+
+macro_rules! log_message {
+    ($rv: expr, $msg: expr) => {
+        log!($msg, $rv.padding_3);
+    };
+}
+
+macro_rules! read_log_and_continue {
+    ($rv: expr, $msg: expr) => {
+        log_message!($rv, $msg);
+        continue_rv!($rv);
+    };
+}
+
 pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
     // Update the TDX Trampoline Context for AP Startup
     tdx_prepare_ap_trampoline();
@@ -206,8 +236,23 @@ pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
 
     // Start VPs on Tdx-isolated VMs by sending TDVMCALL-based hypercall HvCallStartVirtualProcessor
     for cpu in 1..partition_info.cpus.len() {
+        let context_ptr: *mut TdxTrampolineContext = RESET_VECTOR_PAGE as *mut TdxTrampolineContext;
+        // SAFETY: The TdxTrampolineContext is known to be stored at the architectural reset vector address
+        let tdxcontext: &mut TdxTrampolineContext = unsafe { context_ptr.as_mut().unwrap() };
+        //HACK: setting padding_1 to any value will resume RV execution, then the RV will reset the value to 0
+        //HACK: the RV will send responses to the shim using padding_3. It is up to the shim to clear this value
+        tdxcontext.padding_1 = 0;
+        tdxcontext.padding_3 = 0;
+
+        log!("ap_diag: starting VP {}", cpu as u32);
         hvcall()
             .tdx_start_vp(cpu as u32)
             .expect("start vp should not fail");
+
+        log!("RV reached 64-bit mode, continuing");
+        continue_rv!(tdxcontext);
+        read_log_and_continue!(tdxcontext, "APIC_ID read in RV: {:#X}");
+        log!("reached the mailbox_spinloop, continuing");
+        continue_rv!(tdxcontext);
     }
 }
