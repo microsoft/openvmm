@@ -10,9 +10,9 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::CellUpdater;
 use nvme::NvmeControllerCaps;
+use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
-use nvme_resources::fault::QueueFaultBehavior;
 use nvme_spec::AdminOpcode;
 use nvme_spec::Cap;
 use nvme_spec::Command;
@@ -53,7 +53,7 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
                 CommandMatchBuilder::new()
                     .match_cdw0_opcode(AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
                     .build(),
-                QueueFaultBehavior::Update(output_cmd),
+                AdminQueueFaultBehavior::Update(output_cmd),
             ),
         ),
     )
