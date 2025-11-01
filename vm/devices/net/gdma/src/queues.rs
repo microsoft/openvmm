@@ -228,7 +228,7 @@ impl Wq {
 
         let total_len = header.total_len();
         if total_len > size_of::<Wqe>() || total_len > self.available() as usize {
-            tracing::warn!("invalid wqe");
+            tracing::warn!(total_len, available = self.available(), "invalid wqe");
             return Poll::Pending;
         }
 
