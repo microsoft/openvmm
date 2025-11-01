@@ -129,8 +129,10 @@ impl GenericPcieRootComplex {
                     "GenericPcieRootComplex: creating port {} at device number {:#x} with name '{}'",
                     i, device_number, definition.name
                 );
-                let emulator = RootPort::new(definition.name.clone(), definition.hotplug);
-                (device_number, (definition.name, emulator))
+                // Use the device number as the slot number for hotpluggable ports
+                let slot_number = if definition.hotplug { Some((device_number as u32) + 1) } else { None };
+                let root_port = RootPort::new(definition.name.clone(), definition.hotplug, slot_number);
+                (device_number, (definition.name, root_port))
             })
             .collect();
 
@@ -474,7 +476,7 @@ struct RootPort {
 
 impl RootPort {
     /// Constructs a new [`RootPort`] emulator.
-    pub fn new(name: impl Into<Arc<str>>, hotplug: bool) -> Self {
+    pub fn new(name: impl Into<Arc<str>>, hotplug: bool, slot_number: Option<u32>) -> Self {
         let name_str = name.into();
         tracing::info!("RootPort: creating new root port '{}'", name_str);
 
@@ -501,6 +503,7 @@ impl RootPort {
             DevicePortType::RootPort,
             false,
             hotplug,
+            slot_number,
         );
 
         tracing::info!("RootPort: '{}' created successfully", name_str);
@@ -867,7 +870,7 @@ mod tests {
 
     #[test]
     fn test_root_port_invalid_bus_range_handling() {
-        let mut root_port = RootPort::new("test-port", false);
+        let mut root_port = RootPort::new("test-port", false, None);
 
         // Don't configure bus numbers, so the range should be 0..=0 (invalid)
         let bus_range = root_port.port.cfg_space.assigned_bus_range();

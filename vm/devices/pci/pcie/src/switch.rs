@@ -92,10 +92,12 @@ impl DownstreamSwitchPort {
     /// * `name` - The name for this downstream switch port
     /// * `multi_function` - Whether this port should have the multi-function flag set (default: false)
     /// * `hotplug` - Whether this port should support hotplug (default: false)
+    /// * `slot_number` - The slot number for hotpluggable ports (only used if hotplug is true)
     pub fn new(
         name: impl Into<Arc<str>>,
         multi_function: Option<bool>,
         hotplug: Option<bool>,
+        slot_number: Option<u32>,
     ) -> Self {
         let multi_function = multi_function.unwrap_or(false);
         let hotplug = hotplug.unwrap_or(false);
@@ -116,6 +118,7 @@ impl DownstreamSwitchPort {
             DevicePortType::DownstreamSwitchPort,
             multi_function,
             hotplug,
+            slot_number,
         );
 
         Self { port }
@@ -173,10 +176,13 @@ impl GenericPcieSwitch {
         let downstream_ports = (0..definition.downstream_port_count)
             .map(|i| {
                 let port_name = format!("{}-downstream-{}", definition.name, i);
+                // Use the port index as the slot number for hotpluggable ports
+                let slot_number = if definition.hotplug { Some((i as u32) + 1) } else { None };
                 let port = DownstreamSwitchPort::new(
                     port_name.clone(),
                     Some(multi_function),
                     Some(definition.hotplug),
+                    slot_number,
                 );
                 (i as u8, (port_name.into(), port))
             })
@@ -479,7 +485,7 @@ mod tests {
 
     #[test]
     fn test_downstream_switch_port_creation() {
-        let port = DownstreamSwitchPort::new("test-downstream-port", None, None);
+        let port = DownstreamSwitchPort::new("test-downstream-port", None, None, None);
         assert!(port.port.link.is_none());
 
         // Verify that we can read the vendor/device ID from config space
@@ -495,7 +501,7 @@ mod tests {
     #[test]
     fn test_downstream_switch_port_multi_function_options() {
         // Test with default multi_function (false)
-        let port_default = DownstreamSwitchPort::new("test-port-default", None, None);
+        let port_default = DownstreamSwitchPort::new("test-port-default", None, None, None);
         let mut header_type_value: u32 = 0;
         port_default
             .cfg_space()
@@ -509,7 +515,7 @@ mod tests {
         );
 
         // Test with explicit multi_function false
-        let port_false = DownstreamSwitchPort::new("test-port-false", Some(false), None);
+        let port_false = DownstreamSwitchPort::new("test-port-false", Some(false), None, None);
         let mut header_type_value_false: u32 = 0;
         port_false
             .cfg_space()
@@ -523,7 +529,7 @@ mod tests {
         );
 
         // Test with explicit multi_function true
-        let port_true = DownstreamSwitchPort::new("test-port-true", Some(true), None);
+        let port_true = DownstreamSwitchPort::new("test-port-true", Some(true), None, None);
         let mut header_type_value_true: u32 = 0;
         port_true
             .cfg_space()
