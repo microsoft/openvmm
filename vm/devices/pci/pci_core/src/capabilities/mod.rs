@@ -33,4 +33,10 @@ pub trait PciCapability: Send + Sync + Inspect + ProtobufSaveRestore {
 
     /// Reset the capability
     fn reset(&mut self);
+
+    /// Get a reference to this capability as `Any` for downcasting
+    fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Get a mutable reference to this capability as `Any` for downcasting
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }

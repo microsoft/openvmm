@@ -177,7 +177,11 @@ impl GenericPcieSwitch {
             .map(|i| {
                 let port_name = format!("{}-downstream-{}", definition.name, i);
                 // Use the port index as the slot number for hotpluggable ports
-                let slot_number = if definition.hotplug { Some((i as u32) + 1) } else { None };
+                let slot_number = if definition.hotplug {
+                    Some((i as u32) + 1)
+                } else {
+                    None
+                };
                 let port = DownstreamSwitchPort::new(
                     port_name.clone(),
                     Some(multi_function),

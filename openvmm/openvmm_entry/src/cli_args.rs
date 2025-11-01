@@ -571,11 +571,15 @@ options:
 
     /// Attach a PCI Express root complex to the VM
     #[clap(long_help = r#"
-e.g: --pcie-root-complex rc0,segment=0,start_bus=0,end_bus=255,low_mmio=4M,high_mmio=1G
+Attach root complexes to the VM.
 
-syntax: <name>[,opt=arg,...]
+Examples:
+    # Attach root complex rc0 on segment 0 with bus and MMIO ranges
+    --pcie-root-complex rc0,segment=0,start_bus=0,end_bus=255,low_mmio=4M,high_mmio=1G
 
-options:
+Syntax: <name>[,opt=arg,...]
+
+Options:
     `segment=<value>`              configures the PCI Express segment, default 0
     `start_bus=<value>`            lowest valid bus number, default 0
     `end_bus=<value>`              highest valid bus number, default 255
@@ -587,10 +591,16 @@ options:
 
     /// Attach a PCI Express root port to the VM
     #[clap(long_help = r#"
-e.g: --pcie-root-port rc0:rc0rp0
-e.g: --pcie-root-port rc0:rc0rp0,hotplug
+Attach root ports to root complexes.
 
-syntax: <root_complex_name>:<name>[,hotplug]
+Examples:
+    # Attach root port rc0rp0 to root complex rc0
+    --pcie-root-port rc0:rc0rp0
+
+    # Attach root port rc0rp1 to root complex rc0 with hotplug support
+    --pcie-root-port rc0:rc0rp1,hotplug
+
+Syntax: <root_complex_name>:<name>[,hotplug]
 
 Options:
     `hotplug`                      enable hotplug support for this root port
@@ -600,13 +610,13 @@ Options:
 
     /// Attach a PCI Express switch to the VM
     #[clap(long_help = r#"
-Attach switches to root ports or other switches to create PCIe hierarchies.
+Attach switches to root ports or downstream switch ports to create PCIe hierarchies.
 
 Examples:
-    # Connect switch0 directly to root port rp0
+    # Connect switch0 (with 4 downstream switch ports) directly to root port rp0
     --pcie-switch rp0:switch0,num_downstream_ports=4
 
-    # Connect switch1 to downstream port 0 of switch0
+    # Connect switch1 (with 2 downstream switch ports) to downstream port 0 of switch0
     --pcie-switch switch0-downstream-0:switch1,num_downstream_ports=2
 
     # Create a 3-level hierarchy: rp0 -> switch0 -> switch1 -> switch2
@@ -614,14 +624,18 @@ Examples:
     --pcie-switch switch0-downstream-0:switch1
     --pcie-switch switch1-downstream-1:switch2
 
-syntax: <port_name>:<name>[,opt=arg,...]
+    # Enable hotplug on all downstream switch ports of switch0
+    --pcie-switch rp0:switch0,hotplug
 
-port_name can be:
-    - Root port name (e.g., "rp0") to connect directly to a root port
-    - Downstream port name (e.g., "switch0-downstream-1") to connect to another switch
+Syntax: <port_name>:<name>[,opt,opt=arg,...]
 
-options:
-    `num_downstream_ports=<value>`    number of downstream ports, default 4
+    port_name can be:
+        - Root port name (e.g., "rp0") to connect directly to a root port
+        - Downstream port name (e.g., "switch0-downstream-1") to connect to another switch
+
+Options:
+    `hotplug`                       enable hotplug support for all downstream switch ports
+    `num_downstream_ports=<value>`  number of downstream ports, default 4
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_switch: Vec<GenericPcieSwitchCli>,

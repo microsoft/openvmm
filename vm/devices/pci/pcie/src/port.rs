@@ -30,10 +30,6 @@ pub struct PcieDownstreamPort {
     /// The connected device, if any.
     #[inspect(skip)]
     pub link: Option<(Arc<str>, Box<dyn GenericPciBusDevice>)>,
-
-    /// MSI interrupt set for this port.
-    #[inspect(skip)]
-    pub msi_set: MsiInterruptSet,
 }
 
 impl PcieDownstreamPort {
@@ -57,7 +53,6 @@ impl PcieDownstreamPort {
         );
 
         let mut msi_set = MsiInterruptSet::new();
-
         // Create MSI capability with 1 message (multiple_message_capable=0), 64-bit addressing, no per-vector masking
         let msi_capability = MsiCapability::new(0, true, false, &mut msi_set);
 
@@ -87,20 +82,7 @@ impl PcieDownstreamPort {
             name: port_name,
             cfg_space,
             link: None,
-            msi_set,
         }
-    }
-
-    /// Gets a reference to the MSI interrupt set for this port.
-    /// This can be used to connect the port's MSI interrupts to an interrupt controller.
-    pub fn msi_set(&self) -> &MsiInterruptSet {
-        &self.msi_set
-    }
-
-    /// Gets a mutable reference to the MSI interrupt set for this port.
-    /// This can be used to connect the port's MSI interrupts to an interrupt controller.
-    pub fn msi_set_mut(&mut self) -> &mut MsiInterruptSet {
-        &mut self.msi_set
     }
 
     /// Forward a configuration space read to the connected device.
@@ -234,10 +216,139 @@ impl PcieDownstreamPort {
 
             // Connect the device to this port
             self.link = Some((device_name.into(), device));
+
+            // Set presence detect state to true when a device is connected
+            self.cfg_space.set_presence_detect_state(true);
+
             return Ok(());
         }
 
         // If the name doesn't match, fail immediately (no forwarding)
         bail!("port name does not match")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chipset_device::io::IoResult;
+    use pci_bus::GenericPciBusDevice;
+    use pci_core::spec::hwid::HardwareIds;
+
+    // Mock device for testing
+    struct MockDevice;
+
+    impl GenericPciBusDevice for MockDevice {
+        fn pci_cfg_read(&mut self, _offset: u16, _value: &mut u32) -> Option<IoResult> {
+            None
+        }
+
+        fn pci_cfg_write(&mut self, _offset: u16, _value: u32) -> Option<IoResult> {
+            None
+        }
+
+        fn pci_cfg_read_forward(
+            &mut self,
+            _bus: u8,
+            _device_function: u8,
+            _offset: u16,
+            _value: &mut u32,
+        ) -> Option<IoResult> {
+            None
+        }
+
+        fn pci_cfg_write_forward(
+            &mut self,
+            _bus: u8,
+            _device_function: u8,
+            _offset: u16,
+            _value: u32,
+        ) -> Option<IoResult> {
+            None
+        }
+    }
+
+    #[test]
+    fn test_add_pcie_device_sets_presence_detect_state() {
+        use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
+
+        // Create a port with hotplug support
+        let hardware_ids = HardwareIds {
+            vendor_id: 0x1234,
+            device_id: 0x5678,
+            revision_id: 0,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
+            base_class: ClassCode::BRIDGE,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        };
+
+        let mut port = PcieDownstreamPort::new(
+            "test-port",
+            hardware_ids,
+            DevicePortType::RootPort,
+            false,
+            true,    // Enable hotplug
+            Some(1), // Slot number 1
+        );
+
+        // Initially, presence detect state should be 0
+        let mut slot_status_val = 0u32;
+        let result = port.cfg_space.read_u32(0x58, &mut slot_status_val); // 0x40 (cap start) + 0x18 (slot control/status)
+        assert!(matches!(result, IoResult::Ok));
+        let initial_presence_detect = (slot_status_val >> 22) & 0x1; // presence_detect_state is bit 6 of slot status
+        assert_eq!(
+            initial_presence_detect, 0,
+            "Initial presence detect state should be 0"
+        );
+
+        // Add a device to the port
+        let mock_device = Box::new(MockDevice);
+        let result = port.add_pcie_device("test-port", "mock-device", mock_device);
+        assert!(result.is_ok(), "Adding device should succeed");
+
+        // Check that presence detect state is now 1
+        let result = port.cfg_space.read_u32(0x58, &mut slot_status_val);
+        assert!(matches!(result, IoResult::Ok));
+        let present_presence_detect = (slot_status_val >> 22) & 0x1;
+        assert_eq!(
+            present_presence_detect, 1,
+            "Presence detect state should be 1 after adding device"
+        );
+    }
+
+    #[test]
+    fn test_add_pcie_device_without_hotplug() {
+        use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
+
+        // Create a port without hotplug support
+        let hardware_ids = HardwareIds {
+            vendor_id: 0x1234,
+            device_id: 0x5678,
+            revision_id: 0,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
+            base_class: ClassCode::BRIDGE,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        };
+
+        let mut port = PcieDownstreamPort::new(
+            "test-port",
+            hardware_ids,
+            DevicePortType::RootPort,
+            false,
+            false, // No hotplug
+            None,
+        );
+
+        // Add a device to the port (should not panic even without hotplug support)
+        let mock_device = Box::new(MockDevice);
+        let result = port.add_pcie_device("test-port", "mock-device", mock_device);
+        assert!(
+            result.is_ok(),
+            "Adding device should succeed even without hotplug support"
+        );
     }
 }

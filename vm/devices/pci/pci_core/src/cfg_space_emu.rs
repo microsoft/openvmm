@@ -9,6 +9,7 @@
 use crate::PciInterruptPin;
 use crate::bar_mapping::BarMappings;
 use crate::capabilities::PciCapability;
+use crate::capabilities::pci_express::PciExpressCapability;
 use crate::spec::caps::CapabilityId;
 use crate::spec::cfg_space;
 use crate::spec::hwid::HardwareIds;
@@ -904,6 +905,28 @@ impl ConfigSpaceType0Emulator {
     pub fn is_pcie_device(&self) -> bool {
         self.common.is_pcie_device()
     }
+
+    /// Set the presence detect state for a hotplug-capable slot.
+    /// This method finds the PCIe Express capability and calls its set_presence_detect_state method.
+    /// If the PCIe Express capability is not found, the call is silently ignored.
+    ///
+    /// # Arguments
+    /// * `present` - true if a device is present in the slot, false if the slot is empty
+    pub fn set_presence_detect_state(&mut self, present: bool) {
+        use crate::capabilities::pci_express::PciExpressCapability;
+
+        for capability in &mut self.common.capabilities {
+            if let Some(pcie_cap) = capability
+                .as_any_mut()
+                .downcast_mut::<PciExpressCapability>()
+            {
+                pcie_cap.set_presence_detect_state(present);
+                return;
+            }
+        }
+
+        // PCIe Express capability not found - silently ignore
+    }
 }
 
 #[derive(Debug, Inspect)]
@@ -1159,6 +1182,26 @@ impl ConfigSpaceType1Emulator {
     /// Checks if this device is a PCIe device by looking for the PCI Express capability.
     pub fn is_pcie_device(&self) -> bool {
         self.common.is_pcie_device()
+    }
+
+    /// Set the presence detect state for the slot.
+    /// This method finds the PCIe Express capability and calls its set_presence_detect_state method.
+    /// If the PCIe Express capability is not found, the call is silently ignored.
+    ///
+    /// # Arguments
+    /// * `present` - true if a device is present in the slot, false if the slot is empty
+    pub fn set_presence_detect_state(&mut self, present: bool) {
+        // Find the PCIe Express capability
+        for cap in self.common.capabilities_mut() {
+            if cap.capability_id() == CapabilityId::PCI_EXPRESS {
+                // Downcast to PciExpressCapability and call set_presence_detect_state
+                if let Some(pcie_cap) = cap.as_any_mut().downcast_mut::<PciExpressCapability>() {
+                    pcie_cap.set_presence_detect_state(present);
+                    return;
+                }
+            }
+        }
+        // If no PCIe Express capability is found, silently ignore the call
     }
 }
 
@@ -2121,5 +2164,59 @@ mod tests {
         let result = common_emu_type1.read_u32(0x04, &mut test_val);
         assert_eq!(result, CommonHeaderResult::Handled);
         assert_eq!(test_val & 0x0003, 0x0003); // Should be restored
+    }
+
+    #[test]
+    fn test_config_space_type1_set_presence_detect_state() {
+        // Test that ConfigSpaceType1Emulator can set presence detect state
+        // when it has a PCIe Express capability with hotplug support
+
+        // Create a PCIe Express capability with hotplug support
+        let pcie_cap =
+            PciExpressCapability::new(DevicePortType::RootPort, None).with_hotplug_support(1);
+
+        let mut emulator = create_type1_emulator(vec![Box::new(pcie_cap)]);
+
+        // Initially, presence detect state should be 0
+        let mut slot_status_val = 0u32;
+        let result = emulator.read_u32(0x58, &mut slot_status_val); // 0x40 (cap start) + 0x18 (slot control/status)
+        assert!(matches!(result, IoResult::Ok));
+        let initial_presence_detect = (slot_status_val >> 22) & 0x1; // presence_detect_state is bit 6 of slot status
+        assert_eq!(
+            initial_presence_detect, 0,
+            "Initial presence detect state should be 0"
+        );
+
+        // Set device as present
+        emulator.set_presence_detect_state(true);
+        let result = emulator.read_u32(0x58, &mut slot_status_val);
+        assert!(matches!(result, IoResult::Ok));
+        let present_presence_detect = (slot_status_val >> 22) & 0x1;
+        assert_eq!(
+            present_presence_detect, 1,
+            "Presence detect state should be 1 when device is present"
+        );
+
+        // Set device as not present
+        emulator.set_presence_detect_state(false);
+        let result = emulator.read_u32(0x58, &mut slot_status_val);
+        assert!(matches!(result, IoResult::Ok));
+        let absent_presence_detect = (slot_status_val >> 22) & 0x1;
+        assert_eq!(
+            absent_presence_detect, 0,
+            "Presence detect state should be 0 when device is not present"
+        );
+    }
+
+    #[test]
+    fn test_config_space_type1_set_presence_detect_state_without_pcie() {
+        // Test that ConfigSpaceType1Emulator silently ignores set_presence_detect_state
+        // when there is no PCIe Express capability
+
+        let mut emulator = create_type1_emulator(vec![]); // No capabilities
+
+        // Should not panic and should be silently ignored
+        emulator.set_presence_detect_state(true);
+        emulator.set_presence_detect_state(false);
     }
 }

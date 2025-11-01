@@ -311,6 +311,27 @@ impl PciExpressCapability {
 
         self
     }
+
+    /// Set the presence detect state for the slot.
+    /// This method only has effect if the slot is implemented (slot_implemented = true).
+    /// If slot is not implemented, the call is silently ignored, as the spec says
+    /// "If this register is implemented but the Slot Implemented bit is Clear,
+    /// the field behavior of this entire register with the exception of the DLLSC bit is undefined."
+    ///
+    /// # Arguments
+    /// * `present` - true if a device is present in the slot, false if the slot is empty
+    pub fn set_presence_detect_state(&self, present: bool) {
+        if !self.pcie_capabilities.slot_implemented() {
+            // Silently ignore if slot is not implemented
+            return;
+        }
+
+        let mut state = self.state.lock();
+        state.slot_status =
+            state
+                .slot_status
+                .with_presence_detect_state(if present { 1 } else { 0 });
+    }
 }
 
 impl PciCapability for PciExpressCapability {
@@ -533,6 +554,14 @@ impl PciCapability for PciExpressCapability {
     fn reset(&mut self) {
         let mut state = self.state.lock();
         *state = PciExpressState::new();
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -832,10 +861,12 @@ mod tests {
         assert!(cap_with_hotplug.slot_capabilities.hot_plug_surprise());
         assert!(cap_with_hotplug.slot_capabilities.hot_plug_capable());
         assert_eq!(cap_with_hotplug.slot_capabilities.physical_slot_number(), 1);
-        
+
         // Verify that slot_implemented is set in PCIe capabilities
-        assert!(cap_with_hotplug.pcie_capabilities.slot_implemented(), 
-                "slot_implemented should be true when hotplug is enabled");
+        assert!(
+            cap_with_hotplug.pcie_capabilities.slot_implemented(),
+            "slot_implemented should be true when hotplug is enabled"
+        );
 
         // Test with DownstreamSwitchPort (should work)
         let cap2 = PciExpressCapability::new(DevicePortType::DownstreamSwitchPort, None);
@@ -843,16 +874,23 @@ mod tests {
 
         assert!(cap2_with_hotplug.slot_capabilities.hot_plug_surprise());
         assert!(cap2_with_hotplug.slot_capabilities.hot_plug_capable());
-        assert_eq!(cap2_with_hotplug.slot_capabilities.physical_slot_number(), 2);
-        
+        assert_eq!(
+            cap2_with_hotplug.slot_capabilities.physical_slot_number(),
+            2
+        );
+
         // Verify that slot_implemented is set for downstream switch port too
-        assert!(cap2_with_hotplug.pcie_capabilities.slot_implemented(), 
-                "slot_implemented should be true when hotplug is enabled");
-                
+        assert!(
+            cap2_with_hotplug.pcie_capabilities.slot_implemented(),
+            "slot_implemented should be true when hotplug is enabled"
+        );
+
         // Test that non-hotplug capability doesn't have slot_implemented set
         let cap_no_hotplug = PciExpressCapability::new(DevicePortType::RootPort, None);
-        assert!(!cap_no_hotplug.pcie_capabilities.slot_implemented(),
-                "slot_implemented should be false when hotplug is not enabled");
+        assert!(
+            !cap_no_hotplug.pcie_capabilities.slot_implemented(),
+            "slot_implemented should be false when hotplug is not enabled"
+        );
     }
 
     #[test]
@@ -1312,46 +1350,103 @@ mod tests {
     #[test]
     fn test_with_hotplug_support_slot_number() {
         // Test that slot numbers are properly set when enabling hotplug support
-        
+
         // Test with slot number 5
         let cap1 = PciExpressCapability::new(DevicePortType::RootPort, None);
         let cap1_with_hotplug = cap1.with_hotplug_support(5);
-        
+
         assert!(cap1_with_hotplug.slot_capabilities.hot_plug_capable());
-        assert_eq!(cap1_with_hotplug.slot_capabilities.physical_slot_number(), 5);
-        
+        assert_eq!(
+            cap1_with_hotplug.slot_capabilities.physical_slot_number(),
+            5
+        );
+
         // Test with slot number 0
         let cap2 = PciExpressCapability::new(DevicePortType::DownstreamSwitchPort, None);
         let cap2_with_hotplug = cap2.with_hotplug_support(0);
-        
+
         assert!(cap2_with_hotplug.slot_capabilities.hot_plug_capable());
-        assert_eq!(cap2_with_hotplug.slot_capabilities.physical_slot_number(), 0);
-        
+        assert_eq!(
+            cap2_with_hotplug.slot_capabilities.physical_slot_number(),
+            0
+        );
+
         // Test with a larger slot number
         let cap3 = PciExpressCapability::new(DevicePortType::RootPort, None);
         let cap3_with_hotplug = cap3.with_hotplug_support(255);
-        
+
         assert!(cap3_with_hotplug.slot_capabilities.hot_plug_capable());
-        assert_eq!(cap3_with_hotplug.slot_capabilities.physical_slot_number(), 255);
+        assert_eq!(
+            cap3_with_hotplug.slot_capabilities.physical_slot_number(),
+            255
+        );
     }
 
     #[test]
     fn test_slot_implemented_flag_in_pcie_capabilities_register() {
         // Test that slot_implemented bit is correctly set in the PCIe Capabilities register
         // when hotplug support is enabled
-        
+
         // Test without hotplug - slot_implemented should be false
         let cap_no_hotplug = PciExpressCapability::new(DevicePortType::RootPort, None);
         let caps_val_no_hotplug = cap_no_hotplug.read_u32(0x00);
         let pcie_caps_no_hotplug = (caps_val_no_hotplug >> 16) as u16;
         let slot_implemented_bit = (pcie_caps_no_hotplug >> 8) & 0x1; // slot_implemented is bit 8 of PCIe capabilities
-        assert_eq!(slot_implemented_bit, 0, "slot_implemented should be 0 when hotplug is not enabled");
-        
+        assert_eq!(
+            slot_implemented_bit, 0,
+            "slot_implemented should be 0 when hotplug is not enabled"
+        );
+
         // Test with hotplug - slot_implemented should be true
         let cap_with_hotplug = cap_no_hotplug.with_hotplug_support(1);
         let caps_val_with_hotplug = cap_with_hotplug.read_u32(0x00);
         let pcie_caps_with_hotplug = (caps_val_with_hotplug >> 16) as u16;
         let slot_implemented_bit_hotplug = (pcie_caps_with_hotplug >> 8) & 0x1; // slot_implemented is bit 8 of PCIe capabilities
-        assert_eq!(slot_implemented_bit_hotplug, 1, "slot_implemented should be 1 when hotplug is enabled");
+        assert_eq!(
+            slot_implemented_bit_hotplug, 1,
+            "slot_implemented should be 1 when hotplug is enabled"
+        );
+    }
+
+    #[test]
+    fn test_set_presence_detect_state() {
+        // Test setting presence detect state on a hotplug-capable port
+        let cap = PciExpressCapability::new(DevicePortType::RootPort, None).with_hotplug_support(1);
+
+        // Initially, presence detect state should be 0 (no device present)
+        let initial_slot_status = cap.read_u32(0x18); // Slot Control + Slot Status
+        let initial_presence_detect = (initial_slot_status >> 22) & 0x1; // presence_detect_state is bit 6 of slot status (upper 16 bits)
+        assert_eq!(
+            initial_presence_detect, 0,
+            "Initial presence detect state should be 0"
+        );
+
+        // Set device as present
+        cap.set_presence_detect_state(true);
+        let present_slot_status = cap.read_u32(0x18);
+        let present_presence_detect = (present_slot_status >> 22) & 0x1;
+        assert_eq!(
+            present_presence_detect, 1,
+            "Presence detect state should be 1 when device is present"
+        );
+
+        // Set device as not present
+        cap.set_presence_detect_state(false);
+        let absent_slot_status = cap.read_u32(0x18);
+        let absent_presence_detect = (absent_slot_status >> 22) & 0x1;
+        assert_eq!(
+            absent_presence_detect, 0,
+            "Presence detect state should be 0 when device is not present"
+        );
+    }
+
+    #[test]
+    fn test_set_presence_detect_state_without_slot_implemented() {
+        // Test that setting presence detect state is silently ignored when slot is not implemented
+        let cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+
+        // Should not panic and should be silently ignored
+        cap.set_presence_detect_state(true);
+        cap.set_presence_detect_state(false);
     }
 }

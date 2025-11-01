@@ -113,6 +113,14 @@ impl PciCapability for MsixCapability {
             vector.state = EntryState::new();
         }
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 struct MsixMessageTableEntry {
