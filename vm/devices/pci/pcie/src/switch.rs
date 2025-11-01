@@ -87,12 +87,20 @@ pub struct DownstreamSwitchPort {
 
 impl DownstreamSwitchPort {
     /// Constructs a new [`DownstreamSwitchPort`] emulator.
-    pub fn new(name: impl Into<Arc<str>>) -> Self {
-        Self::new_with_multi_function(name, false)
-    }
-
-    /// Constructs a new [`DownstreamSwitchPort`] emulator with multi-function flag.
-    pub fn new_with_multi_function(name: impl Into<Arc<str>>, multi_function: bool) -> Self {
+    ///
+    /// # Arguments
+    /// * `name` - The name for this downstream switch port
+    /// * `multi_function` - Whether this port should have the multi-function flag set (default: false)
+    /// * `hotplug` - Whether this port should support hotplug (default: false)
+    /// * `slot_number` - The slot number for hotpluggable ports (only used if hotplug is true)
+    pub fn new(
+        name: impl Into<Arc<str>>,
+        multi_function: Option<bool>,
+        hotplug: Option<bool>,
+        slot_number: Option<u32>,
+    ) -> Self {
+        let multi_function = multi_function.unwrap_or(false);
+        let hotplug = hotplug.unwrap_or(false);
         let hardware_ids = HardwareIds {
             vendor_id: VENDOR_ID,
             device_id: DOWNSTREAM_SWITCH_PORT_DEVICE_ID,
@@ -103,14 +111,17 @@ impl DownstreamSwitchPort {
             type0_sub_vendor_id: 0,
             type0_sub_system_id: 0,
         };
-        Self {
-            port: PcieDownstreamPort::new(
-                name.into().to_string(),
-                hardware_ids,
-                DevicePortType::DownstreamSwitchPort,
-                multi_function,
-            ),
-        }
+
+        let port = PcieDownstreamPort::new(
+            name.into().to_string(),
+            hardware_ids,
+            DevicePortType::DownstreamSwitchPort,
+            multi_function,
+            hotplug,
+            slot_number,
+        );
+
+        Self { port }
     }
 
     /// Get a reference to the configuration space emulator.
@@ -122,11 +133,6 @@ impl DownstreamSwitchPort {
     pub fn cfg_space_mut(&mut self) -> &mut ConfigSpaceType1Emulator {
         &mut self.port.cfg_space
     }
-
-    /// Get a mutable reference to the underlying PCIe port.
-    pub fn port_mut(&mut self) -> &mut PcieDownstreamPort {
-        &mut self.port
-    }
 }
 
 /// A PCI Express switch definition used for creating switch instances.
@@ -135,7 +141,9 @@ pub struct GenericPcieSwitchDefinition {
     pub name: Arc<str>,
     /// The number of downstream ports to create.
     /// TODO: implement physical slot number, link and slot stuff
-    pub downstream_port_count: usize,
+    pub downstream_port_count: u8,
+    /// Whether hotplug is enabled for this switch's downstream ports.
+    pub hotplug: bool,
 }
 
 /// A PCI Express switch emulator that implements a complete switch with upstream and downstream ports.
@@ -168,9 +176,17 @@ impl GenericPcieSwitch {
         let downstream_ports = (0..definition.downstream_port_count)
             .map(|i| {
                 let port_name = format!("{}-downstream-{}", definition.name, i);
-                let port = DownstreamSwitchPort::new_with_multi_function(
+                // Use the port index as the slot number for hotpluggable ports
+                let slot_number = if definition.hotplug {
+                    Some((i as u32) + 1)
+                } else {
+                    None
+                };
+                let port = DownstreamSwitchPort::new(
                     port_name.clone(),
-                    multi_function,
+                    Some(multi_function),
+                    Some(definition.hotplug),
+                    slot_number,
                 );
                 (i as u8, (port_name.into(), port))
             })
@@ -473,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_downstream_switch_port_creation() {
-        let port = DownstreamSwitchPort::new("test-downstream-port");
+        let port = DownstreamSwitchPort::new("test-downstream-port", None, None, None);
         assert!(port.port.link.is_none());
 
         // Verify that we can read the vendor/device ID from config space
@@ -487,10 +503,56 @@ mod tests {
     }
 
     #[test]
+    fn test_downstream_switch_port_multi_function_options() {
+        // Test with default multi_function (false)
+        let port_default = DownstreamSwitchPort::new("test-port-default", None, None, None);
+        let mut header_type_value: u32 = 0;
+        port_default
+            .cfg_space()
+            .read_u32(0x0C, &mut header_type_value)
+            .unwrap();
+        let header_type_field = (header_type_value >> 16) & 0xFF;
+        assert_eq!(
+            header_type_field & 0x80,
+            0x00,
+            "Multi-function bit should NOT be set with None parameter"
+        );
+
+        // Test with explicit multi_function false
+        let port_false = DownstreamSwitchPort::new("test-port-false", Some(false), None, None);
+        let mut header_type_value_false: u32 = 0;
+        port_false
+            .cfg_space()
+            .read_u32(0x0C, &mut header_type_value_false)
+            .unwrap();
+        let header_type_field_false = (header_type_value_false >> 16) & 0xFF;
+        assert_eq!(
+            header_type_field_false & 0x80,
+            0x00,
+            "Multi-function bit should NOT be set with Some(false)"
+        );
+
+        // Test with explicit multi_function true
+        let port_true = DownstreamSwitchPort::new("test-port-true", Some(true), None, None);
+        let mut header_type_value_true: u32 = 0;
+        port_true
+            .cfg_space()
+            .read_u32(0x0C, &mut header_type_value_true)
+            .unwrap();
+        let header_type_field_true = (header_type_value_true >> 16) & 0xFF;
+        assert_eq!(
+            header_type_field_true & 0x80,
+            0x80,
+            "Multi-function bit should be set with Some(true)"
+        );
+    }
+
+    #[test]
     fn test_switch_creation() {
         let definition = GenericPcieSwitchDefinition {
             name: "test-switch".into(),
             downstream_port_count: 3,
+            hotplug: false,
         };
         let switch = GenericPcieSwitch::new(definition);
 
@@ -521,6 +583,7 @@ mod tests {
         let definition = GenericPcieSwitchDefinition {
             name: "test-switch".into(),
             downstream_port_count: 2,
+            hotplug: false,
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -566,6 +629,7 @@ mod tests {
         let definition = GenericPcieSwitchDefinition {
             name: "test-switch".into(),
             downstream_port_count: 2,
+            hotplug: false,
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -598,6 +662,7 @@ mod tests {
         let definition = GenericPcieSwitchDefinition {
             name: "test-switch".into(),
             downstream_port_count: 4,
+            hotplug: false,
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -626,6 +691,7 @@ mod tests {
         let definition = GenericPcieSwitchDefinition {
             name: "default-switch".into(),
             downstream_port_count: 4,
+            hotplug: false,
         };
         let switch = GenericPcieSwitch::new(definition);
         assert_eq!(switch.name().as_ref(), "default-switch");
@@ -637,6 +703,7 @@ mod tests {
         let definition = GenericPcieSwitchDefinition {
             name: "test-switch".into(),
             downstream_port_count: 16,
+            hotplug: false,
         };
         let switch = GenericPcieSwitch::new(definition);
         assert_eq!(switch.downstream_ports().len(), 16);
@@ -647,6 +714,7 @@ mod tests {
         let definition = GenericPcieSwitchDefinition {
             name: "test-switch".into(),
             downstream_port_count: 3,
+            hotplug: false,
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -689,6 +757,7 @@ mod tests {
         let definition = GenericPcieSwitchDefinition {
             name: "test-switch".into(),
             downstream_port_count: 2,
+            hotplug: false,
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -713,6 +782,7 @@ mod tests {
         let definition = GenericPcieSwitchDefinition {
             name: "test-switch".into(),
             downstream_port_count: 2,
+            hotplug: false,
         };
         let mut switch = GenericPcieSwitch::new(definition);
 
@@ -751,6 +821,7 @@ mod tests {
         let multi_port_definition = GenericPcieSwitchDefinition {
             name: "multi-port-switch".into(),
             downstream_port_count: 3,
+            hotplug: false,
         };
         let multi_port_switch = GenericPcieSwitch::new(multi_port_definition);
 
@@ -788,6 +859,7 @@ mod tests {
         let single_port_definition = GenericPcieSwitchDefinition {
             name: "single-port-switch".into(),
             downstream_port_count: 1,
+            hotplug: false,
         };
         let single_port_switch = GenericPcieSwitch::new(single_port_definition);
 
@@ -820,5 +892,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_hotplug_support() {
+        // Test hotplug disabled
+        let definition_no_hotplug = GenericPcieSwitchDefinition {
+            name: "test-switch-no-hotplug".into(),
+            downstream_port_count: 1,
+            hotplug: false,
+        };
+        let switch_no_hotplug = GenericPcieSwitch::new(definition_no_hotplug);
+        assert_eq!(switch_no_hotplug.name().as_ref(), "test-switch-no-hotplug");
+
+        // Test hotplug enabled
+        let definition_with_hotplug = GenericPcieSwitchDefinition {
+            name: "test-switch-with-hotplug".into(),
+            downstream_port_count: 1,
+            hotplug: true,
+        };
+        let switch_with_hotplug = GenericPcieSwitch::new(definition_with_hotplug);
+        assert_eq!(
+            switch_with_hotplug.name().as_ref(),
+            "test-switch-with-hotplug"
+        );
     }
 }

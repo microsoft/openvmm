@@ -221,6 +221,7 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
             name: switch_cli.name.clone(),
             num_downstream_ports: switch_cli.num_downstream_ports,
             parent_port: switch_cli.port_name.clone(),
+            hotplug: switch_cli.hotplug,
         })
         .collect()
 }
@@ -720,6 +721,7 @@ fn vm_config_from_command_line(
                 .filter(|port_cli| port_cli.root_complex_name == cli.name)
                 .map(|port_cli| PcieRootPortConfig {
                     name: port_cli.name.clone(),
+                    hotplug: port_cli.hotplug,
                 })
                 .collect();
 

@@ -186,6 +186,7 @@ pub struct PcieRootComplexConfig {
 #[derive(Debug, MeshPayload)]
 pub struct PcieRootPortConfig {
     pub name: String,
+    pub hotplug: bool,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -193,6 +194,7 @@ pub struct PcieSwitchConfig {
     pub name: String,
     pub num_downstream_ports: u8,
     pub parent_port: String,
+    pub hotplug: bool,
 }
 
 #[derive(Debug, MeshPayload)]

@@ -49,6 +49,10 @@ impl PciCapability for MsixCapability {
         "msi-x"
     }
 
+    fn capability_id(&self) -> CapabilityId {
+        CapabilityId::MSIX
+    }
+
     fn len(&self) -> usize {
         12
     }
@@ -108,6 +112,14 @@ impl PciCapability for MsixCapability {
         for vector in &mut state.vectors {
             vector.state = EntryState::new();
         }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
