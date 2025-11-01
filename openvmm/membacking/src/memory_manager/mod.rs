@@ -184,7 +184,7 @@ impl GuestMemoryBuilder {
         let (thread, spawner) = DefaultPool::spawn_on_thread("memory_manager");
 
         let max_addr =
-            (mem_layout.end_of_ram_or_mmio()).max(mem_layout.vtl2_range().map_or(0, |r| r.end()));
+            (mem_layout.end_of_layout()).max(mem_layout.vtl2_range().map_or(0, |r| r.end()));
 
         let vtl0_alias_map_offset = if let Some(offset) = self.vtl0_alias_map {
             if max_addr > offset {
