@@ -30,6 +30,8 @@ pub struct ResolvedPipeline {
     pub graph: petgraph::Graph<ResolvedPipelineJob, ()>,
     pub order: Vec<petgraph::prelude::NodeIndex>,
     pub parameters: Vec<Parameter>,
+    pub flowey_bootstrap_publishers:
+        BTreeMap<(FlowPlatform, FlowArch), petgraph::prelude::NodeIndex>,
     pub ado_schedule_triggers: Vec<AdoScheduleTriggers>,
     pub ado_name: Option<String>,
     pub ado_ci_triggers: Option<AdoCiTriggers>,
@@ -262,6 +264,12 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
         graph.add_edge(job_graph_idx[from], job_graph_idx[to], ());
     }
 
+    // Add flowey bootstrap dependencies to ensure all jobs on the same platform
+    // depend on a single bootstrap job. This is done before the topological sort
+    // so that the dependencies are properly reflected in the job ordering.
+    let platform_publishers =
+        crate::pipeline_resolver::common_yaml::add_flowey_bootstrap_dependencies(&mut graph);
+
     // TODO: better error handling
     let order = petgraph::algo::toposort(&graph, None)
         .map_err(|_| anyhow::anyhow!("detected cycle in pipeline"))?;
@@ -270,6 +278,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
         graph,
         order,
         parameters,
+        flowey_bootstrap_publishers: platform_publishers,
         ado_name,
         ado_variables,
         ado_schedule_triggers,

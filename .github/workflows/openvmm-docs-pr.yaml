@@ -181,6 +181,14 @@ jobs:
         name: guide
         path: ${{ runner.temp }}/publish_artifacts/guide/
         include-hidden-files: true
+    - name: 🌼🧼 Redact bootstrap var db
+      run: rm $AgentTempDirNormal/bootstrapped-flowey/job0.json
+      shell: bash
+    - name: 🌼🥾 Publish bootstrapped flowey
+      uses: actions/upload-artifact@v4
+      with:
+        name: flowey_1_build_mdbook_guide
+        path: ${{ runner.temp }}/bootstrapped-flowey
   job1:
     name: build and check docs [x64-windows]
     runs-on: windows-latest
@@ -340,73 +348,39 @@ jobs:
         name: x64-windows-rustdoc
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-rustdoc/
         include-hidden-files: true
+    - name: 🌼🧼 Redact bootstrap var db
+      run: rm $AgentTempDirNormal/bootstrapped-flowey/job1.json
+      shell: bash
+    - name: 🌼🥾 Publish bootstrapped flowey
+      uses: actions/upload-artifact@v4
+      with:
+        name: flowey_0_build_and_check_docs_[x64-windows]
+        path: ${{ runner.temp }}/bootstrapped-flowey
   job2:
     name: build and check docs [x64-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
+    needs:
+    - job0
     if: github.event.pull_request.draft == false
     steps:
-    - run: |
-        set -x
-        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.90.0 -y
-        . "$HOME/.cargo/env"
-        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-        rustup show
-      if: runner.os == 'Linux'
-      name: rustup (Linux)
-      shell: bash
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.90.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-      shell: bash
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.90.0
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
-      shell: bash
-    - uses: actions/checkout@v4
+    - name: 🌼📦 Download artifacts
+      uses: actions/download-artifact@v4
       with:
-        path: flowey_bootstrap
-    - name: Build flowey
-      run: |
-        set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-        OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p "$OutDirNormal"
-        mv ./.github/workflows/openvmm-docs-pr.yaml "$OutDirNormal/pipeline.yaml"
-        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite "$OutDirNormal/flowey"
-      working-directory: flowey_bootstrap
-      shell: bash
-    - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
+        pattern: flowey_1_build_mdbook_guide
+        path: ${{ runner.temp }}/used_artifacts/
+    - run: echo "${{ runner.temp }}/used_artifacts/flowey_1_build_mdbook_guide" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-docs-pr.yaml ci build-docs --config=pr
-      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey
+        chmod +x $AgentTempDirNormal/used_artifacts/flowey_1_build_mdbook_guide/flowey
 
         echo '"debug"' | flowey v 2 'FLOWEY_LOG' update
         echo "${{ runner.temp }}/work" | flowey v 2 '_internal_WORKING_DIR' --is-raw-string update
@@ -505,14 +479,6 @@ jobs:
         name: x64-linux-rustdoc
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-rustdoc/
         include-hidden-files: true
-    - name: 🌼🧼 Redact bootstrap var db
-      run: rm $AgentTempDirNormal/bootstrapped-flowey/job2.json
-      shell: bash
-    - name: 🌼🥾 Publish bootstrapped flowey
-      uses: actions/upload-artifact@v4
-      with:
-        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/bootstrapped-flowey
   job3:
     name: openvmm build docs gates
     runs-on: ubuntu-latest
@@ -530,9 +496,9 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        pattern: flowey_1_build_mdbook_guide
         path: ${{ runner.temp }}/used_artifacts/
-    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
+    - run: echo "${{ runner.temp }}/used_artifacts/flowey_1_build_mdbook_guide" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
     - name: 🌼🛫 Initialize job
@@ -541,7 +507,7 @@ jobs:
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/flowey
+        chmod +x $AgentTempDirNormal/used_artifacts/flowey_1_build_mdbook_guide/flowey
 
         echo '"debug"' | flowey v 3 'FLOWEY_LOG' update
         echo "${{ runner.temp }}/work" | flowey v 3 '_internal_WORKING_DIR' --is-raw-string update

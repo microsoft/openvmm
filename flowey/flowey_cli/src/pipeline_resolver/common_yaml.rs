@@ -9,11 +9,9 @@ use crate::pipeline_resolver::generic::ResolvedPipelineJob;
 use anyhow::Context;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowPlatform;
-use petgraph::visit::EdgeRef;
 use serde::Serialize;
 use serde_yaml::Value;
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::Path;
 
@@ -25,118 +23,104 @@ pub(crate) enum FloweySource {
     Consume(String),
 }
 
+/// Adds edges to the graph to ensure all jobs on the same platform/arch depend on
+/// a single designated "bootstrap" job for that platform. This allows flowey to be
+/// built once per platform and reused by all other jobs.
+///
+/// Returns a map of (platform, arch) -> bootstrap job index
+pub(crate) fn add_flowey_bootstrap_dependencies(
+    graph: &mut petgraph::Graph<ResolvedPipelineJob, ()>,
+) -> BTreeMap<(FlowPlatform, FlowArch), petgraph::prelude::NodeIndex> {
+    let mut platform_publishers: BTreeMap<(FlowPlatform, FlowArch), petgraph::prelude::NodeIndex> =
+        BTreeMap::new();
+
+    // First, identify the best bootstrap job for each platform/arch
+    // We want jobs with the fewest dependencies (ideally zero)
+    for idx in graph.node_indices() {
+        let platform = graph[idx].platform;
+        let arch = graph[idx].arch;
+
+        let dependency_count = graph
+            .edges_directed(idx, petgraph::Direction::Incoming)
+            .count();
+
+        platform_publishers
+            .entry((platform, arch))
+            .and_modify(|current_idx| {
+                let current_dep_count = graph
+                    .edges_directed(*current_idx, petgraph::Direction::Incoming)
+                    .count();
+
+                if dependency_count < current_dep_count {
+                    *current_idx = idx;
+                }
+            })
+            .or_insert(idx);
+    }
+
+    // Second, add edges from each bootstrap job to all other jobs on the same platform
+    // (unless there's already a path between them)
+    for idx in graph.node_indices() {
+        let platform = graph[idx].platform;
+        let arch = graph[idx].arch;
+        let bootstrap_idx = platform_publishers[&(platform, arch)];
+
+        // Skip the bootstrap job itself
+        if idx == bootstrap_idx {
+            continue;
+        }
+
+        // Check if there's already a path from bootstrap to this job
+        let path_exists = petgraph::algo::has_path_connecting(&*graph, bootstrap_idx, idx, None);
+
+        if !path_exists {
+            // Add edge from bootstrap job to this job
+            graph.add_edge(bootstrap_idx, idx, ());
+        }
+    }
+
+    platform_publishers
+}
+
 /// each job has one of three "roles" when it comes to bootstrapping flowey:
 ///
 /// 1. Build flowey
 /// 2. Building _and_ publishing flowey
 /// 3. Consuming a pre-built flowey
 ///
-/// We _could_ just have every bootstrap job also publish flowey, but this
-/// will spam the artifact feed with artifacts no one will consume, which is
-/// wasteful.
+/// Strategy: The designated bootstrap job for each platform/arch will build and
+/// publish flowey. All other jobs on that platform will consume it.
 ///
-/// META: why go through all this hassle anyways? i.e: why not just do
-/// something dead simple like:
-///
-/// - discover which platforms exist in the graph
-/// - have the first jobs of every pipeline be standalone "bootstrap flowey"
-///   jobs, which all subsequent jobs of a certain platform can take a dep on
-///
-/// well... it turns out that provisioning job runners is _sloooooow_,
-/// and having every single pipeline run these "bootstrap flowey" steps
-/// gating the rest of the "interesting" stuff would really stink.
-///
-/// i.e: it's better to do redundant flowey bootstraps if it means that we
-/// can avoid the extra time it takes to tear down + re-provision a worker.
+/// This function should be called AFTER add_flowey_bootstrap_dependencies() has
+/// modified the graph to ensure proper dependency ordering.
 pub(crate) fn job_flowey_bootstrap_source(
     graph: &petgraph::Graph<ResolvedPipelineJob, ()>,
     order: &Vec<petgraph::prelude::NodeIndex>,
+    platform_publishers: &BTreeMap<(FlowPlatform, FlowArch), petgraph::prelude::NodeIndex>,
 ) -> BTreeMap<petgraph::prelude::NodeIndex, FloweySource> {
     let mut bootstrapped_flowey = BTreeMap::new();
 
-    // the first traversal builds a list of all ancestors of a give node
-    let mut ancestors = BTreeMap::<
-        petgraph::prelude::NodeIndex,
-        BTreeSet<(petgraph::prelude::NodeIndex, FlowPlatform, FlowArch)>,
-    >::new();
-    for idx in order {
-        for ancestor_idx in graph
-            .edges_directed(*idx, petgraph::Direction::Incoming)
-            .map(|e| e.source())
-        {
-            ancestors.entry(*idx).or_default().insert((
-                ancestor_idx,
-                graph[ancestor_idx].platform,
-                graph[ancestor_idx].arch,
-            ));
-
-            if let Some(set) = ancestors.get(&ancestor_idx).cloned() {
-                ancestors.get_mut(idx).unwrap().extend(&set);
-            }
-        }
-    }
-
-    // the second traversal assigns roles to each node
+    // Assign roles: publishers build and publish, all others consume
     let mut floweyno = 0;
-    'outer: for idx in order {
-        let ancestors = ancestors.remove(idx).unwrap_or_default();
+    let mut published_artifacts: BTreeMap<(FlowPlatform, FlowArch), String> = BTreeMap::new();
 
-        let mut elect_bootstrap = None;
+    for idx in order {
+        let platform = graph[*idx].platform;
+        let arch = graph[*idx].arch;
+        let publisher_idx = platform_publishers[&(platform, arch)];
 
-        for (ancestor_idx, platform, arch) in ancestors {
-            if platform != graph[*idx].platform || arch != graph[*idx].arch {
-                continue;
-            }
-
-            let role =
-                bootstrapped_flowey
-                    .get_mut(&ancestor_idx)
-                    .and_then(|existing| match existing {
-                        FloweySource::Bootstrap(s, true) => Some(FloweySource::Consume(s.clone())),
-                        FloweySource::Consume(s) => Some(FloweySource::Consume(s.clone())),
-                        // there is an ancestor that is building, but not
-                        // publishing. maybe they should get upgraded...
-                        FloweySource::Bootstrap(_, false) => {
-                            elect_bootstrap = Some(ancestor_idx);
-                            None
-                        }
-                    });
-
-            if let Some(role) = role {
-                bootstrapped_flowey.insert(*idx, role);
-                continue 'outer;
-            }
-        }
-
-        // if we got here, that means we couldn't find a valid ancestor.
-        //
-        // check if we can upgrade an existing ancestor vs. bootstrapping
-        // things ourselves
-        if let Some(elect_bootstrap) = elect_bootstrap {
-            let FloweySource::Bootstrap(s, publish) =
-                bootstrapped_flowey.get_mut(&elect_bootstrap).unwrap()
-            else {
-                unreachable!()
-            };
-
-            *publish = true;
-            let s = s.clone();
-
-            bootstrapped_flowey.insert(*idx, FloweySource::Consume(s));
-        } else {
-            // Having this extra unique `floweyno` per bootstrap is
-            // necessary since GitHub doesn't let you double-publish an
-            // artifact with the same name
+        if *idx == publisher_idx {
+            // This is the designated publisher for this platform/arch
+            let artifact = format!("flowey_{floweyno}_{}", graph[*idx].label.replace(' ', "_"));
             floweyno += 1;
-            let platform = graph[*idx].platform;
-            let arch = graph[*idx].arch;
-            bootstrapped_flowey.insert(
-                *idx,
-                FloweySource::Bootstrap(
-                    format!("_internal-flowey-bootstrap-{arch}-{platform}-uid-{floweyno}"),
-                    false,
-                ),
-            );
+            published_artifacts.insert((platform, arch), artifact.clone());
+            bootstrapped_flowey.insert(*idx, FloweySource::Bootstrap(artifact, true));
+        } else {
+            // This job consumes from the platform publisher
+            // Since we've already added the dependency in add_flowey_bootstrap_dependencies,
+            // we know the publisher is an ancestor
+            let artifact = published_artifacts[&(platform, arch)].clone();
+            bootstrapped_flowey.insert(*idx, FloweySource::Consume(artifact));
         }
     }
 

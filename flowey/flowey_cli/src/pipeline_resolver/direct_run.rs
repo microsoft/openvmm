@@ -67,6 +67,7 @@ fn direct_run_do_work(
         graph,
         order,
         parameters,
+        flowey_bootstrap_publishers: _,
         ado_name: _,
         ado_schedule_triggers: _,
         ado_ci_triggers: _,

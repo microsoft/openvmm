@@ -58,6 +58,7 @@ pub fn github_yaml(
         gh_pr_triggers,
         gh_bootstrap_template,
         parameters,
+        flowey_bootstrap_publishers,
         ado_name: _,
         ado_schedule_triggers: _,
         ado_ci_triggers: _,
@@ -70,7 +71,7 @@ pub fn github_yaml(
     } = pipeline;
 
     let mut job_flowey_source: BTreeMap<petgraph::prelude::NodeIndex, FloweySource> =
-        job_flowey_bootstrap_source(&graph, &order);
+        job_flowey_bootstrap_source(&graph, &order, &flowey_bootstrap_publishers);
 
     let mut pipeline_static_db = FloweyPipelineStaticDb {
         flow_backend: crate::cli::FlowBackendCli::Github,

@@ -63,6 +63,7 @@ pub fn ado_yaml(
         ado_post_process_yaml_cb,
         ado_variables,
         ref ado_job_id_overrides,
+        flowey_bootstrap_publishers,
         gh_name: _,
         gh_schedule_triggers: _,
         gh_ci_triggers: _,
@@ -71,7 +72,7 @@ pub fn ado_yaml(
     } = pipeline;
 
     let mut job_flowey_source: BTreeMap<petgraph::prelude::NodeIndex, FloweySource> =
-        job_flowey_bootstrap_source(&graph, &order);
+        job_flowey_bootstrap_source(&graph, &order, &flowey_bootstrap_publishers);
 
     let mut pipeline_static_db = FloweyPipelineStaticDb {
         flow_backend: crate::cli::FlowBackendCli::Ado,
