@@ -34,7 +34,6 @@ use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_memory_init;
 use crate::boot_logger::boot_logger_runtime_init;
-use crate::boot_logger::boot_logger_write_memory_log_to_runtime;
 use crate::boot_logger::log;
 use crate::hypercall::hvcall;
 use crate::memory::AddressSpaceManager;
@@ -585,7 +584,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // any access to secrets in the boot shim.
     boot_logger_runtime_init(p.isolation_type, partition_info.com3_serial_available);
     log!("openhcl_boot: logging enabled");
-    boot_logger_write_memory_log_to_runtime();
+    // experiment: revert boot_logger_write_memory_log_to_runtime();
 
     // Confidential debug will show up in boot_options only if included in the
     // static command line, or if can_trust_host is true (so the dynamic command
