@@ -233,7 +233,7 @@ pub struct AdminQueueFaultConfig {
 /// Panic when RESERVATION_REPORT command is seen.
 /// ```no_run
 /// use mesh::CellUpdater;
-/// use nvme_resources::fault::AdminQueueFaultConfig;
+/// use nvme_resources::fault::IoQueueFaultConfig;
 /// use nvme_resources::fault::CommandMatch;
 /// use nvme_resources::fault::FaultConfiguration;
 /// use nvme_resources::fault::IoQueueFaultBehavior;
