@@ -38,6 +38,9 @@ async fn nvme_relay_test_core(
     props: Option<ExpectedNvmeDeviceProperties>,
 ) -> Result<(), anyhow::Error> {
     let (vm, agent) = config
+        .with_openhcl_log_levels(petri::OpenHclLogConfig::Custom(
+            "OPENVMM_LOG=info OPENVMM_SHOW_SPANS=true".to_string(),
+        ))
         .with_openhcl_command_line(openhcl_cmdline)
         .with_vmbus_redirect(true)
         .with_processor_topology(processor_topology.unwrap_or(ProcessorTopology {

@@ -56,7 +56,13 @@ async fn battery_capacity(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
     let os_flavor = config.os_flavor();
-    let (vm, agent) = config.modify_backend(|b| b.with_battery()).run().await?;
+    let (vm, agent) = config
+        .with_openhcl_log_levels(petri::OpenHclLogConfig::Custom(
+            "OPENVMM_LOG=info OPENVMM_SHOW_SPANS=true".to_string(),
+        ))
+        .modify_backend(|b| b.with_battery())
+        .run()
+        .await?;
 
     let output = match os_flavor {
         OsFlavor::Linux => {
@@ -149,7 +155,12 @@ async fn sidecar_aps_unused<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn sidecar_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), anyhow::Error> {
-    let (vm, agent) = configure_for_sidecar(config, 8, 2).run().await?;
+    let (vm, agent) = configure_for_sidecar(config, 8, 2)
+        .with_openhcl_log_levels(petri::OpenHclLogConfig::Custom(
+            "OPENVMM_LOG=info OPENVMM_SHOW_SPANS=true".to_string(),
+        ))
+        .run()
+        .await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
@@ -164,6 +175,9 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
     // controller should be allowed by OpenHCL.
     let (vm, agent) = config
         .with_openhcl_command_line("OPENHCL_ENABLE_VPCI_RELAY=1")
+        .with_openhcl_log_levels(petri::OpenHclLogConfig::Custom(
+            "OPENVMM_LOG=info OPENVMM_SHOW_SPANS=true".to_string(),
+        ))
         .with_vmbus_redirect(true)
         .modify_backend(move |b| {
             b.with_custom_config(|c| {
