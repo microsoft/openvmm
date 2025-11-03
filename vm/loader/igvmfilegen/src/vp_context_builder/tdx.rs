@@ -381,7 +381,11 @@ impl VpContextBuilder for TdxHardwareContext {
         byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
 
         // mov edx, 01h
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0xBA, 0x01, 0x00, 0x00, 0x00]);
+        byte_offset = copy_instr(
+            &mut reset_page,
+            byte_offset,
+            &[0xBA, 0x01, 0x00, 0x00, 0x00],
+        );
 
         // cmp ebx, edx
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x39, 0xD3]);
