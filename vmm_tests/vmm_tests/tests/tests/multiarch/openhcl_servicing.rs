@@ -363,7 +363,7 @@ async fn servicing_keepalive_with_nvme_fault(
 /// with NVMe keepalive support and a faulty controller that panics when
 /// IDENTIFY commands are received. This verifies namespace save/restore functionality.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn servicing_keepalive_with_nvme_namespace_fault(
+async fn servicing_keepalive_fault_if_identify(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
