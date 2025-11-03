@@ -277,6 +277,10 @@ impl SimpleFlowNode for Node {
                     done: v,
                 }
             }));
+        } else {
+            side_effects.push(test_log_path.into_side_effect());
+            side_effects.push(nextest_list_json.into_side_effect());
+            side_effects.push(junit_xml.into_side_effect());
         }
 
         ctx.emit_rust_step("report test results to overall pipeline status", |ctx| {
