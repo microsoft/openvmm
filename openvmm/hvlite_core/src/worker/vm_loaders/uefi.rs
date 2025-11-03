@@ -152,12 +152,10 @@ pub fn load_uefi(
     .add(&flags);
 
     #[cfg(guest_arch = "aarch64")]
-    {
-        cfg.add(&config::Gic {
-            gic_distributor_base: processor_topology.gic_distributor_base(),
-            gic_redistributors_base: processor_topology.gic_redistributors_base(),
-        });
-    }
+    cfg.add(&config::Gic {
+        gic_distributor_base: processor_topology.gic_distributor_base(),
+        gic_redistributors_base: processor_topology.gic_redistributors_base(),
+    });
 
     if let Some(mcfg) = mcfg {
         cfg.add_raw(config::BlobStructureType::Mcfg, mcfg);

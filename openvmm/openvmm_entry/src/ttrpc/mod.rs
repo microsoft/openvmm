@@ -460,6 +460,7 @@ impl VmService {
             floppy_disks: vec![],
             pcie_root_complexes: vec![],
             pcie_devices: vec![],
+            pcie_switches: vec![],
             vpci_devices: vec![],
             memory: MemoryConfig {
                 mem_size: req_config
@@ -511,6 +512,7 @@ impl VmService {
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             automatic_guest_reset: true,
+            efi_diagnostics_log_level: Default::default(),
         };
 
         let mut scsi_rpc = None;

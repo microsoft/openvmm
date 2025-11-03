@@ -8,12 +8,12 @@ import "../styles/runs.css";
 export const defaultSorting = [{ id: "creationTime", desc: true }];
 
 export const columnWidthMap = {
-  name: 105,
-  creationTime: 190,
+  name: 115,
+  creationTime: 210,
   status: 60,
   failed: 50,
   total: 60,
-  ghRun: 105,
+  ghRun: 115,
 };
 
 // Define the columns for the runs table

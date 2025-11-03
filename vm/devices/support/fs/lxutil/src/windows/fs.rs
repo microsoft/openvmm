@@ -615,7 +615,10 @@ pub fn query_stat_information(
         debug_assert!(!fs_context.compatibility_flags.supports_query_by_name());
 
         let granted_access = if fs_context.compatibility_flags.supports_permission_mapping() {
-            util::check_security(file_handle, W32Ss::MAXIMUM_ALLOWED)?
+            util::check_security(
+                file_handle,
+                W32Fs::FILE_ACCESS_RIGHTS(W32Ss::MAXIMUM_ALLOWED),
+            )?
         } else {
             0
         };

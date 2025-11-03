@@ -1,0 +1,23 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "fast_memcpy"
+rust-version.workspace = true
+edition.workspace = true
+
+[features]
+# Export `memcpy` and `memmove`, replacing the system-provided implementation.
+replace_system_memcpy = []
+
+[dependencies]
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "perf"
+harness = false
+
+[lints]
+workspace = true

@@ -13,6 +13,7 @@ import { startDataPrefetching } from "./fetch/fetch_runs_data";
 import { RunDetails } from "./run_details";
 import { Tests } from "./tests";
 import { TestDetails } from "./test_details";
+import { LogViewer } from "./log_viewer";
 
 const queryClient = new QueryClient();
 
@@ -37,6 +38,7 @@ function Content() {
       <Route path="runs/:runId" element={<RunDetails />} />
       <Route path="tests" element={<Tests />} />
       <Route path="tests/:architecture/:testName" element={<TestDetails />} />
+      <Route path="runs/:runId/:architecture/:testName" element={<LogViewer />} />
     </Routes>
   );
 }

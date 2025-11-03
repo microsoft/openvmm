@@ -230,6 +230,11 @@ fn direct_run_do_work(
             pipeline_param_idx,
         } in parameters_used
         {
+            log::trace!(
+                "resolving parameter idx {}, flowey_var {:?}",
+                pipeline_param_idx,
+                flowey_var
+            );
             let (desc, value) = match &parameters[*pipeline_param_idx] {
                 Parameter::Bool {
                     name: _,

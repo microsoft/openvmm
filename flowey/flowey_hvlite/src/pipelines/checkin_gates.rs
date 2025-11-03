@@ -713,7 +713,7 @@ impl IntoPipeline for CheckinGatesCli {
 
             all_jobs.push(job.finish());
 
-            if arch == CommonArch::X86_64 && matches!(config, PipelineConfig::Pr) {
+            if matches!(config, PipelineConfig::Pr) {
                 let job = pipeline
                     .new_job(
                         FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),

@@ -13,6 +13,7 @@ use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
 use crate::host_params::MAX_VTL2_RAM_RANGES;
+use crate::host_params::dt::dma_hint::pick_private_pool_size;
 use crate::host_params::mmio::select_vtl2_mmio_range;
 use crate::host_params::shim_params::IsolationType;
 use crate::memory::AddressSpaceManager;
@@ -41,6 +42,7 @@ use thiserror::Error;
 use zerocopy::FromBytes;
 
 mod bump_alloc;
+mod dma_hint;
 
 /// Errors when reading the host device tree.
 #[derive(Debug, Error)]
@@ -375,6 +377,17 @@ struct PartitionTopology {
     memory_allocation_mode: MemoryAllocationMode,
 }
 
+// Calculate the default mmio size for VTL2 when not specified by the host.
+//
+// This is half of the high mmio gap size, rounded down, with a minimum of 128
+// MB and a maximum of 1 GB.
+fn calculate_default_mmio_size(parsed: &ParsedDt) -> Result<u64, DtError> {
+    const MINIMUM_MMIO_SIZE: u64 = 128 * (1 << 20);
+    const MAXIMUM_MMIO_SIZE: u64 = 1 << 30;
+    let half_high_gap = parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?.mmio[1].len() / 2;
+    Ok(half_high_gap.clamp(MINIMUM_MMIO_SIZE, MAXIMUM_MMIO_SIZE))
+}
+
 /// Read topology from the host provided device tree.
 fn topology_from_host_dt(
     params: &ShimParams,
@@ -418,16 +431,16 @@ fn topology_from_host_dt(
             parsed.memory_allocation_mode,
             MemoryAllocationMode::Vtl2 { .. }
         ) {
-        // Decide the amount of mmio VTL2 should allocate. Enforce a minimum
-        // of 128 MB mmio for VTL2.
-        const MINIMUM_MMIO_SIZE: u64 = 128 * (1 << 20);
+        // Decide the amount of mmio VTL2 should allocate.
         let mmio_size = max(
             match parsed.memory_allocation_mode {
                 MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
                 _ => 0,
             },
-            MINIMUM_MMIO_SIZE,
+            calculate_default_mmio_size(parsed)?,
         );
+
+        log!("allocating vtl2 mmio size {mmio_size:#x} bytes");
 
         // Decide what mmio vtl2 should use.
         let mmio = &parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?.mmio;
@@ -510,31 +523,31 @@ fn topology_from_host_dt(
         .init()
         .expect("failed to initialize address space manager");
 
-    // Decide if we will reserve memory for a VTL2 private pool. Parse this
-    // from the final command line, or the host provided device tree value.
-    let vtl2_gpa_pool_size = {
-        let dt_page_count = parsed.device_dma_page_count;
-        let cmdline_page_count = options.enable_vtl2_gpa_pool;
-        max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0))
-    };
-    if vtl2_gpa_pool_size != 0 {
-        // Reserve the specified number of pages for the pool. Use the used
-        // ranges to figure out which VTL2 memory is free to allocate from.
-        let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;
-
-        match address_space.allocate(
-            None,
-            pool_size_bytes,
-            AllocationType::GpaPool,
-            AllocationPolicy::LowMemory,
+    if params.isolation_type == IsolationType::None {
+        if let Some(vtl2_gpa_pool_size) = pick_private_pool_size(
+            options.enable_vtl2_gpa_pool,
+            parsed.device_dma_page_count,
+            parsed.cpu_count(),
+            vtl2_ram.iter().map(|e| e.range.len()).sum(),
         ) {
-            Some(pool) => {
-                log!("allocated VTL2 pool at {:#x?}", pool.range);
-            }
-            None => {
-                panic!("failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes");
-            }
-        };
+            // Reserve the specified number of pages for the pool. Use the used
+            // ranges to figure out which VTL2 memory is free to allocate from.
+            let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;
+
+            match address_space.allocate(
+                None,
+                pool_size_bytes,
+                AllocationType::GpaPool,
+                AllocationPolicy::LowMemory,
+            ) {
+                Some(pool) => {
+                    log!("allocated VTL2 pool at {:#x?}", pool.range);
+                }
+                None => {
+                    panic!("failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes");
+                }
+            };
+        }
     }
 
     Ok(PartitionTopology {

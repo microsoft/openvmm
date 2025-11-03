@@ -42,7 +42,6 @@ use net_backend::BackendQueueStats;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
-use net_backend::L3Protocol;
 use net_backend::L4Protocol;
 use net_backend::MultiQueueSupport;
 use net_backend::Queue;
@@ -678,10 +677,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     mem_key: self.mem_key,
                     size,
                 };
-                let wqe_len = self
-                    .rx_wq
-                    .push(&(), [sqe], None, 0)
-                    .expect("rq should not be full");
+                let wqe_len = self.rx_wq.push((), [sqe]).expect("rq should not be full");
 
                 PostedRx {
                     id,
@@ -696,10 +692,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     size: seg.len,
                 });
 
-                let wqe_len = self
-                    .rx_wq
-                    .push(&(), sgl, None, 0)
-                    .expect("rq should not be full");
+                let wqe_len = self.rx_wq.push((), sgl).expect("rq should not be full");
 
                 assert!(wqe_len <= MAX_RWQE_SIZE, "too many scatter/gather entries");
                 PostedRx {
@@ -1002,13 +995,13 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                 unreachable!()
             };
 
-            if let Some(tx) = self.handle_tx(&segments[i..i + meta.segment_count])? {
+            if let Some(tx) = self.handle_tx(&segments[i..i + meta.segment_count as usize])? {
                 commit = true;
                 self.posted_tx.push_back(tx);
             } else {
                 self.dropped_tx.push_back(meta.id);
             }
-            i += meta.segment_count;
+            i += meta.segment_count as usize;
         }
 
         if commit {
@@ -1109,15 +1102,15 @@ impl<T: DeviceBacking> ManaQueue<T> {
         oob.s_oob
             .set_vsq_frame((self.tx_wq.id() >> 10) as u16 & 0x3fff);
 
+        oob.s_oob.set_is_outer_ipv4(meta.flags.is_ipv4());
+        oob.s_oob.set_is_outer_ipv6(meta.flags.is_ipv6());
         oob.s_oob
-            .set_is_outer_ipv4(meta.l3_protocol == L3Protocol::Ipv4);
+            .set_comp_iphdr_csum(meta.flags.offload_ip_header_checksum());
         oob.s_oob
-            .set_is_outer_ipv6(meta.l3_protocol == L3Protocol::Ipv6);
+            .set_comp_tcp_csum(meta.flags.offload_tcp_checksum());
         oob.s_oob
-            .set_comp_iphdr_csum(meta.offload_ip_header_checksum);
-        oob.s_oob.set_comp_tcp_csum(meta.offload_tcp_checksum);
-        oob.s_oob.set_comp_udp_csum(meta.offload_udp_checksum);
-        if meta.offload_tcp_checksum {
+            .set_comp_udp_csum(meta.flags.offload_udp_checksum());
+        if meta.flags.offload_tcp_checksum() {
             oob.s_oob.set_trans_off(meta.l2_len as u16 + meta.l3_len);
         }
         let short_format = self.vp_offset <= 0xff;
@@ -1128,12 +1121,16 @@ impl<T: DeviceBacking> ManaQueue<T> {
             oob.s_oob.set_pkt_fmt(MANA_LONG_PKT_FMT);
             oob.l_oob.set_long_vp_offset(self.vp_offset);
         }
+        let mut builder = if short_format {
+            self.tx_wq.wqe_builder(oob.s_oob)
+        } else {
+            self.tx_wq.wqe_builder(oob)
+        };
 
         let mut bounce_buffer = self.tx_bounce_buffer.start_allocation();
-        let tx = if self.rx_bounce_buffer.is_some() {
-            assert!(!meta.offload_tcp_segmentation);
-            let gd_client_unit_data = 0;
-            let mut buf: ContiguousBuffer<'_, '_> = match bounce_buffer.allocate(meta.len as u32) {
+        if self.rx_bounce_buffer.is_some() {
+            assert!(!meta.flags.offload_tcp_segmentation());
+            let mut buf = match bounce_buffer.allocate(meta.len) {
                 Ok(buf) => buf,
                 Err(err) => {
                     tracelimit::error_ratelimited!(
@@ -1155,26 +1152,12 @@ impl<T: DeviceBacking> ManaQueue<T> {
             let sge = Sge {
                 address: buf.gpa,
                 mem_key: self.mem_key,
-                size: meta.len as u32,
+                size: meta.len,
             };
-            let wqe_len = if short_format {
-                self.tx_wq
-                    .push(&oob.s_oob, [sge], None, gd_client_unit_data)
-                    .unwrap()
-            } else {
-                self.tx_wq
-                    .push(&oob, [sge], None, gd_client_unit_data)
-                    .unwrap()
-            };
-            PostedTx {
-                id: meta.id,
-                wqe_len,
-                bounced_len_with_padding: bounce_buffer.commit(),
-            }
+            builder.push_sge(sge);
         } else {
-            let mut gd_client_unit_data = 0;
             let mut header_len = head.len;
-            let (header_segment_count, partial_bytes) = if meta.offload_tcp_segmentation {
+            let (header_segment_count, partial_bytes) = if meta.flags.offload_tcp_segmentation() {
                 header_len = (meta.l2_len as u16 + meta.l3_len + meta.l4_len as u16) as u32;
                 if header_len > PAGE_SIZE32 {
                     tracelimit::error_ratelimited!(
@@ -1184,9 +1167,10 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     // Drop the packet
                     return Ok(None);
                 }
+                builder.set_client_oob_in_sgl(header_len as u8);
+                builder.set_gd_client_unit_data(meta.max_tcp_segment_size);
 
                 let mut partial_bytes = 0;
-                gd_client_unit_data = meta.max_tcp_segment_size;
                 if header_len > head.len || self.force_tx_header_bounce {
                     let mut header_bytes_remaining = header_len;
                     let mut hdr_idx = 0;
@@ -1253,16 +1237,16 @@ impl<T: DeviceBacking> ManaQueue<T> {
             // Hardware limit for short oob is 31. Max WQE size is 512 bytes.
             // Hardware limit for long oob is 30.
             let hardware_segment_limit = if short_format { 31 } else { 30 };
-            let mut sgl = [Sge::new_zeroed(); 31];
-            sgl[0] = Sge {
+            let mut sge = Sge {
                 address: head_iova,
                 mem_key: self.mem_key,
                 size: header_len,
             };
-            let tail_sgl_offset = if partial_bytes > 0 {
+            if partial_bytes > 0 {
                 last_segment_bounced = false;
                 let shared_seg = &segments[header_segment_count - 1];
-                sgl[1] = Sge {
+                builder.push_sge(sge);
+                sge = Sge {
                     address: self
                         .guest_memory
                         .iova(shared_seg.gpa)
@@ -1271,30 +1255,23 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     mem_key: self.mem_key,
                     size: shared_seg.len - partial_bytes,
                 };
-                2
-            } else {
-                1
-            };
+            }
 
-            let mut segment_count = tail_sgl_offset + meta.segment_count - header_segment_count;
-            let mut sgl_idx = tail_sgl_offset - 1;
-            let sgl = if segment_count <= hardware_segment_limit {
-                for (tail, sge) in segments[header_segment_count..]
-                    .iter()
-                    .zip(&mut sgl[tail_sgl_offset..])
-                {
-                    *sge = Sge {
+            let segment_count =
+                builder.sge_count() + 1 + meta.segment_count - header_segment_count as u8;
+            if segment_count <= hardware_segment_limit {
+                builder.push_sge(sge);
+                for tail in &segments[header_segment_count..] {
+                    builder.push_sge(Sge {
                         address: self.guest_memory.iova(tail.gpa).unwrap(),
                         mem_key: self.mem_key,
                         size: tail.len,
-                    };
+                    });
                 }
-                &sgl[..segment_count]
             } else {
-                let sgl = &mut sgl[..hardware_segment_limit];
+                let mut segment_count = segment_count;
                 for tail_idx in header_segment_count..segments.len() {
                     let tail = &segments[tail_idx];
-                    let cur_seg = &mut sgl[sgl_idx];
                     // Try to coalesce segments together if there are more than the hardware allows.
                     // TODO: Could use more expensive techniques such as
                     //       copying portions of segments to fill an entire
@@ -1302,21 +1279,21 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     //       full segments together fails.
                     // TODO: If the header was not bounced, we could search the segments for the
                     //       longest sequence that can be coalesced, instead of the first sequence.
-                    let coalesce_possible = cur_seg.size + tail.len < PAGE_SIZE32;
+                    let coalesce_possible = sge.size + tail.len < PAGE_SIZE32;
                     if segment_count > hardware_segment_limit {
                         if !last_segment_bounced
                             && coalesce_possible
-                            && bounce_buffer.allocate(cur_seg.size + tail.len).is_ok()
+                            && bounce_buffer.allocate(sge.size + tail.len).is_ok()
                         {
                             // There is enough room to coalesce the current
                             // segment with the previous. The previous segment
                             // is not yet bounced, so bounce it now.
                             let last_segment_gpa = segments[tail_idx - 1].gpa;
-                            let mut copy = bounce_buffer.allocate(cur_seg.size).unwrap();
+                            let mut copy = bounce_buffer.allocate(sge.size).unwrap();
                             self.guest_memory
                                 .read_to_atomic(last_segment_gpa, copy.as_slice())?;
                             let ContiguousBufferInUse { gpa, .. } = copy.reserve();
-                            cur_seg.address = gpa;
+                            sge.address = gpa;
                             last_segment_bounced = true;
                         }
                         if last_segment_bounced {
@@ -1328,7 +1305,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                                     len_with_padding, ..
                                 } = copy.reserve();
                                 assert_eq!(tail.len, len_with_padding);
-                                cur_seg.size += len_with_padding;
+                                sge.size += len_with_padding;
                                 segment_count -= 1;
                                 continue;
                             }
@@ -1336,10 +1313,10 @@ impl<T: DeviceBacking> ManaQueue<T> {
                         last_segment_bounced = false;
                     }
 
-                    sgl_idx += 1;
-                    if sgl_idx == hardware_segment_limit {
+                    builder.push_sge(sge);
+                    if builder.sge_count() == hardware_segment_limit {
                         tracelimit::error_ratelimited!(
-                            segments_remaining = segment_count - sgl_idx,
+                            segments_remaining = segment_count - builder.sge_count(),
                             hardware_segment_limit,
                             "Failed to bounce buffer the packet too many segments"
                         );
@@ -1347,40 +1324,25 @@ impl<T: DeviceBacking> ManaQueue<T> {
                         return Ok(None);
                     }
 
-                    sgl[sgl_idx] = Sge {
+                    sge = Sge {
                         address: self.guest_memory.iova(tail.gpa).unwrap(),
                         mem_key: self.mem_key,
                         size: tail.len,
                     };
                 }
+                builder.push_sge(sge);
                 self.stats.tx_packets_coalesced.increment();
-                &sgl[..segment_count]
             };
 
-            let wqe_len = if short_format {
-                self.tx_wq
-                    .push(
-                        &oob.s_oob,
-                        sgl.iter().copied(),
-                        meta.offload_tcp_segmentation.then(|| sgl[0].size as u8),
-                        gd_client_unit_data,
-                    )
-                    .unwrap()
-            } else {
-                self.tx_wq
-                    .push(
-                        &oob,
-                        sgl.iter().copied(),
-                        meta.offload_tcp_segmentation.then(|| sgl[0].size as u8),
-                        gd_client_unit_data,
-                    )
-                    .unwrap()
-            };
-            PostedTx {
-                id: meta.id,
-                wqe_len,
-                bounced_len_with_padding: bounce_buffer.commit(),
-            }
+            assert!(builder.sge_count() <= hardware_segment_limit);
+        }
+        let wqe_len = builder
+            .finish()
+            .expect("caller ensured enough space for a max sized WQE");
+        let tx = PostedTx {
+            id: meta.id,
+            wqe_len,
+            bounced_len_with_padding: bounce_buffer.commit(),
         };
         Ok(Some(tx))
     }
@@ -1604,8 +1566,8 @@ mod tests {
         let tx_id = 1;
         let tx_metadata = net_backend::TxMetadata {
             id: TxId(tx_id),
-            segment_count: num_segments,
-            len: packet_len,
+            segment_count: num_segments as u8,
+            len: packet_len as u32,
             ..Default::default()
         };
         let expected_num_received_packets = 1;
@@ -1795,8 +1757,8 @@ mod tests {
         let packet_len = 1138;
         let metadata = net_backend::TxMetadata {
             id: TxId(tx_id),
-            segment_count: num_segments,
-            len: packet_len,
+            segment_count: num_segments as u8,
+            len: packet_len as u32,
             ..Default::default()
         };
 
@@ -1822,18 +1784,18 @@ mod tests {
     async fn test_tx_error_handling(driver: DefaultDriver) {
         let tx_id = 1;
         let expected_num_received_packets = 0;
-        let num_segments = 1;
+        let segment_count = 1;
         let packet_len = 1138;
         // LSO Enabled, but sending insufficient number of segments.
         let metadata = net_backend::TxMetadata {
             id: TxId(tx_id),
-            segment_count: num_segments,
-            len: packet_len,
-            offload_tcp_segmentation: true,
+            segment_count: segment_count as u8,
+            len: packet_len as u32,
+            flags: net_backend::TxFlags::new().with_offload_tcp_segmentation(true),
             ..Default::default()
         };
 
-        let (data_to_send, tx_segments) = build_tx_segments(packet_len, num_segments, metadata);
+        let (data_to_send, tx_segments) = build_tx_segments(packet_len, segment_count, metadata);
 
         let stats = test_endpoint(
             driver,

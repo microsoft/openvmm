@@ -49,6 +49,16 @@ export interface TestData {
     totalCount: number;
 }
 
+export interface LogEntry {
+  index: number;
+  timestamp: string;
+  relative: string;
+  severity: string;
+  source: string;
+  message: string; // message with attachment links
+  screenshot: string | null;
+}
+
 // Concurrency settings when fetching test results
 export const CONCURRENCY_FOREGROUND = 15;
 export const CONCURRENCY_BACKGROUND = 5;

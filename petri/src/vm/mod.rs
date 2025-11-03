@@ -958,6 +958,8 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     }
 
     async fn launch_vtl2_pipette(&self) -> anyhow::Result<()> {
+        tracing::debug!("Launching VTL 2 pipette...");
+
         // Start pipette through DiagClient
         let res = self
             .openhcl_diag()?
@@ -1102,6 +1104,7 @@ impl PetriVmFramebufferAccess for NoPetriVmFramebufferAccess {
 }
 
 /// Common processor topology information for the VM.
+#[derive(Debug)]
 pub struct ProcessorTopology {
     /// The number of virtual processors.
     pub vp_count: u32,

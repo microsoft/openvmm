@@ -429,6 +429,7 @@ impl PetriVmConfigOpenVmm {
             ide_disks,
             pcie_root_complexes: vec![],
             pcie_devices: vec![],
+            pcie_switches: vec![],
             vpci_devices,
             vmbus_devices,
 
@@ -456,6 +457,7 @@ impl PetriVmConfigOpenVmm {
             debugger_rpc: None,
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
+            efi_diagnostics_log_level: Default::default(), // TODO: Add config for tests
         };
 
         // Make the pipette connection listener.
@@ -1024,6 +1026,7 @@ impl PetriVmConfigSetupCore<'_> {
             no_persistent_secrets: !tpm_state_persistence,
             igvm_attest_test_config: None,
             test_gsp_by_id,
+            efi_diagnostics_log_level: Default::default(), // TODO: make configurable
         };
 
         Ok((ged, guest_request_send))

@@ -1448,10 +1448,7 @@ impl MshvHvcall {
                         | HvX64RegisterName::VsmVpSecureConfigVtl1
                 ));
             }
-            Some(Vtl::Vtl1) => {
-                todo!("TODO: allowed registers for VTL1");
-            }
-            Some(Vtl::Vtl0) => {
+            Some(Vtl::Vtl1) | Some(Vtl::Vtl0) => {
                 // Only VTL-private registers can go through this path.
                 // VTL-shared registers have to go through the kernel (either
                 // via the CPU context page or via the dedicated ioctl), as
@@ -1491,11 +1488,7 @@ impl MshvHvcall {
                         | HvArm64RegisterName::PrivilegesAndFeaturesInfo
                 ));
             }
-            Some(Vtl::Vtl1) => {
-                // TODO: allowed registers for VTL1
-                todo!();
-            }
-            Some(Vtl::Vtl0) => {
+            Some(Vtl::Vtl1) | Some(Vtl::Vtl0) => {
                 // Only VTL-private registers can go through this path.
                 // VTL-shared registers have to go through the kernel (either
                 // via the CPU context page or via the dedicated ioctl), as
@@ -2936,9 +2929,6 @@ impl Hcl {
 
         let caps = match self.isolation {
             IsolationType::None | IsolationType::Vbs => caps,
-            // TODO SNP: Return actions may be useful, but with alternate injection many of these need
-            // cannot actually be processed by the hypervisor without returning to VTL2.
-            // Filter them out for now.
             IsolationType::Snp => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available()),
