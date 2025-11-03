@@ -280,7 +280,7 @@ impl IoHandler {
                 match fault {
                     IoQueueFaultBehavior::CustomPayload(payload) => {
                         tracing::info!(
-                            "configured fault: admin completion custom payload write. completion: {:?}, payload size: {}",
+                            "configured fault: io completion custom payload write. completion: {:?}, payload size: {}",
                             &completion,
                             payload.len()
                         );
