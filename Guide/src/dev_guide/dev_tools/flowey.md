@@ -2,6 +2,8 @@
 
 Flowey is an in-house, custom Rust library for writing maintainable, cross-platform automation. It enables developers to define CI/CD pipelines and local workflows as type-safe Rust code that can generate backend-specific YAML (Azure DevOps, GitHub Actions) or execute directly on a local machine. Rather than writing automation logic in YAML with implicit dependencies, flowey treats automation as first-class Rust code with explicit, typed dependencies tracked through a directed acyclic graph (DAG).
 
+
+
 ## Why Flowey?
 
 Traditional CI/CD pipelines using YAML-based configuration (e.g., Azure DevOps Pipelines, GitHub Actions workflows) have several fundamental limitations that become increasingly problematic as projects grow in complexity:
@@ -39,3 +41,15 @@ Flowey addresses these issues by treating automation as **first-class Rust code*
 - **Portability**: Write once, generate YAML for any backend (ADO, GitHub Actions, or run locally)
 - **Reusability**: Nodes are composable building blocks that can be shared across pipelines
 - **Local Execution**: The same pipeline definition can run locally or in CI
+
+## Flowey's Directory Structure
+
+Flowey is architected as a standalone tool with a layered crate structure that separates project-agnostic core functionality from project-specific implementations:
+
+- **`flowey_core`**: Provides the core types and traits shared between user-facing and internal Flowey code, such as the essential abstractions for nodes and pipelines.
+- **`flowey`**: Thin wrapper around `flowey_core` that exposes the public API for defining nodes and pipelines.
+- **`flowey_cli`**: Command-line interface for running flowey - handles YAML generation, local execution, and pipeline orchestration.
+- **`schema_ado_yaml`**: Rust types for Azure DevOps YAML schemas used during pipeline generation.
+- **`flowey_lib_common`**: Ecosystem-wide reusable nodes (installing Rust, running Cargo, downloading tools, etc.) that could be useful across projects outside of OpenVMM.
+- **`flowey_lib_hvlite`**: OpenVMM-specific nodes and workflows that build on the common library primitives.
+- **`flowey_hvlite`**: The OpenVMM pipeline definitions that compose nodes from the libraries above into complete CI/CD workflows.
