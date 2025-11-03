@@ -32,18 +32,22 @@ struct ExpectedNvmeDeviceProperties {
 async fn nvme_relay_test_core(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     openhcl_cmdline: &str,
+    processor_topology: Option<ProcessorTopology>,
+    vtl2_base_address_type: Option<hvlite_defs::config::Vtl2BaseAddressType>,
     props: Option<ExpectedNvmeDeviceProperties>,
 ) -> Result<(), anyhow::Error> {
     let (vm, agent) = config
         .with_openhcl_command_line(openhcl_cmdline)
         .with_vmbus_redirect(true)
-        .with_processor_topology(ProcessorTopology {
+        .with_processor_topology(processor_topology.unwrap_or(ProcessorTopology {
             vp_count: 4, // Ideally, with 16GB RAM to match D4v5
             ..Default::default()
-        })
-        .with_vtl2_base_address_type(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
-            size: Some(512 * 1024 * 1024), // 512MB to be more than what is defined in the dev manifest json
-        })
+        }))
+        .with_vtl2_base_address_type(vtl2_base_address_type.unwrap_or(
+            hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+                size: Some(512 * 1024 * 1024), // 512MB to be more than what is defined in the dev manifest json
+            },
+        ))
         .run()
         .await?;
 
@@ -152,7 +156,7 @@ async fn nvme_relay_test_core(
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
 #[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
-    nvme_relay_test_core(config, "", None).await
+    nvme_relay_test_core(config, "", None, None, None).await
 }
 
 /// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
@@ -167,6 +171,65 @@ async fn nvme_relay_private_pool(
     nvme_relay_test_core(
         config,
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
+        None,
+        None,
+        Some(ExpectedNvmeDeviceProperties {
+            save_restore_supported: true,
+            qsize: 256, // private pool should allow contiguous allocations.
+            nvme_keepalive: false,
+        }),
+    )
+    .await
+}
+
+/// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
+/// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
+///
+/// There _should_ be enough private pool memory for the NVMe driver to
+/// allocate all of its buffers contiguously.
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
+async fn nvme_relay_heuristic_16vp_768mb_heavy(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    nvme_relay_test_core(
+        config,
+        "",
+        Some(ProcessorTopology {
+            vp_count: 16,
+            ..Default::default()
+        }),
+        Some(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            size: Some(768 * 1024 * 1024),
+        }),
+        Some(ExpectedNvmeDeviceProperties {
+            save_restore_supported: true,
+            qsize: 256, // private pool should allow contiguous allocations.
+            nvme_keepalive: false,
+        }),
+    )
+    .await
+}
+
+/// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
+/// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
+///
+/// There _should_ be enough private pool memory for the NVMe driver to
+/// allocate all of its buffers contiguously.
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
+async fn nvme_relay_32vp_500mb_very_heavy(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    nvme_relay_test_core(
+        config,
+        // Allocate 40MiB pages for private pool, what we expect future heuristics to pick for 32 vps and 500MB of VTL2 space.
+        "OPENHCL_ENABLE_VTL2_GPA_POOL=10240",
+        Some(ProcessorTopology {
+            vp_count: 32,
+            ..Default::default()
+        }),
+        Some(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            size: Some(500 * 1024 * 1024),
+        }),
         Some(ExpectedNvmeDeviceProperties {
             save_restore_supported: true,
             qsize: 256, // private pool should allow contiguous allocations.
