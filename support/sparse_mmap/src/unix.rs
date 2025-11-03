@@ -95,7 +95,7 @@ impl SparseMapping {
     /// The range will be aligned to the largest system page size that's smaller
     /// or equal to `len`.
     pub fn new(len: usize) -> Result<Self, Error> {
-        super::initialize_try_copy();
+        trycopy::initialize_try_copy();
 
         // Length of 0 return an OS error, so we need to handle it explicitly.
         if len == 0 {

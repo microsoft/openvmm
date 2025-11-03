@@ -332,14 +332,6 @@ impl OpenhclDmaManager {
         vtom: u64,
         isolation_type: virt::IsolationType,
     ) -> anyhow::Result<Self> {
-        tracing::info!(
-            ?shared_ranges,
-            ?private_ranges,
-            vtom,
-            ?isolation_type,
-            "create dma manager"
-        );
-
         let shared_pool = if shared_ranges.is_empty() {
             None
         } else {

@@ -1665,6 +1665,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
+name = "fast_memcpy"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+]
+
+[[package]]
 name = "fast_select"
 version = "0.0.0"
 dependencies = [
@@ -2740,6 +2747,7 @@ dependencies = [
  "pal_event",
  "sparse_mmap",
  "thiserror 2.0.16",
+ "trycopy",
  "zerocopy 0.8.25",
 ]
 
@@ -5013,9 +5021,7 @@ dependencies = [
  "sidecar_defs",
  "string_page_buf",
  "tdcall",
- "test_with_tracing",
  "thiserror 2.0.16",
- "tracing",
  "underhill_confidentiality",
  "x86defs",
  "zerocopy 0.8.25",
@@ -6881,13 +6887,12 @@ dependencies = [
 name = "sparse_mmap"
 version = "0.0.0"
 dependencies = [
- "cc",
- "criterion",
  "getrandom 0.3.3",
  "libc",
  "pal",
  "parking_lot",
  "thiserror 2.0.16",
+ "trycopy",
  "windows-sys 0.61.0",
  "zerocopy 0.8.25",
 ]
@@ -7680,6 +7685,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "trycopy"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "libc",
+ "thiserror 2.0.16",
+ "windows-sys 0.61.0",
+]
+
+[[package]]
 name = "typed-path"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8089,6 +8104,7 @@ name = "underhill_entry"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "fast_memcpy",
  "mimalloc",
  "openssl_crypto_only",
  "underhill_core",
@@ -8238,8 +8254,8 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "safeatomic",
- "sparse_mmap",
  "tracing",
+ "trycopy",
  "uevent",
  "vfio-bindings",
  "vfio_sys",
