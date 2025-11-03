@@ -114,7 +114,7 @@ impl Vtl2InterceptState {
             InterceptType::RetargetUnknownDeviceId => self
                 .retarget_unknown_device_id
                 .swap(false, Ordering::SeqCst),
-            InterceptType::Eoi => self.eoi.swap(true, Ordering::SeqCst),
+            InterceptType::Eoi => self.eoi.swap(false, Ordering::SeqCst),
         }
     }
 

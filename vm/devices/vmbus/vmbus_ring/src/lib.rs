@@ -257,6 +257,15 @@ impl RingRange {
         }
     }
 
+    /// Writes the full range using aligned writes of `u64` values.
+    ///
+    /// # Panics
+    /// Panics if the ring range is not exactly the size of `data`.
+    pub fn write_aligned_full<T: Ring>(&self, ring: &T, data: &[u64]) {
+        assert_eq!(self.size as usize, data.len() * 8);
+        ring.mem().write_aligned(self.off as usize, data.as_bytes());
+    }
+
     /// Retrieves a `MemoryRead` that allows for writing to the range.
     pub fn reader<'a, T: Ring>(&self, ring: &'a T) -> RingRangeReader<'a, T::Memory> {
         RingRangeReader {
