@@ -213,6 +213,7 @@ macro_rules! continue_rv {
 
 macro_rules! log_message {
     ($rv: expr, $msg: expr) => {
+        core::hint::black_box($rv.padding_3);
         log!($msg, $rv.padding_3);
     };
 }
@@ -252,7 +253,9 @@ pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
         log!("RV reached 64-bit mode, continuing");
         continue_rv!(tdxcontext);
         read_log_and_continue!(tdxcontext, "APIC_ID read in RV: {:#X}");
-        log!("reached the mailbox_spinloop, continuing");
-        continue_rv!(tdxcontext);
+        continue_rv!(tdxcontext); //means we've reached the spinloop
+        //read_log_and_continue!(tdxcontext, "EDX {:#X}");
+        // test: is the last continue necessary?
+        read_log_and_continue!(tdxcontext, "EDX {:#X}");
     }
 }

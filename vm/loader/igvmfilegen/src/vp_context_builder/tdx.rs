@@ -532,6 +532,57 @@ impl VpContextBuilder for TdxHardwareContext {
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
         byte_offset += 1;
         let l7_offset = byte_offset;
+
+
+        //BEGIN HACK: send a 32-bit message to the boot shim by writing EAX to padding_3
+        //send the value we'll spin on to the boot shim
+        // mov dx, 01h
+        //401032:       66 ba 01 00             mov    dx,0x1
+        //byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x66, 0xBA, 0x01, 0x00]);
+        //401030:       89 d0                   mov    eax,edx
+        // mov dx, 01h
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0xBA, 0x01, 0x00]);
+        // mov eax, edx
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x89, 0xD0]);
+
+        //mov [padding_3], eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x89, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, padding_3) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+        //END HACK
+
+        //BEGIN HACK: Spin until we get a message from the boot shim to continue
+        //The message is sent via padding_1
+        let debug_spinloop = byte_offset;
+        // mov eax, [padding_1]
+        // 401025:       8b 05 d5 0f 00 00       mov    eax,DWORD PTR [rip+0xfd5]        # 402000 <memory_location>
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x8B, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+
+        // test eax, eax
+        //401023:       85 c0                   test   eax,eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x85, 0xC0]);
+
+        // jz debug_spinloop
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
+        byte_offset += 1;
+        reset_page[byte_offset.wrapping_sub(1)] = (debug_spinloop.wrapping_sub(byte_offset)) as u8;
+
+        // xor eax, eax
+        //40102b:       31 c0                   xor    eax,eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xC0]);
+
+        // mov [padding_1], eax
+        //401000:       89 05 fa 0f 00 00       mov    DWORD PTR [rip+0xffa],eax        # 402000 <memory_location>
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x89, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, padding_1) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+        //END HACK
+
         //BEGIN HACK: Spin until we get a message from the boot shim to continue
         //The message is sent via padding_1
         let debug_spinloop = byte_offset;
