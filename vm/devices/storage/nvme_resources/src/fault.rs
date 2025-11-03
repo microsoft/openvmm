@@ -238,7 +238,6 @@ pub struct AdminQueueFaultConfig {
 /// use nvme_resources::fault::FaultConfiguration;
 /// use nvme_resources::fault::IoQueueFaultBehavior;
 /// use nvme_spec::Command;
-/// use std::time::Duration;
 /// use zerocopy::FromZeros;
 /// use zerocopy::IntoBytes;
 ///
