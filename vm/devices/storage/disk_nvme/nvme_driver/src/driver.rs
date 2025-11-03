@@ -72,9 +72,9 @@ pub struct NvmeDriver<T: DeviceBacking> {
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
     rescan_notifiers: Arc<RwLock<HashMap<u32, mesh::Sender<()>>>>,
-    /// NVMe namespaces associated with this driver. Mapping nsid to the NS.
+    /// NVMe namespaces associated with this driver. Mapping nsid to (NS, refcount).
     #[inspect(skip)]
-    namespaces: HashMap<u32, Arc<Namespace>>,
+    namespaces: HashMap<u32, (Arc<Namespace>, u32)>,
     /// Keeps the controller connected (CC.EN==1) while servicing.
     nvme_keepalive: bool,
     bounce_buffer: bool,
@@ -539,7 +539,13 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
-        if self.namespaces.contains_key(&nsid) {
+        if let Some(ns) = self.namespaces.get_mut(&nsid) {
+            // After reboot ns will be present but unused.
+            if ns.1 < 1 {
+                ns.1 += 1;
+                return Ok(ns.0.clone());
+            }
+
             // Prevent multiple references to the same Namespace.
             // Allowing this could lead to undefined behavior if multiple components
             // concurrently read or write to the same namespace. To avoid this,
@@ -559,7 +565,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             )
             .await?,
         );
-        self.namespaces.insert(nsid, namespace.clone());
+        self.namespaces.insert(nsid, (namespace.clone(), 1));
 
         // Append the sender to the list of notifiers for this nsid.
         let mut notifiers = self.rescan_notifiers.write();
@@ -596,7 +602,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             Ok(s) => {
                 let mut namespaces = vec![];
                 for ns in self.namespaces.values() {
-                    namespaces.push(ns.save()?);
+                    namespaces.push(ns.0.save()?);
                 }
                 Ok(NvmeDriverSavedState {
                     identify_ctrl: spec::IdentifyController::read_from_bytes(
@@ -804,14 +810,17 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             let (send, recv) = mesh::channel::<()>();
             this.namespaces.insert(
                 ns.nsid,
-                Arc::new(Namespace::restore(
-                    &driver,
-                    admin.issuer().clone(),
-                    recv,
-                    this.identify.clone().unwrap(),
-                    &this.io_issuers,
-                    ns,
-                )?),
+                (
+                    Arc::new(Namespace::restore(
+                        &driver,
+                        admin.issuer().clone(),
+                        recv,
+                        this.identify.clone().unwrap(),
+                        &this.io_issuers,
+                        ns,
+                    )?),
+                    0,
+                ),
             );
             this.rescan_notifiers.write().insert(ns.nsid, send);
         }
