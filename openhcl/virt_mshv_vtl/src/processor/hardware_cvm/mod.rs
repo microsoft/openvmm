@@ -65,6 +65,57 @@ use x86defs::cpuid::CpuidFunction;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
+/// Error type for proxy interrupt redirection failures.
+#[derive(Debug, thiserror::Error)]
+enum ProxyInterruptRedirectionError {
+    /// Multicast is not supported for proxy interrupt redirection.
+    #[error("multicast not supported")]
+    MulticastNotSupported,
+    /// Processor set operation failed.
+    #[error("processor set operation failed")]
+    ProcessorSetError,
+    /// Failed to map the redirected device interrupt in VTL2 kernel.
+    #[error("failed to map redirected device interrupt in VTL2 kernel")]
+    MapInterruptFailed,
+    /// HvCallRetargetDeviceInterrupt hypercall failed in hypervisor.
+    #[error("HvCallRetargetDeviceInterrupt with proxy redirect failed in hypervisor")]
+    RetargetDeviceInterruptFailed,
+}
+
+/// Manages redirected interrupt vector mapping in VTL2 for proxy interrupt redirection.
+struct RedirectedVectorMapping<'a> {
+    hcl: &'a hcl::ioctl::Hcl,
+    apic_id: u32,
+    redirected_vector: u32,
+}
+
+impl<'a> RedirectedVectorMapping<'a> {
+    /// Creates a new mapping in VTL2 kernel for proxy interrupt redirection. This will be automatically
+    /// unmapped when the guard is dropped unless explicitly disarmed.
+    fn new(hcl: &'a hcl::ioctl::Hcl, vector: u32, apic_id: u32) -> Option<Self> {
+        let redirected_vector = hcl.map_redirected_device_interrupt(vector, apic_id, true)?;
+        Some(Self {
+            hcl,
+            apic_id,
+            redirected_vector,
+        })
+    }
+
+    /// Returns the redirected vector value returned by the VTL2 kernel.
+    fn redirected_vector(&self) -> u32 {
+        self.redirected_vector
+    }
+}
+
+impl Drop for RedirectedVectorMapping<'_> {
+    /// Drop guard to unmap the interrupt vector in VTL2 kernel.
+    fn drop(&mut self) {
+        self.hcl
+            .map_redirected_device_interrupt(self.redirected_vector, self.apic_id, false)
+            .expect("Failed to unmap VTL2 vector for proxy device interrupt");
+    }
+}
+
 impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     fn validate_register_access(
         &mut self,
@@ -887,16 +938,22 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
 
         if self.vp.partition.hcl.proxy_interrupt_redirect() {
             // Try proxy interrupt redirection. Fall back to normal proxy delivery upon any error.
-            if let Some(Ok(())) = self.try_proxy_interrupt_redirection(
+            match self.try_proxy_interrupt_redirection(
                 device_id,
                 entry,
                 vector,
                 multicast,
                 &target_processors,
             ) {
-                return Ok(());
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        error = %err,
+                        "Proxy interrupt redirection failed, using normal proxy delivery"
+                    );
+                }
             }
-            tracing::warn!("Proxy interrupt redirection failed, using normal proxy delivery");
         }
 
         self.vp.partition.hcl.retarget_device_interrupt(
@@ -918,10 +975,10 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         vector: u32,
         multicast: bool,
         target_processors: &ProcessorSet<'_>,
-    ) -> Option<HvResult<()>> {
+    ) -> Result<(), ProxyInterruptRedirectionError> {
         // Proxy interrupt redirection doesn't support multicast.
         if multicast {
-            return None;
+            return Err(ProxyInterruptRedirectionError::MulticastNotSupported);
         }
 
         // Register the interrupt handler in VTL2 for only the first processor in the target set.
@@ -929,62 +986,47 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         // when forwarding the hypercall to the hypervisor.
 
         // Get the first processor from the target processor set.
-        let first_processor_index = target_processors.iter().next()?;
+        let first_processor_index = target_processors
+            .iter()
+            .next()
+            .ok_or(ProxyInterruptRedirectionError::ProcessorSetError)?;
         let first_apic_id = self
             .vp
             .partition
             .vps
-            .get(first_processor_index as usize)?
+            .get(first_processor_index as usize)
+            .ok_or(ProxyInterruptRedirectionError::ProcessorSetError)?
             .vp_info
             .apic_id;
 
-        // Map the interrupt vector in VTL2.
-        let redirected_vector =
-            self.vp
-                .partition
-                .hcl
-                .map_redirected_device_interrupt(vector, first_apic_id, true)?;
+        // Map the interrupt vector in VTL2 and create guard for automatic cleanup.
+        let guard = RedirectedVectorMapping::new(&self.vp.partition.hcl, vector, first_apic_id)
+            .ok_or(ProxyInterruptRedirectionError::MapInterruptFailed)?;
 
         // Create new sparse ProcessorSet containing only the first processor.
         let mask_index = first_processor_index / 64;
         let processor_mask = 1u64 << (first_processor_index % 64);
         let masks = [processor_mask];
-        let redirected_processor =
-            match ProcessorSet::from_processor_masks(1u64 << mask_index, &masks) {
-                Some(set) => set,
-                None => {
-                    // Undo interrupt vector mapping in VTL2 and fallback to proxy interrupt delivery
-                    self.vp
-                        .partition
-                        .hcl
-                        .map_redirected_device_interrupt(vector, first_apic_id, false)
-                        .expect("Failed to unmap VTL2 vector for proxy device interrupt");
-                    return None;
-                }
-            };
+        let redirected_processor = ProcessorSet::from_processor_masks(1u64 << mask_index, &masks)
+            .ok_or(ProxyInterruptRedirectionError::ProcessorSetError)?;
 
         // Issue HvCallRetargetDeviceInterrupt hypercall with posted interrupt redirection enabled
-        let result = self.vp.partition.hcl.retarget_device_interrupt(
-            device_id,
-            entry,
-            redirected_vector,
-            multicast,
-            redirected_processor,
-            true,
-        );
+        self.vp
+            .partition
+            .hcl
+            .retarget_device_interrupt(
+                device_id,
+                entry,
+                guard.redirected_vector(),
+                multicast,
+                redirected_processor,
+                true,
+            )
+            .map_err(|_| ProxyInterruptRedirectionError::RetargetDeviceInterruptFailed)?;
 
-        match result {
-            Ok(()) => Some(Ok(())),
-            Err(_) => {
-                // Undo interrupt vector mapping in VTL2 and fallback to proxy interrupt delivery
-                self.vp
-                    .partition
-                    .hcl
-                    .map_redirected_device_interrupt(vector, first_apic_id, false)
-                    .expect("Failed to unmap VTL2 vector for proxy device interrupt");
-                None
-            }
-        }
+        // Disarm the guard upon success to prevent unmapping.
+        std::mem::forget(guard);
+        Ok(())
     }
 
     pub(crate) fn hcvm_validate_flush_inputs(

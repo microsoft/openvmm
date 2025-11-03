@@ -1721,6 +1721,11 @@ impl<'a> UhProtoPartition<'a> {
             // This offers better performance for device interrupt delivery to VTL0.
             let caps = hcl.get_vsm_capabilities().map_err(Error::Hcl)?;
             hcl.set_proxy_interrupt_redirect(caps.proxy_interrupt_redirect_available());
+            tracing::info!(
+                CVM_ALLOWED,
+                proxy_interrupt_redirect = caps.proxy_interrupt_redirect_available(),
+                "Proxy interrupt redirect capability"
+            );
         }
 
         // Do per-VP HCL initialization.
