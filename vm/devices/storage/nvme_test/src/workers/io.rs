@@ -269,7 +269,7 @@ impl IoHandler {
                 status: spec::CompletionStatus::new().with_status(result.status.0),
             };
 
-            // Apply a completion queue fault only to synchronously processed admin commands
+            // Apply a completion queue fault only to synchronously processed IO commands
             // (Ignore namespace change and sq delete complete events for now).
             if state.fault_configuration.fault_active.get()
                 && let Some(fault) = Self::get_configured_fault_behavior(
