@@ -255,7 +255,7 @@ pub struct AdminQueueFaultConfig {
 ///
 ///     return FaultConfiguration::new(fault_start_updater.cell())
 ///         .with_io_queue_fault(
-///             IoQueueFault::new().with_completion_queue_fault(
+///             IoQueueFaultConfig::new(fault_start_updater.cell()).with_completion_queue_fault(
 ///                 CommandMatch {
 ///                     command: command_io_queue,
 ///                     mask: mask.as_bytes().try_into().expect("mask should be 64 bytes"),
