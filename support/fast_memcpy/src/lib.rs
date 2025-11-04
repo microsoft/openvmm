@@ -325,11 +325,13 @@ const ARCH_LARGE_COPY_THRESHOLD: usize = if cfg!(target_arch = "x86_64") {
 /// `T`--the caller must handle the tail separately, but the buffers must include
 /// a full tail.
 unsafe fn arch_copy_forward_no_tail<T>(dest: *mut u8, src: *const u8, len: usize) {
+    // On x86_64, use `rep movsq` for large copies. This seems to be fast on
+    // Intel and AMD, on aligned and unaligned data. (AMD's `rep movsb` is slow
+    // on unaligned data).
     #[cfg(target_arch = "x86_64")]
     {
-        // On x86_64, use `rep movsq` for large copies. This seems to be fast on
-        // Intel and AMD, on aligned and unaligned data. (AMD's `rep movsb` is slow
-        // on unaligned data).
+        // Copy the buffer minus the tail, but copy part of the tail if needed to
+        // make the length a multiple of 8.
         const { assert!(size_of::<T>() >= 8) };
         let count = (len - size_of::<T>()).div_ceil(8);
         unsafe {
@@ -343,7 +345,10 @@ unsafe fn arch_copy_forward_no_tail<T>(dest: *mut u8, src: *const u8, len: usize
         }
     }
     #[cfg(not(target_arch = "x86_64"))]
-    unreachable!();
+    {
+        let _ = (dest, src, len);
+        unreachable!();
+    }
 }
 
 #[cfg(test)]
