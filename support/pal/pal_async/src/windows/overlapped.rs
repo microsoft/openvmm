@@ -123,7 +123,12 @@ enum IssueState<T> {
 struct IoInner<T> {
     overlapped: Overlapped,
     state: Mutex<InnerState>,
+    // `buffers` is aliased and potentially mutated by the kernel while the IO
+    // is pending, so use `UnsafeCell` to allow interior mutability.
     buffers: UnsafeCell<T>,
+    // This structure cannot move while an IO is pending, since the kernel will
+    // mutate its contents and keeps a pointer to its location. Prevent it from
+    // being accidentally unpinned and moved.
     _pin: std::marker::PhantomPinned,
 }
 
