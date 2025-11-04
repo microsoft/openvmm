@@ -21,10 +21,10 @@ pub struct ReadOnlyCapability<T> {
 
 impl<T: IntoBytes + Immutable + KnownLayout> ReadOnlyCapability<T> {
     /// Create a new [`ReadOnlyCapability`]
-    pub fn new(label: impl Into<String>, capability_id: CapabilityId, data: T) -> Self {
+    pub fn new(label: impl Into<String>, capability_id: Option<CapabilityId>, data: T) -> Self {
         Self {
             label: label.into(),
-            capability_id,
+            capability_id: capability_id.unwrap_or(CapabilityId::VENDOR_SPECIFIC),
             data,
         }
     }

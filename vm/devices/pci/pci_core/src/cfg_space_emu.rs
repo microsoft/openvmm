@@ -1592,11 +1592,7 @@ mod tests {
         assert_eq!(read_cfg(&emu, 0), 0x2222_1111);
         assert_eq!(read_cfg(&emu, 4) & 0x10_0000, 0); // Capabilities pointer
 
-        let emu = create_type1_emulator(vec![Box::new(ReadOnlyCapability::new(
-            "foo",
-            CapabilityId::VENDOR_SPECIFIC,
-            0,
-        ))]);
+        let emu = create_type1_emulator(vec![Box::new(ReadOnlyCapability::new("foo", None, 0))]);
         assert_eq!(read_cfg(&emu, 0), 0x2222_1111);
         assert_eq!(read_cfg(&emu, 4) & 0x10_0000, 0x10_0000); // Capabilities pointer
     }
@@ -1737,11 +1733,7 @@ mod tests {
     #[test]
     fn test_type1_is_pcie_device() {
         // Test Type 1 device without PCIe capability
-        let emu = create_type1_emulator(vec![Box::new(ReadOnlyCapability::new(
-            "foo",
-            CapabilityId::VENDOR_SPECIFIC,
-            0,
-        ))]);
+        let emu = create_type1_emulator(vec![Box::new(ReadOnlyCapability::new("foo", None, 0))]);
         assert!(!emu.is_pcie_device());
 
         // Test Type 1 device with PCIe capability
@@ -1753,17 +1745,9 @@ mod tests {
 
         // Test Type 1 device with multiple capabilities including PCIe
         let emu = create_type1_emulator(vec![
-            Box::new(ReadOnlyCapability::new(
-                "foo",
-                CapabilityId::VENDOR_SPECIFIC,
-                0,
-            )),
+            Box::new(ReadOnlyCapability::new("foo", None, 0)),
             Box::new(PciExpressCapability::new(DevicePortType::Endpoint, None)),
-            Box::new(ReadOnlyCapability::new(
-                "bar",
-                CapabilityId::VENDOR_SPECIFIC,
-                0,
-            )),
+            Box::new(ReadOnlyCapability::new("bar", None, 0)),
         ]);
         assert!(emu.is_pcie_device());
     }
@@ -1782,11 +1766,7 @@ mod tests {
                 type0_sub_vendor_id: 0,
                 type0_sub_system_id: 0,
             },
-            vec![Box::new(ReadOnlyCapability::new(
-                "foo",
-                CapabilityId::VENDOR_SPECIFIC,
-                0,
-            ))],
+            vec![Box::new(ReadOnlyCapability::new("foo", None, 0))],
             DeviceBars::new(),
         );
         assert!(!emu.is_pcie_device());
@@ -1824,17 +1804,9 @@ mod tests {
                 type0_sub_system_id: 0,
             },
             vec![
-                Box::new(ReadOnlyCapability::new(
-                    "foo",
-                    CapabilityId::VENDOR_SPECIFIC,
-                    0,
-                )),
+                Box::new(ReadOnlyCapability::new("foo", None, 0)),
                 Box::new(PciExpressCapability::new(DevicePortType::Endpoint, None)),
-                Box::new(ReadOnlyCapability::new(
-                    "bar",
-                    CapabilityId::VENDOR_SPECIFIC,
-                    0,
-                )),
+                Box::new(ReadOnlyCapability::new("bar", None, 0)),
             ],
             DeviceBars::new(),
         );
@@ -1864,7 +1836,7 @@ mod tests {
         let pcie_cap = PciExpressCapability::new(DevicePortType::Endpoint, None);
         assert_eq!(pcie_cap.capability_id(), CapabilityId::PCI_EXPRESS);
 
-        let read_only_cap = ReadOnlyCapability::new("test", CapabilityId::VENDOR_SPECIFIC, 0u32);
+        let read_only_cap = ReadOnlyCapability::new("test", None, 0u32);
         assert_eq!(read_only_cap.capability_id(), CapabilityId::VENDOR_SPECIFIC);
     }
 
@@ -2011,11 +1983,7 @@ mod tests {
                 type0_sub_vendor_id: 0,
                 type0_sub_system_id: 0,
             },
-            vec![Box::new(ReadOnlyCapability::new(
-                "foo",
-                CapabilityId::VENDOR_SPECIFIC,
-                0,
-            ))],
+            vec![Box::new(ReadOnlyCapability::new("foo", None, 0))],
             DeviceBars::new(),
         );
         assert!(!common_emu_no_pcie.is_pcie_device());
