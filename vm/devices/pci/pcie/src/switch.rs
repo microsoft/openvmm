@@ -188,7 +188,7 @@ impl GenericPcieSwitch {
                     Some(definition.hotplug),
                     slot_number,
                 );
-                (i as u8, (port_name.into(), port))
+                (i, (port_name.into(), port))
             })
             .collect();
 
