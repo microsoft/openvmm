@@ -640,6 +640,7 @@ impl Pipeline {
             name: owned_name,
             published_by_job: None,
             used_by_jobs: BTreeSet::new(),
+            force_published: false,
         });
 
         (PublishArtifact { idx }, UseArtifact { idx })
@@ -657,6 +658,30 @@ impl Pipeline {
             PublishTypedArtifact(publish, std::marker::PhantomData),
             UseTypedArtifact(use_artifact, std::marker::PhantomData),
         )
+    }
+
+    /// Mark an artifact to be force published, meaning it will be published
+    /// even if the job fails.
+    ///
+    /// This is useful for artifacts that contain diagnostic information or logs
+    /// that are needed to debug failures.
+    #[track_caller]
+    pub fn force_publish_artifact(&mut self, artifact: &PublishArtifact) -> &mut Self {
+        self.artifacts[artifact.idx].force_published = true;
+        self
+    }
+
+    /// Mark a typed artifact to be force published, meaning it will be published
+    /// even if the job fails.
+    ///
+    /// This is useful for artifacts that contain diagnostic information or logs
+    /// that are needed to debug failures.
+    #[track_caller]
+    pub fn force_publish_typed_artifact<T: Artifact>(
+        &mut self,
+        artifact: &PublishTypedArtifact<T>,
+    ) -> &mut Self {
+        self.force_publish_artifact(&artifact.0)
     }
 
     /// (ADO only) Set the pipeline-level name.
@@ -1204,9 +1229,12 @@ impl PipelineJob<'_> {
         self
     }
 
-    /// Only run the job if the specified condition is true.
+    /// (ADO+Local Only) Only run the job if the specified condition is true.
     pub fn with_condition(self, cond: UseParameter<bool>) -> Self {
         self.pipeline.jobs[self.job_idx].cond_param_idx = Some(cond.idx);
+        self.pipeline.parameters[cond.idx]
+            .used_by_jobs
+            .insert(self.job_idx);
         self
     }
 
@@ -1338,6 +1366,7 @@ pub mod internal {
         pub name: String,
         pub published_by_job: Option<usize>,
         pub used_by_jobs: BTreeSet<usize>,
+        pub force_published: bool,
     }
 
     #[derive(Debug)]

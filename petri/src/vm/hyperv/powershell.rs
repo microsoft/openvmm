@@ -843,7 +843,7 @@ pub async fn hyperv_halt_events(
 ) -> anyhow::Result<Vec<WinEvent>> {
     let vmid = vmid.to_string();
     run_get_winevent(
-        &[HYPERV_WORKER_TABLE],
+        &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
         Some(start_time),
         Some(&vmid),
         &HALT_EVENT_IDS,

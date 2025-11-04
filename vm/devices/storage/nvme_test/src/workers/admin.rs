@@ -32,10 +32,10 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use mesh::rpc::Rpc;
+use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::CommandMatch;
 use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::NamespaceChange;
-use nvme_resources::fault::QueueFaultBehavior;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
@@ -519,7 +519,7 @@ impl AdminHandler {
                     )
                 {
                     match fault {
-                        QueueFaultBehavior::Update(command_updated) => {
+                        AdminQueueFaultBehavior::Update(command_updated) => {
                             tracing::info!(
                                 "configured fault: admin command updated in sq. original: {:?},\n new: {:?}",
                                 &command,
@@ -527,29 +527,29 @@ impl AdminHandler {
                             );
                             command = *command_updated;
                         }
-                        QueueFaultBehavior::Drop => {
+                        AdminQueueFaultBehavior::Drop => {
                             tracing::info!(
                                 "configured fault: admin command dropped from sq {:?}",
                                 &command
                             );
                             return Ok(());
                         }
-                        QueueFaultBehavior::Delay(duration) => {
+                        AdminQueueFaultBehavior::Delay(duration) => {
                             self.timer.sleep(*duration).await;
                         }
-                        QueueFaultBehavior::Panic(message) => {
+                        AdminQueueFaultBehavior::Panic(message) => {
                             panic!(
                                 "configured fault: admin command panic with command: {:?} and message: {}",
                                 &command, &message
                             );
                         }
-                        QueueFaultBehavior::CustomPayload(_) => {
+                        AdminQueueFaultBehavior::CustomPayload(_) => {
                             panic!(
                                 "bad fault configuration: custom payloads are not applicable to admin submission commands. command: {:?}",
                                 &command
                             );
                         }
-                        QueueFaultBehavior::Verify(send) => {
+                        AdminQueueFaultBehavior::Verify(send) => {
                             // Verify that the command was received.
                             if let Some(send) = send.take() {
                                 send.send(());
@@ -663,7 +663,7 @@ impl AdminHandler {
             )
         {
             match fault {
-                QueueFaultBehavior::Update(completion_updated) => {
+                AdminQueueFaultBehavior::Update(completion_updated) => {
                     tracing::info!(
                         "configured fault: admin completion updated in cq. command: {:?},original: {:?},\n new: {:?}",
                         &command,
@@ -672,7 +672,7 @@ impl AdminHandler {
                     );
                     completion = completion_updated.clone();
                 }
-                QueueFaultBehavior::Drop => {
+                AdminQueueFaultBehavior::Drop => {
                     tracing::info!(
                         "configured fault: admin completion dropped from cq. command: {:?}, completion: {:?}",
                         &command,
@@ -680,16 +680,16 @@ impl AdminHandler {
                     );
                     return Ok(());
                 }
-                QueueFaultBehavior::Delay(duration) => {
+                AdminQueueFaultBehavior::Delay(duration) => {
                     self.timer.sleep(*duration).await;
                 }
-                QueueFaultBehavior::Panic(message) => {
+                AdminQueueFaultBehavior::Panic(message) => {
                     panic!(
                         "configured fault: admin completion panic with command: {:?}, completion: {:?} and message: {}",
                         &command, &completion, &message
                     );
                 }
-                QueueFaultBehavior::CustomPayload(payload) => {
+                AdminQueueFaultBehavior::CustomPayload(payload) => {
                     tracing::info!(
                         "configured fault: admin completion custom payload write. completion: {:?}, payload size: {}",
                         &completion,
@@ -702,7 +702,7 @@ impl AdminHandler {
                         .write(&self.config.mem, payload)
                         .expect("configured fault failure: failed to write custom payload");
                 }
-                QueueFaultBehavior::Verify(send) => {
+                AdminQueueFaultBehavior::Verify(send) => {
                     // Verify that the command was received.
                     if let Some(send) = send.take() {
                         send.send(());
@@ -1013,6 +1013,7 @@ impl AdminHandler {
             cqid,
             interrupt,
             namespaces,
+            self.config.fault_configuration.io_fault.clone(),
         );
         sq.task.insert(&sq.driver, "nvme-io", state);
         sq.task.start();
@@ -1188,9 +1189,9 @@ impl AdminHandler {
 
     /// Returns a mutable reference to the fault behavior for a given command if a fault is configured.
     fn get_configured_fault_behavior_mut<'a, T: Clone>(
-        fault_configs: &'a mut [(CommandMatch, QueueFaultBehavior<T>)],
+        fault_configs: &'a mut [(CommandMatch, AdminQueueFaultBehavior<T>)],
         command: &'a nvme_spec::Command,
-    ) -> Option<&'a mut QueueFaultBehavior<T>> {
+    ) -> Option<&'a mut AdminQueueFaultBehavior<T>> {
         fault_configs
             .iter_mut()
             .find(|(pattern, _)| match_command_pattern(pattern, command))

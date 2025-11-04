@@ -65,6 +65,7 @@ use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_blockdevice::BlockDeviceResolver;
 use disk_blockdevice::OpenBlockDeviceConfig;
+use firmware_uefi::LogLevel;
 use firmware_uefi::UefiCommandSet;
 use futures::executor::block_on;
 use futures::future::join_all;
@@ -2207,6 +2208,16 @@ async fn new_underhill_vm(
                 } else {
                     UefiCommandSet::Aarch64
                 },
+                diagnostics_log_level: {
+                    use get_protocol::dps_json::EfiDiagnosticsLogLevelType as LogLevelType;
+                    let level = dps.general.efi_diagnostics_log_level.0;
+                    match level {
+                        x if x == LogLevelType::DEFAULT.0 => LogLevel::make_default(),
+                        x if x == LogLevelType::INFO.0 => LogLevel::make_info(),
+                        x if x == LogLevelType::FULL.0 => LogLevel::make_full(),
+                        _ => LogLevel::make_default(),
+                    }
+                },
             };
 
             let (watchdog_send, watchdog_recv) = mesh::channel();
@@ -2299,6 +2310,11 @@ async fn new_underhill_vm(
             "processor idle emulator unsupported for underhill"
         );
     }
+
+    // Set the callback in GET to trigger the debug interrupt.
+    let p = partition.clone();
+    let debug_interrupt_callback = move |vtl: u8| p.assert_debug_interrupt(vtl);
+    get_client.set_debug_interrupt_callback(Box::new(debug_interrupt_callback));
 
     let mut input_distributor = InputDistributor::new(remote_console_cfg.input);
     resolver.add_async_resolver::<KeyboardInputHandleKind, _, MultiplexedInputHandle, _>(
@@ -2781,7 +2797,7 @@ async fn new_underhill_vm(
         0..=1,
         0,
         "bsp",
-        Arc::new(virt::irqcon::ApicLintLineTarget::new(
+        Arc::new(vmm_core::emuplat::apic::ApicLintLineTarget::new(
             partition.clone(),
             Vtl::Vtl0,
         )),
@@ -2948,6 +2964,7 @@ async fn new_underhill_vm(
                                 .context("failed to create direct mmio accessor")?,
                         )
                     },
+                    vtom,
                 );
 
                 // Allow NVMe devices.
@@ -3077,6 +3094,7 @@ async fn new_underhill_vm(
                     let device = Arc::new(device);
                     Ok((device.clone(), VpciInterruptMapper::new(device)))
                 },
+                vtom,
             )
             .await?;
         }
@@ -3396,6 +3414,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         cxl_memory_enabled: _,
 
         // TODO: decide whether these need to be validated here
+        efi_diagnostics_log_level: _,
         guest_state_encryption_policy: _,
         guest_state_lifetime: _,
         management_vtl_features: _,

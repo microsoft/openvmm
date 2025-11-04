@@ -83,6 +83,7 @@ use vmbus_core::HvsockConnectResult;
 use vmbus_core::MaxVersionInfo;
 use vmbus_core::OutgoingMessage;
 use vmbus_core::TaggedStream;
+use vmbus_core::VMBUS_SINT;
 use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
 pub use vmbus_core::protocol::GpadlId;
@@ -99,7 +100,6 @@ use vmcore::synic::MessagePort;
 use vmcore::synic::MonitorPageGpas;
 use vmcore::synic::SynicPortAccess;
 
-const SINT: u8 = 2;
 pub const REDIRECT_SINT: u8 = 7;
 pub const REDIRECT_VTL: Vtl = Vtl::Vtl2;
 const SHARED_EVENT_CONNECTION_ID: u32 = 2;
@@ -463,7 +463,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
         let (redirect_vtl, redirect_sint) = if self.use_message_redirect {
             (REDIRECT_VTL, REDIRECT_SINT)
         } else {
-            (self.vtl, SINT)
+            (self.vtl, VMBUS_SINT)
         };
 
         // If this server is not for VTL2, use a server-specific connection ID rather than the
@@ -1019,9 +1019,10 @@ impl ServerTask {
 
         let channel = self.inner.channels.get_mut(&offer_id).unwrap();
         for gpadl in &gpadls {
-            if let Ok(buf) =
-                MultiPagedRangeBuf::new(gpadl.request.count.into(), gpadl.request.buf.clone())
-            {
+            if let Ok(buf) = MultiPagedRangeBuf::from_range_buffer(
+                gpadl.request.count.into(),
+                gpadl.request.buf.clone(),
+            ) {
                 channel.gpadls.add(gpadl.request.id, buf);
             }
         }
@@ -1556,7 +1557,7 @@ impl Notifier for ServerTaskInner {
             channels::Action::Gpadl(gpadl_id, count, buf) => {
                 channel.gpadls.add(
                     gpadl_id,
-                    MultiPagedRangeBuf::new(count.into(), buf.clone()).unwrap(),
+                    MultiPagedRangeBuf::from_range_buffer(count.into(), buf.clone()).unwrap(),
                 );
                 handle(
                     offer_id,
@@ -1791,11 +1792,11 @@ impl ServerTaskInner {
         let (target_vtl, target_sint) = if open_params.flags.redirect_interrupt() {
             (self.redirect_vtl, self.redirect_sint)
         } else {
-            (self.vtl, SINT)
+            (self.vtl, VMBUS_SINT)
         };
 
         let guest_event_port = self.synic.new_guest_event_port(
-            VmbusServer::get_child_event_port_id(open_params.channel_id, SINT, self.vtl),
+            VmbusServer::get_child_event_port_id(open_params.channel_id, VMBUS_SINT, self.vtl),
             target_vtl,
             target_vp,
             target_sint,

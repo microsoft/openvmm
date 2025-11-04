@@ -88,7 +88,7 @@ fn test_version_negotiation_multiclient_vtl() {
     let mut env = TestEnv::new();
 
     let target_info = TargetInfo::new()
-        .with_sint(SINT)
+        .with_sint(VMBUS_SINT)
         .with_vtl(2)
         .with_feature_flags(FeatureFlags::new().into());
 
@@ -133,7 +133,7 @@ fn test_version_negotiation_feature_flags() {
 
     // Test with no feature flags.
     let mut target_info = TargetInfo::new()
-        .with_sint(SINT)
+        .with_sint(VMBUS_SINT)
         .with_vtl(0)
         .with_feature_flags(FeatureFlags::new().into());
     test_initiate_contact(
@@ -399,7 +399,7 @@ fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
         .unwrap();
 
     let mut target_info = TargetInfo::new()
-        .with_sint(SINT)
+        .with_sint(VMBUS_SINT)
         .with_vtl(2)
         .with_feature_flags(FeatureFlags::new().into());
     if version >= Version::Copper {
@@ -788,12 +788,12 @@ fn test_save_restore_with_connection() {
     env.gpadl(3, 31);
 
     // Test Opening, Open, and Closing save for reserved channels
-    env.open_reserved(7, 1, SINT.into());
-    env.open_reserved(8, 2, SINT.into());
-    env.open_reserved(9, 3, SINT.into());
+    env.open_reserved(7, 1, VMBUS_SINT.into());
+    env.open_reserved(8, 2, VMBUS_SINT.into());
+    env.open_reserved(9, 3, VMBUS_SINT.into());
     env.c().open_complete(offer_id8, 0);
     env.c().open_complete(offer_id9, 0);
-    env.close_reserved(9, 3, SINT.into());
+    env.close_reserved(9, 3, VMBUS_SINT.into());
 
     // Revoke an offer but don't have the "guest" release it, so we can then mark it as
     // reoffered.
@@ -853,7 +853,7 @@ fn test_save_restore_with_connection() {
 
     // Check reserved channels have been restored to the same state
     env.c().open_complete(offer_id7, 0);
-    env.close_reserved(8, 2, SINT.into());
+    env.close_reserved(8, 2, VMBUS_SINT.into());
     env.c().close_complete(offer_id8);
     env.c().close_complete(offer_id9);
 
@@ -1146,7 +1146,7 @@ fn test_pending_messages() {
 
     env.notifier.messages.clear();
     env.notifier.pend_messages = true;
-    env.open_reserved(2, 4, SINT.into());
+    env.open_reserved(2, 4, VMBUS_SINT.into());
     env.c().open_complete(offer_id2, protocol::STATUS_SUCCESS);
 
     // Reserved channel message should not be queued, but just discarded if it cannot be sent.
@@ -1297,18 +1297,24 @@ fn test_reserved_channels() {
     env.notifier.messages.clear();
 
     // Open responses should be sent to the provided target
-    env.open_reserved(1, 1, SINT.into());
+    env.open_reserved(1, 1, VMBUS_SINT.into());
     env.c().open_complete(offer_id1, 0);
     env.notifier.check_message_with_target(
         OutgoingMessage::new(&protocol::OpenResult {
             channel_id: ChannelId(1),
             ..FromZeros::new_zeroed()
         }),
-        MessageTarget::ReservedChannel(offer_id1, ConnectionTarget { vp: 1, sint: SINT }),
+        MessageTarget::ReservedChannel(
+            offer_id1,
+            ConnectionTarget {
+                vp: 1,
+                sint: VMBUS_SINT,
+            },
+        ),
     );
-    env.open_reserved(2, 2, SINT.into());
+    env.open_reserved(2, 2, VMBUS_SINT.into());
     env.c().open_complete(offer_id2, 0);
-    env.open_reserved(3, 3, SINT.into());
+    env.open_reserved(3, 3, VMBUS_SINT.into());
     env.c().open_complete(offer_id3, 0);
 
     // This should fail
@@ -1319,7 +1325,7 @@ fn test_reserved_channels() {
     env.complete_reset();
 
     // Closing while disconnected should work
-    env.close_reserved(2, 2, SINT.into());
+    env.close_reserved(2, 2, VMBUS_SINT.into());
     env.c().close_complete(offer_id2);
 
     env.notifier.messages.clear();
@@ -1332,20 +1338,26 @@ fn test_reserved_channels() {
     env.c().gpadl_create_complete(offer_id2, GpadlId(10), 0);
 
     // Reopening the same offer should work
-    env.open_reserved(2, 3, SINT.into());
+    env.open_reserved(2, 3, VMBUS_SINT.into());
     env.c().open_complete(offer_id2, 0);
 
     env.notifier.messages.clear();
 
     // The channel should still be open after disconnect/reconnect
     // and close responses should be sent to the provided target
-    env.close_reserved(1, 4, SINT.into());
+    env.close_reserved(1, 4, VMBUS_SINT.into());
     env.c().close_complete(offer_id1);
     env.notifier.check_message_with_target(
         OutgoingMessage::new(&protocol::CloseReservedChannelResponse {
             channel_id: ChannelId(1),
         }),
-        MessageTarget::ReservedChannel(offer_id1, ConnectionTarget { vp: 4, sint: SINT }),
+        MessageTarget::ReservedChannel(
+            offer_id1,
+            ConnectionTarget {
+                vp: 4,
+                sint: VMBUS_SINT,
+            },
+        ),
     );
     env.teardown_gpadl(1, 10);
     env.c().gpadl_teardown_complete(offer_id1, GpadlId(10));
@@ -1371,7 +1383,7 @@ fn test_disconnected_reset() {
 
     env.gpadl(1, 10);
     env.c().gpadl_create_complete(offer_id1, GpadlId(10), 0);
-    env.open_reserved(1, 1, SINT.into());
+    env.open_reserved(1, 1, VMBUS_SINT.into());
     env.c().open_complete(offer_id1, 0);
 
     env.c().handle_unload();
@@ -1394,13 +1406,13 @@ fn test_disconnected_reset() {
 
     env.gpadl(2, 20);
     env.c().gpadl_create_complete(offer_id2, GpadlId(20), 0);
-    env.open_reserved(2, 2, SINT.into());
+    env.open_reserved(2, 2, VMBUS_SINT.into());
     env.c().open_complete(offer_id2, 0);
 
     env.c().handle_unload();
     env.complete_reset();
 
-    env.close_reserved(2, 2, SINT.into());
+    env.close_reserved(2, 2, VMBUS_SINT.into());
     env.c().close_complete(offer_id2);
     env.c().gpadl_teardown_complete(offer_id2, GpadlId(20));
 
@@ -1511,7 +1523,7 @@ fn test_server_monitor_page_helper(provide_guest_pages: bool) {
             protocol::InitiateContact {
                 version_requested: version as u32,
                 interrupt_page_or_target_info: TargetInfo::new()
-                    .with_sint(SINT)
+                    .with_sint(VMBUS_SINT)
                     .with_vtl(0)
                     .with_feature_flags(feature_flags.into())
                     .into(),
@@ -1998,7 +2010,10 @@ fn test_reinitiate_contact() {
         protocol::MessageType::INITIATE_CONTACT,
         protocol::InitiateContact {
             version_requested: Version::Win10 as u32,
-            interrupt_page_or_target_info: TargetInfo::new().with_sint(SINT).with_vtl(0).into(),
+            interrupt_page_or_target_info: TargetInfo::new()
+                .with_sint(VMBUS_SINT)
+                .with_vtl(0)
+                .into(),
             child_to_parent_monitor_page_gpa: 0x123f000,
             parent_to_child_monitor_page_gpa: 0x321f000,
             ..FromZeros::new_zeroed()
@@ -2500,7 +2515,7 @@ impl TestEnv {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: version as u32,
                     interrupt_page_or_target_info: TargetInfo::new()
-                        .with_sint(SINT)
+                        .with_sint(VMBUS_SINT)
                         .with_vtl(0)
                         .with_feature_flags(feature_flags.into())
                         .into(),

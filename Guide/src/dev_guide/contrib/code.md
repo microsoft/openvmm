@@ -205,8 +205,8 @@ In a nutshell:
 These requirements are enforced by CI, and will cause the build to fail if
 required documentation is missing.
 
-Editing a file containing unsafe code will trigger CI to automatically add the
-OpenVMM Unsafe Approvers group to your PR. This is to ensure that all unsafe code
+Editing a file containing unsafe code will trigger CI to label your PR and warn
+reviewers that the PR touches unsafe code. This is to ensure that all unsafe code
 is audited for correctness by area experts.
 
 ## Uses of `cfg(target_arch = ...)` must be justified
