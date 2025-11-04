@@ -130,19 +130,19 @@ impl std::fmt::Debug for MsiInterruptState {
 impl Inspect for MsiInterruptState {
     fn inspect(&self, req: inspect::Request<'_>) {
         let mut resp = req.respond();
-        resp.field("pending", &self.pending);
+        resp.field("pending", self.pending);
 
         if let Some((address, data)) = &self.address_data {
             resp.field("address", inspect::AsHex(*address));
             resp.field("data", inspect::AsHex(*data));
         } else {
-            resp.field("address_data", &"None");
+            resp.field("address_data", "None");
         }
 
         if self.control.is_some() {
-            resp.field("control", &"<MsiControl>");
+            resp.field("control", "<MsiControl>");
         } else {
-            resp.field("control", &"None");
+            resp.field("control", "None");
         }
     }
 }
