@@ -4810,6 +4810,8 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "disk_backend",
+ "disk_prwrap",
  "disklayer_ram",
  "event-listener",
  "futures",

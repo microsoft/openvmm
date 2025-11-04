@@ -5,6 +5,8 @@ use crate::NvmeDriver;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
+use disk_backend::Disk;
+use disk_prwrap::DiskWithReservations;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -45,7 +47,7 @@ use zerocopy::IntoBytes;
 
 #[async_test]
 #[should_panic(expected = "assertion `left == right` failed: cid sequence number mismatch:")]
-async fn test_nvme_command_fault(driver: DefaultDriver) {
+async fn test_nvme_admin_fault_bad_cid(driver: DefaultDriver) {
     let mut output_cmd = Command::new_zeroed();
     output_cmd.cdw0.set_cid(1); // AER will have cid 0.
 
@@ -57,6 +59,33 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
                     .match_cdw0_opcode(AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
                     .build(),
                 AdminQueueFaultBehavior::Update(output_cmd),
+            ),
+        ),
+    )
+    .await;
+}
+
+#[async_test]
+async fn test_nvme_io_fault_long_reservation_report(driver: DefaultDriver) {
+    let report_header = nvm::ReservationReportExtended {
+        report: nvm::ReservationReport {
+            generation: 0,
+            rtype: nvm::ReservationType(0),
+            regctl: (128 as u16).into(), // Indicates at-least 2 pages worth of data
+            ptpls: 0,
+            ..FromZeros::new_zeroed()
+        },
+        ..FromZeros::new_zeroed()
+    };
+
+    test_nvme_fault_injection(
+        driver,
+        FaultConfiguration::new(CellUpdater::new(true).cell()).with_io_queue_fault(
+            IoQueueFaultConfig::new(CellUpdater::new(true).cell()).with_completion_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvm::NvmOpcode::RESERVATION_REPORT.0)
+                    .build(),
+                IoQueueFaultBehavior::CustomPayload(report_header.as_bytes().to_vec()),
             ),
         ),
     )
@@ -427,33 +456,12 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     //     .unwrap();
 }
 
-#[async_test]
-async fn test_nvme_command_fault_bad_reservation_report(driver: DefaultDriver) {
-    let report_header = nvm::ReservationReportExtended {
-        report: nvm::ReservationReport {
-            generation: 0,
-            rtype: nvm::ReservationType(0),
-            regctl: (150 as u16).into(),
-            ptpls: 0,
-            ..FromZeros::new_zeroed()
-        },
-        ..FromZeros::new_zeroed()
-    };
-
-    test_nvme_fault_injection(
-        driver,
-        FaultConfiguration::new(CellUpdater::new(true).cell()).with_io_queue_fault(
-            IoQueueFaultConfig::new(CellUpdater::new(true).cell()).with_completion_queue_fault(
-                CommandMatchBuilder::new()
-                    .match_cdw0_opcode(nvm::NvmOpcode::RESERVATION_REPORT.0)
-                    .build(),
-                IoQueueFaultBehavior::CustomPayload(report_header.as_bytes().to_vec()),
-            ),
-        ),
-    )
-    .await;
-}
-
+// This helper function creates a NVMe fault controller with a namespace backed
+// by PRDisk(RamDisk). It then creates and initializes the NVMe driver attached
+// to the fault controller. The fault configuration passed in is applied to the controller.
+// Admin queue is exercised during driver setup and IO queue is exercised by
+// requesting a reservation report for cpu 0 and then performing a write to the
+// namespace.
 async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: FaultConfiguration) {
     const MSIX_COUNT: u16 = 2;
     const IO_QUEUE_COUNT: u16 = 64;

@@ -668,11 +668,6 @@ impl Issuer {
             .await
             .expect("pool cap is sufficient");
 
-        assert!(
-            mem.page_count() <= 4096,
-            "Requests larger than 4096 pages not currently supported"
-        );
-
         let prp = self
             .make_prp(0, (0..mem.page_count()).map(|i| mem.physical_address(i)))
             .await;
