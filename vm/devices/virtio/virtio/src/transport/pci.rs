@@ -764,10 +764,8 @@ pub(crate) mod capabilities {
 
         #[test]
         fn common_check() {
-            let common = ReadOnlyCapability::new(
-                "common",
-                VirtioCapability::new(0x13, 2, 0, 0x100, 0x200),
-            );
+            let common =
+                ReadOnlyCapability::new("common", VirtioCapability::new(0x13, 2, 0, 0x100, 0x200));
             assert_eq!(common.read_u32(0), 0x13100009);
             assert_eq!(common.read_u32(4), 2);
             assert_eq!(common.read_u32(8), 0x100);
