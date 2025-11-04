@@ -12,6 +12,7 @@ use pal::windows::Overlapped;
 use pal::windows::SendSyncRawHandle;
 use pal::windows::chk_status;
 use parking_lot::Mutex;
+use std::cell::UnsafeCell;
 use std::fs::File;
 use std::future::Future;
 use std::io;
@@ -102,112 +103,138 @@ impl OverlappedFile {
 
 #[derive(Debug)]
 struct Io<T> {
-    inner: ManuallyDrop<Box<IoInner<T>>>,
-    handle: Option<SendSyncRawHandle>,
+    state: IssueState<T>,
 }
 
-impl<T> Default for Io<T> {
-    fn default() -> Self {
-        Self::new()
-    }
+#[derive(Debug)]
+enum IssueState<T> {
+    Pending {
+        inner: ManuallyDrop<Pin<Box<IoInner<T>>>>,
+        handle: SendSyncRawHandle,
+    },
+    Complete {
+        inner: Box<IoInner<T>>,
+        result: Result<(), io::Error>,
+    },
+    Taken,
 }
 
 #[repr(C)]
 #[derive(Debug)]
 struct IoInner<T> {
     overlapped: Overlapped,
-    state: Mutex<IoState>,
-    buffers: Option<T>,
+    state: Mutex<InnerState>,
+    buffers: UnsafeCell<T>,
+    _pin: std::marker::PhantomPinned,
 }
 
 #[derive(Debug)]
-enum IoState {
+enum InnerState {
     None,
     Issued,
-    SyncError(Option<io::Error>),
     Waiting(Waker),
     Dropped(unsafe fn(*mut ())),
 }
 
 impl<T> Io<T> {
-    fn new() -> Self {
-        let inner = Box::new(IoInner {
-            overlapped: Overlapped::new(),
-            state: Mutex::new(IoState::None),
-            buffers: None,
-        });
-        Self {
-            inner: ManuallyDrop::new(inner),
-            handle: None,
-        }
-    }
-
-    fn issue<F>(&mut self, file: &OverlappedFile, offset: i64, buffers: T, f: F)
+    fn issue<F>(file: &OverlappedFile, offset: i64, buffers: T, f: F) -> Self
     where
         F: FnOnce(RawHandle, &mut T, *mut OVERLAPPED) -> io::Result<()>,
     {
-        assert!(self.handle.is_none());
-        self.inner.overlapped.set_offset(offset);
-        *self.inner.state.get_mut() = IoState::Issued;
-        let overlapped = self.inner.overlapped.as_ptr();
-        let buffers = self.inner.buffers.insert(buffers);
+        let mut inner = Box::new(IoInner {
+            overlapped: Overlapped::new(),
+            state: Mutex::new(InnerState::None),
+            buffers: UnsafeCell::new(buffers),
+            _pin: std::marker::PhantomPinned,
+        });
+
         let handle = file.file.as_raw_handle();
 
+        inner.overlapped.set_offset(offset);
+        *inner.state.get_mut() = InnerState::Issued;
+        let overlapped = inner.overlapped.as_ptr();
         file.inner.pre_io();
-        let result = f(handle, buffers, overlapped);
-        if unsafe { file.inner.post_io(&result, &self.inner.overlapped) } {
-            // The IO completed synchronously. If an error was returned, store it because the IO
-            // status block is not updated in this case.
-            *self.inner.state.get_mut() = result
-                .map(|_| IoState::None)
-                .unwrap_or_else(|e| IoState::SyncError(Some(e)));
+        let result = f(handle, inner.buffers.get_mut(), overlapped);
+        let state = if unsafe { file.inner.post_io(&result, &inner.overlapped) } {
+            // The IO completed synchronously. If an error was returned, store
+            // it because the IO status block is not updated in this case.
+            IssueState::Complete { inner, result }
         } else {
-            self.handle = Some(SendSyncRawHandle(handle));
-        }
+            // Pin `inner` and avoid dropping it while it's still possibly in
+            // use by the kernel.
+            let inner = ManuallyDrop::new(Box::into_pin(inner));
+            IssueState::Pending {
+                inner,
+                handle: SendSyncRawHandle(handle),
+            }
+        };
+        Self { state }
     }
 
     fn cancel(&mut self) {
-        if let Some(handle) = &self.handle {
+        if let IssueState::Pending { handle, inner } = &self.state {
             unsafe {
-                CancelIoEx(handle.0, self.inner.overlapped.as_ptr());
+                CancelIoEx(handle.0, inner.overlapped.as_ptr());
             }
         }
     }
 
     fn poll_result(&mut self, cx: &mut Context<'_>) -> Poll<BufResult<T>> {
-        if let Some(result) = self.try_complete() {
-            Poll::Ready(result)
-        } else {
-            let old_state = std::mem::replace(
-                &mut *self.inner.state.lock(),
-                IoState::Waiting(cx.waker().clone()),
-            );
-            match old_state {
-                IoState::None => Poll::Ready(self.try_complete().unwrap()),
-                IoState::Issued | IoState::Waiting(_) => Poll::Pending,
-                IoState::Dropped(_) | IoState::SyncError(_) => unreachable!(),
+        let (r, inner) = match &self.state {
+            IssueState::Complete { .. } => {
+                let IssueState::Complete { result, inner } =
+                    std::mem::replace(&mut self.state, IssueState::Taken)
+                else {
+                    unreachable!()
+                };
+                (result, inner)
             }
-        }
-    }
-
-    fn try_complete(&mut self) -> Option<BufResult<T>> {
-        // If an error was returned synchronously the IO status block is not updated, so check for
-        // that before accessing the overlapped structure.
-        let result = if let IoState::SyncError(error) = self.inner.state.get_mut() {
-            Err(error.take().unwrap())
-        } else {
-            let (status, len) = self.inner.overlapped.io_status()?;
-            chk_status(status).map(|_| len)
+            IssueState::Pending { inner, .. } => {
+                let mut state = inner.state.lock();
+                match &mut *state {
+                    InnerState::None => {
+                        drop(state);
+                        let IssueState::Pending { inner, .. } =
+                            std::mem::replace(&mut self.state, IssueState::Taken)
+                        else {
+                            unreachable!()
+                        };
+                        // SAFETY: Since the IO is completed, `inner` is now
+                        // exclusively owned so can be unpinned.
+                        let inner =
+                            unsafe { Pin::into_inner_unchecked(ManuallyDrop::into_inner(inner)) };
+                        (Ok(()), inner)
+                    }
+                    InnerState::Issued => {
+                        *state = InnerState::Waiting(cx.waker().clone());
+                        return Poll::Pending;
+                    }
+                    InnerState::Waiting(waker) => {
+                        waker.clone_from(cx.waker());
+                        return Poll::Pending;
+                    }
+                    InnerState::Dropped(_) => unreachable!(),
+                }
+            }
+            IssueState::Taken => panic!("polled after completion"),
         };
 
-        let buffers = self.inner.buffers.take().unwrap();
-        Some((result, buffers))
+        let r = r.and_then(|()| {
+            let (status, len) = inner
+                .overlapped
+                .io_status()
+                .expect("IO is known to be complete");
+            chk_status(status).map(|_| len)
+        });
+
+        let buffers = inner.buffers.into_inner();
+        Poll::Ready((r, buffers))
     }
 }
 
 impl<T: IoBufMut> Io<T> {
-    fn read(&mut self, file: &OverlappedFile, offset: i64, buffers: T) {
-        self.issue(
+    fn read(file: &OverlappedFile, offset: i64, buffers: T) -> Self {
+        Self::issue(
             file,
             offset,
             buffers,
@@ -225,13 +252,13 @@ impl<T: IoBufMut> Io<T> {
                     Err(io::Error::last_os_error())
                 }
             },
-        );
+        )
     }
 }
 
 impl<T: IoBuf> Io<T> {
-    fn write(&mut self, file: &OverlappedFile, offset: i64, buffers: T) {
-        self.issue(
+    fn write(file: &OverlappedFile, offset: i64, buffers: T) -> Self {
+        Self::issue(
             file,
             offset,
             buffers,
@@ -249,13 +276,13 @@ impl<T: IoBuf> Io<T> {
                     Err(io::Error::last_os_error())
                 }
             },
-        );
+        )
     }
 }
 
 impl<T: IoBufMut, U: IoBufMut> Io<(T, U)> {
-    fn ioctl(&mut self, file: &OverlappedFile, code: u32, input: T, output: U) {
-        self.issue(
+    fn ioctl(file: &OverlappedFile, code: u32, input: T, output: U) -> Self {
+        Self::issue(
             file,
             0,
             (input, output),
@@ -276,37 +303,50 @@ impl<T: IoBufMut, U: IoBufMut> Io<(T, U)> {
                     Err(io::Error::last_os_error())
                 }
             },
-        );
+        )
     }
 }
 
 pub(crate) unsafe fn overlapped_io_done(overlapped: *mut OVERLAPPED, wakers: &mut WakerList) {
     let inner = overlapped as *const IoInner<()>;
-    let old_state = std::mem::replace(&mut *unsafe { &(*inner).state }.lock(), IoState::None);
+    let old_state = {
+        // SAFETY: `inner` is currently shared between this function and the
+        // owner of the `Io`.
+        let inner = unsafe { &*inner };
+        std::mem::replace(&mut *inner.state.lock(), InnerState::None)
+    };
     match old_state {
-        IoState::None | IoState::SyncError(_) => unreachable!(),
-        IoState::Issued => {}
-        IoState::Waiting(waker) => wakers.push(waker),
-        IoState::Dropped(drop_fn) => unsafe { drop_fn(inner as *mut ()) },
+        InnerState::None => unreachable!(),
+        InnerState::Issued => {}
+        InnerState::Waiting(waker) => wakers.push(waker),
+        InnerState::Dropped(drop_fn) => unsafe { drop_fn(inner.cast_mut().cast()) },
     }
 }
 
 impl<T> Drop for Io<T> {
     fn drop(&mut self) {
-        if self.handle.is_some() {
-            let drop_fn = |p: *mut ()| drop(unsafe { Box::from_raw(p.cast::<IoInner<T>>()) });
-            let old_state =
-                std::mem::replace(&mut *self.inner.state.lock(), IoState::Dropped(drop_fn));
-            match old_state {
-                IoState::None | IoState::SyncError(_) => {
-                    // SAFETY: inner is no longer referenced by the kernel.
-                    unsafe { ManuallyDrop::drop(&mut self.inner) };
+        match &mut self.state {
+            IssueState::Taken | IssueState::Complete { .. } => {}
+            IssueState::Pending { inner, .. } => {
+                // An IO may still be pending.
+                let old_state = std::mem::replace(
+                    &mut *inner.state.lock(),
+                    InnerState::Dropped(|p| {
+                        // SAFETY: `p` is owned and is of the correct type.
+                        unsafe { drop(Box::from_raw(p.cast::<IoInner<T>>())) };
+                    }),
+                );
+                match old_state {
+                    InnerState::None => {
+                        // SAFETY: inner is now exclusively owned.
+                        unsafe { ManuallyDrop::drop(inner) };
+                    }
+                    InnerState::Waiting(_) | InnerState::Issued => {
+                        // Ensure the IO completes soon so that buffers can be freed.
+                        self.cancel();
+                    }
+                    InnerState::Dropped(_) => unreachable!(),
                 }
-                IoState::Waiting(_) | IoState::Issued => {
-                    // Ensure the IO completes soon so that buffers can be freed.
-                    self.cancel();
-                }
-                IoState::Dropped(_) => unreachable!(),
             }
         }
     }
@@ -393,16 +433,12 @@ unsafe impl<T: IntoBytes + FromBytes + Immutable + KnownLayout> IoBufMut for Vec
 impl OverlappedFile {
     /// Reads from the file at `offset` into `buffer`.
     pub fn read_at<T: IoBufMut>(&self, offset: u64, buffer: T) -> Read<T> {
-        let mut io = Io::new();
-        io.read(self, offset as i64, buffer);
-        Read(io)
+        Read(Io::read(self, offset as i64, buffer))
     }
 
     /// Writes to the file at `offset` from `buffer`.
     pub fn write_at<T: IoBuf>(&self, offset: u64, buffer: T) -> Write<T> {
-        let mut io = Io::new();
-        io.write(self, offset as i64, buffer);
-        Write(io)
+        Write(Io::write(self, offset as i64, buffer))
     }
 
     /// Issues an IOCTL to the file.
@@ -415,9 +451,7 @@ impl OverlappedFile {
         input: T,
         output: U,
     ) -> Ioctl<T, U> {
-        let mut io = Io::new();
-        io.ioctl(self, code, input, output);
-        Ioctl(io)
+        Ioctl(Io::ioctl(self, code, input, output))
     }
 
     /// Performs a custom overlapped IO by calling `f`.
@@ -431,9 +465,7 @@ impl OverlappedFile {
     where
         F: FnOnce(RawHandle, &mut T, *mut OVERLAPPED) -> io::Result<()>,
     {
-        let mut io = Io::new();
-        io.issue(self, 0, buffers, f);
-        Custom(io)
+        Custom(Io::issue(self, 0, buffers, f))
     }
 }
 
@@ -454,12 +486,6 @@ macro_rules! io {
             /// wait for the IO to complete.
             pub fn cancel(&mut self) {
                 self.0.cancel()
-            }
-
-            /// Gets the completion result of the IO, returning `None` if the IO
-            /// is still in flight.
-            pub fn try_complete(&mut self) -> Option<BufResult<$buffers>> {
-                self.0.try_complete()
             }
         }
 
