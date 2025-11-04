@@ -71,7 +71,7 @@ async fn test_nvme_io_fault_long_reservation_report(driver: DefaultDriver) {
         report: nvm::ReservationReport {
             generation: 0,
             rtype: nvm::ReservationType(0),
-            regctl: (128 as u16).into(), // Indicates at-least 2 pages worth of data
+            regctl: (128_u16).into(), // Indicates at-least 2 pages worth of data
             ptpls: 0,
             ..FromZeros::new_zeroed()
         },
