@@ -585,15 +585,10 @@ impl Issuer {
             .await
             .expect("pool cap is sufficient");
 
-        assert_eq!(
-            mem.page_count(),
-            1,
-            "larger requests not currently supported"
-        );
-        let prp = Prp {
-            dptr: [mem.physical_address(0), INVALID_PAGE_ADDR],
-            _pages: None,
-        };
+        let prp = self
+            .make_prp(0, (0..mem.page_count()).map(|i| mem.physical_address(i)))
+            .await;
+
         command.dptr = prp.dptr;
         let completion = self.issue_raw(command).await;
         mem.read(data);
