@@ -138,13 +138,10 @@ struct U128x2(U128, U128);
 struct U128x4(U128, U128, U128, U128);
 
 // Use a SIMD type when possible to encourage better register use.
-// xtask-fmt allow-target-arch sys-crate
 #[cfg(target_arch = "x86_64")]
 type U128 = core::arch::x86_64::__m128i;
-// xtask-fmt allow-target-arch sys-crate
 #[cfg(target_arch = "aarch64")]
 type U128 = core::arch::aarch64::uint8x16_t;
-// xtask-fmt allow-target-arch sys-crate
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 type U128 = u128;
 
