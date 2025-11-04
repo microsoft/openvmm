@@ -9,7 +9,6 @@
 use crate::PciInterruptPin;
 use crate::bar_mapping::BarMappings;
 use crate::capabilities::PciCapability;
-use crate::capabilities::pci_express::PciExpressCapability;
 use crate::spec::caps::CapabilityId;
 use crate::spec::cfg_space;
 use crate::spec::hwid::HardwareIds;
@@ -924,13 +923,8 @@ impl ConfigSpaceType0Emulator {
     /// # Arguments
     /// * `present` - true if a device is present in the slot, false if the slot is empty
     pub fn set_presence_detect_state(&mut self, present: bool) {
-        use crate::capabilities::pci_express::PciExpressCapability;
-
         for capability in self.common.capabilities_mut() {
-            if let Some(pcie_cap) = capability
-                .as_any_mut()
-                .downcast_mut::<PciExpressCapability>()
-            {
+            if let Some(pcie_cap) = capability.as_pci_express_mut() {
                 pcie_cap.set_presence_detect_state(present);
                 return;
             }
@@ -1206,7 +1200,7 @@ impl ConfigSpaceType1Emulator {
         for cap in self.common.capabilities_mut() {
             if cap.capability_id() == CapabilityId::PCI_EXPRESS {
                 // Downcast to PciExpressCapability and call set_presence_detect_state
-                if let Some(pcie_cap) = cap.as_any_mut().downcast_mut::<PciExpressCapability>() {
+                if let Some(pcie_cap) = cap.as_pci_express_mut() {
                     pcie_cap.set_presence_detect_state(present);
                     return;
                 }

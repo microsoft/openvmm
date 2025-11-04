@@ -34,9 +34,15 @@ pub trait PciCapability: Send + Sync + Inspect + ProtobufSaveRestore {
     /// Reset the capability
     fn reset(&mut self);
 
-    /// Get a reference to this capability as `Any` for downcasting
-    fn as_any(&self) -> &dyn std::any::Any;
+    // Specific downcast methods for known capability types
 
-    /// Get a mutable reference to this capability as `Any` for downcasting
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+    /// Downcast to PCI Express capability
+    fn as_pci_express(&self) -> Option<&pci_express::PciExpressCapability> {
+        None
+    }
+
+    /// Downcast to PCI Express capability (mutable)
+    fn as_pci_express_mut(&mut self) -> Option<&mut pci_express::PciExpressCapability> {
+        None
+    }
 }

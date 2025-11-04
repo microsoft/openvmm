@@ -556,12 +556,12 @@ impl PciCapability for PciExpressCapability {
         *state = PciExpressState::new();
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn as_pci_express(&self) -> Option<&PciExpressCapability> {
+        Some(self)
     }
 
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
+    fn as_pci_express_mut(&mut self) -> Option<&mut PciExpressCapability> {
+        Some(self)
     }
 }
 
