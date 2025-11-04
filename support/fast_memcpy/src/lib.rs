@@ -46,7 +46,7 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *m
                     // address.
                     copy_one::<U128>(dest.cast(), src.cast());
                     // If the buffer was already 16-byte aligned, don't
-                    // advance--keep the original alignment (which may be more
+                    // advance--keep the original alignment (which may be better
                     // than 16). This is useful on Intel, where `rep movsq`
                     // prefers 64-byte alignment when it can get it, and the
                     // caller may have provided that.
