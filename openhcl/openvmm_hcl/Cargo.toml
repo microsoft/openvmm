@@ -23,6 +23,10 @@ vpci = ["underhill_entry/vpci"]
 [target.'cfg(target_os = "linux")'.dependencies]
 underhill_entry.workspace = true
 openvmm_hcl_resources.workspace = true
+tracing.workspace = true
+
+[package.metadata.xtask.unused-deps]
+ignored = ["tracing"] # Present to specify features from flowey
 
 [lints]
 workspace = true

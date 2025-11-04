@@ -604,7 +604,7 @@ pub struct WriteBatch<'a, M: RingMem> {
     write: &'a mut WriteState,
 }
 
-impl<M: RingMem> WriteBatch<'_, M> {
+impl<'a, M: RingMem> WriteBatch<'a, M> {
     /// Checks the outgiong ring for the capacity to send a packet of size
     /// `send_size`.
     pub fn can_write(&mut self, send_size: usize) -> Result<bool, Error> {
@@ -631,19 +631,51 @@ impl<M: RingMem> WriteBatch<'_, M> {
             size,
             typ: packet.packet_type,
         };
+        let mut builder = self.try_start_write(&ring_packet)?;
+        let mut writer = builder.writer();
+        for &p in packet.payload {
+            writer
+                .write(p)
+                .map_err(|err| TryWriteError::Queue(ErrorInner::Access(err).into()))?;
+        }
+        builder.finish();
+        Ok(())
+    }
+
+    /// Tries to write a packet with an aligned u64 payload into the outgoing
+    /// ring.
+    ///
+    /// This is more efficient than `try_write` when the payload is a contiguous
+    /// multiple of 8 bytes.
+    pub fn try_write_aligned(
+        &mut self,
+        transaction_id: u64,
+        packet_type: OutgoingPacketType<'_>,
+        data: &[u64],
+    ) -> Result<(), TryWriteError> {
+        let size = data.len() * 8;
+        let ring_packet = ring::OutgoingPacket {
+            transaction_id,
+            size,
+            typ: packet_type,
+        };
+        let mut builder = self.try_start_write(&ring_packet)?;
+        builder.write_aligned_full(data);
+        builder.finish();
+        Ok(())
+    }
+
+    fn try_start_write(
+        &mut self,
+        packet: &ring::OutgoingPacket<'_>,
+    ) -> Result<WritePacketBuilder<'_, 'a, M>, TryWriteError> {
         let mut ptrs = self.write.ptrs.clone();
-        match self.core.out_ring().write(&mut ptrs, &ring_packet) {
-            Ok(range) => {
-                let mut writer = range.writer(self.core.out_ring());
-                for p in packet.payload.iter().copied() {
-                    writer.write(p).map_err(|err| {
-                        TryWriteError::Queue(Error::from(ErrorInner::Access(err)))
-                    })?;
-                }
-                self.write.clear_poll(self.core);
-                self.write.ptrs = ptrs;
-                Ok(())
-            }
+        match self.core.out_ring().write(&mut ptrs, packet) {
+            Ok(range) => Ok(WritePacketBuilder {
+                batch: self,
+                range,
+                ptrs,
+            }),
             Err(ring::WriteError::Full(n)) => {
                 self.write.clear_ready();
                 Err(TryWriteError::Full(n))
@@ -652,6 +684,28 @@ impl<M: RingMem> WriteBatch<'_, M> {
                 Err(TryWriteError::Queue(ErrorInner::Ring(err).into()))
             }
         }
+    }
+}
+
+struct WritePacketBuilder<'a, 'b, M: RingMem> {
+    batch: &'a mut WriteBatch<'b, M>,
+    range: ring::RingRange,
+    ptrs: ring::OutgoingOffset,
+}
+
+impl<M: RingMem> WritePacketBuilder<'_, '_, M> {
+    fn writer(&mut self) -> vmbus_ring::RingRangeWriter<'_, M> {
+        self.range.writer(self.batch.core.out_ring())
+    }
+
+    fn write_aligned_full(&mut self, data: &[u64]) {
+        self.range
+            .write_aligned_full(self.batch.core.out_ring(), data)
+    }
+
+    fn finish(self) {
+        self.batch.write.clear_poll(self.batch.core);
+        self.batch.write.ptrs = self.ptrs;
     }
 }
 
