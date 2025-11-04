@@ -19,6 +19,14 @@ struct ExpectedNvmeDeviceProperties {
     nvme_keepalive: bool,
 }
 
+#[derive(Default)]
+struct NvmeRelayTestParams {
+    openhcl_cmdline: &'static str,
+    processor_topology: Option<ProcessorTopology>,
+    vtl2_base_address_type: Option<hvlite_defs::config::Vtl2BaseAddressType>,
+    expected_props: Option<ExpectedNvmeDeviceProperties>,
+}
+
 /// Helper to run a scenario where we boot an OpenHCL UEFI VM with a NVME
 /// disk assigned to VTL2.
 ///
@@ -31,11 +39,15 @@ struct ExpectedNvmeDeviceProperties {
 /// to get the devices to work as expected.)
 async fn nvme_relay_test_core(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
-    openhcl_cmdline: &str,
-    processor_topology: Option<ProcessorTopology>,
-    vtl2_base_address_type: Option<hvlite_defs::config::Vtl2BaseAddressType>,
-    props: Option<ExpectedNvmeDeviceProperties>,
+    params: NvmeRelayTestParams,
 ) -> Result<(), anyhow::Error> {
+    let NvmeRelayTestParams {
+        openhcl_cmdline,
+        processor_topology,
+        vtl2_base_address_type,
+        expected_props,
+    } = params;
+
     let (vm, agent) = config
         .with_openhcl_command_line(openhcl_cmdline)
         .with_vmbus_redirect(true)
@@ -125,7 +137,7 @@ async fn nvme_relay_test_core(
     // The PCI id is generated from the VMBUS instance guid for vpci devices.
     // See `PARAVISOR_BOOT_NVME_INSTANCE`.
     assert_eq!(found_device_id, "718b:00:00.0");
-    if let Some(props) = &props {
+    if let Some(props) = &expected_props {
         assert_eq!(
             devices[found_device_id]["driver"]["driver"]["qsize"]
                 .as_u64()
@@ -156,7 +168,7 @@ async fn nvme_relay_test_core(
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
 #[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
-    nvme_relay_test_core(config, "", None, None, None).await
+    nvme_relay_test_core(config, NvmeRelayTestParams::default()).await
 }
 
 /// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
@@ -170,14 +182,15 @@ async fn nvme_relay_private_pool(
     // Number of pages to reserve as a private pool.
     nvme_relay_test_core(
         config,
-        "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
-        None,
-        None,
-        Some(ExpectedNvmeDeviceProperties {
-            save_restore_supported: true,
-            qsize: 256, // private pool should allow contiguous allocations.
-            nvme_keepalive: false,
-        }),
+        NvmeRelayTestParams {
+            openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
+            expected_props: Some(ExpectedNvmeDeviceProperties {
+                save_restore_supported: true,
+                qsize: 256, // private pool should allow contiguous allocations.
+                nvme_keepalive: false,
+            }),
+            ..Default::default()
+        },
     )
     .await
 }
@@ -193,19 +206,21 @@ async fn nvme_relay_heuristic_16vp_768mb_heavy(
 ) -> Result<(), anyhow::Error> {
     nvme_relay_test_core(
         config,
-        "",
-        Some(ProcessorTopology {
-            vp_count: 16,
-            ..Default::default()
-        }),
-        Some(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
-            size: Some(768 * 1024 * 1024),
-        }),
-        Some(ExpectedNvmeDeviceProperties {
-            save_restore_supported: true,
-            qsize: 256, // private pool should allow contiguous allocations.
-            nvme_keepalive: false,
-        }),
+        NvmeRelayTestParams {
+            openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=10240",
+            processor_topology: Some(ProcessorTopology {
+                vp_count: 16,
+                ..Default::default()
+            }),
+            vtl2_base_address_type: Some(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+                size: Some(768 * 1024 * 1024),
+            }),
+            expected_props: Some(ExpectedNvmeDeviceProperties {
+                save_restore_supported: true,
+                qsize: 256, // private pool should allow contiguous allocations.
+                nvme_keepalive: false,
+            }),
+        },
     )
     .await
 }
@@ -221,20 +236,21 @@ async fn nvme_relay_32vp_500mb_very_heavy(
 ) -> Result<(), anyhow::Error> {
     nvme_relay_test_core(
         config,
-        // Allocate 40MiB pages for private pool, what we expect future heuristics to pick for 32 vps and 500MB of VTL2 space.
-        "OPENHCL_ENABLE_VTL2_GPA_POOL=10240",
-        Some(ProcessorTopology {
-            vp_count: 32,
-            ..Default::default()
-        }),
-        Some(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
-            size: Some(500 * 1024 * 1024),
-        }),
-        Some(ExpectedNvmeDeviceProperties {
-            save_restore_supported: true,
-            qsize: 256, // private pool should allow contiguous allocations.
-            nvme_keepalive: false,
-        }),
+        NvmeRelayTestParams {
+            openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=10240",
+            processor_topology: Some(ProcessorTopology {
+                vp_count: 32,
+                ..Default::default()
+            }),
+            vtl2_base_address_type: Some(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+                size: Some(500 * 1024 * 1024),
+            }),
+            expected_props: Some(ExpectedNvmeDeviceProperties {
+                save_restore_supported: true,
+                qsize: 256, // private pool should allow contiguous allocations.
+                nvme_keepalive: false,
+            }),
+        },
     )
     .await
 }
