@@ -5,6 +5,7 @@
 
 use anyhow::Context;
 use futures::StreamExt;
+use petri::MemoryConfig;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
@@ -205,7 +206,10 @@ async fn nvme_relay_heuristic_16vp_768mb_heavy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
     nvme_relay_test_core(
-        config,
+        config.with_memory(MemoryConfig {
+            startup_bytes: 16 * 1024 * 1024 * 1024,
+            ..Default::default()
+        }),
         NvmeRelayTestParams {
             openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=10240",
             processor_topology: Some(ProcessorTopology {
@@ -231,11 +235,14 @@ async fn nvme_relay_heuristic_16vp_768mb_heavy(
 /// There _should_ be enough private pool memory for the NVMe driver to
 /// allocate all of its buffers contiguously.
 #[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
-async fn nvme_relay_32vp_500mb_very_heavy(
+async fn nvme_relay_32vp_768mb_very_heavy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
     nvme_relay_test_core(
-        config,
+        config.with_memory(MemoryConfig {
+            startup_bytes: 16 * 1024 * 1024 * 1024,
+            ..Default::default()
+        }),
         NvmeRelayTestParams {
             openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=10240",
             processor_topology: Some(ProcessorTopology {
@@ -243,7 +250,7 @@ async fn nvme_relay_32vp_500mb_very_heavy(
                 ..Default::default()
             }),
             vtl2_base_address_type: Some(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
-                size: Some(500 * 1024 * 1024),
+                size: Some(768 * 1024 * 1024),
             }),
             expected_props: Some(ExpectedNvmeDeviceProperties {
                 save_restore_supported: true,
