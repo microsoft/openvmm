@@ -30,7 +30,11 @@ impl<T: IntoBytes + Immutable + KnownLayout> ReadOnlyCapability<T> {
     }
 
     /// Create a new [`ReadOnlyCapability`] with a specific capability ID
-    pub fn new_with_capability_id(label: impl Into<String>, capability_id: CapabilityId, data: T) -> Self {
+    pub fn new_with_capability_id(
+        label: impl Into<String>,
+        capability_id: CapabilityId,
+        data: T,
+    ) -> Self {
         Self {
             label: label.into(),
             capability_id,

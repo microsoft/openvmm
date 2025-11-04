@@ -307,9 +307,9 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
     /// Get current interrupt pin (returns the pin number + 1, or 0 if no pin configured)
     pub fn interrupt_pin(&self) -> u8 {
         if let Some(intx) = &self.intx_interrupt {
-            (intx.pin as u8) + 1  // PCI spec: 1=INTA, 2=INTB, 3=INTC, 4=INTD, 0=no interrupt
+            (intx.pin as u8) + 1 // PCI spec: 1=INTA, 2=INTB, 3=INTC, 4=INTD, 0=no interrupt
         } else {
-            0  // No interrupt pin configured
+            0 // No interrupt pin configured
         }
     }
 
@@ -893,7 +893,7 @@ impl ConfigSpaceType0Emulator {
             }
             HeaderType00::LATENCY_INTERRUPT => {
                 // Bits 7-0: Interrupt Line (read/write)
-                // Bits 15-8: Interrupt Pin (read-only, ignore writes)  
+                // Bits 15-8: Interrupt Pin (read-only, ignore writes)
                 // Bits 31-16: Latency Timer (read/write)
                 self.common.set_interrupt_line((val & 0xff) as u8);
                 self.state.latency_timer = (val >> 16) as u8;
@@ -2234,7 +2234,7 @@ mod tests {
         emu.read_u32(0x3C, &mut val).unwrap();
         assert_eq!((val >> 8) & 0xFF, 1); // Interrupt pin should be 1 (INTA)
 
-        // Set interrupt line to 0x42 and verify both pin and line are correct  
+        // Set interrupt line to 0x42 and verify both pin and line are correct
         emu.write_u32(0x3C, 0x00110042).unwrap(); // Latency=0x11, pin=ignored, line=0x42
         emu.read_u32(0x3C, &mut val).unwrap();
         assert_eq!(val & 0xFF, 0x42); // Interrupt line should be 0x42
