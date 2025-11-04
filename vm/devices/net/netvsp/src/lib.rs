@@ -49,7 +49,6 @@ use inspect_counters::Histogram;
 use mesh::rpc::Rpc;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
-use net_backend::L3Protocol;
 use net_backend::QueueConfig;
 use net_backend::RxId;
 use net_backend::TxError;
@@ -61,7 +60,6 @@ use pal_async::timer::PolledTimer;
 use ring::gparange::MultiPagedRangeIter;
 use rx_bufs::RxBuffers;
 use rx_bufs::SubAllocationInUse;
-use std::cmp;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::future::pending;
@@ -100,7 +98,6 @@ use vmbus_channel::gpadl_ring::gpadl_channel;
 use vmbus_ring as ring;
 use vmbus_ring::OutgoingPacketType;
 use vmbus_ring::RingMem;
-use vmbus_ring::gparange::GpnList;
 use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -389,30 +386,43 @@ struct NetChannel<T: RingMem> {
     adapter: Arc<Adapter>,
     queue: Queue<T>,
     gpadl_map: GpadlMapView,
-    packet_size: usize,
+    packet_size: PacketSize,
     pending_send_size: usize,
     restart: Option<CoordinatorMessage>,
     can_use_ring_size_opt: bool,
     packet_filter: u32,
 }
 
+// Use an enum to give the compiler more visibility into the packet size.
+#[derive(Debug, Copy, Clone)]
+enum PacketSize {
+    /// [`protocol::PACKET_SIZE_V1`]
+    V1,
+    /// [`protocol::PACKET_SIZE_V61`]
+    V61,
+}
+
 /// Buffers used during packet processing.
 struct ProcessingData {
     tx_segments: Vec<TxSegment>,
+    tx_segments_sent: usize,
     tx_done: Box<[TxId]>,
     rx_ready: Box<[RxId]>,
     rx_done: Vec<RxId>,
     transfer_pages: Vec<ring::TransferPageRange>,
+    external_data: MultiPagedRangeBuf,
 }
 
 impl ProcessingData {
     fn new() -> Self {
         Self {
             tx_segments: Vec::new(),
+            tx_segments_sent: 0,
             tx_done: vec![TxId(0); 8192].into(),
             rx_ready: vec![RxId(0); RX_BATCH_SIZE].into(),
             rx_done: Vec::with_capacity(RX_BATCH_SIZE),
             transfer_pages: Vec::with_capacity(RX_BATCH_SIZE),
+            external_data: MultiPagedRangeBuf::new(),
         }
     }
 }
@@ -461,6 +471,7 @@ struct QueueStats {
     tx_packets: Counter,
     tx_lso_packets: Counter,
     tx_checksum_packets: Counter,
+    tx_invalid_lso_packets: Counter,
     tx_packets_per_wake: Histogram<10>,
     rx_packets_per_wake: Histogram<10>,
 }
@@ -756,17 +767,15 @@ impl OffloadConfig {
 
         let lso_v2 = {
             let mut lso = rndisprot::TcpLargeSendOffloadV2::new_zeroed();
-            // Use the same maximum as vmswitch.
-            const MAX_OFFLOAD_SIZE: u32 = 0xF53C;
             if self.lso4 {
                 lso.ipv4_encapsulation = rndisprot::NDIS_ENCAPSULATION_IEEE_802_3;
-                lso.ipv4_max_offload_size = MAX_OFFLOAD_SIZE;
-                lso.ipv4_min_segment_count = 2;
+                lso.ipv4_max_offload_size = rndisprot::LSO_MAX_OFFLOAD_SIZE;
+                lso.ipv4_min_segment_count = rndisprot::LSO_MIN_SEGMENT_COUNT;
             }
             if self.lso6 {
                 lso.ipv6_encapsulation = rndisprot::NDIS_ENCAPSULATION_IEEE_802_3;
-                lso.ipv6_max_offload_size = MAX_OFFLOAD_SIZE;
-                lso.ipv6_min_segment_count = 2;
+                lso.ipv6_max_offload_size = rndisprot::LSO_MAX_OFFLOAD_SIZE;
+                lso.ipv6_min_segment_count = rndisprot::LSO_MIN_SEGMENT_COUNT;
                 lso.ipv6_flags = rndisprot::Ipv6LsoFlags::new()
                     .with_ip_extension_headers_supported(rndisprot::NDIS_OFFLOAD_SUPPORTED)
                     .with_tcp_options_supported(rndisprot::NDIS_OFFLOAD_SUPPORTED);
@@ -1399,7 +1408,7 @@ impl Nic {
                 adapter: self.adapter.clone(),
                 queue,
                 gpadl_map: self.resources.gpadl_map.clone(),
-                packet_size: protocol::PACKET_SIZE_V1,
+                packet_size: PacketSize::V1,
                 pending_send_size: 0,
                 restart: None,
                 can_use_ring_size_opt,
@@ -1895,6 +1904,8 @@ enum WorkerError {
     UnexpectedPacketOrder(#[source] PacketOrderError),
     #[error("unknown rndis message type: {0}")]
     UnknownRndisMessageType(u32),
+    #[error("junk after rndis packet message: {0:#x}")]
+    NonRndisPacketAfterPacket(u32),
     #[error("memory access error")]
     Access(#[from] AccessError),
     #[error("rndis message too small")]
@@ -2005,21 +2016,14 @@ enum PacketData {
 struct Packet<'a> {
     data: PacketData,
     transaction_id: Option<u64>,
-    external_data: MultiPagedRangeBuf<GpnList>,
-    send_buffer_suballocation: PagedRange<'a>,
+    external_data: &'a MultiPagedRangeBuf,
 }
 
-type PacketReader<'a> = PagedRangesReader<
-    'a,
-    std::iter::Chain<std::iter::Once<PagedRange<'a>>, MultiPagedRangeIter<'a>>,
->;
+type PacketReader<'a> = PagedRangesReader<'a, MultiPagedRangeIter<'a>>;
 
 impl Packet<'_> {
     fn rndis_reader<'a>(&'a self, mem: &'a GuestMemory) -> PacketReader<'a> {
-        PagedRanges::new(
-            std::iter::once(self.send_buffer_suballocation).chain(self.external_data.iter()),
-        )
-        .reader(mem)
+        PagedRanges::new(self.external_data.iter()).reader(mem)
     }
 }
 
@@ -2031,9 +2035,11 @@ fn read_packet_data<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
 
 fn parse_packet<'a, T: RingMem>(
     packet_ref: &queue::PacketRef<'_, T>,
-    send_buffer: Option<&'a SendBuffer>,
+    send_buffer: Option<&SendBuffer>,
     version: Option<Version>,
+    external_data: &'a mut MultiPagedRangeBuf,
 ) -> Result<Packet<'a>, PacketError> {
+    external_data.clear();
     let packet = match packet_ref.as_ref() {
         IncomingPacket::Data(data) => data,
         IncomingPacket::Completion(completion) => {
@@ -2055,15 +2061,13 @@ fn parse_packet<'a, T: RingMem>(
             return Ok(Packet {
                 data,
                 transaction_id: Some(completion.transaction_id()),
-                external_data: MultiPagedRangeBuf::empty(),
-                send_buffer_suballocation: PagedRange::empty(),
+                external_data,
             });
         }
     };
 
     let mut reader = packet.reader();
     let header: protocol::MessageHeader = reader.read_plain().map_err(PacketError::Access)?;
-    let mut send_buffer_suballocation = PagedRange::empty();
     let data = match header.message_type {
         protocol::MESSAGE_TYPE_INIT => PacketData::Init(read_packet_data(&mut reader)?),
         protocol::MESSAGE1_TYPE_SEND_NDIS_VERSION if version >= Some(Version::V1) => {
@@ -2084,7 +2088,7 @@ fn parse_packet<'a, T: RingMem>(
         protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET if version >= Some(Version::V1) => {
             let message: protocol::Message1SendRndisPacket = read_packet_data(&mut reader)?;
             if message.send_buffer_section_index != 0xffffffff {
-                send_buffer_suballocation = send_buffer
+                let send_buffer_suballocation = send_buffer
                     .ok_or(PacketError::InvalidSendBufferIndex)?
                     .gpadl
                     .first()
@@ -2094,6 +2098,8 @@ fn parse_packet<'a, T: RingMem>(
                         message.send_buffer_section_size as usize,
                     )
                     .ok_or(PacketError::InvalidSendBufferIndex)?;
+
+                external_data.push_range(send_buffer_suballocation);
             }
             PacketData::RndisPacket(message)
         }
@@ -2111,26 +2117,61 @@ fn parse_packet<'a, T: RingMem>(
         }
         typ => return Err(PacketError::UnknownType(typ)),
     };
+    packet
+        .read_external_ranges(external_data)
+        .map_err(PacketError::ExternalData)?;
     Ok(Packet {
         data,
         transaction_id: packet.transaction_id(),
-        external_data: packet
-            .read_external_ranges()
-            .map_err(PacketError::ExternalData)?,
-        send_buffer_suballocation,
+        external_data,
     })
 }
 
 #[derive(Debug, Copy, Clone)]
-struct NvspMessage<T> {
-    header: protocol::MessageHeader,
-    data: T,
-    padding: &'static [u8],
+struct NvspMessage {
+    buf: [u64; protocol::PACKET_SIZE_V61 / 8],
+    size: PacketSize,
 }
 
-impl<T: IntoBytes + Immutable + KnownLayout> NvspMessage<T> {
-    fn payload(&self) -> [&[u8]; 3] {
-        [self.header.as_bytes(), self.data.as_bytes(), self.padding]
+impl NvspMessage {
+    fn new<P: IntoBytes + Immutable + KnownLayout>(
+        size: PacketSize,
+        message_type: u32,
+        data: P,
+    ) -> Self {
+        // Assert at compile time that the packet will fit in the message
+        // buffer. Note that we are checking against the v1 message size here.
+        // It's possible this is a v6.1+ message, in which case we could compare
+        // against the larger size. So far this has not been necessary. If
+        // needed, make a `new_v61` method that does the more relaxed check,
+        // rater than weakening this one.
+        const {
+            assert!(
+                size_of::<P>() <= protocol::PACKET_SIZE_V1 - size_of::<protocol::MessageHeader>(),
+                "packet might not fit in message"
+            )
+        };
+        let mut message = NvspMessage {
+            buf: [0; protocol::PACKET_SIZE_V61 / 8],
+            size,
+        };
+        let header = protocol::MessageHeader { message_type };
+        header.write_to_prefix(message.buf.as_mut_bytes()).unwrap();
+        data.write_to_prefix(
+            &mut message.buf.as_mut_bytes()[size_of::<protocol::MessageHeader>()..],
+        )
+        .unwrap();
+        message
+    }
+
+    fn aligned_payload(&self) -> &[u64] {
+        // Note that vmbus packets are always 8-byte multiples, so round the
+        // protocol package size up.
+        let len = match self.size {
+            PacketSize::V1 => const { protocol::PACKET_SIZE_V1.next_multiple_of(8) / 8 },
+            PacketSize::V61 => const { protocol::PACKET_SIZE_V61.next_multiple_of(8) / 8 },
+        };
+        &self.buf[..len]
     }
 }
 
@@ -2139,31 +2180,14 @@ impl<T: RingMem> NetChannel<T> {
         &self,
         message_type: u32,
         data: P,
-    ) -> NvspMessage<P> {
-        let padding = self.padding(&data);
-        NvspMessage {
-            header: protocol::MessageHeader { message_type },
-            data,
-            padding,
-        }
-    }
-
-    /// Returns zero padding bytes to round the payload up to the packet size.
-    /// Only needed for Windows guests, which are picky about packet sizes.
-    fn padding<P: IntoBytes + Immutable + KnownLayout>(&self, data: &P) -> &'static [u8] {
-        static PADDING: &[u8] = &[0; protocol::PACKET_SIZE_V61];
-        let padding_len = self.packet_size
-            - cmp::min(
-                self.packet_size,
-                size_of::<protocol::MessageHeader>() + data.as_bytes().len(),
-            );
-        &PADDING[..padding_len]
+    ) -> NvspMessage {
+        NvspMessage::new(self.packet_size, message_type, data)
     }
 
     fn send_completion(
         &mut self,
         transaction_id: Option<u64>,
-        payload: &[&[u8]],
+        message: Option<&NvspMessage>,
     ) -> Result<(), WorkerError> {
         match transaction_id {
             None => Ok(()),
@@ -2171,11 +2195,12 @@ impl<T: RingMem> NetChannel<T> {
                 .queue
                 .split()
                 .1
-                .try_write(&queue::OutgoingPacket {
+                .batched()
+                .try_write_aligned(
                     transaction_id,
-                    packet_type: OutgoingPacketType::Completion,
-                    payload,
-                })
+                    OutgoingPacketType::Completion,
+                    message.map_or(&[], |m| m.aligned_payload()),
+                )
                 .map_err(|err| match err {
                     queue::TryWriteError::Full(_) => WorkerError::OutOfSpace,
                     queue::TryWriteError::Queue(err) => WorkerError::Queue(err),
@@ -2289,58 +2314,96 @@ impl SendBuffer {
 }
 
 impl<T: RingMem> NetChannel<T> {
-    /// Process a single RNDIS message.
+    /// Process a single non-packet RNDIS message.
     fn handle_rndis_message(
+        &mut self,
+        state: &mut ActiveState,
+        message_type: u32,
+        mut reader: PacketReader<'_>,
+    ) -> Result<(), WorkerError> {
+        assert_ne!(
+            message_type,
+            rndisprot::MESSAGE_TYPE_PACKET_MSG,
+            "handled elsewhere"
+        );
+        let control = state
+            .primary
+            .as_mut()
+            .ok_or(WorkerError::NotSupportedOnSubChannel(message_type))?;
+
+        if message_type == rndisprot::MESSAGE_TYPE_HALT_MSG {
+            // Currently ignored and does not require a response.
+            return Ok(());
+        }
+
+        // This is a control message that needs a response. Responding
+        // will require a suballocation to be available, which it may
+        // not be right now. Enqueue the suballocation to a queue and
+        // process the queue as suballocations become available.
+        const CONTROL_MESSAGE_MAX_QUEUED_BYTES: usize = 100 * 1024;
+        if reader.len() == 0 {
+            return Err(WorkerError::RndisMessageTooSmall);
+        }
+        // Do not let the queue get too large--the guest should not be
+        // sending very many control messages at a time.
+        if CONTROL_MESSAGE_MAX_QUEUED_BYTES - control.control_messages_len < reader.len() {
+            return Err(WorkerError::TooManyControlMessages);
+        }
+
+        control.control_messages_len += reader.len();
+        control.control_messages.push_back(ControlMessage {
+            message_type,
+            data: reader.read_all()?.into(),
+        });
+
+        // The control message queue will be processed in the main dispatch
+        // loop.
+        Ok(())
+    }
+
+    /// Process RNDIS packet messages, which may contain multiple RNDIS packets
+    /// in a single vmbus message.
+    ///
+    /// On entry, the reader has already read the RNDIS message header of the
+    /// first RNDIS packet in the message.
+    fn handle_rndis_packet_messages(
         &mut self,
         buffers: &ChannelBuffers,
         state: &mut ActiveState,
         id: TxId,
-        message_type: u32,
+        mut message_len: usize,
         mut reader: PacketReader<'_>,
         segments: &mut Vec<TxSegment>,
-    ) -> Result<bool, WorkerError> {
-        let is_packet = match message_type {
-            rndisprot::MESSAGE_TYPE_PACKET_MSG => {
-                self.handle_rndis_packet_message(
-                    id,
-                    reader,
-                    &buffers.mem,
-                    segments,
-                    &mut state.stats,
-                )?;
-                true
-            }
-            rndisprot::MESSAGE_TYPE_HALT_MSG => false,
-            n => {
-                let control = state
-                    .primary
-                    .as_mut()
-                    .ok_or(WorkerError::NotSupportedOnSubChannel(n))?;
+    ) -> Result<usize, WorkerError> {
+        // There may be multiple RNDIS packets in a single message, concatenated
+        // with each other. Consume them until there is no more data in the
+        // RNDIS message.
+        let mut num_packets = 0;
+        loop {
+            let next_message_offset = message_len
+                .checked_sub(size_of::<rndisprot::MessageHeader>())
+                .ok_or(WorkerError::RndisMessageTooSmall)?;
 
-                // This is a control message that needs a response. Responding
-                // will require a suballocation to be available, which it may
-                // not be right now. Enqueue the suballocation to a queue and
-                // process the queue as suballocations become available.
-                const CONTROL_MESSAGE_MAX_QUEUED_BYTES: usize = 100 * 1024;
-                if reader.len() == 0 {
-                    return Err(WorkerError::RndisMessageTooSmall);
-                }
-                // Do not let the queue get too large--the guest should not be
-                // sending very many control messages at a time.
-                if CONTROL_MESSAGE_MAX_QUEUED_BYTES - control.control_messages_len < reader.len() {
-                    return Err(WorkerError::TooManyControlMessages);
-                }
-                control.control_messages_len += reader.len();
-                control.control_messages.push_back(ControlMessage {
-                    message_type,
-                    data: reader.read_all()?.into(),
-                });
+            self.handle_rndis_packet_message(
+                id,
+                reader.clone(),
+                &buffers.mem,
+                segments,
+                &mut state.stats,
+            )?;
+            num_packets += 1;
 
-                false
-                // The queue will be processed in the main dispatch loop.
+            reader.skip(next_message_offset)?;
+            if reader.len() == 0 {
+                break;
             }
-        };
-        Ok(is_packet)
+            let header: rndisprot::MessageHeader = reader.read_plain()?;
+            if header.message_type != rndisprot::MESSAGE_TYPE_PACKET_MSG {
+                return Err(WorkerError::NonRndisPacketAfterPacket(header.message_type));
+            }
+            message_len = header.message_length as usize;
+        }
+        Ok(num_packets)
     }
 
     /// Process an RNDIS package message (used to send an Ethernet frame).
@@ -2357,7 +2420,7 @@ impl<T: RingMem> NetChannel<T> {
             .clone()
             .into_inner()
             .paged_ranges()
-            .find(|r| !r.is_empty())
+            .next()
             .ok_or(WorkerError::RndisMessageTooSmall)?;
         let mut data = reader.into_inner();
         let request: rndisprot::Packet = headers.reader(mem).read_plain()?;
@@ -2381,7 +2444,7 @@ impl<T: RingMem> NetChannel<T> {
 
         let mut metadata = net_backend::TxMetadata {
             id,
-            len: request.data_length as usize,
+            len: request.data_length,
             ..Default::default()
         };
 
@@ -2407,20 +2470,21 @@ impl<T: RingMem> NetChannel<T> {
                     rndisprot::PPI_TCP_IP_CHECKSUM => {
                         let n: rndisprot::TxTcpIpChecksumInfo = d.reader(mem).read_plain()?;
 
-                        metadata.offload_tcp_checksum =
-                            (n.is_ipv4() || n.is_ipv6()) && n.tcp_checksum();
-                        metadata.offload_udp_checksum =
-                            (n.is_ipv4() || n.is_ipv6()) && !n.tcp_checksum() && n.udp_checksum();
-                        metadata.offload_ip_header_checksum = n.is_ipv4() && n.ip_header_checksum();
-                        metadata.l3_protocol = if n.is_ipv4() {
-                            L3Protocol::Ipv4
-                        } else if n.is_ipv6() {
-                            L3Protocol::Ipv6
-                        } else {
-                            L3Protocol::Unknown
-                        };
+                        metadata.flags.set_offload_tcp_checksum(
+                            (n.is_ipv4() || n.is_ipv6()) && n.tcp_checksum(),
+                        );
+                        metadata.flags.set_offload_udp_checksum(
+                            (n.is_ipv4() || n.is_ipv6()) && !n.tcp_checksum() && n.udp_checksum(),
+                        );
+                        metadata
+                            .flags
+                            .set_offload_ip_header_checksum(n.is_ipv4() && n.ip_header_checksum());
+                        metadata.flags.set_is_ipv4(n.is_ipv4());
+                        metadata.flags.set_is_ipv6(n.is_ipv6() && !n.is_ipv4());
                         metadata.l2_len = ETHERNET_HEADER_LEN as u8;
-                        if metadata.offload_tcp_checksum || metadata.offload_udp_checksum {
+                        if metadata.flags.offload_tcp_checksum()
+                            || metadata.flags.offload_udp_checksum()
+                        {
                             metadata.l3_len = if n.tcp_header_offset() >= metadata.l2_len as u16 {
                                 n.tcp_header_offset() - metadata.l2_len as u16
                             } else if n.is_ipv4() {
@@ -2438,14 +2502,11 @@ impl<T: RingMem> NetChannel<T> {
                     rndisprot::PPI_LSO => {
                         let n: rndisprot::TcpLsoInfo = d.reader(mem).read_plain()?;
 
-                        metadata.offload_tcp_segmentation = true;
-                        metadata.offload_tcp_checksum = true;
-                        metadata.offload_ip_header_checksum = n.is_ipv4();
-                        metadata.l3_protocol = if n.is_ipv4() {
-                            L3Protocol::Ipv4
-                        } else {
-                            L3Protocol::Ipv6
-                        };
+                        metadata.flags.set_offload_tcp_segmentation(true);
+                        metadata.flags.set_offload_tcp_checksum(true);
+                        metadata.flags.set_offload_ip_header_checksum(n.is_ipv4());
+                        metadata.flags.set_is_ipv4(n.is_ipv4());
+                        metadata.flags.set_is_ipv6(n.is_ipv6() && !n.is_ipv4());
                         metadata.l2_len = ETHERNET_HEADER_LEN as u8;
                         if n.tcp_header_offset() < metadata.l2_len as u16 {
                             return Err(WorkerError::InvalidTcpHeaderOffset);
@@ -2460,6 +2521,11 @@ impl<T: RingMem> NetChannel<T> {
                             (b >> 4) * 4
                         };
                         metadata.max_tcp_segment_size = n.mss() as u16;
+
+                        if request.data_length >= rndisprot::LSO_MAX_OFFLOAD_SIZE {
+                            // Not strictly enforced.
+                            stats.tx_invalid_lso_packets.increment();
+                        }
                     }
                     _ => {}
                 }
@@ -2477,13 +2543,13 @@ impl<T: RingMem> NetChannel<T> {
             });
         }
 
-        metadata.segment_count = segments.len() - start;
+        metadata.segment_count = (segments.len() - start) as u8;
 
         stats.tx_packets.increment();
-        if metadata.offload_tcp_checksum || metadata.offload_udp_checksum {
+        if metadata.flags.offload_tcp_checksum() || metadata.flags.offload_udp_checksum() {
             stats.tx_checksum_packets.increment();
         }
-        if metadata.offload_tcp_segmentation {
+        if metadata.flags.offload_tcp_segmentation() {
             stats.tx_lso_packets.increment();
         }
 
@@ -2520,11 +2586,12 @@ impl<T: RingMem> NetChannel<T> {
             self.queue
                 .split()
                 .1
-                .try_write(&queue::OutgoingPacket {
-                    transaction_id: VF_ASSOCIATION_TRANSACTION_ID,
-                    packet_type: OutgoingPacketType::InBandWithCompletion,
-                    payload: &message.payload(),
-                })
+                .batched()
+                .try_write_aligned(
+                    VF_ASSOCIATION_TRANSACTION_ID,
+                    OutgoingPacketType::InBandWithCompletion,
+                    message.aligned_payload(),
+                )
                 .map_err(|err| match err {
                     queue::TryWriteError::Full(len) => {
                         tracing::error!(len, "failed to write vf association message");
@@ -2576,12 +2643,8 @@ impl<T: RingMem> NetChannel<T> {
             data.send_indirection_table[i] = i as u32 % num_channels_opened;
         }
 
-        let message = NvspMessage {
-            header: protocol::MessageHeader {
-                message_type: protocol::MESSAGE5_TYPE_SEND_INDIRECTION_TABLE,
-            },
-            data,
-            padding: &[],
+        let header = protocol::MessageHeader {
+            message_type: protocol::MESSAGE5_TYPE_SEND_INDIRECTION_TABLE,
         };
         let result = self
             .queue
@@ -2590,7 +2653,7 @@ impl<T: RingMem> NetChannel<T> {
             .try_write(&queue::OutgoingPacket {
                 transaction_id: 0,
                 packet_type: OutgoingPacketType::InBandNoCompletion,
-                payload: &message.payload(),
+                payload: &[header.as_bytes(), data.as_bytes()],
             })
             .map_err(|err| match err {
                 queue::TryWriteError::Full(len) => {
@@ -2607,14 +2670,11 @@ impl<T: RingMem> NetChannel<T> {
     /// Notify the guest that the data path has been switched back to synthetic
     /// due to some external state change.
     fn guest_vf_data_path_switched_to_synthetic(&mut self) {
-        let message = NvspMessage {
-            header: protocol::MessageHeader {
-                message_type: protocol::MESSAGE4_TYPE_SWITCH_DATA_PATH,
-            },
-            data: protocol::Message4SwitchDataPath {
-                active_data_path: protocol::DataPath::SYNTHETIC.0,
-            },
-            padding: &[],
+        let header = protocol::MessageHeader {
+            message_type: protocol::MESSAGE4_TYPE_SWITCH_DATA_PATH,
+        };
+        let data = protocol::Message4SwitchDataPath {
+            active_data_path: protocol::DataPath::SYNTHETIC.0,
         };
         let result = self
             .queue
@@ -2623,7 +2683,7 @@ impl<T: RingMem> NetChannel<T> {
             .try_write(&queue::OutgoingPacket {
                 transaction_id: SWITCH_DATA_PATH_TRANSACTION_ID,
                 packet_type: OutgoingPacketType::InBandWithCompletion,
-                payload: &message.payload(),
+                payload: &[header.as_bytes(), data.as_bytes()],
             })
             .map_err(|err| match err {
                 queue::TryWriteError::Full(len) => {
@@ -2684,7 +2744,7 @@ impl<T: RingMem> NetChannel<T> {
                     id,
                 } => {
                     // Complete the data path switch request.
-                    self.send_completion(id, &[])?;
+                    self.send_completion(id, None)?;
                     if to_guest {
                         PrimaryChannelGuestVfState::UnavailableFromDataPathSwitched
                     } else {
@@ -2708,7 +2768,7 @@ impl<T: RingMem> NetChannel<T> {
                 } => {
                     let result = result.expect("DataPathSwitchPending should have been processed");
                     // Complete the data path switch request.
-                    self.send_completion(id, &[])?;
+                    self.send_completion(id, None)?;
                     if result {
                         if to_guest {
                             PrimaryChannelGuestVfState::DataPathSwitched
@@ -2928,11 +2988,11 @@ impl<T: RingMem> NetChannel<T> {
                 send_buffer_section_size: 0,
             },
         );
-        let pending_send_size = match self.queue.split().1.try_write(&queue::OutgoingPacket {
+        let pending_send_size = match self.queue.split().1.batched().try_write_aligned(
             transaction_id,
-            packet_type: OutgoingPacketType::TransferPages(recv_buffer_id, transfer_pages),
-            payload: &message.payload(),
-        }) {
+            OutgoingPacketType::TransferPages(recv_buffer_id, transfer_pages),
+            message.aligned_payload(),
+        ) {
             Ok(()) => None,
             Err(queue::TryWriteError::Full(n)) => Some(n),
             Err(queue::TryWriteError::Queue(err)) => return Err(err.into()),
@@ -4598,14 +4658,14 @@ impl<T: RingMem + 'static> Worker<T> {
 impl<T: 'static + RingMem> NetChannel<T> {
     fn try_next_packet<'a>(
         &mut self,
-        send_buffer: Option<&'a SendBuffer>,
+        send_buffer: Option<&SendBuffer>,
         version: Option<Version>,
+        external_data: &'a mut MultiPagedRangeBuf,
     ) -> Result<Option<Packet<'a>>, WorkerError> {
         let (mut read, _) = self.queue.split();
         let packet = match read.try_read() {
-            Ok(packet) => {
-                parse_packet(&packet, send_buffer, version).map_err(WorkerError::Packet)?
-            }
+            Ok(packet) => parse_packet(&packet, send_buffer, version, external_data)
+                .map_err(WorkerError::Packet)?,
             Err(queue::TryReadError::Empty) => return Ok(None),
             Err(queue::TryReadError::Queue(err)) => return Err(err.into()),
         };
@@ -4618,11 +4678,12 @@ impl<T: 'static + RingMem> NetChannel<T> {
         &mut self,
         send_buffer: Option<&'a SendBuffer>,
         version: Option<Version>,
+        external_data: &'a mut MultiPagedRangeBuf,
     ) -> Result<Packet<'a>, WorkerError> {
         let (mut read, _) = self.queue.split();
         let mut packet_ref = read.read().await?;
-        let packet =
-            parse_packet(&packet_ref, send_buffer, version).map_err(WorkerError::Packet)?;
+        let packet = parse_packet(&packet_ref, send_buffer, version, external_data)
+            .map_err(WorkerError::Packet)?;
         if matches!(packet.data, PacketData::RndisPacket(_)) {
             // In WorkerState::Init if an rndis packet is received, assume it is MESSAGE_TYPE_INITIALIZE_MSG
             tracing::trace!(target: "netvsp/vmbus", "detected rndis initialization message");
@@ -4680,8 +4741,13 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 .wait_ready(ring::PacketSize::completion(protocol::PACKET_SIZE_V61))
                 .await?;
 
+            let mut external_data = MultiPagedRangeBuf::new();
             let packet = self
-                .next_packet(None, initializing.as_ref().map(|x| x.version))
+                .next_packet(
+                    None,
+                    initializing.as_ref().map(|x| x.version),
+                    &mut external_data,
+                )
                 .await?;
 
             if let Some(initializing) = &mut *initializing {
@@ -4701,7 +4767,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         };
 
                         // The UEFI client expects a completion packet, which can be empty.
-                        self.send_completion(packet.transaction_id, &[])?;
+                        self.send_completion(packet.transaction_id, None)?;
                         initializing.ndis_config = Some(NdisConfig {
                             mtu,
                             capabilities: config.capabilities,
@@ -4715,7 +4781,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         }
 
                         // The UEFI client expects a completion packet, which can be empty.
-                        self.send_completion(packet.transaction_id, &[])?;
+                        self.send_completion(packet.transaction_id, None)?;
                         initializing.ndis_version = Some(NdisVersion {
                             major: version.ndis_major_version,
                             minor: version.ndis_minor_version,
@@ -4749,22 +4815,20 @@ impl<T: 'static + RingMem> NetChannel<T> {
 
                         self.send_completion(
                             packet.transaction_id,
-                            &self
-                                .message(
-                                    protocol::MESSAGE1_TYPE_SEND_RECEIVE_BUFFER_COMPLETE,
-                                    protocol::Message1SendReceiveBufferComplete {
-                                        status: protocol::Status::SUCCESS,
-                                        num_sections: 1,
-                                        sections: [protocol::ReceiveBufferSection {
-                                            offset: 0,
-                                            sub_allocation_size: recv_buffer.sub_allocation_size,
-                                            num_sub_allocations: recv_buffer.count,
-                                            end_offset: recv_buffer.sub_allocation_size
-                                                * recv_buffer.count,
-                                        }],
-                                    },
-                                )
-                                .payload(),
+                            Some(&self.message(
+                                protocol::MESSAGE1_TYPE_SEND_RECEIVE_BUFFER_COMPLETE,
+                                protocol::Message1SendReceiveBufferComplete {
+                                    status: protocol::Status::SUCCESS,
+                                    num_sections: 1,
+                                    sections: [protocol::ReceiveBufferSection {
+                                        offset: 0,
+                                        sub_allocation_size: recv_buffer.sub_allocation_size,
+                                        num_sub_allocations: recv_buffer.count,
+                                        end_offset: recv_buffer.sub_allocation_size
+                                            * recv_buffer.count,
+                                    }],
+                                },
+                            )),
                         )?;
                         initializing.recv_buffer = Some(recv_buffer);
                     }
@@ -4778,15 +4842,13 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         let send_buffer = SendBuffer::new(&self.gpadl_map, message.gpadl_handle)?;
                         self.send_completion(
                             packet.transaction_id,
-                            &self
-                                .message(
-                                    protocol::MESSAGE1_TYPE_SEND_SEND_BUFFER_COMPLETE,
-                                    protocol::Message1SendSendBufferComplete {
-                                        status: protocol::Status::SUCCESS,
-                                        section_size: 6144,
-                                    },
-                                )
-                                .payload(),
+                            Some(&self.message(
+                                protocol::MESSAGE1_TYPE_SEND_SEND_BUFFER_COMPLETE,
+                                protocol::Message1SendSendBufferComplete {
+                                    status: protocol::Status::SUCCESS,
+                                    section_size: 6144,
+                                },
+                            )),
                         )?;
 
                         initializing.send_buffer = Some(send_buffer);
@@ -4814,23 +4876,21 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     PacketData::Init(init) => {
                         let requested_version = init.protocol_version;
                         let version = check_version(requested_version);
-                        let mut message = self.message(
-                            protocol::MESSAGE_TYPE_INIT_COMPLETE,
-                            protocol::MessageInitComplete {
-                                deprecated: protocol::INVALID_PROTOCOL_VERSION,
-                                maximum_mdl_chain_length: 34,
-                                status: protocol::Status::NONE,
-                            },
-                        );
+                        let mut data = protocol::MessageInitComplete {
+                            deprecated: protocol::INVALID_PROTOCOL_VERSION,
+                            maximum_mdl_chain_length: 34,
+                            status: protocol::Status::NONE,
+                        };
                         if let Some(version) = version {
                             if version == Version::V1 {
-                                message.data.deprecated = Version::V1 as u32;
+                                data.deprecated = Version::V1 as u32;
                             }
-                            message.data.status = protocol::Status::SUCCESS;
+                            data.status = protocol::Status::SUCCESS;
                         } else {
                             tracing::debug!(requested_version, "unrecognized version");
                         }
-                        self.send_completion(packet.transaction_id, &message.payload())?;
+                        let message = self.message(protocol::MESSAGE_TYPE_INIT_COMPLETE, data);
+                        self.send_completion(packet.transaction_id, Some(&message))?;
 
                         if let Some(version) = version {
                             tracelimit::info_ratelimited!(?version, "network negotiated");
@@ -4838,7 +4898,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             if version >= Version::V61 {
                                 // Update the packet size so that the appropriate padding is
                                 // appended for picky Windows guests.
-                                self.packet_size = protocol::PACKET_SIZE_V61;
+                                self.packet_size = PacketSize::V61;
                             }
                             *initializing = Some(InitState {
                                 version,
@@ -5009,7 +5069,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         }
 
                         // Check the incoming ring for tx, but only if there are enough
-                        // free tx packets.
+                        // free tx packets and no pending tx segments.
                         let (mut recv, mut send) = self.queue.split();
                         if state.free_tx_packets.len() >= self.adapter.free_tx_packet_threshold
                             && data.tx_segments.is_empty()
@@ -5243,7 +5303,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         if queue_switch_operation {
             self.send_coordinator_update_vf();
         } else {
-            self.send_completion(transaction_id, &[])?;
+            self.send_completion(transaction_id, None)?;
         }
         Ok(())
     }
@@ -5255,15 +5315,23 @@ impl<T: 'static + RingMem> NetChannel<T> {
         data: &mut ProcessingData,
         queue_state: &mut QueueState,
     ) -> Result<bool, WorkerError> {
+        if !data.tx_segments.is_empty() {
+            // There are still segments pending transmission. Skip polling the
+            // ring until they are sent to increase backpressure and minimize
+            // unnecessary wakeups.
+            return Ok(false);
+        }
         let mut total_packets = 0;
         let mut did_some_work = false;
         loop {
-            if state.free_tx_packets.is_empty() || !data.tx_segments.is_empty() {
+            if state.free_tx_packets.is_empty() {
                 break;
             }
-            let packet = if let Some(packet) =
-                self.try_next_packet(buffers.send_buffer.as_ref(), Some(buffers.version))?
-            {
+            let packet = if let Some(packet) = self.try_next_packet(
+                buffers.send_buffer.as_ref(),
+                Some(buffers.version),
+                &mut data.external_data,
+            )? {
                 packet
             } else {
                 break;
@@ -5272,33 +5340,24 @@ impl<T: 'static + RingMem> NetChannel<T> {
             did_some_work = true;
             match packet.data {
                 PacketData::RndisPacket(_) => {
-                    assert!(data.tx_segments.is_empty());
                     let id = state.free_tx_packets.pop().unwrap();
                     let result: Result<usize, WorkerError> =
                         self.handle_rndis(buffers, id, state, &packet, &mut data.tx_segments);
-                    let num_packets = match result {
-                        Ok(num_packets) => num_packets,
+                    match result {
+                        Ok(num_packets) => {
+                            total_packets += num_packets as u64;
+                            if num_packets == 0 {
+                                self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
+                            }
+                        }
                         Err(err) => {
                             tracelimit::error_ratelimited!(
                                 err = &err as &dyn std::error::Error,
                                 "failed to handle RNDIS packet"
                             );
                             self.complete_tx_packet(state, id, protocol::Status::FAILURE)?;
-                            continue;
                         }
                     };
-                    total_packets += num_packets as u64;
-                    state.pending_tx_packets[id.0 as usize].pending_packet_count += num_packets;
-
-                    if num_packets != 0 {
-                        if self.transmit_segments(state, data, queue_state, id, num_packets)?
-                            < num_packets
-                        {
-                            state.stats.tx_stalled.increment();
-                        }
-                    } else {
-                        self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
-                    }
                 }
                 PacketData::RndisPacketComplete(_completion) => {
                     data.rx_done.clear();
@@ -5327,15 +5386,13 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     tracing::debug!(?status, subchannel_count, "subchannel request");
                     self.send_completion(
                         packet.transaction_id,
-                        &self
-                            .message(
-                                protocol::MESSAGE5_TYPE_SUB_CHANNEL,
-                                protocol::Message5SubchannelComplete {
-                                    status,
-                                    num_sub_channels: subchannel_count,
-                                },
-                            )
-                            .payload(),
+                        Some(&self.message(
+                            protocol::MESSAGE5_TYPE_SUB_CHANNEL,
+                            protocol::Message5SubchannelComplete {
+                                status,
+                                num_sub_channels: subchannel_count,
+                            },
+                        )),
                     )?;
 
                     if subchannel_count > 0 {
@@ -5369,15 +5426,13 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     tracing::warn!(oid = ?oid_query.oid, "unimplemented OID");
                     self.send_completion(
                         packet.transaction_id,
-                        &self
-                            .message(
-                                protocol::MESSAGE5_TYPE_OID_QUERY_EX_COMPLETE,
-                                protocol::Message5OidQueryExComplete {
-                                    status: rndisprot::STATUS_NOT_SUPPORTED,
-                                    bytes: 0,
-                                },
-                            )
-                            .payload(),
+                        Some(&self.message(
+                            protocol::MESSAGE5_TYPE_OID_QUERY_EX_COMPLETE,
+                            protocol::Message5OidQueryExComplete {
+                                status: rndisprot::STATUS_NOT_SUPPORTED,
+                                bytes: 0,
+                            },
+                        )),
                     )?;
                 }
                 p => {
@@ -5388,10 +5443,15 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 }
             }
         }
+        if total_packets > 0 && !self.transmit_segments(state, data, queue_state)? {
+            state.stats.tx_stalled.increment();
+        }
         state.stats.tx_packets_per_wake.add_sample(total_packets);
         Ok(did_some_work)
     }
 
+    // Transmit any pending segments. Returns Ok(true) if work was done--if any
+    // segments were transmitted.
     fn transmit_pending_segments(
         &mut self,
         state: &mut ActiveState,
@@ -5401,47 +5461,50 @@ impl<T: 'static + RingMem> NetChannel<T> {
         if data.tx_segments.is_empty() {
             return Ok(false);
         }
-        let net_backend::TxSegmentType::Head(metadata) = &data.tx_segments[0].ty else {
-            unreachable!()
-        };
-        let id = metadata.id;
-        let num_packets = state.pending_tx_packets[id.0 as usize].pending_packet_count;
-        let packets_sent = self.transmit_segments(state, data, queue_state, id, num_packets)?;
-        Ok(num_packets == packets_sent)
+        let sent = data.tx_segments_sent;
+        let did_work =
+            self.transmit_segments(state, data, queue_state)? || data.tx_segments_sent > sent;
+        Ok(did_work)
     }
 
+    /// Returns true if all pending segments were transmitted.
     fn transmit_segments(
         &mut self,
         state: &mut ActiveState,
         data: &mut ProcessingData,
         queue_state: &mut QueueState,
-        id: TxId,
-        num_packets: usize,
-    ) -> Result<usize, WorkerError> {
+    ) -> Result<bool, WorkerError> {
+        let segments = &data.tx_segments[data.tx_segments_sent..];
         let (sync, segments_sent) = queue_state
             .queue
-            .tx_avail(&data.tx_segments)
+            .tx_avail(segments)
             .map_err(WorkerError::Endpoint)?;
 
-        assert!(segments_sent <= data.tx_segments.len());
-
-        let packets_sent = if segments_sent == data.tx_segments.len() {
-            num_packets
-        } else {
-            net_backend::packet_count(&data.tx_segments[..segments_sent])
-        };
-
-        data.tx_segments.drain(..segments_sent);
+        let mut segments = &segments[..segments_sent];
+        data.tx_segments_sent += segments_sent;
 
         if sync {
-            state.pending_tx_packets[id.0 as usize].pending_packet_count -= packets_sent;
+            // Complete the packets now.
+            while let Some(head) = segments.first() {
+                let net_backend::TxSegmentType::Head(metadata) = &head.ty else {
+                    unreachable!()
+                };
+                let id = metadata.id;
+                let pending_tx_packet = &mut state.pending_tx_packets[id.0 as usize];
+                pending_tx_packet.pending_packet_count -= 1;
+                if pending_tx_packet.pending_packet_count == 0 {
+                    self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
+                }
+                segments = &segments[metadata.segment_count as usize..];
+            }
         }
 
-        if state.pending_tx_packets[id.0 as usize].pending_packet_count == 0 {
-            self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
+        let all_sent = data.tx_segments_sent == data.tx_segments.len();
+        if all_sent {
+            data.tx_segments.clear();
+            data.tx_segments_sent = 0;
         }
-
-        Ok(packets_sent)
+        Ok(all_sent)
     }
 
     fn handle_rndis(
@@ -5452,9 +5515,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
         packet: &Packet<'_>,
         segments: &mut Vec<TxSegment>,
     ) -> Result<usize, WorkerError> {
-        let mut num_packets = 0;
+        let mut total_packets = 0;
         let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
-        assert!(tx_packet.pending_packet_count == 0);
+        assert_eq!(tx_packet.pending_packet_count, 0);
         tx_packet.transaction_id = packet
             .transaction_id
             .ok_or(WorkerError::MissingTransactionId)?;
@@ -5469,27 +5532,32 @@ impl<T: 'static + RingMem> NetChannel<T> {
             .map_err(WorkerError::GpaDirectError)?;
 
         let mut reader = packet.rndis_reader(&buffers.mem);
-        // There may be multiple RNDIS packets in a single
-        // message, concatenated with each other. Consume
-        // them until there is no more data in the RNDIS
-        // message.
-        while reader.len() > 0 {
-            let mut this_reader = reader.clone();
-            let header: rndisprot::MessageHeader = this_reader.read_plain()?;
-            if self.handle_rndis_message(
+        let header: rndisprot::MessageHeader = reader.read_plain()?;
+        if header.message_type == rndisprot::MESSAGE_TYPE_PACKET_MSG {
+            let start = segments.len();
+            match self.handle_rndis_packet_messages(
                 buffers,
                 state,
                 id,
-                header.message_type,
-                this_reader,
+                header.message_length as usize,
+                reader,
                 segments,
-            )? {
-                num_packets += 1;
+            ) {
+                Ok(n) => {
+                    state.pending_tx_packets[id.0 as usize].pending_packet_count += n;
+                    total_packets += n;
+                }
+                Err(err) => {
+                    // Roll back any segments added for this message.
+                    segments.truncate(start);
+                    return Err(err);
+                }
             }
-            reader.skip(header.message_length as usize)?;
+        } else {
+            self.handle_rndis_message(state, header.message_type, reader)?;
         }
 
-        Ok(num_packets)
+        Ok(total_packets)
     }
 
     fn try_send_tx_packet(
@@ -5501,11 +5569,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
             protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
             protocol::Message1SendRndisPacketComplete { status },
         );
-        let result = self.queue.split().1.try_write(&queue::OutgoingPacket {
+        let result = self.queue.split().1.batched().try_write_aligned(
             transaction_id,
-            packet_type: OutgoingPacketType::Completion,
-            payload: &message.payload(),
-        });
+            OutgoingPacketType::Completion,
+            message.aligned_payload(),
+        );
         let sent = match result {
             Ok(()) => true,
             Err(queue::TryWriteError::Full(n)) => {

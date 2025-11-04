@@ -2797,7 +2797,7 @@ async fn new_underhill_vm(
         0..=1,
         0,
         "bsp",
-        Arc::new(virt::irqcon::ApicLintLineTarget::new(
+        Arc::new(vmm_core::emuplat::apic::ApicLintLineTarget::new(
             partition.clone(),
             Vtl::Vtl0,
         )),
@@ -2964,6 +2964,7 @@ async fn new_underhill_vm(
                                 .context("failed to create direct mmio accessor")?,
                         )
                     },
+                    vtom,
                 );
 
                 // Allow NVMe devices.
@@ -3093,6 +3094,7 @@ async fn new_underhill_vm(
                     let device = Arc::new(device);
                     Ok((device.clone(), VpciInterruptMapper::new(device)))
                 },
+                vtom,
             )
             .await?;
         }

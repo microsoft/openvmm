@@ -1091,7 +1091,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "azure_profiler_proto",
- "build_rs_guest_arch",
  "cvm_tracing",
  "diag_proto",
  "fs-err",
@@ -1414,7 +1413,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.16",
  "vm_resource",
- "winapi",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -1664,6 +1663,13 @@ name = "fallible-streaming-iterator"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
+
+[[package]]
+name = "fast_memcpy"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+]
 
 [[package]]
 name = "fast_select"
@@ -1950,6 +1956,7 @@ dependencies = [
  "igvmfilegen_config",
  "log",
  "powershell_builder",
+ "quick-xml",
  "serde",
  "serde_json",
  "target-lexicon",
@@ -2741,6 +2748,7 @@ dependencies = [
  "pal_event",
  "sparse_mmap",
  "thiserror 2.0.16",
+ "trycopy",
  "zerocopy 0.8.25",
 ]
 
@@ -2752,7 +2760,7 @@ dependencies = [
  "inspect",
  "mesh_protobuf",
  "thiserror 2.0.16",
- "winapi",
+ "win_etw_provider",
  "windows 0.62.0",
  "windows-sys 0.61.0",
  "zerocopy 0.8.25",
@@ -4434,6 +4442,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bitfield-struct 0.11.0",
  "futures",
  "futures-concurrency",
  "guestmem",
@@ -4802,6 +4811,8 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "disk_backend",
+ "disk_prwrap",
  "disklayer_ram",
  "event-listener",
  "futures",
@@ -5013,7 +5024,9 @@ dependencies = [
  "sidecar_defs",
  "string_page_buf",
  "tdcall",
+ "test_with_tracing",
  "thiserror 2.0.16",
+ "tracing",
  "underhill_confidentiality",
  "x86defs",
  "zerocopy 0.8.25",
@@ -5032,7 +5045,6 @@ dependencies = [
  "memory_range",
  "mesh",
  "page_pool_alloc",
- "tracing",
  "user_driver",
  "virt",
  "vmcore",
@@ -5233,6 +5245,7 @@ name = "openvmm_hcl"
 version = "0.0.0"
 dependencies = [
  "openvmm_hcl_resources",
+ "tracing",
  "underhill_entry",
 ]
 
@@ -6068,6 +6081,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-xml"
+version = "0.38.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42a232e7487fc2ef313d96dde7948e7a3c05101870d8985e4fd8d26aedd27b89"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6878,13 +6900,12 @@ dependencies = [
 name = "sparse_mmap"
 version = "0.0.0"
 dependencies = [
- "cc",
- "criterion",
  "getrandom 0.3.3",
  "libc",
  "pal",
  "parking_lot",
  "thiserror 2.0.16",
+ "trycopy",
  "windows-sys 0.61.0",
  "zerocopy 0.8.25",
 ]
@@ -7677,6 +7698,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "trycopy"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "libc",
+ "thiserror 2.0.16",
+ "windows-sys 0.61.0",
+]
+
+[[package]]
 name = "typed-path"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8086,6 +8117,7 @@ name = "underhill_entry"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "fast_memcpy",
  "mimalloc",
  "openssl_crypto_only",
  "underhill_core",
@@ -8235,8 +8267,8 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "safeatomic",
- "sparse_mmap",
  "tracing",
+ "trycopy",
  "uevent",
  "vfio-bindings",
  "vfio_sys",
@@ -8883,7 +8915,6 @@ dependencies = [
  "inspect",
  "inspect_counters",
  "pal_async",
- "smallvec",
  "thiserror 2.0.16",
  "vmbus_channel",
  "vmbus_ring",
@@ -9046,7 +9077,6 @@ dependencies = [
  "guestmem",
  "inspect",
  "safeatomic",
- "smallvec",
  "thiserror 2.0.16",
  "zerocopy 0.8.25",
 ]
@@ -9812,8 +9842,10 @@ name = "whp"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "guid",
  "pal",
  "winapi",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]

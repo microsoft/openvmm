@@ -6,7 +6,6 @@ pub mod saved_state;
 mod tests;
 
 use crate::Guid;
-use crate::SINT;
 use crate::SynicMessage;
 use crate::monitor::AssignedMonitors;
 use crate::protocol::Version;
@@ -37,6 +36,7 @@ use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
 use vmbus_core::MaxVersionInfo;
 use vmbus_core::OutgoingMessage;
+use vmbus_core::VMBUS_SINT;
 use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
@@ -867,7 +867,7 @@ impl Channel {
 
         let channel_id = entry.id();
         entry.insert(offer_id);
-        let connection_id = ConnectionId::new(channel_id.0, assigned_channels.vtl, SINT);
+        let connection_id = ConnectionId::new(channel_id.0, assigned_channels.vtl, VMBUS_SINT);
 
         // Allocate a monitor ID if the channel uses MNF.
         // N.B. If the synic doesn't support MNF or MNF is disabled by the server, use_mnf should
@@ -1217,7 +1217,7 @@ impl Gpadl {
             buf.resize(buf.len() + data.len() / 8, 0);
             buf[start..].as_mut_bytes().copy_from_slice(data);
             Ok(if buf.len() == buf.capacity() {
-                gparange::MultiPagedRangeBuf::<Vec<u64>>::validate(self.count as usize, buf)
+                gparange::validate_gpa_ranges(self.count as usize, buf)
                     .map_err(ChannelError::InvalidGpaRange)?;
                 self.state = GpadlState::Offered;
                 true
@@ -2111,7 +2111,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         {
             target_info.sint()
         } else {
-            SINT
+            VMBUS_SINT
         };
 
         let target_vtl = if message.multiclient
@@ -2205,7 +2205,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             return;
         }
 
-        if request.target_sint != SINT {
+        if request.target_sint != VMBUS_SINT {
             tracelimit::warn_ratelimited!(
                 target_vtl = request.target_vtl,
                 target_sint = request.target_sint,
