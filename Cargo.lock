@@ -1956,6 +1956,7 @@ dependencies = [
  "igvmfilegen_config",
  "log",
  "powershell_builder",
+ "quick-xml",
  "serde",
  "serde_json",
  "target-lexicon",
@@ -4810,6 +4811,8 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "disk_backend",
+ "disk_prwrap",
  "disklayer_ram",
  "event-listener",
  "futures",
@@ -5021,7 +5024,9 @@ dependencies = [
  "sidecar_defs",
  "string_page_buf",
  "tdcall",
+ "test_with_tracing",
  "thiserror 2.0.16",
+ "tracing",
  "underhill_confidentiality",
  "x86defs",
  "zerocopy 0.8.25",
@@ -5040,7 +5045,6 @@ dependencies = [
  "memory_range",
  "mesh",
  "page_pool_alloc",
- "tracing",
  "user_driver",
  "virt",
  "vmcore",
@@ -6074,6 +6078,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.106",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.38.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42a232e7487fc2ef313d96dde7948e7a3c05101870d8985e4fd8d26aedd27b89"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
