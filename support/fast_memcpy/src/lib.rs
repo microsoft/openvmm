@@ -258,15 +258,21 @@ unsafe fn copy_loop_dest_aligned_forward<T: Chunk>(dest: *mut T, src: *const T, 
 
         // Save the tail now in case it is overlapping.
         let tail = read_one(src.byte_add(len - size_of::<T>()));
-        // Copy until the last chunk.
-        let mut i = 0;
-        loop {
-            write_one_aligned(dest.byte_add(i), read_one(src.byte_add(i)));
-            i += size_of::<T>();
-            if i >= len - size_of::<T>() {
-                break;
+
+        if len < ARCH_LARGE_COPY_THRESHOLD {
+            // Copy until the last chunk.
+            let mut i = 0;
+            loop {
+                write_one_aligned(dest.byte_add(i), read_one(src.byte_add(i)));
+                i += size_of::<T>();
+                if i >= len - size_of::<T>() {
+                    break;
+                }
             }
+        } else {
+            arch_copy_forward_no_tail::<T>(dest.cast(), src.cast(), len);
         }
+
         // Write the tail.
         write_one(dest.byte_add(len - size_of::<T>()), tail);
     }
@@ -300,6 +306,39 @@ unsafe fn copy_loop_dest_aligned_backward<T: Chunk>(dest: *mut T, src: *const T,
         // Write the head.
         write_one(dest, head);
     }
+}
+
+const ARCH_LARGE_COPY_THRESHOLD: usize = if cfg!(target_arch = "x86_64") {
+    // Use rep movsq for relatively large copies.
+    1800
+} else {
+    // No architecture-specific large copy implementation.
+    usize::MAX
+};
+
+/// Copies bytes from `src` to `dest`, minus some tail portion no bigger than
+/// `T`--the caller must handle the tail separately, but the buffers must include
+/// a full tail.
+unsafe fn arch_copy_forward_no_tail<T>(dest: *mut u8, src: *const u8, len: usize) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // On x86_64, use `rep movsq` for large copies. This seems to be fast on
+        // Intel and AMD, on aligned and unaligned data. (AMD's `rep movsb` is slow
+        // on unaligned data).
+        const { assert!(size_of::<T>() >= 8) };
+        let count = (len - size_of::<T>()).div_ceil(8);
+        unsafe {
+            core::arch::asm!(
+                "rep movsq",
+                inout("rdi") dest => _,
+                inout("rsi") src => _,
+                inout("rcx") count => _,
+                options(nostack, preserves_flags)
+            );
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    unreachable!();
 }
 
 #[cfg(test)]
