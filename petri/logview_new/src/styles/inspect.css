@@ -130,7 +130,7 @@
     color: black;
     font-family: monospace;
     font-size: 1.2rem;
-    width: min(1100px, 100%);
+    width: min(2500px, 96%);
     max-height: 96vh;
     display: flex;
     flex-direction: column;
