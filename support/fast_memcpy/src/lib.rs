@@ -43,10 +43,13 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *m
                 // compiler some room to optimize.
                 if !overlaps(dest, src, len) {
                     // Copy the first 16 bytes, then resume at the next aligned
-                    // address. This may be a redundant copy if the buffers are
-                    // already aligned, but this keeps the buffer 64-byte
-                    // aligned if it was already aligned.
+                    // address.
                     copy_one::<U128>(dest.cast(), src.cast());
+                    // If the buffer was already 16-byte aligned, don't
+                    // advance--keep the original alignment (which may be more
+                    // than 16). This is useful on Intel, where `rep movsq`
+                    // prefers 64-byte alignment when it can get it, and the
+                    // caller may have provided that.
                     let offset = dest.addr().wrapping_neg() % 16;
                     copy_loop_dest_aligned_forward::<U128x4>(
                         dest.byte_add(offset).cast(),
