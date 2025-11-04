@@ -346,7 +346,7 @@ unsafe fn arch_copy_forward_no_tail<T>(dest: *mut u8, src: *const u8, len: usize
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
-        let _ = (dest, src, len);
+        let _ = (dest, src, len, size_of::<T>());
         unreachable!();
     }
 }
