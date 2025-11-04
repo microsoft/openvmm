@@ -915,7 +915,7 @@ impl ConfigSpaceType0Emulator {
     pub fn set_presence_detect_state(&mut self, present: bool) {
         use crate::capabilities::pci_express::PciExpressCapability;
 
-        for capability in &mut self.common.capabilities {
+        for capability in self.common.capabilities_mut() {
             if let Some(pcie_cap) = capability
                 .as_any_mut()
                 .downcast_mut::<PciExpressCapability>()
