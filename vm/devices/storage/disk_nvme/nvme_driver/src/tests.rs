@@ -13,9 +13,12 @@ use nvme::NvmeControllerCaps;
 use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::IoQueueFaultBehavior;
+use nvme_resources::fault::IoQueueFaultConfig;
 use nvme_spec::AdminOpcode;
 use nvme_spec::Cap;
 use nvme_spec::Command;
+use nvme_spec::nvm;
 use nvme_spec::nvm::DsmRange;
 use nvme_test::command_match::CommandMatchBuilder;
 use pal_async::DefaultDriver;
@@ -422,6 +425,33 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     // let _new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, new_device, &saved_state)
     //     .await
     //     .unwrap();
+}
+
+#[async_test]
+async fn test_nvme_command_fault_bad_reservation_report(driver: DefaultDriver) {
+    let report_header = nvm::ReservationReportExtended {
+        report: nvm::ReservationReport {
+            generation: 0,
+            rtype: nvm::ReservationType(0),
+            regctl: (150 as u16).into(),
+            ptpls: 0,
+            ..FromZeros::new_zeroed()
+        },
+        ..FromZeros::new_zeroed()
+    };
+
+    test_nvme_fault_injection(
+        driver,
+        FaultConfiguration::new(CellUpdater::new(true).cell()).with_io_queue_fault(
+            IoQueueFaultConfig::new(CellUpdater::new(true).cell()).with_completion_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvm::NvmOpcode::RESERVATION_REPORT.0)
+                    .build(),
+                IoQueueFaultBehavior::CustomPayload(report_header.as_bytes().to_vec()),
+            ),
+        ),
+    )
+    .await;
 }
 
 async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: FaultConfiguration) {
