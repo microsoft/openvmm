@@ -151,7 +151,6 @@ impl FlowNode for Node {
                         let attachment_path_string = attachment_path.map(ctx, |p| {
                             p.absolute().expect("invalid path").display().to_string()
                         });
-
                         match ctx.backend() {
                             FlowBackend::Ado => {
                                 if publish_on_ado {
@@ -192,21 +191,7 @@ impl FlowNode for Node {
                                         .push(attachment_path_string.into_side_effect());
                                 }
                             }
-                            FlowBackend::Github => {
-                                // Note: usually flowey's built-in artifact publishing API should be used instead of this,
-                                // but here we need to manually upload the artifact so that we can attach a condition.
-                                use_side_effects.push(
-                                    ctx.emit_gh_step(
-                                        step_name.clone(),
-                                        "actions/upload-artifact@v4",
-                                    )
-                                    .condition(attachment_exists)
-                                    .with("name", artifact_name)
-                                    .with("path", attachment_path_string)
-                                    .finish(ctx),
-                                );
-                            }
-                            FlowBackend::Local => {
+                            FlowBackend::Local | FlowBackend::Github => {
                                 use_side_effects.push(ctx.emit_rust_step(step_name, |ctx| {
                                     let output_dir = output_dir.clone().claim(ctx);
                                     let attachment_exists = attachment_exists.claim(ctx);
