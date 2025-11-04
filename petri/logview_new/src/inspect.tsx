@@ -88,62 +88,20 @@ export const InspectOverlay: React.FC<InspectOverlayProps> = ({ fileUrl, onClose
     // This effect also restores expansion state after a search is cleared.
     useEffect(() => {
         if (rawMode) {
-            if (!contentsRef.current) return;
-            // Render raw text lines with highlighting. Preserve whitespace.
-            const container = document.createElement('div');
-            container.style.fontFamily = 'monospace';
-            const terms = filter.trim().split(/\s+/).filter(t => t.length > 0);
-            const lowerTerms = terms.map(t => t.toLowerCase());
-            const lines = rawText ? rawText.split(/\r?\n/) : [];
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                if (lowerTerms.length > 0) {
-                    const matchAll = lowerTerms.every(term => line.toLowerCase().includes(term));
-                    if (!matchAll) continue; // AND filtering semantics similar to tree filter
-                }
-                const div = document.createElement('div');
-                div.style.whiteSpace = 'pre';
-                const highlighted = highlightMatch(line, filter);
-                if (typeof highlighted === 'string') div.textContent = highlighted; else div.appendChild(highlighted);
-                container.appendChild(div);
-            }
-            if (!container.childElementCount) {
-                const empty = document.createElement('div');
-                empty.textContent = 'No matches';
-                container.appendChild(empty);
-            }
-            contentsRef.current.replaceChildren(container);
-            return;
-        }
-
-        // Parsed mode
-        if (!contentsRef.current || !data || error) return;
-        allToggleButtonsRef.current = [];
-        const hasFilter = filter.trim().length > 0;
-        updateFilteredTree(data, filter, contentsRef, selectedPathRef, allToggleButtonsRef);
-        if (hasFilter) {
-            // During an active search we auto-expand everything.
-            (allToggleButtonsRef.current as any[]).forEach((toggleControl: any) => {
-                toggleControl.setExpanded(true);
-            });
-            setAllExpanded(true);
+            renderRawTextContent(contentsRef, rawText, filter);
         } else {
-            // If we've just cleared a search, restore the pre-search expansion snapshot.
-            if (clearedSearchRef.current) {
-                (allToggleButtonsRef.current as any[]).forEach((tc: any) => {
-                    if (tc.path && preSearchExpandedRef.current.has(tc.path)) {
-                        tc.setExpanded(true);
-                    }
-                });
-                // Compute aggregate allExpanded state after restoration.
-                const total = (allToggleButtonsRef.current as any[]).length;
-                const expandedCount = (allToggleButtonsRef.current as any[]).reduce((acc: number, tc: any) => acc + (tc.isExpanded && tc.isExpanded() ? 1 : 0), 0);
-                setAllExpanded(total > 0 && expandedCount === total);
-                clearedSearchRef.current = false; // reset flag
-            } else {
-                // No filter and not clearing from a search: leave default collapsed state.
-                setAllExpanded(false);
-            }
+            // Parsed mode
+            renderParsedModeContent(
+                data,
+                error,
+                filter,
+                contentsRef,
+                selectedPathRef,
+                allToggleButtonsRef,
+                preSearchExpandedRef,
+                clearedSearchRef,
+                setAllExpanded
+            );
         }
     }, [data, error, filter, rawMode, rawText]);
 
@@ -172,7 +130,6 @@ export const InspectOverlay: React.FC<InspectOverlayProps> = ({ fileUrl, onClose
             onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
         >
             <div className="inspect-container">
-                <button className="inspect-close-btn" onClick={onClose} aria-label="Close Inspect">×</button>
                 <div className="inspect-filter-bar">
                     <div className="inspect-test-name" title={fileName}>{fileName}</div>
                     <div className="inspect-search-controls">
@@ -292,6 +249,113 @@ function highlightMatch(str: string, filter: string): HTMLElement | string {
     }
 
     return result;
+}
+
+/**
+ * Renders raw text content (when rawMode is enabled) into the provided container ref.
+ * Applies multi-term AND filtering and highlights matched substrings.
+ * Whitespace is preserved and lines are displayed in a monospace font.
+ *
+ * @param contentsRef - Ref to the scroll/content div that will receive rendered children
+ * @param rawText - The full raw text loaded from the target file
+ * @param filter - The user-entered filter string (space-separated terms; all must match)
+ */
+function renderRawTextContent(
+    contentsRef: React.RefObject<HTMLDivElement | null>,
+    rawText: string,
+    filter: string
+): void {
+    if (!contentsRef.current) return;
+
+    const container = document.createElement('div');
+    container.style.fontFamily = 'monospace';
+
+    const terms = filter.trim().split(/\s+/).filter(t => t.length > 0);
+    const lowerTerms = terms.map(t => t.toLowerCase());
+    const lines = rawText ? rawText.split(/\r?\n/) : [];
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (lowerTerms.length > 0) {
+            const matchAll = lowerTerms.every(term => line.toLowerCase().includes(term));
+            if (!matchAll) continue; // AND filtering semantics similar to tree filter
+        }
+        const div = document.createElement('div');
+        div.style.whiteSpace = 'pre';
+        const highlighted = highlightMatch(line, filter);
+        if (typeof highlighted === 'string') div.textContent = highlighted; else div.appendChild(highlighted);
+        container.appendChild(div);
+    }
+
+    if (!container.childElementCount) {
+        const empty = document.createElement('div');
+        empty.textContent = 'No matches';
+        container.appendChild(empty);
+    }
+
+    contentsRef.current.replaceChildren(container);
+}
+
+/**
+ * Handles parsed (tree) mode rendering including filter application, auto-expansion during
+ * active searches, and restoration of pre-search expansion state once cleared.
+ *
+ * @param data Root inspect object data (nullable until fetched)
+ * @param error Current error (if any) aborts rendering
+ * @param filter Current user filter string (space-separated AND terms)
+ * @param contentsRef Ref to container into which tree is rendered
+ * @param selectedPathRef Ref tracking the currently selected node path
+ * @param allToggleButtonsRef Ref aggregating toggle controls for expansion operations
+ * @param preSearchExpandedRef Snapshot of expanded paths prior to starting a search
+ * @param clearedSearchRef Flag indicating a transition from searching -> cleared
+ * @param setAllExpanded React state setter for global expand/collapse state indicator
+ */
+function renderParsedModeContent(
+    data: InspectObject | null,
+    error: string | null,
+    filter: string,
+    contentsRef: React.RefObject<HTMLDivElement | null>,
+    selectedPathRef: React.MutableRefObject<string>,
+    allToggleButtonsRef: React.MutableRefObject<any[]>,
+    preSearchExpandedRef: React.MutableRefObject<Set<string>>,
+    clearedSearchRef: React.MutableRefObject<boolean>,
+    setAllExpanded: React.Dispatch<React.SetStateAction<boolean>>
+): void {
+    if (!contentsRef.current || !data || error) return;
+
+    // Reset toggle controls collection before rebuilding tree
+    allToggleButtonsRef.current = [] as any[];
+    const hasFilter = filter.trim().length > 0;
+
+    updateFilteredTree(data, filter, contentsRef, selectedPathRef, allToggleButtonsRef);
+
+    if (hasFilter) {
+        // Auto-expand all nodes when filter active so user can see matches immediately.
+        (allToggleButtonsRef.current as any[]).forEach((toggleControl: any) => {
+            toggleControl.setExpanded(true);
+        });
+        setAllExpanded(true);
+        return;
+    }
+
+    // No active filter: either restoring pre-search expansion snapshot or leaving defaults.
+    if (clearedSearchRef.current) {
+        (allToggleButtonsRef.current as any[]).forEach((tc: any) => {
+            if (tc.path && preSearchExpandedRef.current.has(tc.path)) {
+                tc.setExpanded(true);
+            }
+        });
+        const total = (allToggleButtonsRef.current as any[]).length;
+        const expandedCount = (allToggleButtonsRef.current as any[]).reduce(
+            (acc: number, tc: any) => acc + (tc.isExpanded && tc.isExpanded() ? 1 : 0),
+            0
+        );
+        setAllExpanded(total > 0 && expandedCount === total);
+        clearedSearchRef.current = false;
+    } else {
+        // Default collapsed state when not searching and not restoring.
+        setAllExpanded(false);
+    }
 }
 
 // ---------------- Tree Rendering Functions ----------------
