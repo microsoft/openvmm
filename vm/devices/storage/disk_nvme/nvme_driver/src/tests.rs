@@ -483,7 +483,13 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
     );
 
     nvme.client() // 2MB namespace
-        .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
+        .add_namespace(
+            1,
+            Disk::new(DiskWithReservations::new(
+                disklayer_ram::ram_disk(2 << 20, false).unwrap(),
+            ))
+            .unwrap(),
+        )
         .await
         .unwrap();
     let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
@@ -491,6 +497,7 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
         .await
         .unwrap();
     let namespace = driver.namespace(1).await.unwrap();
+    let _ = namespace.reservation_report_extended(0).await;
 
     // Act: Write 1024 bytes of data to disk starting at LBA 1.
     let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // 32 blocks
