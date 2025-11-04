@@ -304,6 +304,15 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
         self.state.interrupt_line
     }
 
+    /// Get current interrupt pin (returns the pin number + 1, or 0 if no pin configured)
+    pub fn interrupt_pin(&self) -> u8 {
+        if let Some(intx) = &self.intx_interrupt {
+            (intx.pin as u8) + 1  // PCI spec: 1=INTA, 2=INTB, 3=INTC, 4=INTD, 0=no interrupt
+        } else {
+            0  // No interrupt pin configured
+        }
+    }
+
     /// Set interrupt line (for save/restore)
     pub fn set_interrupt_line(&mut self, interrupt_line: u8) {
         self.state.interrupt_line = interrupt_line;
@@ -849,8 +858,10 @@ impl ConfigSpaceType0Emulator {
             HeaderType00::EXPANSION_ROM_BASE => 0,
             HeaderType00::RESERVED => 0,
             HeaderType00::LATENCY_INTERRUPT => {
-                // Read interrupt line from common header and return interrupt pin as 0 for now
-                self.common.interrupt_line() as u32
+                // Bits 7-0: Interrupt Line, Bits 15-8: Interrupt Pin, Bits 31-16: Latency Timer
+                (self.state.latency_timer as u32) << 16
+                    | (self.common.interrupt_pin() as u32) << 8
+                    | self.common.interrupt_line() as u32
             }
             _ => {
                 tracelimit::warn_ratelimited!(offset, "unexpected config space read");
@@ -877,13 +888,15 @@ impl ConfigSpaceType0Emulator {
         // Handle Type 0 specific registers
         match HeaderType00(offset) {
             HeaderType00::BIST_HEADER => {
-                // allow writes to the latency timer
-                let timer_val = (val >> 8) as u8;
-                self.state.latency_timer = timer_val;
+                // BIST_HEADER - Type 0 specific handling
+                // For now, just ignore these writes (header type is read-only)
             }
             HeaderType00::LATENCY_INTERRUPT => {
-                // Delegate interrupt line writes to common header
+                // Bits 7-0: Interrupt Line (read/write)
+                // Bits 15-8: Interrupt Pin (read-only, ignore writes)  
+                // Bits 31-16: Latency Timer (read/write)
                 self.common.set_interrupt_line((val & 0xff) as u8);
+                self.state.latency_timer = (val >> 16) as u8;
             }
             // all other base regs are noops
             _ if offset < 0x40 && offset.is_multiple_of(4) => (),
@@ -2186,5 +2199,68 @@ mod tests {
         // Should not panic and should be silently ignored
         emulator.set_presence_detect_state(true);
         emulator.set_presence_detect_state(false);
+    }
+
+    #[test]
+    fn test_interrupt_pin_register() {
+        use vmcore::line_interrupt::LineInterrupt;
+
+        // Test Type 0 device with interrupt pin configured
+        let mut emu = ConfigSpaceType0Emulator::new(
+            HardwareIds {
+                vendor_id: 0x1111,
+                device_id: 0x2222,
+                revision_id: 1,
+                prog_if: ProgrammingInterface::NONE,
+                sub_class: Subclass::NONE,
+                base_class: ClassCode::UNCLASSIFIED,
+                type0_sub_vendor_id: 0,
+                type0_sub_system_id: 0,
+            },
+            vec![],
+            DeviceBars::new(),
+        );
+
+        // Initially, no interrupt pin should be configured
+        let mut val = 0u32;
+        emu.read_u32(0x3C, &mut val).unwrap(); // LATENCY_INTERRUPT register
+        assert_eq!(val & 0xFF00, 0); // Interrupt pin should be 0
+
+        // Configure interrupt pin A
+        let line_interrupt = LineInterrupt::detached();
+        emu.set_interrupt_pin(PciInterruptPin::IntA, line_interrupt);
+
+        // Read the register again
+        emu.read_u32(0x3C, &mut val).unwrap();
+        assert_eq!((val >> 8) & 0xFF, 1); // Interrupt pin should be 1 (INTA)
+
+        // Set interrupt line to 0x42 and verify both pin and line are correct  
+        emu.write_u32(0x3C, 0x00110042).unwrap(); // Latency=0x11, pin=ignored, line=0x42
+        emu.read_u32(0x3C, &mut val).unwrap();
+        assert_eq!(val & 0xFF, 0x42); // Interrupt line should be 0x42
+        assert_eq!((val >> 8) & 0xFF, 1); // Interrupt pin should still be 1 (writes ignored)
+        assert_eq!((val >> 16) & 0xFF, 0x11); // Latency timer should be 0x11
+
+        // Test with interrupt pin D
+        let mut emu_d = ConfigSpaceType0Emulator::new(
+            HardwareIds {
+                vendor_id: 0x1111,
+                device_id: 0x2222,
+                revision_id: 1,
+                prog_if: ProgrammingInterface::NONE,
+                sub_class: Subclass::NONE,
+                base_class: ClassCode::UNCLASSIFIED,
+                type0_sub_vendor_id: 0,
+                type0_sub_system_id: 0,
+            },
+            vec![],
+            DeviceBars::new(),
+        );
+
+        let line_interrupt_d = LineInterrupt::detached();
+        emu_d.set_interrupt_pin(PciInterruptPin::IntD, line_interrupt_d);
+
+        emu_d.read_u32(0x3C, &mut val).unwrap();
+        assert_eq!((val >> 8) & 0xFF, 4); // Interrupt pin should be 4 (INTD)
     }
 }
