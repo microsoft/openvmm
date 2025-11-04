@@ -545,8 +545,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
         if let Some(handle) = self.namespaces.get_mut(&nsid) {
-            // After reboot ns will be present but unused. Update the refcount
-            // and return.
+            // After reboot ns will be present but unused.
             if !handle.in_use {
                 handle.in_use = true;
                 return Ok(handle.namespace.clone());
