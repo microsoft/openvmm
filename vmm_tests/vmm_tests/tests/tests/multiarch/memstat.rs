@@ -383,13 +383,7 @@ async fn idle_test<T: PetriVmmBackend>(
     let arch_str = get_arch_str(isolation_type, machine_arch);
     let vp_count = match vps {
         TestVPCount::SmallVPCount => 2,
-        TestVPCount::LargeVPCount => {
-            if arch_str.contains("x64") {
-                32
-            } else {
-                64
-            }
-        }
+        TestVPCount::LargeVPCount => 32,
     };
     let vm_boot_result = config
         .with_processor_topology({
@@ -423,8 +417,6 @@ async fn idle_test<T: PetriVmmBackend>(
 
     let (mut vm, agent) = vm_boot_result?;
 
-    let vtl2_agent = vm.wait_for_vtl2_agent().await?;
-
     // Wait for the guest to be booted
     agent.ping().await?;
 
@@ -433,6 +425,7 @@ async fn idle_test<T: PetriVmmBackend>(
         .sleep(Duration::from_secs(wait_time_sec as u64))
         .await;
 
+    let vtl2_agent = vm.wait_for_vtl2_agent().await?;
     let memstat = MemStat::new(&vtl2_agent).await;
     tracing::info!("MEMSTAT_START:{}:MEMSTAT_END", to_string(&memstat).unwrap());
     agent.power_off().await?;
