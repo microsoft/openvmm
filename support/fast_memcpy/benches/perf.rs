@@ -45,9 +45,11 @@ fn do_bench_memcpy(
                 const N: usize = 64;
                 #[repr(align(64))]
                 #[derive(Clone, Copy)]
-                struct Aligned{ _data: [u8; N] }
+                struct Aligned {
+                    _data: [u8; N],
+                }
                 let count = len.next_multiple_of(N) / N;
-                let elt = Aligned{ _data: [0; N] };
+                let elt = Aligned { _data: [0; N] };
                 let src = vec![elt; count];
                 let mut dest = vec![elt; count];
                 // SAFETY: operating correctly on src/dest.
