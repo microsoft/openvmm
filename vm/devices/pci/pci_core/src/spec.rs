@@ -425,12 +425,12 @@ pub mod caps {
             ///
             /// | Offset    | Bits 31-24    | Bits 23-16    | Bits 15-8     | Bits 7-0              |
             /// |-----------|---------------|---------------|---------------|-----------------------|
-            /// | Cap + 0x0 | Message Control            | Next Pointer  | Capability ID (0x05)  |
-            /// | Cap + 0x4 | Message Address (32-bit or lower 32-bit of 64-bit)                  |
-            /// | Cap + 0x8 | Message Address Upper 32-bit (64-bit capable only)                  |
+            /// | Cap + 0x0 | Message Control               | Next Pointer  | Capability ID (0x05)  |
+            /// | Cap + 0x4 | Message Address (32-bit or lower 32-bit of 64-bit)                    |
+            /// | Cap + 0x8 | Message Address Upper 32-bit (64-bit capable only)                    |
             /// | Cap + 0xC | Message Data  |               |               |                       |
-            /// | Cap + 0x10| Mask Bits (Per-vector masking capable only)                         |
-            /// | Cap + 0x14| Pending Bits (Per-vector masking capable only)                      |
+            /// | Cap + 0x10| Mask Bits (Per-vector masking capable only)                           |
+            /// | Cap + 0x14| Pending Bits (Per-vector masking capable only)                        |
             pub enum MsiCapabilityHeader: u16 {
                 CONTROL_CAPS = 0x00,
                 MSG_ADDR_LO  = 0x04,

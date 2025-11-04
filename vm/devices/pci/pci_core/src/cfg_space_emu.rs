@@ -357,16 +357,14 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
             enabled
         );
         if enabled {
-            // For now, we need to work with the constraint that BarMappings expects 6 BARs
-            // We'll pad with zeros for Type 1 (N=2) and use directly for Type 0 (N=6)
+            // Note that BarMappings expects 6 BARs. Pad with 0 for Type 1 (N=2)
+            // and use directly for Type 0 (N=6).
             let mut full_base_addresses = [0u32; 6];
             let mut full_bar_masks = [0u32; 6];
 
             // Copy our data into the first N positions
-            for i in 0..N {
-                full_base_addresses[i] = self.state.base_addresses[i];
-                full_bar_masks[i] = self.bar_masks[i];
-            }
+            full_base_addresses[..N].copy_from_slice(&self.state.base_addresses[..N]);
+            full_bar_masks[..N].copy_from_slice(&self.bar_masks[..N]);
 
             self.active_bars = BarMappings::parse(&full_base_addresses, &full_bar_masks);
             for (bar, mapping) in self.mapped_memory.iter_mut().enumerate() {
