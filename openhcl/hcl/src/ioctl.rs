@@ -1449,10 +1449,7 @@ impl MshvHvcall {
                         | HvX64RegisterName::VsmVpSecureConfigVtl1
                 ));
             }
-            Some(Vtl::Vtl1) => {
-                todo!("TODO: allowed registers for VTL1");
-            }
-            Some(Vtl::Vtl0) => {
+            Some(Vtl::Vtl1) | Some(Vtl::Vtl0) => {
                 // Only VTL-private registers can go through this path.
                 // VTL-shared registers have to go through the kernel (either
                 // via the CPU context page or via the dedicated ioctl), as
@@ -1492,11 +1489,7 @@ impl MshvHvcall {
                         | HvArm64RegisterName::PrivilegesAndFeaturesInfo
                 ));
             }
-            Some(Vtl::Vtl1) => {
-                // TODO: allowed registers for VTL1
-                todo!();
-            }
-            Some(Vtl::Vtl0) => {
+            Some(Vtl::Vtl1) | Some(Vtl::Vtl0) => {
                 // Only VTL-private registers can go through this path.
                 // VTL-shared registers have to go through the kernel (either
                 // via the CPU context page or via the dedicated ioctl), as

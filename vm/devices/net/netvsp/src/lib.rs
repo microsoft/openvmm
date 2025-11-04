@@ -1195,7 +1195,7 @@ impl VmbusDevice for Nic {
     ) -> Result<(), ChannelOpenError> {
         // Start the coordinator task if this is the primary channel.
         let state = if channel_idx == 0 {
-            self.insert_coordinator(1, false);
+            self.insert_coordinator(1, None);
             WorkerState::Init(None)
         } else {
             self.coordinator.stop().await;
@@ -1383,7 +1383,7 @@ impl Nic {
                 pending_send_size: 0,
                 restart: None,
                 can_use_ring_size_opt,
-                packet_filter: rndisprot::NDIS_PACKET_TYPE_NONE,
+                packet_filter: coordinator.active_packet_filter,
             },
             state,
             coordinator_send: self.coordinator_send.clone().unwrap(),
@@ -1402,9 +1402,13 @@ impl Nic {
     }
 }
 
+struct RestoreCoordinatorState {
+    active_packet_filter: u32,
+}
+
 impl Nic {
     /// If `restoring`, then restart the queues as soon as the coordinator starts.
-    fn insert_coordinator(&mut self, num_queues: u16, restoring: bool) {
+    fn insert_coordinator(&mut self, num_queues: u16, restoring: Option<RestoreCoordinatorState>) {
         let mut driver_builder = self.driver_source.builder();
         // Target each driver to VP 0 initially. This will be updated when the
         // channel is opened.
@@ -1424,7 +1428,7 @@ impl Nic {
             Coordinator {
                 recv,
                 channel_control: self.resources.channel_control.clone(),
-                restart: restoring,
+                restart: restoring.is_some(),
                 workers: (0..self.adapter.max_queues)
                     .map(|i| {
                         TaskControl::new(NetQueue {
@@ -1436,6 +1440,9 @@ impl Nic {
                     .collect(),
                 buffers: None,
                 num_queues,
+                active_packet_filter: restoring
+                    .map(|r| r.active_packet_filter)
+                    .unwrap_or(rndisprot::NDIS_PACKET_TYPE_NONE),
             },
         );
     }
@@ -1639,16 +1646,16 @@ impl Nic {
 
             // Insert the coordinator and mark that it should try to start the
             // network endpoint when it starts running.
-            self.insert_coordinator(states.len() as u16, true);
+            self.insert_coordinator(
+                states.len() as u16,
+                Some(RestoreCoordinatorState {
+                    active_packet_filter: saved_packet_filter,
+                }),
+            );
 
             for (channel_idx, (state, request)) in states.into_iter().zip(requests).enumerate() {
                 if let Some(state) = state {
                     self.insert_worker(channel_idx as u16, &request.unwrap(), state, false)?;
-                }
-            }
-            for worker in self.coordinator.state_mut().unwrap().workers.iter_mut() {
-                if let Some(worker_state) = worker.state_mut() {
-                    worker_state.channel.packet_filter = saved_packet_filter;
                 }
             }
         } else {
@@ -3674,6 +3681,7 @@ struct Coordinator {
     workers: Vec<TaskControl<NetQueue, Worker<GpadlRingMem>>>,
     buffers: Option<Arc<ChannelBuffers>>,
     num_queues: u16,
+    active_packet_filter: u32,
 }
 
 /// Removing the VF may result in the guest sending messages to switch the data
@@ -3954,13 +3962,13 @@ impl Coordinator {
                 Message::Internal(CoordinatorMessage::Update(update_type)) => {
                     if update_type.filter_state {
                         self.stop_workers().await;
-                        let worker_0_packet_filter =
+                        self.active_packet_filter =
                             self.workers[0].state().unwrap().channel.packet_filter;
                         self.workers.iter_mut().skip(1).for_each(|worker| {
                             if let Some(state) = worker.state_mut() {
-                                state.channel.packet_filter = worker_0_packet_filter;
+                                state.channel.packet_filter = self.active_packet_filter;
                                 tracing::debug!(
-                                    packet_filter = ?worker_0_packet_filter,
+                                    packet_filter = ?self.active_packet_filter,
                                     channel_idx = state.channel_idx,
                                     "update packet filter"
                                 );
@@ -4403,7 +4411,7 @@ impl Coordinator {
             self.num_queues = num_queues;
         }
 
-        let worker_0_packet_filter = self.workers[0].state().unwrap().channel.packet_filter;
+        self.active_packet_filter = self.workers[0].state().unwrap().channel.packet_filter;
         // Provide the queue and receive buffer ranges for each worker.
         for ((worker, queue), rx_buffer) in self.workers.iter_mut().zip(queues).zip(rx_buffers) {
             worker.task_mut().queue_state = Some(QueueState {
@@ -4413,7 +4421,7 @@ impl Coordinator {
             });
             // Update the receive packet filter for the subchannel worker.
             if let Some(worker) = worker.state_mut() {
-                worker.channel.packet_filter = worker_0_packet_filter;
+                worker.channel.packet_filter = self.active_packet_filter;
                 // Clear any pending RxIds as buffers were redistributed.
                 if let Some(ready_state) = worker.state.ready_mut() {
                     ready_state.state.pending_rx_packets.clear();

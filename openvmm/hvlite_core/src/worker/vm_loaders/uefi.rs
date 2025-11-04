@@ -37,6 +37,7 @@ pub struct UefiLoadSettings {
     pub serial: bool,
     pub uefi_console_mode: Option<UefiConsoleMode>,
     pub default_boot_always_attempt: bool,
+    pub bios_guid: Guid,
 }
 
 /// Loads the UEFI firmware.
@@ -123,7 +124,7 @@ pub fn load_uefi(
     .add_raw(config::BlobStructureType::Madt, madt)
     .add_raw(config::BlobStructureType::Srat, srat)
     .add_raw(config::BlobStructureType::MemoryMap, memory_map.as_bytes())
-    .add(&config::BiosGuid(Guid::new_random()))
+    .add(&config::BiosGuid(load_settings.bios_guid))
     .add(&config::Entropy(entropy))
     .add(&config::MmioRanges([
         config::Mmio {

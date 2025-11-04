@@ -742,6 +742,9 @@ fn vm_config_from_command_line(
         );
     }
 
+    // TODO: load from VMGS file if it exists
+    let bios_guid = Guid::new_random();
+
     let VmChipsetResult {
         chipset,
         mut chipset_devices,
@@ -810,6 +813,7 @@ fn vm_config_from_command_line(
                 UefiConsoleModeCli::None => UefiConsoleMode::None,
             }),
             default_boot_always_attempt: opt.default_boot_always_attempt,
+            bios_guid,
         };
     } else {
         // Linux Direct
@@ -1007,6 +1011,7 @@ fn vm_config_from_command_line(
                 register_layout,
                 guest_secret_key: None,
                 logger: None,
+                bios_guid,
             }
             .into_resource(),
         });

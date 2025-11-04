@@ -2352,6 +2352,7 @@ dependencies = [
  "slab",
  "task_control",
  "thiserror 2.0.12",
+ "tracelimit",
  "tracing",
  "vm_resource",
  "vmcore",
@@ -2629,6 +2630,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_resources",
+ "cvm_tracing",
  "futures",
  "futures-concurrency",
  "get_protocol",
@@ -4349,6 +4351,7 @@ dependencies = [
  "futures-concurrency",
  "guestmem",
  "inspect",
+ "inspect_counters",
  "memory_range",
  "mesh",
  "net_backend_resources",
@@ -4418,6 +4421,7 @@ dependencies = [
  "gdma_defs",
  "guestmem",
  "inspect",
+ "inspect_counters",
  "mana_driver",
  "mesh",
  "net_backend",
@@ -7048,18 +7052,21 @@ name = "tpm"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bitfield-struct 0.10.1",
  "chipset_device",
  "chipset_device_resources",
  "cvm_tracing",
  "getrandom 0.3.2",
  "guestmem",
+ "guid",
  "inspect",
  "mesh",
  "ms-tpm-20-ref",
  "open_enum",
  "pal_async",
  "parking_lot",
+ "sha2",
  "thiserror 2.0.12",
  "tpm_resources",
  "tracelimit",
@@ -7074,6 +7081,7 @@ dependencies = [
 name = "tpm_resources"
 version = "0.0.0"
 dependencies = [
+ "guid",
  "inspect",
  "mesh",
  "vm_resource",

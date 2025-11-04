@@ -9,10 +9,12 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use futures::StreamExt;
 use gdma_defs::Cqe;
+use gdma_defs::CqeParams;
 use gdma_defs::GDMA_EQE_COMPLETION;
 use gdma_defs::Sge;
 use gdma_defs::bnic::CQE_RX_OKAY;
 use gdma_defs::bnic::CQE_TX_GDMA_ERR;
+use gdma_defs::bnic::CQE_TX_INVALID_OOB;
 use gdma_defs::bnic::CQE_TX_OKAY;
 use gdma_defs::bnic::MANA_LONG_PKT_FMT;
 use gdma_defs::bnic::MANA_SHORT_PKT_FMT;
@@ -24,6 +26,7 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect::SensitivityLevel;
+use inspect_counters::Counter;
 use mana_driver::mana::BnicEq;
 use mana_driver::mana::BnicWq;
 use mana_driver::mana::ResourceArena;
@@ -33,6 +36,7 @@ use mana_driver::mana::Vport;
 use mana_driver::queues::Cq;
 use mana_driver::queues::Eq;
 use mana_driver::queues::Wq;
+use net_backend::BackendQueueStats;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
@@ -724,13 +728,21 @@ impl<T: DeviceBacking> ManaQueue<T> {
         }
     }
 
-    fn trace_tx_wqe(&mut self, tx_oob: ManaTxCompOob, done_length: usize) {
-        tracelimit::error_ratelimited!(
-            cqe_hdr_type = tx_oob.cqe_hdr.cqe_type(),
-            cqe_hdr_vendor_err = tx_oob.cqe_hdr.vendor_err(),
-            tx_oob_data_offset = tx_oob.tx_data_offset,
-            tx_oob_sgl_offset = tx_oob.offsets.tx_sgl_offset(),
-            tx_oob_wqe_offset = tx_oob.offsets.tx_wqe_offset(),
+    fn trace_tx(
+        &mut self,
+        tracing_level: tracing::Level,
+        cqe_params: CqeParams,
+        tx_oob: ManaTxCompOob,
+        done_length: usize,
+    ) {
+        tracelimit::event_ratelimited!(
+            tracing_level,
+            cqe_type = tx_oob.cqe_hdr.cqe_type(),
+            vendor_err = tx_oob.cqe_hdr.vendor_err(),
+            wq_number = cqe_params.wq_number(),
+            tx_data_offset = tx_oob.tx_data_offset,
+            tx_sgl_offset = tx_oob.offsets.tx_sgl_offset(),
+            tx_wqe_offset = tx_oob.offsets.tx_wqe_offset(),
             done_length,
             posted_tx_len = self.posted_tx.len(),
             "tx completion error"
@@ -741,7 +753,8 @@ impl<T: DeviceBacking> ManaQueue<T> {
         // Log properties of s_oob like checksum, etc.
 
         if let Some(packet) = self.posted_tx.front() {
-            tracelimit::error_ratelimited!(
+            tracelimit::event_ratelimited!(
+                tracing_level,
                 id = packet.id.0,
                 wqe_len = packet.wqe_len,
                 bounced_len_with_padding = packet.bounced_len_with_padding,
@@ -934,7 +947,6 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
 
     fn tx_poll(&mut self, done: &mut [TxId]) -> Result<usize, TxError> {
         let mut i = 0;
-        let mut queue_stuck = false;
         while i < done.len() {
             let id = if let Some(cqe) = self.tx_cq.pop() {
                 let tx_oob = ManaTxCompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
@@ -943,21 +955,24 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         self.stats.tx_packets += 1;
                     }
                     CQE_TX_GDMA_ERR => {
-                        queue_stuck = true;
+                        // Hardware hit an error with the packet coming from the Guest.
+                        // CQE_TX_GDMA_ERR is how the Hardware indicates that it has disabled the queue.
+                        self.stats.tx_errors += 1;
+                        self.stats.tx_stuck += 1;
+                        self.trace_tx(tracing::Level::ERROR, cqe.params, tx_oob, done.len());
+                        // Return a TryRestart error to indicate that the queue needs to be restarted.
+                        return Err(TxError::TryRestart(anyhow::anyhow!("GDMA error")));
+                    }
+                    CQE_TX_INVALID_OOB => {
+                        // Invalid OOB means the metadata didn't match how the hardware parsed the packet.
+                        // This is somewhat common, usually due to Encapsulation, and only affects the specific packet.
+                        self.stats.tx_errors += 1;
+                        self.trace_tx(tracing::Level::WARN, cqe.params, tx_oob, done.len());
                     }
                     ty => {
                         tracelimit::error_ratelimited!(ty, "tx completion error");
                         self.stats.tx_errors += 1;
                     }
-                }
-                if queue_stuck {
-                    // Hardware hit an error with the packet coming from the Guest.
-                    // CQE_TX_GDMA_ERR is how the Hardware indicates that it has disabled the queue.
-                    self.stats.tx_errors += 1;
-                    self.stats.tx_stuck += 1;
-                    self.trace_tx_wqe(tx_oob, done.len());
-                    // Return a TryRestart error to indicate that the queue needs to be restarted.
-                    return Err(TxError::TryRestart(anyhow::anyhow!("GDMA error")));
                 }
                 let packet = self.posted_tx.pop_front().unwrap();
                 self.tx_wq.advance_head(packet.wqe_len);
@@ -984,6 +999,33 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
 
     fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
         Some(self.pool.as_mut())
+    }
+
+    fn queue_stats(&self) -> Option<&dyn BackendQueueStats> {
+        Some(&self.stats)
+    }
+}
+
+impl BackendQueueStats for QueueStats {
+    fn rx_errors(&self) -> Counter {
+        let mut counter = Counter::new();
+        counter.add(self.rx_errors);
+        counter
+    }
+    fn tx_errors(&self) -> Counter {
+        let mut counter = Counter::new();
+        counter.add(self.tx_errors);
+        counter
+    }
+    fn rx_packets(&self) -> Counter {
+        let mut counter = Counter::new();
+        counter.add(self.rx_packets);
+        counter
+    }
+    fn tx_packets(&self) -> Counter {
+        let mut counter = Counter::new();
+        counter.add(self.tx_packets);
+        counter
     }
 }
 
@@ -1438,6 +1480,7 @@ impl Inspect for ContiguousBufferManager {
 mod tests {
     use crate::GuestDmaMode;
     use crate::ManaEndpoint;
+    use crate::QueueStats;
     use chipset_device::mmio::ExternallyManagedMmioIntercepts;
     use gdma::VportConfig;
     use gdma_defs::bnic::ManaQueryDeviceCfgResp;
@@ -1463,32 +1506,94 @@ mod tests {
     /// ensures that packets can be sent and received.
     #[async_test]
     async fn test_endpoint_direct_dma(driver: DefaultDriver) {
-        test_endpoint(driver, GuestDmaMode::DirectDma, 1138, 1).await;
+        send_test_packet(driver, GuestDmaMode::DirectDma, 1138, 1).await;
     }
 
     #[async_test]
     async fn test_endpoint_bounce_buffer(driver: DefaultDriver) {
-        test_endpoint(driver, GuestDmaMode::BounceBuffer, 1138, 1).await;
+        send_test_packet(driver, GuestDmaMode::BounceBuffer, 1138, 1).await;
     }
 
     #[async_test]
     async fn test_segment_coalescing(driver: DefaultDriver) {
         // 34 segments of 60 bytes each == 2040
-        test_endpoint(driver, GuestDmaMode::DirectDma, 2040, 34).await;
+        send_test_packet(driver, GuestDmaMode::DirectDma, 2040, 34).await;
     }
 
     #[async_test]
     async fn test_segment_coalescing_many(driver: DefaultDriver) {
         // 128 segments of 16 bytes each == 2048
-        test_endpoint(driver, GuestDmaMode::DirectDma, 2048, 128).await;
+        send_test_packet(driver, GuestDmaMode::DirectDma, 2048, 128).await;
+    }
+
+    async fn send_test_packet(
+        driver: DefaultDriver,
+        dma_mode: GuestDmaMode,
+        packet_len: usize,
+        num_segments: usize,
+    ) {
+        let tx_id = 1;
+        let tx_metadata = net_backend::TxMetadata {
+            id: TxId(tx_id),
+            segment_count: num_segments,
+            len: packet_len,
+            ..Default::default()
+        };
+        let expected_num_received_packets = 1;
+        let (data_to_send, tx_segments) =
+            build_tx_segments(packet_len, num_segments, tx_metadata.clone());
+
+        test_endpoint(
+            driver,
+            dma_mode,
+            packet_len,
+            tx_segments,
+            data_to_send,
+            expected_num_received_packets,
+        )
+        .await;
+    }
+
+    fn build_tx_segments(
+        packet_len: usize,
+        num_segments: usize,
+        tx_metadata: net_backend::TxMetadata,
+    ) -> (Vec<u8>, Vec<TxSegment>) {
+        let data_to_send = (0..packet_len).map(|v| v as u8).collect::<Vec<u8>>();
+
+        let mut tx_segments = Vec::new();
+        let segment_len = packet_len / num_segments;
+        assert_eq!(packet_len % num_segments, 0);
+        assert_eq!(data_to_send.len(), packet_len);
+
+        tx_segments.push(TxSegment {
+            ty: net_backend::TxSegmentType::Head(tx_metadata.clone()),
+            gpa: 0,
+            len: segment_len as u32,
+        });
+
+        for j in 0..(num_segments - 1) {
+            let gpa = (j + 1) * segment_len;
+            tx_segments.push(TxSegment {
+                ty: net_backend::TxSegmentType::Tail,
+                gpa: gpa as u64,
+                len: segment_len as u32,
+            });
+        }
+
+        assert_eq!(tx_segments.len(), num_segments);
+        (data_to_send, tx_segments)
     }
 
     async fn test_endpoint(
         driver: DefaultDriver,
         dma_mode: GuestDmaMode,
         packet_len: usize,
-        num_segments: usize,
-    ) {
+        tx_segments: Vec<TxSegment>,
+        data_to_send: Vec<u8>,
+        expected_num_received_packets: usize,
+    ) -> QueueStats {
+        let tx_id = 1;
         let pages = 256; // 1MB
         let allow_dma = dma_mode == GuestDmaMode::DirectDma;
         let mem: DeviceTestMemory = DeviceTestMemory::new(pages * 2, allow_dma, "test_endpoint");
@@ -1533,62 +1638,53 @@ mod tests {
             .await
             .unwrap();
 
-        for i in 0..1000 {
-            let sent_data = (0..packet_len).map(|v| (i + v) as u8).collect::<Vec<u8>>();
-            payload_mem.write_at(0, &sent_data).unwrap();
+        payload_mem.write_at(0, &data_to_send).unwrap();
 
-            let mut segments = Vec::new();
-            let segment_len = packet_len / num_segments;
-            assert!(packet_len % num_segments == 0);
-            assert!(sent_data.len() == packet_len);
-            segments.push(TxSegment {
-                ty: net_backend::TxSegmentType::Head(net_backend::TxMetadata {
-                    id: TxId(1),
-                    segment_count: num_segments,
-                    len: sent_data.len(),
-                    ..Default::default()
-                }),
-                gpa: 0,
-                len: segment_len as u32,
-            });
+        queues[0].tx_avail(tx_segments.as_slice()).unwrap();
 
-            for j in 0..(num_segments - 1) {
-                let gpa = (j + 1) * segment_len;
-                segments.push(TxSegment {
-                    ty: net_backend::TxSegmentType::Tail,
-                    gpa: gpa as u64,
-                    len: segment_len as u32,
-                });
+        // Poll for completion
+        let mut rx_packets = [RxId(0); 2];
+        let mut rx_packets_n = 0;
+        let mut tx_done = [TxId(0); 2];
+        let mut tx_done_n = 0;
+        while rx_packets_n == 0 {
+            poll_fn(|cx| queues[0].poll_ready(cx)).await;
+            rx_packets_n += queues[0].rx_poll(&mut rx_packets[rx_packets_n..]).unwrap();
+            // GDMA Errors generate a TryReturn error, ignored here.
+            tx_done_n += queues[0].tx_poll(&mut tx_done[tx_done_n..]).unwrap_or(0);
+            if expected_num_received_packets == 0 {
+                break;
             }
-            assert!(segments.len() == num_segments);
+        }
+        assert_eq!(rx_packets_n, expected_num_received_packets);
 
-            queues[0].tx_avail(segments.as_slice()).unwrap();
-
-            let mut packets = [RxId(0); 2];
-            let mut done = [TxId(0); 2];
-            let mut done_n = 0;
-            let mut packets_n = 0;
-            while done_n == 0 || packets_n == 0 {
-                poll_fn(|cx| queues[0].poll_ready(cx)).await;
-                packets_n += queues[0].rx_poll(&mut packets[packets_n..]).unwrap();
-                done_n += queues[0].tx_poll(&mut done[done_n..]).unwrap();
-            }
-            assert_eq!(packets_n, 1);
-            let rx_id = packets[0];
-
-            let mut received_data = vec![0; packet_len];
-            payload_mem
-                .read_at(2048 * rx_id.0 as u64, &mut received_data)
-                .unwrap();
-            assert!(received_data.len() == packet_len);
-            assert_eq!(&received_data[..], sent_data, "{i} {:?}", rx_id);
-            assert_eq!(done_n, 1);
-            assert_eq!(done[0].0, 1);
-            queues[0].rx_avail(&[rx_id]);
+        if expected_num_received_packets == 0 {
+            // If no packets were received, exit.
+            let stats = get_queue_stats(queues[0].queue_stats());
+            drop(queues);
+            endpoint.stop().await;
+            return stats;
         }
 
+        // Check tx
+        assert_eq!(tx_done_n, 1);
+        assert_eq!(tx_done[0].0, tx_id);
+
+        // Check rx
+        assert_eq!(rx_packets[0].0, 1);
+        let rx_id = rx_packets[0];
+
+        let mut received_data = vec![0; packet_len];
+        payload_mem
+            .read_at(2048 * rx_id.0 as u64, &mut received_data)
+            .unwrap();
+        assert_eq!(received_data.len(), packet_len);
+        assert_eq!(&received_data[..], data_to_send, "{:?}", rx_id);
+
+        let stats = get_queue_stats(queues[0].queue_stats());
         drop(queues);
         endpoint.stop().await;
+        stats
     }
 
     #[async_test]
@@ -1620,5 +1716,78 @@ mod tests {
         };
         let thing = ManaDevice::new(&driver, device, 1, 1).await.unwrap();
         let _ = thing.new_vport(0, None, &dev_config).await.unwrap();
+    }
+
+    #[async_test]
+    async fn test_valid_packet(driver: DefaultDriver) {
+        let tx_id = 1;
+        let expected_num_received_packets = 1;
+        let num_segments = 1;
+        let packet_len = 1138;
+        let metadata = net_backend::TxMetadata {
+            id: TxId(tx_id),
+            segment_count: num_segments,
+            len: packet_len,
+            ..Default::default()
+        };
+
+        let (data_to_send, tx_segments) = build_tx_segments(packet_len, num_segments, metadata);
+
+        let stats = test_endpoint(
+            driver,
+            GuestDmaMode::DirectDma,
+            packet_len,
+            tx_segments,
+            data_to_send,
+            expected_num_received_packets,
+        )
+        .await;
+
+        assert_eq!(stats.tx_packets, 1, "tx_packets increase");
+        assert_eq!(stats.rx_packets, 1, "rx_packets increase");
+        assert_eq!(stats.tx_errors, 0, "tx_errors remain the same");
+        assert_eq!(stats.rx_errors, 0, "rx_errors remain the same");
+    }
+
+    #[async_test]
+    async fn test_tx_error_handling(driver: DefaultDriver) {
+        let tx_id = 1;
+        let expected_num_received_packets = 0;
+        let num_segments = 1;
+        let packet_len = 1138;
+        // LSO Enabled, but sending insufficient number of segments.
+        let metadata = net_backend::TxMetadata {
+            id: TxId(tx_id),
+            segment_count: num_segments,
+            len: packet_len,
+            offload_tcp_segmentation: true,
+            ..Default::default()
+        };
+
+        let (data_to_send, tx_segments) = build_tx_segments(packet_len, num_segments, metadata);
+
+        let stats = test_endpoint(
+            driver,
+            GuestDmaMode::DirectDma,
+            packet_len,
+            tx_segments,
+            data_to_send,
+            expected_num_received_packets,
+        )
+        .await;
+
+        assert_eq!(stats.tx_errors, 1, "tx_errors increase");
+        assert_eq!(stats.tx_packets, 0, "tx_packets stay the same");
+    }
+
+    fn get_queue_stats(queue_stats: Option<&dyn net_backend::BackendQueueStats>) -> QueueStats {
+        let queue_stats = queue_stats.unwrap();
+        QueueStats {
+            rx_errors: queue_stats.rx_errors().get(),
+            tx_errors: queue_stats.tx_errors().get(),
+            rx_packets: queue_stats.rx_packets().get(),
+            tx_packets: queue_stats.tx_packets().get(),
+            ..Default::default()
+        }
     }
 }

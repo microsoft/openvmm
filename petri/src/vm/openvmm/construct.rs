@@ -671,6 +671,7 @@ impl PetriVmConfigSetupCore<'_> {
                     enable_serial: true,
                     enable_vpci_boot: false,
                     uefi_console_mode: Some(hvlite_defs::config::UefiConsoleMode::Com1),
+                    bios_guid: Guid::new_random(),
                     default_boot_always_attempt: false,
                 }
             }

@@ -36,6 +36,7 @@ pub async fn build_vpci_device(
         Arc<dyn MsiInterruptTarget>,
         VpciInterruptMapper,
     )>,
+    vtom: Option<u64>,
 ) -> anyhow::Result<()> {
     let device_name = format!("{}:vpci-{instance_id}", resource.id());
 
@@ -82,6 +83,7 @@ pub async fn build_vpci_device(
                     &mut services.register_mmio(),
                     vmbus,
                     interrupt_mapper,
+                    vtom,
                 )
                 .await?;
 

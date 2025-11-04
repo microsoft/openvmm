@@ -1072,7 +1072,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 
                 if crash.control.crash_message() {
                     let message_gpa = crash.parameters[3];
-                    let message_size = crash.parameters[4];
+                    let message_size = std::cmp::min(crash.parameters[4], hvdef::HV_PAGE_SIZE);
                     let mut message = vec![0; message_size as usize];
                     match self.partition.gm[vtl].read_at(message_gpa, &mut message) {
                         Ok(()) => {

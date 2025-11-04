@@ -117,6 +117,7 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
             ak_cert_type,
             resource.guest_secret_key,
             logger,
+            resource.bios_guid,
         )
         .await
         .map_err(ResolveTpmError::Tpm)?;

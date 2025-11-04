@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+use guid::Guid;
 use inspect::Inspect;
 use mesh::MeshPayload;
 use vm_resource::Resource;
@@ -30,6 +31,8 @@ pub struct TpmDeviceHandle {
     pub guest_secret_key: Option<Vec<u8>>,
     /// Optional logger to send event to the host
     pub logger: Option<Resource<TpmLoggerKind>>,
+    /// BIOS GUID (for logging purposes)
+    pub bios_guid: Guid,
 }
 
 impl ResourceId<ChipsetDeviceHandleKind> for TpmDeviceHandle {

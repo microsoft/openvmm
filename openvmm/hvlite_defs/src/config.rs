@@ -114,6 +114,7 @@ pub enum LoadMode {
         enable_vpci_boot: bool,
         uefi_console_mode: Option<UefiConsoleMode>,
         default_boot_always_attempt: bool,
+        bios_guid: Guid,
     },
     Pcat {
         firmware: RomFileLocation,
