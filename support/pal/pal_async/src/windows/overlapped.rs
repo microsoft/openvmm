@@ -3,8 +3,6 @@
 
 //! Windows overlapped IO support.
 
-#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
-
 use crate::driver::Driver;
 use crate::driver::PollImpl;
 use crate::waker::WakerList;
@@ -75,8 +73,9 @@ pub struct OverlappedFile {
 impl OverlappedFile {
     /// Prepares `file` for overlapped IO.
     ///
-    /// `file` must have been opeend with `FILE_FLAG_OVERLAPPED`.
+    /// `file` must have been opened with `FILE_FLAG_OVERLAPPED`.
     pub fn new(driver: &(impl ?Sized + Driver), file: File) -> io::Result<Self> {
+        // SAFETY: `file` is exclusively owned by the caller.
         let inner = unsafe { driver.new_dyn_overlapped_file(file.as_raw_handle())? };
         Ok(Self { inner, file })
     }
@@ -143,18 +142,16 @@ impl<T> Io<T> {
     {
         let mut inner = Box::new(IoInner {
             overlapped: Overlapped::new(),
-            state: Mutex::new(InnerState::None),
+            state: Mutex::new(InnerState::Issued),
             buffers: UnsafeCell::new(buffers),
             _pin: std::marker::PhantomPinned,
         });
+        inner.overlapped.set_offset(offset);
 
         let handle = file.file.as_raw_handle();
-
-        inner.overlapped.set_offset(offset);
-        *inner.state.get_mut() = InnerState::Issued;
-        let overlapped = inner.overlapped.as_ptr();
         file.inner.pre_io();
-        let result = f(handle, inner.buffers.get_mut(), overlapped);
+        let result = f(handle, inner.buffers.get_mut(), inner.overlapped.as_ptr());
+        // SAFETY: `pre_io` has been called with `overlapped` as the target.
         let state = if unsafe { file.inner.post_io(&result, &inner.overlapped) } {
             // The IO completed synchronously. If an error was returned, store
             // it because the IO status block is not updated in this case.
@@ -173,6 +170,7 @@ impl<T> Io<T> {
 
     fn cancel(&mut self) {
         if let IssueState::Pending { handle, inner } = &self.state {
+            // SAFETY: the file handle is alive and the overlapped pointer is still valid.
             unsafe {
                 CancelIoEx(handle.0, inner.overlapped.as_ptr());
             }
@@ -234,11 +232,9 @@ impl<T> Io<T> {
 
 impl<T: IoBufMut> Io<T> {
     fn read(file: &OverlappedFile, offset: i64, buffers: T) -> Self {
-        Self::issue(
-            file,
-            offset,
-            buffers,
-            |handle, buffers, overlapped| unsafe {
+        Self::issue(file, offset, buffers, |handle, buffers, overlapped| {
+            // SAFETY: calling ReadFile with valid parameters.
+            unsafe {
                 if ReadFile(
                     handle,
                     buffers.as_mut_ptr().cast(),
@@ -251,18 +247,16 @@ impl<T: IoBufMut> Io<T> {
                 } else {
                     Err(io::Error::last_os_error())
                 }
-            },
-        )
+            }
+        })
     }
 }
 
 impl<T: IoBuf> Io<T> {
     fn write(file: &OverlappedFile, offset: i64, buffers: T) -> Self {
-        Self::issue(
-            file,
-            offset,
-            buffers,
-            |handle, buffers, overlapped| unsafe {
+        Self::issue(file, offset, buffers, |handle, buffers, overlapped| {
+            // SAFETY: calling WriteFile with valid parameters.
+            unsafe {
                 if WriteFile(
                     handle,
                     buffers.as_ptr().cast(),
@@ -275,38 +269,48 @@ impl<T: IoBuf> Io<T> {
                 } else {
                     Err(io::Error::last_os_error())
                 }
-            },
-        )
+            }
+        })
     }
 }
 
 impl<T: IoBufMut, U: IoBufMut> Io<(T, U)> {
-    fn ioctl(file: &OverlappedFile, code: u32, input: T, output: U) -> Self {
+    /// # Safety
+    /// The caller must ensure the IOCTL is safe to call.
+    unsafe fn ioctl(file: &OverlappedFile, code: u32, input: T, output: U) -> Self {
         Self::issue(
             file,
             0,
             (input, output),
-            |handle, (input, output), overlapped| unsafe {
-                if DeviceIoControl(
-                    handle,
-                    code,
-                    input.as_mut_ptr().cast(),
-                    input.len() as u32,
-                    output.as_mut_ptr().cast(),
-                    output.len() as u32,
-                    null_mut(),
-                    overlapped,
-                ) != 0
-                {
-                    Ok(())
-                } else {
-                    Err(io::Error::last_os_error())
+            |handle, (input, output), overlapped| {
+                // SAFETY: calling DeviceIoControl with valid parameters, according to the caller
+                unsafe {
+                    if DeviceIoControl(
+                        handle,
+                        code,
+                        input.as_mut_ptr().cast(),
+                        input.len() as u32,
+                        output.as_mut_ptr().cast(),
+                        output.len() as u32,
+                        null_mut(),
+                        overlapped,
+                    ) != 0
+                    {
+                        Ok(())
+                    } else {
+                        Err(io::Error::last_os_error())
+                    }
                 }
             },
         )
     }
 }
 
+/// Called when an overlapped IO has completed.
+///
+/// # Safety
+/// The caller must ensure that `overlapped` is a valid pointer to an overlapped
+/// structure associated with an IO that has just completed.
 pub(crate) unsafe fn overlapped_io_done(overlapped: *mut OVERLAPPED, wakers: &mut WakerList) {
     let inner = overlapped as *const IoInner<()>;
     let old_state = {
@@ -319,7 +323,11 @@ pub(crate) unsafe fn overlapped_io_done(overlapped: *mut OVERLAPPED, wakers: &mu
         InnerState::None => unreachable!(),
         InnerState::Issued => {}
         InnerState::Waiting(waker) => wakers.push(waker),
-        InnerState::Dropped(drop_fn) => unsafe { drop_fn(inner.cast_mut().cast()) },
+        InnerState::Dropped(drop_fn) => {
+            // SAFETY: `inner` is owned (since the original `Io` has been
+            // dropped) and `drop_fn` is the correct function to drop it.
+            unsafe { drop_fn(inner.cast_mut().cast()) }
+        }
     }
 }
 
@@ -372,6 +380,7 @@ pub unsafe trait IoBufMut: IoBuf {
     fn as_mut_ptr(&mut self) -> *mut u8;
 }
 
+// SAFETY: implementing trait according to requirements.
 unsafe impl<T> IoBuf for [T; 0] {
     fn as_ptr(&self) -> *const u8 {
         null()
@@ -382,12 +391,14 @@ unsafe impl<T> IoBuf for [T; 0] {
     }
 }
 
+// SAFETY: implementing trait according to requirements.
 unsafe impl<T> IoBufMut for [T; 0] {
     fn as_mut_ptr(&mut self) -> *mut u8 {
         null_mut()
     }
 }
 
+// SAFETY: implementing trait according to requirements.
 unsafe impl IoBuf for () {
     fn as_ptr(&self) -> *const u8 {
         null()
@@ -398,12 +409,14 @@ unsafe impl IoBuf for () {
     }
 }
 
+// SAFETY: implementing trait according to requirements.
 unsafe impl IoBufMut for () {
     fn as_mut_ptr(&mut self) -> *mut u8 {
         null_mut()
     }
 }
 
+// SAFETY: implementing trait according to requirements.
 unsafe impl<T: IntoBytes + Immutable + KnownLayout> IoBuf for &'static [T] {
     fn as_ptr(&self) -> *const u8 {
         self.as_bytes().as_ptr()
@@ -414,6 +427,7 @@ unsafe impl<T: IntoBytes + Immutable + KnownLayout> IoBuf for &'static [T] {
     }
 }
 
+// SAFETY: implementing trait according to requirements.
 unsafe impl<T: IntoBytes + Immutable + KnownLayout> IoBuf for Vec<T> {
     fn as_ptr(&self) -> *const u8 {
         self.as_bytes().as_ptr()
@@ -424,6 +438,7 @@ unsafe impl<T: IntoBytes + Immutable + KnownLayout> IoBuf for Vec<T> {
     }
 }
 
+// SAFETY: implementing trait according to requirements.
 unsafe impl<T: IntoBytes + FromBytes + Immutable + KnownLayout> IoBufMut for Vec<T> {
     fn as_mut_ptr(&mut self) -> *mut u8 {
         self.as_mut_bytes().as_mut_ptr()
@@ -444,14 +459,16 @@ impl OverlappedFile {
     /// Issues an IOCTL to the file.
     ///
     /// # Safety
-    /// The caller must ensure the IOCTL is safe to call.
+    /// The caller must ensure the IOCTL is safe to call. This is device and
+    /// IOCTL specific.
     pub unsafe fn ioctl<T: IoBufMut, U: IoBufMut>(
         &self,
         code: u32,
         input: T,
         output: U,
     ) -> Ioctl<T, U> {
-        Ioctl(Io::ioctl(self, code, input, output))
+        // SAFETY: caller ensures IOCTL is safe.
+        Ioctl(unsafe { Io::ioctl(self, code, input, output) })
     }
 
     /// Performs a custom overlapped IO by calling `f`.
