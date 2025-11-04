@@ -198,29 +198,31 @@ struct Vport {
     serial_no: u32,
 }
 
+impl InspectMut for Vport {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        req.respond()
+            .field("mac_address", self.mac_address)
+            .field_mut("endpoint", self.endpoint.as_mut())
+            .field("number_of_queues", self.tasks.len())
+            .fields_mut("tasks", self.tasks.iter_mut().enumerate());
+    }
+}
+
 struct VportTask {
     task: TaskControl<TxRxState, TxRxTask>,
     queue_cfg: QueueCfg,
 }
 
-impl InspectMut for Vport {
+impl InspectMut for VportTask {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        let mut response = req.respond();
-        response
-            .field("mac_address", self.mac_address)
-            .field_mut("endpoint", self.endpoint.as_mut());
-
-        for task in self.tasks.iter_mut() {
-            response
-                .field("tx_wq", task.queue_cfg.tx.map(|(wq, _cq, _wq_obj)| wq))
-                .field("tx_cq", task.queue_cfg.tx.map(|(_wq, cq, _wq_obj)| cq))
-                .field("rx_wq", task.queue_cfg.rx.map(|(wq, _cq, _wq_obj)| wq))
-                .field("rx_cq", task.queue_cfg.rx.map(|(_wq, cq, _wq_obj)| cq));
-            response.merge(&mut task.task);
-        }
+        req.respond()
+            .field("tx_wq", self.queue_cfg.tx.map(|(wq, _cq, _wq_obj)| wq))
+            .field("tx_cq", self.queue_cfg.tx.map(|(_wq, cq, _wq_obj)| cq))
+            .field("rx_wq", self.queue_cfg.rx.map(|(wq, _cq, _wq_obj)| wq))
+            .field("rx_cq", self.queue_cfg.rx.map(|(_wq, cq, _wq_obj)| cq))
+            .merge(&mut self.task);
     }
 }
-
 struct QueueCfg {
     /// (wq_id, cq_id, wq_obj_handle)
     tx: Option<(u32, u32, u64)>,
