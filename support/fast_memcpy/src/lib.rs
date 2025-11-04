@@ -43,9 +43,11 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *m
                 // compiler some room to optimize.
                 if !overlaps(dest, src, len) {
                     // Copy the first 16 bytes, then resume at the next aligned
-                    // address.
+                    // address. This may be a redundant copy if the buffers are
+                    // already aligned, but this keeps the buffer 64-byte
+                    // aligned if it was already aligned.
                     copy_one::<U128>(dest.cast(), src.cast());
-                    let offset = 16 - dest.addr() % 16;
+                    let offset = dest.addr().wrapping_neg() % 16;
                     copy_loop_dest_aligned_forward::<U128x4>(
                         dest.byte_add(offset).cast(),
                         src.byte_add(offset).cast(),
