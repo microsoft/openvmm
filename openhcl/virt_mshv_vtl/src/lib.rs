@@ -1804,6 +1804,7 @@ impl<'a> UhProtoPartition<'a> {
             .expect("registering synic intercept cannot fail");
         }
 
+        #[cfg(guest_arch = "x86_64")]
         let vsm_caps = hcl.get_vsm_capabilities().map_err(Error::Hcl)?;
 
         #[cfg(guest_arch = "x86_64")]
