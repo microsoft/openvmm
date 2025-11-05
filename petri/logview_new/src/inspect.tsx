@@ -172,6 +172,16 @@ function formatValue(v: InspectPrimitive): string {
     }
 }
 
+/**
+ * Creates an HTML element with the specified tag, attributes, and children.
+ *
+ * @param tag - The HTML tag name to create (e.g., 'div', 'span').
+ * @param attrs - An object containing attribute key-value pairs to set on the element.
+ *                Special handling for 'class' (sets `className`) and 'style' (assigns to `style`).
+ * @param children - A list of child nodes or strings to append as children of the element.
+ *                   Strings are converted to text nodes.
+ * @returns The constructed HTMLElement with the given attributes and children.
+ */
 function node(tag: string, attrs: Record<string, any>, ...children: (string | Node)[]): HTMLElement {
     const el = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
@@ -186,6 +196,15 @@ function node(tag: string, attrs: Record<string, any>, ...children: (string | No
     return el;
 }
 
+/**
+ * Highlights all occurrences of the given filter terms within a string by wrapping them in a span element
+ * with a "highlight" class. Multiple terms are supported and matches are case-insensitive.
+ * Overlapping matches are merged to avoid nested highlights.
+ *
+ * @param str - The input string to search and highlight.
+ * @param filter - The filter string containing one or more space-separated terms to highlight.
+ * @returns An HTMLElement containing the highlighted string, or the original string if no matches are found or filter is empty.
+ */
 function highlightMatch(str: string, filter: string): HTMLElement | string {
     if (!filter) return str;
 
