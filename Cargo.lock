@@ -2195,6 +2195,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuzz_fast_memcpy"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "fast_memcpy",
+ "libfuzzer-sys",
+ "xtask_fuzz",
+]
+
+[[package]]
 name = "fuzz_firmware_uefi"
 version = "0.0.0"
 dependencies = [
@@ -2335,6 +2345,16 @@ dependencies = [
  "vmbus_ring",
  "xtask_fuzz",
  "zerocopy 0.8.25",
+]
+
+[[package]]
+name = "fuzz_trycopy"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "libfuzzer-sys",
+ "trycopy",
+ "xtask_fuzz",
 ]
 
 [[package]]
