@@ -1804,6 +1804,8 @@ impl<'a> UhProtoPartition<'a> {
             .expect("registering synic intercept cannot fail");
         }
 
+        let vsm_caps = hcl.get_vsm_capabilities().map_err(Error::Hcl)?;
+
         #[cfg(guest_arch = "x86_64")]
         let cvm_state = if is_hardware_isolated {
             Some(Self::construct_cvm_state(
@@ -1811,6 +1813,7 @@ impl<'a> UhProtoPartition<'a> {
                 late_params.cvm_params.unwrap(),
                 &caps,
                 guest_vsm_available,
+                vsm_caps.proxy_interrupt_redirect_available(),
             )?)
         } else {
             None
@@ -2069,6 +2072,7 @@ impl UhProtoPartition<'_> {
         late_params: CvmLateParams,
         caps: &PartitionCapabilities,
         guest_vsm_available: bool,
+        proxy_interrupt_redirect_available: bool,
     ) -> Result<UhCvmPartitionState, Error> {
         use vmcore::reference_time::ReferenceTimeSource;
 
@@ -2120,7 +2124,7 @@ impl UhProtoPartition<'_> {
             shared_dma_client: late_params.shared_dma_client,
             private_dma_client: late_params.private_dma_client,
             hide_isolation: params.hide_isolation,
-            proxy_interrupt_redirect: false,
+            proxy_interrupt_redirect: proxy_interrupt_redirect_available,
         })
     }
 }
