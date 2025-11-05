@@ -84,10 +84,8 @@ mod aarch64;
 mod memcpy;
 mod x86_64;
 
-// xtask-fmt allow-target-arch sys-crate
 #[cfg(target_arch = "aarch64")]
 use aarch64::*;
-// xtask-fmt allow-target-arch sys-crate
 #[cfg(target_arch = "x86_64")]
 use x86_64::*;
 
