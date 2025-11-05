@@ -112,6 +112,7 @@ pub struct Vmgs {
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
     encrypted_metadata_keys: [VmgsEncryptionKey; 2],
     reprovisioned: bool,
+    provisioned_this_boot: bool,
 
     #[cfg_attr(feature = "inspect", inspect(skip))]
     logger: Option<Arc<dyn VmgsLogger>>,
@@ -245,7 +246,9 @@ impl Vmgs {
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Self, Error> {
         let active_header = Self::format(&mut storage, VMGS_VERSION_3_0).await?;
-        Self::finish_open(storage, active_header, 0, logger).await
+        let mut vmgs = Self::finish_open(storage, active_header, 0, logger).await?;
+        vmgs.provisioned_this_boot = true;
+        Ok(vmgs)
     }
 
     async fn open_inner(
@@ -361,6 +364,7 @@ impl Vmgs {
             metadata_key: VmgsDatastoreKey::new_zeroed(),
             encrypted_metadata_keys,
             reprovisioned,
+            provisioned_this_boot: false,
 
             #[cfg(feature = "inspect")]
             stats: Default::default(),
@@ -1516,6 +1520,11 @@ impl Vmgs {
         self.encryption_algorithm != EncryptionAlgorithm::NONE
     }
 
+    /// Whether the VMGS file was provisioned during the most recent boot
+    pub fn was_provisioned_this_boot(&self) -> bool {
+        self.provisioned_this_boot
+    }
+
     fn prepare_new_header(&self, file_table_fcb: &ResolvedFileControlBlock) -> VmgsHeader {
         VmgsHeader {
             signature: VMGS_SIGNATURE,
@@ -2034,6 +2043,7 @@ pub mod save_restore {
                     }
                 }),
                 reprovisioned,
+                provisioned_this_boot: false,
                 logger,
             }
         }
@@ -2062,6 +2072,7 @@ pub mod save_restore {
                 encrypted_metadata_keys,
                 logger: _,
                 reprovisioned,
+                provisioned_this_boot: _,
             } = self;
 
             state::SavedVmgsState {
