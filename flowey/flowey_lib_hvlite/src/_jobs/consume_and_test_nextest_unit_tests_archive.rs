@@ -1,31 +1,25 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Build and run the cargo-nextest based unit tests.
+//! Run a pre-built cargo-nextest based unit test archive.
 
-use crate::build_nextest_unit_tests::BuildNextestUnitTestMode;
-use crate::run_cargo_build::common::CommonProfile;
+use crate::build_nextest_unit_tests::NextestUnitTestArchive;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
-use flowey_lib_common::run_cargo_nextest_run::build_params::PanicAbortTests;
 use std::collections::BTreeMap;
 
 flowey_request! {
     pub struct Params {
         /// Friendly label for report JUnit test results
         pub junit_test_label: String,
-        /// Build and run unit tests for the specified target
-        pub target: target_lexicon::Triple,
-        /// Build and run unit tests with the specified cargo profile
-        pub profile: CommonProfile,
-        /// Whether to build tests with unstable `-Zpanic-abort-tests` flag
-        pub unstable_panic_abort_tests: Option<PanicAbortTests>,
+        /// Existing unit test archive
+        pub nextest_unit_test_archive: ReadVar<NextestUnitTestArchive>,
         /// Nextest profile to use when running the source code
         pub nextest_profile: NextestProfile,
 
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
-        /// If provided, also publish junit.xml test results as an artifact.
+        /// (optionally) Also publish raw junit.xml test results as an artifact.
         pub artifact_dir: Option<ReadVar<PathBuf>>,
         pub done: WriteVar<SideEffect>,
     }
@@ -38,29 +32,25 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
-        ctx.import::<crate::build_nextest_unit_tests::Node>();
+        ctx.import::<crate::test_nextest_unit_tests_archive::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params {
             junit_test_label,
-            target,
-            profile,
-            unstable_panic_abort_tests,
+            nextest_unit_test_archive,
             nextest_profile,
             fail_job_on_test_fail,
             artifact_dir,
             done,
         } = request;
 
-        let results = ctx.reqv(|v| crate::build_nextest_unit_tests::Request {
-            profile,
-            target,
-            unstable_panic_abort_tests,
-            build_mode: BuildNextestUnitTestMode::ImmediatelyRun {
-                nextest_profile,
-                results: v,
-            },
+        let results = ctx.reqv(|v| crate::test_nextest_unit_tests_archive::Request {
+            nextest_archive_file: nextest_unit_test_archive,
+            nextest_profile,
+            nextest_bin: None,
+            target: None,
+            results: v,
         });
 
         let mut side_effects = Vec::new();

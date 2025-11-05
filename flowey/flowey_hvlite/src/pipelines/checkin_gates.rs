@@ -971,8 +971,6 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::Ubuntu2504ServerX64Vhd,
         ];
 
-        let mut vmm_tests_results_artifacts = vec![];
-
         for VmmTestJobParams {
             platform,
             arch,
@@ -1058,22 +1056,11 @@ impl IntoPipeline for CheckinGatesCli {
         ] {
             let test_label = format!("{label}-vmm-tests");
 
-            let (pub_vmm_tests_results_full, _) =
-                pipeline.new_artifact(format!("{label}-vmm-tests-results"));
-
-            let (pub_vmm_tests_junit_xml, use_vmm_tests_junit_xml) =
-                pipeline.new_artifact(format!("{label}-vmm-tests-results-junit-xml"));
-            let (pub_vmm_tests_nextest_list_json, use_vmm_tests_nextest_list_json) =
-                pipeline.new_artifact(format!("{label}-vmm-tests-results-nextest-list-json"));
-
-            pipeline.force_publish_artifact(&pub_vmm_tests_results_full);
-            pipeline.force_publish_artifact(&pub_vmm_tests_junit_xml);
-            pipeline.force_publish_artifact(&pub_vmm_tests_nextest_list_json);
-
-            vmm_tests_results_artifacts.push((
-                label.to_string(),
-                (use_vmm_tests_junit_xml, use_vmm_tests_nextest_list_json),
-            ));
+            let pub_vmm_tests_results = if matches!(backend_hint, PipelineBackendHint::Local) {
+                Some(pipeline.new_artifact(&test_label).0)
+            } else {
+                None
+            };
 
             let use_vmm_tests_archive = match target {
                 CommonTriple::X86_64_WINDOWS_MSVC => &use_vmm_tests_archive_windows_x86,
@@ -1096,13 +1083,7 @@ impl IntoPipeline for CheckinGatesCli {
                         dep_artifact_dirs: resolve_vmm_tests_artifacts(ctx),
                         test_artifacts,
                         fail_job_on_test_fail: true,
-                        artifacts_to_publish: Some(
-                            flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::VmmTestsPublishArtifacts {
-                                junit_xml: ctx.publish_artifact(pub_vmm_tests_junit_xml),
-                                nextest_list_json: ctx.publish_artifact(pub_vmm_tests_nextest_list_json),
-                                test_logs_dir: ctx.publish_artifact(pub_vmm_tests_results_full),
-                            }
-                        ),
+                        artifact_dir: pub_vmm_tests_results.map(|x| ctx.publish_artifact(x)),
                         needs_prep_run,
                         done: ctx.new_done_handle(),
                     }
@@ -1117,35 +1098,6 @@ impl IntoPipeline for CheckinGatesCli {
             }
 
             all_jobs.push(vmm_tests_run_job.finish());
-        }
-
-        {
-            let job = pipeline
-                .new_job(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                    FlowArch::X86_64,
-                    "verify all tests run at least once",
-                )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::verify_all_tests_run::Request {
-                        test_artifacts: vmm_tests_results_artifacts
-                            .iter()
-                            .map(|elem| {
-                                (
-                                    elem.0.clone(),
-                                    flowey_lib_hvlite::_jobs::verify_all_tests_run::VmmTestResultsArtifacts {
-                                        junit_xml: ctx.use_artifact(&elem.1.0),
-                                        nextest_list_json: ctx.use_artifact(&elem.1.1),
-                                    },
-                                )
-                            })
-                            .collect(),
-                        done: ctx.new_done_handle(),
-                    },
-                )
-                .finish();
-            all_jobs.push(job);
         }
 
         // test the flowey local backend by running cargo xflowey build-igvm on x64

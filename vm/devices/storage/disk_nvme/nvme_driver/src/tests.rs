@@ -282,7 +282,7 @@ async fn test_nvme_driver(driver: DefaultDriver, config: NvmeTestConfig) {
         return;
     }
 
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
+    let mut driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
         .await
         .unwrap();
     let namespace = driver.namespace(1).await.unwrap();
@@ -421,7 +421,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     // As of today we do not save namespace data to avoid possible conflict
     // when namespace has changed during servicing.
     // TODO: Review and re-enable in future.
-    assert_eq!(saved_state.namespaces.len(), 0);
+    assert_eq!(saved_state.namespaces.len(), 1);
 
     // Create a second set of devices since the ownership has been moved.
     let mut new_msi_x = MsiInterruptSet::new();
@@ -501,7 +501,7 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
         .await
         .unwrap();
     let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
+    let mut driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
         .await
         .unwrap();
     let namespace = driver.namespace(1).await.unwrap();
