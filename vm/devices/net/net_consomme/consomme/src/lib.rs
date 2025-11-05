@@ -42,6 +42,7 @@ use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Cidr;
 use smoltcp::wire::Ipv6Packet;
 use std::net::SocketAddrV4;
+use std::net::SocketAddrV6;
 use std::task::Context;
 use thiserror::Error;
 
@@ -85,7 +86,7 @@ pub struct ConsommeParams {
     pub nameservers: Vec<Ipv4Address>,
     /// Current IPv6 network mask (if any).
     #[inspect(with = "Option::is_some")]
-    pub net_mask_ipv6: Option<u8>,
+    pub prefix_len_ipv6: Option<u8>,
     /// Current IPv6 gateway address (if any).
     #[inspect(with = "Option::is_some")]
     pub gateway_ip_ipv6: Option<Ipv6Address>,
@@ -116,7 +117,7 @@ impl ConsommeParams {
             client_mac: EthernetAddress([0x0, 0x0, 0x0, 0x0, 0x1, 0x0]),
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
-            net_mask_ipv6: None,
+            prefix_len_ipv6: None,
             gateway_ip_ipv6: None,
             client_ip_ipv6: None,
             nameservers_ipv6: Vec::new(),
@@ -138,17 +139,21 @@ impl ConsommeParams {
         Ok(())
     }
 
+    /// Sets the cidr for the network with IPv6 addresses.
+    ///
+    /// Setting, for example, 2001:db8::/64 will set the gateway to
+    /// 2001:db8::1 and the client IP to 2001:db8::2.
     pub fn set_cidr_ipv6(&mut self, cidr: &str) -> Result<(), InvalidCidr> {
         let cidr: Ipv6Cidr = cidr.parse().map_err(|()| InvalidCidr)?;
-        let base_address = self.network_address(&cidr);
+        let base_address = self.network_address(&cidr)?;
 
         // Convert to a mutable 16-byte array
         let mut gateway = base_address.0;
         let mut client = base_address.0;
 
         // Safely increment the last 16-bit chunk (no overflow)
-        increment_ipv6(&mut gateway, 1);
-        increment_ipv6(&mut client, 2);
+        Self::increment_ipv6(&mut gateway, 1);
+        Self::increment_ipv6(&mut client, 2);
 
         self.gateway_ip_ipv6 = Some(Ipv6Address(gateway));
         self.client_ip_ipv6 = Some(Ipv6Address(client));
@@ -157,25 +162,22 @@ impl ConsommeParams {
         Ok(())
     }
 
-    fn network_address(&self, cidr: &Ipv6Cidr) -> Ipv6Address {
-        let mut bytes = cidr.address().0;
+    fn network_address(&self, cidr: &Ipv6Cidr) -> Result<Ipv6Address, InvalidCidr> {
+        let bytes = cidr.address().0;
         let prefix = cidr.prefix_len();
 
-        // Zero out host bits beyond prefix_len
         if prefix < 128 {
-            let byte_index = prefix / 8;
-            let bit_index = prefix % 8;
+            let mask = if prefix == 0 {
+                0
+            } else {
+                (!0u128) << (128 - prefix)
+            };
 
-            if bit_index != 0 {
-                bytes[byte_index] &= 0xFF << (8 - bit_index);
-            }
-
-            for i in (byte_index + 1)..16 {
-                bytes[i] = 0;
-            }
+            let bytes = u128::from_be_bytes(bytes);
+            Ok(Ipv6Address((bytes & mask).to_be_bytes()))
+        } else {
+            Err(InvalidCidr)
         }
-
-        Ipv6Address(bytes)
     }
 
     fn increment_ipv6(addr: &mut [u8; 16], n: u128) {
@@ -358,6 +360,12 @@ struct Ipv4Addresses {
     dst_addr: Ipv4Address,
 }
 
+#[derive(Debug)]
+struct Ipv6Addresses {
+    src_addr: Ipv6Address,
+    dst_addr: Ipv6Address,
+}
+
 impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(params: ConsommeParams) -> Self {
@@ -512,6 +520,37 @@ impl<T: Client> Access<'_, T> {
         payload: &[u8],
         checksum: &ChecksumState,
     ) -> Result<(), DropReason> {
-        Err(DropReason::UnsupportedEthertype(EthernetProtocol::Ipv6))
+        let ipv6 = Ipv6Packet::new_unchecked(payload);
+        if payload.len() < smoltcp::wire::IPV6_HEADER_LEN || ipv6.version() != 6 {
+            return Err(DropReason::Packet(smoltcp::Error::Malformed));
+        }
+
+        let declared_payload_len = ipv6.total_len() as usize;
+        let total_len = if checksum.tso.is_some() {
+            payload.len()
+        } else {
+            smoltcp::wire::IPV6_HEADER_LEN + declared_payload_len
+        };
+
+        if total_len > payload.len || total_len < smoltcp::wire::IPV6_HEADER_LEN {
+            return Err(DropReason::Packet(smoltcp::Error::Malformed));
+        }
+
+        //TODO: Walk extension headers.
+        let next_header = ipv6.next_header();
+        let inner = &payload[smoltcp::wire::IPV6_HEADER_LEN..total_len];
+        let addresses = Ipv6Addresses {
+            src_addr: ipv6.src_addr(),
+            dst_addr: ipv6.dst_addr(),
+        };
+
+        match next_header {
+            IpProtocol::Tcp => self.handle_tcp_ipv6(&ipv6, inner, checksum)?,
+            IpProtocol::Udp => self.handle_udp_ipv6(frame, &ipv6, inner, checksum)?,
+            IpProtocol::Icmpv6 => {
+                self.handle_icmp_ipv6(frame, &ipv6, inner, checksum, ipv6.hop_limit())?
+            }
+            p => return Err(DropReason::UnsupportedIpProtocol(p)),
+        };
     }
 }
