@@ -47,11 +47,7 @@ fn safe_copy_length(
     let max_from_src = buffer_size.saturating_sub(src_offset);
     let max_from_dest = buffer_size.saturating_sub(dest_offset);
     let safe_len = requested.min(max_from_src).min(max_from_dest);
-    if safe_len > 0 {
-        Some(safe_len)
-    } else {
-        None
-    }
+    if safe_len > 0 { Some(safe_len) } else { None }
 }
 
 fn do_fuzz(input: FuzzInput) {
@@ -75,8 +71,7 @@ fn do_fuzz(input: FuzzInput) {
                 dest_offset,
                 len,
             } => {
-                if let Some(max_len) = safe_copy_length(src_offset, dest_offset, len, buffer_size)
-                {
+                if let Some(max_len) = safe_copy_length(src_offset, dest_offset, len, buffer_size) {
                     // Test memcpy with separate src/dest buffers (non-overlapping by design).
                     // Note: memcpy has undefined behavior with overlapping buffers, so we
                     // use separate buffers here. memmove tests overlapping scenarios.
@@ -101,8 +96,7 @@ fn do_fuzz(input: FuzzInput) {
                 dest_offset,
                 len,
             } => {
-                if let Some(max_len) = safe_copy_length(src_offset, dest_offset, len, buffer_size)
-                {
+                if let Some(max_len) = safe_copy_length(src_offset, dest_offset, len, buffer_size) {
                     // Reset reference buffer to current state
                     reference_buffer.copy_from_slice(&dest_buffer);
 

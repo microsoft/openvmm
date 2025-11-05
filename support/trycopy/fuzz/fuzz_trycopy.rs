@@ -102,11 +102,7 @@ fn safe_copy_length(
     let max_from_src = buffer_size.saturating_sub(src_offset);
     let max_from_dest = buffer_size.saturating_sub(dest_offset);
     let safe_len = requested.min(max_from_src).min(max_from_dest);
-    if safe_len > 0 {
-        Some(safe_len)
-    } else {
-        None
-    }
+    if safe_len > 0 { Some(safe_len) } else { None }
 }
 
 fn do_fuzz(input: FuzzInput) {
