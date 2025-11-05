@@ -95,7 +95,7 @@ impl SimpleFlowNode for Node {
 
         pre_build_deps.push(
             ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
-                package_names: vec!["libssl-dev".into()],
+                package_names: vec!["libssl-dev".into(), "build-essential".into()],
                 done: v,
             }),
         );

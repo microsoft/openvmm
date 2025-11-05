@@ -352,7 +352,10 @@ jobs:
       shell: bash
   job10:
     name: clippy [x64-windows], unit tests [x64-windows]
-    runs-on: windows-latest
+    runs-on:
+    - self-hosted
+    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
+    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
     permissions:
       contents: read
       id-token: write
@@ -1132,7 +1135,10 @@ jobs:
       shell: bash
   job13:
     name: clippy [aarch64-windows], unit tests [aarch64-windows]
-    runs-on: windows-11-arm
+    runs-on:
+    - self-hosted
+    - 1ES.Pool=OpenVMM-GitHub-ARM64-Pool-WestUS2
+    - 1ES.ImageOverride=OpenVMM-CI-Windows-ARM64
     permissions:
       contents: read
       id-token: write
@@ -1369,7 +1375,10 @@ jobs:
       shell: bash
   job14:
     name: clippy [aarch64-linux], unit tests [aarch64-linux]
-    runs-on: ubuntu-24.04-arm
+    runs-on:
+    - self-hosted
+    - 1ES.Pool=OpenVMM-GitHub-ARM64-Pool-WestUS2
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu-ARM64
     permissions:
       contents: read
       id-token: write
@@ -1622,7 +1631,10 @@ jobs:
       shell: bash
   job15:
     name: clippy [aarch64-linux-musl, misc nostd], unit tests [aarch64-linux-musl]
-    runs-on: ubuntu-24.04-arm
+    runs-on:
+    - self-hosted
+    - 1ES.Pool=OpenVMM-GitHub-ARM64-Pool-WestUS2
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu-ARM64
     permissions:
       contents: read
       id-token: write
