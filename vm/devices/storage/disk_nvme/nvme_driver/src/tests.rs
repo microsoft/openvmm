@@ -420,7 +420,6 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     let saved_state = nvme_driver.save().await.unwrap();
     // As of today we do not save namespace data to avoid possible conflict
     // when namespace has changed during servicing.
-    // TODO: Review and re-enable in future.
     assert_eq!(saved_state.namespaces.len(), 1);
 
     // Create a second set of devices since the ownership has been moved.
