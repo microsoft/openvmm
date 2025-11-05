@@ -31,7 +31,7 @@ use net_backend::TxSegmentType;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -107,7 +107,7 @@ pub enum IpProtocol {
 
 struct MessageBindPort {
     protocol: IpProtocol,
-    address: Option<Ipv4Addr>,
+    address: Option<IpAddr>,
     port: u16,
 }
 
@@ -122,7 +122,7 @@ impl ConsommeControl {
     pub async fn bind_port(
         &self,
         protocol: IpProtocol,
-        ip_addr: Option<Ipv4Addr>,
+        ip_addr: Option<IpAddr>,
         port: u16,
     ) -> Result<(), ConsommeMessageError> {
         self.send

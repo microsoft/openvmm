@@ -35,6 +35,7 @@ use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
 use smoltcp::wire::IPV4_HEADER_LEN;
+use smoltcp::wire::IpAddress;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
@@ -42,7 +43,6 @@ use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Cidr;
 use smoltcp::wire::Ipv6Packet;
 use std::net::SocketAddrV4;
-use std::net::SocketAddrV6;
 use std::task::Context;
 use thiserror::Error;
 
@@ -83,19 +83,19 @@ pub struct ConsommeParams {
     pub client_mac: EthernetAddress,
     /// Current list of DNS resolvers.
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
-    pub nameservers: Vec<Ipv4Address>,
+    pub nameservers: Vec<IpAddress>,
     /// Current IPv6 network mask (if any).
     #[inspect(with = "Option::is_some")]
     pub prefix_len_ipv6: Option<u8>,
     /// Current IPv6 gateway address (if any).
     #[inspect(with = "Option::is_some")]
     pub gateway_ip_ipv6: Option<Ipv6Address>,
+    /// Current IPv6 gateway MAC address (if any).
+    #[inspect(with = "Option::is_some")]
+    pub gateway_mac_ipv6: Option<EthernetAddress>,
     /// Current IPv6 address assigned to endpoint (if any).
     #[inspect(with = "Option::is_some")]
     pub client_ip_ipv6: Option<Ipv6Address>,
-    /// Current list of IPv6 DNS resolvers.
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
-    pub nameservers_ipv6: Vec<Ipv6Address>,
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -119,8 +119,8 @@ impl ConsommeParams {
             nameservers,
             prefix_len_ipv6: None,
             gateway_ip_ipv6: None,
+            gateway_mac_ipv6: None,
             client_ip_ipv6: None,
-            nameservers_ipv6: Vec::new(),
         })
     }
 
@@ -306,6 +306,25 @@ impl From<SocketAddress> for socket2::SockAddr {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+enum IpSocketAddress {
+    V4 { ip: Ipv4Address, port: u16 },
+    V6 { ip: Ipv6Address, port: u16 },
+}
+
+impl From<IpSocketAddress> for std::net::SocketAddr {
+    fn from(addr: IpSocketAddress) -> Self {
+        match addr {
+            IpSocketAddress::V4 { ip, port } => {
+                std::net::SocketAddr::V4(SocketAddrV4::new(ip.into(), port))
+            }
+            IpSocketAddress::V6 { ip, port } => {
+                std::net::SocketAddr::V6(std::net::SocketAddrV6::new(ip.into(), port, 0, 0))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 struct FourTuple {
     dst: SocketAddress,
     src: SocketAddress,
@@ -364,6 +383,12 @@ struct Ipv4Addresses {
 struct Ipv6Addresses {
     src_addr: Ipv6Address,
     dst_addr: Ipv6Address,
+}
+
+#[derive(Debug)]
+enum IpAddresses {
+    V4(Ipv4Addresses),
+    V6(Ipv6Addresses),
 }
 
 impl Consomme {
@@ -505,7 +530,9 @@ impl<T: Client> Access<'_, T> {
 
         match ipv4.protocol() {
             IpProtocol::Tcp => self.handle_tcp(&addresses, inner, checksum)?,
-            IpProtocol::Udp => self.handle_udp(frame, &addresses, inner, checksum)?,
+            IpProtocol::Udp => {
+                self.handle_udp(frame, &IpAddresses::V4(addresses), inner, checksum)?
+            }
             IpProtocol::Icmp => {
                 self.handle_icmp(frame, &addresses, inner, checksum, ipv4.hop_limit())?
             }
@@ -525,14 +552,14 @@ impl<T: Client> Access<'_, T> {
             return Err(DropReason::Packet(smoltcp::Error::Malformed));
         }
 
-        let declared_payload_len = ipv6.total_len() as usize;
+        let declared_payload_len = ipv6.total_len();
         let total_len = if checksum.tso.is_some() {
             payload.len()
         } else {
             smoltcp::wire::IPV6_HEADER_LEN + declared_payload_len
         };
 
-        if total_len > payload.len || total_len < smoltcp::wire::IPV6_HEADER_LEN {
+        if total_len > payload.len() || total_len < smoltcp::wire::IPV6_HEADER_LEN {
             return Err(DropReason::Packet(smoltcp::Error::Malformed));
         }
 
@@ -545,12 +572,12 @@ impl<T: Client> Access<'_, T> {
         };
 
         match next_header {
-            IpProtocol::Tcp => self.handle_tcp_ipv6(&ipv6, inner, checksum)?,
-            IpProtocol::Udp => self.handle_udp_ipv6(frame, &ipv6, inner, checksum)?,
-            IpProtocol::Icmpv6 => {
-                self.handle_icmp_ipv6(frame, &ipv6, inner, checksum, ipv6.hop_limit())?
+            IpProtocol::Udp => {
+                self.handle_udp(frame, &IpAddresses::V6(addresses), inner, checksum)?
             }
+
             p => return Err(DropReason::UnsupportedIpProtocol(p)),
         };
+        Ok(())
     }
 }

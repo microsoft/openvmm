@@ -41,6 +41,7 @@ use std::io;
 use std::io::ErrorKind;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
+use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::Shutdown;
 use std::net::SocketAddrV4;
@@ -352,11 +353,14 @@ impl<T: Client> Access<'_, T> {
 
     /// Binds to the specified host IP and port for listening for incoming
     /// connections.
-    pub fn bind_tcp_port(
-        &mut self,
-        ip_addr: Option<Ipv4Addr>,
-        port: u16,
-    ) -> Result<(), DropReason> {
+    pub fn bind_tcp_port(&mut self, ip_addr: Option<IpAddr>, port: u16) -> Result<(), DropReason> {
+        let ip_addr = match ip_addr {
+            Some(IpAddr::V4(ip)) => Some(ip),
+            Some(IpAddr::V6(_)) => {
+                return Err(DropReason::UnsupportedEthertype(EthernetProtocol::Ipv6));
+            }
+            None => None,
+        };
         match self.inner.tcp.listeners.entry(port) {
             hash_map::Entry::Occupied(_) => {
                 tracing::warn!(port, "Duplicate TCP bind for port");

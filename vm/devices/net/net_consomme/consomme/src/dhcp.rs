@@ -51,12 +51,16 @@ impl<T: Client> Access<'_, T> {
             None
         } else {
             let mut dns_servers = [None; DHCP_MAX_DNS_SERVER_COUNT];
-            for (&s, d) in self
+            for (s, d) in self
                 .inner
                 .state
                 .params
                 .nameservers
                 .iter()
+                .filter_map(|ip| match ip {
+                    IpAddress::Ipv4(addr) => Some(*addr),
+                    _ => None,
+                })
                 .zip(&mut dns_servers)
             {
                 *d = Some(s);

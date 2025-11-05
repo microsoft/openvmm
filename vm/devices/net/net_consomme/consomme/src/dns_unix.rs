@@ -2,7 +2,9 @@
 // Licensed under the MIT License.
 
 use resolv_conf::ScopedIp;
+use smoltcp::wire::IpAddress;
 use smoltcp::wire::Ipv4Address;
+use smoltcp::wire::Ipv6Address;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -13,15 +15,17 @@ pub enum Error {
     Parse(#[from] resolv_conf::ParseError),
 }
 
-pub fn nameservers() -> Result<Vec<Ipv4Address>, Error> {
+pub fn nameservers() -> Result<Vec<IpAddress>, Error> {
     let contents = std::fs::read("/etc/resolv.conf")?;
     let config = resolv_conf::Config::parse(contents)?;
     Ok(config
         .nameservers
         .iter()
         .filter_map(|ns| match ns {
-            ScopedIp::V4(addr) => Some(Ipv4Address::from(*addr)),
-            ScopedIp::V6(_, _) => None,
+            ScopedIp::V4(addr) => Some(IpAddress::Ipv4(Ipv4Address::from(*addr))),
+            // REVIEW: Do we want to support scoped IPv6 addresses here?
+            ScopedIp::V6(addr, None) => Some(IpAddress::Ipv6(Ipv6Address::from(*addr))),
+            ScopedIp::V6(_, Some(_)) => None,
         })
         .collect())
 }
