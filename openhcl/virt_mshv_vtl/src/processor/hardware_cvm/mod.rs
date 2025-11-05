@@ -936,7 +936,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         // Update `proxy_irr_blocked` for this VP itself
         self.vp.update_proxy_irr_filter(self.intercepted_vtl);
 
-        if self.vp.partition.hcl.proxy_interrupt_redirect() {
+        if self.vp.cvm_partition().proxy_interrupt_redirect {
             // Try proxy interrupt redirection. Fall back to normal proxy delivery upon any error.
             match self.try_proxy_interrupt_redirection(
                 device_id,

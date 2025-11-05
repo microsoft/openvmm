@@ -461,6 +461,7 @@ struct UhCvmPartitionState {
     /// Dma client for private visibility pages.
     private_dma_client: Arc<dyn DmaClient>,
     hide_isolation: bool,
+    proxy_interrupt_redirect: bool,
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -1714,18 +1715,6 @@ impl<'a> UhProtoPartition<'a> {
                 );
             }
             hcl.set_snp_register_bitmap(bitmap);
-        } else if isolation == IsolationType::Tdx {
-            // Enable proxy interrupt redirection if supported by hypervisor. This allows proxy interrupts
-            // for VTL0 devices to be delivered to VTL2 via posted interrupt mechanism when it cannot
-            // be directly posted to the VTL0.
-            // This offers better performance for device interrupt delivery to VTL0.
-            let caps = hcl.get_vsm_capabilities().map_err(Error::Hcl)?;
-            hcl.set_proxy_interrupt_redirect(caps.proxy_interrupt_redirect_available());
-            tracing::info!(
-                CVM_ALLOWED,
-                proxy_interrupt_redirect = caps.proxy_interrupt_redirect_available(),
-                "Proxy interrupt redirect capability"
-            );
         }
 
         // Do per-VP HCL initialization.
@@ -2131,6 +2120,7 @@ impl UhProtoPartition<'_> {
             shared_dma_client: late_params.shared_dma_client,
             private_dma_client: late_params.private_dma_client,
             hide_isolation: params.hide_isolation,
+            proxy_interrupt_redirect: false,
         })
     }
 }

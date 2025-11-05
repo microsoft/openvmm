@@ -779,10 +779,16 @@ impl TdxBackedShared {
         let cr4_allowed_bits =
             (ShadowedRegister::Cr4.guest_owned_mask() | X64_CR4_MCE) & cr4_fixed1;
 
+        // Determine if proxy interrupt redirect is supported
+        let caps = params.hcl.get_vsm_capabilities().map_err(crate::Error::Hcl)?;
+
+        let mut cvm = params.cvm_state.unwrap();
+        cvm.proxy_interrupt_redirect = caps.proxy_interrupt_redirect_available();
+
         Ok(Self {
             untrusted_synic,
             flush_state: VtlArray::from_fn(|_| TdxPartitionFlushState::new()),
-            cvm: params.cvm_state.unwrap(),
+            cvm,
             // VPs start in VTL 2.
             active_vtl: std::iter::repeat_n(2, partition_params.topology.vp_count() as usize)
                 .map(AtomicU8::new)
