@@ -128,7 +128,6 @@ fn do_fuzz(input: FuzzInput) {
                 dest_offset,
                 count,
             } => {
-                let count = count.min(buffer_size);
                 if let Some(safe_count) =
                     safe_copy_length(src_offset, dest_offset, count, buffer_size)
                 {

@@ -77,7 +77,9 @@ fn do_fuzz(input: FuzzInput) {
             } => {
                 if let Some(max_len) = safe_copy_length(src_offset, dest_offset, len, buffer_size)
                 {
-                    // Test memcpy with non-overlapping buffers
+                    // Test memcpy with separate src/dest buffers (non-overlapping by design).
+                    // Note: memcpy has undefined behavior with overlapping buffers, so we
+                    // use separate buffers here. memmove tests overlapping scenarios.
                     unsafe {
                         fast_memcpy::memcpy(
                             dest_buffer.as_mut_ptr().add(dest_offset),
