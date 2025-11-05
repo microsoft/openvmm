@@ -147,10 +147,11 @@ impl Mouse {
     }
 }
 
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Debug, Clone, Protobuf, Default)]
 #[mesh(package = "ui.synthmouse")]
 enum ChannelState {
     #[mesh(1)]
+    #[default]
     ReadVersion,
     #[mesh(2)]
     WriteVersion {
@@ -172,12 +173,6 @@ enum ChannelState {
         #[mesh(1)]
         version: u32,
     },
-}
-
-impl Default for ChannelState {
-    fn default() -> Self {
-        Self::ReadVersion
-    }
 }
 
 /// Mouse saved state.

@@ -375,10 +375,11 @@ pub struct Activity {
     pub pending_interruption: Option<PendingInterruption>,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Protobuf, Inspect)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Protobuf, Inspect, Default)]
 #[mesh(package = "virt.x86")]
 pub enum MpState {
     #[mesh(1)]
+    #[default]
     Running,
     #[mesh(2)]
     WaitForSipi,
@@ -386,12 +387,6 @@ pub enum MpState {
     Halted,
     #[mesh(4)]
     Idle,
-}
-
-impl Default for MpState {
-    fn default() -> Self {
-        Self::Running
-    }
 }
 
 // N.B. This does not include the NMI pending bit, which must be get/set via the

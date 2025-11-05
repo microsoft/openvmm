@@ -806,6 +806,18 @@ impl TestNicSubchannel {
     }
 }
 
+struct NvspMessage<T> {
+    header: protocol::MessageHeader,
+    data: T,
+    padding: &'static [u8],
+}
+
+impl<T: IntoBytes + Immutable + KnownLayout> NvspMessage<T> {
+    fn payload(&self) -> [&[u8]; 3] {
+        [self.header.as_bytes(), self.data.as_bytes(), self.padding]
+    }
+}
+
 struct TestNicChannel<'a> {
     pub mtu: u32,
     nic: &'a mut TestNicDevice,
@@ -1325,6 +1337,133 @@ impl<'a> TestNicChannel<'a> {
             .first()
             .unwrap()
             .subrange(0, total_message_length);
+        self.write(OutgoingPacket {
+            transaction_id: self.transaction_id,
+            packet_type: OutgoingPacketType::GpaDirect(&[gpa_range]),
+            payload: &message.payload(),
+        })
+        .await;
+        self.transaction_id += 1;
+    }
+
+    pub async fn send_rndis_packet_offload(
+        &mut self,
+        data: &[u8],
+        tcp_checksum: bool,
+        udp_checksum: bool,
+        lso: bool,
+    ) {
+        let mem = self.nic.mock_vmbus.memory.clone();
+        let gpadl_view = self.gpadl_map.clone().view().map(self.send_buf_id).unwrap();
+        let mut buf_writer = PagedRanges::new(&*gpadl_view).writer(&mem);
+
+        assert!(lso || tcp_checksum || udp_checksum);
+        // Calculate packet info length based on the offloads requested
+        let per_packet_info_offset = size_of::<rndisprot::Packet>() as u32;
+        let mut per_packet_info_length = size_of::<rndisprot::PerPacketInfo>() as u32;
+        if tcp_checksum || udp_checksum {
+            per_packet_info_length += size_of::<rndisprot::TxTcpIpChecksumInfo>() as u32;
+            assert!(!lso);
+        }
+        if lso {
+            per_packet_info_length += size_of::<rndisprot::TcpLsoInfo>() as u32;
+            assert!(!(tcp_checksum || udp_checksum));
+        }
+
+        let message_length = size_of::<rndisprot::MessageHeader>()
+            + size_of::<rndisprot::Packet>()
+            + per_packet_info_length as usize
+            + data.len();
+
+        // Write RNDIS packet message header
+        buf_writer
+            .write(
+                rndisprot::MessageHeader {
+                    message_type: rndisprot::MESSAGE_TYPE_PACKET_MSG,
+                    message_length: message_length as u32,
+                }
+                .as_bytes(),
+            )
+            .unwrap();
+
+        let packet = rndisprot::Packet {
+            data_offset: per_packet_info_offset + per_packet_info_length,
+            data_length: data.len() as u32,
+            oob_data_offset: 0,
+            oob_data_length: 0,
+            num_oob_data_elements: 0,
+            per_packet_info_offset,
+            per_packet_info_length,
+            vc_handle: 0,
+            reserved: 0,
+        };
+
+        // Write RNDIS packet
+        buf_writer.write(packet.as_bytes()).unwrap();
+
+        // Write per-packet info for checksum offload
+        const TCP_HEADER_OFFSET: u16 = 34; // Ethernet (14) + IPv4 (20)
+        if tcp_checksum || udp_checksum {
+            let checksum_info = rndisprot::TxTcpIpChecksumInfo::new_zeroed()
+                .set_is_ipv4(true)
+                .set_tcp_checksum(tcp_checksum)
+                .set_udp_checksum(udp_checksum)
+                .set_ip_header_checksum(true)
+                .set_tcp_header_offset(TCP_HEADER_OFFSET);
+
+            buf_writer
+                .write(
+                    rndisprot::PerPacketInfo {
+                        size: size_of::<rndisprot::PerPacketInfo>() as u32
+                            + size_of::<rndisprot::TxTcpIpChecksumInfo>() as u32,
+                        typ: rndisprot::PPI_TCP_IP_CHECKSUM,
+                        per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+                    }
+                    .as_bytes(),
+                )
+                .unwrap();
+            buf_writer.write(checksum_info.as_bytes()).unwrap();
+        }
+
+        // Write per-packet info for LSO
+        if lso {
+            const NORMAL_MTU: u32 = 1460; // 1500 MTU - 40 bytes (IP + TCP Headers). 8960 would be jumbo frames.
+            let maximum_segment_size = NORMAL_MTU;
+            let lso_info = rndisprot::TcpLsoInfo(
+                maximum_segment_size | ((TCP_HEADER_OFFSET as u32) << 20), // MSS in low 20 bits, TCP header offset in bits 20-29
+            );
+
+            buf_writer
+                .write(
+                    rndisprot::PerPacketInfo {
+                        size: size_of::<rndisprot::PerPacketInfo>() as u32
+                            + size_of::<rndisprot::TcpLsoInfo>() as u32,
+                        typ: rndisprot::PPI_LSO,
+                        per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+                    }
+                    .as_bytes(),
+                )
+                .unwrap();
+            buf_writer.write(lso_info.as_bytes()).unwrap();
+        }
+
+        // Write the packet data
+        buf_writer.write(data).unwrap();
+
+        let message = NvspMessage {
+            header: protocol::MessageHeader {
+                message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET,
+            },
+            data: protocol::Message1SendRndisPacket {
+                channel_type: protocol::DATA_CHANNEL_TYPE,
+                send_buffer_section_index: 0xffffffff,
+                send_buffer_section_size: 0,
+            },
+            padding: &[],
+        };
+
+        let gpadl_map_view = self.gpadl_map.clone().view().map(self.send_buf_id).unwrap();
+        let gpa_range = gpadl_map_view.first().unwrap().subrange(0, message_length);
         self.write(OutgoingPacket {
             transaction_id: self.transaction_id,
             packet_type: OutgoingPacketType::GpaDirect(&[gpa_range]),
@@ -5292,4 +5431,114 @@ async fn race_coordinator_and_worker_stop_events(driver: DefaultDriver) {
             }
         }
     }
+}
+
+#[async_test]
+async fn rndis_send_lso_packet(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let initialize_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(initialize_complete.request_id, 123);
+    assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
+    assert_eq!(initialize_complete.major_version, rndisprot::MAJOR_VERSION);
+    assert_eq!(initialize_complete.minor_version, rndisprot::MINOR_VERSION);
+
+    assert_eq!(endpoint_state.lock().stop_endpoint_counter, 1);
+
+    let data = vec![0xCC; 60];
+    let tcp_checksum = false;
+    let udp_checksum = false;
+    let lso = true;
+    channel
+        .send_rndis_packet_offload(data.as_slice(), tcp_checksum, udp_checksum, lso)
+        .await;
+
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
+}
+
+#[async_test]
+async fn rndis_send_tcp_checksum_packet(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let initialize_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(initialize_complete.request_id, 123);
+    assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
+    assert_eq!(initialize_complete.major_version, rndisprot::MAJOR_VERSION);
+    assert_eq!(initialize_complete.minor_version, rndisprot::MINOR_VERSION);
+
+    assert_eq!(endpoint_state.lock().stop_endpoint_counter, 1);
+
+    let data = vec![0xCC; 60];
+    let tcp_checksum = true;
+    let udp_checksum = false;
+    let lso = false;
+    channel
+        .send_rndis_packet_offload(data.as_slice(), tcp_checksum, udp_checksum, lso)
+        .await;
+
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
 }

@@ -947,7 +947,7 @@ jobs:
     - name: collect openvmm_hcl files for analysis
       run: |-
         flowey e 11 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
-        flowey v 11 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:8:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:122:27' --is-raw-string write-to-env github floweyvar1
+        flowey v 11 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:8:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:129:27' --is-raw-string write-to-env github floweyvar1
       shell: bash
     - id: flowey_lib_hvlite___jobs__check_openvmm_hcl_size__2
       uses: actions/upload-artifact@v4
@@ -6658,7 +6658,7 @@ jobs:
     - name: collect openvmm_hcl files for analysis
       run: |-
         flowey e 9 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
-        flowey v 9 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:8:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:122:27' --is-raw-string write-to-env github floweyvar1
+        flowey v 9 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:8:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:129:27' --is-raw-string write-to-env github floweyvar1
       shell: bash
     - id: flowey_lib_hvlite___jobs__check_openvmm_hcl_size__2
       uses: actions/upload-artifact@v4
@@ -6666,13 +6666,9 @@ jobs:
         name: aarch64_openvmm_hcl_for_size_analysis
         path: ${{ env.floweyvar1 }}
       name: publish openvmm_hcl for analysis
-    - name: extract X64 sysroot.tar.gz
-      run: |-
-        flowey e 9 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 1
-        flowey e 9 flowey_lib_hvlite::init_cross_build 1
-      shell: bash
     - name: cargo build xtask
       run: |-
+        flowey e 9 flowey_lib_hvlite::init_cross_build 1
         flowey e 9 flowey_lib_common::run_cargo_build 1
         flowey e 9 flowey_lib_hvlite::run_cargo_build 2
       shell: bash
