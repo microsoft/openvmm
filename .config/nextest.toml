@@ -1,19 +1,34 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-[[profile.default.overrides]]
-filter = 'package(~vmm_tests)'
-# Mark VMM tests as heavy and requiring more threads due to their memory and CPU
-# usage. For local dev runs, you may need to manually restrict the number of
-# threads running via the -j cli arg.
-threads-required = 3
+# IMPORTANT: nextest processes this file in linear order. The
+# first override to set any setting wins. Order any overrides
+# from most-to-least specific.
+#
+# Take the following config items by example:
+#
+# [[profile.default.overrides]] # <-- override 1
+# filter = 'package(~vmm_tests)'
+# threads-required = 3
+#
+# [[profile.default.overrides]] # <-- override 2
+# filter = 'package(~vmm_tests) and test(very_heavy)'
+# threads-required = 35
+#
+# If a test is named "my_very_heavy_test", nextest will
+# apply ***threads-required = 3***, since override 1
+# is first in the file and matches.
+#
+# See:
+# https://nexte.st/docs/configuration/per-test-overrides/#override-precedence
+# https://nexte.st/docs/configuration/?h=hierar#hierarchical-configuration
 
 [[profile.default.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile
-filter = 'package(~vmm_tests) and test(openhcl)'
-# Mark OpenHCL VMM tests as extra heavy, as they have to also run VTL2.
-threads-required = 5
+filter = 'package(~vmm_tests) and test(very_heavy)'
+# Mark very heavy tests as extra very heavy, as they include up to 32 vps.
+threads-required = 35
 
 [[profile.default.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
@@ -25,9 +40,16 @@ threads-required = 18
 [[profile.default.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile
-filter = 'package(~vmm_tests) and test(very_heavy)'
-# Mark very heavy tests as extra very heavy, as they include up to 32 vps.
-threads-required = 35
+filter = 'package(~vmm_tests) and test(openhcl)'
+# Mark OpenHCL VMM tests as extra heavy, as they have to also run VTL2.
+threads-required = 5
+
+[[profile.default.overrides]]
+filter = 'package(~vmm_tests)'
+# Mark VMM tests as heavy and requiring more threads due to their memory and CPU
+# usage. For local dev runs, you may need to manually restrict the number of
+# threads running via the -j cli arg.
+threads-required = 3
 
 # Profile for CI runs.
 [profile.ci]
