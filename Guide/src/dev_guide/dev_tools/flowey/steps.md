@@ -111,7 +111,7 @@ rt.write_not_secret(output_var, &"done".to_string());
 
 1. **Never use `ReadVar::from_static()` for secrets** - static values are encoded in plain text in the generated YAML
 2. **Always use `write_secret()`** when writing sensitive data like tokens, passwords, or keys
-5. **Minimize secret lifetime** - read secrets as late as possible and don't pass them through more variables than necessary
+3. **Minimize secret lifetime** - read secrets as late as possible and don't pass them through more variables than necessary
 
 ### AdoStepServices
 
