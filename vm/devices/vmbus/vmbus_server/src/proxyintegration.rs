@@ -533,15 +533,21 @@ impl ProxyTask {
                 },
             }
         } else if offer.ChannelFlags.enumerate_device_interface() {
-            let params = offer.UserDefined.as_pipe_params();
-            let message_mode = match params.pipe_type {
-                protocol::PipeType::BYTE => false,
-                protocol::PipeType::MESSAGE => true,
-                _ => {
-                    anyhow::bail!("unsupported offer pipe mode");
+            if offer.ChannelFlags.named_pipe_mode() {
+                let params = offer.UserDefined.as_pipe_params();
+                let message_mode = match params.pipe_type {
+                    protocol::PipeType::BYTE => false,
+                    protocol::PipeType::MESSAGE => true,
+                    _ => {
+                        anyhow::bail!("unsupported offer pipe mode");
+                    }
+                };
+                ChannelType::Pipe { message_mode }
+            } else {
+                ChannelType::Interface {
+                    user_defined: offer.UserDefined,
                 }
-            };
-            ChannelType::Pipe { message_mode }
+            }
         } else {
             ChannelType::Device {
                 pipe_packets: offer.ChannelFlags.named_pipe_mode(),

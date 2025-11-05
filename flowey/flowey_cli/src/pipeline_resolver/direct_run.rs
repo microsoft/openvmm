@@ -4,11 +4,10 @@
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_PERSISTENT_STORAGE_DIR;
 use crate::flow_resolver::stage1_dag::OutputGraphEntry;
 use crate::flow_resolver::stage1_dag::Step;
+use crate::pipeline_resolver::generic::ResolvedJobArtifact;
 use crate::pipeline_resolver::generic::ResolvedJobUseParameter;
 use crate::pipeline_resolver::generic::ResolvedPipeline;
 use crate::pipeline_resolver::generic::ResolvedPipelineJob;
-use crate::pipeline_resolver::generic::ResolvedPublishedArtifact;
-use crate::pipeline_resolver::generic::ResolvedUsedArtifact;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
@@ -282,10 +281,7 @@ fn direct_run_do_work(
             serde_json::to_string(&persist_dir).unwrap().into(),
         );
 
-        for ResolvedPublishedArtifact {
-            flowey_var, name, ..
-        } in artifacts_published
-        {
+        for ResolvedJobArtifact { flowey_var, name } in artifacts_published {
             let path = out_dir.join("artifacts").join(name);
             fs_err::create_dir_all(&path)?;
 
@@ -301,7 +297,7 @@ fn direct_run_do_work(
         }
         fs_err::create_dir_all(out_dir.join(".job_artifacts"))?;
 
-        for ResolvedUsedArtifact { flowey_var, name } in artifacts_used {
+        for ResolvedJobArtifact { flowey_var, name } in artifacts_used {
             let path = out_dir.join(".job_artifacts").join(name);
             fs_err::create_dir_all(&path)?;
             copy_dir_all(out_dir.join("artifacts").join(name), &path)?;

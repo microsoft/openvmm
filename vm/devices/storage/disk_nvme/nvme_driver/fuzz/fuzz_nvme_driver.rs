@@ -19,6 +19,7 @@ use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::convert::TryFrom;
+use std::sync::Arc;
 use user_driver_emulated_mock::DeviceTestMemory;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -26,7 +27,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 /// Nvme driver fuzzer
 pub struct FuzzNvmeDriver {
     driver: Option<NvmeDriver<FuzzEmulatedDevice<NvmeController, PagePoolAllocator>>>,
-    namespace: Namespace,
+    namespace: Arc<Namespace>,
     payload_mem: GuestMemory,
     cpu_count: u32,
 }
@@ -64,7 +65,7 @@ impl FuzzNvmeDriver {
             .unwrap();
 
         let device = FuzzEmulatedDevice::new(nvme, msi_set, mem.dma_client());
-        let nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device, false).await?; // TODO: [use-arbitrary-input]
+        let mut nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device, false).await?; // TODO: [use-arbitrary-input]
         let namespace = nvme_driver.namespace(1).await?; // TODO: [use-arbitrary-input]
 
         Ok(Self {
