@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import React, { useEffect, useRef, useState } from 'react';
 import './styles/inspect.css';
 import { SearchInput } from './search';
