@@ -259,7 +259,7 @@ impl PciCapability for MsiCapability {
         state.address = 0;
         state.data = 0;
         if self.per_vector_masking {
-            state.mask_bits = 0xFFFFFFFF; // All vectors masked by default
+            state.mask_bits = 0;
             state.pending_bits = 0;
         }
     }
