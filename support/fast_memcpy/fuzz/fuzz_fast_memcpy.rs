@@ -57,9 +57,10 @@ fn do_fuzz(input: FuzzInput) {
             } => {
                 // Ensure we don't go out of bounds
                 if src_offset < buffer_size && dest_offset < buffer_size {
-                    let max_len = buffer_size
-                        .saturating_sub(src_offset.max(dest_offset))
-                        .min(len);
+                    // Calculate maximum safe length for both src and dest
+                    let max_src_len = buffer_size.saturating_sub(src_offset);
+                    let max_dest_len = buffer_size.saturating_sub(dest_offset);
+                    let max_len = max_src_len.min(max_dest_len).min(len);
 
                     if max_len > 0 {
                         // Test memcpy with non-overlapping buffers
@@ -87,9 +88,10 @@ fn do_fuzz(input: FuzzInput) {
             } => {
                 // Ensure we don't go out of bounds
                 if src_offset < buffer_size && dest_offset < buffer_size {
-                    let max_len = buffer_size
-                        .saturating_sub(src_offset.max(dest_offset))
-                        .min(len);
+                    // Calculate maximum safe length for both src and dest
+                    let max_src_len = buffer_size.saturating_sub(src_offset);
+                    let max_dest_len = buffer_size.saturating_sub(dest_offset);
+                    let max_len = max_src_len.min(max_dest_len).min(len);
 
                     if max_len > 0 {
                         // Reset reference buffer to current state

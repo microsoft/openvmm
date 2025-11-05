@@ -104,8 +104,10 @@ fn do_fuzz(input: FuzzInput) {
                 if src_offset < buffer_size && dest_offset < buffer_size && count > 0 {
                     let src = unsafe { base_ptr.add(src_offset) };
                     let dest = unsafe { base_ptr.add(dest_offset) };
-                    let max_count = buffer_size.saturating_sub(src_offset.max(dest_offset));
-                    let safe_count = count.min(max_count);
+                    // Ensure both src and dest ranges are within bounds
+                    let max_from_src = buffer_size.saturating_sub(src_offset);
+                    let max_from_dest = buffer_size.saturating_sub(dest_offset);
+                    let safe_count = count.min(max_from_src).min(max_from_dest);
                     if safe_count > 0 {
                         let _ = unsafe { trycopy::try_copy::<u8>(src, dest, safe_count) };
                     }
