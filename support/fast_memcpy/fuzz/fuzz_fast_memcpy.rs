@@ -34,6 +34,26 @@ struct FuzzInput {
     operations: Vec<MemcpyOp>,
 }
 
+/// Helper function to calculate safe copy length for two-pointer operations
+fn safe_copy_length(
+    src_offset: usize,
+    dest_offset: usize,
+    requested: usize,
+    buffer_size: usize,
+) -> Option<usize> {
+    if src_offset >= buffer_size || dest_offset >= buffer_size {
+        return None;
+    }
+    let max_from_src = buffer_size.saturating_sub(src_offset);
+    let max_from_dest = buffer_size.saturating_sub(dest_offset);
+    let safe_len = requested.min(max_from_src).min(max_from_dest);
+    if safe_len > 0 {
+        Some(safe_len)
+    } else {
+        None
+    }
+}
+
 fn do_fuzz(input: FuzzInput) {
     // Create buffers to work with - limit size to avoid OOM
     let buffer_size = (input.buffer_size as usize).min(MAX_BUFFER_SIZE).max(16);
@@ -55,30 +75,23 @@ fn do_fuzz(input: FuzzInput) {
                 dest_offset,
                 len,
             } => {
-                // Ensure we don't go out of bounds
-                if src_offset < buffer_size && dest_offset < buffer_size {
-                    // Calculate maximum safe length for both src and dest
-                    let max_src_len = buffer_size.saturating_sub(src_offset);
-                    let max_dest_len = buffer_size.saturating_sub(dest_offset);
-                    let max_len = max_src_len.min(max_dest_len).min(len);
-
-                    if max_len > 0 {
-                        // Test memcpy with non-overlapping buffers
-                        unsafe {
-                            fast_memcpy::memcpy(
-                                dest_buffer.as_mut_ptr().add(dest_offset),
-                                src_buffer.as_ptr().add(src_offset),
-                                max_len,
-                            );
-                        }
-
-                        // Verify the copy worked correctly
-                        assert_eq!(
-                            &dest_buffer[dest_offset..dest_offset + max_len],
-                            &src_buffer[src_offset..src_offset + max_len],
-                            "memcpy failed: dest and src differ"
+                if let Some(max_len) = safe_copy_length(src_offset, dest_offset, len, buffer_size)
+                {
+                    // Test memcpy with non-overlapping buffers
+                    unsafe {
+                        fast_memcpy::memcpy(
+                            dest_buffer.as_mut_ptr().add(dest_offset),
+                            src_buffer.as_ptr().add(src_offset),
+                            max_len,
                         );
                     }
+
+                    // Verify the copy worked correctly
+                    assert_eq!(
+                        &dest_buffer[dest_offset..dest_offset + max_len],
+                        &src_buffer[src_offset..src_offset + max_len],
+                        "memcpy failed: dest and src differ"
+                    );
                 }
             }
             MemcpyOp::Memmove {
@@ -86,35 +99,28 @@ fn do_fuzz(input: FuzzInput) {
                 dest_offset,
                 len,
             } => {
-                // Ensure we don't go out of bounds
-                if src_offset < buffer_size && dest_offset < buffer_size {
-                    // Calculate maximum safe length for both src and dest
-                    let max_src_len = buffer_size.saturating_sub(src_offset);
-                    let max_dest_len = buffer_size.saturating_sub(dest_offset);
-                    let max_len = max_src_len.min(max_dest_len).min(len);
+                if let Some(max_len) = safe_copy_length(src_offset, dest_offset, len, buffer_size)
+                {
+                    // Reset reference buffer to current state
+                    reference_buffer.copy_from_slice(&dest_buffer);
 
-                    if max_len > 0 {
-                        // Reset reference buffer to current state
-                        reference_buffer.copy_from_slice(&dest_buffer);
-
-                        // Test memmove with potentially overlapping regions
-                        unsafe {
-                            fast_memcpy::memmove(
-                                dest_buffer.as_mut_ptr().add(dest_offset),
-                                dest_buffer.as_ptr().add(src_offset),
-                                max_len,
-                            );
-                        }
-
-                        // Use reference buffer to verify the operation
-                        // by simulating the expected behavior
-                        reference_buffer.copy_within(src_offset..src_offset + max_len, dest_offset);
-
-                        assert_eq!(
-                            dest_buffer, reference_buffer,
-                            "memmove failed: result doesn't match expected behavior"
+                    // Test memmove with potentially overlapping regions
+                    unsafe {
+                        fast_memcpy::memmove(
+                            dest_buffer.as_mut_ptr().add(dest_offset),
+                            dest_buffer.as_ptr().add(src_offset),
+                            max_len,
                         );
                     }
+
+                    // Use reference buffer to verify the operation
+                    // by simulating the expected behavior
+                    reference_buffer.copy_within(src_offset..src_offset + max_len, dest_offset);
+
+                    assert_eq!(
+                        dest_buffer, reference_buffer,
+                        "memmove failed: result doesn't match expected behavior"
+                    );
                 }
             }
         }

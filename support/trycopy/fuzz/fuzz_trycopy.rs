@@ -8,6 +8,7 @@
 #![expect(clippy::undocumented_unsafe_blocks)]
 
 use arbitrary::Arbitrary;
+use std::mem::{align_of, size_of};
 use xtask_fuzz::fuzz_eprintln;
 use xtask_fuzz::fuzz_target;
 
@@ -81,6 +82,33 @@ struct FuzzInput {
     operations: Vec<TryCopyOp>,
 }
 
+/// Helper function to check if a typed read/write operation is safe
+fn is_aligned_op_safe<T>(offset: usize, buffer_size: usize) -> bool {
+    let size = size_of::<T>();
+    let align = align_of::<T>();
+    offset % align == 0 && offset + size <= buffer_size
+}
+
+/// Helper function to calculate safe copy length for two-pointer operations
+fn safe_copy_length(
+    src_offset: usize,
+    dest_offset: usize,
+    requested: usize,
+    buffer_size: usize,
+) -> Option<usize> {
+    if src_offset >= buffer_size || dest_offset >= buffer_size {
+        return None;
+    }
+    let max_from_src = buffer_size.saturating_sub(src_offset);
+    let max_from_dest = buffer_size.saturating_sub(dest_offset);
+    let safe_len = requested.min(max_from_src).min(max_from_dest);
+    if safe_len > 0 {
+        Some(safe_len)
+    } else {
+        None
+    }
+}
+
 fn do_fuzz(input: FuzzInput) {
     // Initialize trycopy
     trycopy::initialize_try_copy();
@@ -101,16 +129,12 @@ fn do_fuzz(input: FuzzInput) {
                 count,
             } => {
                 let count = count.min(buffer_size);
-                if src_offset < buffer_size && dest_offset < buffer_size && count > 0 {
+                if let Some(safe_count) =
+                    safe_copy_length(src_offset, dest_offset, count, buffer_size)
+                {
                     let src = unsafe { base_ptr.add(src_offset) };
                     let dest = unsafe { base_ptr.add(dest_offset) };
-                    // Ensure both src and dest ranges are within bounds
-                    let max_from_src = buffer_size.saturating_sub(src_offset);
-                    let max_from_dest = buffer_size.saturating_sub(dest_offset);
-                    let safe_count = count.min(max_from_src).min(max_from_dest);
-                    if safe_count > 0 {
-                        let _ = unsafe { trycopy::try_copy::<u8>(src, dest, safe_count) };
-                    }
+                    let _ = unsafe { trycopy::try_copy::<u8>(src, dest, safe_count) };
                 }
             }
             TryCopyOp::WriteBytes {
@@ -128,49 +152,49 @@ fn do_fuzz(input: FuzzInput) {
                 }
             }
             TryCopyOp::ReadVolatileU8 { offset } => {
-                if offset < buffer_size {
+                if is_aligned_op_safe::<u8>(offset, buffer_size) {
                     let src = unsafe { base_ptr.add(offset).cast::<u8>() };
                     let _ = unsafe { trycopy::try_read_volatile(src) };
                 }
             }
             TryCopyOp::ReadVolatileU16 { offset } => {
-                if offset + 2 <= buffer_size && offset % 2 == 0 {
+                if is_aligned_op_safe::<u16>(offset, buffer_size) {
                     let src = unsafe { base_ptr.add(offset).cast::<u16>() };
                     let _ = unsafe { trycopy::try_read_volatile(src) };
                 }
             }
             TryCopyOp::ReadVolatileU32 { offset } => {
-                if offset + 4 <= buffer_size && offset % 4 == 0 {
+                if is_aligned_op_safe::<u32>(offset, buffer_size) {
                     let src = unsafe { base_ptr.add(offset).cast::<u32>() };
                     let _ = unsafe { trycopy::try_read_volatile(src) };
                 }
             }
             TryCopyOp::ReadVolatileU64 { offset } => {
-                if offset + 8 <= buffer_size && offset % 8 == 0 {
+                if is_aligned_op_safe::<u64>(offset, buffer_size) {
                     let src = unsafe { base_ptr.add(offset).cast::<u64>() };
                     let _ = unsafe { trycopy::try_read_volatile(src) };
                 }
             }
             TryCopyOp::WriteVolatileU8 { offset, value } => {
-                if offset < buffer_size {
+                if is_aligned_op_safe::<u8>(offset, buffer_size) {
                     let dest = unsafe { base_ptr.add(offset).cast::<u8>() };
                     let _ = unsafe { trycopy::try_write_volatile(dest, &value) };
                 }
             }
             TryCopyOp::WriteVolatileU16 { offset, value } => {
-                if offset + 2 <= buffer_size && offset % 2 == 0 {
+                if is_aligned_op_safe::<u16>(offset, buffer_size) {
                     let dest = unsafe { base_ptr.add(offset).cast::<u16>() };
                     let _ = unsafe { trycopy::try_write_volatile(dest, &value) };
                 }
             }
             TryCopyOp::WriteVolatileU32 { offset, value } => {
-                if offset + 4 <= buffer_size && offset % 4 == 0 {
+                if is_aligned_op_safe::<u32>(offset, buffer_size) {
                     let dest = unsafe { base_ptr.add(offset).cast::<u32>() };
                     let _ = unsafe { trycopy::try_write_volatile(dest, &value) };
                 }
             }
             TryCopyOp::WriteVolatileU64 { offset, value } => {
-                if offset + 8 <= buffer_size && offset % 8 == 0 {
+                if is_aligned_op_safe::<u64>(offset, buffer_size) {
                     let dest = unsafe { base_ptr.add(offset).cast::<u64>() };
                     let _ = unsafe { trycopy::try_write_volatile(dest, &value) };
                 }
@@ -180,7 +204,7 @@ fn do_fuzz(input: FuzzInput) {
                 current,
                 new,
             } => {
-                if offset < buffer_size {
+                if is_aligned_op_safe::<u8>(offset, buffer_size) {
                     let dest = unsafe { base_ptr.add(offset).cast::<u8>() };
                     let _ = unsafe { trycopy::try_compare_exchange(dest, current, new) };
                 }
@@ -190,7 +214,7 @@ fn do_fuzz(input: FuzzInput) {
                 current,
                 new,
             } => {
-                if offset + 2 <= buffer_size && offset % 2 == 0 {
+                if is_aligned_op_safe::<u16>(offset, buffer_size) {
                     let dest = unsafe { base_ptr.add(offset).cast::<u16>() };
                     let _ = unsafe { trycopy::try_compare_exchange(dest, current, new) };
                 }
@@ -200,7 +224,7 @@ fn do_fuzz(input: FuzzInput) {
                 current,
                 new,
             } => {
-                if offset + 4 <= buffer_size && offset % 4 == 0 {
+                if is_aligned_op_safe::<u32>(offset, buffer_size) {
                     let dest = unsafe { base_ptr.add(offset).cast::<u32>() };
                     let _ = unsafe { trycopy::try_compare_exchange(dest, current, new) };
                 }
@@ -210,7 +234,7 @@ fn do_fuzz(input: FuzzInput) {
                 current,
                 new,
             } => {
-                if offset + 8 <= buffer_size && offset % 8 == 0 {
+                if is_aligned_op_safe::<u64>(offset, buffer_size) {
                     let dest = unsafe { base_ptr.add(offset).cast::<u64>() };
                     let _ = unsafe { trycopy::try_compare_exchange(dest, current, new) };
                 }
