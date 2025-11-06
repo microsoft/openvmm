@@ -96,9 +96,8 @@ fn get_madt_ptr() -> TmkResult<NonNull<Header>> {
             log::info!("Found SDT Table: {:x?}", sdt_header.signature);
             if sdt_header.signature == *b"APIC" {
                 log::info!("Found MADT Table at address: {:x?}", addr);
-                return true;
             }
-            return false;
+            sdt_header.signature == *b"APIC"
         })
         .map(|u64| {
             // SAFETY: the address is valid as it was found in the ACPI tables, UEFI guarantees their validity
