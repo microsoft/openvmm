@@ -127,14 +127,20 @@ export const InspectOverlay: React.FC<InspectOverlayProps> = ({ fileUrl, onClose
     useEffect(() => {
         if (rawMode) return; // Only meaningful in parsed mode
         const handler = (e: KeyboardEvent) => {
-            // Handle copy of selected subtree: Ctrl+C / Cmd+C
+            // Handle copy of selected subtree: Ctrl+C / Cmd+C (unless user has a text selection)
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+                const selection = window.getSelection();
+                if (selection && selection.toString().length > 0) {
+                    // User has highlighted text; allow native copy behavior.
+                    return; // Do not prevent default
+                }
                 const selPath = selectedPathRef.current;
                 if (selPath && data) {
                     const node = getNodeByPath(data, selPath);
                     if (node) {
-                        const serialized = serializeInspectNode(node);
-                        const text = typeof serialized === 'string' ? serialized : JSON.stringify(serialized, null, 2);
+                        // Include the selected node name as a root wrapper (e.g. key { ... })
+                        const rootKey = selPath.split('.').slice(-1)[0];
+                        const text = formatNodeWithRootName(rootKey, node);
                         // Attempt clipboard write
                         const doCopy = async () => {
                             try {
@@ -814,27 +820,39 @@ function getNodeByPath(root: InspectObject, path: string): InspectNode | null {
  * Convert an InspectNode subtree into a plain JS structure for copying. Object nodes become nested objects.
  * Primitive nodes convert based on type. Unevaluated becomes a string placeholder; error becomes { error: value }.
  */
-function serializeInspectNode(node: InspectNode): any {
-    if (node.type === 'object') {
-        const out: Record<string, any> = {};
-        for (const child of node.children) {
-            out[child.key] = serializeInspectNode(child.value);
+// (Deprecated) retained for future use if JSON serialization is needed again.
+// function serializeInspectNode(node: InspectNode): any { /* removed in favor of formatNodeWithRootName */ }
+
+/**
+ * Produce a textual representation including the root key name, mimicking a lightweight
+ * structured dump (key { ... } or key: value). Indents with two spaces per depth.
+ */
+function formatNodeWithRootName(rootKey: string, node: InspectNode): string {
+    const lines: string[] = [];
+    const IND = '  ';
+    function emitPrimitive(key: string, prim: InspectPrimitive, depth: number) {
+        let val: string;
+        switch (prim.type) {
+            case 'string': val = JSON.stringify(prim.value); break;
+            case 'bytes': val = JSON.stringify(prim.value); break;
+            case 'boolean': val = String(prim.value); break;
+            case 'number': val = prim.value; break;
+            case 'error': val = `ERROR(${JSON.stringify(prim.value)})`; break;
+            case 'unevaluated': val = '(unevaluated)'; break;
         }
-        return out;
+        lines.push(`${IND.repeat(depth)}${key}: ${val}`);
     }
-    switch (node.type) {
-        case 'string':
-        case 'bytes':
-            return node.value;
-        case 'boolean':
-            return node.value;
-        case 'number': {
-            const num = Number(node.value);
-            return Number.isFinite(num) ? num : node.value;
+    function walk(key: string, n: InspectNode, depth: number) {
+        if (n.type === 'object') {
+            lines.push(`${IND.repeat(depth)}${key} {`);
+            for (const child of n.children) {
+                walk(child.key, child.value, depth + 1);
+            }
+            lines.push(`${IND.repeat(depth)}}`);
+        } else {
+            emitPrimitive(key, n as InspectPrimitive, depth);
         }
-        case 'error':
-            return { error: node.value };
-        case 'unevaluated':
-            return '(unevaluated)';
     }
+    walk(rootKey, node, 0);
+    return lines.join('\n');
 }
