@@ -62,7 +62,7 @@ fn get_xsdt_ptr() -> TmkResult<NonNull<Header>> {
 }
 
 fn get_madt_ptr() -> TmkResult<NonNull<Header>> {
-    // From XSDT get SDT Headder
+    // From XSDT get SDT Header
     let sdt_ptr = get_xsdt_ptr()?;
     let sdt_address = sdt_ptr.as_ptr() as usize;
 
