@@ -41,6 +41,8 @@ pub enum NamespaceError {
     Request(#[source] RequestError),
     #[error("maximum data transfer size too small: 2^{0} pages")]
     MdtsInvalid(u8),
+    #[error("namespace ID {nsid} already exists")]
+    DuplicateRequest { nsid: u32 },
 }
 
 /// An NVMe namespace.
@@ -150,10 +152,10 @@ impl Namespace {
 
         // NOTE: Detach `poll_for_rescans` task because its lifetime is not tied
         // to that of the Namespace object. `poll_for_rescans` terminates when the sender of
-        // rescan_event is dropped. So lifetime of this task is tied to the NvmeDriver
-        // & `handle_asynchronous_events` task within the driver. Currently,
-        // this task *could* outlive the Namespace that created it. Task lifetime
-        // will be more tightly bound in future updates.
+        // rescan_event is dropped. i.e. lifetime of this task is tied to the NvmeDriver
+        // & `handle_asynchronous_events` task within the driver. Because the
+        // driver stores references to Namespaces, this task will never outlive
+        // the Namespace object.
         driver
             .spawn(format!("nvme_poll_rescan_{nsid}"), {
                 let state = state.clone();
@@ -521,8 +523,6 @@ impl Namespace {
     /// Initially we will re-query namespace state after restore
     /// to avoid possible contention if namespace was changed
     /// during servicing.
-    /// TODO: Re-enable namespace save/restore once we confirm
-    /// that we can process namespace change AEN.
     pub fn save(&self) -> anyhow::Result<SavedNamespaceData> {
         Ok(SavedNamespaceData {
             nsid: self.nsid,

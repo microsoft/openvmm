@@ -177,9 +177,13 @@ export async function fetchProcessedLog(
       }
       // Inspect attachment gets two links (inspect + raw); others single link
       if (rec.attachment.includes("inspect")) {
+        // Add two links:
+        //  1. data-inspect => parsed / tree view
+        //  2. data-inspect-raw => raw text view inside the same overlay (no parsing)
+        // The click handler in log_viewer.tsx intercepts both and opens the overlay accordingly.
         message +=
           (message ? " " : "") +
-          `<a href="${attachmentUrl}" class="attachment" target="_blank" data-inspect="true">${escapeHtml(rec.attachment)}</a> <a href="${attachmentUrl}" class="attachment" target="_blank">[raw]</a>`;
+          `<a href="${attachmentUrl}" class="attachment" target="_blank" data-inspect="true">${escapeHtml(rec.attachment)}</a> <a href="${attachmentUrl}" class="attachment" target="_blank" data-inspect-raw="true">[raw]</a>`;
       } else {
         message +=
           (message ? " " : "") +

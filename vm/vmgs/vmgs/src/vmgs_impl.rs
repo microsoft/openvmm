@@ -112,6 +112,7 @@ pub struct Vmgs {
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
     encrypted_metadata_keys: [VmgsEncryptionKey; 2],
     reprovisioned: bool,
+    provisioned_this_boot: bool,
 
     #[cfg_attr(feature = "inspect", inspect(skip))]
     logger: Option<Arc<dyn VmgsLogger>>,
@@ -245,13 +246,17 @@ impl Vmgs {
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Self, Error> {
         let active_header = Self::format(&mut storage, VMGS_VERSION_3_0).await?;
-        Self::finish_open(storage, active_header, 0, logger).await
+        let mut vmgs = Self::finish_open(storage, active_header, 0, logger).await?;
+        vmgs.provisioned_this_boot = true;
+        Ok(vmgs)
     }
 
     async fn open_inner(
         mut storage: VmgsStorage,
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Self, Error> {
+        pre_open_validation(&mut storage).await?;
+
         let (active_header, active_header_index) = Self::open_header(&mut storage).await?;
 
         let mut vmgs =
@@ -265,15 +270,7 @@ impl Vmgs {
     }
 
     async fn open_header(storage: &mut VmgsStorage) -> Result<(VmgsHeader, usize), Error> {
-        let (header_1, header_2) = read_headers_inner(storage).await?;
-
-        let empty_header = VmgsHeader::new_zeroed();
-
-        if header_1.as_bytes() == empty_header.as_bytes()
-            && header_2.as_bytes() == empty_header.as_bytes()
-        {
-            return Err(Error::EmptyFile);
-        }
+        let (header_1, header_2) = read_headers(storage).await?;
 
         let active_header_index =
             get_active_header(validate_header(&header_1), validate_header(&header_2))?;
@@ -367,6 +364,7 @@ impl Vmgs {
             metadata_key: VmgsDatastoreKey::new_zeroed(),
             encrypted_metadata_keys,
             reprovisioned,
+            provisioned_this_boot: false,
 
             #[cfg(feature = "inspect")]
             stats: Default::default(),
@@ -1522,6 +1520,11 @@ impl Vmgs {
         self.encryption_algorithm != EncryptionAlgorithm::NONE
     }
 
+    /// Whether the VMGS file was provisioned during the most recent boot
+    pub fn was_provisioned_this_boot(&self) -> bool {
+        self.provisioned_this_boot
+    }
+
     fn prepare_new_header(&self, file_table_fcb: &ResolvedFileControlBlock) -> VmgsHeader {
         VmgsHeader {
             signature: VMGS_SIGNATURE,
@@ -1570,28 +1573,76 @@ mod test_helpers {
     }
 }
 
-/// Read both headers. For compatibility with the V1 format, the headers are
-/// at logical sectors 0 and 1
-pub async fn read_headers(disk: Disk) -> Result<(VmgsHeader, VmgsHeader), Error> {
-    read_headers_inner(&mut VmgsStorage::new(disk)).await
+/// Attempt to read both headers and separately return any validation errors
+pub async fn validate_and_read_headers(
+    disk: Disk,
+) -> (Result<(VmgsHeader, VmgsHeader), Error>, Result<(), Error>) {
+    let mut storage = VmgsStorage::new(disk);
+    let validate_result = pre_open_validation(&mut storage).await;
+    let headers_result = read_headers(&mut storage).await;
+    (headers_result, validate_result)
 }
 
-async fn read_headers_inner(storage: &mut VmgsStorage) -> Result<(VmgsHeader, VmgsHeader), Error> {
-    // Read both headers, and determine the active one. For compatibility with
-    // the V1 format, the headers are at logical sectors 0 and 1
+async fn read_headers(storage: &mut VmgsStorage) -> Result<(VmgsHeader, VmgsHeader), Error> {
+    // first_two_blocks will contain enough bytes to read the first two headers
     let mut first_two_blocks = [0; (VMGS_BYTES_PER_BLOCK * 2) as usize];
     storage
         .read_block(0, &mut first_two_blocks)
         .await
         .map_err(Error::ReadDisk)?;
 
-    // first_two_blocks will contain enough bytes to read the first two headers
     let header_1 = VmgsHeader::read_from_prefix(&first_two_blocks).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     let header_2 =
         VmgsHeader::read_from_prefix(&first_two_blocks[storage.aligned_header_size() as usize..])
             .unwrap()
             .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     Ok((header_1, header_2))
+}
+
+async fn pre_open_validation(storage: &mut VmgsStorage) -> Result<(), Error> {
+    storage.validate().map_err(Error::Initialization)?;
+
+    if vmgs_is_v1(storage).await? {
+        return Err(Error::V1Format);
+    }
+
+    if vmgs_is_empty(storage).await? {
+        return Err(Error::EmptyFile);
+    }
+
+    Ok(())
+}
+
+async fn vmgs_is_v1(storage: &mut VmgsStorage) -> Result<bool, Error> {
+    const EFI_SIGNATURE: &[u8] = b"EFI PART";
+    const EFI_SIGNATURE_OFFSET: usize = 512;
+
+    let mut first_block = [0; (VMGS_BYTES_PER_BLOCK) as usize];
+
+    storage
+        .read_block(0, &mut first_block)
+        .await
+        .map_err(Error::ReadDisk)?;
+
+    Ok(EFI_SIGNATURE
+        == &first_block[EFI_SIGNATURE_OFFSET..EFI_SIGNATURE_OFFSET + EFI_SIGNATURE.len()])
+}
+
+async fn vmgs_is_empty(storage: &mut VmgsStorage) -> Result<bool, Error> {
+    let empty_block = [0; VMGS_BYTES_PER_BLOCK as usize];
+    let mut test_block = [0; VMGS_BYTES_PER_BLOCK as usize];
+
+    for i in 0..storage.block_capacity() {
+        storage
+            .read_block((i * VMGS_BYTES_PER_BLOCK) as u64, &mut test_block)
+            .await
+            .map_err(Error::ReadDisk)?;
+        if test_block != empty_block {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
 }
 
 /// Determines which header to use given the results of checking the
@@ -1992,6 +2043,7 @@ pub mod save_restore {
                     }
                 }),
                 reprovisioned,
+                provisioned_this_boot: false,
                 logger,
             }
         }
@@ -2020,6 +2072,7 @@ pub mod save_restore {
                 encrypted_metadata_keys,
                 logger: _,
                 reprovisioned,
+                provisioned_this_boot: _,
             } = self;
 
             state::SavedVmgsState {

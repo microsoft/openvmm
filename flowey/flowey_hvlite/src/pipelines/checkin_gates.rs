@@ -295,9 +295,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build artifacts (not for VMM tests) [{arch_tag}-windows]"),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_self_hosted(
-                    FlowPlatform::Windows,
-                ))
+                .gh_set_pool(crate::pipelines_shared::gh_pools::windows_amd_self_hosted_largedisk())
                 .dep_on(|ctx| flowey_lib_hvlite::build_hypestv::Request {
                     target: CommonTriple::Common {
                         arch,
@@ -342,9 +340,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build artifacts (for VMM tests) [{arch_tag}-windows]"),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_self_hosted(
-                    FlowPlatform::Windows,
-                ))
+                .gh_set_pool(crate::pipelines_shared::gh_pools::windows_amd_self_hosted_largedisk())
                 .dep_on(|ctx| {
                     flowey_lib_hvlite::build_openvmm::Request {
                         params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
@@ -495,9 +491,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build artifacts [{arch_tag}-linux]"),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_self_hosted(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
+                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk())
                 .dep_on(|ctx| {
                     flowey_lib_hvlite::build_openvmm::Request {
                         params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
@@ -667,9 +661,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     build_openhcl_job_tag(arch_tag),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_self_hosted(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
+                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk())
                 .dep_on(|ctx| {
                     let publish_baseline_artifact = pub_openhcl_baseline
                         .map(|baseline_artifact| ctx.publish_artifact(baseline_artifact));
@@ -759,7 +751,11 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::gh_hosted_x64_windows(),
+                gh_pool: if release {
+                    crate::pipelines_shared::gh_pools::windows_amd_self_hosted_largedisk()
+                } else {
+                    crate::pipelines_shared::gh_pools::gh_hosted_x64_windows()
+                },
                 clippy_targets: Some((
                     "x64-windows",
                     &[(target_lexicon::triple!("x86_64-pc-windows-msvc"), false)],
@@ -802,7 +798,11 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::Aarch64,
-                gh_pool: crate::pipelines_shared::gh_pools::gh_hosted_arm_windows(),
+                gh_pool: if release {
+                    crate::pipelines_shared::gh_pools::windows_arm_self_hosted()
+                } else {
+                    crate::pipelines_shared::gh_pools::gh_hosted_arm_windows()
+                },
                 clippy_targets: Some((
                     "aarch64-windows",
                     &[(target_lexicon::triple!("aarch64-pc-windows-msvc"), false)],
@@ -815,7 +815,11 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::Aarch64,
-                gh_pool: crate::pipelines_shared::gh_pools::gh_hosted_arm_linux(),
+                gh_pool: if release {
+                    crate::pipelines_shared::gh_pools::linux_arm_self_hosted()
+                } else {
+                    crate::pipelines_shared::gh_pools::gh_hosted_arm_linux()
+                },
                 clippy_targets: Some((
                     "aarch64-linux",
                     &[(target_lexicon::triple!("aarch64-unknown-linux-gnu"), false)],
@@ -828,7 +832,11 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::Aarch64,
-                gh_pool: crate::pipelines_shared::gh_pools::gh_hosted_arm_linux(),
+                gh_pool: if release {
+                    crate::pipelines_shared::gh_pools::linux_arm_self_hosted()
+                } else {
+                    crate::pipelines_shared::gh_pools::gh_hosted_arm_linux()
+                },
                 clippy_targets: Some((
                     "aarch64-linux-musl, misc nostd",
                     &[(openhcl_musl_target(CommonArch::Aarch64), true)],

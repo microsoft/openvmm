@@ -4810,6 +4810,8 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "disk_backend",
+ "disk_prwrap",
  "disklayer_ram",
  "event-listener",
  "futures",
@@ -5021,7 +5023,9 @@ dependencies = [
  "sidecar_defs",
  "string_page_buf",
  "tdcall",
+ "test_with_tracing",
  "thiserror 2.0.16",
+ "tracing",
  "underhill_confidentiality",
  "x86defs",
  "zerocopy 0.8.25",
