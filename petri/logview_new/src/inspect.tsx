@@ -43,7 +43,7 @@ export const InspectOverlay: React.FC<InspectOverlayProps> = ({ fileUrl, onClose
         if (rawMode) {
             fetch(fileUrl)
                 .then(r => {
-                    if (r.ok) throw new Error(`Failed to fetch "${fileUrl}": ${r.status} ${r.statusText}. Please check the file path or network connection.`);
+                    if (!r.ok) throw new Error(`Failed to fetch "${fileUrl}": ${r.status} ${r.statusText}. Please check the file path or network connection.`);
                     return r.text();
                 })
                 .then(t => setRawText(t))
