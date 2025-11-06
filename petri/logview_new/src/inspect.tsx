@@ -127,7 +127,38 @@ export const InspectOverlay: React.FC<InspectOverlayProps> = ({ fileUrl, onClose
     useEffect(() => {
         if (rawMode) return; // Only meaningful in parsed mode
         const handler = (e: KeyboardEvent) => {
-            if (e.altKey || e.ctrlKey || e.metaKey) return; // ignore with modifiers
+            // Handle copy of selected subtree: Ctrl+C / Cmd+C
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+                const selPath = selectedPathRef.current;
+                if (selPath && data) {
+                    const node = getNodeByPath(data, selPath);
+                    if (node) {
+                        const serialized = serializeInspectNode(node);
+                        const text = typeof serialized === 'string' ? serialized : JSON.stringify(serialized, null, 2);
+                        // Attempt clipboard write
+                        const doCopy = async () => {
+                            try {
+                                await navigator.clipboard.writeText(text);
+                            } catch {
+                                // Fallback: temporary textarea
+                                const ta = document.createElement('textarea');
+                                ta.value = text;
+                                ta.style.position = 'fixed';
+                                ta.style.left = '-1000px';
+                                document.body.appendChild(ta);
+                                ta.select();
+                                try { document.execCommand('copy'); } catch {}
+                                document.body.removeChild(ta);
+                            }
+                        };
+                        doCopy();
+                        e.preventDefault();
+                        e.stopPropagation();
+                        return; // Copy handled
+                    }
+                }
+            }
+            if (e.altKey || e.ctrlKey || e.metaKey) return; // ignore other shortcuts with modifiers
             const targetEl = e.target as HTMLElement | null;
             if (targetEl) {
                 const tag = targetEl.tagName;
@@ -208,7 +239,7 @@ export const InspectOverlay: React.FC<InspectOverlayProps> = ({ fileUrl, onClose
         };
         window.addEventListener('keydown', handler);
         return () => window.removeEventListener('keydown', handler);
-    }, [rawMode]);
+    }, [rawMode, data]);
 
     const handleToggleAll = () => {
         const newState = !allExpanded;
@@ -755,5 +786,55 @@ function updateFilteredTree(
                 }
             });
         }
+    }
+}
+
+// ---------------- Serialization / Lookup Helpers ----------------
+
+/**
+ * Resolve a dot-delimited path (e.g. "root.child.sub") into an InspectNode within the given root object.
+ * Returns null if any path segment is missing.
+ */
+function getNodeByPath(root: InspectObject, path: string): InspectNode | null {
+    if (path === '') return root;
+    const segments = path.split('.');
+    let current: InspectNode = root;
+    for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        if (current.type !== 'object') return null; // cannot descend into primitive
+        const obj: InspectObject = current; // narrow type
+        const childEntry = obj.children.find((c: { key: string; value: InspectNode }) => c.key === seg);
+        if (!childEntry) return null;
+        current = childEntry.value;
+    }
+    return current;
+}
+
+/**
+ * Convert an InspectNode subtree into a plain JS structure for copying. Object nodes become nested objects.
+ * Primitive nodes convert based on type. Unevaluated becomes a string placeholder; error becomes { error: value }.
+ */
+function serializeInspectNode(node: InspectNode): any {
+    if (node.type === 'object') {
+        const out: Record<string, any> = {};
+        for (const child of node.children) {
+            out[child.key] = serializeInspectNode(child.value);
+        }
+        return out;
+    }
+    switch (node.type) {
+        case 'string':
+        case 'bytes':
+            return node.value;
+        case 'boolean':
+            return node.value;
+        case 'number': {
+            const num = Number(node.value);
+            return Number.isFinite(num) ? num : node.value;
+        }
+        case 'error':
+            return { error: node.value };
+        case 'unevaluated':
+            return '(unevaluated)';
     }
 }
