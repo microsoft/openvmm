@@ -117,6 +117,7 @@ impl PetriVmConfigOpenVmm {
             vmgs,
             boot_device_type,
             tpm_state_persistence,
+            guest_crash_disk: _, // TODO
         } = petri_vm_config;
 
         let PetriVmResources { driver, log_source } = resources;

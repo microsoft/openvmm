@@ -118,6 +118,7 @@ impl Test {
             .context("failed to resolve artifacts")?;
         let output_dir = artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
         let logger = try_init_tracing(output_dir).context("failed to initialize tracing")?;
+        let mut post_test_hooks = Vec::new();
 
         // Catch test panics in order to cleanly log the panic result. Without
         // this, `libtest_mimic` will report the panic to stdout and fail the
@@ -127,6 +128,7 @@ impl Test {
                 PetriTestParams {
                     test_name: &name,
                     logger: &logger,
+                    post_test_hooks: &mut post_test_hooks,
                 },
                 &artifacts,
             )
@@ -147,6 +149,19 @@ impl Test {
             Err(err)
         });
         logger.log_test_result(&name, &r);
+
+        for hook in post_test_hooks {
+            tracing::info!(name = hook.name, "Running post-test hook");
+            if let Err(e) = (hook.hook)() {
+                tracing::error!(
+                    error = e.as_ref() as &dyn std::error::Error,
+                    "Post-test hook failed"
+                );
+            } else {
+                tracing::info!(name = hook.name, "Post-test hook completed successfully");
+            }
+        }
+
         r
     }
 
@@ -222,6 +237,17 @@ pub struct PetriTestParams<'a> {
     pub test_name: &'a str,
     /// The logger for the test.
     pub logger: &'a PetriLogSource,
+    /// Any hooks that want to run after the test completes.
+    pub post_test_hooks: &'a mut Vec<PetriPostTestHook>,
+}
+
+/// A post-test hook to be run after the test completes, regardless of if it
+/// succeeds or fails.
+pub struct PetriPostTestHook {
+    /// The name of the hook.
+    pub name: String,
+    /// The hook function.
+    pub hook: Box<dyn FnOnce() -> anyhow::Result<()> + Send>,
 }
 
 /// A test defined by an artifact resolver function and a run function.

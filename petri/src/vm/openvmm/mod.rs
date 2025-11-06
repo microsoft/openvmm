@@ -52,6 +52,7 @@ use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempPath;
 use unix_socket::UnixListener;
@@ -109,6 +110,12 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
                 flaky_boot: firmware.is_pcat().then_some(Duration::from_secs(15)),
             },
         )
+    }
+
+    async fn create_guest_dump_disk(
+        _logger: &crate::PetriLogSource,
+    ) -> anyhow::Result<Option<(Arc<TempPath>, crate::test::PetriPostTestHook)>> {
+        Ok(None) // TODO
     }
 
     fn new(resolver: &ArtifactResolver<'_>) -> Self {

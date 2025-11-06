@@ -19,6 +19,7 @@ use scsi_buffers::RequestBuffers;
 use std::fs;
 use std::os::windows::prelude::*;
 use std::path::Path;
+use std::path::PathBuf;
 use thiserror::Error;
 use vm_resource::ResolveResource;
 use vm_resource::ResourceId;
@@ -375,11 +376,17 @@ mod virtdisk {
             overlapped: Option<&mut OVERLAPPED>,
             handle: &mut RawHandle,
         ) -> u32;
+
+        pub unsafe fn GetVirtualDiskPhysicalPath(
+            virtual_disk_handle: RawHandle,
+            disk_path_size_in_bytes: &mut u32,
+            disk_path: *mut u16,
+        ) -> u32;
     }
 }
 
 #[derive(Debug, MeshPayload)]
-pub struct Vhd(fs::File);
+pub struct Vhd(pub fs::File);
 
 fn chk_win32(err: u32) -> std::io::Result<()> {
     if err == 0 {
@@ -390,7 +397,7 @@ fn chk_win32(err: u32) -> std::io::Result<()> {
 }
 
 impl Vhd {
-    fn open(path: &Path, read_only: bool) -> std::io::Result<Self> {
+    pub fn open(path: &Path, read_only: bool) -> std::io::Result<Self> {
         let file = unsafe {
             let mut storage_type = std::mem::zeroed();
             // Use a unique ID for each open to avoid virtual disk sharing
@@ -416,6 +423,51 @@ impl Vhd {
                 0,
                 0,
                 Some(&mut parameters),
+                &mut handle,
+            ))?;
+            fs::File::from_raw_handle(handle)
+        };
+        Ok(Self(file))
+    }
+
+    /// Create a new dynamic VHD
+    pub fn create_dynamic(path: &Path, max_size: u64) -> std::io::Result<Self> {
+        let file = unsafe {
+            let path = {
+                let mut path16: Vec<_> = path.as_os_str().encode_wide().collect();
+                path16.push(0);
+                path16
+            };
+
+            let mut storage_type = std::mem::zeroed();
+            // Use a unique ID for each open to avoid virtual disk sharing
+            // within VHDMP. In the future, consider taking this as a parameter
+            // to support failover.
+            let resiliency_guid = Guid::new_random();
+            let mut parameters = virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS {
+                Version: 2,
+                u: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_u {
+                    Version2: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_2 {
+                        UniqueId: resiliency_guid.into(),
+                        MaximumSize: max_size,
+                        BlockSizeInBytes: 512 * 1024,
+                        OpenFlags: virtdisk::OPEN_VIRTUAL_DISK_FLAG_CACHED_IO,
+                        ResiliencyGuid: resiliency_guid.into(),
+                        ..std::mem::zeroed()
+                    },
+                },
+            };
+
+            let mut handle = std::mem::zeroed();
+            chk_win32(virtdisk::CreateVirtualDisk(
+                &mut storage_type,
+                path.as_ptr(),
+                0,
+                None,
+                0,
+                0,
+                Some(&mut parameters),
+                None,
                 &mut handle,
             ))?;
             fs::File::from_raw_handle(handle)
@@ -473,7 +525,8 @@ impl Vhd {
         Ok(Self(file))
     }
 
-    fn attach_for_raw_access(&self, read_only: bool) -> std::io::Result<()> {
+    /// Configure the VHD for raw access
+    pub fn attach_for_raw_access(&self, read_only: bool) -> std::io::Result<()> {
         unsafe {
             let mut flags = virtdisk::ATTACH_VIRTUAL_DISK_FLAG_NO_LOCAL_HOST;
             if read_only {
@@ -489,6 +542,36 @@ impl Vhd {
             ))?;
         }
         Ok(())
+    }
+
+    /// Mount the VHD and return the physical path to it.
+    pub fn attach(&self, read_only: bool) -> std::io::Result<PathBuf> {
+        let mut flags = virtdisk::ATTACH_VIRTUAL_DISK_FLAG_NO_DRIVE_LETTER;
+        if read_only {
+            flags |= virtdisk::ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY;
+        }
+        unsafe {
+            chk_win32(virtdisk::AttachVirtualDisk(
+                self.0.as_raw_handle(),
+                None,
+                flags,
+                0,
+                0,
+                None,
+            ))?;
+        }
+
+        let mut size = 0;
+        let mut buffer = vec![0u16; 256];
+        unsafe {
+            chk_win32(virtdisk::GetVirtualDiskPhysicalPath(
+                self.0.as_raw_handle(),
+                &mut size,
+                buffer.as_mut_ptr(),
+            ))?;
+        }
+        let path = String::from_utf16_lossy(&buffer[..(size as usize - 1)]);
+        Ok(PathBuf::from(path))
     }
 
     fn info_static(&self, info_type: u32) -> std::io::Result<virtdisk::GET_VIRTUAL_DISK_INFO> {

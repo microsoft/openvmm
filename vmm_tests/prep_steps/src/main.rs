@@ -105,13 +105,16 @@ fn run(
 
     DefaultPool::run_with(async move |driver| {
         let (vm, agent) = PetriVmBuilder::new(
-            &PetriTestParams {
+            PetriTestParams {
                 test_name: name,
                 logger,
+                // TODO: Run any hooks.
+                post_test_hooks: &mut Vec::new(),
             },
             artifacts,
             &driver,
-        )?
+        )
+        .await?
         // Add the second disk as a separate controller to avoid interfering with
         // the boot disk.
         .modify_backend(|v| {
@@ -161,12 +164,21 @@ fn run(
             .run()
             .await?;
 
-        // Load the target's SYSTEM hive to write to.
+        // Load the target's SYSTEM and SOFTWARE hives to write to.
         cmd!(shell, "reg")
             .args([
                 "load",
-                "HKLM\\TargetTemp",
+                "HKLM\\TargetTempSystem",
                 "E:\\Windows\\System32\\config\\SYSTEM",
+            ])
+            .run()
+            .await?;
+
+        cmd!(shell, "reg")
+            .args([
+                "load",
+                "HKLM\\TargetTempSoftware",
+                "E:\\Windows\\System32\\config\\SOFTWARE",
             ])
             .run()
             .await?;
@@ -178,16 +190,30 @@ fn run(
             .args([
                 "copy",
                 "HKLM\\IMCTemp\\SYSTEM\\CurrentControlSet",
-                "HKLM\\TargetTemp\\ControlSet001",
+                "HKLM\\TargetTempSystem\\ControlSet001",
+                "/s",
+                "/f",
+            ])
+            .run()
+            .await?;
+        cmd!(shell, "reg")
+            .args([
+                "copy",
+                "HKLM\\IMCTemp\\SOFTWARE",
+                "HKLM\\TargetTempSoftware",
                 "/s",
                 "/f",
             ])
             .run()
             .await?;
 
-        // Unload the target hive.
+        // Unload the target hives.
         cmd!(shell, "reg")
-            .args(["unload", "HKLM\\TargetTemp"])
+            .args(["unload", "HKLM\\TargetTempSystem"])
+            .run()
+            .await?;
+        cmd!(shell, "reg")
+            .args(["unload", "HKLM\\TargetTempSoftware"])
             .run()
             .await?;
 

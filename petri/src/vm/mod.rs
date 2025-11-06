@@ -13,6 +13,7 @@ use crate::PetriTestParams;
 use crate::ShutdownKind;
 use crate::disk_image::AgentImage;
 use crate::openhcl_diag::OpenHclDiagHandler;
+use crate::test::PetriPostTestHook;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use hvlite_defs::config::Vtl2BaseAddressType;
@@ -37,7 +38,9 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
+use tempfile::TempPath;
 use vmgs_resources::GuestStateEncryptionPolicy;
 
 /// The set of artifacts and resources needed to instantiate a
@@ -124,6 +127,8 @@ pub struct PetriVmConfig {
     pub agent_image: Option<AgentImage>,
     /// Agent to run in OpenHCL
     pub openhcl_agent_image: Option<AgentImage>,
+    /// Disk to use for guest crash dumps
+    pub guest_crash_disk: Option<Arc<TempPath>>,
     /// VM guest state
     pub vmgs: PetriVmgsResource,
     /// The boot device type for the VM
@@ -157,6 +162,12 @@ pub trait PetriVmmBackend {
     /// Resolve any artifacts needed to use this backend
     fn new(resolver: &ArtifactResolver<'_>) -> Self;
 
+    /// Create a disk for guest crash dumps and a post-test hook to collect
+    /// the dumps after the test.
+    async fn create_guest_dump_disk(
+        logger: &PetriLogSource,
+    ) -> anyhow::Result<Option<(Arc<TempPath>, PetriPostTestHook)>>;
+
     /// Create and start VM from the generic config using the VMM backend
     async fn run(
         self,
@@ -181,12 +192,14 @@ pub struct PetriVm<T: PetriVmmBackend> {
 
 impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// Create a new VM configuration.
-    pub fn new(
-        params: &PetriTestParams<'_>,
+    pub async fn new(
+        params: PetriTestParams<'_>,
         artifacts: PetriVmArtifacts<T>,
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
         let (guest_quirks, vmm_quirks) = T::quirks(&artifacts.firmware);
+        let (guest_crash_disk, guest_dump_hook) =
+            T::create_guest_dump_disk(params.logger).await?.unzip();
         let expected_boot_event = artifacts.firmware.expected_boot_event();
         let boot_device_type = match artifacts.firmware {
             Firmware::LinuxDirect { .. } => BootDeviceType::None,
@@ -202,6 +215,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             } => BootDeviceType::None,
             Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => BootDeviceType::Scsi,
         };
+        params.post_test_hooks.extend(guest_dump_hook);
 
         Ok(Self {
             backend: artifacts.backend,
@@ -216,6 +230,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 openhcl_agent_image: artifacts.openhcl_agent_image,
                 vmgs: PetriVmgsResource::Ephemeral,
                 tpm_state_persistence: true,
+                guest_crash_disk,
             },
             modify_vmm_config: None,
             resources: PetriVmResources {

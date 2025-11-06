@@ -30,6 +30,8 @@ use crate::disk_image::AgentImage;
 use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::kmsg_log_task;
 use crate::openhcl_diag::OpenHclDiagHandler;
+use crate::test::PetriPostTestHook;
+use crate::tracing::PetriLogSource;
 use crate::vm::append_cmdline;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -50,7 +52,9 @@ use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
+use tempfile::TempPath;
 use vm::HyperVVM;
 use vmgs_resources::GuestStateEncryptionPolicy;
 
@@ -151,6 +155,45 @@ impl PetriVmmBackend for HyperVPetriBackend {
         (firmware.quirks().hyperv, VmmQuirks::default())
     }
 
+    async fn create_guest_dump_disk(
+        logger: &PetriLogSource,
+    ) -> anyhow::Result<Option<(Arc<TempPath>, PetriPostTestHook)>> {
+        // Make a 4 GiB dynamic VHD for guest crash dumps.
+        let mut crash_disk = blocking::unblock(|| {
+            tempfile::Builder::new()
+                .suffix(".vhd")
+                .make(|path| disk_vhdmp::Vhd::create_dynamic(path, 4 * 1024 * 1024 * 1024))
+        })
+        .await?;
+        crash_disk.as_file().attach_for_raw_access(false)?;
+
+        // Format the VHD with FAT32.
+        crate::disk_image::build_fat32_disk_image(
+            &mut crash_disk.as_file_mut().0,
+            "CRASHDUMP",
+            b"crashdump  ",
+            &[],
+        )?;
+
+        // Prepare the hook to extract crash dumps after the test.
+        let crash_disk = Arc::new(crash_disk.into_temp_path());
+        let hook_crash_disk = crash_disk.clone();
+        let logger = logger.clone();
+        let post_test_hook = PetriPostTestHook {
+            name: "extract guest crash dumps".into(),
+            hook: Box::new(move || {
+                // Open the VHD and artifact any files in it.
+                let vhd = disk_vhdmp::Vhd::open(hook_crash_disk.as_ref(), true)?;
+                let root_path = vhd.attach(true)?;
+                for file in fs_err::read_dir(root_path)? {
+                    logger.copy_attachment("guest_dump.dmp", &file?.path())?;
+                }
+                Ok(())
+            }),
+        };
+        Ok(Some((crash_disk, post_test_hook)))
+    }
+
     fn new(_resolver: &ArtifactResolver<'_>) -> Self {
         HyperVPetriBackend {}
     }
@@ -172,6 +215,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             boot_device_type,
             vmgs,
             tpm_state_persistence,
+            guest_crash_disk,
         } = config;
 
         let PetriVmResources { driver, log_source } = resources;
@@ -566,6 +610,17 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     ),
                 ));
             }
+        }
+
+        if let Some(guest_crash_disk) = guest_crash_disk {
+            let controller_number = vm.add_scsi_controller(0).await?.0;
+            vm.add_vhd(
+                &guest_crash_disk,
+                powershell::ControllerType::Scsi,
+                Some(0),
+                Some(controller_number),
+            )
+            .await?;
         }
 
         let serial_pipe_path = vm.set_vm_com_port(1).await?;

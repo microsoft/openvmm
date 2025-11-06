@@ -128,34 +128,37 @@ impl AgentImage {
         if files.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(build_disk_image(volume_label, &files)?))
+            let mut image_file = tempfile::NamedTempFile::new()?;
+            image_file
+                .as_file()
+                .set_len(64 * 1024 * 1024)
+                .context("failed to set file size")?;
+            build_fat32_disk_image(&mut image_file, "CIDATA", volume_label, &files)?;
+            Ok(Some(image_file))
         }
     }
 }
 
-enum PathOrBinary<'a> {
+pub(crate) enum PathOrBinary<'a> {
     Path(&'a Path),
     Binary(&'a [u8]),
 }
 
-fn build_disk_image(
+pub(crate) fn build_fat32_disk_image(
+    file: &mut (impl Read + Write + Seek),
+    gpt_name: &str,
     volume_label: &[u8; 11],
     files: &[(&str, PathOrBinary<'_>)],
-) -> anyhow::Result<tempfile::NamedTempFile> {
-    let mut file = tempfile::NamedTempFile::new()?;
-    file.as_file()
-        .set_len(64 * 1024 * 1024)
-        .context("failed to set file size")?;
-
+) -> anyhow::Result<()> {
     let partition_range =
-        build_gpt(&mut file, "CIDATA").context("failed to construct partition table")?;
+        build_gpt(file, gpt_name).context("failed to construct partition table")?;
     build_fat32(
-        &mut fscommon::StreamSlice::new(&mut file, partition_range.start, partition_range.end)?,
+        &mut fscommon::StreamSlice::new(file, partition_range.start, partition_range.end)?,
         volume_label,
         files,
     )
     .context("failed to format volume")?;
-    Ok(file)
+    Ok(())
 }
 
 fn build_gpt(file: &mut (impl Read + Write + Seek), name: &str) -> anyhow::Result<Range<u64>> {
