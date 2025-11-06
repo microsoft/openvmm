@@ -492,9 +492,16 @@ unsafe fn install_signal_handlers() {
         // SAFETY: mcontext is always valid.
         let ctx = unsafe { &mut *ucontext.uc_mcontext };
 
+        let address = if sig == libc::SIGSEGV || sig == libc::SIGBUS {
+            // SAFETY: si_addr is always valid to read for SIGSEGV and SIGBUS.
+            unsafe { info.si_addr().cast() }
+        } else {
+            // No address available.
+            std::ptr::null_mut()
+        };
+
         let failure = AccessFailure {
-            // SAFETY: si_addr is always valid for SIGSEGV and SIGBUS.
-            address: unsafe { info.si_addr().cast() },
+            address,
             si_signo: sig,
             si_code: info.si_code as u32,
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -565,9 +572,6 @@ where
         let this_data = &head[size_of::<Header>()..];
         data = rest;
         if header.magic == magic {
-            if (header.size as usize) < size_of::<T>() {
-                return None;
-            }
             break T::ref_from_bytes(this_data).ok();
         }
     }
