@@ -2348,16 +2348,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fuzz_trycopy"
-version = "0.0.0"
-dependencies = [
- "arbitrary",
- "libfuzzer-sys",
- "trycopy",
- "xtask_fuzz",
-]
-
-[[package]]
 name = "fuzz_ucs2"
 version = "0.0.0"
 dependencies = [
