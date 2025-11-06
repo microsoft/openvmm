@@ -207,7 +207,6 @@ pub mod windows {
     use crate::driver::Driver;
     use crate::sys::overlapped::OverlappedFile;
     use crate::sys::pipe::NamedPipeServer;
-    use std::fs::File;
     use std::fs::OpenOptions;
     use std::os::windows::prelude::*;
     use unicycle::FuturesUnordered;
@@ -245,8 +244,43 @@ pub mod windows {
             let mut fut = FuturesUnordered::new();
             fut.push(accept);
             assert!(futures::poll!(fut.next()).is_pending());
-            let _ = File::open(&path).unwrap();
-            fut.next().await.unwrap().unwrap();
+
+            let client_pipe = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .attributes(FILE_FLAG_OVERLAPPED)
+                .open(&path)
+                .unwrap();
+
+            let server_pipe = fut.next().await.unwrap().unwrap();
+
+            let client_pipe = OverlappedFile::new(&driver, client_pipe).unwrap();
+            let server_pipe = OverlappedFile::new(&driver, server_pipe).unwrap();
+
+            // Drop case.
+            let mut read = server_pipe.read_at(0, vec![0; 256]);
+            assert!(futures::poll!(&mut read).is_pending());
+            drop(read);
+
+            // Cancel case.
+            let mut read = server_pipe.read_at(0, vec![0; 256]);
+            assert!(futures::poll!(&mut read).is_pending());
+            read.cancel();
+            assert_eq!(
+                read.await.0.unwrap_err().raw_os_error(),
+                Some(winapi::shared::winerror::ERROR_OPERATION_ABORTED as i32)
+            );
+
+            // Success case.
+            let mut read = server_pipe.read_at(0, vec![0; 256]);
+            assert!(futures::poll!(&mut read).is_pending());
+
+            let data = b"hello, pipe!".as_slice();
+            assert_eq!(client_pipe.write_at(0, data).await.0.unwrap(), data.len());
+            let (n, buf) = read.await;
+            let n = n.unwrap();
+            assert_eq!(n, data.len());
+            assert_eq!(&buf[..n], data);
         }
     }
 }
