@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-///! ACPI table handling for UEFI environment.
+//! ACPI table handling for UEFI environment.
 use core::ffi::c_void;
 use core::mem::size_of;
 use core::mem::transmute;
