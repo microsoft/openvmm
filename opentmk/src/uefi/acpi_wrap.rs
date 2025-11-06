@@ -127,12 +127,9 @@ pub fn get_apic_count_from_madt() -> TmkResult<usize> {
     let mut processor_count = 0;
     madt_parser.entries().for_each(|e| {
         if let Ok(entry) = e {
-            log::info!("MADT Entry: {:?}", entry);
+            log::trace!("MADT Entry: {:?}", entry);
             match entry {
-                MadtEntry::Apic(_) => {
-                    processor_count += 1;
-                }
-                MadtEntry::X2Apic(_) => {
+                MadtEntry::Apic(_) | MadtEntry::X2Apic(_) => {
                     processor_count += 1;
                 }
             }
