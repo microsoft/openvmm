@@ -24,7 +24,6 @@ export const InspectOverlay: React.FC<InspectOverlayProps> = ({ fileUrl, onClose
     const [data, setData] = useState<InspectObject | null>(null);
     const [filter, setFilter] = useState('');
     const [allExpanded, setAllExpanded] = useState(false);
-    const filterInputRef = useRef<HTMLInputElement>(null);
     const contentsRef = useRef<HTMLDivElement>(null);
     const selectedPathRef = useRef<string>('');
     const allToggleButtonsRef = useRef<HTMLElement[]>([]);
@@ -44,7 +43,7 @@ export const InspectOverlay: React.FC<InspectOverlayProps> = ({ fileUrl, onClose
         if (rawMode) {
             fetch(fileUrl)
                 .then(r => {
-                    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+                    if (r.ok) throw new Error(`Failed to fetch "${fileUrl}": ${r.status} ${r.statusText}. Please check the file path or network connection.`);
                     return r.text();
                 })
                 .then(t => setRawText(t))
@@ -119,6 +118,98 @@ export const InspectOverlay: React.FC<InspectOverlayProps> = ({ fileUrl, onClose
         };
     }, [error, rawMode]);
 
+    // Keyboard shortcuts:
+    //  '+' or '='      : expand all descendants of selected node
+    //  '-'             : collapse all descendants of selected node
+    //  ArrowRight      : expand selected node (only its own subtree, not deeper descendants unless already expanded)
+    //  ArrowLeft       : collapse selected node
+    //  ArrowUp/Down    : move selection to previous/next visible tree row
+    useEffect(() => {
+        if (rawMode) return; // Only meaningful in parsed mode
+        const handler = (e: KeyboardEvent) => {
+            if (e.altKey || e.ctrlKey || e.metaKey) return; // ignore with modifiers
+            const targetEl = e.target as HTMLElement | null;
+            if (targetEl) {
+                const tag = targetEl.tagName;
+                if (tag === 'INPUT' || tag === 'TEXTAREA' || targetEl.isContentEditable) return; // allow native editing
+            }
+
+            // Expand/collapse single selected node with ArrowRight/ArrowLeft
+            if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                const sel = selectedPathRef.current;
+                if (!sel) return;
+                const toggleControl = (allToggleButtonsRef.current as any[]).find((tc: any) => tc.path === sel);
+                if (!toggleControl) return; // leaf node or not found
+                const wantExpand = e.key === 'ArrowRight';
+                if (wantExpand && !toggleControl.isExpanded()) {
+                    toggleControl.setExpanded(true);
+                } else if (!wantExpand && toggleControl.isExpanded()) {
+                    toggleControl.setExpanded(false);
+                } else {
+                    return; // no change
+                }
+                // Recompute overall expansion state
+                const total = (allToggleButtonsRef.current as any[]).length;
+                const expandedCount = (allToggleButtonsRef.current as any[]).reduce((acc: number, tc: any) => acc + (tc.isExpanded && tc.isExpanded() ? 1 : 0), 0);
+                setAllExpanded(total > 0 && expandedCount === total);
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
+
+            // Arrow navigation among visible tree nodes
+            if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                if (!contentsRef.current) return;
+                // Collect only visible tree nodes (skip those inside collapsed subtrees).
+                const nodes = (Array.from(contentsRef.current.querySelectorAll('.tree-node')) as HTMLElement[])
+                    .filter(n => n.offsetParent !== null); // offsetParent null => hidden via display:none
+                if (!nodes.length) return;
+                let idx = nodes.findIndex(n => n.getAttribute('data-path') === selectedPathRef.current);
+                if (idx === -1) {
+                    idx = e.key === 'ArrowDown' ? -1 : nodes.length; // start before/after bounds
+                }
+                const nextIdx = e.key === 'ArrowDown' ? Math.min(idx + 1, nodes.length - 1) : Math.max(idx - 1, 0);
+                if (nextIdx !== idx) {
+                    // Clear previous selection styling
+                    if (selectedPathRef.current) {
+                        const prevSel = contentsRef.current.querySelector('.tree-node.selected');
+                        if (prevSel) prevSel.classList.remove('selected');
+                    }
+                    const el = nodes[nextIdx];
+                    el.classList.add('selected');
+                    selectedPathRef.current = el.getAttribute('data-path') || '';
+                    el.scrollIntoView({ block: 'nearest' });
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+                return; // handled arrow key
+            }
+
+            // Expand / collapse all descendants shortcuts
+            if (e.key !== '+' && e.key !== '=' && e.key !== '-') return;
+            const sel = selectedPathRef.current;
+            if (!sel) return;
+            const expand = (e.key === '+' || e.key === '=');
+            let affected = 0;
+            (allToggleButtonsRef.current as any[]).forEach((tc: any) => {
+                if (!tc.path) return;
+                if (tc.path === sel || tc.path.startsWith(sel + '.')) {
+                    tc.setExpanded(expand);
+                    affected++;
+                }
+            });
+            if (affected > 0) {
+                const total = (allToggleButtonsRef.current as any[]).length;
+                const expandedCount = (allToggleButtonsRef.current as any[]).reduce((acc: number, tc: any) => acc + (tc.isExpanded && tc.isExpanded() ? 1 : 0), 0);
+                setAllExpanded(total > 0 && expandedCount === total);
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, [rawMode]);
+
     const handleToggleAll = () => {
         const newState = !allExpanded;
         setAllExpanded(newState);
@@ -134,7 +225,18 @@ export const InspectOverlay: React.FC<InspectOverlayProps> = ({ fileUrl, onClose
         >
             <div className="inspect-container">
                 <div className="inspect-filter-bar">
-                    <div className="inspect-test-name" title={fileName}>{fileName}</div>
+                    <div className="inspect-filter-left">
+                        <button
+                            type="button"
+                            className="inspect-close"
+                            onClick={onClose}
+                            aria-label="Close inspect view"
+                            title="Close"
+                        >
+                            ×
+                        </button>
+                        <div className="inspect-test-name" title={fileName}>{fileName}</div>
+                    </div>
                     <div className="inspect-search-controls">
                         {!rawMode && (
                             <button
@@ -148,13 +250,11 @@ export const InspectOverlay: React.FC<InspectOverlayProps> = ({ fileUrl, onClose
                         <SearchInput
                             value={filter}
                             onChange={setFilter}
-                            inputRef={filterInputRef}
                             usePersistentSearching={false}
                         />
                     </div>
                 </div>
                 <div className="inspect-scroll" ref={contentsRef}>
-                    {error && <div style={{ padding: '12px', color: 'red' }}>Error: {error}</div>}
                     {/* Raw mode content injected directly into contentsRef */}
                 </div>
             </div>
