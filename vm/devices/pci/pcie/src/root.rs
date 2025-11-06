@@ -99,47 +99,26 @@ impl GenericPcieRootComplex {
         ecam_base: u64,
         ports: Vec<GenericPcieRootPortDefinition>,
     ) -> Self {
-        tracing::info!(
-            "GenericPcieRootComplex: creating new root complex - start_bus={}, end_bus={}, ecam_base={:#x}, num_ports={}",
-            start_bus,
-            end_bus,
-            ecam_base,
-            ports.len()
-        );
-
         let ecam_size = ecam_size_from_bus_numbers(start_bus, end_bus);
-        tracing::info!(
-            "GenericPcieRootComplex: ECAM size calculated as {:#x}",
-            ecam_size
-        );
 
         let mut ecam = register_mmio.new_io_region("ecam", ecam_size);
         ecam.map(ecam_base);
-        tracing::info!(
-            "GenericPcieRootComplex: ECAM region mapped at base {:#x}",
-            ecam_base
-        );
 
         let port_map: HashMap<u8, (Arc<str>, RootPort)> = ports
             .into_iter()
             .enumerate()
             .map(|(i, definition)| {
                 let device_number: u8 = (i << BDF_DEVICE_SHIFT).try_into().expect("too many ports");
-                tracing::info!(
-                    "GenericPcieRootComplex: creating port {} at device number {:#x} with name '{}'",
-                    i, device_number, definition.name
-                );
                 // Use the device number as the slot number for hotpluggable ports
-                let slot_number = if definition.hotplug { Some((device_number as u32) + 1) } else { None };
-                let root_port = RootPort::new(definition.name.clone(), definition.hotplug, slot_number);
+                let hotplug_slot_number = if definition.hotplug {
+                    Some((device_number as u32) + 1)
+                } else {
+                    None
+                };
+                let root_port = RootPort::new(definition.name.clone(), hotplug_slot_number);
                 (device_number, (definition.name, root_port))
             })
             .collect();
-
-        tracing::info!(
-            "GenericPcieRootComplex: root complex created successfully with {} ports",
-            port_map.len()
-        );
 
         Self {
             start_bus,
@@ -156,13 +135,7 @@ impl GenericPcieRootComplex {
         name: impl AsRef<str>,
         dev: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Arc<str>> {
-        tracing::info!(
-            "GenericPcieRootComplex: adding PCIe device '{}' to port {:#x}",
-            name.as_ref(),
-            port
-        );
-
-        let (port_name, root_port) = self.ports.get_mut(&port).ok_or_else(|| -> Arc<str> {
+        let (_port_name, root_port) = self.ports.get_mut(&port).ok_or_else(|| -> Arc<str> {
             tracing::error!(
                 "GenericPcieRootComplex: port {:#x} not found for device '{}'",
                 port,
@@ -171,21 +144,8 @@ impl GenericPcieRootComplex {
             format!("Port {:#x} not found", port).into()
         })?;
 
-        tracing::info!(
-            "GenericPcieRootComplex: connecting device '{}' to root port '{}' at port {:#x}",
-            name.as_ref(),
-            port_name,
-            port
-        );
-
         match root_port.connect_device(name, dev) {
-            Ok(()) => {
-                tracing::info!(
-                    "GenericPcieRootComplex: successfully connected device to port {:#x}",
-                    port
-                );
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(existing_device) => {
                 tracing::warn!(
                     "GenericPcieRootComplex: failed to connect device to port {:#x}, existing device: '{}'",
@@ -204,15 +164,6 @@ impl GenericPcieRootComplex {
             .iter()
             .map(|(port, (name, _))| (*port, name.clone()))
             .collect();
-
-        tracing::info!(
-            "GenericPcieRootComplex: enumerating {} downstream ports: {:?}",
-            ports.len(),
-            ports
-                .iter()
-                .map(|(port, name)| format!("{:#x}:{}", port, name))
-                .collect::<Vec<_>>()
-        );
 
         ports
     }
@@ -277,19 +228,9 @@ impl ChangeDeviceState for GenericPcieRootComplex {
     async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
-        tracing::info!(
-            "GenericPcieRootComplex: starting reset for {} ports",
-            self.ports.len()
-        );
-        for (device_num, (name, port)) in self.ports.iter_mut() {
-            tracing::info!(
-                "GenericPcieRootComplex: resetting port {} ({})",
-                device_num,
-                name
-            );
+        for (_, (_, port)) in self.ports.iter_mut() {
             port.port.cfg_space.reset();
         }
-        tracing::info!("GenericPcieRootComplex: reset completed");
     }
 }
 
@@ -329,12 +270,6 @@ impl MmioIntercept for GenericPcieRootComplex {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
         validate_ecam_intercept!(addr, data);
 
-        tracing::trace!(
-            "GenericPcieRootComplex: ECAM read at addr={:#x}, len={}",
-            addr,
-            data.len()
-        );
-
         // N.B. Emulators internally only support 4-byte aligned accesses to
         // 4-byte registers, but the guest can use 1-, 2-, or 4 byte memory
         // instructions to access ECAM. This function reads the 4-byte aligned
@@ -351,19 +286,9 @@ impl MmioIntercept for GenericPcieRootComplex {
                 tracelimit::warn_ratelimited!("unroutable config space access");
             }
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
-                tracing::trace!(
-                    "GenericPcieRootComplex: reading internal bus cfg_offset={:#x}",
-                    cfg_offset
-                );
                 check_result!(port.port.cfg_space.read_u32(cfg_offset, &mut dword_value));
             }
             DecodedEcamAccess::DownstreamPort(port, bus_number, device_function, cfg_offset) => {
-                tracing::trace!(
-                    "GenericPcieRootComplex: reading downstream port bus={}, dev_fn={}, cfg_offset={:#x}",
-                    bus_number,
-                    device_function,
-                    cfg_offset
-                );
                 check_result!(port.forward_cfg_read(
                     &bus_number,
                     &device_function,
@@ -379,23 +304,11 @@ impl MmioIntercept for GenericPcieRootComplex {
                 [byte_offset_within_dword..byte_offset_within_dword + data.len()],
         );
 
-        tracing::trace!(
-            "GenericPcieRootComplex: ECAM read addr={:#x} -> value={:#x}",
-            addr,
-            dword_value
-        );
         IoResult::Ok
     }
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
         validate_ecam_intercept!(addr, data);
-
-        tracing::trace!(
-            "GenericPcieRootComplex: ECAM write at addr={:#x}, len={}, data={:?}",
-            addr,
-            data.len(),
-            data
-        );
 
         // N.B. Emulators internally only support 4-byte aligned accesses to
         // 4-byte registers, but the guest can use 1-, 2-, or 4-byte memory
@@ -425,12 +338,6 @@ impl MmioIntercept for GenericPcieRootComplex {
             }
         };
 
-        tracing::trace!(
-            "GenericPcieRootComplex: ECAM write dword_aligned_addr={:#x}, write_dword={:#x}",
-            dword_aligned_addr,
-            write_dword
-        );
-
         match self.decode_ecam_access(dword_aligned_addr) {
             DecodedEcamAccess::UnexpectedIntercept => {
                 tracing::error!("unexpected intercept at address 0x{:16x}", addr);
@@ -439,21 +346,9 @@ impl MmioIntercept for GenericPcieRootComplex {
                 tracelimit::warn_ratelimited!("unroutable config space access");
             }
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
-                tracing::trace!(
-                    "GenericPcieRootComplex: writing internal bus cfg_offset={:#x}, val={:#x}",
-                    cfg_offset,
-                    write_dword
-                );
                 check_result!(port.port.cfg_space.write_u32(cfg_offset, write_dword));
             }
             DecodedEcamAccess::DownstreamPort(port, bus_number, device_function, cfg_offset) => {
-                tracing::trace!(
-                    "GenericPcieRootComplex: writing downstream port bus={}, dev_fn={}, cfg_offset={:#x}, val={:#x}",
-                    bus_number,
-                    device_function,
-                    cfg_offset,
-                    write_dword
-                );
                 check_result!(port.forward_cfg_write(
                     &bus_number,
                     &device_function,
@@ -476,9 +371,17 @@ struct RootPort {
 
 impl RootPort {
     /// Constructs a new [`RootPort`] emulator.
-    pub fn new(name: impl Into<Arc<str>>, hotplug: bool, slot_number: Option<u32>) -> Self {
+    ///
+    /// # Arguments
+    /// * `name` - The name for this root port
+    /// * `hotplug_slot_number` - The slot number for hotplug support. `Some(slot_number)` enables hotplug, `None` disables it
+    pub fn new(name: impl Into<Arc<str>>, hotplug_slot_number: Option<u32>) -> Self {
         let name_str = name.into();
-        tracing::info!("RootPort: creating new root port '{}'", name_str);
+
+        let (hotplug, slot_number) = match hotplug_slot_number {
+            Some(slot) => (true, Some(slot)),
+            None => (false, None),
+        };
 
         let hardware_ids = HardwareIds {
             vendor_id: VENDOR_ID,
@@ -491,12 +394,6 @@ impl RootPort {
             type0_sub_system_id: 0,
         };
 
-        tracing::info!(
-            "RootPort: hardware_ids configured - vendor={:#x}, device={:#x}",
-            hardware_ids.vendor_id,
-            hardware_ids.device_id
-        );
-
         let port = PcieDownstreamPort::new(
             name_str.to_string(),
             hardware_ids,
@@ -505,8 +402,6 @@ impl RootPort {
             hotplug,
             slot_number,
         );
-
-        tracing::info!("RootPort: '{}' created successfully", name_str);
 
         Self { port }
     }
@@ -521,21 +416,8 @@ impl RootPort {
         let device_name = name.as_ref();
         let port_name = self.port.name.clone();
 
-        tracing::info!(
-            "RootPort: '{}' attempting to connect device '{}'",
-            port_name,
-            device_name
-        );
-
         match self.port.add_pcie_device(&port_name, device_name, dev) {
-            Ok(()) => {
-                tracing::info!(
-                    "RootPort: '{}' successfully connected device '{}'",
-                    port_name,
-                    device_name
-                );
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(_error) => {
                 // If the connection failed, it means the port is already occupied
                 // We need to get the name of the existing device
@@ -869,8 +751,36 @@ mod tests {
     }
 
     #[test]
+    fn test_root_port_hotplug_options() {
+        // Test with hotplug disabled (None)
+        let root_port_no_hotplug = RootPort::new("test-port-no-hotplug", None);
+        // We can't easily verify hotplug is disabled without accessing internal state,
+        // but we can verify the port was created successfully
+        let mut vendor_device_id: u32 = 0;
+        root_port_no_hotplug
+            .port
+            .cfg_space
+            .read_u32(0x0, &mut vendor_device_id)
+            .unwrap();
+        let expected = (ROOT_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
+        assert_eq!(vendor_device_id, expected);
+
+        // Test with hotplug enabled (Some(slot_number))
+        let root_port_with_hotplug = RootPort::new("test-port-hotplug", Some(5));
+        let mut vendor_device_id_hotplug: u32 = 0;
+        root_port_with_hotplug
+            .port
+            .cfg_space
+            .read_u32(0x0, &mut vendor_device_id_hotplug)
+            .unwrap();
+        assert_eq!(vendor_device_id_hotplug, expected);
+        // The slot number and hotplug capability would be tested via PCIe capability registers
+        // but that requires more complex setup
+    }
+
+    #[test]
     fn test_root_port_invalid_bus_range_handling() {
-        let mut root_port = RootPort::new("test-port", false, None);
+        let mut root_port = RootPort::new("test-port", None);
 
         // Don't configure bus numbers, so the range should be 0..=0 (invalid)
         let bus_range = root_port.port.cfg_space.assigned_bus_range();

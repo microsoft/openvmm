@@ -423,4 +423,137 @@ mod tests {
         assert_eq!(cap.read_u32(4), 0x12345678);
         assert_eq!(cap.read_u32(8), 0x1234);
     }
+
+    #[test]
+    fn test_msi_save_restore() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut set = MsiInterruptSet::new();
+        let mut cap = MsiCapability::new(2, true, false, &mut set); // 4 messages max, 64-bit, no masking
+        let msi_controller = TestPciInterruptController::new();
+        set.connect(&msi_controller);
+
+        // Configure MSI capability with specific values
+        cap.write_u32(4, 0x12345678); // Address low
+        cap.write_u32(8, 0x9abcdef0); // Address high
+        cap.write_u32(12, 0x5678); // Data
+        cap.write_u32(0, 0x00110001); // Enable MSI with MME=1 (2 messages)
+
+        // Verify initial state
+        assert_eq!(cap.read_u32(0), 0x00950005); // Enabled with capabilities
+        assert_eq!(cap.read_u32(4), 0x12345678);
+        assert_eq!(cap.read_u32(8), 0x9abcdef0);
+        assert_eq!(cap.read_u32(12), 0x5678);
+
+        // Save the state
+        let saved_state = cap.save().expect("save should succeed");
+
+        // Reset the capability
+        cap.reset();
+        assert_eq!(cap.read_u32(0), 0x00840005); // Back to disabled
+        assert_eq!(cap.read_u32(4), 0);
+        assert_eq!(cap.read_u32(8), 0);
+        assert_eq!(cap.read_u32(12), 0);
+
+        // Restore the state
+        cap.restore(saved_state).expect("restore should succeed");
+
+        // Verify restored state
+        assert_eq!(cap.read_u32(0), 0x00950005); // Should be enabled again
+        assert_eq!(cap.read_u32(4), 0x12345678);
+        assert_eq!(cap.read_u32(8), 0x9abcdef0);
+        assert_eq!(cap.read_u32(12), 0x5678);
+    }
+
+    #[test]
+    fn test_msi_save_restore_32bit_with_masking() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut set = MsiInterruptSet::new();
+        let mut cap = MsiCapability::new(3, false, true, &mut set); // 8 messages max, 32-bit, with masking
+        let msi_controller = TestPciInterruptController::new();
+        set.connect(&msi_controller);
+
+        // Configure MSI capability with specific values
+        cap.write_u32(4, 0x87654321); // Address (32-bit)
+        cap.write_u32(8, 0x1234); // Data
+        cap.write_u32(12, 0xaaaabbbb); // Mask bits (for per-vector masking)
+        cap.write_u32(0, 0x00210001); // Enable MSI with MME=2 (4 messages)
+
+        // Verify initial state
+        let control_reg = cap.read_u32(0);
+        let control_val = (control_reg >> 16) & 0xFFFF;
+        assert!(control_val & 1 != 0); // MSI enabled
+        assert_eq!((control_val >> 4) & 0x7, 2); // MME = 2
+        assert_eq!(cap.read_u32(4), 0x87654321);
+        assert_eq!(cap.read_u32(8), 0x1234);
+
+        // Save the state
+        let saved_state = cap.save().expect("save should succeed");
+
+        // Modify state
+        cap.write_u32(4, 0x11111111);
+        cap.write_u32(8, 0x9999);
+        cap.write_u32(0, 0x00000005); // Disable MSI
+
+        // Verify changed state
+        let control_reg = cap.read_u32(0);
+        let control_val = (control_reg >> 16) & 0xFFFF;
+        assert_eq!(control_val & 1, 0); // MSI disabled
+        assert_eq!(cap.read_u32(4), 0x11111111);
+        assert_eq!(cap.read_u32(8), 0x9999);
+
+        // Restore the state
+        cap.restore(saved_state).expect("restore should succeed");
+
+        // Verify restored state
+        let control_reg = cap.read_u32(0);
+        let control_val = (control_reg >> 16) & 0xFFFF;
+        assert!(control_val & 1 != 0); // MSI enabled
+        assert_eq!((control_val >> 4) & 0x7, 2); // MME = 2
+        assert_eq!(cap.read_u32(4), 0x87654321);
+        assert_eq!(cap.read_u32(8), 0x1234);
+    }
+
+    #[test]
+    fn test_msi_save_restore_mme_clamping() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut set = MsiInterruptSet::new();
+        let mut cap = MsiCapability::new(1, true, false, &mut set); // Only 2 messages max (MMC=1)
+        let msi_controller = TestPciInterruptController::new();
+        set.connect(&msi_controller);
+
+        // Configure with MME=3 (8 messages), but device only supports MMC=1 (2 messages)
+        cap.write_u32(4, 0x12345678); // Address low
+        cap.write_u32(8, 0x9abcdef0); // Address high
+        cap.write_u32(12, 0x5678); // Data
+        cap.write_u32(0, 0x00310001); // Enable MSI with MME=3
+
+        // Verify MME was clamped to MMC (1)
+        let control_reg = cap.read_u32(0);
+        let control_val = (control_reg >> 16) & 0xFFFF;
+        let mme = (control_val >> 4) & 0x7;
+        assert_eq!(mme, 1); // Should be clamped to MMC=1
+
+        // Save the state (which should preserve the clamped MME)
+        let saved_state = cap.save().expect("save should succeed");
+
+        // Reset the capability
+        cap.reset();
+
+        // Restore the state
+        cap.restore(saved_state).expect("restore should succeed");
+
+        // Check that MME is still properly clamped after restore
+        let control_reg = cap.read_u32(0);
+        let control_val = (control_reg >> 16) & 0xFFFF;
+        let mme = (control_val >> 4) & 0x7;
+        let enabled = control_val & 1 != 0;
+        assert_eq!(mme, 1); // Should still be clamped to MMC=1
+        assert!(enabled); // Should be enabled
+        assert_eq!(cap.read_u32(4), 0x12345678);
+        assert_eq!(cap.read_u32(8), 0x9abcdef0);
+        assert_eq!(cap.read_u32(12), 0x5678);
+    }
 }
