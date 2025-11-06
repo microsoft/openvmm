@@ -16,12 +16,12 @@ inspect.workspace = true
 memory_range.workspace = true
 mesh.workspace = true
 page_pool_alloc.workspace = true
+tracing.workspace = true
 user_driver.workspace = true
 virt.workspace = true
 vmcore.workspace = true
 
 anyhow.workspace = true
-tracing.workspace = true
 
 [lints]
 workspace = true

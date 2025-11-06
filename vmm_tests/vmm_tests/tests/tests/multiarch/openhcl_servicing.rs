@@ -16,11 +16,11 @@ use mesh::CellUpdater;
 use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
+use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::NamespaceChange;
 use nvme_resources::fault::NamespaceFaultConfig;
-use nvme_resources::fault::QueueFaultBehavior;
 use nvme_test::command_match::CommandMatchBuilder;
 use petri::OpenHclServicingFlags;
 use petri::PetriGuestStateLifetime;
@@ -289,13 +289,13 @@ async fn servicing_keepalive_with_namespace_update(
                     CommandMatchBuilder::new()
                         .match_cdw0_opcode(nvme_spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0)
                         .build(),
-                    QueueFaultBehavior::Verify(Some(aer_verify_send)),
+                    AdminQueueFaultBehavior::Verify(Some(aer_verify_send)),
                 )
                 .with_submission_queue_fault(
                     CommandMatchBuilder::new()
                         .match_cdw0_opcode(nvme_spec::AdminOpcode::GET_LOG_PAGE.0)
                         .build(),
-                    QueueFaultBehavior::Verify(Some(log_verify_send)),
+                    AdminQueueFaultBehavior::Verify(Some(log_verify_send)),
                 ),
         );
 
@@ -352,7 +352,28 @@ async fn servicing_keepalive_with_nvme_fault(
         .with_admin_queue_fault(
             AdminQueueFaultConfig::new().with_submission_queue_fault(
                 CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0).build(),
-                QueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
+                AdminQueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
+            ),
+        );
+
+    apply_fault_with_keepalive(config, fault_configuration, fault_start_updater, igvm_file).await
+}
+
+/// Test servicing an OpenHCL VM from the current version to itself
+/// with NVMe keepalive support and a faulty controller that panics when
+/// IDENTIFY commands are received. This verifies namespace save/restore functionality.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_fault_if_identify(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let mut fault_start_updater = CellUpdater::new(false);
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::IDENTIFY.0).match_cdw10(nvme_spec::Cdw10Identify::new().with_cns(nvme_spec::Cns::NAMESPACE.0).into(), nvme_spec::Cdw10Identify::new().with_cns(u8::MAX).into()).build(),
+                AdminQueueFaultBehavior::Panic("Received an IDENTIFY command during servicing with keepalive enabled (And no namespaces were updated). THERE IS A BUG SOMEWHERE.".to_string()),
             ),
         );
 
@@ -371,7 +392,7 @@ async fn servicing_keepalive_verify_no_duplicate_aers(
         .with_admin_queue_fault(
             AdminQueueFaultConfig::new().with_submission_queue_fault(
                 CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0).build(),
-                QueueFaultBehavior::Panic("Received a duplicate ASYNCHRONOUS_EVENT_REQUEST command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
+                AdminQueueFaultBehavior::Panic("Received a duplicate ASYNCHRONOUS_EVENT_REQUEST command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
             )
         );
 
@@ -405,7 +426,7 @@ async fn servicing_keepalive_with_nvme_identify_fault(
                         nvme_spec::Cdw10Identify::new().with_cns(u8::MAX).into(),
                     )
                     .build(),
-                QueueFaultBehavior::CustomPayload(buf.to_vec()),
+                AdminQueueFaultBehavior::CustomPayload(buf.to_vec()),
             ),
         );
 
