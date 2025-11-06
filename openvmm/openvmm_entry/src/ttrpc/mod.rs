@@ -471,6 +471,7 @@ impl VmService {
                     .checked_mul(0x100000)
                     .context("invalid memory configuration")?,
                 mmio_gaps: DEFAULT_MMIO_GAPS_X86.into(),
+                device_reserved_gaps: vec![],
                 prefetch_memory: false,
                 pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
             },
