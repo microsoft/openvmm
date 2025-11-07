@@ -117,7 +117,7 @@ impl PetriVmConfigOpenVmm {
             vmgs,
             boot_device_type,
             tpm_state_persistence,
-            guest_crash_disk: _, // TODO
+            guest_crash_disk,
         } = petri_vm_config;
 
         let PetriVmResources { driver, log_source } = resources;
@@ -500,6 +500,7 @@ impl PetriVmConfigOpenVmm {
                 output_dir: log_source.output_dir().to_owned(),
                 agent_image,
                 openhcl_agent_image,
+                guest_crash_disk,
                 openvmm_path: openvmm_path.clone(),
                 vtl2_vsock_path,
                 _vmbus_vsock_path: vmbus_vsock_path,

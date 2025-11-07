@@ -178,6 +178,7 @@ struct PetriVmResourcesOpenVmm {
     driver: DefaultDriver,
     agent_image: Option<AgentImage>,
     openhcl_agent_image: Option<AgentImage>,
+    guest_crash_disk: Option<Arc<TempPath>>,
     openvmm_path: ResolvedArtifact,
     output_dir: PathBuf,
 

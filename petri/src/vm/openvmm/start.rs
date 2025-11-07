@@ -85,6 +85,41 @@ impl PetriVmConfigOpenVmm {
             }
         }
 
+        if let Some(guest_crash_disk) = resources.guest_crash_disk.as_ref() {
+            const CRASHDUMP_SCSI_INSTANCE: Guid =
+                guid::guid!("766e16f8-2ceb-437e-afe3-a93168b48a7b");
+            // Add a SCSI controller to contain the crash dump disk. Don't reuse an
+            // existing controller so that we can avoid interfering with
+            // test-specific configuration.
+            config.vmbus_devices.push((
+                DeviceVtl::Vtl0,
+                ScsiControllerHandle {
+                    instance_id: CRASHDUMP_SCSI_INSTANCE,
+                    max_sub_channel_count: 1,
+                    io_queue_depth: None,
+                    devices: vec![ScsiDeviceAndPath {
+                        path: ScsiPath {
+                            path: 0,
+                            target: 0,
+                            lun: 0,
+                        },
+                        device: SimpleScsiDiskHandle {
+                            read_only: true,
+                            parameters: Default::default(),
+                            disk: FileDiskHandle(
+                                fs_err::File::open(guest_crash_disk.as_ref())?.into(),
+                            )
+                            .into_resource(),
+                        }
+                        .into_resource(),
+                    }],
+                    requests: None,
+                    poll_mode_queue_depth: None,
+                }
+                .into_resource(),
+            ));
+        }
+
         // Add the GED and VTL 2 settings.
         if let Some(mut ged) = ged {
             ged.vtl2_settings = Some(prost::Message::encode_to_vec(
