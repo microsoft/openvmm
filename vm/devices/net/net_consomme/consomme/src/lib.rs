@@ -493,7 +493,7 @@ impl<T: Client> Access<'_, T> {
         let frame = EthernetRepr::parse(&frame_packet)?;
         match frame.ethertype {
             EthernetProtocol::Ipv4 => self.handle_ipv4(&frame, frame_packet.payload(), checksum)?,
-            EthernetProtocol::Ipv6 => self.handle_ipv6(&frame, frame_packet.payload(), checksum)?,
+            EthernetProtocol::Ipv6 => self.handle_ipv6(&frame, frame_packet.payload(), checksum, data)?,
             EthernetProtocol::Arp => self.handle_arp(&frame, frame_packet.payload())?,
             _ => return Err(DropReason::UnsupportedEthertype(frame.ethertype)),
         }
@@ -557,6 +557,7 @@ impl<T: Client> Access<'_, T> {
         frame: &EthernetRepr,
         payload: &[u8],
         checksum: &ChecksumState,
+        full_frame: &[u8],
     ) -> Result<(), DropReason> {
         let ipv6 = Ipv6Packet::new_unchecked(payload);
         if payload.len() < smoltcp::wire::IPV6_HEADER_LEN || ipv6.version() != 6 {
@@ -586,7 +587,7 @@ impl<T: Client> Access<'_, T> {
                     || msg_type == smoltcp::wire::Icmpv6Message::RouterSolicit
                     || msg_type == smoltcp::wire::Icmpv6Message::RouterAdvert
                 {
-                    self.handle_ndp(frame, inner, ipv6.src_addr())?;
+                    self.handle_ndp(frame, inner, ipv6.src_addr(), full_frame)?;
                 } else {
                     // Other ICMPv6 types are not supported
                     tracing::info!(
