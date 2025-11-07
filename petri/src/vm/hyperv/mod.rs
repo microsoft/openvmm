@@ -162,7 +162,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         // Make a 4 GiB dynamic VHD for guest crash dumps.
         let mut crash_disk = tempfile::Builder::new()
             .suffix(".vhdx")
-            .make(|path| disk_vhdmp::Vhd::create_dynamic(path, 4 * 1024 * 1024 * 1024, true))
+            .make(|path| disk_vhdmp::Vhd::create_dynamic(path, 4 * 1024, true))
             .context("error creating crash dump vhdx")?;
 
         // Format the VHD with FAT32.

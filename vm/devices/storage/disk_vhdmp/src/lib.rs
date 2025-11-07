@@ -433,7 +433,7 @@ impl Vhd {
     }
 
     /// Create a new dynamic VHD
-    pub fn create_dynamic(path: &Path, max_size: u64, vhdx: bool) -> std::io::Result<Self> {
+    pub fn create_dynamic(path: &Path, max_size_mb: u64, vhdx: bool) -> std::io::Result<Self> {
         let file = unsafe {
             let path = {
                 let mut path16: Vec<_> = path.as_os_str().encode_wide().collect();
@@ -459,7 +459,7 @@ impl Vhd {
                 u: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_u {
                     Version2: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_2 {
                         UniqueId: resiliency_guid.into(),
-                        MaximumSize: max_size,
+                        MaximumSize: max_size_mb * 1024 * 1024,
                         BlockSizeInBytes: 2 * 1024 * 1024,
                         SectorSizeInBytes: 512,
                         OpenFlags: virtdisk::OPEN_VIRTUAL_DISK_FLAG_CACHED_IO,
