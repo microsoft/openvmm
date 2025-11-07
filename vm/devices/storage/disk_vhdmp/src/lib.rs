@@ -461,6 +461,7 @@ impl Vhd {
                         UniqueId: resiliency_guid.into(),
                         MaximumSize: max_size,
                         BlockSizeInBytes: 512 * 1024,
+                        SectorSizeInBytes: 512,
                         OpenFlags: virtdisk::OPEN_VIRTUAL_DISK_FLAG_CACHED_IO,
                         ResiliencyGuid: resiliency_guid.into(),
                         ..std::mem::zeroed()
