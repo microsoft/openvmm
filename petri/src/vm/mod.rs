@@ -162,11 +162,14 @@ pub trait PetriVmmBackend {
     /// Resolve any artifacts needed to use this backend
     fn new(resolver: &ArtifactResolver<'_>) -> Self;
 
-    /// Create a disk for guest crash dumps and a post-test hook to collect
-    /// the dumps after the test.
-    async fn create_guest_dump_disk(
-        logger: &PetriLogSource,
-    ) -> anyhow::Result<Option<(Arc<TempPath>, PetriPostTestHook)>>;
+    /// Create a disk for guest crash dumps, and a post-test hook to open the disk
+    /// to allow for reading the dumps.
+    fn create_guest_dump_disk() -> anyhow::Result<
+        Option<(
+            Arc<TempPath>,
+            Box<dyn FnOnce() -> anyhow::Result<std::fs::File>>,
+        )>,
+    >;
 
     /// Create and start VM from the generic config using the VMM backend
     async fn run(
@@ -198,8 +201,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
         let (guest_quirks, vmm_quirks) = T::quirks(&artifacts.firmware);
-        let (guest_crash_disk, guest_dump_hook) =
-            T::create_guest_dump_disk(params.logger).await?.unzip();
         let expected_boot_event = artifacts.firmware.expected_boot_event();
         let boot_device_type = match artifacts.firmware {
             Firmware::LinuxDirect { .. } => BootDeviceType::None,
@@ -215,7 +216,23 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             } => BootDeviceType::None,
             Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => BootDeviceType::Scsi,
         };
-        params.post_test_hooks.extend(guest_dump_hook);
+
+        let (guest_crash_disk, guest_dump_disk_hook) = T::create_guest_dump_disk()?.unzip();
+        if let Some(guest_dump_disk_hook) = guest_dump_disk_hook {
+            let logger = params.logger.clone();
+            params.post_test_hooks.push(PetriPostTestHook::new(
+                "extract guest crash dumps".into(),
+                Box::new(move || {
+                    let disk = guest_dump_disk_hook()?;
+                    let fs = fatfs::FileSystem::new(disk, fatfs::FsOptions::new())?;
+                    for entry in fs.root_dir().iter() {
+                        let entry = entry?;
+                        logger.write_attachment(&entry.file_name(), entry.to_file())?;
+                    }
+                    Ok(())
+                }),
+            ));
+        }
 
         Ok(Self {
             backend: artifacts.backend,

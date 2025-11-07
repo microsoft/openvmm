@@ -30,8 +30,6 @@ use crate::disk_image::AgentImage;
 use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::kmsg_log_task;
 use crate::openhcl_diag::OpenHclDiagHandler;
-use crate::test::PetriPostTestHook;
-use crate::tracing::PetriLogSource;
 use crate::vm::append_cmdline;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -155,16 +153,16 @@ impl PetriVmmBackend for HyperVPetriBackend {
         (firmware.quirks().hyperv, VmmQuirks::default())
     }
 
-    async fn create_guest_dump_disk(
-        logger: &PetriLogSource,
-    ) -> anyhow::Result<Option<(Arc<TempPath>, PetriPostTestHook)>> {
+    fn create_guest_dump_disk() -> anyhow::Result<
+        Option<(
+            Arc<TempPath>,
+            Box<dyn FnOnce() -> anyhow::Result<std::fs::File>>,
+        )>,
+    > {
         // Make a 4 GiB dynamic VHD for guest crash dumps.
-        let mut crash_disk = blocking::unblock(|| {
-            tempfile::Builder::new()
-                .suffix(".vhdx")
-                .make(|path| disk_vhdmp::Vhd::create_dynamic(path, 4 * 1024 * 1024 * 1024, true))
-        })
-        .await?;
+        let mut crash_disk = tempfile::Builder::new()
+            .suffix(".vhdx")
+            .make(|path| disk_vhdmp::Vhd::create_dynamic(path, 4 * 1024 * 1024 * 1024, true))?;
 
         // Format the VHD with FAT32.
         crate::disk_image::build_fat32_disk_image(
@@ -177,21 +175,12 @@ impl PetriVmmBackend for HyperVPetriBackend {
         // Prepare the hook to extract crash dumps after the test.
         let crash_disk = Arc::new(crash_disk.into_temp_path());
         let hook_crash_disk = crash_disk.clone();
-        let logger = logger.clone();
-        let post_test_hook = PetriPostTestHook::new(
-            "extract guest crash dumps".into(),
-            Box::new(move || {
-                // Open the VHD and artifact any files in it.
-                let vhd = disk_vhdmp::VhdmpDisk::open_vhd(hook_crash_disk.as_ref(), true)?;
-                let fs = fatfs::FileSystem::new(vhd.0, fatfs::FsOptions::new())?;
-                for entry in fs.root_dir().iter() {
-                    let entry = entry?;
-                    logger.write_attachment(&entry.file_name(), entry.to_file())?;
-                }
-                Ok(())
-            }),
-        );
-        Ok(Some((crash_disk, post_test_hook)))
+        let disk_opener = Box::new(move || {
+            disk_vhdmp::VhdmpDisk::open_vhd(hook_crash_disk.as_ref(), true)
+                .map(|vhd| vhd.0)
+                .map_err(Into::into)
+        });
+        Ok(Some((crash_disk, disk_opener)))
     }
 
     fn new(_resolver: &ArtifactResolver<'_>) -> Self {

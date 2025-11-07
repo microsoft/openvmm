@@ -112,9 +112,12 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         )
     }
 
-    async fn create_guest_dump_disk(
-        _logger: &crate::PetriLogSource,
-    ) -> anyhow::Result<Option<(Arc<TempPath>, crate::test::PetriPostTestHook)>> {
+    fn create_guest_dump_disk() -> anyhow::Result<
+        Option<(
+            Arc<TempPath>,
+            Box<dyn FnOnce() -> anyhow::Result<std::fs::File>>,
+        )>,
+    > {
         Ok(None) // TODO
     }
 
