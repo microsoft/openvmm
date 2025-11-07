@@ -355,6 +355,7 @@ fn shim_parameters(shim_params_raw_offset: isize) -> ShimParams {
 #[cfg_attr(not(target_arch = "x86_64"), expect(dead_code))]
 mod x86_boot {
     use crate::PageAlign;
+    use crate::boot_logger::log;
     use crate::memory::AddressSpaceManager;
     use crate::single_threaded::OffStackRef;
     use crate::single_threaded::off_stack;
@@ -405,6 +406,7 @@ mod x86_boot {
         boot_params: &mut boot_params,
         ext: &mut E820Ext,
         address_space: &AddressSpaceManager,
+        initrd: Option<Range<u64>>,
     ) -> Result<bool, BuildE820MapError> {
         boot_params.e820_entries = 0;
         let mut entries = boot_params
@@ -412,11 +414,33 @@ mod x86_boot {
             .iter_mut()
             .chain(ext.entries.iter_mut());
 
+        // Find the largest region and the one containing initrd
+        let mut largest_ram: Option<MemoryRange> = None;
+        let mut initrd_hosting_ram: Option<MemoryRange> = None;
+        for (range, typ) in address_space.vtl2_ranges() {
+            if matches!(typ, MemoryVtlType::VTL2_RAM) {
+                if largest_ram.is_none_or(|r| range.len() > r.len()) {
+                    largest_ram = Some(range);
+                }
+
+                if initrd.clone().is_some()
+                    && range.start() <= initrd.clone().unwrap().start
+                    && range.end() >= initrd.clone().unwrap().end
+                {
+                    initrd_hosting_ram = Some(range);
+                }
+            }
+        }
+
         let mut n = 0;
         for (range, typ) in address_space.vtl2_ranges() {
             match typ {
                 MemoryVtlType::VTL2_RAM => {
-                    add_e820_entry(entries.next(), range, E820_RAM)?;
+                    if Some(range) == largest_ram || Some(range) == initrd_hosting_ram {
+                        add_e820_entry(entries.next(), range, E820_RAM)?;
+                    } else {
+                        add_e820_entry(entries.next(), range, E820_RESERVED)?;
+                    }
                     n += 1;
                 }
                 MemoryVtlType::VTL2_CONFIG
@@ -436,6 +460,43 @@ mod x86_boot {
                     panic!("unexpected vtl2 ram type {typ:?} for range {range:#?}");
                 }
             }
+        }
+
+        for (range, typ) in address_space.vtl2_ranges() {
+            let (kind, label) = match typ {
+                MemoryVtlType::VTL2_RAM => {
+                    if Some(range) == largest_ram {
+                        ("RAM", "usable")
+                    } else if Some(range) == initrd_hosting_ram {
+                        ("RAM", "initrd")
+                    } else {
+                        ("RESERVED", "hidden_ram")
+                    }
+                }
+                MemoryVtlType::VTL2_PERSISTED_STATE_HEADER => {
+                    ("RESERVED", "persisted_state_header")
+                }
+                MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF => {
+                    ("RESERVED", "persisted_state_payload")
+                }
+                MemoryVtlType::VTL2_GPA_POOL => ("RESERVED", "keep_alive_gpa_pool"),
+                MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER => ("RESERVED", "boot_log_buffer"),
+                MemoryVtlType::VTL2_TDX_PAGE_TABLES => ("RESERVED", "tdx_page_tables"),
+                MemoryVtlType::VTL2_CONFIG => ("RESERVED", "config"),
+                MemoryVtlType::VTL2_SIDECAR_IMAGE => ("RESERVED", "sidecar_image"),
+                MemoryVtlType::VTL2_SIDECAR_NODE => ("RESERVED", "sidecar_node"),
+                MemoryVtlType::VTL2_RESERVED => ("RESERVED", "generic_reserved"),
+                _ => ("UNKNOWN", "unexpected"),
+            };
+
+            log!(
+                "e820 {}: {:#x}-{:#x} len={:#x} {}",
+                kind,
+                range.start(),
+                range.end(),
+                range.len(),
+                label
+            );
         }
 
         let base = n.min(boot_params.e820_map.len());
@@ -474,12 +535,13 @@ mod x86_boot {
         boot_params.hdr.ramdisk_image = (initrd.start as u32).into();
         boot_params.ext_ramdisk_image = (initrd.start >> 32) as u32;
         let initrd_len = initrd.end - initrd.start;
+        log!("initrd start: {:#x} end: {:#x}", initrd.start, initrd.end);
         boot_params.hdr.ramdisk_size = (initrd_len as u32).into();
         boot_params.ext_ramdisk_size = (initrd_len >> 32) as u32;
 
         let e820_ext = OffStackRef::leak(off_stack!(E820Ext, zeroed()));
 
-        let used_ext = build_e820_map(boot_params, e820_ext, address_space)
+        let used_ext = build_e820_map(boot_params, e820_ext, address_space, Some(initrd))
             .expect("building e820 map must succeed");
 
         if used_ext {
@@ -1128,7 +1190,7 @@ mod test {
             None,
         );
 
-        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space).is_ok());
+        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space, None).is_ok());
 
         check_e820(
             &boot_params,
@@ -1159,7 +1221,7 @@ mod test {
             Some(reclaim),
         );
 
-        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space).is_ok());
+        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space, None).is_ok());
 
         check_e820(
             &boot_params,
@@ -1195,7 +1257,7 @@ mod test {
             Some(reclaim),
         );
 
-        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space).is_ok());
+        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space, None).is_ok());
 
         check_e820(
             &boot_params,
@@ -1236,7 +1298,7 @@ mod test {
             Some(reclaim),
         );
 
-        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space).is_ok());
+        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space, None).is_ok());
 
         check_e820(
             &boot_params,
@@ -1322,7 +1384,7 @@ mod test {
         let mut ext = FromZeros::new_zeroed();
         let total_ranges = address_space.vtl2_ranges().count();
 
-        let used_ext = build_e820_map(&mut boot_params, &mut ext, &address_space).unwrap();
+        let used_ext = build_e820_map(&mut boot_params, &mut ext, &address_space, None).unwrap();
 
         // Verify that we used the extension
         assert!(used_ext, "should use extension when there are many ranges");
