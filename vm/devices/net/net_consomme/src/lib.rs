@@ -346,13 +346,15 @@ impl net_backend::Queue for ConsommeQueue {
             }
 
             if let Err(err) = self.with_consomme(|c| c.send(&buf, &checksum)) {
-                tracing::debug!(error = &err as &dyn std::error::Error, "tx packet ignored");
+                tracing::info!(error = &err as &dyn std::error::Error, "tx packet ignored");
                 match err {
                     consomme::DropReason::SendBufferFull => self.stats.tx_dropped.increment(),
                     consomme::DropReason::UnsupportedEthertype(_)
                     | consomme::DropReason::UnsupportedIpProtocol(_)
                     | consomme::DropReason::UnsupportedDhcp(_)
-                    | consomme::DropReason::UnsupportedArp => self.stats.tx_unknown.increment(),
+                    | consomme::DropReason::UnsupportedArp
+                    | consomme::DropReason::UnsupportedDhcpv6(_)
+                    | consomme::DropReason::UnsupportedNdp(_) => self.stats.tx_unknown.increment(),
                     consomme::DropReason::Packet(_)
                     | consomme::DropReason::Ipv4Checksum
                     | consomme::DropReason::Io(_)

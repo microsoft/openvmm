@@ -16,14 +16,17 @@
 
 mod arp;
 mod dhcp;
+mod dhcpv6;
 #[cfg_attr(unix, path = "dns_unix.rs")]
 #[cfg_attr(windows, path = "dns_windows.rs")]
 mod dns;
 mod icmp;
+mod ndp;
 mod tcp;
 mod udp;
 mod windows;
 
+use dhcproto::v6::MessageType as Dhcpv6MessageType;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal_async::driver::Driver;
@@ -43,6 +46,7 @@ use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Cidr;
 use smoltcp::wire::Ipv6Packet;
 use std::net::SocketAddrV4;
+use std::str::FromStr;
 use std::task::Context;
 use thiserror::Error;
 
@@ -85,17 +89,17 @@ pub struct ConsommeParams {
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
     pub nameservers: Vec<IpAddress>,
     /// Current IPv6 network mask (if any).
-    #[inspect(with = "Option::is_some")]
-    pub prefix_len_ipv6: Option<u8>,
+    #[inspect(display)]
+    pub prefix_len_ipv6: u8,
     /// Current IPv6 gateway address (if any).
-    #[inspect(with = "Option::is_some")]
-    pub gateway_ip_ipv6: Option<Ipv6Address>,
+    #[inspect(display)]
+    pub gateway_ip_ipv6: Ipv6Address,
     /// Current IPv6 gateway MAC address (if any).
-    #[inspect(with = "Option::is_some")]
-    pub gateway_mac_ipv6: Option<EthernetAddress>,
+    #[inspect(display)]
+    pub gateway_mac_ipv6: EthernetAddress,
     /// Current IPv6 address assigned to endpoint (if any).
-    #[inspect(with = "Option::is_some")]
-    pub client_ip_ipv6: Option<Ipv6Address>,
+    #[inspect(display)]
+    pub client_ip_ipv6: Ipv6Address,
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -113,14 +117,15 @@ impl ConsommeParams {
         Ok(Self {
             gateway_ip: Ipv4Address::new(10, 0, 0, 1),
             gateway_mac: EthernetAddress([0x52, 0x55, 10, 0, 0, 1]),
-            client_ip: Ipv4Address::new(10, 0, 0, 2),
+            client_ip: Ipv4Address::new(10, 0, 0, 10),
             client_mac: EthernetAddress([0x0, 0x0, 0x0, 0x0, 0x1, 0x0]),
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
-            prefix_len_ipv6: None,
-            gateway_ip_ipv6: None,
-            gateway_mac_ipv6: None,
-            client_ip_ipv6: None,
+            prefix_len_ipv6: 64,
+            gateway_ip_ipv6: Ipv6Address([0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x01]),
+            gateway_mac_ipv6: EthernetAddress([0x52, 0x55, 0x0A, 0x00, 0x01, 0x02]),
+            client_ip_ipv6: Ipv6Address::from_str("fd10:0:0:0::2").unwrap(),
         })
     }
 
@@ -155,9 +160,9 @@ impl ConsommeParams {
         Self::increment_ipv6(&mut gateway, 1);
         Self::increment_ipv6(&mut client, 2);
 
-        self.gateway_ip_ipv6 = Some(Ipv6Address(gateway));
-        self.client_ip_ipv6 = Some(Ipv6Address(client));
-        self.prefix_len_ipv6 = Some(cidr.prefix_len());
+        self.gateway_ip_ipv6 = Ipv6Address(gateway);
+        self.client_ip_ipv6 = Ipv6Address(client);
+        self.prefix_len_ipv6 = cidr.prefix_len();
 
         Ok(())
     }
@@ -363,6 +368,12 @@ pub enum DropReason {
     /// Specified port is not bound.
     #[error("port is not bound")]
     PortNotBound,
+    /// The DHCPv6 message type is unsupported.
+    #[error("unsupported dhcpv6 message type {0:?}")]
+    UnsupportedDhcpv6(Dhcpv6MessageType),
+    /// The NDP message type is unsupported.
+    #[error("unsupported ndp message type {0:?}")]
+    UnsupportedNdp(ndp::NdpMessageType),
 }
 
 /// An error to create a consomme instance.
@@ -552,20 +563,9 @@ impl<T: Client> Access<'_, T> {
             return Err(DropReason::Packet(smoltcp::Error::Malformed));
         }
 
-        let declared_payload_len = ipv6.total_len();
-        let total_len = if checksum.tso.is_some() {
-            payload.len()
-        } else {
-            smoltcp::wire::IPV6_HEADER_LEN + declared_payload_len
-        };
-
-        if total_len > payload.len() || total_len < smoltcp::wire::IPV6_HEADER_LEN {
-            return Err(DropReason::Packet(smoltcp::Error::Malformed));
-        }
-
         //TODO: Walk extension headers.
         let next_header = ipv6.next_header();
-        let inner = &payload[smoltcp::wire::IPV6_HEADER_LEN..total_len];
+        let inner = &payload[smoltcp::wire::IPV6_HEADER_LEN..];
         let addresses = Ipv6Addresses {
             src_addr: ipv6.src_addr(),
             dst_addr: ipv6.dst_addr(),
@@ -574,6 +574,27 @@ impl<T: Client> Access<'_, T> {
         match next_header {
             IpProtocol::Udp => {
                 self.handle_udp(frame, &IpAddresses::V6(addresses), inner, checksum)?
+            }
+            IpProtocol::Icmpv6 => {
+                // Check if this is an NDP packet (Neighbor Solicitation or Neighbor Advertisement)
+                use smoltcp::wire::Icmpv6Packet;
+                let icmpv6_packet = Icmpv6Packet::new_unchecked(inner);
+                let msg_type = icmpv6_packet.msg_type();
+                
+                if msg_type == smoltcp::wire::Icmpv6Message::NeighborSolicit
+                    || msg_type == smoltcp::wire::Icmpv6Message::NeighborAdvert
+                    || msg_type == smoltcp::wire::Icmpv6Message::RouterSolicit
+                    || msg_type == smoltcp::wire::Icmpv6Message::RouterAdvert
+                {
+                    self.handle_ndp(frame, inner, ipv6.src_addr())?;
+                } else {
+                    // Other ICMPv6 types are not supported
+                    tracing::info!(
+                        msg_type = ?msg_type,
+                        "unsupported ICMPv6 message type received"
+                    );
+                    return Err(DropReason::UnsupportedIpProtocol(next_header));
+                }
             }
 
             p => return Err(DropReason::UnsupportedIpProtocol(p)),

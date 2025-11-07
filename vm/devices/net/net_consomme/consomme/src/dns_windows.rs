@@ -76,12 +76,15 @@ pub fn nameservers() -> Result<Vec<IpAddress>, Error> {
                 let dns_addr = &*dns.Address.lpSockaddr;
                 if dns_addr.sa_family == AF_INET {
                     let dns_addr = &*dns.Address.lpSockaddr.cast::<SOCKADDR_IN>();
-                    dns_servers
-                        .push(Ipv4Addr::from(u32::from_be(dns_addr.sin_addr.S_un.S_addr)).into());
+                    let ipv4_addr = Ipv4Addr::from(u32::from_be(dns_addr.sin_addr.S_un.S_addr));
+                    tracing::info!(dns_server = %ipv4_addr, "Collected IPv4 DNS server");
+                    dns_servers.push(ipv4_addr.into());
                 }
                 else if dns_addr.sa_family == AF_INET6 {
                     let dns_addr = &*dns.Address.lpSockaddr.cast::<SOCKADDR_IN6>();
-                    dns_servers.push(Ipv6Addr::from(u128::from_be_bytes(dns_addr.sin6_addr.u.Byte)).into());
+                    let ipv6_addr = Ipv6Addr::from(u128::from_be_bytes(dns_addr.sin6_addr.u.Byte));
+                    tracing::info!(dns_server = %ipv6_addr, "Collected IPv6 DNS server");
+                    dns_servers.push(ipv6_addr.into());
                 }
                 dns_p = dns.Next;
             }
@@ -89,6 +92,7 @@ pub fn nameservers() -> Result<Vec<IpAddress>, Error> {
         }
     }
 
+    tracing::info!(total_dns_servers = dns_servers.len(), "DNS server collection complete");
     Ok(dns_servers)
 }
 
@@ -126,5 +130,65 @@ impl Drop for Addresses {
             // SAFETY: the pointer is owned.
             unsafe { std::alloc::dealloc(ptr.as_ptr().cast(), self.layout) }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_nameservers() {
+        // This test calls the actual Windows API to get DNS servers
+        let result = nameservers();
+        
+        // The function should succeed (though the list may be empty on some systems)
+        assert!(result.is_ok(), "nameservers() should succeed: {:?}", result.err());
+        
+        let dns_servers = result.unwrap();
+        
+        // Pretty print the DNS servers found
+        println!("\n========================================");
+        println!("DNS Servers Found: {}", dns_servers.len());
+        println!("========================================");
+        
+        if dns_servers.is_empty() {
+            println!("  (No DNS servers configured)");
+        } else {
+            for (i, server) in dns_servers.iter().enumerate() {
+                match server {
+                    IpAddress::Ipv4(addr) => {
+                        println!("  {}. IPv4: {}", i + 1, addr);
+                    }
+                    IpAddress::Ipv6(addr) => {
+                        println!("  {}. IPv6: {}", i + 1, addr);
+                    }
+                    _ => {
+                        println!("  {}. Unknown: {:?}", i + 1, server);
+                    }
+                }
+            }
+        }
+        println!("========================================\n");
+        
+        // Verify that all returned addresses are valid IP addresses
+        // (they are already typed as IpAddress, so this is mainly checking the parsing)
+        for server in &dns_servers {
+            match server {
+                IpAddress::Ipv4(_) => {
+                    // Valid IPv4 address
+                }
+                IpAddress::Ipv6(_) => {
+                    // Valid IPv6 address
+                }
+                _ => {
+                    // Handle any other variants (though the function should only return v4/v6)
+                    panic!("Unexpected IP address type: {:?}", server);
+                }
+            }
+        }
+        
+        // Note: We don't assert that dns_servers is non-empty because
+        // some systems might not have DNS servers configured, though this is rare
     }
 }

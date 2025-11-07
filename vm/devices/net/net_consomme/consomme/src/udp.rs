@@ -9,6 +9,7 @@ use crate::ChecksumState;
 use crate::ConsommeState;
 use crate::IpAddresses;
 use crate::IpSocketAddress;
+use dhcproto::v6::SERVER_PORT as DHCPV6_SERVER_PORT;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -26,6 +27,7 @@ use smoltcp::wire::IPV6_HEADER_LEN;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv4Repr;
+use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Packet;
 use smoltcp::wire::Ipv6Repr;
 use smoltcp::wire::UDP_HEADER_LEN;
@@ -285,13 +287,15 @@ impl<T: Client> Access<'_, T> {
                     &checksum.caps(),
                 )?;
 
-                // Check for gateway-destined packets (IPv6 doesn't have broadcast)
-                if let Some(gateway_ipv6) = self.inner.state.params.gateway_ip_ipv6 {
-                    if addrs.dst_addr == gateway_ipv6 {
-                        // Gateway UDP handling for IPv6 could be added here if needed
-                        // For now, just continue with normal forwarding
+                // Check for gateway-destined packets (IPv6 uses multicast instead of broadcast)
+                if addrs.dst_addr == self.inner.state.params.gateway_ip_ipv6
+                    || addrs.dst_addr.is_multicast()
+                {
+                    if self.handle_gateway_udp_v6(&udp_packet, Some(addrs.src_addr))? {
+                        return Ok(());
                     }
                 }
+                
 
                 let guest_addr = IpSocketAddress::V6 {
                     ip: addrs.src_addr,
@@ -369,6 +373,17 @@ impl<T: Client> Access<'_, T> {
         match udp.dst_port() {
             DHCP_SERVER => {
                 self.handle_dhcp(payload)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn handle_gateway_udp_v6(&mut self, udp: &UdpPacket<&[u8]>, client_ip: Option<Ipv6Address>) -> Result<bool, DropReason> {
+        let payload = udp.payload();
+        match udp.dst_port() {
+            DHCPV6_SERVER_PORT => {
+                self.handle_dhcpv6(payload, client_ip)?;
                 Ok(true)
             }
             _ => Ok(false),
