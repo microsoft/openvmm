@@ -9,6 +9,8 @@
 #[cfg(any(target_os = "linux", windows))]
 mod agent;
 #[cfg(any(target_os = "linux", windows))]
+mod crash;
+#[cfg(any(target_os = "linux", windows))]
 mod execute;
 #[cfg(any(target_os = "linux", windows))]
 mod shutdown;

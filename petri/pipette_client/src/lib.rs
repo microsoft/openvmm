@@ -210,6 +210,26 @@ impl PipetteClient {
             .await
             .context("failed to get time")
     }
+
+    /// Tell the agent to crash itself.
+    pub async fn crash(&self) -> Result<(), RpcError> {
+        self.send.call(PipetteRequest::Crash, ()).await
+    }
+
+    /// Tell the agent to crash the kernel.
+    pub async fn kernel_crash(&self) -> anyhow::Result<()> {
+        let r = self.send.call(PipetteRequest::KernelCrash, ());
+        match r.await {
+            Ok(r) => r
+                .map_err(anyhow::Error::from)
+                .context("failed to crash the kernel")?,
+            Err(_) => {
+                // Presumably this is an expected error due to the agent exiting
+                // or the guest crashing.
+            }
+        }
+        Ok(())
+    }
 }
 
 async fn replay_logs(log: mesh::pipe::ReadPipe) {
