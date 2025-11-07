@@ -1240,6 +1240,10 @@ fn guest_memory_access_self_test(
             test_gm(true, gpa, format!("failed to read RAM at {gpa:#x}"))?;
 
             // It is not initially accessible above VTOM.
+            //
+            // FUTURE: When we support servicing on isolated guests, this may
+            // also need to be allowed to fail, as a guest may have changed
+            // visibility of pages.
             if let Some(vtom) = vtom {
                 test_gm(
                     false,
