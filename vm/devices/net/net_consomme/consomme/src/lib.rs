@@ -46,7 +46,6 @@ use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Cidr;
 use smoltcp::wire::Ipv6Packet;
 use std::net::SocketAddrV4;
-use std::str::FromStr;
 use std::task::Context;
 use thiserror::Error;
 
@@ -93,13 +92,24 @@ pub struct ConsommeParams {
     pub prefix_len_ipv6: u8,
     /// Current IPv6 gateway address (if any).
     #[inspect(display)]
-    pub gateway_ip_ipv6: Ipv6Address,
+    pub gateway_ipv6: Ipv6Address,
     /// Current IPv6 gateway MAC address (if any).
     #[inspect(display)]
     pub gateway_mac_ipv6: EthernetAddress,
-    /// Current IPv6 address assigned to endpoint (if any).
+    /// Gateway's link-local IPv6 address (derived from gateway_mac_ipv6).
+    ///
+    /// This is the address used as the source for NDP Router Advertisements
+    /// and as the target for Neighbor Solicitations. It's computed from the
+    /// gateway MAC address using EUI-64 format (RFC 4291).
     #[inspect(display)]
-    pub client_ip_ipv6: Ipv6Address,
+    pub gateway_link_local_ipv6: Ipv6Address,
+    /// Current IPv6 address learned from guest via SLAAC (if any).
+    /// 
+    /// With SLAAC (Stateless Address Autoconfiguration), the guest generates
+    /// its own IPv6 address using the advertised prefix and its interface identifier.
+    /// This field is learned from incoming IPv6 traffic from the guest.
+    #[inspect(with = "Option::is_some")]
+    pub client_ip_ipv6: Option<Ipv6Address>,
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -114,6 +124,8 @@ impl ConsommeParams {
     ///     no DNS resolvers
     pub fn new() -> Result<Self, Error> {
         let nameservers = dns::nameservers()?;
+        let gateway_mac_ipv6 = EthernetAddress([0x52, 0x55, 0x0A, 0x00, 0x01, 0x02]);
+        
         Ok(Self {
             gateway_ip: Ipv4Address::new(10, 0, 0, 1),
             gateway_mac: EthernetAddress([0x52, 0x55, 10, 0, 0, 1]),
@@ -122,10 +134,11 @@ impl ConsommeParams {
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
             prefix_len_ipv6: 64,
-            gateway_ip_ipv6: Ipv6Address([0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+            gateway_ipv6: Ipv6Address([0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x01]),
-            gateway_mac_ipv6: EthernetAddress([0x52, 0x55, 0x0A, 0x00, 0x01, 0x02]),
-            client_ip_ipv6: Ipv6Address::from_str("fd10:0:0:0::2").unwrap(),
+            gateway_mac_ipv6,
+            gateway_link_local_ipv6: Self::compute_link_local_address(gateway_mac_ipv6),
+            client_ip_ipv6: None,
         })
     }
 
@@ -145,23 +158,17 @@ impl ConsommeParams {
     }
 
     /// Sets the cidr for the network with IPv6 addresses.
-    ///
-    /// Setting, for example, 2001:db8::/64 will set the gateway to
-    /// 2001:db8::1 and the client IP to 2001:db8::2.
     pub fn set_cidr_ipv6(&mut self, cidr: &str) -> Result<(), InvalidCidr> {
         let cidr: Ipv6Cidr = cidr.parse().map_err(|()| InvalidCidr)?;
         let base_address = self.network_address(&cidr)?;
 
-        // Convert to a mutable 16-byte array
+        // Set gateway address
         let mut gateway = base_address.0;
-        let mut client = base_address.0;
-
-        // Safely increment the last 16-bit chunk (no overflow)
         Self::increment_ipv6(&mut gateway, 1);
-        Self::increment_ipv6(&mut client, 2);
-
-        self.gateway_ip_ipv6 = Ipv6Address(gateway);
-        self.client_ip_ipv6 = Ipv6Address(client);
+        
+        self.gateway_ipv6 = Ipv6Address(gateway);
+    
+        self.client_ip_ipv6 = None;
         self.prefix_len_ipv6 = cidr.prefix_len();
 
         Ok(())
@@ -188,6 +195,38 @@ impl ConsommeParams {
     fn increment_ipv6(addr: &mut [u8; 16], n: u128) {
         let val = u128::from_be_bytes(*addr).wrapping_add(n);
         *addr = val.to_be_bytes();
+    }
+
+    /// Compute a link-local IPv6 address from a MAC address using EUI-64 format.
+    ///
+    /// RFC 4291 Section 2.5.6: Link-local addresses are formed by combining
+    /// the link-local prefix (fe80::/64) with an interface identifier derived
+    /// from the MAC address using the EUI-64 format.
+    ///
+    /// EUI-64 format (RFC 2464 Section 4):
+    /// - Insert 0xFFFE in the middle of the 48-bit MAC address
+    /// - Invert the universal/local bit (bit 6 of the first byte)
+    pub fn compute_link_local_address(mac: EthernetAddress) -> Ipv6Address {
+        const LINK_LOCAL_PREFIX: [u8; 8] = [0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        
+        let mut addr = [0u8; 16];
+
+        // Set link-local prefix (fe80::/64)
+        addr[0..8].copy_from_slice(&LINK_LOCAL_PREFIX);
+
+        // Create EUI-64 interface identifier from MAC address
+        // MAC: AB:CD:EF:11:22:33
+        // EUI-64: AB:CD:EF:FF:FE:11:22:33 with universal/local bit flipped
+        addr[8] = mac.0[0] ^ 0x02; // Flip the universal/local bit
+        addr[9] = mac.0[1];
+        addr[10] = mac.0[2];
+        addr[11] = 0xFF;
+        addr[12] = 0xFE;
+        addr[13] = mac.0[3];
+        addr[14] = mac.0[4];
+        addr[15] = mac.0[5];
+
+        Ipv6Address(addr)
     }
 }
 

@@ -90,7 +90,7 @@ impl<T: Client> Access<'_, T> {
 
                 let client_link_local = client_ip.unwrap_or_else(|| Ipv6Address::from_str("ff02::1:2").unwrap());
                 let resp_ipv6 = Ipv6Repr {
-                    src_addr: self.inner.state.params.gateway_ip_ipv6,
+                    src_addr: self.inner.state.params.gateway_ipv6,
                     dst_addr: client_link_local,
                     next_header: IpProtocol::Udp,
                     payload_len: resp_udp.header_len() + dhcpv6_buffer.len(),

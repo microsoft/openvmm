@@ -31,9 +31,6 @@ use smoltcp::wire::NdiscRepr;
 use smoltcp::wire::NdiscRouterFlags;
 use smoltcp::wire::RawHardwareAddress;
 
-/// Well-known IPv6 link-local prefix
-const LINK_LOCAL_PREFIX: [u8; 8] = [0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-
 #[derive(Debug)]
 pub enum NdpMessageType {
     RouterSolicit,
@@ -165,13 +162,9 @@ impl<T: Client> Access<'_, T> {
         // Compute the network prefix from our configured IPv6 parameters
         // This is the prefix that clients will use for SLAAC
         let prefix = self.compute_network_prefix(
-            self.inner.state.params.gateway_ip_ipv6,
+            self.inner.state.params.gateway_ipv6,
             self.inner.state.params.prefix_len_ipv6,
         );
-
-        // Compute our link-local address for the source
-        // The gateway uses a link-local address as the source of Router Advertisements
-        let link_local_src = self.compute_link_local_address(self.inner.state.params.gateway_mac_ipv6);
 
         // RFC 4861 Section 4.6.2: Router Advertisement with Prefix Information
         // We set the AUTONOMOUS flag to enable SLAAC and ON_LINK flag to indicate
@@ -200,7 +193,7 @@ impl<T: Client> Access<'_, T> {
         // Build IPv6 header
         // RFC 4861 Section 4.2: Router Advertisements MUST have hop limit 255
         let ipv6_repr = Ipv6Repr {
-            src_addr: link_local_src,
+            src_addr: self.inner.state.params.gateway_link_local_ipv6,
             dst_addr,
             next_header: IpProtocol::Icmpv6,
             payload_len: ndp_repr.buffer_len(),
@@ -309,16 +302,32 @@ impl<T: Client> Access<'_, T> {
             return Ok(());
         }
 
-        // Compute our link-local address
-        let our_link_local = self.compute_link_local_address(self.inner.state.params.gateway_mac_ipv6);
+        // Learn client IPv6 address from Neighbor Solicitation
+        // When the client performs address resolution using their SLAAC-configured
+        // global address, we learn it here. We only learn global unicast addresses
+        // (not link-local, multicast, or unspecified).
+        if !ipv6_src_addr.is_link_local() 
+            && !ipv6_src_addr.is_multicast() 
+            && !ipv6_src_addr.is_unspecified() 
+        {
+            if self.inner.state.params.client_ip_ipv6.is_none() 
+                || self.inner.state.params.client_ip_ipv6 != Some(ipv6_src_addr) 
+            {
+                tracing::info!(
+                    client_ipv6 = %ipv6_src_addr,
+                    "learned client IPv6 address from Neighbor Solicitation"
+                );
+                self.inner.state.params.client_ip_ipv6 = Some(ipv6_src_addr);
+            }
+        }
 
         // Only respond if the target is our link-local address
         // In a stateless NAT implementation, the gateway only responds for its own
         // link-local address, not for global addresses that clients autoconfigure
-        if target_addr != our_link_local {
+        if target_addr != self.inner.state.params.gateway_link_local_ipv6 {
             tracing::debug!(
                 target_addr = %target_addr,
-                our_link_local = %our_link_local,
+                our_link_local = %self.inner.state.params.gateway_link_local_ipv6,
                 "NS target is not our link-local address, ignoring"
             );
             return Ok(());
@@ -424,35 +433,5 @@ impl<T: Client> Access<'_, T> {
         };
 
         Ipv6Address((addr_u128 & mask).to_be_bytes())
-    }
-
-    /// Compute a link-local IPv6 address from a MAC address
-    ///
-    /// RFC 4291 Section 2.5.6: Link-local addresses are formed by combining
-    /// the link-local prefix (fe80::/64) with an interface identifier derived
-    /// from the MAC address using the EUI-64 format.
-    ///
-    /// EUI-64 format (RFC 2464 Section 4):
-    /// - Insert 0xFFFE in the middle of the 48-bit MAC address
-    /// - Invert the universal/local bit (bit 6 of the first byte)
-    fn compute_link_local_address(&self, mac: EthernetAddress) -> Ipv6Address {
-        let mut addr = [0u8; 16];
-
-        // Set link-local prefix (fe80::/64)
-        addr[0..8].copy_from_slice(&LINK_LOCAL_PREFIX);
-
-        // Create EUI-64 interface identifier from MAC address
-        // MAC: AB:CD:EF:11:22:33
-        // EUI-64: AB:CD:EF:FF:FE:11:22:33 with universal/local bit flipped
-        addr[8] = mac.0[0] ^ 0x02; // Flip the universal/local bit
-        addr[9] = mac.0[1];
-        addr[10] = mac.0[2];
-        addr[11] = 0xFF;
-        addr[12] = 0xFE;
-        addr[13] = mac.0[3];
-        addr[14] = mac.0[4];
-        addr[15] = mac.0[5];
-
-        Ipv6Address(addr)
     }
 }
