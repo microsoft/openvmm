@@ -161,11 +161,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
         // Make a 4 GiB dynamic VHD for guest crash dumps.
         let mut crash_disk = blocking::unblock(|| {
             tempfile::Builder::new()
-                .suffix(".vhd")
-                .make(|path| disk_vhdmp::Vhd::create_dynamic(path, 4 * 1024 * 1024 * 1024))
+                .suffix(".vhdx")
+                .make(|path| disk_vhdmp::Vhd::create_dynamic(path, 4 * 1024 * 1024 * 1024, true))
         })
         .await?;
-        crash_disk.as_file().attach_for_raw_access(false)?;
 
         // Format the VHD with FAT32.
         crate::disk_image::build_fat32_disk_image(
@@ -179,18 +178,19 @@ impl PetriVmmBackend for HyperVPetriBackend {
         let crash_disk = Arc::new(crash_disk.into_temp_path());
         let hook_crash_disk = crash_disk.clone();
         let logger = logger.clone();
-        let post_test_hook = PetriPostTestHook {
-            name: "extract guest crash dumps".into(),
-            hook: Box::new(move || {
+        let post_test_hook = PetriPostTestHook::new(
+            "extract guest crash dumps".into(),
+            Box::new(move || {
                 // Open the VHD and artifact any files in it.
-                let vhd = disk_vhdmp::Vhd::open(hook_crash_disk.as_ref(), true)?;
-                let root_path = vhd.attach(true)?;
-                for file in fs_err::read_dir(root_path)? {
-                    logger.copy_attachment("guest_dump.dmp", &file?.path())?;
+                let vhd = disk_vhdmp::VhdmpDisk::open_vhd(hook_crash_disk.as_ref(), true)?;
+                let fs = fatfs::FileSystem::new(vhd.0, fatfs::FsOptions::new())?;
+                for entry in fs.root_dir().iter() {
+                    let entry = entry?;
+                    logger.write_attachment(&entry.file_name(), entry.to_file())?;
                 }
                 Ok(())
             }),
-        };
+        );
         Ok(Some((crash_disk, post_test_hook)))
     }
 

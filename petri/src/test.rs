@@ -150,17 +150,7 @@ impl Test {
         });
         logger.log_test_result(&name, &r);
 
-        for hook in post_test_hooks {
-            tracing::info!(name = hook.name, "Running post-test hook");
-            if let Err(e) = (hook.hook)() {
-                tracing::error!(
-                    error = e.as_ref() as &dyn std::error::Error,
-                    "Post-test hook failed"
-                );
-            } else {
-                tracing::info!(name = hook.name, "Post-test hook completed successfully");
-            }
-        }
+        run_post_test_hooks(post_test_hooks);
 
         r
     }
@@ -173,6 +163,21 @@ impl Test {
         libtest_mimic::Trial::test(self.name(), move || {
             self.run(resolve).map_err(|err| format!("{err:#}").into())
         })
+    }
+}
+
+/// Runs all given post-test hooks, logging any errors.
+pub fn run_post_test_hooks(post_test_hooks: Vec<PetriPostTestHook>) {
+    for hook in post_test_hooks {
+        tracing::info!(name = hook.name(), "Running post-test hook");
+        if let Err(e) = hook.run() {
+            tracing::error!(
+                error = e.as_ref() as &dyn std::error::Error,
+                "Post-test hook failed"
+            );
+        } else {
+            tracing::info!("Post-test hook completed successfully");
+        }
     }
 }
 
@@ -245,9 +250,23 @@ pub struct PetriTestParams<'a> {
 /// succeeds or fails.
 pub struct PetriPostTestHook {
     /// The name of the hook.
-    pub name: String,
+    name: String,
     /// The hook function.
-    pub hook: Box<dyn FnOnce() -> anyhow::Result<()> + Send>,
+    hook: Box<dyn FnOnce() -> anyhow::Result<()>>,
+}
+
+impl PetriPostTestHook {
+    pub fn new(name: String, hook: Box<dyn FnOnce() -> anyhow::Result<()>>) -> Self {
+        Self { name, hook }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn run(self) -> anyhow::Result<()> {
+        (self.hook)()
+    }
 }
 
 /// A test defined by an artifact resolver function and a run function.

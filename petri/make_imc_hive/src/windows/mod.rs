@@ -42,7 +42,7 @@ pub(crate) fn main() -> anyhow::Result<()> {
         &hive,
         &["SYSTEM", "CurrentControlSet", "Control", "CrashControl"],
     )?;
-    crash_control_key.set_dword("CrashDumpEnabled", 2)?;
+    crash_control_key.set_dword("CrashDumpEnabled", 2)?; // kernel memory dump
     crash_control_key.set_expand_sz("DumpFile", "E:\\memory.dmp")?;
 
     // Enable user mode crash dumps
@@ -56,7 +56,7 @@ pub(crate) fn main() -> anyhow::Result<()> {
             "LocalDumps",
         ],
     )?;
-    wer_key.set_dword("DumpType", 2)?;
+    wer_key.set_dword("DumpType", 2)?; // full dump
     wer_key.set_expand_sz("DumpFolder", "E:\\")?;
 
     // Windows defaults this to 1, so we need to set it to 2 to cause Windows

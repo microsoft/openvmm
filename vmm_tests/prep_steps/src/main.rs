@@ -102,14 +102,14 @@ fn run(
     std::fs::copy(source_disk, &result_disk)?;
     tracing::info!("Copied source disk successfully.");
     let result_disk = hvlite_helpers::disk::open_disk_type(&result_disk, false)?;
+    let mut post_test_hooks = Vec::new();
 
     DefaultPool::run_with(async move |driver| {
         let (vm, agent) = PetriVmBuilder::new(
             PetriTestParams {
                 test_name: name,
                 logger,
-                // TODO: Run any hooks.
-                post_test_hooks: &mut Vec::new(),
+                post_test_hooks: &mut post_test_hooks,
             },
             artifacts,
             &driver,
@@ -223,6 +223,9 @@ fn run(
         // Now that everything is done we can keep the file.
         std::mem::forget(drop_guard);
         tracing::info!("Prep steps completed successfully.");
+
+        // Run any hooks requested by the backend
+        petri::run_post_test_hooks(post_test_hooks);
 
         Ok(())
     })

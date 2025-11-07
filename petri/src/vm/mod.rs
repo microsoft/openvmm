@@ -1910,9 +1910,10 @@ async fn save_inspect(
             return;
         }
     };
-    if let Err(e) =
-        log_source.write_attachment(&format!("timeout_inspect_{name}.log"), format!("{node:#}"))
-    {
+    if let Err(e) = log_source.write_attachment(
+        &format!("timeout_inspect_{name}.log"),
+        format!("{node:#}").as_bytes(),
+    ) {
         tracing::error!(?e, "Failed to save {name} inspect log");
         return;
     }

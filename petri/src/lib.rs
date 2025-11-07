@@ -32,6 +32,7 @@ pub use test::PetriTestParams;
 pub use test::RunTest;
 pub use test::SimpleTest;
 pub use test::TestCase;
+pub use test::run_post_test_hooks;
 pub use test::test_macro_support;
 pub use test::test_main;
 pub use tracing::*;
