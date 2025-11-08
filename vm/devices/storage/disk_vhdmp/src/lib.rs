@@ -388,7 +388,7 @@ mod virtdisk {
 }
 
 #[derive(Debug, MeshPayload)]
-pub struct Vhd(pub fs::File);
+pub struct Vhd(fs::File);
 
 fn chk_win32(err: u32) -> std::io::Result<()> {
     if err == 0 {

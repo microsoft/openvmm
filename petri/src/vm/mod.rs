@@ -167,7 +167,7 @@ pub trait PetriVmmBackend {
     fn create_guest_dump_disk() -> anyhow::Result<
         Option<(
             Arc<TempPath>,
-            Box<dyn FnOnce() -> anyhow::Result<std::fs::File>>,
+            Box<dyn FnOnce() -> anyhow::Result<Box<dyn fatfs::ReadWriteSeek>>>,
         )>,
     >;
 

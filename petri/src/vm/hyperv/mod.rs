@@ -33,6 +33,8 @@ use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::vm::append_cmdline;
 use anyhow::Context;
 use async_trait::async_trait;
+use disk_backend::sync_wrapper::BlockingDisk;
+use disk_vhdmp::VhdmpDisk;
 use get_resources::ged::FirmwareEvent;
 use pal_async::DefaultDriver;
 use pal_async::pipe::PolledPipe;
@@ -156,22 +158,28 @@ impl PetriVmmBackend for HyperVPetriBackend {
     fn create_guest_dump_disk() -> anyhow::Result<
         Option<(
             Arc<TempPath>,
-            Box<dyn FnOnce() -> anyhow::Result<std::fs::File>>,
+            Box<dyn FnOnce() -> anyhow::Result<Box<dyn fatfs::ReadWriteSeek>>>,
         )>,
     > {
         // Make a 4 GiB dynamic VHD for guest crash dumps.
-        let mut crash_disk = tempfile::Builder::new()
+        let crash_disk = tempfile::Builder::new()
             .suffix(".vhdx")
             .make(|path| disk_vhdmp::Vhd::create_dynamic(path, 4 * 1024, true))
             .context("error creating crash dump vhdx")?;
+        let (crash_disk, crash_disk_path) = crash_disk.into_parts();
         crash_disk
-            .as_file()
             .attach_for_raw_access(false)
             .context("error attaching crash dump vhdx")?;
+        let mut crash_disk = BlockingDisk::new(
+            disk_backend::Disk::new(
+                VhdmpDisk::new(crash_disk, false).context("failed opening vhdmp")?,
+            )
+            .unwrap(),
+        );
 
         // Format the VHD with FAT32.
         crate::disk_image::build_fat32_disk_image(
-            &mut crash_disk.as_file_mut().0,
+            &mut crash_disk,
             "CRASHDUMP",
             b"crashdump  ",
             &[],
@@ -179,14 +187,15 @@ impl PetriVmmBackend for HyperVPetriBackend {
         .context("error writing empty crash disk filesystem")?;
 
         // Prepare the hook to extract crash dumps after the test.
-        let crash_disk = Arc::new(crash_disk.into_temp_path());
-        let hook_crash_disk = crash_disk.clone();
+        let crash_disk_path = Arc::new(crash_disk_path);
+        let hook_crash_disk = crash_disk_path.clone();
         let disk_opener = Box::new(move || {
-            disk_vhdmp::VhdmpDisk::open_vhd(hook_crash_disk.as_ref(), true)
-                .map(|vhd| vhd.0)
-                .map_err(Into::into)
+            let vhd = VhdmpDisk::open_vhd(hook_crash_disk.as_ref(), true)
+                .context("failed opening vhd")?;
+            let vhdmp = VhdmpDisk::new(vhd, true).context("failed opening vhdmp")?;
+            Ok(Box::new(BlockingDisk::new(disk_backend::Disk::new(vhdmp).unwrap())) as _)
         });
-        Ok(Some((crash_disk, disk_opener)))
+        Ok(Some((crash_disk_path, disk_opener)))
     }
 
     fn new(_resolver: &ArtifactResolver<'_>) -> Self {

@@ -115,7 +115,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
     fn create_guest_dump_disk() -> anyhow::Result<
         Option<(
             Arc<TempPath>,
-            Box<dyn FnOnce() -> anyhow::Result<std::fs::File>>,
+            Box<dyn FnOnce() -> anyhow::Result<Box<dyn fatfs::ReadWriteSeek>>>,
         )>,
     > {
         Ok(None) // TODO
