@@ -217,22 +217,30 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => BootDeviceType::Scsi,
         };
 
-        let (guest_crash_disk, guest_dump_disk_hook) = T::create_guest_dump_disk()?.unzip();
-        if let Some(guest_dump_disk_hook) = guest_dump_disk_hook {
-            let logger = params.logger.clone();
-            params.post_test_hooks.push(PetriPostTestHook::new(
-                "extract guest crash dumps".into(),
-                Box::new(move || {
-                    let disk = guest_dump_disk_hook()?;
-                    let fs = fatfs::FileSystem::new(disk, fatfs::FsOptions::new())?;
-                    for entry in fs.root_dir().iter() {
-                        let entry = entry?;
-                        logger.write_attachment(&entry.file_name(), entry.to_file())?;
-                    }
-                    Ok(())
-                }),
-            ));
-        }
+        let guest_crash_disk = if matches!(
+            artifacts.firmware.os_flavor(),
+            OsFlavor::Windows | OsFlavor::Linux
+        ) {
+            let (guest_crash_disk, guest_dump_disk_hook) = T::create_guest_dump_disk()?.unzip();
+            if let Some(guest_dump_disk_hook) = guest_dump_disk_hook {
+                let logger = params.logger.clone();
+                params.post_test_hooks.push(PetriPostTestHook::new(
+                    "extract guest crash dumps".into(),
+                    Box::new(move || {
+                        let disk = guest_dump_disk_hook()?;
+                        let fs = fatfs::FileSystem::new(disk, fatfs::FsOptions::new())?;
+                        for entry in fs.root_dir().iter() {
+                            let entry = entry?;
+                            logger.write_attachment(&entry.file_name(), entry.to_file())?;
+                        }
+                        Ok(())
+                    }),
+                ));
+            }
+            guest_crash_disk
+        } else {
+            None
+        };
 
         Ok(Self {
             backend: artifacts.backend,
