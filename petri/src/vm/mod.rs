@@ -12,8 +12,10 @@ use crate::PetriLogSource;
 use crate::PetriTestParams;
 use crate::ShutdownKind;
 use crate::disk_image::AgentImage;
+use crate::disk_image::SECTOR_SIZE;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::test::PetriPostTestHook;
+use anyhow::Context;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use hvlite_defs::config::Vtl2BaseAddressType;
@@ -227,8 +229,17 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 params.post_test_hooks.push(PetriPostTestHook::new(
                     "extract guest crash dumps".into(),
                     Box::new(move || {
-                        let disk = guest_dump_disk_hook()?;
-                        let fs = fatfs::FileSystem::new(disk, fatfs::FsOptions::new())?;
+                        let mut disk = guest_dump_disk_hook()?;
+                        let gpt = gptman::GPT::read_from(&mut disk, SECTOR_SIZE)
+                            .context("could not read gpt")?;
+                        let partition = fscommon::StreamSlice::new(
+                            &mut disk,
+                            gpt[1].starting_lba * SECTOR_SIZE,
+                            gpt[1].ending_lba * SECTOR_SIZE,
+                        )
+                        .context("couldn't construct slice")?;
+                        let fs = fatfs::FileSystem::new(partition, fatfs::FsOptions::new())
+                            .context("couldn't parse filesystem")?;
                         for entry in fs.root_dir().iter() {
                             let entry = entry?;
                             logger.write_attachment(&entry.file_name(), entry.to_file())?;

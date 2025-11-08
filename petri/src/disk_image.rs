@@ -161,8 +161,9 @@ pub(crate) fn build_fat32_disk_image(
     Ok(())
 }
 
+pub(crate) const SECTOR_SIZE: u64 = 512;
+
 fn build_gpt(file: &mut (impl Read + Write + Seek), name: &str) -> anyhow::Result<Range<u64>> {
-    const SECTOR_SIZE: u64 = 512;
     // EBD0A0A2-B9E5-4433-87C0-68B6B72699C7
     const BDP_GUID: [u8; 16] = [
         0xA2, 0xA0, 0xD0, 0xEB, 0xE5, 0xB9, 0x33, 0x44, 0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99,
