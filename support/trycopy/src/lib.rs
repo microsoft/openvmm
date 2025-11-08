@@ -360,6 +360,7 @@ struct OsAccessError {
     esr: Option<u64>,
 }
 
+#[cfg(unix)]
 impl std::fmt::Display for OsAccessError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let signal = match self.signal {
