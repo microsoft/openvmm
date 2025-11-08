@@ -173,8 +173,8 @@ fn build_gpt(file: &mut (impl Read + Write + Seek), name: &str) -> anyhow::Resul
         0xF3,
     ];
 
-    let mut mbr = mbrman::MBR::new_from(file, SECTOR_SIZE as u32, [0xff; 4])?;
-    let mut gpt = gptman::GPT::new_from(file, SECTOR_SIZE, [0xff; 16])?;
+    let mut mbr = mbrman::MBR::new_from(file, SECTOR_SIZE as u32, [0xff; 4]).unwrap();
+    let mut gpt = gptman::GPT::new_from(file, SECTOR_SIZE, [0xff; 16]).unwrap();
 
     // Set up the "Protective" Master Boot Record
     let first_chs = mbrman::CHS::new(0, 0, 2);
@@ -187,9 +187,10 @@ fn build_gpt(file: &mut (impl Read + Write + Seek), name: &str) -> anyhow::Resul
         starting_lba: 1,
         sectors: gpt.header.last_usable_lba.try_into().unwrap_or(0xFFFFFFFF),
     };
-    mbr.write_into(file)?;
+    mbr.write_into(file)
+        .context("failed to write protective mbr")?;
 
-    file.rewind()?;
+    file.rewind().context("failed to reset file position")?;
 
     // Set up the GPT Partition Table Header
     gpt[1] = gptman::GPTPartitionEntry {
@@ -200,7 +201,7 @@ fn build_gpt(file: &mut (impl Read + Write + Seek), name: &str) -> anyhow::Resul
         attribute_bits: 0,
         partition_name: name.into(),
     };
-    gpt.write_into(file)?;
+    gpt.write_into(file).context("failed to write gpt")?;
 
     // calculate the EFI partition's usable range
     let partition_start_byte = gpt[1].starting_lba * SECTOR_SIZE;
