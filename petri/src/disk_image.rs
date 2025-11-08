@@ -173,8 +173,10 @@ fn build_gpt(file: &mut (impl Read + Write + Seek), name: &str) -> anyhow::Resul
         0xF3,
     ];
 
-    let mut mbr = mbrman::MBR::new_from(file, SECTOR_SIZE as u32, [0xff; 4]).unwrap();
-    let mut gpt = gptman::GPT::new_from(file, SECTOR_SIZE, [0xff; 16]).unwrap();
+    let mut mbr = mbrman::MBR::new_from(file, SECTOR_SIZE as u32, [0xff; 4])
+        .context("could not construct mbr")?;
+    let mut gpt =
+        gptman::GPT::new_from(file, SECTOR_SIZE, [0xff; 16]).context("could not construct gpt")?;
 
     // Set up the "Protective" Master Boot Record
     let first_chs = mbrman::CHS::new(0, 0, 2);
