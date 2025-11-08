@@ -164,6 +164,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
             .suffix(".vhdx")
             .make(|path| disk_vhdmp::Vhd::create_dynamic(path, 4 * 1024, true))
             .context("error creating crash dump vhdx")?;
+        crash_disk
+            .as_file()
+            .attach_for_raw_access(false)
+            .context("error attaching crash dump vhdx")?;
 
         // Format the VHD with FAT32.
         crate::disk_image::build_fat32_disk_image(

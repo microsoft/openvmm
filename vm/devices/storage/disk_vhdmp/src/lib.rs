@@ -537,7 +537,7 @@ impl Vhd {
     }
 
     /// Configure the VHD for raw access
-    fn attach_for_raw_access(&self, read_only: bool) -> std::io::Result<()> {
+    pub fn attach_for_raw_access(&self, read_only: bool) -> std::io::Result<()> {
         unsafe {
             let mut flags = virtdisk::ATTACH_VIRTUAL_DISK_FLAG_NO_LOCAL_HOST;
             if read_only {
