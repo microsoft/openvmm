@@ -101,7 +101,7 @@ impl PetriLogSource {
     /// a number to the base name.
     pub fn write_attachment(&self, filename: &str, mut data: impl Read) -> anyhow::Result<PathBuf> {
         let path = self.attachment_path(filename);
-        let mut file = File::open(&path)?;
+        let mut file = File::create(&path)?;
         std::io::copy(&mut data, &mut file)?;
         self.trace_attachment(&path);
         Ok(path)
