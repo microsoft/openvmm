@@ -513,7 +513,7 @@ unsafe fn install_signal_handlers() {
                 aarch64_extended_context::<u64>(ctx, ESR_MAGIC).copied()
             },
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            esr: ctx.__es.__esr,
+            esr: Some(ctx.__es.__esr.into()),
         };
 
         let recovered = recover(ctx, failure);
@@ -897,6 +897,7 @@ mod tests {
         };
         LAST_ACCESS_FAILURE.set(AccessFailure {
             address: nonsense_addr.cast(),
+            #[cfg(not(windows))]
             ..AccessFailure::empty()
         });
 
