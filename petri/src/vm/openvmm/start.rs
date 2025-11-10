@@ -41,6 +41,7 @@ impl PetriVmConfigOpenVmm {
 
             openvmm_log_file,
 
+            petri_scsi_controller: mut petri_vtl0_scsi_controller,
             ged,
             framebuffer_view,
         } = self;
@@ -85,40 +86,28 @@ impl PetriVmConfigOpenVmm {
             }
         }
 
+        // Add the guest crash dump disk.
         if let Some(guest_crash_disk) = resources.guest_crash_disk.as_ref() {
-            const CRASHDUMP_SCSI_INSTANCE: Guid =
-                guid::guid!("766e16f8-2ceb-437e-afe3-a93168b48a7b");
-            // Add a SCSI controller to contain the crash dump disk. Don't reuse an
-            // existing controller so that we can avoid interfering with
-            // test-specific configuration.
-            config.vmbus_devices.push((
-                DeviceVtl::Vtl0,
-                ScsiControllerHandle {
-                    instance_id: CRASHDUMP_SCSI_INSTANCE,
-                    max_sub_channel_count: 1,
-                    io_queue_depth: None,
-                    devices: vec![ScsiDeviceAndPath {
-                        path: ScsiPath {
-                            path: 0,
-                            target: 0,
-                            lun: 0,
-                        },
-                        device: SimpleScsiDiskHandle {
-                            read_only: true,
-                            parameters: Default::default(),
-                            disk: FileDiskHandle(
-                                fs_err::File::open(guest_crash_disk.as_ref())?.into(),
-                            )
-                            .into_resource(),
-                        }
+            petri_vtl0_scsi_controller.devices.push(ScsiDeviceAndPath {
+                path: ScsiPath {
+                    path: 0,
+                    target: 0,
+                    lun: 2,
+                },
+                device: SimpleScsiDiskHandle {
+                    read_only: true,
+                    parameters: Default::default(),
+                    disk: FileDiskHandle(fs_err::File::open(guest_crash_disk.as_ref())?.into())
                         .into_resource(),
-                    }],
-                    requests: None,
-                    poll_mode_queue_depth: None,
                 }
                 .into_resource(),
-            ));
+            });
         }
+
+        // Add the Petri SCSI controller to VTL0 now that all the disks are on it.
+        config
+            .vmbus_devices
+            .push((DeviceVtl::Vtl0, petri_vtl0_scsi_controller.into_resource()));
 
         // Add the GED and VTL 2 settings.
         if let Some(mut ged) = ged {
@@ -182,37 +171,21 @@ impl PetriVmConfigOpenVmm {
     /// included in the config
     pub async fn run(mut self) -> anyhow::Result<PetriVmOpenVmm> {
         let launch_linux_direct_pipette = if let Some(agent_image) = &self.resources.agent_image {
-            const CIDATA_SCSI_INSTANCE: Guid = guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7b");
-
             // Construct the agent disk.
             if let Some(agent_disk) = agent_image.build().context("failed to build agent image")? {
-                // Add a SCSI controller to contain the agent disk. Don't reuse an
-                // existing controller so that we can avoid interfering with
-                // test-specific configuration.
-                self.config.vmbus_devices.push((
-                    DeviceVtl::Vtl0,
-                    ScsiControllerHandle {
-                        instance_id: CIDATA_SCSI_INSTANCE,
-                        max_sub_channel_count: 1,
-                        io_queue_depth: None,
-                        devices: vec![ScsiDeviceAndPath {
-                            path: ScsiPath {
-                                path: 0,
-                                target: 0,
-                                lun: 0,
-                            },
-                            device: SimpleScsiDiskHandle {
-                                read_only: true,
-                                parameters: Default::default(),
-                                disk: FileDiskHandle(agent_disk.into_file()).into_resource(),
-                            }
-                            .into_resource(),
-                        }],
-                        requests: None,
-                        poll_mode_queue_depth: None,
+                self.petri_scsi_controller.devices.push(ScsiDeviceAndPath {
+                    path: ScsiPath {
+                        path: 0,
+                        target: 0,
+                        lun: 1,
+                    },
+                    device: SimpleScsiDiskHandle {
+                        read_only: true,
+                        parameters: Default::default(),
+                        disk: FileDiskHandle(agent_disk.into_file()).into_resource(),
                     }
                     .into_resource(),
-                ));
+                });
             }
 
             if matches!(self.firmware.os_flavor(), OsFlavor::Windows)

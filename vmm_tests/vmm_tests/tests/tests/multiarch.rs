@@ -483,29 +483,6 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
 
 #[cfg(windows)]
 #[vmm_test(
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64)),
-    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))
-)]
-async fn user_crash<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    let (vm, agent) = config.run().await?;
-
-    let s = agent.read_file("/proc/sys/kernel/core_pattern").await?;
-    let s = String::from_utf8_lossy(&s).to_string();
-    tracing::info!(s, "core_pattern");
-    agent
-        .write_file("/crash/testfile", "crashdata".as_bytes())
-        .await?;
-
-    agent.crash().await?;
-    vm.wait_for_clean_teardown().await?;
-    Ok(())
-}
-
-#[cfg(windows)]
-#[vmm_test(
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -514,8 +491,18 @@ async fn user_crash<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 )]
 async fn kernel_crash<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config.run().await?;
+    let output = agent
+        .windows_shell()
+        .cmd("fsutil")
+        .args(["fsinfo", "drives"])
+        .output()
+        .await?;
+    tracing::info!(
+        "Drives before crash:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
     agent
-        .write_file("E:\\testfile", "crashdata".as_bytes())
+        .write_file("F:\\testfile", "crashdata".as_bytes())
         .await?;
     agent.kernel_crash().await?;
     vm.wait_for_clean_teardown().await?;

@@ -54,6 +54,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use storvsp_resources::ScsiControllerHandle;
 use tempfile::TempPath;
 use unix_socket::UnixListener;
 use vm_resource::IntoResource;
@@ -160,6 +161,8 @@ pub struct PetriVmConfigOpenVmm {
     openvmm_log_file: PetriLogFile,
 
     // Resources that are only used during startup.
+    /// Single VMBus SCSI controller shared for all VTL0 disks added by petri.
+    petri_scsi_controller: ScsiControllerHandle,
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
     framebuffer_view: Option<framebuffer::View>,
 }
