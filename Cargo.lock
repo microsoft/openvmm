@@ -2822,6 +2822,7 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "bitvec",
  "build_rs_guest_arch",
+ "cfg-if",
  "cvm_tracing",
  "fs-err",
  "getrandom 0.3.3",
@@ -7696,6 +7697,7 @@ dependencies = [
  "libc",
  "thiserror 2.0.16",
  "windows-sys 0.61.0",
+ "zerocopy 0.8.25",
 ]
 
 [[package]]
