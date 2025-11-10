@@ -11,7 +11,6 @@ pub(crate) fn main() -> anyhow::Result<()> {
     let path = std::env::args_os().nth(1).context("missing path")?;
     let hive = Hive::create()?;
 
-    // Create the pipette service and set it to auto start
     let service_key = create_subkeys(
         &hive,
         &["SYSTEM", "CurrentControlSet", "Services", "pipette"],
@@ -24,7 +23,6 @@ pub(crate) fn main() -> anyhow::Result<()> {
     service_key.set_sz("ObjectName", "LocalSystem")?;
     service_key.set_multi_sz("DependOnService", ["RpcSs"])?;
 
-    // Allow VMBus devices when isolated - namely pipette
     let vmbus_key = create_subkeys(
         &hive,
         &[
@@ -44,20 +42,6 @@ pub(crate) fn main() -> anyhow::Result<()> {
     )?;
     crash_control_key.set_dword("CrashDumpEnabled", 2)?; // kernel memory dump
     crash_control_key.set_expand_sz("DumpFile", "E:\\memory.dmp")?;
-
-    // Enable user mode crash dumps
-    let wer_key = create_subkeys(
-        &hive,
-        &[
-            "SOFTWARE",
-            "Microsoft",
-            "Windows",
-            "Windows Error Reporting",
-            "LocalDumps",
-        ],
-    )?;
-    wer_key.set_dword("DumpType", 2)?; // full dump
-    wer_key.set_expand_sz("DumpFolder", "E:\\")?;
 
     // Windows defaults this to 1, so we need to set it to 2 to cause Windows
     // to apply the IMC changes on first boot.

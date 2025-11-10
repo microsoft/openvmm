@@ -164,21 +164,12 @@ fn run(
             .run()
             .await?;
 
-        // Load the target's SYSTEM and SOFTWARE hives to write to.
+        // Load the target's SYSTEM hive to write to.
         cmd!(shell, "reg")
             .args([
                 "load",
-                "HKLM\\TargetTempSystem",
+                "HKLM\\TargetTemp",
                 "E:\\Windows\\System32\\config\\SYSTEM",
-            ])
-            .run()
-            .await?;
-
-        cmd!(shell, "reg")
-            .args([
-                "load",
-                "HKLM\\TargetTempSoftware",
-                "E:\\Windows\\System32\\config\\SOFTWARE",
             ])
             .run()
             .await?;
@@ -190,30 +181,16 @@ fn run(
             .args([
                 "copy",
                 "HKLM\\IMCTemp\\SYSTEM\\CurrentControlSet",
-                "HKLM\\TargetTempSystem\\ControlSet001",
-                "/s",
-                "/f",
-            ])
-            .run()
-            .await?;
-        cmd!(shell, "reg")
-            .args([
-                "copy",
-                "HKLM\\IMCTemp\\SOFTWARE",
-                "HKLM\\TargetTempSoftware",
+                "HKLM\\TargetTemp\\ControlSet001",
                 "/s",
                 "/f",
             ])
             .run()
             .await?;
 
-        // Unload the target hives.
+        // Unload the target hive.
         cmd!(shell, "reg")
-            .args(["unload", "HKLM\\TargetTempSystem"])
-            .run()
-            .await?;
-        cmd!(shell, "reg")
-            .args(["unload", "HKLM\\TargetTempSoftware"])
+            .args(["unload", "HKLM\\TargetTemp"])
             .run()
             .await?;
 
