@@ -110,4 +110,7 @@ pub trait CreateNvmeDriver: Inspect + Send + Sync {
         save_restore_supported: bool,
         saved_state: Option<&nvme_driver::NvmeDriverSavedState>,
     ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError>;
+
+    // DEVNOTE(mattkur): TODO: create a new trait fn that clears and resets state, in the case of
+    // a restore on a host that does not support restore.
 }

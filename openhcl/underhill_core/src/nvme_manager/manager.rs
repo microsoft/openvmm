@@ -457,7 +457,7 @@ impl NvmeManagerWorker {
                     &self.context.driver_source,
                     &pci_id,
                     saved_state.cpu_count,
-                    true, // save_restore_supported is always `true` when restoring.
+                    true, // save_restore_supported is always `true` when restoring. (TODO(mattkur): no longer true).
                     Some(&disk.driver_state),
                 )
                 .await?;
