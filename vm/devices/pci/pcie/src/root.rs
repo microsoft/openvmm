@@ -377,12 +377,6 @@ impl RootPort {
     /// * `hotplug_slot_number` - The slot number for hotplug support. `Some(slot_number)` enables hotplug, `None` disables it
     pub fn new(name: impl Into<Arc<str>>, hotplug_slot_number: Option<u32>) -> Self {
         let name_str = name.into();
-
-        let (_hotplug, _slot_number) = match hotplug_slot_number {
-            Some(slot) => (true, Some(slot)),
-            None => (false, None),
-        };
-
         let hardware_ids = HardwareIds {
             vendor_id: VENDOR_ID,
             device_id: ROOT_PORT_DEVICE_ID,
