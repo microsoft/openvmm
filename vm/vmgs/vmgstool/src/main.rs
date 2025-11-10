@@ -122,6 +122,7 @@ enum ExitCode {
     ErrorNotFound = 4,
     ErrorV1 = 5,
     ErrorGspById = 6,
+    ErrorGspUnknown = 7,
 }
 
 #[derive(Args)]
@@ -359,6 +360,7 @@ fn main() {
                 Error::Vmgs(VmgsError::FileInfoNotAllocated) => ExitCode::ErrorNotFound,
                 Error::V1Format => ExitCode::ErrorV1,
                 Error::GspByIdEncryption => ExitCode::ErrorGspById,
+                Error::GspUnknown => ExitCode::ErrorGspUnknown,
                 _ => ExitCode::Error,
             };
 
