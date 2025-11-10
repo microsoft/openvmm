@@ -492,7 +492,7 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
 async fn kernel_crash<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config.run().await?;
     agent
-        .write_file("F:\\testfile", "crashdata".as_bytes())
+        .write_file("E:\\testfile", "crashdata".as_bytes())
         .await?;
     agent.kernel_crash().await?;
     vm.wait_for_clean_teardown().await?;
