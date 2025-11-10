@@ -13,9 +13,14 @@ pub fn trigger_kernel_crash() -> anyhow::Result<()> {
 pub fn trigger_kernel_crash() -> anyhow::Result<()> {
     use anyhow::Context;
 
-    std::process::Command::new("taskill")
+    let status = std::process::Command::new("taskkill")
         .args(["/IM", "winlogon.exe", "/F"])
         .status()
         .context("failed to execute taskkill")?;
+
+    if !status.success() {
+        anyhow::bail!("taskkill exited with status {}", status);
+    }
+
     Ok(())
 }
