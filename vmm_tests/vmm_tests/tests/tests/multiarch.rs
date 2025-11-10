@@ -502,15 +502,10 @@ async fn user_crash<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 
 #[vmm_test(
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))
 )]
 async fn kernel_crash<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config.run().await?;

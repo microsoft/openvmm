@@ -52,3 +52,5 @@ runcmd:
     fi
   # Configure core dumps to go to the crash dump disk.
   - echo "/crash/core.%e.%p" > "/proc/sys/kernel/core_pattern"
+  # Configure kernel panics to reboot after 5 seconds.
+  - echo "5" > "/proc/sys/kernel/panic"
