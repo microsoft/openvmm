@@ -90,7 +90,6 @@ impl SimpleFlowNode for Node {
                 )?;
 
                 // Make petri logview available under
-                // `openvmm.dev/test-results-new/` Will move to `test-results`
                 // after getting usage feedback.
                 flowey_lib_common::_util::copy_dir_all(
                     repo.join("petri/logview_new/dist"),
