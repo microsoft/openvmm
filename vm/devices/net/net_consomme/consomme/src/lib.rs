@@ -43,7 +43,6 @@ use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv6Address;
-use smoltcp::wire::Ipv6Cidr;
 use smoltcp::wire::Ipv6Packet;
 use std::net::SocketAddrV4;
 use std::task::Context;
@@ -90,9 +89,6 @@ pub struct ConsommeParams {
     /// Current IPv6 network mask (if any).
     #[inspect(display)]
     pub prefix_len_ipv6: u8,
-    /// Current IPv6 gateway address (if any).
-    #[inspect(display)]
-    pub gateway_ipv6: Ipv6Address,
     /// Current IPv6 gateway MAC address (if any).
     #[inspect(display)]
     pub gateway_mac_ipv6: EthernetAddress,
@@ -134,8 +130,6 @@ impl ConsommeParams {
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
             prefix_len_ipv6: 64,
-            gateway_ipv6: Ipv6Address([0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x01]),
             gateway_mac_ipv6,
             gateway_link_local_ipv6: Self::compute_link_local_address(gateway_mac_ipv6),
             client_ip_ipv6: None,
@@ -155,46 +149,6 @@ impl ConsommeParams {
         self.client_ip.0[3] += 2;
         self.net_mask = cidr.netmask();
         Ok(())
-    }
-
-    /// Sets the cidr for the network with IPv6 addresses.
-    pub fn set_cidr_ipv6(&mut self, cidr: &str) -> Result<(), InvalidCidr> {
-        let cidr: Ipv6Cidr = cidr.parse().map_err(|()| InvalidCidr)?;
-        let base_address = self.network_address(&cidr)?;
-
-        // Set gateway address
-        let mut gateway = base_address.0;
-        Self::increment_ipv6(&mut gateway, 1);
-        
-        self.gateway_ipv6 = Ipv6Address(gateway);
-    
-        self.client_ip_ipv6 = None;
-        self.prefix_len_ipv6 = cidr.prefix_len();
-
-        Ok(())
-    }
-
-    fn network_address(&self, cidr: &Ipv6Cidr) -> Result<Ipv6Address, InvalidCidr> {
-        let bytes = cidr.address().0;
-        let prefix = cidr.prefix_len();
-
-        if prefix < 128 {
-            let mask = if prefix == 0 {
-                0
-            } else {
-                (!0u128) << (128 - prefix)
-            };
-
-            let bytes = u128::from_be_bytes(bytes);
-            Ok(Ipv6Address((bytes & mask).to_be_bytes()))
-        } else {
-            Err(InvalidCidr)
-        }
-    }
-
-    fn increment_ipv6(addr: &mut [u8; 16], n: u128) {
-        let val = u128::from_be_bytes(*addr).wrapping_add(n);
-        *addr = val.to_be_bytes();
     }
 
     /// Compute a link-local IPv6 address from a MAC address using EUI-64 format.

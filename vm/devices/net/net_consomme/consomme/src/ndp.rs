@@ -162,7 +162,8 @@ impl<T: Client> Access<'_, T> {
         // Compute the network prefix from our configured IPv6 parameters
         // This is the prefix that clients will use for SLAAC
         let prefix = self.compute_network_prefix(
-            self.inner.state.params.gateway_ipv6,
+            Ipv6Address([0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x01]),
             self.inner.state.params.prefix_len_ipv6,
         );
 
