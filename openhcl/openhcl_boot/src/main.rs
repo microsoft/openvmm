@@ -290,6 +290,15 @@ fn build_kernel_command_line(
 
     // Only when explicitly supported by Host.
     // TODO: Move from command line to device tree when stabilized.
+    //
+    // DEVNOTE (mattkur): Create a new command line flag to pass along that
+    // the host supports keep alive (even if there is vtl2 pool supported).
+    // e.g.:
+    // OPENHCL_NVME_KEEP_ALIVE=1 (legacy, let's remove this)
+    // OPENHCL_NVME_KEEP_ALIVE=host,privatepool (supported by host and we have private pool)
+    // OPENHCL_NVME_KEEP_ALIVE=nohost,privatepool (not supported by host but we have a private pool)
+    // OPENHCL_NVME_KEEP_ALIVE=host,noprivatepool (supported by host, but no private pool (KA will be disabled))
+    // OPENHCL_NVME_KEEP_ALIVE=disabled,{no,}host,{no,}privatepool (explicitly disabled by command line, rest of flags as above)
     if partition_info.nvme_keepalive && vtl2_pool_supported && !disable_keep_alive {
         write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=1 ")?;
     }
