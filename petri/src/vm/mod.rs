@@ -190,6 +190,7 @@ pub struct PetriVm<T: PetriVmmBackend> {
     openhcl_diag_handler: Option<OpenHclDiagHandler>,
 
     arch: MachineArch,
+    os_flavor: OsFlavor,
     guest_quirks: GuestQuirksInner,
     vmm_quirks: VmmQuirks,
     expected_boot_event: Option<FirmwareEvent>,
@@ -303,6 +304,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     async fn run_core(self) -> anyhow::Result<PetriVm<T>> {
         let arch = self.config.arch;
+        let os_flavor = self.config.firmware.os_flavor();
         let expect_reset = self.expect_reset();
 
         let mut runtime = self
@@ -319,6 +321,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             openhcl_diag_handler,
 
             arch,
+            os_flavor,
             guest_quirks: self.guest_quirks,
             vmm_quirks: self.vmm_quirks,
             expected_boot_event: self.expected_boot_event,
@@ -998,9 +1001,14 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.runtime.restore_openhcl().await
     }
 
-    /// Get VM's guest OS flavor
+    /// Get VM's guest architecture
     pub fn arch(&self) -> MachineArch {
         self.arch
+    }
+
+    /// Get VM's guest OS flavor
+    pub fn os_flavor(&self) -> OsFlavor {
+        self.os_flavor
     }
 
     /// Get the inner runtime backend to make backend-specific calls
