@@ -6,6 +6,7 @@
 use anyhow::Context;
 use fatfs::FormatVolumeOptions;
 use fatfs::FsOptions;
+use guid::Guid;
 use petri_artifacts_common::artifacts as common_artifacts;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
@@ -164,20 +165,11 @@ pub(crate) fn build_fat32_disk_image(
 pub(crate) const SECTOR_SIZE: u64 = 512;
 
 fn build_gpt(file: &mut (impl Read + Write + Seek), name: &str) -> anyhow::Result<Range<u64>> {
-    // EBD0A0A2-B9E5-4433-87C0-68B6B72699C7
-    const BDP_GUID: [u8; 16] = [
-        0xA2, 0xA0, 0xD0, 0xEB, 0xE5, 0xB9, 0x33, 0x44, 0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99,
-        0xC7,
-    ];
-    const PARTITION_GUID: [u8; 16] = [
-        0x55, 0x29, 0x65, 0x69, 0x3A, 0xA7, 0x98, 0x41, 0xBA, 0xBD, 0xB5, 0x50, 0x77, 0x14, 0xA1,
-        0xF3,
-    ];
-
-    let mut mbr = mbrman::MBR::new_from(file, SECTOR_SIZE as u32, [0xff; 4])
+    let disk_guid = Guid::new_random();
+    let mut mbr = mbrman::MBR::new_from(file, SECTOR_SIZE as u32, disk_guid.data1.to_le_bytes())
         .context("could not construct mbr")?;
-    let mut gpt =
-        gptman::GPT::new_from(file, SECTOR_SIZE, [0xff; 16]).context("could not construct gpt")?;
+    let mut gpt = gptman::GPT::new_from(file, SECTOR_SIZE, disk_guid.into())
+        .context("could not construct gpt")?;
 
     // Set up the "Protective" Master Boot Record
     let first_chs = mbrman::CHS::new(0, 0, 2);
@@ -197,8 +189,8 @@ fn build_gpt(file: &mut (impl Read + Write + Seek), name: &str) -> anyhow::Resul
 
     // Set up the GPT Partition Table Header
     gpt[1] = gptman::GPTPartitionEntry {
-        partition_type_guid: BDP_GUID,
-        unique_partition_guid: PARTITION_GUID,
+        partition_type_guid: guid::guid!("EBD0A0A2-B9E5-4433-87C0-68B6B72699C7").into(),
+        unique_partition_guid: Guid::new_random().into(),
         starting_lba: gpt.header.first_usable_lba,
         ending_lba: gpt.header.last_usable_lba,
         attribute_bits: 0,

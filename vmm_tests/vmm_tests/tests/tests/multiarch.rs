@@ -491,16 +491,6 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
 )]
 async fn kernel_crash<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config.run().await?;
-    let output = agent
-        .windows_shell()
-        .cmd("fsutil")
-        .args(["fsinfo", "drives"])
-        .output()
-        .await?;
-    tracing::info!(
-        "Drives before crash:\n{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
     agent
         .write_file("F:\\testfile", "crashdata".as_bytes())
         .await?;

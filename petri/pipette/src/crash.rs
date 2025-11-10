@@ -14,7 +14,7 @@ pub fn trigger_kernel_crash() -> anyhow::Result<()> {
     use anyhow::Context;
 
     let output = std::process::Command::new("taskkill")
-        .args(["/IM", "wininit.exe", "/F"])
+        .args(["/IM", "wininit.exe", "/F", "/T"])
         .output()
         .context("failed to execute taskkill")?;
 
