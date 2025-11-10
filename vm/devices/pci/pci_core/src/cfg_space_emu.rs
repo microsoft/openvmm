@@ -23,6 +23,58 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use vmcore::line_interrupt::LineInterrupt;
 
+/// PCI configuration space header type with corresponding BAR count
+///
+/// This enum provides a type-safe way to work with PCI configuration space header types
+/// and their corresponding BAR counts. It improves readability over raw constants.
+///
+/// # Examples
+///
+/// ```rust
+/// # use pci_core::cfg_space_emu::HeaderType;
+/// // Get BAR count for different header types
+/// assert_eq!(HeaderType::Type0.bar_count(), 6);
+/// assert_eq!(HeaderType::Type1.bar_count(), 2);
+///
+/// // Convert to usize for use in generic contexts
+/// let bar_count: usize = HeaderType::Type0.into();
+/// assert_eq!(bar_count, 6);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderType {
+    /// Type 0 header with 6 BARs (endpoint devices)
+    Type0,
+    /// Type 1 header with 2 BARs (bridge devices)  
+    Type1,
+}
+
+impl HeaderType {
+    /// Get the number of BARs for this header type
+    pub const fn bar_count(self) -> usize {
+        match self {
+            HeaderType::Type0 => 6,
+            HeaderType::Type1 => 2,
+        }
+    }
+}
+
+impl From<HeaderType> for usize {
+    fn from(header_type: HeaderType) -> usize {
+        header_type.bar_count()
+    }
+}
+
+/// Constants for header type BAR counts
+pub mod header_type_consts {
+    use super::HeaderType;
+
+    /// Number of BARs for Type 0 headers
+    pub const TYPE0_BAR_COUNT: usize = HeaderType::Type0.bar_count();
+
+    /// Number of BARs for Type 1 headers  
+    pub const TYPE1_BAR_COUNT: usize = HeaderType::Type1.bar_count();
+}
+
 /// Result type for common header emulator operations
 #[derive(Debug)]
 pub enum CommonHeaderResult {
@@ -165,10 +217,12 @@ pub struct ConfigSpaceCommonHeaderEmulator<const N: usize> {
 }
 
 /// Type alias for Type 0 common header emulator (6 BARs)
-pub type ConfigSpaceCommonHeaderEmulatorType0 = ConfigSpaceCommonHeaderEmulator<6>;
+pub type ConfigSpaceCommonHeaderEmulatorType0 =
+    ConfigSpaceCommonHeaderEmulator<{ header_type_consts::TYPE0_BAR_COUNT }>;
 
 /// Type alias for Type 1 common header emulator (2 BARs)
-pub type ConfigSpaceCommonHeaderEmulatorType1 = ConfigSpaceCommonHeaderEmulator<2>;
+pub type ConfigSpaceCommonHeaderEmulatorType1 =
+    ConfigSpaceCommonHeaderEmulator<{ header_type_consts::TYPE1_BAR_COUNT }>;
 
 impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
     /// Create a new common header emulator
@@ -219,6 +273,16 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
             active_bars: Default::default(),
             state: ConfigSpaceCommonHeaderEmulatorState::new(),
         }
+    }
+
+    /// Get the number of BARs supported by this emulator
+    pub const fn bar_count(&self) -> usize {
+        N
+    }
+
+    /// Validate that this emulator has the correct number of BARs for the given header type
+    pub fn validate_header_type(&self, expected: HeaderType) -> bool {
+        N == expected.bar_count()
     }
 
     /// If the device is multi-function, enable bit 7 in the Header register.
@@ -286,6 +350,15 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
     /// Get multi-function bit
     pub fn multi_function_bit(&self) -> bool {
         self.multi_function_bit
+    }
+
+    /// Get the header type for this emulator
+    pub const fn header_type(&self) -> HeaderType {
+        match N {
+            header_type_consts::TYPE0_BAR_COUNT => HeaderType::Type0,
+            header_type_consts::TYPE1_BAR_COUNT => HeaderType::Type1,
+            _ => panic!("Unsupported BAR count - must be 6 (Type0) or 2 (Type1)"),
+        }
     }
 
     /// Get current command register state
@@ -1569,6 +1642,23 @@ mod tests {
     use crate::spec::hwid::ProgrammingInterface;
     use crate::spec::hwid::Subclass;
 
+    fn create_type0_emulator(caps: Vec<Box<dyn PciCapability>>) -> ConfigSpaceType0Emulator {
+        ConfigSpaceType0Emulator::new(
+            HardwareIds {
+                vendor_id: 0x1111,
+                device_id: 0x2222,
+                revision_id: 1,
+                prog_if: ProgrammingInterface::NONE,
+                sub_class: Subclass::NONE,
+                base_class: ClassCode::UNCLASSIFIED,
+                type0_sub_vendor_id: 0x3333,
+                type0_sub_system_id: 0x4444,
+            },
+            caps,
+            DeviceBars::new(),
+        )
+    }
+
     fn create_type1_emulator(caps: Vec<Box<dyn PciCapability>>) -> ConfigSpaceType1Emulator {
         ConfigSpaceType1Emulator::new(
             HardwareIds {
@@ -2254,5 +2344,32 @@ mod tests {
 
         emu_d.read_u32(0x3C, &mut val).unwrap();
         assert_eq!((val >> 8) & 0xFF, 4); // Interrupt pin should be 4 (INTD)
+    }
+
+    #[test]
+    fn test_header_type_functionality() {
+        // Test HeaderType enum values
+        assert_eq!(HeaderType::Type0.bar_count(), 6);
+        assert_eq!(HeaderType::Type1.bar_count(), 2);
+        assert_eq!(usize::from(HeaderType::Type0), 6);
+        assert_eq!(usize::from(HeaderType::Type1), 2);
+
+        // Test constant values
+        assert_eq!(header_type_consts::TYPE0_BAR_COUNT, 6);
+        assert_eq!(header_type_consts::TYPE1_BAR_COUNT, 2);
+
+        // Test Type 0 emulator
+        let emu_type0 = create_type0_emulator(vec![]);
+        assert_eq!(emu_type0.common.bar_count(), 6);
+        assert_eq!(emu_type0.common.header_type(), HeaderType::Type0);
+        assert!(emu_type0.common.validate_header_type(HeaderType::Type0));
+        assert!(!emu_type0.common.validate_header_type(HeaderType::Type1));
+
+        // Test Type 1 emulator
+        let emu_type1 = create_type1_emulator(vec![]);
+        assert_eq!(emu_type1.common.bar_count(), 2);
+        assert_eq!(emu_type1.common.header_type(), HeaderType::Type1);
+        assert!(emu_type1.common.validate_header_type(HeaderType::Type1));
+        assert!(!emu_type1.common.validate_header_type(HeaderType::Type0));
     }
 }
