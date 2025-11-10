@@ -49,6 +49,7 @@ use thiserror::Error;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::line_interrupt::LineInterrupt;
 use zerocopy::IntoBytes;
+//use guestmem::GuestMemoryErrorKind;
 
 open_enum! {
     pub enum IdeIoPort: u16 {
@@ -708,15 +709,16 @@ impl Channel {
             return;
         }
 
-        let mut dma_avail = match drive.dma_request() {
+        let (dma_type, mut dma_avail) = match drive.dma_request() {
             Some((dma_type, avail)) if *dma_type == self.bus_master_state.dma_io_type() => {
-                avail as u32
+                (Some(*dma_type), avail as u32)
             }
             _ => {
                 // No active, appropriate DMA buffer.
                 return;
             }
         };
+        tracing::trace!(dma_type = ?dma_type, "DMA TYPE here");
         let Some(dma) = &mut self.bus_master_state.dma_state else {
             return;
         };
@@ -738,6 +740,9 @@ impl Channel {
                     .wrapping_add(8 * (dma.descriptor_idx as u32))
                     .into();
 
+                tracing::trace!(gm = ?self.guest_memory, "guest_memory");
+
+                tracing::trace!(desc_addr = ?descriptor_addr, "desc_addr");
                 let cur_desc_table_entry = match self
                     .guest_memory
                     .read_plain::<protocol::BusMasterDmaDesc>(descriptor_addr)
@@ -764,8 +769,44 @@ impl Channel {
                     dma.transfer_bytes_left = 0x10000;
                 }
 
-                dma.transfer_base_addr = cur_desc_table_entry.mem_physical_base.into();
+                // Check that the base address is within the guest's physical address space.
+                // This is a sanity check, the guest should not be able to program the DMA
+                // controller with an invalid address.
 
+                if let Some(dma_type) = dma_type {
+                    let end_addr = cur_desc_table_entry
+                        .mem_physical_base
+                        .checked_add(dma.transfer_bytes_left);
+                    let r = match (dma_type, end_addr) {
+                        (DmaType::Read, Some(end)) => {
+                            self.guest_memory
+                                .probe_gpa_readable(end.into())
+                        },
+                        (DmaType::Write, Some(end)) => {
+                            self.guest_memory
+                                .probe_gpa_writable(end.into())
+                        },
+                        (_, None) => Err(guestmem::GuestMemoryErrorKind::OutOfRange),
+                    };
+                    if let Err(err) = r {
+                        // If there is an error and there is no other IO in parallel,
+                        // we need to stop the current DMA transfer and set the error bit
+                        // in the Bus Master Status register.
+
+                        self.bus_master_state.dma_state = None;
+                        if !drive.handle_read_dma_descriptor_error() {
+                            self.bus_master_state.dma_error = true;
+                        }
+
+                        tracelimit::error_ratelimited!(
+                            error = ?err,
+                            "dma base address out-of-range error"
+                        );
+                        return;
+                    };
+                }
+                
+                dma.transfer_base_addr = cur_desc_table_entry.mem_physical_base.into();
                 dma.transfer_complete = (cur_desc_table_entry.end_of_table & 0x80) != 0;
 
                 // Increment to the next descriptor.
@@ -795,7 +836,7 @@ impl Channel {
                     drive.set_prd_exhausted();
                     drive.dma_advance_buffer(dma_avail as usize);
                 }
-                tracing::trace!("dma transfer is complete");
+                tracing::trace!(dma_avail = ?dma_avail, "dma transfer is complete");
                 self.bus_master_state.dma_state = None;
                 break;
             }
@@ -1172,12 +1213,16 @@ impl Channel {
             };
 
             let status = self.drive_status(drive_index);
+
+            tracing::trace!(?status, "post driveaccess");
+
             let completed = match self.drive_type(drive_index) {
                 DriveType::Hard => !(status.bsy() || status.drq()),
                 DriveType::Optical => status.drdy(),
             };
             if completed {
                 // The command is done.
+                tracing::trace!(completed, "post_drive_access: completed");
                 let write = self.enlightened_write.take().unwrap();
                 match write {
                     EnlightenedWrite::Hard(write) => {
@@ -1251,6 +1296,9 @@ impl Channel {
                 // Save this for restoring in the enlightened path.
                 self.state.shadow_adapter_control_reg = data;
                 let v = DeviceControlReg::from_bits_truncate(data);
+
+                tracing::trace!(Reset = ?v.reset(), ?v, "Reset set");
+
                 if v.reset() && (self.drives[0].is_some() || self.drives[1].is_some()) {
                     self.state = ChannelState::default();
                 }
@@ -2349,6 +2397,74 @@ mod tests {
             .read_at(data_gpa.into(), &mut buffer)
             .unwrap();
         assert_eq!(buffer, file_contents.as_bytes()[..buffer.len()]);
+    }
+
+    #[async_test]
+    async fn enlightened_cmd_test_invalid_dma_base() {
+        /*
+        This is a negative test case where the DMA base address is invalid.
+        The test sets the DMA base address to an out-of-bounds memory
+        address of the guest range and expects the device to not read any data.
+        */
+        const SECTOR_COUNT: u16 = 8;
+        const BYTE_COUNT: u16 = SECTOR_COUNT * protocol::HARD_DRIVE_SECTOR_BYTES as u16;
+
+        let test_guest_mem = GuestMemory::allocate(16384);
+
+        let table_gpa = 0x1000;
+        let data_gpa = 0x4000; // Invalid out-of-bounds memory address
+        test_guest_mem
+            .write_plain(
+                table_gpa,
+                &BusMasterDmaDesc {
+                    mem_physical_base: data_gpa,
+                    byte_count: BYTE_COUNT / 2,
+                    unused: 0,
+                    end_of_table: 0x80,
+                },
+            )
+            .unwrap();
+
+        let data_buffer = table_gpa as u32;
+        let byte_count = 0;
+
+        let eint13_command = protocol::EnlightenedInt13Command {
+            command: IdeCommand::WRITE_DMA_ALT,
+            device_head: DeviceHeadReg::new().with_lba(true),
+            flags: 0,
+            result_status: 0,
+            lba_low: 0,
+            lba_high: 0,
+            block_count: SECTOR_COUNT,
+            byte_count,
+            data_buffer,
+            skip_bytes_head: 0,
+            skip_bytes_tail: 0,
+        };
+        test_guest_mem.write_plain(0, &eint13_command).unwrap();
+
+        let dev_path = IdePath::default();
+        let (mut ide_device, _disk, _file_contents, _geometry) =
+            ide_test_setup(Some(test_guest_mem.clone()), DriveType::Hard);
+
+        // select device [0,0] = primary channel, primary drive
+        device_select(&mut ide_device, &dev_path).await;
+        prep_ide_channel(&mut ide_device, DriveType::Hard, &dev_path);
+
+        // READ SECTORS - enlightened
+        let r = ide_device.io_write(IdeIoPort::PRI_ENLIGHTENED.0, 0_u32.as_bytes()); // read from gpa 0
+
+        match r {
+            IoResult::Defer(mut deferred) => {
+                poll_fn(|cx| {
+                    ide_device.poll_device(cx);
+                    deferred.poll_write(cx)
+                })
+                .await
+                .unwrap();
+            }
+            _ => panic!("{:?}", r),
+        }
     }
 
     #[async_test]
