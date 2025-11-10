@@ -491,11 +491,14 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
 )]
 async fn user_crash<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config.run().await?;
-    if vm.os_flavor() == OsFlavor::Linux {
-        let s = agent.read_file("/proc/sys/kernel/core_pattern").await?;
-        let s = String::from_utf8_lossy(&s).to_string();
-        tracing::info!(s, "core_pattern");
-    }
+
+    let s = agent.read_file("/proc/sys/kernel/core_pattern").await?;
+    let s = String::from_utf8_lossy(&s).to_string();
+    tracing::info!(s, "core_pattern");
+    agent
+        .write_file("/crash/testfile", "crashdata".as_bytes())
+        .await?;
+
     agent.crash().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
@@ -511,6 +514,9 @@ async fn user_crash<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 )]
 async fn kernel_crash<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config.run().await?;
+    agent
+        .write_file("E:\\testfile", "crashdata".as_bytes())
+        .await?;
     agent.kernel_crash().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
