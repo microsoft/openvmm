@@ -2654,7 +2654,6 @@ macro_rules! new_flow_node_base {
 /// **Use [`SimpleFlowNode`]** when:
 /// - Each request can be processed independently
 /// - No aggregation logic is needed
-/// - Simpler, less boilerplate
 pub trait FlowNode {
     /// The request type that defines what operations this node can perform.
     ///

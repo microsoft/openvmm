@@ -22,7 +22,7 @@ Flowey's model consists of a hierarchy of components:
 
 These building blocks are connected through three key mechanisms:
 
-**[Variables (`ReadVar`/`WriteVar`)](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.ReadVar.html)** enable data flow between steps. A `WriteVar<T>` represents a promise to produce a value of type `T` at runtime, while a `ReadVar<T>` represents a dependency on that value. Variables enforce write-once semantics (each value has exactly one producer) and create explicit dependencies in the DAG. For example, a "build" step might write a binary path to a `WriteVar<PathBuf>`, and a "test" step would read from the corresponding `ReadVar<PathBuf>`. This echoes Rust’s “shared XOR mutable” ownership rule: a value has either one writer or multiple readers, never both concurrently.
+**[Variables (`ReadVar`/`WriteVar`)](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.ReadVar.html)** enable data flow between steps. A `WriteVar<T>` represents a promise to produce a value of type `T` at runtime, while a `ReadVar<T>` represents a dependency on that value. Variables enforce write-once semantics (each value has exactly one producer) and create explicit dependencies in the DAG. For example, a "build" step might write a binary path to a `WriteVar<PathBuf>`, and a "test" step would read from the corresponding `ReadVar<PathBuf>`. This echoes Rust's "shared XOR mutable" ownership rule: a value has either one writer or multiple readers, never both concurrently.
 
 **[Artifacts](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/trait.Artifact.html)** enable data transfer between jobs. Since jobs may run on different machines or at different times, artifacts package up files (like compiled binaries, test results, or build outputs) for transfer. Flowey automatically handles uploading artifacts at the end of producing jobs and downloading them at the start of consuming jobs, abstracting away backend-specific artifact APIs.
 
@@ -30,9 +30,9 @@ These building blocks are connected through three key mechanisms:
 
 ### Putting It Together
 
-Here's how these pieces relate:
+Here's an example of how these pieces relate:
 
-```
+```txt
 Pipeline
   ├─ Job 1 (Linux x86_64)
   │   ├─ Node A (install Rust) 
@@ -51,6 +51,7 @@ Pipeline
 ```
 
 In this example:
+
 - The **Pipeline** defines two jobs that run on different platforms
 - **Job 1** installs Rust and builds the project, with step dependencies expressed through variables
 - **Job 2** runs tests using the binary from Job 1, with the binary transferred via an artifact
@@ -80,8 +81,8 @@ Flowey operates in two distinct phases:
    - Artifacts (data packages passed between jobs) are published/consumed
    - Side effects (dependencies) are resolved
 
-
 The `.flowey.toml` file at the repo root defines which pipelines to generate and where. For example:
+
 ```toml
 [[pipeline.flowey_hvlite.github]]
 file = ".github/workflows/openvmm-pr.yaml"
@@ -89,12 +90,14 @@ cmd = ["ci", "checkin-gates", "--config=pr"]
 ```
 
 When you run `cargo xflowey regen`:
-1. It reads `.flowey.toml` 
+
+1. It reads `.flowey.toml`
 2. Builds the `flowey-hvlite` binary
 3. Runs `flowey-hvlite pipeline github --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr`
 4. This generates/updates the YAML file with the resolved pipeline
 
 **Key Distinction:**
+
 - `cargo build -p flowey-hvlite` - Only compiles the flowey code to verify it builds successfully. **Does not** construct the DAG or generate YAML files.
 - `cargo xflowey regen` - Compiles the code **and** runs the full build-time resolution to construct the DAG, validate the pipeline, and regenerate all YAML files defined in `.flowey.toml`.
 
@@ -104,12 +107,12 @@ Always run `cargo xflowey regen` after modifying pipeline definitions to ensure 
 
 Flowey supports multiple execution backends:
 
-- **Local**: Runs directly on your development machine 
+- **Local**: Runs directly on your development machine
 - **ADO (Azure DevOps)**: Generates ADO Pipeline YAML
 - **GitHub Actions**: Generates GitHub Actions workflow YAML
 
-```admonish warning 
+```admonish warning
 Nodes should be written to work across ALL backends whenever possible. Relying on `ctx.backend()` to query the backend or manually emitting backend-specific steps (via `emit_ado_step` or `emit_gh_step`) should be avoided unless absolutely necessary. Most automation logic should be backend-agnostic, using `emit_rust_step` for cross-platform Rust code that works everywhere. Writing cross-platform flowey code enables locally testing pipelines which can be invaluable when iterating over CI changes. 
 ```
 
-If a node only supports certain backends, it should immediately fast‑fail with a clear error (“<Node> not supported on <backend>”) instead of silently proceeding. That failure signals it’s time either to add the missing backend support or introduce a multi‑platform abstraction/meta‑node that delegates to platform‑specific nodes.
+If a node only supports certain backends, it should immediately fast‑fail with a clear error ("`<Node>` not supported on `<backend>`") instead of silently proceeding. That failure signals it's time either to add the missing backend support or introduce a multi‑platform abstraction/meta‑node that delegates to platform‑specific nodes.

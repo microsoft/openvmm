@@ -1,10 +1,11 @@
 # Variables
 
-Variables are flowey's mechanism for creating typed data dependencies between steps. When a node emits steps, it uses ReadVar<T> and WriteVar<T> to declare what data each step consumes and produces. This creates explicit edges in the dependency graph: if step B reads from a variable that step A writes to, flowey ensures step A executes before step B.
+Variables are flowey's mechanism for creating typed data dependencies between steps. When a node emits steps, it uses `ReadVar<T>` and `WriteVar<T>` to declare what data each step consumes and produces. This creates explicit edges in the dependency graph: if step B reads from a variable that step A writes to, flowey ensures step A executes before step B.
 
 ## Claiming Variables
 
 Before a step can use a [`ReadVar`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.ReadVar.html) or [`WriteVar`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/struct.WriteVar.html), it must **claim** it. Claiming serves several purposes:
+
 1. Registers that this step depends on (or produces) this variable
 2. Converts `ReadVar<T, VarNotClaimed>` to `ReadVar<T, VarClaimed>`
 3. Allows flowey to track variable usage for graph construction
@@ -18,7 +19,7 @@ Variables can only be claimed inside step closures using the `claim()` method.
 fn process_request(&self, request: Self::Request, ctx: &mut NodeCtx<'_>) {
     // Assume a single Request provided an input ReadVar and output WriteVar
     let input_var: ReadVar<String> = /* from one of the requests */;
-    let output_var: WriteVar<i32> = /* from one of the request */
+    let output_var: WriteVar<i32> = /* from one of the requests */;
 
     // Declare a step (still build-time). This adds a node to the DAG.
     ctx.emit_rust_step("compute length", |step| {
@@ -46,9 +47,8 @@ The nested closure pattern is fundamental to flowey's two-phase execution model:
 1. **Build-Time (Outer Closure)**: When flowey constructs the DAG, the outer closure runs to:
    - Claim variables, which registers dependencies in the graph
    - Determine what this step depends on (reads) and produces (writes)
-   - Allow flowey to validate the dependency graph and determine execution order
-   - The outer closure returns the inner closure for later execution
-
+   - Allow flowey determine execution order
+   - Returns an inner closure that gets invoked during the job's runtime
 2. **Runtime (Inner Closure)**: When the pipeline actually executes, the inner closure runs to:
    - Read actual values from claimed `ReadVar`s
    - Perform the real work (computations, running commands, etc.)
@@ -63,14 +63,15 @@ The type system enforces this separation: `claim()` requires `StepCtx` (only ava
 ## ClaimedReadVar and ClaimedWriteVar
 
 These are type aliases for claimed variables:
+
 - [`ClaimedReadVar<T>`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/type.ClaimedReadVar.html) = `ReadVar<T, VarClaimed>`
 - [`ClaimedWriteVar<T>`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/type.ClaimedWriteVar.html) = `WriteVar<T, VarClaimed>`
 
 Only claimed variables can be read/written at runtime.
 
-**Implementation Detail: Zero-Sized Types (ZSTs)**
+### Implementation Detail: Zero-Sized Types (ZSTs)
 
-The claim state markers [`VarClaimed`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/enum.VarClaimed.html) and [`VarNotClaimed`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/enum.VarNotClaimed.html) are zero-sized types (ZSTs) - they exist purely at the type level. It allows Rust to statically verify that all variables used in a runtime block have been claimed by that block. 
+The claim state markers [`VarClaimed`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/enum.VarClaimed.html) and [`VarNotClaimed`](https://openvmm.dev/rustdoc/linux/flowey/node/prelude/enum.VarNotClaimed.html) are zero-sized types (ZSTs) - they exist purely at the type level. It allows Rust to statically verify that all variables used in a runtime block have been claimed by that block.
 
 The type system ensures that `claim()` is the only way to convert from `VarNotClaimed` to `VarClaimed`, and this conversion can only happen within the outer closure where `StepCtx` is available.
 
@@ -86,7 +87,7 @@ let version = ReadVar::from_static("1.2.3".to_string());
 // WARNING: Never use this for secrets!
 ```
 
-This can be used as an escape hatch when you have a Request (that expects a value to be determined at runtime), but in a given instance you know the value is known at build-time. 
+This can be used as an escape hatch when you have a Request (that expects a value to be determined at runtime), but in a given instance you know the value at build-time.
 
 ## Variable Operations
 

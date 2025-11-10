@@ -2,7 +2,7 @@
 
 Pipelines define complete automation workflows consisting of jobs that run nodes. See the [IntoPipeline trait documentation](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/trait.IntoPipeline.html) for detailed examples.
 
-### Pipeline Jobs
+## Pipeline Jobs
 
 [`PipelineJob`](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/struct.PipelineJob.html) instances are configured using a builder pattern:
 
@@ -22,9 +22,9 @@ let job = pipeline
 
 ### Pipeline Parameters
 
-Parameters allow runtime configuration of pipelines. In Azure DevOps, parameters appear as editable fields in the Run pipeline UI (name, description, default).  
-<img src="images/Parameters.png" alt="Azure DevOps parameter UI" width="450" />
+Parameters allow runtime configuration of pipelines. In Azure DevOps, parameters appear as editable fields in the Run pipeline UI (name, description, default).
 
+![Azure DevOps parameter UI](images/Parameters.png)
 
 ```rust
 // Define a boolean parameter
@@ -54,7 +54,7 @@ Stable parameters represent a **public, stable API** for the pipeline:
 
 - **External Visibility**: The parameter name is exposed as-is in the generated CI YAML, making it callable by external pipelines and users.
 - **API Contract**: Once a parameter is marked stable, its name and behavior should be maintained for backward compatibility. Removing or renaming a stable parameter is a breaking change.
-- **Use Cases**: 
+- **Use Cases**:
   - Parameters that control major pipeline behavior (e.g., `enable_tests`, `build_configuration`)
   - Parameters intended for use by other teams or external automation
   - Parameters documented as part of the pipeline's public interface

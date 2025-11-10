@@ -3,6 +3,8 @@
 **Steps** are units of work that will be executed at runtime. Different
 step types exist for different purposes.
 
+## Types of Steps
+
 ### Rust Steps
 
 Rust steps execute Rust code at runtime and are the most common step type in flowey.
@@ -54,32 +56,71 @@ closures passed to `emit_rust_step`, etc.).
 
 [`RustRuntimeServices`](https://openvmm.dev/rustdoc/linux/flowey_core/node/steps/rust/struct.RustRuntimeServices.html) is the primary runtime service available in Rust steps. It provides:
 
-**Variable Operations:**
+#### Variable Operations
+
 - Reading and writing flowey variables
 - Secret handling (automatic secret propagation for safety)
 - Support for reading values of any type that implements [`ReadVarValue`](https://openvmm.dev/rustdoc/linux/flowey_core/node/trait.ReadVarValue.html)
 
-**Environment Queries:**
+#### Environment Queries
+
 - Backend identification (Local, ADO, or GitHub)
 - Platform detection (Windows, Linux, macOS)
 - Architecture information (x86_64, Aarch64)
 
-#### Secret Variables and CI Backend Integration
+### AdoStepServices
+
+[`AdoStepServices`](https://openvmm.dev/rustdoc/linux/flowey_core/node/steps/ado/struct.AdoStepServices.html) provides integration with Azure DevOps-specific features when emitting ADO YAML steps:
+
+**ADO Variable Bridge:**
+
+- Convert ADO runtime variables (like `BUILD.SOURCEBRANCH`) into flowey vars
+- Convert flowey vars back into ADO variables for use in YAML
+- Handle secret variables appropriately
+
+**Repository Resources:**
+
+- Resolve repository IDs declared as pipeline resources
+- Access repository information in ADO-specific steps
+
+### GhStepBuilder
+
+[`GhStepBuilder`](https://openvmm.dev/rustdoc/linux/flowey_core/node/steps/github/struct.GhStepBuilder.html) is a fluent builder for constructing GitHub Actions steps with:
+
+**Step Configuration:**
+
+- Specifying the action to use (e.g., `actions/checkout@v4`)
+- Adding input parameters via `.with()`
+- Capturing step outputs into flowey variables
+- Setting conditional execution based on variables
+
+**Dependency Management:**
+
+- Declaring side-effect dependencies via `.run_after()`
+- Ensuring steps run in the correct order
+
+**Permissions:**
+
+- Declaring required GITHUB_TOKEN permissions
+- Automatic permission aggregation at the job level
+
+## Secret Variables and CI Backend Integration
 
 Flowey provides built-in support for handling sensitive data like API keys, tokens, and credentials through **secret variables**. Secret variables are treated specially to prevent accidental exposure in logs and CI outputs.
 
-**How Secret Handling Works**
+### How Secret Handling Works
 
 When a variable is marked as secret, flowey ensures:
+
 - The value is not logged or printed in step output
 - CI backends (ADO, GitHub Actions) are instructed to mask the value in their logs
 - Secret status is automatically propagated to prevent leaks
 
-**Automatic Secret Propagation**
+### Automatic Secret Propagation
 
 To prevent accidental leaks, flowey uses conservative automatic secret propagation:
 
-```admonish warning 
+```admonish warning
 If a step reads a secret value, **all subsequent writes from that step are automatically marked as secret** by default. This prevents accidentally leaking secrets through derived values.
 ```
 
@@ -107,39 +148,8 @@ If you need to write non-secret data after reading a secret, use `write_not_secr
 rt.write_not_secret(output_var, &"done".to_string());
 ```
 
-**Best Practices for Secrets**
+### Best Practices for Secrets
 
 1. **Never use `ReadVar::from_static()` for secrets** - static values are encoded in plain text in the generated YAML
 2. **Always use `write_secret()`** when writing sensitive data like tokens, passwords, or keys
 3. **Minimize secret lifetime** - read secrets as late as possible and don't pass them through more variables than necessary
-
-### AdoStepServices
-
-[`AdoStepServices`](https://openvmm.dev/rustdoc/linux/flowey_core/node/steps/ado/struct.AdoStepServices.html) provides integration with Azure DevOps-specific features when emitting ADO YAML steps:
-
-**ADO Variable Bridge:**
-- Convert ADO runtime variables (like `BUILD.SOURCEBRANCH`) into flowey vars
-- Convert flowey vars back into ADO variables for use in YAML
-- Handle secret variables appropriately
-
-**Repository Resources:**
-- Resolve repository IDs declared as pipeline resources
-- Access repository information in ADO-specific steps
-
-### GhStepBuilder
-
-[`GhStepBuilder`](https://openvmm.dev/rustdoc/linux/flowey_core/node/steps/github/struct.GhStepBuilder.html) is a fluent builder for constructing GitHub Actions steps with:
-
-**Step Configuration:**
-- Specifying the action to use (e.g., `actions/checkout@v4`)
-- Adding input parameters via `.with()`
-- Capturing step outputs into flowey variables
-- Setting conditional execution based on variables
-
-**Dependency Management:**
-- Declaring side-effect dependencies via `.run_after()`
-- Ensuring steps run in the correct order
-
-**Permissions:**
-- Declaring required GITHUB_TOKEN permissions
-- Automatic permission aggregation at the job level
