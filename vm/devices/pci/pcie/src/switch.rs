@@ -98,7 +98,7 @@ impl DownstreamSwitchPort {
         hotplug_slot_number: Option<u32>,
     ) -> Self {
         let multi_function = multi_function.unwrap_or(false);
-        let (hotplug, slot_number) = match hotplug_slot_number {
+        let (_hotplug, _slot_number) = match hotplug_slot_number {
             Some(slot) => (true, Some(slot)),
             None => (false, None),
         };
@@ -118,8 +118,7 @@ impl DownstreamSwitchPort {
             hardware_ids,
             DevicePortType::DownstreamSwitchPort,
             multi_function,
-            hotplug,
-            slot_number,
+            hotplug_slot_number,
         );
 
         Self { port }

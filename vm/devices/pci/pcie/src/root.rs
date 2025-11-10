@@ -378,7 +378,7 @@ impl RootPort {
     pub fn new(name: impl Into<Arc<str>>, hotplug_slot_number: Option<u32>) -> Self {
         let name_str = name.into();
 
-        let (hotplug, slot_number) = match hotplug_slot_number {
+        let (_hotplug, _slot_number) = match hotplug_slot_number {
             Some(slot) => (true, Some(slot)),
             None => (false, None),
         };
@@ -399,8 +399,7 @@ impl RootPort {
             hardware_ids,
             DevicePortType::RootPort,
             false,
-            hotplug,
-            slot_number,
+            hotplug_slot_number,
         );
 
         Self { port }

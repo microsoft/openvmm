@@ -34,15 +34,26 @@ pub struct PcieDownstreamPort {
 
 impl PcieDownstreamPort {
     /// Creates a new PCIe port with the specified hardware configuration and optional multi-function flag.
+    ///
+    /// # Arguments
+    /// * `name` - The name for this port
+    /// * `hardware_ids` - Hardware identifiers for the port
+    /// * `port_type` - The PCIe port type (root port, downstream switch port, etc.)
+    /// * `multi_function` - Whether this port should have the multi-function flag set
+    /// * `hotplug_slot_number` - The slot number for hotplug support. `Some(slot_number)` enables hotplug, `None` disables it
     pub fn new(
         name: impl Into<String>,
         hardware_ids: HardwareIds,
         port_type: DevicePortType,
         multi_function: bool,
-        hotplug: bool,
-        slot_number: Option<u32>,
+        hotplug_slot_number: Option<u32>,
     ) -> Self {
         let port_name = name.into();
+
+        let (hotplug, slot_number) = match hotplug_slot_number {
+            Some(slot) => (true, Some(slot)),
+            None => (false, None),
+        };
 
         let mut msi_set = MsiInterruptSet::new();
         // Create MSI capability with 1 message (multiple_message_capable=0), 64-bit addressing, no per-vector masking
@@ -272,8 +283,7 @@ mod tests {
             hardware_ids,
             DevicePortType::RootPort,
             false,
-            true,    // Enable hotplug
-            Some(1), // Slot number 1
+            Some(1), // Enable hotplug with slot number 1
         );
 
         // Initially, presence detect state should be 0
@@ -322,8 +332,7 @@ mod tests {
             hardware_ids,
             DevicePortType::RootPort,
             false,
-            false, // No hotplug
-            None,
+            None, // No hotplug
         );
 
         // Add a device to the port (should not panic even without hotplug support)
