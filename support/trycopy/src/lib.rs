@@ -895,9 +895,9 @@ mod tests {
         } else {
             src
         };
+        #[cfg_attr(windows, expect(clippy::needless_update))]
         LAST_ACCESS_FAILURE.set(AccessFailure {
             address: nonsense_addr.cast(),
-            #[cfg(not(windows))]
             ..AccessFailure::empty()
         });
 
