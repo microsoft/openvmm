@@ -134,6 +134,13 @@ impl NvmeManager {
     }
 
     /// Restore NVMe manager's state after servicing.
+    ///
+    /// DEVNOTE(mattkur): If the environment says that save/restore is not supported, then
+    /// we are restoring on a host where we do not understand the state. We must
+    /// quiesce IO (reset the device), clear any allocations, and then create a new device.
+    ///
+    /// The "nice" thing is that we can just be in an empty state after restore. This will cause
+    /// us to create new drivers and namespaces.
     async fn restore(
         worker: &mut NvmeManagerWorker,
         saved_state: &NvmeSavedState,
@@ -431,6 +438,13 @@ impl NvmeManagerWorker {
     }
 
     /// Restore NVMe manager and device states from the buffer after servicing.
+    ///
+    /// DEVNOTE(mattkur): If the environment says that save/restore is not supported, then
+    /// we are restoring on a host where we do not understand the state. We must
+    /// quiesce IO (reset the device), clear any allocations, and then create a new device.
+    ///
+    /// The "nice" thing is that we can just be in an empty state after restore. This will cause
+    /// us to create new drivers and namespaces.
     pub async fn restore(&mut self, saved_state: &NvmeManagerSavedState) -> anyhow::Result<()> {
         let mut restored_devices: HashMap<String, NvmeDriverManager> = HashMap::new();
 

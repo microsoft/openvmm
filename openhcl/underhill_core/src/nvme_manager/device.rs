@@ -91,7 +91,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
                 } else {
                     AllocationVisibility::Private
                 },
-                persistent_allocations: save_restore_supported,
+                persistent_allocations: save_restore_supported, // OK in restore-on-old-host, since this will correctly be `false`. But, ideally, we keep it as `true` so that we can save on a host without support and restore on a node that has it.
             })
             .map_err(NvmeSpawnerError::DmaClient)?;
 
@@ -131,6 +131,19 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
             driver: nvme_driver,
         }))
     }
+
+    // DEVNOTE(mattkur): TODO: create a new trait fn that clears and resets state, in the case of
+    // a restore on a host that does not support restore.
+    //
+    // This will:
+    // 1) Create a DMA client, be sure to say that we require persistent memory (even though save_restore_supported will actually be false).
+    // 2) Reset the device (call `VfioDevice::new` to get a fresh handle, and make sure that you do it in a way such that Vfio calls FLR).
+    // 3) call dma_client.attach_pending_buffers().context("failed to restore allocations")?;
+    // 4) free all the allocations on the dma client.
+    // 5) close the handle to the device (oops, will probably FLR it *again*, but ... that's probably OK; it does multiply the time to be 250ms x 2 per device).
+    //
+    // Now device is in a clean state.
+    // ... after this ... the next calls to get a `namespace` object will first open a handle to the device (so NvmeManagerWorker::restore() can simply be done).
 }
 
 impl VfioNvmeDriverSpawner {

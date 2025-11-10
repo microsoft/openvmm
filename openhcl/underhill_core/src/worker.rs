@@ -1998,6 +1998,11 @@ async fn new_underhill_vm(
     let nvme_manager = if env_cfg.nvme_vfio {
         // TODO: reevaluate enablement of nvme save restore when private pool
         // save restore to bootshim is available.
+        //
+        // DEVNOTE(mattkur): In the event that this UH is _restoring_ on a host that no
+        // longer supports nvme_keep_alive (but UH itself supports this, and thus
+        // has a private pool), private_pool_available will be true and save_restore_supported will be false.
+        //
         let private_pool_available = !runtime_params.private_pool_ranges().is_empty();
         let save_restore_supported = env_cfg.nvme_keep_alive && private_pool_available;
 
