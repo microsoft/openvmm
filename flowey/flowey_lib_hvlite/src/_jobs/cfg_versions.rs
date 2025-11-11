@@ -87,7 +87,7 @@ impl FlowNode for Node {
         }
 
         if has_download_requests && has_local_requests {
-            anyhow::bail!("Cannot mix DownloadDependencies and LocalDependenices requests");
+            anyhow::bail!("cannot mix Download and Local requests");
         }
 
         if has_local_requests {
@@ -98,7 +98,6 @@ impl FlowNode for Node {
             anyhow::bail!("using local dependencies not yet fully implemented");
         }
 
-        ctx.req(crate::resolve_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()));

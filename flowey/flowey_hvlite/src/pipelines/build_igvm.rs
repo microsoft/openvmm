@@ -177,9 +177,15 @@ pub struct BuildIgvmCliCustomizations {
     #[clap(long)]
     pub max_trace_level: Option<MaxTraceLevelCli>,
 
+    /// (experimental) Only use local dependencies to build. Keeps flowey from
+    /// downloading any dependencies from the internet.
     #[clap(long, requires_all = ["custom_openvmm_deps"])]
     pub use_local_deps: bool,
 
+    /// Use a custom openvmm_deps directory.
+    ///
+    /// Expects a parent directory with aarch64 and x64 subdirectories
+    /// containing an openvmm_deps release for each architecture.
     #[clap(long)]
     pub custom_openvmm_deps: Option<PathBuf>,
 }
