@@ -394,7 +394,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             BootDeviceType::Nvme => todo!("NVMe boot device not yet supported for Hyper-V"),
         } {
             if let Some(artifact) = guest_artifact {
-                let controller_location = 0;
+                let controller_location = super::PETRI_VTL0_SCSI_BOOT_LUN;
                 let vhd = artifact.get();
                 let diff_disk_path = temp_dir.path().join(format!(
                     "{}_{}_{}",
@@ -445,7 +445,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 vm.add_vhd(
                     &agent_disk_path,
                     powershell::ControllerType::Scsi,
-                    Some(1),
+                    Some(super::PETRI_VTL0_SCSI_PIPETTE_LUN),
                     Some(petri_vtl0_scsi),
                 )
                 .await?;

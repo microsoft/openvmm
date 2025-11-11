@@ -166,6 +166,9 @@ pub trait PetriVmmBackend {
     ) -> anyhow::Result<Self::VmRuntime>;
 }
 
+pub(crate) const PETRI_VTL0_SCSI_BOOT_LUN: u8 = 0;
+pub(crate) const PETRI_VTL0_SCSI_PIPETTE_LUN: u8 = 1;
+
 /// A constructed Petri VM
 pub struct PetriVm<T: PetriVmmBackend> {
     resources: PetriVmResources,
