@@ -5,12 +5,14 @@
 //! complete log entry with all necessary metadata. It consolidates parsing,
 //! validation, and formatting logic in one place.
 
+use arrayvec::ArrayVec;
 use std::borrow::Cow;
 use std::mem::size_of;
 use thiserror::Error;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerMessageEntryV2;
 use uefi_specs::hyperv::advanced_logger::PHASE_NAMES;
 use uefi_specs::hyperv::advanced_logger::SIG_ENTRY;
+use uefi_specs::hyperv::debug_level::DEBUG_FLAG_COUNT;
 use uefi_specs::hyperv::debug_level::DEBUG_FLAG_NAMES;
 use zerocopy::FromBytes;
 
@@ -157,7 +159,8 @@ pub fn debug_level_to_string(debug_level: u32) -> Cow<'static, str> {
     }
 
     // Handle combined flags or unknown debug levels
-    let flags: Vec<&str> = DEBUG_FLAG_NAMES
+    // Use stack-allocated array to avoid heap allocation
+    let flags: ArrayVec<&str, DEBUG_FLAG_COUNT> = DEBUG_FLAG_NAMES
         .iter()
         .filter(|&&(flag, _)| debug_level & flag != 0)
         .map(|&(_, name)| name)
