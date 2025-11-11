@@ -396,7 +396,6 @@ impl IntoPipeline for BuildIgvmCli {
                 custom_vtl0_kernel,
                 custom_layer,
                 custom_directory,
-                custom_openvmm_deps,
             },
         })
         .finish();

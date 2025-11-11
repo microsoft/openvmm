@@ -53,7 +53,7 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
         ctx.import::<flowey_lib_common::download_cargo_fuzz::Node>();
@@ -92,18 +92,18 @@ impl FlowNode for Node {
 
         if has_local_requests {
             if let Some(openvmm_deps_path) = local_openvmm_deps {
-                ctx.req(crate::download_openvmm_deps::Request::LocalPath(openvmm_deps_path));
+                ctx.req(crate::resolve_openvmm_deps::Request::LocalPath(openvmm_deps_path));
             }
 
             anyhow::bail!("using local dependencies not yet fully implemented");
         }
 
-        ctx.req(crate::download_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
+        ctx.req(crate::resolve_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::CvmDev, OPENHCL_KERNEL_DEV_VERSION.into()));
-        ctx.req(crate::download_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
+        ctx.req(crate::resolve_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
         ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
         ctx.req(flowey_lib_common::download_azcopy::Request::Version(AZCOPY.into()));
         ctx.req(flowey_lib_common::download_cargo_fuzz::Request::Version(FUZZ.into()));

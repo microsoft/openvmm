@@ -3,7 +3,7 @@
 
 //! Wrapper around `update-rootfs.py`
 
-use crate::download_openvmm_deps::OpenvmmDepsArch;
+use crate::resolve_openvmm_deps::OpenvmmDepsArch;
 use crate::run_cargo_build::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -43,8 +43,6 @@ flowey_request! {
         pub bin_openhcl: ReadVar<PathBuf>,
         /// Output path of generated initrd
         pub initrd: WriteVar<OpenhclInitrdOutput>,
-        /// Path to a local openvmm-deps archive to use instead of downloading
-        pub custom_openvmm_deps: Option<PathBuf>,
     }
 }
 
@@ -54,7 +52,7 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
@@ -89,7 +87,6 @@ impl FlowNode for Node {
             bin_openhcl,
             initrd,
             interactive,
-            custom_openvmm_deps,
         } in requests
         {
             let OpenhclInitrdExtraParams {
@@ -103,15 +100,14 @@ impl FlowNode for Node {
                 CommonArch::Aarch64 => OpenvmmDepsArch::Aarch64,
             };
 
-            let interactive_dep = match (interactive, custom_openvmm_deps) {
-                (true, Some(path)) => ReadVar::from_static(path.join("dbgrd.cpio.gz")),
-                (false, Some(path)) => ReadVar::from_static(path.join("shell.cpio.gz")),
-                (true, None) => ctx.reqv(|v| {
-                    crate::download_openvmm_deps::Request::GetOpenhclCpioDbgrd(openvmm_deps_arch, v)
-                }),
-                (false, None) => ctx.reqv(|v| {
-                    crate::download_openvmm_deps::Request::GetOpenhclCpioShell(openvmm_deps_arch, v)
-                }),
+            let interactive_dep = if interactive {
+                ctx.reqv(|v| {
+                    crate::resolve_openvmm_deps::Request::GetOpenhclCpioDbgrd(openvmm_deps_arch, v)
+                })
+            } else {
+                ctx.reqv(|v| {
+                    crate::resolve_openvmm_deps::Request::GetOpenhclCpioShell(openvmm_deps_arch, v)
+                })
             };
 
             if rootfs_config.is_empty() {

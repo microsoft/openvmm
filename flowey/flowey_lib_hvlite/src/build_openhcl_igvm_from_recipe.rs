@@ -15,8 +15,8 @@ use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_openvmm_hcl::OpenvmmHclFeature;
 use crate::download_openhcl_kernel_package::OpenhclKernelPackageArch;
 use crate::download_openhcl_kernel_package::OpenhclKernelPackageKind;
-use crate::download_openvmm_deps::OpenvmmDepsArch;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
+use crate::resolve_openvmm_deps::OpenvmmDepsArch;
 use crate::run_cargo_build::BuildProfile;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonPlatform;
@@ -75,7 +75,6 @@ pub struct OpenhclIgvmRecipeDetailsLocalOnly {
     pub openvmm_hcl_no_strip: bool,
     pub openhcl_initrd_extra_params: Option<OpenhclInitrdExtraParams>,
     pub custom_openvmm_hcl: Option<PathBuf>,
-    pub custom_openvmm_deps: Option<PathBuf>,
     pub custom_openhcl_boot: Option<PathBuf>,
     pub custom_uefi: Option<PathBuf>,
     pub custom_kernel: Option<PathBuf>,
@@ -276,7 +275,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_openvmm_hcl::Node>();
         ctx.import::<crate::build_sidecar::Node>();
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::run_igvmfilegen::Node>();
@@ -312,7 +311,6 @@ impl SimpleFlowNode for Node {
             openvmm_hcl_no_strip,
             openhcl_initrd_extra_params,
             custom_openvmm_hcl,
-            custom_openvmm_deps,
             custom_openhcl_boot,
             custom_uefi,
             custom_kernel,
@@ -322,7 +320,6 @@ impl SimpleFlowNode for Node {
             openvmm_hcl_no_strip: false,
             openhcl_initrd_extra_params: None,
             custom_openvmm_hcl: None,
-            custom_openvmm_deps: None,
             custom_openhcl_boot: None,
             custom_uefi: None,
             custom_kernel: None,
@@ -394,15 +391,10 @@ impl SimpleFlowNode for Node {
         let vtl0_kernel_resource = vtl0_kernel_type.map(|typ| {
             let kernel = if let Vtl0KernelType::LocalOnlyCustom(path) = typ {
                 ReadVar::from_static(path)
-            } else if let Some(path) = custom_openvmm_deps.clone() {
-                match arch {
-                    CommonArch::X86_64 => ReadVar::from_static(path.join("vmlinux")),
-                    CommonArch::Aarch64 => ReadVar::from_static(path.join("Image")),
-                }
             } else {
                 match typ {
                     Vtl0KernelType::Example => ctx.reqv(|v| {
-                        crate::download_openvmm_deps::Request::GetLinuxTestKernel(
+                        crate::resolve_openvmm_deps::Request::GetLinuxTestKernel(
                             match arch {
                                 CommonArch::X86_64 => OpenvmmDepsArch::X86_64,
                                 CommonArch::Aarch64 => OpenvmmDepsArch::Aarch64,
@@ -414,19 +406,15 @@ impl SimpleFlowNode for Node {
                 }
             };
 
-            let initrd = if let Some(path) = custom_openvmm_deps.clone() {
-                ReadVar::from_static(path.join("initrd"))
-            } else {
-                ctx.reqv(|v| {
-                    crate::download_openvmm_deps::Request::GetLinuxTestInitrd(
-                        match arch {
-                            CommonArch::X86_64 => OpenvmmDepsArch::X86_64,
-                            CommonArch::Aarch64 => OpenvmmDepsArch::Aarch64,
-                        },
-                        v,
-                    )
-                })
-            };
+            let initrd = ctx.reqv(|v| {
+                crate::resolve_openvmm_deps::Request::GetLinuxTestInitrd(
+                    match arch {
+                        CommonArch::X86_64 => OpenvmmDepsArch::X86_64,
+                        CommonArch::Aarch64 => OpenvmmDepsArch::Aarch64,
+                    },
+                    v,
+                )
+            });
 
             Vtl0KernelResource { kernel, initrd }
         });
@@ -592,7 +580,6 @@ impl SimpleFlowNode for Node {
                 kernel_package_root: vtl2_kernel_package_root.clone(),
                 bin_openhcl: openvmm_hcl_bin,
                 initrd: v,
-                custom_openvmm_deps: custom_openvmm_deps.clone(),
             })
         };
 
