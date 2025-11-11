@@ -73,7 +73,7 @@ where
     gm.read_at(buffer_start_addr as u64, &mut buffer_data)?;
 
     // Process the buffer
-    process_buffer(&buffer_data, log_level, log_handler)?;
+    LogProcessor::process_buffer(&buffer_data, log_level, log_handler)?;
 
     Ok(())
 }
@@ -131,65 +131,65 @@ impl LogProcessor {
     fn should_emit(&mut self, log: &Log, log_level: LogLevel) -> bool {
         log_level.should_log(log.debug_level) && !self.should_suppress(log)
     }
-}
 
-/// Process the log buffer and emit completed log entries
-fn process_buffer<F>(
-    buffer_data: &[u8],
-    log_level: LogLevel,
-    mut log_handler: F,
-) -> Result<(), ProcessingError>
-where
-    F: FnMut(&Log),
-{
-    let mut buffer_slice = buffer_data;
-    let mut processor = LogProcessor::new();
+    /// Process the log buffer and emit completed log entries
+    fn process_buffer<F>(
+        buffer_data: &[u8],
+        log_level: LogLevel,
+        mut log_handler: F,
+    ) -> Result<(), ProcessingError>
+    where
+        F: FnMut(&Log),
+    {
+        let mut processor = Self::new();
+        let mut buffer_slice = buffer_data;
 
-    // Process the buffer slice until all entries are processed
-    while !buffer_slice.is_empty() {
-        let log = match Log::from_buffer(buffer_slice) {
-            Ok(log) => log,
-            Err(e) => {
-                // Log the error and break - don't try to continue with corrupted data
-                tracelimit::warn_ratelimited!(error = ?e, "Failed to parse log entry, stopping processing");
-                break;
+        // Process the buffer slice until all entries are processed
+        while !buffer_slice.is_empty() {
+            let log = match Log::from_buffer(buffer_slice) {
+                Ok(log) => log,
+                Err(e) => {
+                    // Log the error and break - don't try to continue with corrupted data
+                    tracelimit::warn_ratelimited!(error = ?e, "Failed to parse log entry, stopping processing");
+                    break;
+                }
+            };
+
+            let consumed = log.consumed_bytes;
+            processor.bytes_read += consumed;
+
+            // Feed the log into the accumulator
+            processor.accumulator.feed(log)?;
+
+            // Check if we have a complete message to emit
+            if let Some(complete_log) = processor.accumulator.take() {
+                processor.entries_processed += 1;
+
+                if processor.should_emit(&complete_log, log_level) {
+                    log_handler(&complete_log);
+                }
             }
-        };
 
-        let consumed = log.consumed_bytes;
-        processor.bytes_read += consumed;
+            // Move to the next entry
+            if consumed >= buffer_slice.len() {
+                break; // End of buffer
+            } else {
+                buffer_slice = &buffer_slice[consumed..];
+            }
+        }
 
-        // Feed the log into the accumulator
-        processor.accumulator.feed(log)?;
-
-        // Check if we have a complete message to emit
-        if let Some(complete_log) = processor.accumulator.take() {
+        // Process any remaining accumulated message
+        if let Some(final_log) = processor.accumulator.clear() {
             processor.entries_processed += 1;
 
-            if processor.should_emit(&complete_log, log_level) {
-                log_handler(&complete_log);
+            if processor.should_emit(&final_log, log_level) {
+                log_handler(&final_log);
             }
         }
 
-        // Move to the next entry
-        if consumed >= buffer_slice.len() {
-            break; // End of buffer
-        } else {
-            buffer_slice = &buffer_slice[consumed..];
-        }
+        // Log suppressed message summary and statistics
+        processor.log_summary();
+
+        Ok(())
     }
-
-    // Process any remaining accumulated message
-    if let Some(final_log) = processor.accumulator.clear() {
-        processor.entries_processed += 1;
-
-        if processor.should_emit(&final_log, log_level) {
-            log_handler(&final_log);
-        }
-    }
-
-    // Log suppressed message summary and statistics
-    processor.log_summary();
-
-    Ok(())
 }
