@@ -1982,6 +1982,20 @@ mod tests {
             panic!("Expected File variant");
         }
 
+        // Test term config with name, but no specific path
+        match SerialConfigCli::from_str("term,name=MyTerm").unwrap() {
+            SerialConfigCli::NewConsole(None, Some(name)) => {
+                assert_eq!(name, "MyTerm");
+            }
+            _ => panic!("Expected NewConsole variant with name"),
+        }
+
+        // Test term config without name, but no specific path
+        match SerialConfigCli::from_str("term").unwrap() {
+            SerialConfigCli::NewConsole(None, None) => (),
+            _ => panic!("Expected NewConsole variant without name"),
+        }
+
         // Test term config with name
         match SerialConfigCli::from_str("term=/dev/pts/0,name=MyTerm").unwrap() {
             SerialConfigCli::NewConsole(Some(path), Some(name)) => {
