@@ -15,8 +15,10 @@
 //! internal implementation details should be in submodules.
 
 use crate::UefiDevice;
+use gpa::Gpa;
 use guestmem::GuestMemory;
 use inspect::Inspect;
+use log::Log;
 use mesh::payload::Protobuf;
 use processor::ProcessingError;
 use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
@@ -24,6 +26,7 @@ use uefi_specs::hyperv::debug_level::DEBUG_INFO;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
 
 mod accumulator;
+mod gpa;
 mod header;
 mod log;
 mod processor;
@@ -36,7 +39,7 @@ pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;
 /// # Arguments
 /// * `log` - The log entry to emit
 /// * `limit` - Maximum number of log entries to emit per period
-fn emit_log_ratelimited(log: &log::Log, limit: u32) {
+fn emit_log_ratelimited(log: &Log, limit: u32) {
     let raw_debug_level = log.debug_level;
     if raw_debug_level & DEBUG_ERROR != 0 {
         tracelimit::error_ratelimited!(
@@ -72,7 +75,7 @@ fn emit_log_ratelimited(log: &log::Log, limit: u32) {
 ///
 /// # Arguments
 /// * `log` - The log entry to emit
-fn emit_log_unrestricted(log: &log::Log) {
+fn emit_log_unrestricted(log: &Log) {
     let raw_debug_level = log.debug_level;
     if raw_debug_level & DEBUG_ERROR != 0 {
         tracing::error!(
@@ -151,7 +154,7 @@ impl Inspect for LogLevel {
 #[derive(Inspect)]
 pub struct DiagnosticsServices {
     /// The guest physical address of the diagnostics buffer
-    gpa: Option<u32>,
+    gpa: Option<Gpa>,
     /// Flag indicating if guest-initiated processing has occurred before
     has_guest_processed_before: bool,
     /// Log level used for filtering
@@ -176,10 +179,7 @@ impl DiagnosticsServices {
 
     /// Set the GPA of the diagnostics buffer
     pub fn set_gpa(&mut self, gpa: u32) {
-        self.gpa = match gpa {
-            0 => None,
-            _ => Some(gpa),
-        }
+        self.gpa = Gpa::new(gpa).ok();
     }
 
     /// Processes diagnostics from guest memory
@@ -195,7 +195,7 @@ impl DiagnosticsServices {
         log_handler: F,
     ) -> Result<(), ProcessingError>
     where
-        F: FnMut(&log::Log),
+        F: FnMut(&Log),
     {
         // Delegate to the processor module
         processor::process_diagnostics_internal(
@@ -263,7 +263,7 @@ mod save_restore {
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             Ok(state::SavedState {
-                gpa: self.gpa,
+                gpa: self.gpa.map(|g| g.get()),
                 did_flush: self.has_guest_processed_before,
                 log_level: self.log_level,
             })
@@ -275,7 +275,7 @@ mod save_restore {
                 did_flush,
                 log_level,
             } = state;
-            self.gpa = gpa;
+            self.gpa = gpa.and_then(|g| Gpa::new(g).ok());
             self.has_guest_processed_before = did_flush;
             self.log_level = log_level;
             Ok(())

@@ -5,6 +5,7 @@
 
 use crate::service::diagnostics::LogLevel;
 use crate::service::diagnostics::accumulator::LogAccumulator;
+use crate::service::diagnostics::gpa::Gpa;
 use crate::service::diagnostics::header::HeaderParseError;
 use crate::service::diagnostics::header::LogBufferHeader;
 use crate::service::diagnostics::log::Log;
@@ -49,7 +50,7 @@ pub enum ProcessingError {
 /// * `log_level` - Log level for filtering
 /// * `log_handler` - Function to handle each parsed log entry
 pub fn process_diagnostics_internal<F>(
-    gpa: &mut Option<u32>,
+    gpa: &mut Option<Gpa>,
     has_processed_before: &mut bool,
     allow_reprocess: bool,
     gm: &GuestMemory,

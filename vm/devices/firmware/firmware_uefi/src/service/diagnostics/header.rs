@@ -4,6 +4,7 @@
 //! This module provides `LogBufferHeader`, a trusted representation of an
 //! Advanced Logger buffer header.
 
+use crate::service::diagnostics::gpa::Gpa;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use thiserror::Error;
@@ -28,9 +29,6 @@ pub enum HeaderParseError {
     /// Arithmetic overflow occurred during calculation
     #[error("Arithmetic overflow in {0}")]
     Overflow(&'static str),
-    /// Invalid guest physical address
-    #[error("Invalid GPA value: {0:#x}")]
-    InvalidGpa(u32),
     /// No GPA has been set
     #[error("No GPA set")]
     NoGpa,
@@ -56,19 +54,15 @@ impl LogBufferHeader {
     /// * `gm` - Guest memory to read the header from
     ///
     /// # Returns
-    /// A tuple containing the validated header and the base GPA value on success,
+    /// A tuple containing the validated header and the GPA on success,
     /// or a `HeaderParseError` on failure.
     pub fn from_guest_memory(
-        gpa: Option<u32>,
+        gpa: Option<Gpa>,
         gm: &GuestMemory,
-    ) -> Result<(Self, u32), HeaderParseError> {
-        let gpa_value = match gpa {
-            Some(gpa_val) if gpa_val != 0 && gpa_val != u32::MAX => gpa_val,
-            Some(invalid_gpa) => return Err(HeaderParseError::InvalidGpa(invalid_gpa)),
-            None => return Err(HeaderParseError::NoGpa),
-        };
+    ) -> Result<(Self, Gpa), HeaderParseError> {
+        let gpa = gpa.ok_or(HeaderParseError::NoGpa)?;
 
-        let raw_header: AdvancedLoggerInfo = gm.read_plain(gpa_value as u64)?;
+        let raw_header: AdvancedLoggerInfo = gm.read_plain(gpa.as_u64())?;
 
         let expected_sig = u32::from_le_bytes(SIG_HEADER);
         if raw_header.signature != expected_sig {
@@ -102,7 +96,7 @@ impl LogBufferHeader {
                 buffer_offset: raw_header.log_buffer_offset,
                 used_size,
             },
-            gpa_value,
+            gpa,
         ))
     }
 
@@ -124,8 +118,9 @@ impl LogBufferHeader {
     /// # Returns
     /// The guest physical address where the log buffer data begins, or a
     /// `HeaderParseError` if the calculation would overflow.
-    pub fn buffer_start_address(&self, base_gpa: u32) -> Result<u32, HeaderParseError> {
+    pub fn buffer_start_address(&self, base_gpa: Gpa) -> Result<u32, HeaderParseError> {
         base_gpa
+            .get()
             .checked_add(self.buffer_offset)
             .ok_or_else(|| HeaderParseError::Overflow("buffer_start_address"))
     }
