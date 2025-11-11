@@ -68,7 +68,7 @@ impl PetriVmConfigOpenVmm {
                             path: ScsiPath {
                                 path: 0,
                                 target: 0,
-                                lun: 0,
+                                lun: crate::vm::PETRI_VTL0_SCSI_BOOT_LUN,
                             },
                             device: SimpleScsiDiskHandle {
                                 read_only: true,
@@ -161,7 +161,7 @@ impl PetriVmConfigOpenVmm {
                     path: ScsiPath {
                         path: 0,
                         target: 0,
-                        lun: 1,
+                        lun: crate::vm::PETRI_VTL0_SCSI_PIPETTE_LUN,
                     },
                     device: SimpleScsiDiskHandle {
                         read_only: true,
