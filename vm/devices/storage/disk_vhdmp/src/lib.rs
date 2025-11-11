@@ -458,7 +458,7 @@ impl Vhd {
                 Version: 2,
                 u: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_u {
                     Version2: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_2 {
-                        UniqueId: resiliency_guid.into(),
+                        UniqueId: Guid::new_random().into(),
                         MaximumSize: max_size_mb * 1024 * 1024,
                         BlockSizeInBytes: 2 * 1024 * 1024,
                         SectorSizeInBytes: 512,
