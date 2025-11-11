@@ -143,17 +143,13 @@ impl LogProcessor {
 
     /// Check if a log should be suppressed based on known patterns
     fn should_suppress(&mut self, log: &Log) -> bool {
-        let mut suppress = false;
         for &pattern in &SUPPRESS_LOGS {
             if log.message.contains(pattern) {
-                self.suppressed_logs
-                    .entry(pattern)
-                    .and_modify(|count| *count += 1)
-                    .or_insert(1);
-                suppress = true;
+                *self.suppressed_logs.entry(pattern).or_insert(0) += 1;
+                return true;
             }
         }
-        suppress
+        false
     }
 
     /// Log summary of suppressed messages and statistics
