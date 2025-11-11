@@ -220,5 +220,5 @@ open_enum! {
 pub struct VmgsMarkers {
     pub reprovisioned: bool,
     #[bits(15)]
-    _reserved: u16,
+    _reserved: u32,
 }
