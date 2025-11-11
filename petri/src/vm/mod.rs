@@ -182,7 +182,7 @@ pub struct PetriVm<T: PetriVmmBackend> {
 impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// Create a new VM configuration.
     pub fn new(
-        params: &PetriTestParams<'_>,
+        params: PetriTestParams<'_>,
         artifacts: PetriVmArtifacts<T>,
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
