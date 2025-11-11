@@ -87,9 +87,11 @@ impl PetriVmConfigOpenVmm {
         }
 
         // Add the Petri SCSI controller to VTL0 now that all the disks are on it.
-        config
-            .vmbus_devices
-            .push((DeviceVtl::Vtl0, petri_vtl0_scsi.into_resource()));
+        if !petri_vtl0_scsi.devices.is_empty() {
+            config
+                .vmbus_devices
+                .push((DeviceVtl::Vtl0, petri_vtl0_scsi.into_resource()));
+        }
 
         // Add the GED and VTL 2 settings.
         if let Some(mut ged) = ged {
