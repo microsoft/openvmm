@@ -192,7 +192,12 @@ async fn handle_request(
         PipetteRequest::GetTime(rpc) => rpc.handle_sync(|()| SystemTime::now().into()),
         PipetteRequest::Crash(rpc) => rpc.handle_sync(|()| panic!("crash requested")),
         PipetteRequest::KernelCrash(rpc) => {
-            rpc.handle_failable_sync(|()| crate::crash::trigger_kernel_crash())
+            rpc.handle_failable(async |()| {
+                crate::crash::trigger_kernel_crash()?;
+                std::future::pending::<()>().await;
+                anyhow::Ok(())
+            })
+            .await
         }
     }
 }
