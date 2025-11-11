@@ -255,8 +255,6 @@ impl Vmgs {
         mut storage: VmgsStorage,
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Self, Error> {
-        pre_open_validation(&mut storage).await?;
-
         let (active_header, active_header_index) = Self::open_header(&mut storage).await?;
 
         let mut vmgs =
@@ -270,7 +268,7 @@ impl Vmgs {
     }
 
     async fn open_header(storage: &mut VmgsStorage) -> Result<(VmgsHeader, usize), Error> {
-        let (header_1, header_2) = read_headers(storage).await?;
+        let (header_1, header_2) = read_headers_inner(storage).await.map_err(|(e, _)| e)?;
 
         let active_header_index =
             get_active_header(validate_header(&header_1), validate_header(&header_2))?;
@@ -1574,84 +1572,55 @@ mod test_helpers {
 }
 
 /// Attempt to read both headers and separately return any validation errors
-pub async fn validate_and_read_headers(
+pub async fn read_headers(
     disk: Disk,
-) -> (Result<(VmgsHeader, VmgsHeader), Error>, Result<(), Error>) {
+) -> Result<(VmgsHeader, VmgsHeader), (Error, Option<(VmgsHeader, VmgsHeader)>)> {
     let mut storage = VmgsStorage::new(disk);
-    let validate_result = match storage.validate() {
-        Ok(_) => pre_open_validation(&mut storage).await,
-        Err(e) => Err(Error::Initialization(e)),
-    };
-    let headers_result = read_headers(&mut storage).await;
-    (headers_result, validate_result)
+    match (storage.validate(), read_headers_inner(&mut storage).await) {
+        (Ok(_), res) => res,
+        (Err(e), res) => Err((Error::Initialization(e), res.ok())),
+    }
 }
 
-async fn read_headers(storage: &mut VmgsStorage) -> Result<(VmgsHeader, VmgsHeader), Error> {
+async fn read_headers_inner(
+    storage: &mut VmgsStorage,
+) -> Result<(VmgsHeader, VmgsHeader), (Error, Option<(VmgsHeader, VmgsHeader)>)> {
     // first_two_blocks will contain enough bytes to read the first two headers
     let mut first_two_blocks = [0; (VMGS_BYTES_PER_BLOCK * 2) as usize];
+
     storage
         .read_block(0, &mut first_two_blocks)
         .await
-        .map_err(Error::ReadDisk)?;
+        .map_err(|e| (Error::ReadDisk(e), None))?;
 
     let header_1 = VmgsHeader::read_from_prefix(&first_two_blocks).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     let header_2 =
         VmgsHeader::read_from_prefix(&first_two_blocks[storage.aligned_header_size() as usize..])
             .unwrap()
             .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-    Ok((header_1, header_2))
+    let headers = (header_1, header_2);
+
+    if vmgs_is_v1(&first_two_blocks) {
+        Err((Error::V1Format, Some(headers)))
+    } else if vmgs_headers_empty(&headers.0, &headers.1) {
+        Err((Error::EmptyFile, Some(headers)))
+    } else {
+        Ok(headers)
+    }
 }
 
-async fn pre_open_validation(storage: &mut VmgsStorage) -> Result<(), Error> {
-    if vmgs_is_v1(storage).await? {
-        return Err(Error::V1Format);
-    }
-
-    if vmgs_is_empty(storage).await? {
-        return Err(Error::EmptyFile);
-    }
-
-    Ok(())
-}
-
-async fn vmgs_is_v1(storage: &mut VmgsStorage) -> Result<bool, Error> {
+fn vmgs_is_v1(first_two_blocks: &[u8; 2 * VMGS_BYTES_PER_BLOCK as usize]) -> bool {
     const EFI_SIGNATURE: &[u8] = b"EFI PART";
     const EFI_SIGNATURE_OFFSET: usize = 512;
 
-    let mut first_block = [0; (VMGS_BYTES_PER_BLOCK) as usize];
-
-    storage
-        .read_block(0, &mut first_block)
-        .await
-        .map_err(Error::ReadDisk)?;
-
-    Ok(EFI_SIGNATURE
-        == &first_block[EFI_SIGNATURE_OFFSET..EFI_SIGNATURE_OFFSET + EFI_SIGNATURE.len()])
+    EFI_SIGNATURE
+        == &first_two_blocks[EFI_SIGNATURE_OFFSET..EFI_SIGNATURE_OFFSET + EFI_SIGNATURE.len()]
 }
 
-async fn vmgs_is_empty(storage: &mut VmgsStorage) -> Result<bool, Error> {
-    let empty_block = [0; VMGS_BYTES_PER_BLOCK as usize];
-    let mut test_block = [0; VMGS_BYTES_PER_BLOCK as usize];
-
-    for i in 0..storage.block_capacity() {
-        storage
-            .read_block((i * VMGS_BYTES_PER_BLOCK) as u64, &mut test_block)
-            .await
-            .map_err(Error::ReadDisk)?;
-        if test_block != empty_block {
-            return Ok(false);
-        }
-    }
-
-    Ok(true)
-}
-
-async fn vmgs_is_empty_quick(storage: &mut VmgsStorage) -> Result<bool, Error> {
+fn vmgs_headers_empty(header_1: &VmgsHeader, header_2: &VmgsHeader) -> bool {
     let empty_header = VmgsHeader::new_zeroed();
-    let (header_1, header_2) = read_headers(storage).await?;
 
-    Ok(header_1.as_bytes() == empty_header.as_bytes()
-        && header_2.as_bytes() == empty_header.as_bytes())
+    header_1.as_bytes() == empty_header.as_bytes() && header_2.as_bytes() == empty_header.as_bytes()
 }
 
 /// Determines which header to use given the results of checking the
