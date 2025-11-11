@@ -9721,15 +9721,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "w32-error"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa7c61a6bd91e168c12fc170985725340f6b458eb6f971d1cf6c34f74ffafb43"
-dependencies = [
- "winapi",
-]
-
-[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9858,22 +9849,21 @@ dependencies = [
 
 [[package]]
 name = "win_etw_provider"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a3aa32c55cf5f882e92258c466b75ab216aa7ddc245cef64730150c79641493"
+checksum = "f93d936085c6aac9d7e284def085e0277e769e012279dfb26214e40f8dabf172"
 dependencies = [
- "w32-error",
  "widestring",
  "win_etw_metadata",
  "winapi",
- "zerocopy 0.7.35",
+ "zerocopy 0.8.25",
 ]
 
 [[package]]
 name = "win_etw_tracing"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a60a107937401ac1aa48839f0c7f2e5bdf774d862fd39ef3ba8224980e1b1c9"
+checksum = "fe4ea790d850bc4f1371a8bc877914a9ca4e79a40f29a6902cb310481f2c9747"
 dependencies = [
  "bytes",
  "tracing",
