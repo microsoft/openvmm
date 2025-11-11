@@ -26,6 +26,47 @@ const SUPPRESS_LOGS: [&str; 5] = [
     "ConvertPages: range",
 ];
 
+/// Iterator over raw log entries from a buffer.
+///
+/// This iterator parses individual log entries from the buffer slice,
+/// advancing the buffer as it goes. It stops on the first parse error.
+struct RawLogIterator<'a> {
+    buffer: &'a [u8],
+}
+
+impl<'a> RawLogIterator<'a> {
+    fn new(buffer: &'a [u8]) -> Self {
+        Self { buffer }
+    }
+}
+
+impl<'a> Iterator for RawLogIterator<'a> {
+    type Item = Result<Log, LogParseError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.buffer.is_empty() {
+            return None;
+        }
+
+        match Log::from_buffer(self.buffer) {
+            Ok(log) => {
+                let consumed = log.consumed_bytes;
+                self.buffer = if consumed >= self.buffer.len() {
+                    &[]
+                } else {
+                    &self.buffer[consumed..]
+                };
+                Some(Ok(log))
+            }
+            Err(e) => {
+                // Stop processing on error
+                self.buffer = &[];
+                Some(Err(e))
+            }
+        }
+    }
+}
+
 /// Errors that occur during processing
 #[derive(Debug, Error)]
 pub enum ProcessingError {
@@ -142,54 +183,35 @@ impl LogProcessor {
         F: FnMut(&Log),
     {
         let mut processor = Self::new();
-        let mut buffer_slice = buffer_data;
 
-        // Process the buffer slice until all entries are processed
-        while !buffer_slice.is_empty() {
-            let log = match Log::from_buffer(buffer_slice) {
+        for result in RawLogIterator::new(buffer_data) {
+            let log = match result {
                 Ok(log) => log,
                 Err(e) => {
-                    // Log the error and break - don't try to continue with corrupted data
                     tracelimit::warn_ratelimited!(error = ?e, "Failed to parse log entry, stopping processing");
                     break;
                 }
             };
 
-            let consumed = log.consumed_bytes;
-            processor.bytes_read += consumed;
-
-            // Feed the log into the accumulator
+            processor.bytes_read += log.consumed_bytes;
             processor.accumulator.feed(log)?;
 
-            // Check if we have a complete message to emit
             if let Some(complete_log) = processor.accumulator.take() {
                 processor.entries_processed += 1;
-
                 if processor.should_emit(&complete_log, log_level) {
                     log_handler(&complete_log);
                 }
             }
-
-            // Move to the next entry
-            if consumed >= buffer_slice.len() {
-                break; // End of buffer
-            } else {
-                buffer_slice = &buffer_slice[consumed..];
-            }
         }
 
-        // Process any remaining accumulated message
         if let Some(final_log) = processor.accumulator.clear() {
             processor.entries_processed += 1;
-
             if processor.should_emit(&final_log, log_level) {
                 log_handler(&final_log);
             }
         }
 
-        // Log suppressed message summary and statistics
         processor.log_summary();
-
         Ok(())
     }
 }
