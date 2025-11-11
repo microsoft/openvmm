@@ -21,6 +21,7 @@ use inspect::Inspect;
 use log::Log;
 use mesh::payload::Protobuf;
 use processor::ProcessingError;
+use reprocess_guard::ReprocessGuard;
 use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
 use uefi_specs::hyperv::debug_level::DEBUG_INFO;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
@@ -30,6 +31,7 @@ mod gpa;
 mod header;
 mod log;
 mod processor;
+mod reprocess_guard;
 
 /// Default number of EfiDiagnosticsLogs emitted per period
 pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;
@@ -155,8 +157,8 @@ impl Inspect for LogLevel {
 pub struct DiagnosticsServices {
     /// The guest physical address of the diagnostics buffer
     gpa: Option<Gpa>,
-    /// Flag indicating if guest-initiated processing has occurred before
-    has_guest_processed_before: bool,
+    /// Guard to prevent reprocessing spam from guest
+    reprocess_guard: ReprocessGuard,
     /// Log level used for filtering
     log_level: LogLevel,
 }
@@ -166,7 +168,7 @@ impl DiagnosticsServices {
     pub fn new(log_level: LogLevel) -> DiagnosticsServices {
         DiagnosticsServices {
             gpa: None,
-            has_guest_processed_before: false,
+            reprocess_guard: ReprocessGuard::new(),
             log_level,
         }
     }
@@ -174,7 +176,7 @@ impl DiagnosticsServices {
     /// Reset the diagnostics services state
     pub fn reset(&mut self) {
         self.gpa = None;
-        self.has_guest_processed_before = false;
+        self.reprocess_guard.reset();
     }
 
     /// Set the GPA of the diagnostics buffer
@@ -197,15 +199,23 @@ impl DiagnosticsServices {
     where
         F: FnMut(&Log),
     {
+        // Check if processing is allowed
+        let permission = self.reprocess_guard.check_permission(allow_reprocess);
+        if !permission.is_allowed() {
+            tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
+            return Ok(());
+        }
+
         // Delegate to the processor module
-        processor::process_diagnostics_internal(
-            &mut self.gpa,
-            &mut self.has_guest_processed_before,
-            allow_reprocess,
-            gm,
-            self.log_level,
-            log_handler,
-        )
+        let result =
+            processor::process_diagnostics_internal(self.gpa, gm, self.log_level, log_handler);
+
+        // Only mark as processed if processing succeeded
+        if result.is_ok() {
+            self.reprocess_guard.mark_processed();
+        }
+
+        result
     }
 }
 
@@ -264,7 +274,7 @@ mod save_restore {
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             Ok(state::SavedState {
                 gpa: self.gpa.map(|g| g.get()),
-                did_flush: self.has_guest_processed_before,
+                did_flush: self.reprocess_guard.has_processed(),
                 log_level: self.log_level,
             })
         }
@@ -276,7 +286,13 @@ mod save_restore {
                 log_level,
             } = state;
             self.gpa = gpa.and_then(|g| Gpa::new(g).ok());
-            self.has_guest_processed_before = did_flush;
+            self.reprocess_guard = if did_flush {
+                let mut guard = ReprocessGuard::new();
+                guard.mark_processed();
+                guard
+            } else {
+                ReprocessGuard::new()
+            };
             self.log_level = log_level;
             Ok(())
         }

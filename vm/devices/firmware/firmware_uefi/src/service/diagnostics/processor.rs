@@ -43,16 +43,12 @@ pub enum ProcessingError {
 /// Processes diagnostics from guest memory (internal implementation)
 ///
 /// # Arguments
-/// * `gpa` - Mutable reference to the GPA option
-/// * `has_processed_before` - Mutable reference to the processing flag
-/// * `allow_reprocess` - If true, allows processing even if already processed for guest
+/// * `gpa` - The GPA of the diagnostics buffer
 /// * `gm` - Guest memory to read diagnostics from
 /// * `log_level` - Log level for filtering
 /// * `log_handler` - Function to handle each parsed log entry
 pub fn process_diagnostics_internal<F>(
-    gpa: &mut Option<Gpa>,
-    has_processed_before: &mut bool,
-    allow_reprocess: bool,
+    gpa: Option<Gpa>,
     gm: &GuestMemory,
     log_level: LogLevel,
     log_handler: F,
@@ -60,17 +56,8 @@ pub fn process_diagnostics_internal<F>(
 where
     F: FnMut(&Log),
 {
-    // Prevents the guest from spamming diagnostics processing
-    if !allow_reprocess {
-        if *has_processed_before {
-            tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
-            return Ok(());
-        }
-        *has_processed_before = true;
-    }
-
     // Parse and validate the header
-    let (header, base_gpa) = LogBufferHeader::from_guest_memory(*gpa, gm)?;
+    let (header, base_gpa) = LogBufferHeader::from_guest_memory(gpa, gm)?;
 
     // Early exit if buffer is empty
     if header.is_empty() {
