@@ -30,7 +30,7 @@ pub mod tags {
 
     /// A coarse-grained label used to differentiate between different OS
     /// environments.
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     #[expect(missing_docs)] // Self-describing names.
     pub enum OsFlavor {
         Windows,
