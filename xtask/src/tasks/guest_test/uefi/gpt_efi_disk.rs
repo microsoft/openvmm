@@ -10,7 +10,6 @@ use guid::Guid;
 use std::io::Cursor;
 use std::io::Seek;
 use std::path::Path;
-use zerocopy::IntoBytes;
 
 const SECTOR_SIZE: usize = 512;
 const EFI_GUID: Guid = guid::guid!("{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}");
@@ -37,7 +36,7 @@ pub fn create_gpt_efi_disk(out_img: &Path, with_files: &[(&Path, &Path)]) -> Res
 
         // Set up the GPT Partition Table Header
         gpt[1] = gptman::GPTPartitionEntry {
-            partition_type_guid: EFI_GUID.as_bytes().try_into().unwrap(),
+            partition_type_guid: EFI_GUID.into(),
             unique_partition_guid: Guid::new_random().into(),
             starting_lba: gpt.header.first_usable_lba,
             ending_lba: gpt.header.last_usable_lba,

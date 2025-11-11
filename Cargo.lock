@@ -10378,7 +10378,6 @@ dependencies = [
  "walkdir",
  "which 8.0.0",
  "xshell",
- "zerocopy 0.8.25",
 ]
 
 [[package]]
