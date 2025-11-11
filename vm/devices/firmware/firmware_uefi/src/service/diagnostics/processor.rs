@@ -78,23 +78,16 @@ where
     Ok(())
 }
 
-/// Statistics about processed entries
-#[derive(Debug, Default)]
-struct ProcessingStats {
-    /// Number of entries processed
-    entries_processed: usize,
-    /// Number of bytes read
-    bytes_read: usize,
-}
-
 /// Internal processor for log entries with suppression tracking
 struct LogProcessor {
     /// Accumulator for multi-part messages
     accumulator: LogAccumulator,
     /// Map of suppressed log patterns to their counts
     suppressed_logs: BTreeMap<&'static str, u32>,
-    /// Processing statistics
-    stats: ProcessingStats,
+    /// Number of entries processed
+    entries_processed: usize,
+    /// Number of bytes read from buffer
+    bytes_read: usize,
 }
 
 impl LogProcessor {
@@ -102,7 +95,8 @@ impl LogProcessor {
         Self {
             accumulator: LogAccumulator::new(),
             suppressed_logs: BTreeMap::new(),
-            stats: ProcessingStats::default(),
+            entries_processed: 0,
+            bytes_read: 0,
         }
     }
 
@@ -121,11 +115,21 @@ impl LogProcessor {
         suppress
     }
 
-    /// Log summary of suppressed messages
-    fn log_suppressed_summary(&self) {
+    /// Log summary of suppressed messages and statistics
+    fn log_summary(&self) {
         for (substring, count) in &self.suppressed_logs {
             tracelimit::warn_ratelimited!(substring, count, "suppressed logs");
         }
+        tracelimit::info_ratelimited!(
+            entries_processed = self.entries_processed,
+            bytes_read = self.bytes_read,
+            "processed EFI log entries"
+        );
+    }
+
+    /// Check if a log should be emitted based on level and suppression
+    fn should_emit(&mut self, log: &Log, log_level: LogLevel) -> bool {
+        log_level.should_log(log.debug_level) && !self.should_suppress(log)
     }
 }
 
@@ -153,19 +157,16 @@ where
         };
 
         let consumed = log.consumed_bytes;
-        processor.stats.bytes_read += consumed;
+        processor.bytes_read += consumed;
 
         // Feed the log into the accumulator
         processor.accumulator.feed(log)?;
 
         // Check if we have a complete message to emit
         if let Some(complete_log) = processor.accumulator.take() {
-            processor.stats.entries_processed += 1;
+            processor.entries_processed += 1;
 
-            // Check if log should be emitted based on level and suppression
-            if log_level.should_log(complete_log.debug_level)
-                && !processor.should_suppress(&complete_log)
-            {
+            if processor.should_emit(&complete_log, log_level) {
                 log_handler(&complete_log);
             }
         }
@@ -180,20 +181,15 @@ where
 
     // Process any remaining accumulated message
     if let Some(final_log) = processor.accumulator.clear() {
-        processor.stats.entries_processed += 1;
+        processor.entries_processed += 1;
 
-        if log_level.should_log(final_log.debug_level) && !processor.should_suppress(&final_log) {
+        if processor.should_emit(&final_log, log_level) {
             log_handler(&final_log);
         }
     }
 
     // Log suppressed message summary and statistics
-    processor.log_suppressed_summary();
-    tracelimit::info_ratelimited!(
-        entries_processed = processor.stats.entries_processed,
-        bytes_read = processor.stats.bytes_read,
-        "processed EFI log entries"
-    );
+    processor.log_summary();
 
     Ok(())
 }
