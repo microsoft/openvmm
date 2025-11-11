@@ -15,9 +15,6 @@
 //! internal implementation details should be in submodules.
 
 use crate::UefiDevice;
-use formatting::EfiDiagnosticsLog;
-use formatting::log_diagnostic_ratelimited;
-use formatting::log_diagnostic_unrestricted;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use mesh::payload::Protobuf;
@@ -26,13 +23,83 @@ use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
 use uefi_specs::hyperv::debug_level::DEBUG_INFO;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
 
-mod formatting;
-mod message_accumulator;
-mod parser;
+mod accumulator;
+mod header;
+mod log;
 mod processor;
 
 /// Default number of EfiDiagnosticsLogs emitted per period
 pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;
+
+/// Emit a diagnostic log entry with rate limiting.
+///
+/// # Arguments
+/// * `log` - The log entry to emit
+/// * `limit` - Maximum number of log entries to emit per period
+fn emit_log_ratelimited(log: &log::Log, limit: u32) {
+    let raw_debug_level = log.debug_level;
+    if raw_debug_level & DEBUG_ERROR != 0 {
+        tracelimit::error_ratelimited!(
+            limit: limit,
+            debug_level = %log.debug_level_str(),
+            ticks = log.ticks(),
+            phase = %log.phase_str(),
+            log_message = log.message_trimmed(),
+            "EFI log entry"
+        )
+    } else if raw_debug_level & DEBUG_WARN != 0 {
+        tracelimit::warn_ratelimited!(
+            limit: limit,
+            debug_level = %log.debug_level_str(),
+            ticks = log.ticks(),
+            phase = %log.phase_str(),
+            log_message = log.message_trimmed(),
+            "EFI log entry"
+        )
+    } else {
+        tracelimit::info_ratelimited!(
+            limit: limit,
+            debug_level = %log.debug_level_str(),
+            ticks = log.ticks(),
+            phase = %log.phase_str(),
+            log_message = log.message_trimmed(),
+            "EFI log entry"
+        )
+    }
+}
+
+/// Emit a diagnostic log entry without rate limiting.
+///
+/// # Arguments
+/// * `log` - The log entry to emit
+fn emit_log_unrestricted(log: &log::Log) {
+    let raw_debug_level = log.debug_level;
+    if raw_debug_level & DEBUG_ERROR != 0 {
+        tracing::error!(
+            debug_level = %log.debug_level_str(),
+            ticks = log.ticks(),
+            phase = %log.phase_str(),
+            log_message = log.message_trimmed(),
+            "EFI log entry"
+        )
+    } else if raw_debug_level & DEBUG_WARN != 0 {
+        tracing::warn!(
+            debug_level = %log.debug_level_str(),
+            ticks = log.ticks(),
+            phase = %log.phase_str(),
+            log_message = log.message_trimmed(),
+            "EFI log entry"
+        )
+    } else {
+        tracing::info!(
+            debug_level = %log.debug_level_str(),
+            ticks = log.ticks(),
+            phase = %log.phase_str(),
+            log_message = log.message_trimmed(),
+            "EFI log entry"
+        )
+    }
+}
 
 /// Log level configuration - encapsulates a u32 mask where u32::MAX means log everything
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Protobuf)]
@@ -73,7 +140,7 @@ impl Default for LogLevel {
 
 impl Inspect for LogLevel {
     fn inspect(&self, req: inspect::Request<'_>) {
-        let human_readable = formatting::debug_level_to_string(self.0);
+        let human_readable = log::debug_level_to_string(self.0);
         req.respond()
             .field("raw_value", self.0)
             .field("debug_levels", human_readable.as_ref());
@@ -128,7 +195,7 @@ impl DiagnosticsServices {
         log_handler: F,
     ) -> Result<(), ProcessingError>
     where
-        F: FnMut(EfiDiagnosticsLog<'_>, u32),
+        F: FnMut(&log::Log),
     {
         // Delegate to the processor module
         processor::process_diagnostics_internal(
@@ -152,14 +219,14 @@ impl UefiDevice {
     /// * `allow_reprocess` - If true, allows processing even if already processed for guest
     /// * `limit` - Maximum number of logs to process per period, or `None` for no limit
     pub(crate) fn process_diagnostics(&mut self, allow_reprocess: bool, limit: Option<u32>) {
-        if let Err(error) = self.service.diagnostics.process_diagnostics(
-            allow_reprocess,
-            &self.gm,
-            |log, raw_debug_level| match limit {
-                Some(limit) => log_diagnostic_ratelimited(log, raw_debug_level, limit),
-                None => log_diagnostic_unrestricted(log, raw_debug_level),
-            },
-        ) {
+        if let Err(error) =
+            self.service
+                .diagnostics
+                .process_diagnostics(allow_reprocess, &self.gm, |log| match limit {
+                    Some(limit) => emit_log_ratelimited(log, limit),
+                    None => emit_log_unrestricted(log),
+                })
+        {
             tracelimit::error_ratelimited!(
                 error = &error as &dyn std::error::Error,
                 "failed to process diagnostics buffer"
