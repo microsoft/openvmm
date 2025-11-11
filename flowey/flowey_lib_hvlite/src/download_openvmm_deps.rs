@@ -14,6 +14,8 @@ pub enum OpenvmmDepsArch {
 
 flowey_request! {
     pub enum Request {
+        /// Use a locally downloaded openvmm-deps
+        LocalPath(PathBuf),
         /// Specify version of the github release to pull from
         Version(String),
         GetLinuxTestKernel(OpenvmmDepsArch, WriteVar<PathBuf>),
@@ -36,6 +38,7 @@ impl FlowNode for Node {
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let mut version = None;
+        let mut local_path = None;
         let mut linux_test_kernel: BTreeMap<_, Vec<_>> = BTreeMap::new();
         let mut linux_test_initrd: BTreeMap<_, Vec<_>> = BTreeMap::new();
         let mut openhcl_cpio_dbgrd: BTreeMap<_, Vec<_>> = BTreeMap::new();
@@ -45,7 +48,7 @@ impl FlowNode for Node {
         for req in requests {
             match req {
                 Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
-
+                Request::LocalPath(p) => same_across_all_reqs("LocalPath", &mut local_path, p)?,
                 Request::GetLinuxTestKernel(arch, var) => {
                     linux_test_kernel.entry(arch).or_default().push(var)
                 }
@@ -64,7 +67,13 @@ impl FlowNode for Node {
             }
         }
 
-        let version = version.ok_or(anyhow::anyhow!("Missing essential request: Version"))?;
+        if version.is_some() && local_path.is_some() {
+            anyhow::bail!("Cannot specify both Version and Path requests");
+        }
+
+        if version.is_none() && local_path.is_none() {
+            anyhow::bail!("Must specify a Version or Path request");
+        }
 
         // -- end of req processing -- //
 
@@ -77,6 +86,10 @@ impl FlowNode for Node {
             return Ok(());
         }
 
+        if local_path.is_some() {
+            anyhow::bail!("LocalPath request is not yet implemented");
+        }
+
         let extract_tar_bz2_deps =
             flowey_lib_common::_util::extract::extract_tar_bz2_if_new_deps(ctx);
 
@@ -86,6 +99,7 @@ impl FlowNode for Node {
             || openhcl_cpio_shell.contains_key(&OpenvmmDepsArch::X86_64)
             || openhcl_sysroot.contains_key(&OpenvmmDepsArch::X86_64)
         {
+            let version = version.clone().expect("local requests handled above");
             Some(
                 ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
                     repo_owner: "microsoft".into(),
@@ -107,6 +121,7 @@ impl FlowNode for Node {
             || openhcl_cpio_shell.contains_key(&OpenvmmDepsArch::Aarch64)
             || openhcl_sysroot.contains_key(&OpenvmmDepsArch::Aarch64)
         {
+            let version = version.clone().expect("local requests handled above");
             Some(
                 ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
                     repo_owner: "microsoft".into(),
@@ -131,6 +146,7 @@ impl FlowNode for Node {
             let openhcl_cpio_dbgrd = openhcl_cpio_dbgrd.claim(ctx);
             let openhcl_cpio_shell = openhcl_cpio_shell.claim(ctx);
             let openhcl_sysroot = openhcl_sysroot.claim(ctx);
+            let version = version.clone().expect("local requests handled above");
             move |rt| {
                 let extract_dir_x64 = openvmm_deps_tar_bz2_x64
                     .map(|file| {

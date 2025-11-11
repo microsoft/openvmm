@@ -33,8 +33,16 @@ pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.12.52.1";
 pub const OPENVMM_DEPS: &str = "0.1.0-20250403.3";
 pub const PROTOC: &str = "27.1";
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LocalDependencyRequest {
+    pub openvmm_deps: PathBuf,
+}
+
 flowey_request! {
-    pub struct Request {}
+    pub enum Request {
+        Download,
+        Local(LocalDependencyRequest),
+    }
 }
 
 new_flow_node!(struct Node);
@@ -61,7 +69,36 @@ impl FlowNode for Node {
     }
 
     #[rustfmt::skip]
-    fn emit(_requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+        let mut has_download_requests = false;
+        let mut has_local_requests = false;
+        let mut local_openvmm_deps: Option<PathBuf> = None;
+
+        for req in requests {
+            match req {
+                Request::Download => {
+                    has_download_requests = true;
+                }
+                Request::Local(local_req) => {
+                    has_local_requests = true;
+                    same_across_all_reqs("OpenvmmDepsPath", &mut local_openvmm_deps, local_req.openvmm_deps)?;
+                }
+            }
+        }
+
+        if has_download_requests && has_local_requests {
+            anyhow::bail!("Cannot mix DownloadDependencies and LocalDependenices requests");
+        }
+
+        if has_local_requests {
+            if let Some(openvmm_deps_path) = local_openvmm_deps {
+                ctx.req(crate::download_openvmm_deps::Request::LocalPath(openvmm_deps_path));
+            }
+
+            anyhow::bail!("using local dependencies not yet fully implemented");
+        }
+
+        ctx.req(crate::download_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()));

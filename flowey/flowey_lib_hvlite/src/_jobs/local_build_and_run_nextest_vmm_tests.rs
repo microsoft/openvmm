@@ -451,6 +451,7 @@ impl SimpleFlowNode for Node {
                             openvmm_hcl_no_strip: false,
                             openhcl_initrd_extra_params: initrd_extra,
                             custom_openvmm_hcl: None,
+                            custom_openvmm_deps: None,
                             custom_openhcl_boot: None,
                             custom_uefi: None,
                             custom_kernel: custom_kernel_abs.clone(),

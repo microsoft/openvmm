@@ -43,6 +43,8 @@ flowey_request! {
         pub bin_openhcl: ReadVar<PathBuf>,
         /// Output path of generated initrd
         pub initrd: WriteVar<OpenhclInitrdOutput>,
+        /// Path to a local openvmm-deps archive to use instead of downloading
+        pub custom_openvmm_deps: Option<PathBuf>,
     }
 }
 
@@ -87,6 +89,7 @@ impl FlowNode for Node {
             bin_openhcl,
             initrd,
             interactive,
+            custom_openvmm_deps,
         } in requests
         {
             let OpenhclInitrdExtraParams {
@@ -100,14 +103,15 @@ impl FlowNode for Node {
                 CommonArch::Aarch64 => OpenvmmDepsArch::Aarch64,
             };
 
-            let interactive_dep = if interactive {
-                ctx.reqv(|v| {
+            let interactive_dep = match (interactive, custom_openvmm_deps) {
+                (true, Some(path)) => ReadVar::from_static(path.join("dbgrd.cpio.gz")),
+                (false, Some(path)) => ReadVar::from_static(path.join("shell.cpio.gz")),
+                (true, None) => ctx.reqv(|v| {
                     crate::download_openvmm_deps::Request::GetOpenhclCpioDbgrd(openvmm_deps_arch, v)
-                })
-            } else {
-                ctx.reqv(|v| {
+                }),
+                (false, None) => ctx.reqv(|v| {
                     crate::download_openvmm_deps::Request::GetOpenhclCpioShell(openvmm_deps_arch, v)
-                })
+                }),
             };
 
             if rootfs_config.is_empty() {
