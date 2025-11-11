@@ -42,8 +42,7 @@ pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;
 /// * `log` - The log entry to emit
 /// * `limit` - Maximum number of log entries to emit per period
 fn emit_log_ratelimited(log: &Log, limit: u32) {
-    let raw_debug_level = log.debug_level;
-    if raw_debug_level & DEBUG_ERROR != 0 {
+    if log.debug_level & DEBUG_ERROR != 0 {
         tracelimit::error_ratelimited!(
             limit: limit,
             debug_level = %log.debug_level_str(),
@@ -52,7 +51,7 @@ fn emit_log_ratelimited(log: &Log, limit: u32) {
             log_message = log.message_trimmed(),
             "EFI log entry"
         )
-    } else if raw_debug_level & DEBUG_WARN != 0 {
+    } else if log.debug_level & DEBUG_WARN != 0 {
         tracelimit::warn_ratelimited!(
             limit: limit,
             debug_level = %log.debug_level_str(),
@@ -78,8 +77,7 @@ fn emit_log_ratelimited(log: &Log, limit: u32) {
 /// # Arguments
 /// * `log` - The log entry to emit
 fn emit_log_unrestricted(log: &Log) {
-    let raw_debug_level = log.debug_level;
-    if raw_debug_level & DEBUG_ERROR != 0 {
+    if log.debug_level & DEBUG_ERROR != 0 {
         tracing::error!(
             debug_level = %log.debug_level_str(),
             ticks = log.ticks(),
@@ -87,7 +85,7 @@ fn emit_log_unrestricted(log: &Log) {
             log_message = log.message_trimmed(),
             "EFI log entry"
         )
-    } else if raw_debug_level & DEBUG_WARN != 0 {
+    } else if log.debug_level & DEBUG_WARN != 0 {
         tracing::warn!(
             debug_level = %log.debug_level_str(),
             ticks = log.ticks(),
