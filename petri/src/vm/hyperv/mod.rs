@@ -410,7 +410,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 vm.add_vhd(
                     &diff_disk_path,
                     controller_type,
-                    Some(controller_location as u32),
+                    Some(controller_location),
                     Some(controller_number),
                 )
                 .await?;
@@ -657,7 +657,7 @@ impl HyperVPetriRuntime {
         &mut self,
         vhd: impl AsRef<Path>,
         controller_type: powershell::ControllerType,
-        controller_location: Option<u32>,
+        controller_location: Option<u8>,
         controller_number: Option<u32>,
     ) -> anyhow::Result<()> {
         self.vm
