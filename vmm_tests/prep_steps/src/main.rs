@@ -105,9 +105,12 @@ fn run(
 
     DefaultPool::run_with(async move |driver| {
         let (vm, agent) = PetriVmBuilder::new(
-            &PetriTestParams {
+            PetriTestParams {
                 test_name: name,
                 logger,
+                // FUTURE: To properly support post_test_hooks we'd need to catch panics
+                // and early failure returns. Not worth it for this simple prep step tool.
+                post_test_hooks: &mut vec![],
             },
             artifacts,
             &driver,
