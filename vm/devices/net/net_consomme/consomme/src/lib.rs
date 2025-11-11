@@ -23,6 +23,7 @@ mod dns;
 mod icmp;
 mod ndp;
 mod tcp;
+mod tcpv6;
 mod udp;
 mod windows;
 
@@ -45,6 +46,7 @@ use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Packet;
 use std::net::SocketAddrV4;
+use std::net::SocketAddrV6;
 use std::task::Context;
 use thiserror::Error;
 
@@ -56,6 +58,7 @@ pub struct Consomme {
     #[inspect(mut)]
     udp: udp::Udp,
     icmp: icmp::Icmp,
+    tcpv6: tcpv6::Tcpv6,
 }
 
 #[derive(Inspect)]
@@ -100,7 +103,7 @@ pub struct ConsommeParams {
     #[inspect(display)]
     pub gateway_link_local_ipv6: Ipv6Address,
     /// Current IPv6 address learned from guest via SLAAC (if any).
-    /// 
+    ///
     /// With SLAAC (Stateless Address Autoconfiguration), the guest generates
     /// its own IPv6 address using the advertised prefix and its interface identifier.
     /// This field is learned from incoming IPv6 traffic from the guest.
@@ -121,7 +124,7 @@ impl ConsommeParams {
     pub fn new() -> Result<Self, Error> {
         let nameservers = dns::nameservers()?;
         let gateway_mac_ipv6 = EthernetAddress([0x52, 0x55, 0x0A, 0x00, 0x01, 0x02]);
-        
+
         Ok(Self {
             gateway_ip: Ipv4Address::new(10, 0, 0, 1),
             gateway_mac: EthernetAddress([0x52, 0x55, 10, 0, 0, 1]),
@@ -162,7 +165,7 @@ impl ConsommeParams {
     /// - Invert the universal/local bit (bit 6 of the first byte)
     pub fn compute_link_local_address(mac: EthernetAddress) -> Ipv6Address {
         const LINK_LOCAL_PREFIX: [u8; 8] = [0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        
+
         let mut addr = [0u8; 16];
 
         // Set link-local prefix (fe80::/64)
@@ -265,6 +268,12 @@ impl ChecksumState {
         udp: true,
         tso: None,
     };
+    const TCP6: Self = Self {
+        ipv4: false,
+        tcp: true,
+        udp: false,
+        tso: None,
+    };
 
     fn caps(&self) -> ChecksumCapabilities {
         let mut caps = ChecksumCapabilities::default();
@@ -303,29 +312,15 @@ impl From<SocketAddress> for socket2::SockAddr {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-enum IpSocketAddress {
-    V4 { ip: Ipv4Address, port: u16 },
-    V6 { ip: Ipv6Address, port: u16 },
-}
+trait SupportedAddressFamily {}
 
-impl From<IpSocketAddress> for std::net::SocketAddr {
-    fn from(addr: IpSocketAddress) -> Self {
-        match addr {
-            IpSocketAddress::V4 { ip, port } => {
-                std::net::SocketAddr::V4(SocketAddrV4::new(ip.into(), port))
-            }
-            IpSocketAddress::V6 { ip, port } => {
-                std::net::SocketAddr::V6(std::net::SocketAddrV6::new(ip.into(), port, 0, 0))
-            }
-        }
-    }
-}
+impl SupportedAddressFamily for SocketAddrV4 {}
+impl SupportedAddressFamily for SocketAddrV6 {}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-struct FourTuple {
-    dst: SocketAddress,
-    src: SocketAddress,
+pub struct FourTuple<T: SupportedAddressFamily> {
+    pub src: T,
+    pub dst: T,
 }
 
 /// The reason a packet was dropped without being handled.
@@ -395,6 +390,22 @@ enum IpAddresses {
     V6(Ipv6Addresses),
 }
 
+impl IpAddresses {
+    fn src(&self) -> IpAddress {
+        match self {
+            IpAddresses::V4(addrs) => IpAddress::Ipv4(addrs.src_addr),
+            IpAddresses::V6(addrs) => IpAddress::Ipv6(addrs.src_addr),
+        }
+    }
+
+    fn dst(&self) -> IpAddress {
+        match self {
+            IpAddresses::V4(addrs) => IpAddress::Ipv4(addrs.dst_addr),
+            IpAddresses::V6(addrs) => IpAddress::Ipv6(addrs.dst_addr),
+        }
+    }
+}
+
 impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(params: ConsommeParams) -> Self {
@@ -406,6 +417,7 @@ impl Consomme {
             tcp: tcp::Tcp::new(),
             udp: udp::Udp::new(),
             icmp: icmp::Icmp::new(),
+            tcpv6: tcpv6::Tcpv6::new(),
         }
     }
 
@@ -441,6 +453,7 @@ impl<T: Client> Access<'_, T> {
     pub fn poll(&mut self, cx: &mut Context<'_>) {
         self.poll_udp(cx);
         self.poll_tcp(cx);
+        self.poll_tcpv6(cx);
         self.poll_icmp(cx);
     }
 
@@ -450,6 +463,7 @@ impl<T: Client> Access<'_, T> {
     pub fn refresh_driver(&mut self) {
         self.refresh_tcp_driver();
         self.refresh_udp_driver();
+        self.refresh_tcpv6_driver();
     }
 
     /// Sends an Ethernet frame to the network.
@@ -486,7 +500,9 @@ impl<T: Client> Access<'_, T> {
         let frame = EthernetRepr::parse(&frame_packet)?;
         match frame.ethertype {
             EthernetProtocol::Ipv4 => self.handle_ipv4(&frame, frame_packet.payload(), checksum)?,
-            EthernetProtocol::Ipv6 => self.handle_ipv6(&frame, frame_packet.payload(), checksum, data)?,
+            EthernetProtocol::Ipv6 => {
+                self.handle_ipv6(&frame, frame_packet.payload(), checksum, data)?
+            }
             EthernetProtocol::Arp => self.handle_arp(&frame, frame_packet.payload())?,
             _ => return Err(DropReason::UnsupportedEthertype(frame.ethertype)),
         }
@@ -569,12 +585,13 @@ impl<T: Client> Access<'_, T> {
             IpProtocol::Udp => {
                 self.handle_udp(frame, &IpAddresses::V6(addresses), inner, checksum)?
             }
+            IpProtocol::Tcp => self.handle_tcpv6(&addresses, inner, checksum)?,
             IpProtocol::Icmpv6 => {
                 // Check if this is an NDP packet (Neighbor Solicitation or Neighbor Advertisement)
                 use smoltcp::wire::Icmpv6Packet;
                 let icmpv6_packet = Icmpv6Packet::new_unchecked(inner);
                 let msg_type = icmpv6_packet.msg_type();
-                
+
                 if msg_type == smoltcp::wire::Icmpv6Message::NeighborSolicit
                     || msg_type == smoltcp::wire::Icmpv6Message::NeighborAdvert
                     || msg_type == smoltcp::wire::Icmpv6Message::RouterSolicit

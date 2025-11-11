@@ -8,7 +8,6 @@ use super::dhcp::DHCP_SERVER;
 use crate::ChecksumState;
 use crate::ConsommeState;
 use crate::IpAddresses;
-use crate::IpSocketAddress;
 use dhcproto::v6::SERVER_PORT as DHCPV6_SERVER_PORT;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -38,12 +37,16 @@ use std::collections::hash_map;
 use std::io::ErrorKind;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
+use std::net::SocketAddr;
+use std::net::SocketAddrV4;
+use std::net::SocketAddrV6;
 use std::net::UdpSocket;
 use std::task::Context;
 use std::task::Poll;
 
 pub(crate) struct Udp {
-    connections: HashMap<IpSocketAddress, UdpConnection>,
+    connections: HashMap<SocketAddr, UdpConnection>,
 }
 
 impl Udp {
@@ -59,8 +62,8 @@ impl InspectMut for Udp {
         let mut resp = req.respond();
         for (addr, conn) in &mut self.connections {
             let key = match addr {
-                IpSocketAddress::V4 { ip, port } => format!("{}:{}", ip, port),
-                IpSocketAddress::V6 { ip, port } => format!("[{}]:{}", ip, port),
+                SocketAddr::V4(addr) => format!("{}:{}", addr.ip(), addr.port()),
+                SocketAddr::V6(addr) => format!("[{}]:{}", addr.ip(), addr.port()),
             };
             resp.field_mut(&key, conn);
         }
@@ -90,7 +93,7 @@ impl UdpConnection {
     fn poll_conn(
         &mut self,
         cx: &mut Context<'_>,
-        dst_addr: &IpSocketAddress,
+        dst_addr: &SocketAddr,
         state: &mut ConsommeState,
         client: &mut impl Client,
     ) -> bool {
@@ -110,8 +113,8 @@ impl UdpConnection {
             }
 
             let header_offset = match dst_addr {
-                IpSocketAddress::V4 { .. } => IPV4_HEADER_LEN + UDP_HEADER_LEN,
-                IpSocketAddress::V6 { .. } => IPV6_HEADER_LEN + UDP_HEADER_LEN,
+                SocketAddr::V4 { .. } => IPV4_HEADER_LEN + UDP_HEADER_LEN,
+                SocketAddr::V6 { .. } => IPV6_HEADER_LEN + UDP_HEADER_LEN,
             };
 
             match self.socket.as_mut().unwrap().poll_io(
@@ -131,18 +134,12 @@ impl UdpConnection {
 
                     // Build IP and UDP headers based on address version
                     let (packet_len, checksum_state) = match (src_addr.ip(), dst_addr) {
-                        (
-                            IpAddr::V4(src_ip),
-                            IpSocketAddress::V4 {
-                                ip: dst_ip,
-                                port: dst_port,
-                            },
-                        ) => {
+                        (IpAddr::V4(src_ip), SocketAddr::V4(dst_addr)) => {
                             eth.set_ethertype(EthernetProtocol::Ipv4);
                             let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
                             Ipv4Repr {
                                 src_addr: src_ip.into(),
-                                dst_addr: *dst_ip,
+                                dst_addr: (*dst_addr.ip()).into(),
                                 protocol: IpProtocol::Udp,
                                 payload_len: UDP_HEADER_LEN + n,
                                 hop_limit: 64,
@@ -152,27 +149,21 @@ impl UdpConnection {
                             // Build UDP header
                             let mut udp = UdpPacket::new_unchecked(ipv4.payload_mut());
                             udp.set_src_port(src_addr.port());
-                            udp.set_dst_port(*dst_port);
+                            udp.set_dst_port(dst_addr.port());
                             udp.set_len((UDP_HEADER_LEN + n) as u16);
-                            udp.fill_checksum(&src_ip.into(), &(*dst_ip).into());
+                            udp.fill_checksum(&src_ip.into(), &(*dst_addr.ip()).into());
 
                             (
                                 ETHERNET_HEADER_LEN + ipv4.total_len() as usize,
                                 ChecksumState::UDP4,
                             )
                         }
-                        (
-                            IpAddr::V6(src_ip),
-                            IpSocketAddress::V6 {
-                                ip: dst_ip,
-                                port: dst_port,
-                            },
-                        ) => {
+                        (IpAddr::V6(src_ip), SocketAddr::V6(dst_addr)) => {
                             eth.set_ethertype(EthernetProtocol::Ipv6);
                             let mut ipv6 = Ipv6Packet::new_unchecked(eth.payload_mut());
                             Ipv6Repr {
                                 src_addr: src_ip.into(),
-                                dst_addr: *dst_ip,
+                                dst_addr: (*dst_addr.ip()).into(),
                                 next_header: IpProtocol::Udp,
                                 payload_len: UDP_HEADER_LEN + n,
                                 hop_limit: 64,
@@ -182,9 +173,9 @@ impl UdpConnection {
                             // Build UDP header
                             let mut udp = UdpPacket::new_unchecked(ipv6.payload_mut());
                             udp.set_src_port(src_addr.port());
-                            udp.set_dst_port(*dst_port);
+                            udp.set_dst_port(dst_addr.port());
                             udp.set_len((UDP_HEADER_LEN + n) as u16);
-                            udp.fill_checksum(&src_ip.into(), &(*dst_ip).into());
+                            udp.fill_checksum(&src_ip.into(), &(*dst_addr.ip()).into());
 
                             (
                                 ETHERNET_HEADER_LEN + IPV6_HEADER_LEN + UDP_HEADER_LEN + n,
@@ -267,15 +258,11 @@ impl<T: Client> Access<'_, T> {
                     }
                 }
 
-                let guest_addr = IpSocketAddress::V4 {
-                    ip: addrs.src_addr,
-                    port: udp.src_port,
-                };
+                let guest_addr =
+                    SocketAddr::V4(SocketAddrV4::new(addrs.src_addr.into(), udp.src_port));
 
-                let dst_sock_addr = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
-                    addrs.dst_addr.into(),
-                    udp.dst_port,
-                ));
+                let dst_sock_addr =
+                    SocketAddr::V4(SocketAddrV4::new(addrs.dst_addr.into(), udp.dst_port));
 
                 (guest_addr, dst_sock_addr)
             }
@@ -295,19 +282,12 @@ impl<T: Client> Access<'_, T> {
                         return Ok(());
                     }
                 }
-                
 
-                let guest_addr = IpSocketAddress::V6 {
-                    ip: addrs.src_addr,
-                    port: udp.src_port,
-                };
+                let guest_addr =
+                    SocketAddr::V6(SocketAddrV6::new(addrs.src_addr.into(), udp.src_port, 0, 0));
 
-                let dst_sock_addr = std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
-                    addrs.dst_addr.into(),
-                    udp.dst_port,
-                    0,
-                    0,
-                ));
+                let dst_sock_addr =
+                    SocketAddr::V6(SocketAddrV6::new(addrs.dst_addr.into(), udp.dst_port, 0, 0));
 
                 (guest_addr, dst_sock_addr)
             }
@@ -338,20 +318,20 @@ impl<T: Client> Access<'_, T> {
 
     fn get_or_insert(
         &mut self,
-        guest_addr: IpSocketAddress,
+        guest_addr: SocketAddr,
         guest_mac: Option<EthernetAddress>,
     ) -> Result<&mut UdpConnection, DropReason> {
         let entry = self.inner.udp.connections.entry(guest_addr);
         match entry {
             hash_map::Entry::Occupied(conn) => Ok(conn.into_mut()),
             hash_map::Entry::Vacant(e) => {
-                let bind_addr: std::net::SocketAddr = match guest_addr {
-                    IpSocketAddress::V4 { .. } => std::net::SocketAddr::V4(
-                        std::net::SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0),
-                    ),
-                    IpSocketAddress::V6 { .. } => std::net::SocketAddr::V6(
-                        std::net::SocketAddrV6::new(std::net::Ipv6Addr::UNSPECIFIED, 0, 0, 0),
-                    ),
+                let bind_addr: SocketAddr = match guest_addr {
+                    SocketAddr::V4 { .. } => {
+                        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))
+                    }
+                    SocketAddr::V6 { .. } => {
+                        SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0))
+                    }
                 };
 
                 let socket = UdpSocket::bind(bind_addr).map_err(DropReason::Io)?;
@@ -379,7 +359,11 @@ impl<T: Client> Access<'_, T> {
         }
     }
 
-    fn handle_gateway_udp_v6(&mut self, udp: &UdpPacket<&[u8]>, client_ip: Option<Ipv6Address>) -> Result<bool, DropReason> {
+    fn handle_gateway_udp_v6(
+        &mut self,
+        udp: &UdpPacket<&[u8]>,
+        client_ip: Option<Ipv6Address>,
+    ) -> Result<bool, DropReason> {
         let payload = udp.payload();
         match udp.dst_port() {
             DHCPV6_SERVER_PORT => {
@@ -394,18 +378,9 @@ impl<T: Client> Access<'_, T> {
     /// packets to the guest.
     pub fn bind_udp_port(&mut self, ip_addr: Option<IpAddr>, port: u16) -> Result<(), DropReason> {
         let guest_addr = match ip_addr {
-            Some(IpAddr::V4(ip)) => IpSocketAddress::V4 {
-                ip: ip.into(),
-                port,
-            },
-            Some(IpAddr::V6(ip)) => IpSocketAddress::V6 {
-                ip: ip.into(),
-                port,
-            },
-            None => IpSocketAddress::V4 {
-                ip: Ipv4Addr::UNSPECIFIED.into(),
-                port,
-            },
+            Some(IpAddr::V4(ip)) => SocketAddr::V4(SocketAddrV4::new(ip.into(), port)),
+            Some(IpAddr::V6(ip)) => SocketAddr::V6(SocketAddrV6::new(ip.into(), port, 0, 0)),
+            None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED.into(), port)),
         };
         let _ = self.get_or_insert(guest_addr, None)?;
         Ok(())
@@ -414,14 +389,8 @@ impl<T: Client> Access<'_, T> {
     /// Unbinds from the specified host port for both IPv4 and IPv6.
     pub fn unbind_udp_port(&mut self, port: u16) -> Result<(), DropReason> {
         // Try to remove both IPv4 and IPv6 bindings
-        let v4_addr = IpSocketAddress::V4 {
-            ip: Ipv4Addr::UNSPECIFIED.into(),
-            port,
-        };
-        let v6_addr = IpSocketAddress::V6 {
-            ip: std::net::Ipv6Addr::UNSPECIFIED.into(),
-            port,
-        };
+        let v4_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port));
+        let v6_addr = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0));
 
         let v4_removed = self.inner.udp.connections.remove(&v4_addr).is_some();
         let v6_removed = self.inner.udp.connections.remove(&v6_addr).is_some();

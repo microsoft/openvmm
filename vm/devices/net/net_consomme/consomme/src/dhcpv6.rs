@@ -8,9 +8,9 @@ use super::Client;
 use super::DropReason;
 use crate::ChecksumState;
 use crate::MIN_MTU;
-use dhcproto::v6;
 use dhcproto::Decodable;
 use dhcproto::Encodable;
+use dhcproto::v6;
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
@@ -27,10 +27,17 @@ pub const DHCPV6_CLIENT_PORT: u16 = 546;
 pub const DHCPV6_SERVER_PORT: u16 = 547;
 
 impl<T: Client> Access<'_, T> {
-    pub(crate) fn handle_dhcpv6(&mut self, payload: &[u8], client_ip: Option<Ipv6Address>) -> Result<(), DropReason> {
+    pub(crate) fn handle_dhcpv6(
+        &mut self,
+        payload: &[u8],
+        client_ip: Option<Ipv6Address>,
+    ) -> Result<(), DropReason> {
         // Parse the DHCPv6 message
         let msg = v6::Message::decode(&mut dhcproto::Decoder::new(payload)).map_err(|x| {
-            tracing::info!(error = &x as &dyn std::error::Error, "failed to decode DHCPv6 message");
+            tracing::info!(
+                error = &x as &dyn std::error::Error,
+                "failed to decode DHCPv6 message"
+            );
             DropReason::Packet(smoltcp::Error::Malformed)
         })?;
 
@@ -44,8 +51,12 @@ impl<T: Client> Access<'_, T> {
                 reply.set_xid(msg.xid());
 
                 // Add Client Identifier option (echo back from the InformationRequest)
-                if let Some(v6::DhcpOption::ClientId(client_id)) = msg.opts().get(v6::OptionCode::ClientId) {
-                    reply.opts_mut().insert(v6::DhcpOption::ClientId(client_id.clone()));
+                if let Some(v6::DhcpOption::ClientId(client_id)) =
+                    msg.opts().get(v6::OptionCode::ClientId)
+                {
+                    reply
+                        .opts_mut()
+                        .insert(v6::DhcpOption::ClientId(client_id.clone()));
                 }
 
                 // Add Server Identifier option
@@ -53,7 +64,9 @@ impl<T: Client> Access<'_, T> {
                 let gateway_mac = self.inner.state.params.gateway_mac_ipv6.0;
                 let mut duid_bytes = vec![0x00, 0x03, 0x00, 0x01]; // Type 3 (LL), Hardware type 1 (Ethernet)
                 duid_bytes.extend_from_slice(&gateway_mac);
-                reply.opts_mut().insert(v6::DhcpOption::ServerId(duid_bytes));
+                reply
+                    .opts_mut()
+                    .insert(v6::DhcpOption::ServerId(duid_bytes));
 
                 // Add DNS Recursive Name Server option if we have nameservers
                 let dns_servers: Vec<std::net::Ipv6Addr> = self
@@ -66,20 +79,32 @@ impl<T: Client> Access<'_, T> {
                         IpAddress::Ipv6(addr) => Some(*addr),
                         _ => None,
                     })
-                    .filter(|addr| !(addr.is_unspecified() || addr.is_loopback() || addr.is_link_local() || addr.is_multicast() || addr.0.starts_with(&[0xfc, 0x00]) || addr.0.starts_with(&[0xfe, 0xc0])))
+                    .filter(|addr| {
+                        !(addr.is_unspecified()
+                            || addr.is_loopback()
+                            || addr.is_link_local()
+                            || addr.is_multicast()
+                            || addr.0.starts_with(&[0xfc, 0x00])
+                            || addr.0.starts_with(&[0xfe, 0xc0]))
+                    })
                     .map(|addr| addr.into())
                     .collect();
 
                 let mut dns_servers_len = 0;
                 if !dns_servers.is_empty() {
                     dns_servers_len = dns_servers.len();
-                    reply.opts_mut().insert(v6::DhcpOption::DomainNameServers(dns_servers));
+                    reply
+                        .opts_mut()
+                        .insert(v6::DhcpOption::DomainNameServers(dns_servers));
                 }
 
                 let mut dhcpv6_buffer = Vec::new();
                 let mut encoder = dhcproto::Encoder::new(&mut dhcpv6_buffer);
                 reply.encode(&mut encoder).map_err(|x| {
-                    tracing::error!(error = &x as &dyn std::error::Error, "failed to encode DHCPv6 message");
+                    tracing::error!(
+                        error = &x as &dyn std::error::Error,
+                        "failed to encode DHCPv6 message"
+                    );
                     DropReason::Packet(smoltcp::Error::Malformed)
                 })?;
 
@@ -88,7 +113,8 @@ impl<T: Client> Access<'_, T> {
                     dst_port: DHCPV6_CLIENT_PORT,
                 };
 
-                let client_link_local = client_ip.unwrap_or_else(|| Ipv6Address::from_str("ff02::1:2").unwrap());
+                let client_link_local =
+                    client_ip.unwrap_or_else(|| Ipv6Address::from_str("ff02::1:2").unwrap());
                 let resp_ipv6 = Ipv6Repr {
                     src_addr: self.inner.state.params.gateway_link_local_ipv6,
                     dst_addr: client_link_local,
@@ -142,7 +168,7 @@ impl<T: Client> Access<'_, T> {
                 tracing::info!(packet = %hex_packet, "sending DHCPv6 packet");
 
                 self.client.recv(&buffer[..total_len], &ChecksumState::NONE);
-            },
+            }
             _ => return Err(DropReason::UnsupportedDhcpv6(msg.msg_type())),
         }
 

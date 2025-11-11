@@ -49,8 +49,13 @@ pub fn nameservers() -> Result<Vec<IpAddress>, Error> {
         let mut addrs = Addresses::new(0);
         loop {
             let mut size = addrs.size();
-            let r =
-                GetAdaptersAddresses(AF_UNSPEC.into(), flags, null_mut(), addrs.as_ptr(), &mut size);
+            let r = GetAdaptersAddresses(
+                AF_UNSPEC.into(),
+                flags,
+                null_mut(),
+                addrs.as_ptr(),
+                &mut size,
+            );
             match r {
                 ERROR_SUCCESS => break,
                 ERROR_BUFFER_OVERFLOW => {}
@@ -79,8 +84,7 @@ pub fn nameservers() -> Result<Vec<IpAddress>, Error> {
                     let ipv4_addr = Ipv4Addr::from(u32::from_be(dns_addr.sin_addr.S_un.S_addr));
                     tracing::info!(dns_server = %ipv4_addr, "Collected IPv4 DNS server");
                     dns_servers.push(ipv4_addr.into());
-                }
-                else if dns_addr.sa_family == AF_INET6 {
+                } else if dns_addr.sa_family == AF_INET6 {
                     let dns_addr = &*dns.Address.lpSockaddr.cast::<SOCKADDR_IN6>();
                     let ipv6_addr = Ipv6Addr::from(u128::from_be_bytes(dns_addr.sin6_addr.u.Byte));
                     tracing::info!(dns_server = %ipv6_addr, "Collected IPv6 DNS server");
@@ -92,7 +96,10 @@ pub fn nameservers() -> Result<Vec<IpAddress>, Error> {
         }
     }
 
-    tracing::info!(total_dns_servers = dns_servers.len(), "DNS server collection complete");
+    tracing::info!(
+        total_dns_servers = dns_servers.len(),
+        "DNS server collection complete"
+    );
     Ok(dns_servers)
 }
 
@@ -141,17 +148,21 @@ mod tests {
     fn test_nameservers() {
         // This test calls the actual Windows API to get DNS servers
         let result = nameservers();
-        
+
         // The function should succeed (though the list may be empty on some systems)
-        assert!(result.is_ok(), "nameservers() should succeed: {:?}", result.err());
-        
+        assert!(
+            result.is_ok(),
+            "nameservers() should succeed: {:?}",
+            result.err()
+        );
+
         let dns_servers = result.unwrap();
-        
+
         // Pretty print the DNS servers found
         println!("\n========================================");
         println!("DNS Servers Found: {}", dns_servers.len());
         println!("========================================");
-        
+
         if dns_servers.is_empty() {
             println!("  (No DNS servers configured)");
         } else {
@@ -170,7 +181,7 @@ mod tests {
             }
         }
         println!("========================================\n");
-        
+
         // Verify that all returned addresses are valid IP addresses
         // (they are already typed as IpAddress, so this is mainly checking the parsing)
         for server in &dns_servers {
@@ -187,7 +198,7 @@ mod tests {
                 }
             }
         }
-        
+
         // Note: We don't assert that dns_servers is non-empty because
         // some systems might not have DNS servers configured, though this is rare
     }

@@ -25,8 +25,8 @@ use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Packet;
 use smoltcp::wire::Ipv6Repr;
 use smoltcp::wire::NdiscNeighborFlags;
-use smoltcp::wire::NdiscPrefixInformation;
 use smoltcp::wire::NdiscPrefixInfoFlags;
+use smoltcp::wire::NdiscPrefixInformation;
 use smoltcp::wire::NdiscRepr;
 use smoltcp::wire::NdiscRouterFlags;
 use smoltcp::wire::RawHardwareAddress;
@@ -114,7 +114,7 @@ impl<T: Client> Access<'_, T> {
         // Verify this is from the expected client MAC (if link-layer address is provided)
         if let Some(lladdr) = lladdr {
             if let Ok(hw_addr) = lladdr.parse(Medium::Ethernet) {
-                let HardwareAddress::Ethernet(eth_addr) = hw_addr; 
+                let HardwareAddress::Ethernet(eth_addr) = hw_addr;
                 if eth_addr != self.inner.state.params.client_mac {
                     tracing::info!("Router Solicitation from unexpected MAC, ignoring");
                     return Ok(());
@@ -162,8 +162,10 @@ impl<T: Client> Access<'_, T> {
         // Compute the network prefix from our configured IPv6 parameters
         // This is the prefix that clients will use for SLAAC
         let prefix = self.compute_network_prefix(
-            Ipv6Address([0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x01]),
+            Ipv6Address([
+                0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x01,
+            ]),
             self.inner.state.params.prefix_len_ipv6,
         );
 
@@ -171,11 +173,11 @@ impl<T: Client> Access<'_, T> {
         // We set the AUTONOMOUS flag to enable SLAAC and ON_LINK flag to indicate
         // that addresses with this prefix are on-link.
         let ndp_repr = NdiscRepr::RouterAdvert {
-            hop_limit: 64, // Default hop limit for outgoing packets
+            hop_limit: 64,                    // Default hop limit for outgoing packets
             flags: NdiscRouterFlags::empty(), // No MANAGED or OTHER flags (stateless only)
             router_lifetime: smoltcp::time::Duration::from_secs(1800), // 30 minutes
-            reachable_time: smoltcp::time::Duration::from_millis(0),   // Unspecified
-            retrans_time: smoltcp::time::Duration::from_millis(0),     // Unspecified
+            reachable_time: smoltcp::time::Duration::from_millis(0), // Unspecified
+            retrans_time: smoltcp::time::Duration::from_millis(0), // Unspecified
             lladdr: Some(RawHardwareAddress::from(
                 self.inner.state.params.gateway_mac_ipv6,
             )),
@@ -183,9 +185,9 @@ impl<T: Client> Access<'_, T> {
             prefix_info: Some(NdiscPrefixInformation {
                 prefix_len: self.inner.state.params.prefix_len_ipv6,
                 prefix,
-                valid_lifetime: smoltcp::time::Duration::from_secs(86400),     // 24 hours
+                valid_lifetime: smoltcp::time::Duration::from_secs(86400), // 24 hours
                 preferred_lifetime: smoltcp::time::Duration::from_secs(14400), // 4 hours
-                // AUTONOMOUS: clients can use SLAAC to generate addresses
+                // ADDRCONF: clients can use SLAAC to generate addresses
                 // ON_LINK: addresses with this prefix are on this link
                 flags: NdiscPrefixInfoFlags::ON_LINK | NdiscPrefixInfoFlags::ADDRCONF,
             }),
@@ -307,12 +309,12 @@ impl<T: Client> Access<'_, T> {
         // When the client performs address resolution using their SLAAC-configured
         // global address, we learn it here. We only learn global unicast addresses
         // (not link-local, multicast, or unspecified).
-        if !ipv6_src_addr.is_link_local() 
-            && !ipv6_src_addr.is_multicast() 
-            && !ipv6_src_addr.is_unspecified() 
+        if !ipv6_src_addr.is_link_local()
+            && !ipv6_src_addr.is_multicast()
+            && !ipv6_src_addr.is_unspecified()
         {
-            if self.inner.state.params.client_ip_ipv6.is_none() 
-                || self.inner.state.params.client_ip_ipv6 != Some(ipv6_src_addr) 
+            if self.inner.state.params.client_ip_ipv6.is_none()
+                || self.inner.state.params.client_ip_ipv6 != Some(ipv6_src_addr)
             {
                 tracing::info!(
                     client_ipv6 = %ipv6_src_addr,

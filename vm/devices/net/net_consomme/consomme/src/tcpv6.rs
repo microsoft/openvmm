@@ -1,15 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-pub mod ring;
-
 use super::Access;
 use super::Client;
-use super::DropReason;
-use super::FourTuple;
-use crate::ChecksumState;
-use crate::ConsommeState;
-use crate::Ipv4Addresses;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use inspect::Inspect;
@@ -20,13 +13,10 @@ use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::ETHERNET_HEADER_LEN;
 use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
-use smoltcp::wire::IPV4_HEADER_LEN;
 use smoltcp::wire::IPV6_HEADER_LEN;
-use smoltcp::wire::IpAddress;
-use smoltcp::wire::IpProtocol;
-use smoltcp::wire::Ipv4Address;
-use smoltcp::wire::Ipv4Packet;
-use smoltcp::wire::Ipv4Repr;
+use smoltcp::wire::Ipv6Address;
+use smoltcp::wire::Ipv6Packet;
+use smoltcp::wire::Ipv6Repr;
 use smoltcp::wire::TcpControl;
 use smoltcp::wire::TcpPacket;
 use smoltcp::wire::TcpRepr;
@@ -43,67 +33,41 @@ use std::io;
 use std::io::ErrorKind;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
-use std::net::IpAddr;
-use std::net::Ipv4Addr;
 use std::net::Shutdown;
-use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
-use thiserror::Error;
 
-pub(crate) struct Tcp {
-    connections: HashMap<FourTuple<SocketAddrV4>, TcpConnection>,
-    v6_connections: HashMap<FourTuple<SocketAddrV6>, TcpConnection>,
-    listeners: HashMap<u16, TcpListener>,
+use crate::ChecksumState;
+use crate::ConsommeState;
+use crate::DropReason;
+use crate::Ipv6Addresses;
+use crate::tcp::TcpError;
+use crate::tcp::ring;
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+struct SocketAddress {
+    ip: Ipv6Address,
+    port: u16,
 }
 
-#[derive(Debug, Error)]
-pub enum TcpError {
-    #[error("still connecting")]
-    StillConnecting,
-    #[error("unacceptable segment number")]
-    Unacceptable,
-    #[error("received out of order packet")]
-    OutOfOrder,
-    #[error("missing ack bit")]
-    MissingAck,
-    #[error("ack newer than sequence")]
-    AckPastSequence,
-    #[error("invalid window scale")]
-    InvalidWindowScale,
-}
-
-impl Inspect for Tcp {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        let mut resp = req.respond();
-        for (addr, conn) in &self.connections {
-            resp.field(
-                &format!(
-                    "{}:{}-{}:{}",
-                    addr.src.ip(),
-                    addr.src.port(),
-                    addr.dst.ip(),
-                    addr.dst.port()
-                ),
-                conn,
-            );
-        }
-        for port in self.listeners.keys() {
-            resp.field("listening port", port);
-        }
+impl From<SocketAddress> for SocketAddrV6 {
+    fn from(addr: SocketAddress) -> Self {
+        Self::new(addr.ip.into(), addr.port, 0, 0)
     }
 }
 
-impl Tcp {
-    pub fn new() -> Self {
-        Self {
-            connections: HashMap::new(),
-            v6_connections: HashMap::new(),
-            listeners: HashMap::new(),
-        }
+impl From<SocketAddress> for socket2::SockAddr {
+    fn from(addr: SocketAddress) -> Self {
+        socket2::SockAddr::from(SocketAddrV6::from(addr))
     }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+struct FourTuple {
+    dst: SocketAddress,
+    src: SocketAddress,
 }
 
 #[derive(Inspect)]
@@ -111,52 +75,6 @@ impl Tcp {
 enum LoopbackPortInfo {
     None,
     ProxyForGuestPort { sending_port: u16, guest_port: u16 },
-}
-
-#[derive(Inspect)]
-struct TcpConnection {
-    #[inspect(skip)]
-    socket: Option<PolledSocket<Socket>>,
-    loopback_port: LoopbackPortInfo,
-    state: TcpState,
-
-    #[inspect(with = "|x| x.len()")]
-    rx_buffer: VecDeque<u8>,
-    #[inspect(hex)]
-    rx_window_cap: usize,
-    rx_window_scale: u8,
-    #[inspect(with = "inspect_seq")]
-    rx_seq: TcpSeqNumber,
-    needs_ack: bool,
-    is_shutdown: bool,
-    enable_window_scaling: bool,
-
-    #[inspect(with = "|x| x.len()")]
-    tx_buffer: ring::Ring,
-    #[inspect(with = "inspect_seq")]
-    tx_acked: TcpSeqNumber,
-    #[inspect(with = "inspect_seq")]
-    tx_send: TcpSeqNumber,
-    tx_fin_buffered: bool,
-    #[inspect(hex)]
-    tx_window_len: u16,
-    tx_window_scale: u8,
-    #[inspect(with = "inspect_seq")]
-    tx_window_rx_seq: TcpSeqNumber,
-    #[inspect(with = "inspect_seq")]
-    tx_window_tx_seq: TcpSeqNumber,
-    #[inspect(hex)]
-    tx_mss: usize,
-}
-
-fn inspect_seq(seq: &TcpSeqNumber) -> inspect::AsHex<u32> {
-    inspect::AsHex(seq.0 as u32)
-}
-
-#[derive(Inspect)]
-struct TcpListener {
-    #[inspect(skip)]
-    socket: PolledSocket<Socket>,
 }
 
 #[derive(Debug, PartialEq, Eq, Inspect)]
@@ -206,252 +124,40 @@ impl TcpState {
     }
 }
 
-impl<T: Client> Access<'_, T> {
-    pub(crate) fn poll_tcp(&mut self, cx: &mut Context<'_>) {
-        // Check for any new incoming connections
-        self.inner
-            .tcp
-            .listeners
-            .retain(|port, listener| match listener.poll_listener(cx) {
-                Ok(result) => {
-                    if let Some((socket, mut other_addr)) = result {
-                        // Check for loopback requests and replace the dest port.
-                        // This supports a guest owning both the sending and receiving ports.
-                        if other_addr.ip().is_loopback() {
-                            for (other_ft, connection) in self.inner.tcp.connections.iter() {
-                                if connection.state == TcpState::Connecting && other_ft.dst.port() == *port {
-                                    if let LoopbackPortInfo::ProxyForGuestPort{sending_port, guest_port} = connection.loopback_port {
-                                        if sending_port == other_addr.port() {
-                                            other_addr.set_port(guest_port);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
+#[derive(Inspect)]
+struct TcpConnection {
+    #[inspect(skip)]
+    socket: Option<PolledSocket<Socket>>,
+    loopback_port: LoopbackPortInfo,
+    state: TcpState,
 
-                        let ft = FourTuple { dst: other_addr, src: SocketAddrV4::new(self.inner.state.params.client_ip.into(), *port) };
+    #[inspect(with = "|x| x.len()")]
+    rx_buffer: VecDeque<u8>,
+    #[inspect(hex)]
+    rx_window_cap: usize,
+    rx_window_scale: u8,
+    #[inspect(with = "inspect_seq")]
+    rx_seq: TcpSeqNumber,
+    needs_ack: bool,
+    is_shutdown: bool,
+    enable_window_scaling: bool,
 
-                        match self.inner.tcp.connections.entry(ft) {
-                            hash_map::Entry::Vacant(e) => {
-                                let mut sender = Sender {
-                                    ft: &ft,
-                                    client: self.client,
-                                    state: &mut self.inner.state,
-                                };
-
-                                let conn = match TcpConnection::new_from_accept(
-                                    &mut sender,
-                                    socket,
-                                ) {
-                                    Ok(conn) => conn,
-                                    Err(err) => {
-                                        tracing::warn!(err = %err, "Failed to create connection from newly accepted socket");
-                                        return true;
-                                    }
-                                };
-                                e.insert(conn);
-                            }
-                            hash_map::Entry::Occupied(_) => {
-                                tracing::warn!(
-                                    address = ?ft.dst,
-                                    "New client request ignored because it was already connected"
-                                );
-                            }
-                        }
-                    }
-                    true
-                }
-                Err(_) => false,
-            });
-        // Check for any new incoming data
-        self.inner.tcp.connections.retain(|ft, conn| {
-            conn.poll_conn(
-                cx,
-                &mut Sender {
-                    ft,
-                    state: &mut self.inner.state,
-                    client: self.client,
-                },
-            )
-        })
-    }
-
-    pub(crate) fn refresh_tcp_driver(&mut self) {
-        self.inner.tcp.connections.retain(|_, conn| {
-            let Some(socket) = conn.socket.take() else {
-                return true;
-            };
-            let socket = socket.into_inner();
-            match PolledSocket::new(self.client.driver(), socket) {
-                Ok(socket) => {
-                    conn.socket = Some(socket);
-                    true
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        error = &err as &dyn std::error::Error,
-                        "failed to update driver for tcp connection"
-                    );
-                    false
-                }
-            }
-        })
-    }
-
-    pub(crate) fn handle_tcp(
-        &mut self,
-        addresses: &Ipv4Addresses,
-        payload: &[u8],
-        checksum: &ChecksumState,
-    ) -> Result<(), DropReason> {
-        let tcp_packet = TcpPacket::new_checked(payload)?;
-        let tcp = TcpRepr::parse(
-            &tcp_packet,
-            &addresses.src_addr.into(),
-            &addresses.dst_addr.into(),
-            &checksum.caps(),
-        )?;
-
-        tracing::trace!(?tcp, "tcp packet");
-
-        let ft = FourTuple {
-            dst: SocketAddrV4::new(addresses.dst_addr.into(), tcp.dst_port),
-            src: SocketAddrV4::new(addresses.src_addr.into(), tcp.src_port),
-        };
-
-        let mut sender = Sender {
-            ft: &ft,
-            client: self.client,
-            state: &mut self.inner.state,
-        };
-
-        match self.inner.tcp.connections.entry(ft) {
-            hash_map::Entry::Occupied(mut e) => {
-                let conn = e.get_mut();
-                if !conn.handle_packet(&mut sender, &tcp)? {
-                    e.remove();
-                }
-            }
-            hash_map::Entry::Vacant(e) => {
-                if tcp.control == TcpControl::Rst {
-                    // This connection is already closed. Ignore the packet.
-                } else if let Some(ack) = tcp.ack_number {
-                    // This is for an old connection. Send reset.
-                    sender.rst(ack, None);
-                } else if tcp.control == TcpControl::Syn {
-                    let conn = TcpConnection::new(&mut sender, &tcp)?;
-                    e.insert(conn);
-                } else {
-                    // Ignore the packet.
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Binds to the specified host IP and port for listening for incoming
-    /// connections.
-    pub fn bind_tcp_port(&mut self, ip_addr: Option<IpAddr>, port: u16) -> Result<(), DropReason> {
-        let ip_addr = match ip_addr {
-            Some(IpAddr::V4(ip)) => Some(ip),
-            Some(IpAddr::V6(_)) => {
-                return Err(DropReason::UnsupportedEthertype(EthernetProtocol::Ipv6));
-            }
-            None => None,
-        };
-        match self.inner.tcp.listeners.entry(port) {
-            hash_map::Entry::Occupied(_) => {
-                tracing::warn!(port, "Duplicate TCP bind for port");
-            }
-            hash_map::Entry::Vacant(e) => {
-                let ft = FourTuple {
-                    dst: SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0),
-                    src: SocketAddrV4::new(ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED), port),
-                };
-                let mut sender = Sender {
-                    ft: &ft,
-                    client: self.client,
-                    state: &mut self.inner.state,
-                };
-
-                let listener = TcpListener::new(&mut sender)?;
-                e.insert(listener);
-            }
-        }
-        Ok(())
-    }
-
-    /// Unbinds from the specified host port.
-    pub fn unbind_tcp_port(&mut self, port: u16) -> Result<(), DropReason> {
-        match self.inner.tcp.listeners.entry(port) {
-            hash_map::Entry::Occupied(e) => {
-                e.remove();
-                Ok(())
-            }
-            hash_map::Entry::Vacant(_) => Err(DropReason::PortNotBound),
-        }
-    }
-}
-
-struct Sender<'a, T> {
-    ft: &'a FourTuple<SocketAddrV4>,
-    client: &'a mut T,
-    state: &'a mut ConsommeState,
-}
-
-impl<T: Client> Sender<'_, T> {
-    fn send_packet(&mut self, tcp: &TcpRepr<'_>, payload: Option<ring::View<'_>>) {
-        let buffer = &mut self.state.buffer;
-        let mut eth_packet = EthernetFrame::new_unchecked(&mut buffer[..]);
-        eth_packet.set_ethertype(EthernetProtocol::Ipv4);
-        eth_packet.set_dst_addr(self.state.params.client_mac);
-        eth_packet.set_src_addr(self.state.params.gateway_mac);
-        let mut ipv4_packet = Ipv4Packet::new_unchecked(eth_packet.payload_mut());
-        let ipv4 = Ipv4Repr {
-            src_addr: Ipv4Address::from(*self.ft.dst.ip()),
-            dst_addr: Ipv4Address::from(*self.ft.src.ip()),
-            protocol: IpProtocol::Tcp,
-            payload_len: tcp.header_len() + payload.as_ref().map_or(0, |p| p.len()),
-            hop_limit: 64,
-        };
-        ipv4.emit(&mut ipv4_packet, &ChecksumCapabilities::default());
-        let mut tcp_packet = TcpPacket::new_unchecked(ipv4_packet.payload_mut());
-        tcp.emit(
-            &mut tcp_packet,
-            &IpAddress::from(*self.ft.dst.ip()),
-            &IpAddress::from(*self.ft.src.ip()),
-            &ChecksumCapabilities::default(),
-        );
-        if let Some(payload) = payload {
-            for (b, c) in tcp_packet.payload_mut().iter_mut().zip(payload.iter()) {
-                *b = *c;
-            }
-        }
-        tcp_packet.fill_checksum(&(*self.ft.dst.ip()).into(), &(*self.ft.src.ip()).into());
-        let n = ETHERNET_HEADER_LEN + ipv4_packet.total_len() as usize;
-        self.client.recv(&buffer[..n], &ChecksumState::TCP4);
-    }
-
-    fn rst(&mut self, seq: TcpSeqNumber, ack: Option<TcpSeqNumber>) {
-        let tcp = TcpRepr {
-            src_port: self.ft.dst.port(),
-            dst_port: self.ft.src.port(),
-            control: TcpControl::Rst,
-            seq_number: seq,
-            ack_number: ack,
-            window_len: 0,
-            window_scale: None,
-            max_seg_size: None,
-            sack_permitted: false,
-            sack_ranges: [None, None, None],
-            payload: &[],
-        };
-
-        tracing::trace!(?tcp, "tcp rst xmit");
-
-        self.send_packet(&tcp, None);
-    }
+    #[inspect(with = "|x| x.len()")]
+    tx_buffer: ring::Ring,
+    #[inspect(with = "inspect_seq")]
+    tx_acked: TcpSeqNumber,
+    #[inspect(with = "inspect_seq")]
+    tx_send: TcpSeqNumber,
+    tx_fin_buffered: bool,
+    #[inspect(hex)]
+    tx_window_len: u16,
+    tx_window_scale: u8,
+    #[inspect(with = "inspect_seq")]
+    tx_window_rx_seq: TcpSeqNumber,
+    #[inspect(with = "inspect_seq")]
+    tx_window_tx_seq: TcpSeqNumber,
+    #[inspect(hex)]
+    tx_mss: usize,
 }
 
 impl Default for TcpConnection {
@@ -497,19 +203,370 @@ impl Default for TcpConnection {
     }
 }
 
+fn inspect_seq(seq: &TcpSeqNumber) -> inspect::AsHex<u32> {
+    inspect::AsHex(seq.0 as u32)
+}
+
+#[derive(Inspect)]
+struct TcpListener {
+    #[inspect(skip)]
+    socket: PolledSocket<Socket>,
+}
+
+impl TcpListener {
+    pub fn new(sender: &mut Sender<'_, impl Client>) -> Result<Self, DropReason> {
+        let socket =
+            Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP)).map_err(DropReason::Io)?;
+
+        let socket = PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?;
+        if let Err(err) = socket.get().bind(&sender.ft.src.into()) {
+            tracing::warn!(
+                address = ?sender.ft.src,
+                error = &err as &dyn std::error::Error,
+                "socket bind error"
+            );
+            return Err(DropReason::Io(err));
+        }
+        if let Err(err) = socket.listen(10) {
+            tracing::warn!(
+                error = &err as &dyn std::error::Error,
+                "socket listen error"
+            );
+            return Err(DropReason::Io(err));
+        }
+        Ok(Self { socket })
+    }
+
+    fn poll_listener(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Result<Option<(Socket, SocketAddress)>, DropReason> {
+        match self.socket.poll_accept(cx) {
+            Poll::Ready(r) => match r {
+                Ok((socket, address)) => match address.as_socket() {
+                    Some(addr) => match address.as_socket_ipv6() {
+                        Some(src_address) => Ok(Some((
+                            socket,
+                            SocketAddress {
+                                ip: (*src_address.ip()).into(),
+                                port: addr.port(),
+                            },
+                        ))),
+                        None => {
+                            tracing::warn!(?address, "Not an IPv4 address from accept");
+                            Ok(None)
+                        }
+                    },
+                    None => {
+                        tracing::warn!(?address, "Unknown address from accept");
+                        Ok(None)
+                    }
+                },
+                Err(_) => {
+                    let err = take_socket_error(&self.socket);
+                    tracing::warn!(error = &err as &dyn std::error::Error, "listen failure");
+                    Err(DropReason::Io(err))
+                }
+            },
+            Poll::Pending => Ok(None),
+        }
+    }
+}
+
+pub(crate) struct Tcpv6 {
+    connections: HashMap<FourTuple, TcpConnection>,
+    listeners: HashMap<u16, TcpListener>,
+}
+
+impl Inspect for Tcpv6 {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        let mut resp = req.respond();
+        for (addr, conn) in &self.connections {
+            resp.field(
+                &format!(
+                    "{}:{}-{}:{}",
+                    addr.src.ip, addr.src.port, addr.dst.ip, addr.dst.port
+                ),
+                conn,
+            );
+        }
+        for port in self.listeners.keys() {
+            resp.field("listening port", port);
+        }
+    }
+}
+
+impl Tcpv6 {
+    pub fn new() -> Self {
+        Self {
+            connections: HashMap::new(),
+            listeners: HashMap::new(),
+        }
+    }
+}
+
+struct Sender<'a, T> {
+    ft: &'a FourTuple,
+    client: &'a mut T,
+    state: &'a mut ConsommeState,
+}
+
+impl<T: Client> Sender<'_, T> {
+    fn send_packet(&mut self, tcp: &TcpRepr<'_>, payload: Option<ring::View<'_>>) {
+        let buffer = &mut self.state.buffer;
+        let mut eth_packet = EthernetFrame::new_unchecked(&mut buffer[..]);
+        eth_packet.set_ethertype(EthernetProtocol::Ipv6);
+        eth_packet.set_dst_addr(self.state.params.client_mac);
+        eth_packet.set_src_addr(self.state.params.gateway_mac);
+        let mut ipv6_packet = Ipv6Packet::new_unchecked(eth_packet.payload_mut());
+        let ipv6 = Ipv6Repr {
+            src_addr: self.ft.dst.ip,
+            dst_addr: self.ft.src.ip,
+            next_header: smoltcp::wire::IpProtocol::Tcp,
+            hop_limit: 64,
+            payload_len: (tcp.header_len() + payload.as_ref().map_or(0, |p| p.len())),
+        };
+        ipv6.emit(&mut ipv6_packet);
+        let mut tcp_packet = TcpPacket::new_unchecked(ipv6_packet.payload_mut());
+        tcp.emit(
+            &mut tcp_packet,
+            &self.ft.dst.ip.into(),
+            &self.ft.src.ip.into(),
+            &ChecksumCapabilities::default(),
+        );
+        if let Some(payload) = payload {
+            for (b, c) in tcp_packet.payload_mut().iter_mut().zip(payload.iter()) {
+                *b = *c;
+            }
+        }
+        tcp_packet.fill_checksum(&self.ft.dst.ip.into(), &self.ft.src.ip.into());
+        let n = ETHERNET_HEADER_LEN + ipv6_packet.total_len() as usize;
+        self.client.recv(&buffer[..n], &ChecksumState::TCP6);
+    }
+
+    fn rst(&mut self, seq: TcpSeqNumber, ack: Option<TcpSeqNumber>) {
+        let tcp = TcpRepr {
+            src_port: self.ft.dst.port,
+            dst_port: self.ft.src.port,
+            control: TcpControl::Rst,
+            seq_number: seq,
+            ack_number: ack,
+            window_len: 0,
+            window_scale: None,
+            max_seg_size: None,
+            sack_permitted: false,
+            sack_ranges: [None, None, None],
+            payload: &[],
+        };
+
+        tracing::trace!(?tcp, "tcp rst xmit");
+
+        self.send_packet(&tcp, None);
+    }
+}
+
+fn take_socket_error(socket: &PolledSocket<Socket>) -> io::Error {
+    match socket.get().take_error() {
+        Ok(Some(err)) => err,
+        Ok(_) => io::Error::other("missing error"),
+        Err(err) => err,
+    }
+}
+
+fn is_connect_incomplete_error(err: &io::Error) -> bool {
+    if err.kind() == ErrorKind::WouldBlock {
+        return true;
+    }
+    // This handles the remaining cases on Linux.
+    #[cfg(unix)]
+    if err.raw_os_error() == Some(libc::EINPROGRESS) {
+        return true;
+    }
+    false
+}
+
+/// Finds the smallest sequence number in a set. To get a coherent result, all
+/// the sequence numbers must be known to be comparable, meaning they are all
+/// within 2^31 bytes of each other.
+///
+/// This isn't just `Ord::min` or `Iterator::min` because `TcpSeqNumber`
+/// implements `PartialOrd` but not `Ord`.
+fn seq_min<const N: usize>(seqs: [TcpSeqNumber; N]) -> TcpSeqNumber {
+    let mut min = seqs[0];
+    for &seq in &seqs[1..] {
+        if min > seq {
+            min = seq;
+        }
+    }
+    min
+}
+
+impl<T: Client> Access<'_, T> {
+    pub(crate) fn poll_tcpv6(&mut self, cx: &mut Context<'_>) {
+        // Check for any new incoming connections
+        self.inner
+            .tcpv6
+            .listeners
+            .retain(|port, listener| match listener.poll_listener(cx) {
+                Ok(result) => {
+                    if let Some((socket, mut other_addr)) = result {
+                        // Check for loopback requests and replace the dest port.
+                        // This supports a guest owning both the sending and receiving ports.
+                        if other_addr.ip.is_loopback() {
+                            for (other_ft, connection) in self.inner.tcpv6.connections.iter() {
+                                if connection.state == TcpState::Connecting && other_ft.dst.port == *port {
+                                    if let LoopbackPortInfo::ProxyForGuestPort{sending_port, guest_port} = connection.loopback_port {
+                                        if sending_port == other_addr.port {
+                                            other_addr.port = guest_port;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        let ft = FourTuple { dst: other_addr, src: SocketAddress {
+                            ip: self.inner.state.params.client_ip_ipv6.unwrap(),
+                            port: *port,
+                        } };
+
+                        match self.inner.tcpv6.connections.entry(ft) {
+                            hash_map::Entry::Vacant(e) => {
+                                let mut sender = Sender {
+                                    ft: &ft,
+                                    client: self.client,
+                                    state: &mut self.inner.state,
+                                };
+
+                                let conn = match TcpConnection::new_from_accept(
+                                    &mut sender,
+                                    socket,
+                                ) {
+                                    Ok(conn) => conn,
+                                    Err(err) => {
+                                        tracing::warn!(err = %err, "Failed to create connection from newly accepted socket");
+                                        return true;
+                                    }
+                                };
+                                e.insert(conn);
+                            }
+                            hash_map::Entry::Occupied(_) => {
+                                tracing::warn!(
+                                    address = ?ft.dst,
+                                    "New client request ignored because it was already connected"
+                                );
+                            }
+                        }
+                    }
+                    true
+                }
+                Err(_) => false,
+            });
+        // Check for any new incoming data
+        self.inner.tcpv6.connections.retain(|ft, conn| {
+            conn.poll_conn(
+                cx,
+                &mut Sender {
+                    ft,
+                    state: &mut self.inner.state,
+                    client: self.client,
+                },
+            )
+        })
+    }
+
+    pub(crate) fn refresh_tcpv6_driver(&mut self) {
+        self.inner.tcpv6.connections.retain(|_, conn| {
+            let Some(socket) = conn.socket.take() else {
+                return true;
+            };
+            let socket = socket.into_inner();
+            match PolledSocket::new(self.client.driver(), socket) {
+                Ok(socket) => {
+                    conn.socket = Some(socket);
+                    true
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = &err as &dyn std::error::Error,
+                        "failed to update driver for tcp connection"
+                    );
+                    false
+                }
+            }
+        })
+    }
+    pub(crate) fn handle_tcpv6(
+        &mut self,
+        addresses: &Ipv6Addresses,
+        payload: &[u8],
+        checksum: &ChecksumState,
+    ) -> Result<(), DropReason> {
+        let tcp_packet = TcpPacket::new_checked(payload)?;
+        let tcp = TcpRepr::parse(
+            &tcp_packet,
+            &addresses.src_addr.into(),
+            &addresses.dst_addr.into(),
+            &checksum.caps(),
+        )?;
+
+        tracing::trace!(?tcp, "tcp packet");
+
+        let ft = FourTuple {
+            dst: SocketAddress {
+                ip: addresses.dst_addr,
+                port: tcp.dst_port,
+            },
+            src: SocketAddress {
+                ip: addresses.src_addr,
+                port: tcp.src_port,
+            },
+        };
+
+        let mut sender = Sender {
+            ft: &ft,
+            client: self.client,
+            state: &mut self.inner.state,
+        };
+
+        match self.inner.tcpv6.connections.entry(ft) {
+            hash_map::Entry::Occupied(mut e) => {
+                let conn = e.get_mut();
+                if !conn.handle_packet(&mut sender, &tcp)? {
+                    e.remove();
+                }
+            }
+            hash_map::Entry::Vacant(e) => {
+                if tcp.control == TcpControl::Rst {
+                    // This connection is already closed. Ignore the packet.
+                } else if let Some(ack) = tcp.ack_number {
+                    // This is for an old connection. Send reset.
+                    sender.rst(ack, None);
+                } else if tcp.control == TcpControl::Syn {
+                    let conn = TcpConnection::new(&mut sender, &tcp)?;
+                    e.insert(conn);
+                } else {
+                    // Ignore the packet.
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 impl TcpConnection {
     fn new(sender: &mut Sender<'_, impl Client>, tcp: &TcpRepr<'_>) -> Result<Self, DropReason> {
         let mut this = Self::default();
         this.initialize_from_first_client_packet(tcp)?;
 
         let socket =
-            Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).map_err(DropReason::Io)?;
+            Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP)).map_err(DropReason::Io)?;
 
         // On Windows the default behavior for non-existent loopback sockets is
         // to wait and try again. This is different than the Linux behavior of
         // immediately failing. Default to the Linux behavior.
         #[cfg(windows)]
-        if sender.ft.dst.ip().is_loopback() {
+        if sender.ft.dst.ip.is_loopback() {
             if let Err(err) = crate::windows::disable_connection_retries(&socket) {
                 tracing::trace!(err, "Failed to disable loopback retries");
             }
@@ -518,7 +575,7 @@ impl TcpConnection {
         let socket = PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?;
         match socket
             .get()
-            .connect(&SockAddr::from(SocketAddrV4::from(sender.ft.dst)))
+            .connect(&SockAddr::from(SocketAddrV6::from(sender.ft.dst)))
         {
             Ok(_) => unreachable!(),
             Err(err) if is_connect_incomplete_error(&err) => (),
@@ -532,11 +589,11 @@ impl TcpConnection {
             }
         }
         if let Ok(addr) = socket.get().local_addr() {
-            if let Some(addr) = addr.as_socket_ipv4() {
+            if let Some(addr) = addr.as_socket_ipv6() {
                 if addr.ip().is_loopback() {
                     this.loopback_port = LoopbackPortInfo::ProxyForGuestPort {
                         sending_port: addr.port(),
-                        guest_port: sender.ft.src.port(),
+                        guest_port: sender.ft.src.port,
                     };
                 }
             }
@@ -786,8 +843,8 @@ impl TcpConnection {
         // to truncate this to its own MTU calculation.
         let max_seg_size = u16::MAX;
         let tcp = TcpRepr {
-            src_port: sender.ft.dst.port(),
-            dst_port: sender.ft.src.port(),
+            src_port: sender.ft.dst.port,
+            dst_port: sender.ft.src.port,
             control: TcpControl::Syn,
             seq_number: self.tx_send,
             ack_number,
@@ -818,8 +875,8 @@ impl TcpConnection {
             }
 
             let mut tcp = TcpRepr {
-                src_port: sender.ft.dst.port(),
-                dst_port: sender.ft.src.port(),
+                src_port: sender.ft.dst.port,
+                dst_port: sender.ft.src.port,
                 control: TcpControl::None,
                 seq_number: self.tx_send,
                 ack_number: Some(self.rx_seq),
@@ -840,7 +897,7 @@ impl TcpConnection {
             // 3. The configured maximum segment size.
             // 4. The client MTU.
             let tx_segment_end = {
-                let header_len = ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + tcp.header_len();
+                let header_len = ETHERNET_HEADER_LEN + IPV6_HEADER_LEN + tcp.header_len();
                 let mtu = rx_mtu.min(sender.state.buffer.len());
                 seq_min([
                     tx_payload_end,
@@ -912,8 +969,8 @@ impl TcpConnection {
     /// by the peer.
     fn ack(&self, sender: &mut Sender<'_, impl Client>) {
         let tcp = TcpRepr {
-            src_port: sender.ft.dst.port(),
-            dst_port: sender.ft.src.port(),
+            src_port: sender.ft.dst.port,
+            dst_port: sender.ft.src.port,
             control: TcpControl::None,
             seq_number: self.tx_send,
             ack_number: Some(self.rx_seq),
@@ -1136,97 +1193,4 @@ impl TcpConnection {
 
         Ok(true)
     }
-}
-
-impl TcpListener {
-    pub fn new(sender: &mut Sender<'_, impl Client>) -> Result<Self, DropReason> {
-        let socket =
-            Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).map_err(DropReason::Io)?;
-
-        let socket = PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?;
-        if let Err(err) = socket.get().bind(&sender.ft.src.into()) {
-            tracing::warn!(
-                address = ?sender.ft.src,
-                error = &err as &dyn std::error::Error,
-                "socket bind error"
-            );
-            return Err(DropReason::Io(err));
-        }
-        if let Err(err) = socket.listen(10) {
-            tracing::warn!(
-                error = &err as &dyn std::error::Error,
-                "socket listen error"
-            );
-            return Err(DropReason::Io(err));
-        }
-        Ok(Self { socket })
-    }
-
-    fn poll_listener(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Result<Option<(Socket, SocketAddrV4)>, DropReason> {
-        match self.socket.poll_accept(cx) {
-            Poll::Ready(r) => match r {
-                Ok((socket, address)) => match address.as_socket() {
-                    Some(addr) => match address.as_socket_ipv4() {
-                        Some(src_address) => Ok(Some((
-                            socket,
-                            SocketAddrV4::new((*src_address.ip()).into(), addr.port()),
-                        ))),
-                        None => {
-                            tracing::warn!(?address, "Not an IPv4 address from accept");
-                            Ok(None)
-                        }
-                    },
-                    None => {
-                        tracing::warn!(?address, "Unknown address from accept");
-                        Ok(None)
-                    }
-                },
-                Err(_) => {
-                    let err = take_socket_error(&self.socket);
-                    tracing::warn!(error = &err as &dyn std::error::Error, "listen failure");
-                    Err(DropReason::Io(err))
-                }
-            },
-            Poll::Pending => Ok(None),
-        }
-    }
-}
-
-fn take_socket_error(socket: &PolledSocket<Socket>) -> io::Error {
-    match socket.get().take_error() {
-        Ok(Some(err)) => err,
-        Ok(_) => io::Error::other("missing error"),
-        Err(err) => err,
-    }
-}
-
-fn is_connect_incomplete_error(err: &io::Error) -> bool {
-    if err.kind() == ErrorKind::WouldBlock {
-        return true;
-    }
-    // This handles the remaining cases on Linux.
-    #[cfg(unix)]
-    if err.raw_os_error() == Some(libc::EINPROGRESS) {
-        return true;
-    }
-    false
-}
-
-/// Finds the smallest sequence number in a set. To get a coherent result, all
-/// the sequence numbers must be known to be comparable, meaning they are all
-/// within 2^31 bytes of each other.
-///
-/// This isn't just `Ord::min` or `Iterator::min` because `TcpSeqNumber`
-/// implements `PartialOrd` but not `Ord`.
-fn seq_min<const N: usize>(seqs: [TcpSeqNumber; N]) -> TcpSeqNumber {
-    let mut min = seqs[0];
-    for &seq in &seqs[1..] {
-        if min > seq {
-            min = seq;
-        }
-    }
-    min
 }
