@@ -4018,19 +4018,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mbrman"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76fbcfee7fbe4307a3317ba5d939fd076cad5e8f64a5d9cbc0f6900d513d6f76"
-dependencies = [
- "bincode",
- "bitvec",
- "serde",
- "serde-big-array",
- "thiserror 2.0.16",
-]
-
-[[package]]
 name = "mcr_resources"
 version = "0.0.0"
 dependencies = [
@@ -5664,7 +5651,6 @@ dependencies = [
  "kmsg",
  "libtest-mimic",
  "linkme",
- "mbrman",
  "mesh",
  "mesh_process",
  "mesh_worker",
@@ -6540,15 +6526,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e2c6ed6606019b4e29e69dbaba95b11854410e5347d525002456dbbb786b6"
 dependencies = [
  "serde_derive",
-]
-
-[[package]]
-name = "serde-big-array"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11fc7cc2c76d73e0f27ee52abbd64eec84d46f370c88371120433196934e4b7f"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -10392,7 +10369,6 @@ dependencies = [
  "guid",
  "ignore",
  "log",
- "mbrman",
  "object 0.37.3",
  "rayon",
  "serde",

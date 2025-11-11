@@ -22,7 +22,6 @@ grep-searcher.workspace = true
 ignore.workspace = true
 log.workspace = true
 object = { workspace = true, features = ["read_core", "elf", "std"] }
-mbrman.workspace = true
 rayon.workspace = true
 serde_json = { workspace = true, features = ["std"]}
 serde = { workspace = true, features = ["std"] }

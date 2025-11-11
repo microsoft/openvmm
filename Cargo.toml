@@ -484,7 +484,6 @@ linkme = "0.3.9"
 log = "0.4"
 loom = "0.7.2"
 macaddr = "1.0"
-mbrman = "0.6"
 mimalloc = { version = "0.1.39", default-features = false }
 ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
 mshv-bindings = "0.6.0"
