@@ -282,7 +282,7 @@ pub struct HyperVAddVMHardDiskDriveArgs<'a> {
     /// hard disk drive is to be added. If not specified, the first available
     /// location in the controller specified with the ControllerNumber parameter
     /// is used.
-    pub controller_location: Option<u32>,
+    pub controller_location: Option<u8>,
     /// Specifies the number of the controller to which the hard disk drive is
     /// to be added. If not specified, this parameter assumes the value of the
     /// first available controller at the location specified in the

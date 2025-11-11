@@ -718,7 +718,7 @@ fn make_vmm_test(
             ),
         };
 
-        let petri_vm_config = quote!(#petri_vm_config::new(&params, artifacts, &driver)?);
+        let petri_vm_config = quote!(#petri_vm_config::new(params, artifacts, &driver)?);
 
         let test = quote! {
             #cfg_conditions

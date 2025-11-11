@@ -384,23 +384,18 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
         }
 
-        let mut vhd_paths = Vec::new();
+        // Share a single scsi controller for all petri-added drives.
+        let petri_vtl0_scsi = vm.add_scsi_controller(0).await?.0;
+
         if let Some((controller_type, controller_number)) = match boot_device_type {
             BootDeviceType::None => None,
             BootDeviceType::Ide => Some((powershell::ControllerType::Ide, 0)),
-            BootDeviceType::Scsi => Some((
-                powershell::ControllerType::Scsi,
-                vm.add_scsi_controller(0).await?.0,
-            )),
+            BootDeviceType::Scsi => Some((powershell::ControllerType::Scsi, petri_vtl0_scsi)),
             BootDeviceType::Nvme => todo!("NVMe boot device not yet supported for Hyper-V"),
         } {
             if let Some(artifact) = guest_artifact {
-                vhd_paths.push((controller_type, controller_number, vec![artifact.get()]));
-            }
-        }
-
-        for (controller_type, controller_number, vhds) in vhd_paths {
-            for (controller_location, vhd) in vhds.iter().enumerate() {
+                let controller_location = super::PETRI_VTL0_SCSI_BOOT_LUN;
+                let vhd = artifact.get();
                 let diff_disk_path = temp_dir.path().join(format!(
                     "{}_{}_{}",
                     controller_number,
@@ -415,7 +410,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 vm.add_vhd(
                     &diff_disk_path,
                     controller_type,
-                    Some(controller_location as u32),
+                    Some(controller_location),
                     Some(controller_number),
                 )
                 .await?;
@@ -447,12 +442,11 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     vm.set_imc(&imc_hive).await?;
                 }
 
-                let controller_number = vm.add_scsi_controller(0).await?.0;
                 vm.add_vhd(
                     &agent_disk_path,
                     powershell::ControllerType::Scsi,
-                    Some(0),
-                    Some(controller_number),
+                    Some(super::PETRI_VTL0_SCSI_PIPETTE_LUN),
+                    Some(petri_vtl0_scsi),
                 )
                 .await?;
             }
@@ -663,7 +657,7 @@ impl HyperVPetriRuntime {
         &mut self,
         vhd: impl AsRef<Path>,
         controller_type: powershell::ControllerType,
-        controller_location: Option<u32>,
+        controller_location: Option<u8>,
         controller_number: Option<u32>,
     ) -> anyhow::Result<()> {
         self.vm
