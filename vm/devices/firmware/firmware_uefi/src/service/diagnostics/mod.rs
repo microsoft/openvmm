@@ -201,16 +201,11 @@ impl DiagnosticsServices {
             return Ok(());
         }
 
+        // Mark as processed first to prevent guest spam (even on failure)
+        self.processed = true;
+
         // Delegate to the processor module
-        let result =
-            processor::process_diagnostics_internal(self.gpa, gm, self.log_level, log_handler);
-
-        // Only mark as processed if processing succeeded
-        if result.is_ok() {
-            self.processed = true;
-        }
-
-        result
+        processor::process_diagnostics_internal(self.gpa, gm, self.log_level, log_handler)
     }
 }
 
