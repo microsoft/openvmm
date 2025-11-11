@@ -1786,6 +1786,7 @@ impl InitializedVm {
                                 .into_iter()
                                 .map(|rp_cfg| GenericPcieRootPortDefinition {
                                     name: rp_cfg.name.into(),
+                                    hotplug: rp_cfg.hotplug,
                                 })
                                 .collect();
 
@@ -1828,7 +1829,8 @@ impl InitializedVm {
                     .add(|_services| {
                         let definition = pcie::switch::GenericPcieSwitchDefinition {
                             name: switch.name.clone().into(),
-                            downstream_port_count: switch.num_downstream_ports as usize,
+                            downstream_port_count: switch.num_downstream_ports,
+                            hotplug: switch.hotplug,
                         };
                         GenericPcieSwitch::new(definition)
                     })?;
