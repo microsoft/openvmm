@@ -214,14 +214,16 @@ impl PipetteClient {
 
     /// Tell the agent to crash itself.
     ///
-    /// This call will always return an error.
+    /// This call will always return an error, as either the request will fail,
+    /// or the agent will crash and the connection will be lost.
     pub async fn crash(&self) -> Result<(), RpcError<RemoteError>> {
         self.send.call_failable(PipetteRequest::Crash, ()).await
     }
 
     /// Tell the agent to crash the kernel.
     ///
-    /// This call will always return an error.
+    /// This call will always return an error, as either the request will fail,
+    /// or the guest OS will crash and the connection will be lost.
     pub async fn kernel_crash(&self) -> Result<(), RpcError<RemoteError>> {
         self.send
             .call_failable(PipetteRequest::KernelCrash, ())

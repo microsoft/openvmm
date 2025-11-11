@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Handler for kernel crash requests.
+
 #[cfg(target_os = "linux")]
 pub fn trigger_kernel_crash() -> anyhow::Result<()> {
     use anyhow::Context;
