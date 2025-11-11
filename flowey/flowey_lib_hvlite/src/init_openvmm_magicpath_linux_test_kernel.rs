@@ -5,7 +5,7 @@
 //! correct "magic directory" set by the project-level `[env]` table in
 //! `.cargo/config.toml`
 
-use crate::download_openvmm_deps::OpenvmmDepsArch;
+use crate::resolve_openvmm_deps::OpenvmmDepsArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -29,7 +29,7 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::cfg_openvmm_magicpath::Node>();
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -51,10 +51,10 @@ impl FlowNode for Node {
                 OpenvmmLinuxTestKernelArch::X64 => OpenvmmDepsArch::X86_64,
             };
             let openvmm_linux_test_kernel = ctx.reqv(|v| {
-                crate::download_openvmm_deps::Request::GetLinuxTestKernel(openvmm_deps_arch, v)
+                crate::resolve_openvmm_deps::Request::GetLinuxTestKernel(openvmm_deps_arch, v)
             });
             let openvmm_linux_test_initrd = ctx.reqv(|v| {
-                crate::download_openvmm_deps::Request::GetLinuxTestInitrd(openvmm_deps_arch, v)
+                crate::resolve_openvmm_deps::Request::GetLinuxTestInitrd(openvmm_deps_arch, v)
             });
 
             ctx.emit_rust_step(format!("extract {arch:?} sysroot.tar.gz"), |ctx| {
