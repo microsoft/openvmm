@@ -1578,7 +1578,10 @@ pub async fn validate_and_read_headers(
     disk: Disk,
 ) -> (Result<(VmgsHeader, VmgsHeader), Error>, Result<(), Error>) {
     let mut storage = VmgsStorage::new(disk);
-    let validate_result = pre_open_validation(&mut storage).await;
+    let validate_result = match storage.validate() {
+        Ok(_) => pre_open_validation(&mut storage).await,
+        Err(e) => Err(Error::Initialization(e)),
+    };
     let headers_result = read_headers(&mut storage).await;
     (headers_result, validate_result)
 }
@@ -1600,8 +1603,6 @@ async fn read_headers(storage: &mut VmgsStorage) -> Result<(VmgsHeader, VmgsHead
 }
 
 async fn pre_open_validation(storage: &mut VmgsStorage) -> Result<(), Error> {
-    storage.validate().map_err(Error::Initialization)?;
-
     if vmgs_is_v1(storage).await? {
         return Err(Error::V1Format);
     }
@@ -1643,6 +1644,14 @@ async fn vmgs_is_empty(storage: &mut VmgsStorage) -> Result<bool, Error> {
     }
 
     Ok(true)
+}
+
+async fn vmgs_is_empty_quick(storage: &mut VmgsStorage) -> Result<bool, Error> {
+    let empty_header = VmgsHeader::new_zeroed();
+    let (header_1, header_2) = read_headers(storage).await?;
+
+    Ok(header_1.as_bytes() == empty_header.as_bytes()
+        && header_2.as_bytes() == empty_header.as_bytes())
 }
 
 /// Determines which header to use given the results of checking the
