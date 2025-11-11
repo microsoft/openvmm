@@ -822,7 +822,7 @@ impl PetriVmConfigSetupCore<'_> {
                     .storage_controllers
                     .push(
                         Vtl2StorageControllerBuilder::scsi()
-                            .with_instance_id(SCSI_INSTANCE)
+                            .with_instance_id(PARAVISOR_BOOT_NVME_INSTANCE)
                             .add_lun(
                                 Vtl2LunBuilder::disk()
                                     .with_location(BOOT_NVME_LUN)
