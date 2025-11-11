@@ -23,7 +23,7 @@ mod dns;
 mod icmp;
 mod ndp;
 mod tcp;
-mod tcpv6;
+// mod tcpv6;
 mod udp;
 mod windows;
 
@@ -45,6 +45,7 @@ use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Packet;
+use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
 use std::task::Context;
@@ -58,7 +59,7 @@ pub struct Consomme {
     #[inspect(mut)]
     udp: udp::Udp,
     icmp: icmp::Icmp,
-    tcpv6: tcpv6::Tcpv6,
+    // tcpv6: tcpv6::Tcpv6,
 }
 
 #[derive(Inspect)]
@@ -312,10 +313,11 @@ impl From<SocketAddress> for socket2::SockAddr {
     }
 }
 
-trait SupportedAddressFamily {}
+pub trait SupportedAddressFamily {}
 
 impl SupportedAddressFamily for SocketAddrV4 {}
 impl SupportedAddressFamily for SocketAddrV6 {}
+impl SupportedAddressFamily for SocketAddr {}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct FourTuple<T: SupportedAddressFamily> {
@@ -417,7 +419,7 @@ impl Consomme {
             tcp: tcp::Tcp::new(),
             udp: udp::Udp::new(),
             icmp: icmp::Icmp::new(),
-            tcpv6: tcpv6::Tcpv6::new(),
+            // tcpv6: tcpv6::Tcpv6::new(),
         }
     }
 
@@ -453,7 +455,7 @@ impl<T: Client> Access<'_, T> {
     pub fn poll(&mut self, cx: &mut Context<'_>) {
         self.poll_udp(cx);
         self.poll_tcp(cx);
-        self.poll_tcpv6(cx);
+        // self.poll_tcpv6(cx);
         self.poll_icmp(cx);
     }
 
@@ -463,7 +465,7 @@ impl<T: Client> Access<'_, T> {
     pub fn refresh_driver(&mut self) {
         self.refresh_tcp_driver();
         self.refresh_udp_driver();
-        self.refresh_tcpv6_driver();
+        // self.refresh_tcpv6_driver();
     }
 
     /// Sends an Ethernet frame to the network.
