@@ -247,11 +247,11 @@ pub struct PetriPostTestHook {
     /// The name of the hook.
     name: String,
     /// The hook function.
-    hook: Box<dyn FnOnce() -> anyhow::Result<()>>,
+    hook: Box<dyn FnOnce() -> anyhow::Result<()> + Send>,
 }
 
 impl PetriPostTestHook {
-    pub fn new(name: String, hook: Box<dyn FnOnce() -> anyhow::Result<()>>) -> Self {
+    pub fn new(name: String, hook: Box<dyn FnOnce() -> anyhow::Result<()> + Send>) -> Self {
         Self { name, hook }
     }
 
