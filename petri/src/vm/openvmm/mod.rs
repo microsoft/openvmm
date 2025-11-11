@@ -53,6 +53,7 @@ use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use storvsp_resources::ScsiControllerHandle;
 use tempfile::TempPath;
@@ -119,6 +120,15 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
             override_version_checks: false,
             stop_timeout_hint_secs: None,
         }
+    }
+
+    fn create_guest_dump_disk() -> anyhow::Result<
+        Option<(
+            Arc<TempPath>,
+            Box<dyn FnOnce() -> anyhow::Result<Box<dyn fatfs::ReadWriteSeek>>>,
+        )>,
+    > {
+        Ok(None) // TODO
     }
 
     fn new(resolver: &ArtifactResolver<'_>) -> Self {

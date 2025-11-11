@@ -12,6 +12,7 @@ use crate::PetriLogSource;
 use crate::PetriTestParams;
 use crate::ShutdownKind;
 use crate::disk_image::AgentImage;
+use crate::disk_image::SECTOR_SIZE;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
@@ -37,7 +38,9 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
+use tempfile::TempPath;
 use vmgs_resources::GuestStateEncryptionPolicy;
 
 /// The set of artifacts and resources needed to instantiate a
@@ -124,6 +127,8 @@ pub struct PetriVmConfig {
     pub agent_image: Option<AgentImage>,
     /// Agent to run in OpenHCL
     pub openhcl_agent_image: Option<AgentImage>,
+    /// Disk to use for guest crash dumps
+    pub guest_crash_disk: Option<Arc<TempPath>>,
     /// VM guest state
     pub vmgs: PetriVmgsResource,
     /// The boot device type for the VM
@@ -157,6 +162,15 @@ pub trait PetriVmmBackend {
     /// Get the default servicing flags (based on what this backend supports)
     fn default_servicing_flags() -> OpenHclServicingFlags;
 
+    /// Create a disk for guest crash dumps, and a post-test hook to open the disk
+    /// to allow for reading the dumps.
+    fn create_guest_dump_disk() -> anyhow::Result<
+        Option<(
+            Arc<TempPath>,
+            Box<dyn FnOnce() -> anyhow::Result<Box<dyn fatfs::ReadWriteSeek>>>,
+        )>,
+    >;
+
     /// Resolve any artifacts needed to use this backend
     fn new(resolver: &ArtifactResolver<'_>) -> Self;
 
@@ -171,6 +185,7 @@ pub trait PetriVmmBackend {
 
 pub(crate) const PETRI_VTL0_SCSI_BOOT_LUN: u8 = 0;
 pub(crate) const PETRI_VTL0_SCSI_PIPETTE_LUN: u8 = 1;
+pub(crate) const PETRI_VTL0_SCSI_CRASH_LUN: u8 = 2;
 
 /// A constructed Petri VM
 pub struct PetriVm<T: PetriVmmBackend> {
@@ -209,6 +224,42 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => BootDeviceType::Scsi,
         };
 
+        let guest_crash_disk = if matches!(
+            artifacts.firmware.os_flavor(),
+            OsFlavor::Windows | OsFlavor::Linux
+        ) {
+            let (guest_crash_disk, guest_dump_disk_hook) = T::create_guest_dump_disk()?.unzip();
+            if let Some(guest_dump_disk_hook) = guest_dump_disk_hook {
+                let logger = params.logger.clone();
+                params
+                    .post_test_hooks
+                    .push(crate::test::PetriPostTestHook::new(
+                        "extract guest crash dumps".into(),
+                        move |test_passed| {
+                            if test_passed {
+                                return Ok(());
+                            }
+                            let mut disk = guest_dump_disk_hook()?;
+                            let gpt = gptman::GPT::read_from(&mut disk, SECTOR_SIZE)?;
+                            let partition = fscommon::StreamSlice::new(
+                                &mut disk,
+                                gpt[1].starting_lba * SECTOR_SIZE,
+                                gpt[1].ending_lba * SECTOR_SIZE,
+                            )?;
+                            let fs = fatfs::FileSystem::new(partition, fatfs::FsOptions::new())?;
+                            for entry in fs.root_dir().iter() {
+                                let entry = entry?;
+                                logger.write_attachment(&entry.file_name(), entry.to_file())?;
+                            }
+                            Ok(())
+                        },
+                    ));
+            }
+            guest_crash_disk
+        } else {
+            None
+        };
+
         Ok(Self {
             backend: artifacts.backend,
             config: PetriVmConfig {
@@ -222,6 +273,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 openhcl_agent_image: artifacts.openhcl_agent_image,
                 vmgs: PetriVmgsResource::Ephemeral,
                 tpm_state_persistence: true,
+                guest_crash_disk,
             },
             modify_vmm_config: None,
             resources: PetriVmResources {

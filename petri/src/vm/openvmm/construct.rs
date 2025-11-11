@@ -35,6 +35,7 @@ use crate::vtl2_settings::Vtl2LunBuilder;
 use crate::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
 use crate::vtl2_settings::Vtl2StorageControllerBuilder;
 use anyhow::Context;
+use disk_backend_resources::FileDiskHandle;
 use framebuffer::FRAMEBUFFER_SIZE;
 use framebuffer::Framebuffer;
 use framebuffer::FramebufferAccess;
@@ -117,6 +118,7 @@ impl PetriVmConfigOpenVmm {
             vmgs,
             boot_device_type,
             tpm_state_persistence,
+            guest_crash_disk,
         } = petri_vm_config;
 
         let PetriVmResources { driver, log_source } = resources;
@@ -248,6 +250,23 @@ impl PetriVmConfigOpenVmm {
                 petri_vtl0_scsi.devices.push(d);
             }
             None => {}
+        }
+
+        if let Some(guest_crash_disk) = guest_crash_disk.as_ref() {
+            petri_vtl0_scsi.devices.push(ScsiDeviceAndPath {
+                path: ScsiPath {
+                    path: 0,
+                    target: 0,
+                    lun: crate::vm::PETRI_VTL0_SCSI_CRASH_LUN,
+                },
+                device: SimpleScsiDiskHandle {
+                    read_only: false,
+                    parameters: Default::default(),
+                    disk: FileDiskHandle(File::open(guest_crash_disk.as_ref())?.into())
+                        .into_resource(),
+                }
+                .into_resource(),
+            });
         }
 
         // Configure the serial ports now that they have been updated by the
