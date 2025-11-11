@@ -21,7 +21,6 @@ use inspect::Inspect;
 use log::Log;
 use mesh::payload::Protobuf;
 use processor::ProcessingError;
-use reprocess_guard::ReprocessGuard;
 use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
 use uefi_specs::hyperv::debug_level::DEBUG_INFO;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
@@ -31,7 +30,6 @@ mod gpa;
 mod header;
 mod log;
 mod processor;
-mod reprocess_guard;
 
 /// Default number of EfiDiagnosticsLogs emitted per period
 pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;
@@ -155,8 +153,8 @@ impl Inspect for LogLevel {
 pub struct DiagnosticsServices {
     /// The guest physical address of the diagnostics buffer
     gpa: Option<Gpa>,
-    /// Guard to prevent reprocessing spam from guest
-    reprocess_guard: ReprocessGuard,
+    /// Whether diagnostics have been processed (prevents reprocessing spam)
+    processed: bool,
     /// Log level used for filtering
     log_level: LogLevel,
 }
@@ -166,7 +164,7 @@ impl DiagnosticsServices {
     pub fn new(log_level: LogLevel) -> DiagnosticsServices {
         DiagnosticsServices {
             gpa: None,
-            reprocess_guard: ReprocessGuard::new(),
+            processed: false,
             log_level,
         }
     }
@@ -174,7 +172,7 @@ impl DiagnosticsServices {
     /// Reset the diagnostics services state
     pub fn reset(&mut self) {
         self.gpa = None;
-        self.reprocess_guard.reset();
+        self.processed = false;
     }
 
     /// Set the GPA of the diagnostics buffer
@@ -198,8 +196,7 @@ impl DiagnosticsServices {
         F: FnMut(&Log),
     {
         // Check if processing is allowed
-        let permission = self.reprocess_guard.check_permission(allow_reprocess);
-        if !permission.is_allowed() {
+        if self.processed && !allow_reprocess {
             tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
             return Ok(());
         }
@@ -210,7 +207,7 @@ impl DiagnosticsServices {
 
         // Only mark as processed if processing succeeded
         if result.is_ok() {
-            self.reprocess_guard.mark_processed();
+            self.processed = true;
         }
 
         result
@@ -272,7 +269,7 @@ mod save_restore {
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             Ok(state::SavedState {
                 gpa: self.gpa.map(|g| g.get()),
-                did_flush: self.reprocess_guard.has_processed(),
+                did_flush: self.processed,
                 log_level: self.log_level,
             })
         }
@@ -284,13 +281,7 @@ mod save_restore {
                 log_level,
             } = state;
             self.gpa = gpa.and_then(|g| Gpa::new(g).ok());
-            self.reprocess_guard = if did_flush {
-                let mut guard = ReprocessGuard::new();
-                guard.mark_processed();
-                guard
-            } else {
-                ReprocessGuard::new()
-            };
+            self.processed = did_flush;
             self.log_level = log_level;
             Ok(())
         }
