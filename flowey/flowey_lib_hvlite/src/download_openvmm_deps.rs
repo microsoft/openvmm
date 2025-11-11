@@ -86,8 +86,57 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        if local_path.is_some() {
-            anyhow::bail!("LocalPath request is not yet implemented");
+        if let Some(local_path) = local_path {
+            ctx.emit_rust_step("use local openvmm-deps", |ctx| {
+                let linux_test_kernel = linux_test_kernel.claim(ctx);
+                let linux_test_initrd = linux_test_initrd.claim(ctx);
+                let openhcl_cpio_dbgrd = openhcl_cpio_dbgrd.claim(ctx);
+                let openhcl_cpio_shell = openhcl_cpio_shell.claim(ctx);
+                let openhcl_sysroot = openhcl_sysroot.claim(ctx);
+                let local_path = local_path.clone();
+                move |rt| {
+                    // The local path assumes the provided path has an x64 and aarch64 subdirectory
+                    // to avoid having to pass separate paths as arguments through multiple requests
+                    let base_dir = move |arch| match arch {
+                        OpenvmmDepsArch::X86_64 => local_path.join("x64"),
+                        OpenvmmDepsArch::Aarch64 => local_path.join("aarch64"),
+                    };
+
+                    let kernel_file_name = |arch| match arch {
+                        OpenvmmDepsArch::X86_64 => "vmlinux",
+                        OpenvmmDepsArch::Aarch64 => "Image",
+                    };
+
+                    for (arch, vars) in linux_test_kernel {
+                        let path = base_dir(arch).join(kernel_file_name(arch));
+                        rt.write_all(vars, &path)
+                    }
+
+                    for (arch, vars) in linux_test_initrd {
+                        let path = base_dir(arch).join("initrd");
+                        rt.write_all(vars, &path)
+                    }
+
+                    for (arch, vars) in openhcl_cpio_dbgrd {
+                        let path = base_dir(arch).join("dbgrd.cpio.gz");
+                        rt.write_all(vars, &path)
+                    }
+
+                    for (arch, vars) in openhcl_cpio_shell {
+                        let path = base_dir(arch).join("shell.cpio.gz");
+                        rt.write_all(vars, &path)
+                    }
+
+                    for (arch, vars) in openhcl_sysroot {
+                        let path = base_dir(arch).join("sysroot.tar.gz");
+                        rt.write_all(vars, &path)
+                    }
+
+                    Ok(())
+                }
+            });
+
+            return Ok(());
         }
 
         let extract_tar_bz2_deps =
