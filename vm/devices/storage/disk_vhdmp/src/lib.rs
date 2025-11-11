@@ -28,6 +28,7 @@ use vm_resource::kind::DiskHandleKind;
 mod virtdisk {
     #![expect(non_snake_case, dead_code, clippy::upper_case_acronyms)]
 
+    use guid::Guid;
     use std::os::windows::prelude::*;
     use windows_sys::Win32::Security::SECURITY_DESCRIPTOR;
     use windows_sys::Win32::System::IO::OVERLAPPED;
@@ -45,6 +46,14 @@ mod virtdisk {
         pub DeviceId: u32,
         pub VendorId: GUID,
     }
+
+    pub const VIRTUAL_STORAGE_TYPE_DEVICE_UNKNOWN: u32 = 0;
+    pub const VIRTUAL_STORAGE_TYPE_DEVICE_ISO: u32 = 1;
+    pub const VIRTUAL_STORAGE_TYPE_DEVICE_VHD: u32 = 2;
+    pub const VIRTUAL_STORAGE_TYPE_DEVICE_VHDX: u32 = 3;
+
+    pub const VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT: Guid =
+        guid::guid!("EC984AEC-A0F9-47e9-901F-71415A66345B");
 
     // Open the backing store without opening any differencing chain parents.
     // This allows one to fixup broken parent links.
@@ -423,6 +432,60 @@ impl Vhd {
         Ok(Self(file))
     }
 
+    /// Create a new dynamic VHD
+    pub fn create_dynamic(path: &Path, max_size_mb: u64, vhdx: bool) -> std::io::Result<Self> {
+        let file = unsafe {
+            let path = {
+                let mut path16: Vec<_> = path.as_os_str().encode_wide().collect();
+                path16.push(0);
+                path16
+            };
+
+            let mut storage_type = virtdisk::VIRTUAL_STORAGE_TYPE {
+                DeviceId: if vhdx {
+                    virtdisk::VIRTUAL_STORAGE_TYPE_DEVICE_VHDX
+                } else {
+                    virtdisk::VIRTUAL_STORAGE_TYPE_DEVICE_VHD
+                },
+                VendorId: virtdisk::VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT.into(),
+            };
+
+            // Use a unique ID for each open to avoid virtual disk sharing
+            // within VHDMP. In the future, consider taking this as a parameter
+            // to support failover.
+            let resiliency_guid = Guid::new_random();
+            let mut parameters = virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS {
+                Version: 2,
+                u: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_u {
+                    Version2: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_2 {
+                        UniqueId: resiliency_guid.into(),
+                        MaximumSize: max_size_mb * 1024 * 1024,
+                        BlockSizeInBytes: 2 * 1024 * 1024,
+                        SectorSizeInBytes: 512,
+                        OpenFlags: virtdisk::OPEN_VIRTUAL_DISK_FLAG_CACHED_IO,
+                        ResiliencyGuid: resiliency_guid.into(),
+                        ..std::mem::zeroed()
+                    },
+                },
+            };
+
+            let mut handle = std::mem::zeroed();
+            chk_win32(virtdisk::CreateVirtualDisk(
+                &mut storage_type,
+                path.as_ptr(),
+                0,
+                None,
+                0,
+                0,
+                Some(&mut parameters),
+                None,
+                &mut handle,
+            ))?;
+            fs::File::from_raw_handle(handle)
+        };
+        Ok(Self(file))
+    }
+
     /// Create a new differencing VHD
     pub fn create_diff(path: &Path, parent_path: &Path) -> std::io::Result<Self> {
         let file = unsafe {
@@ -473,7 +536,8 @@ impl Vhd {
         Ok(Self(file))
     }
 
-    fn attach_for_raw_access(&self, read_only: bool) -> std::io::Result<()> {
+    /// Configure the VHD for raw access
+    pub fn attach_for_raw_access(&self, read_only: bool) -> std::io::Result<()> {
         unsafe {
             let mut flags = virtdisk::ATTACH_VIRTUAL_DISK_FLAG_NO_LOCAL_HOST;
             if read_only {
