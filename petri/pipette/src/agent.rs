@@ -190,6 +190,10 @@ async fn handle_request(
         PipetteRequest::ReadFile(rpc) => rpc.handle_failable(read_file).await,
         PipetteRequest::WriteFile(rpc) => rpc.handle_failable(write_file).await,
         PipetteRequest::GetTime(rpc) => rpc.handle_sync(|()| SystemTime::now().into()),
+        PipetteRequest::Crash(rpc) => rpc.handle_sync(|()| panic!("crash requested")),
+        PipetteRequest::KernelCrash(rpc) => {
+            rpc.handle_failable_sync(|()| crate::crash::trigger_kernel_crash())
+        }
     }
 }
 
