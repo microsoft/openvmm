@@ -21,6 +21,7 @@ use futures::FutureExt as _;
 use futures::StreamExt;
 use futures::io::BufReader;
 use futures_concurrency::future::TryJoin;
+use mesh::error::RemoteError;
 use mesh::payload::Timestamp;
 use mesh::rpc::RpcError;
 use mesh_remote::PointToPointMesh;
@@ -214,25 +215,17 @@ impl PipetteClient {
     /// Tell the agent to crash itself.
     ///
     /// This call will always return an error.
-    pub async fn crash(&self) -> Result<(), RpcError> {
-        self.send.call(PipetteRequest::Crash, ()).await
+    pub async fn crash(&self) -> Result<(), RpcError<RemoteError>> {
+        self.send.call_failable(PipetteRequest::Crash, ()).await
     }
 
     /// Tell the agent to crash the kernel.
     ///
     /// This call will always return an error.
-    pub async fn kernel_crash(&self) -> anyhow::Result<()> {
-        let r = self.send.call(PipetteRequest::KernelCrash, ());
-        match r.await {
-            Ok(r) => r
-                .map_err(anyhow::Error::from)
-                .context("failed to crash the kernel")?,
-            Err(_) => {
-                // Presumably this is an expected error due to the agent exiting
-                // or the guest crashing.
-            }
-        }
-        Ok(())
+    pub async fn kernel_crash(&self) -> Result<(), RpcError<RemoteError>> {
+        self.send
+            .call_failable(PipetteRequest::KernelCrash, ())
+            .await
     }
 }
 

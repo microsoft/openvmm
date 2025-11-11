@@ -48,7 +48,7 @@ pub enum PipetteRequest {
     /// Get the current time in the guest.
     GetTime(Rpc<(), Timestamp>),
     /// Crash the agent.
-    Crash(Rpc<(), ()>),
+    Crash(FailableRpc<(), ()>),
     /// Crash the kernel.
     KernelCrash(FailableRpc<(), ()>),
 }
