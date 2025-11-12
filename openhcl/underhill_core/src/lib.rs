@@ -196,10 +196,218 @@ async fn do_main(driver: DefaultDriver, mut tracing: TracingBackend) -> anyhow::
     tracing::info!(CVM_ALLOWED, ?crate_name, ?crate_revision, "VMM process");
     log_boot_times().context("failure logging boot times")?;
 
-    // Write the current pid to a file.
-    if let Some(pid_path) = &opt.pid {
-        std::fs::write(pid_path, std::process::id().to_string())
-            .with_context(|| format!("failed to write pid to {}", pid_path.display()))?;
+    // Write the current pid to a file, with rich diagnostics to help investigate ENOSPC / write failures.
+    //
+    // Make diagnostics unconditional by choosing a default path if none provided via env/CLI.
+    {
+        use std::path::PathBuf;
+
+        let pid_path: PathBuf = opt
+            .pid
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("/run/underhill.pid"));
+
+        let pid_path_source = if opt.pid.is_some() {
+            "provided"
+        } else {
+            "default_fallback"
+        };
+
+        tracing::info!(
+            CVM_ALLOWED,
+            pid_path=?pid_path,
+            source=%pid_path_source,
+            "PID_DIAG: preparing pid file diagnostics"
+        );
+
+        if let Some(parent) = pid_path.parent() {
+            match std::fs::metadata(parent) {
+                Ok(meta) => {
+                    tracing::debug!(
+                        CVM_ALLOWED,
+                        parent=?parent,
+                        is_dir=meta.is_dir(),
+                        "PID_DIAG: parent metadata ok"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        parent=?parent,
+                        error=%e,
+                        "PID_DIAG: parent metadata error"
+                    );
+                }
+            }
+        }
+
+        // Detailed /proc/meminfo parse (selected fields).
+        if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
+            let mut mem_kv = std::collections::HashMap::new();
+            for line in meminfo.lines().take(40) {
+                if let Some((k, v)) = line.split_once(':') {
+                    mem_kv.insert(k.trim().to_string(), v.trim().to_string());
+                }
+            }
+            let summary = [
+                "MemTotal",
+                "MemFree",
+                "Buffers",
+                "Cached",
+                "SwapTotal",
+                "SwapFree",
+            ]
+            .iter()
+            .map(|k| format!("{}={}", k, mem_kv.get(*k).unwrap_or(&"?".to_string())))
+            .collect::<Vec<_>>()
+            .join(" ");
+            tracing::debug!(CVM_ALLOWED, meminfo_summary=%summary, "PID_DIAG: meminfo summary");
+        }
+
+        // Mount lines (root and /run).
+        if let Ok(mounts) = std::fs::read_to_string("/proc/mounts") {
+            let root_line = mounts
+                .lines()
+                .find(|l| l.split_whitespace().nth(1) == Some("/"));
+            let run_line = mounts
+                .lines()
+                .find(|l| l.split_whitespace().nth(1) == Some("/run"));
+
+            let root_fs_type = root_line
+                .and_then(|l| l.split_whitespace().nth(2))
+                .unwrap_or("?");
+            let run_fs_type = run_line
+                .and_then(|l| l.split_whitespace().nth(2))
+                .unwrap_or("?");
+
+            tracing::debug!(
+                CVM_ALLOWED,
+                root_mount=?root_line,
+                run_mount=?run_line,
+                root_fs_type=%root_fs_type,
+                run_fs_type=%run_fs_type,
+                "PID_DIAG: /proc/mounts subset"
+            );
+        }
+
+        // Enumerate parent directory entries (sample) & mountinfo subset.
+        if let Some(parent) = pid_path.parent() {
+            if let Ok(read_dir) = std::fs::read_dir(parent) {
+                let mut file_count = 0usize;
+                let mut dir_count = 0usize;
+                let mut other_count = 0usize;
+                let mut sample_names = Vec::new();
+                for entry in read_dir.flatten().take(64) {
+                    if let Ok(ft) = entry.file_type() {
+                        if ft.is_dir() {
+                            dir_count += 1;
+                        } else if ft.is_file() {
+                            file_count += 1;
+                        } else {
+                            other_count += 1;
+                        }
+                    }
+                    if let Some(name) = entry.file_name().to_str() {
+                        sample_names.push(name.to_string());
+                    }
+                }
+                tracing::debug!(
+                    CVM_ALLOWED,
+                    path=?parent,
+                    files=file_count,
+                    dirs=dir_count,
+                    other=other_count,
+                    sample=?sample_names,
+                    "PID_DIAG: parent directory sample (max 64 entries)"
+                );
+            }
+
+            if let Ok(mountinfo) = std::fs::read_to_string("/proc/self/mountinfo") {
+                let root_mount = mountinfo
+                    .lines()
+                    .find(|l| l.split_whitespace().any(|f| f == "/"));
+                let run_mount = mountinfo
+                    .lines()
+                    .find(|l| l.split_whitespace().any(|f| f == "/run"));
+                tracing::debug!(
+                    CVM_ALLOWED,
+                    root_mount=?root_mount,
+                    run_mount=?run_mount,
+                    "PID_DIAG: mountinfo subset"
+                );
+            }
+        }
+
+        // /proc/self/status summary (VmSize / VmRSS).
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            let mut vm_size = "?";
+            let mut vm_rss = "?";
+            for line in status.lines() {
+                if line.starts_with("VmSize:") {
+                    vm_size = line.split_whitespace().nth(1).unwrap_or("?");
+                }
+                if line.starts_with("VmRSS:") {
+                    vm_rss = line.split_whitespace().nth(1).unwrap_or("?");
+                }
+            }
+            tracing::debug!(CVM_ALLOWED, vm_size=%vm_size, vm_rss=%vm_rss, "PID_DIAG: process memory");
+        }
+
+        let pid_str = std::process::id().to_string();
+
+        match std::fs::write(&pid_path, &pid_str) {
+            Ok(_) => {
+                tracing::info!(
+                    CVM_ALLOWED,
+                    pid=?pid_str,
+                    pid_path=?pid_path,
+                    source=%pid_path_source,
+                    "PID_DIAG: pid file written"
+                );
+            }
+            Err(e) => {
+                let raw = e.raw_os_error();
+                let enospc = raw == Some(28); // ENOSPC
+                let kind = e.kind();
+                let probe_outcome = pid_path.parent().and_then(|p| {
+                    let probe = p.join("underhill_probe.tmp");
+                    match std::fs::write(&probe, b"probe") {
+                        Ok(_) => {
+                            let _ = std::fs::remove_file(&probe);
+                            Some("probe_ok")
+                        }
+                        Err(pe) => {
+                            let rawp = pe.raw_os_error();
+                            let enospcp = rawp == Some(28);
+                            Some(if enospcp {
+                                "probe_failed_enospc"
+                            } else {
+                                "probe_failed_other"
+                            })
+                        }
+                    }
+                });
+                let post_memfree = std::fs::read_to_string("/proc/meminfo").ok().and_then(|m| {
+                    m.lines()
+                        .find(|l| l.starts_with("MemFree:"))
+                        .map(|l| l.to_string())
+                });
+                tracing::error!(
+                    CVM_ALLOWED,
+                    pid_path=?pid_path,
+                    source=%pid_path_source,
+                    error=%e,
+                    kind=?kind,
+                    raw_os_error=?raw,
+                    enospc=?enospc,
+                    probe=?probe_outcome,
+                    post_memfree=?post_memfree,
+                    "PID_DIAG: failed to write pid file"
+                );
+                return Err(anyhow::anyhow!(e)
+                    .context(format!("failed to write pid to {}", pid_path.display())));
+            }
+        }
     }
 
     let mesh = Mesh::new("underhill".to_string()).context("failed to create mesh")?;
