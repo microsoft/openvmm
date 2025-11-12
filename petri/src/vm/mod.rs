@@ -1748,18 +1748,6 @@ pub struct OpenHclServicingFlags {
     pub stop_timeout_hint_secs: Option<u16>,
 }
 
-impl OpenHclServicingFlags {
-    /// Architecture-specific default flags for servicing OpenHCL.
-    /// e.g. aarch64 does not support NVMe Keepalive at the moment.
-    pub fn default(arch: MachineArch) -> Self {
-        Self {
-            enable_nvme_keepalive: arch == MachineArch::X86_64,
-            override_version_checks: false,
-            stop_timeout_hint_secs: None,
-        }
-    }
-}
-
 /// Petri disk type
 #[derive(Debug, Clone)]
 pub enum PetriDiskType {
