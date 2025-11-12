@@ -166,9 +166,7 @@ pub trait PetriVmmBackend {
     ) -> anyhow::Result<Self::VmRuntime>;
 }
 
-#[allow(unused)] // Temporary
 pub(crate) const PETRI_VTL0_SCSI_BOOT_LUN: u8 = 0;
-#[allow(unused)] // Temporary
 pub(crate) const PETRI_VTL0_SCSI_PIPETTE_LUN: u8 = 1;
 
 /// A constructed Petri VM
