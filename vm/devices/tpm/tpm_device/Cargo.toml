@@ -1,0 +1,45 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "tpm_device"
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+# Without this feature, the crate is a no-op. Disable it by default
+# to avoid requiring openssl on Windows.
+tpm = ["ms-tpm-20-ref", "ms-tpm-20-ref/vendored"]
+
+[dependencies]
+ms-tpm-20-ref = { optional = true, workspace = true }
+tpm_lib.workspace = true
+tpm_protocol.workspace = true
+tpm_resources.workspace = true
+
+chipset_device.workspace = true
+chipset_device_resources.workspace = true
+cvm_tracing.workspace = true
+guestmem.workspace = true
+vmcore.workspace = true
+vm_resource.workspace = true
+
+guid = { workspace = true, features = ["inspect"] }
+inspect.workspace = true
+mesh.workspace = true
+open_enum.workspace = true
+pal_async.workspace = true
+
+async-trait.workspace = true
+getrandom.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+tracelimit.workspace = true
+tracing.workspace = true
+zerocopy.workspace = true
+
+sha2.workspace = true
+base64.workspace = true
+
+[lints]
+workspace = true

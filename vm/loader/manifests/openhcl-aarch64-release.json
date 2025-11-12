@@ -8,7 +8,7 @@
             "image": {
                 "openhcl": {
                     "memory_page_count": 12288,
-                    "command_line": "console=null",
+                    "command_line": "console=null OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG=release",
                     "uefi": true
                 }
             }

@@ -1917,10 +1917,10 @@ impl LocalNode {
                 })
                 .count();
             if left == 0 {
-                tracing::debug!(node = ?self.id(), "no ports remain");
+                tracing::trace!(node = ?self.id(), "no ports remain");
                 return;
             }
-            tracing::debug!(node = ?self.id(), count = left, "waiting for ports");
+            tracing::trace!(node = ?self.id(), count = left, "waiting for ports");
             let _ = recv.await;
         }
     }
@@ -2279,7 +2279,7 @@ impl LocalNodeInner {
                 drop(state);
 
                 // Trace outside the lock to avoid deadlocks.
-                tracing::debug!(
+                tracing::trace!(
                     local_id = ?self.id,
                     port = ?port.id,
                     remote_id = ?remote_node.id,

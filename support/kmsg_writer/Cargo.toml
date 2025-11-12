@@ -1,0 +1,15 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "kmsg_writer"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+fs-err.workspace = true
+
+[lints]
+workspace = true

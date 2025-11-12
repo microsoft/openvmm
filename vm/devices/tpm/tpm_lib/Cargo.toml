@@ -1,0 +1,27 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "tpm_lib"
+rust-version.workspace = true
+edition.workspace = true
+
+[features]
+# Use this feature to enable tests that pulls in the `ms-tpm-20-ref`
+# with dependency on openssl.
+test_tpm = ["ms-tpm-20-ref", "ms-tpm-20-ref/vendored"]
+
+[dependencies]
+ms-tpm-20-ref = { optional = true, workspace = true }
+tpm_protocol.workspace = true
+cvm_tracing.workspace = true
+inspect.workspace = true
+
+thiserror.workspace = true
+tracelimit.workspace = true
+tracing.workspace = true
+zerocopy.workspace = true
+getrandom.workspace = true
+
+[lints]
+workspace = true

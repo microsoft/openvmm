@@ -322,18 +322,19 @@ impl net_backend::Queue for ConsommeQueue {
             };
             let tx_id = meta.id;
             let checksum = ChecksumState {
-                ipv4: meta.offload_ip_header_checksum,
-                tcp: meta.offload_tcp_checksum,
-                udp: meta.offload_udp_checksum,
+                ipv4: meta.flags.offload_ip_header_checksum(),
+                tcp: meta.flags.offload_tcp_checksum(),
+                udp: meta.flags.offload_udp_checksum(),
                 tso: meta
-                    .offload_tcp_segmentation
+                    .flags
+                    .offload_tcp_segmentation()
                     .then_some(meta.max_tcp_segment_size),
             };
 
-            let mut buf = vec![0; meta.len];
+            let mut buf = vec![0; meta.len as usize];
             let gm = self.state.pool.guest_memory();
             let mut offset = 0;
-            for segment in self.state.tx_avail.drain(..meta.segment_count) {
+            for segment in self.state.tx_avail.drain(..meta.segment_count as usize) {
                 let dest = &mut buf[offset..offset + segment.len as usize];
                 if let Err(err) = gm.read_at(segment.gpa, dest) {
                     tracing::error!(

@@ -544,3 +544,19 @@ function Set-Vtl2Settings {
 
     $cimSession | Remove-CimSession | Out-Null
 }
+
+function Set-GuestStateIsolationMode
+{
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm,
+
+        [int] $Mode
+    )
+
+    $vssd = Get-VmSystemSettings $Vm
+    $vssd.GuestStateIsolationMode = $Mode
+    Set-VmSystemSettings $vssd
+}

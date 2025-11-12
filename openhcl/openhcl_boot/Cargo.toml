@@ -19,6 +19,8 @@ memory_range.workspace = true
 sidecar_defs.workspace = true
 string_page_buf.workspace = true
 
+mesh_protobuf.workspace = true
+
 arrayvec.workspace = true
 cfg-if.workspace = true
 crc32fast.workspace = true
@@ -34,6 +36,10 @@ zerocopy.workspace = true
 safe_intrinsics.workspace = true
 tdcall.workspace = true
 x86defs.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
+tracing.workspace = true
 
 [build-dependencies]
 minimal_rt_build.workspace = true

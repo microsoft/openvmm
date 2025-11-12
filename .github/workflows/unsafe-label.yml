@@ -1,0 +1,115 @@
+name: "Unsafe Check"
+on:
+- pull_request_target
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check-unsafe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Check for unsafe code and manage labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            // Get the list of changed files
+            // TODO: pagination if more than 100 files
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100,
+            });
+
+            // Filter to just Rust files
+            const rustFiles = files.filter(file => file.filename.endsWith('.rs'));
+
+            console.log(`Checking ${rustFiles.length} Rust files for unsafe code...`);
+
+            let unsafeFound = false;
+
+            // Check each Rust file for unsafety
+            for (const file of rustFiles) {
+              // Don't check deleted files
+              if (file.status === 'removed') {
+                continue;
+              }
+
+              try {
+                const filePath = file.filename;
+                const content = fs.readFileSync(filePath, 'utf8');
+
+                // Look for "unsafe ", the space ensures we don't catch words like the "unsafe_code" lint
+                const unsafeRegex = /unsafe /;
+                if (unsafeRegex.test(content)) {
+                  console.log(`Found unsafe code in: ${filePath}`);
+                  unsafeFound = true;
+                }
+              } catch (error) {
+                console.log(`Could not read ${filePath}: ${error.message}`);
+              }
+            }
+
+            // Manage the label
+            if (unsafeFound) {
+              console.log('Adding unsafe label...');
+              await github.rest.issues.addLabels({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                labels: ['unsafe']
+              });
+
+              // Post a warning comment
+              const comment = `⚠️ **Unsafe Code Detected**
+
+              This PR modifies files containing \`unsafe\` Rust code. Extra scrutiny is required during review.
+
+              For more on why we check whole files, instead of just diffs, check out [the Rustonomicon](https://doc.rust-lang.org/nomicon/working-with-unsafe.html)`;
+              
+              // Check if we already posted this comment
+              const { data: comments } = await github.rest.issues.listComments({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              });
+
+              const botComment = comments.find(c =>
+                c.user.type === 'Bot' && c.body.includes('Unsafe Code Detected')
+              );
+
+              if (!botComment) {
+                console.log('Posting warning comment...');
+                await github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: comment
+                });
+              } else {
+                console.log('Warning comment already exists');
+              }
+            } else {
+              console.log('No unsafe code found, removing label if present...');
+              try {
+                await github.rest.issues.removeLabel({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: 'unsafe'
+                });
+              } catch (error) {
+                // Label might not exist, that's okay
+                console.log('Label does not exist or could not be removed:', error.message);
+              }
+            }

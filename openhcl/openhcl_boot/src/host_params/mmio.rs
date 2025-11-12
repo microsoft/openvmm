@@ -75,7 +75,7 @@ mod test {
             vtl2_range: MemoryRange,
         }
 
-        let testcases = vec![
+        let testcases = [
             TestCase {
                 // No MMIO range is provided, fails.
                 mmio: ArrayVec::new(),

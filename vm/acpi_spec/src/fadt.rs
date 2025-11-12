@@ -122,8 +122,9 @@ pub const FADT_HW_REDUCED_ACPI: u32 = 1 << 20;
 pub const FADT_LOW_POWER_S0_IDLE_CAPABLE: u32 = 1 << 21;
 
 #[repr(u8)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, Default)]
 pub enum AddressSpaceId {
+    #[default]
     SystemMemory = 0,
     SystemIo = 1,
     PciConfigurationSpace = 2,
@@ -133,26 +134,15 @@ pub enum AddressSpaceId {
     FunctionalFixedHardware = 0x7F,
 }
 
-impl Default for AddressSpaceId {
-    fn default() -> Self {
-        Self::SystemMemory
-    }
-}
-
 #[repr(u8)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, Default)]
 pub enum AddressWidth {
+    #[default]
     Undefined = 0,
     Byte = 1,
     Word = 2,
     Dword = 3,
     Qword = 4,
-}
-
-impl Default for AddressWidth {
-    fn default() -> Self {
-        Self::Undefined
-    }
 }
 
 #[repr(C, packed)]

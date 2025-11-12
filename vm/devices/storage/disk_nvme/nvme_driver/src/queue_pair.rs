@@ -218,9 +218,6 @@ impl<T: AerHandler> QueuePair<T> {
             };
         let dma_client = device.dma_client();
 
-        // TODO: Keepalive: Detect when the allocation came from outside
-        // the private pool and put the device in a degraded state, so it
-        // is possible to inspect that a servicing with keepalive will fail.
         let mem = dma_client
             .allocate_dma_buffer(total_size)
             .context("failed to allocate memory for queues")?;
@@ -483,14 +480,42 @@ impl std::error::Error for NvmeError {}
 impl std::fmt::Display for NvmeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0.status_code_type() {
-            spec::StatusCodeType::GENERIC => write!(f, "general error {:#x?}", self.0),
+            spec::StatusCodeType::GENERIC => write!(
+                f,
+                "NVMe SCT general error, SC: {:#x?}",
+                self.0.status_code()
+            ),
             spec::StatusCodeType::COMMAND_SPECIFIC => {
-                write!(f, "command-specific error {:#x?}", self.0)
+                write!(
+                    f,
+                    "NVMe SCT command-specific error, SC: {:#x?}",
+                    self.0.status_code()
+                )
             }
             spec::StatusCodeType::MEDIA_ERROR => {
-                write!(f, "media error {:#x?}", self.0)
+                write!(f, "NVMe SCT media error, SC: {:#x?}", self.0.status_code())
             }
-            _ => write!(f, "{:#x?}", self.0),
+            spec::StatusCodeType::PATH_RELATED => {
+                write!(
+                    f,
+                    "NVMe SCT path-related error, SC: {:#x?}",
+                    self.0.status_code()
+                )
+            }
+            spec::StatusCodeType::VENDOR_SPECIFIC => {
+                write!(
+                    f,
+                    "NVMe SCT vendor-specific error, SC: {:#x?}",
+                    self.0.status_code()
+                )
+            }
+            _ => write!(
+                f,
+                "NVMe SCT unknown ({:#x?}), SC: {:#x?} (raw: {:#x?})",
+                self.0.status_code_type(),
+                self.0.status_code(),
+                self.0
+            ),
         }
     }
 }
@@ -671,15 +696,10 @@ impl Issuer {
             .await
             .expect("pool cap is sufficient");
 
-        assert_eq!(
-            mem.page_count(),
-            1,
-            "larger requests not currently supported"
-        );
-        let prp = Prp {
-            dptr: [mem.physical_address(0), INVALID_PAGE_ADDR],
-            _pages: None,
-        };
+        let prp = self
+            .make_prp(0, (0..mem.page_count()).map(|i| mem.physical_address(i)))
+            .await;
+
         command.dptr = prp.dptr;
         let completion = self.issue_raw(command).await;
         mem.read(data);

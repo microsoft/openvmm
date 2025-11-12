@@ -834,6 +834,36 @@ mod weak_mutex_pci {
                     .pci_cfg_write(offset, value),
             )
         }
+
+        fn pci_cfg_read_forward(
+            &mut self,
+            bus: u8,
+            device_function: u8,
+            offset: u16,
+            value: &mut u32,
+        ) -> Option<IoResult> {
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()
+                .expect("builder code ensures supports_pci.is_some()")
+                .pci_cfg_read_forward(bus, device_function, offset, value)
+        }
+
+        fn pci_cfg_write_forward(
+            &mut self,
+            bus: u8,
+            device_function: u8,
+            offset: u16,
+            value: u32,
+        ) -> Option<IoResult> {
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()
+                .expect("builder code ensures supports_pci.is_some()")
+                .pci_cfg_write_forward(bus, device_function, offset, value)
+        }
     }
 
     // wiring to enable using the generic PCI bus alongside the Arc+CloseableMutex device infra
@@ -854,9 +884,9 @@ mod weak_mutex_pci {
                     name.clone(),
                     WeakMutexPciDeviceWrapper(dev),
                 )
-                .map_err(|(_, existing_dev)| PciConflict {
+                .map_err(|occ_err| PciConflict {
                     bdf: (bus, device, function),
-                    reason: PciConflictReason::ExistingDev(existing_dev),
+                    reason: PciConflictReason::ExistingDev(occ_err.existing_device_name),
                     conflict_dev: name,
                 })
         }
@@ -881,9 +911,9 @@ mod weak_mutex_pci {
                     name.clone(),
                     WeakMutexPciDeviceWrapper(dev),
                 )
-                .map_err(|(_, existing_dev)| PciConflict {
+                .map_err(|occ_err| PciConflict {
                     bdf: (bus, device, function),
-                    reason: PciConflictReason::ExistingDev(existing_dev),
+                    reason: PciConflictReason::ExistingDev(occ_err.existing_device_name),
                     conflict_dev: name,
                 })
         }
@@ -898,9 +928,30 @@ mod weak_mutex_pci {
             dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
         ) -> Result<(), PcieConflict> {
             self.lock()
-                .add_pcie_device(port, name.clone(), WeakMutexPciDeviceWrapper(dev))
+                .add_pcie_device(port, name.clone(), Box::new(WeakMutexPciDeviceWrapper(dev)))
                 .map_err(|existing_dev_name| PcieConflict {
                     reason: PcieConflictReason::ExistingDev(existing_dev_name),
+                    conflict_dev: name,
+                })
+        }
+
+        fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
+            self.lock().downstream_ports()
+        }
+    }
+
+    // wiring to enable using the PCIe switch alongside the Arc+CloseableMutex device infra
+    impl RegisterWeakMutexPcie for Arc<CloseableMutex<pcie::switch::GenericPcieSwitch>> {
+        fn add_pcie_device(
+            &mut self,
+            port: u8,
+            name: Arc<str>,
+            dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+        ) -> Result<(), PcieConflict> {
+            self.lock()
+                .add_pcie_device(port, &name, Box::new(WeakMutexPciDeviceWrapper(dev)))
+                .map_err(|err| PcieConflict {
+                    reason: PcieConflictReason::ExistingDev(err.to_string().into()),
                     conflict_dev: name,
                 })
         }

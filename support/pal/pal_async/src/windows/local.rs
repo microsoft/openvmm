@@ -36,7 +36,6 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 use std::time::Duration;
-use winapi::shared::winerror::ERROR_IO_PENDING;
 use winapi::shared::winerror::ERROR_OPERATION_ABORTED;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::ioapiset::CancelIoEx;
@@ -467,7 +466,7 @@ impl Drop for OverlappedIo {
 impl IoOverlapped for OverlappedIo {
     fn pre_io(&self) {}
 
-    unsafe fn post_io(&self, result: &io::Result<()>, overlapped: &Overlapped) -> bool {
+    unsafe fn post_io(&self, completed: bool, overlapped: &Overlapped) {
         // Always take the lock to force the thread out of its wait. This is
         // necessary because issuing the IO may have reset the file's internal
         // IO completion event before the waiting thread could consume it.
@@ -476,13 +475,8 @@ impl IoOverlapped for OverlappedIo {
         // For better performance when multiple threads are involved, switch to
         // a different driver.
         let mut inner = self.inner.lock_sys_state();
-        match result.as_ref() {
-            Ok(()) => true,
-            Err(e) if e.raw_os_error() != Some(ERROR_IO_PENDING as i32) => true,
-            Err(_) => {
-                inner.ios.push(overlapped.as_ptr() as usize);
-                false
-            }
+        if !completed {
+            inner.ios.push(overlapped.as_ptr() as usize);
         }
     }
 }

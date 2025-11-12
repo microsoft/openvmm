@@ -74,6 +74,8 @@ pub struct VpciRelay {
     mmio_access: Box<dyn CreateMemoryAccess>,
     #[inspect(iter_by_index)]
     allowed_devices: Vec<AllowedDevice>,
+    #[inspect(hex)]
+    vtom: Option<u64>,
 }
 
 #[derive(Inspect)]
@@ -157,6 +159,7 @@ impl VpciRelay {
         dma_client: Arc<dyn DmaClient>,
         mmio_range: MemoryRange,
         mmio_access: Box<dyn CreateMemoryAccess>,
+        vtom: Option<u64>,
     ) -> Self {
         Self {
             driver_source,
@@ -168,6 +171,7 @@ impl VpciRelay {
             mmio_range,
             mmio_access,
             allowed_devices: Vec::new(),
+            vtom,
         }
     }
 
@@ -304,6 +308,7 @@ impl VpciRelay {
                             mmio,
                             self.vmbus.as_ref(),
                             interrupt_mapper,
+                            self.vtom,
                         )
                         .await?;
 

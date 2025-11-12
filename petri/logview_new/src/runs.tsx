@@ -2,11 +2,12 @@
 // Licensed under the MIT License.
 
 import "./styles/common.css";
+import "./styles/runs.css";
 import React, { useState, useMemo, useEffect } from "react";
 import { SortingState } from "@tanstack/react-table";
 import { useQuery } from "@tanstack/react-query";
 import { RunData } from "./data_defs";
-import { fetchRunData } from "./fetch";
+import { fetchRunData } from "./fetch/fetch_runs_data.tsx";
 import { Menu } from "./menu";
 import { VirtualizedTable } from "./virtualized_table.tsx";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
@@ -72,6 +73,7 @@ export function Runs(): React.JSX.Element {
           searchFilter={searchFilter}
           setSearchFilter={setSearchFilter}
           resultCount={filteredRuns.length}
+          loadingSuccess={isSuccess}
         />
       </div>
       {hasNoData ? (
@@ -95,6 +97,7 @@ interface RunsHeaderProps {
   searchFilter: string;
   setSearchFilter: (filter: string) => void;
   resultCount: number;
+  loadingSuccess: boolean;
 }
 
 export function RunsHeader({
@@ -103,6 +106,7 @@ export function RunsHeader({
   searchFilter,
   setSearchFilter,
   resultCount,
+  loadingSuccess,
 }: RunsHeaderProps): React.JSX.Element {
   return (
     <>
@@ -127,6 +131,14 @@ export function RunsHeader({
             main
           </button>
         </div>
+        {!loadingSuccess && (
+          <div className="header-loading-indicator">
+              <div className="header-loading-spinner"></div>
+              <div className="header-loading-text">
+                  Fetching runs ...
+              </div>
+          </div>
+        )}
       </div>
       <div className="common-header-right">
         <SearchInput value={searchFilter} onChange={setSearchFilter} />

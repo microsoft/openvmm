@@ -26,6 +26,9 @@ pub trait SecureInterceptPlatformTrait {
     ///
     /// Returns `Ok(())` on success or an error wrapped in `TmkResult`.
     fn setup_secure_intercept(&mut self, interrupt_idx: u8) -> TmkResult<()>;
+
+    /// Signals to the platform that the intercept has been handled
+    fn signal_intercept_handled(&mut self) -> TmkResult<()>;
 }
 
 #[cfg(nightly)]
@@ -37,7 +40,7 @@ pub trait InterruptPlatformTrait {
     /// * `interrupt_idx` – IDT/GIC index to program  
     /// * `handler` – Function that will be executed when the interrupt
     ///   fires.
-    fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn()) -> TmkResult<()>;
+    fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn(Self)) -> TmkResult<()>;
 
     /// Finalises platform specific interrupt setup (enables the table,
     /// unmasks lines, etc.).

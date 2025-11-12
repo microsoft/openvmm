@@ -33,7 +33,7 @@ struct GpadlState {
 #[derive(Debug)]
 struct Gpadl {
     id: GpadlId,
-    buf: MultiPagedRangeBuf<Vec<u64>>,
+    buf: MultiPagedRangeBuf,
     state: Mutex<GpadlState>,
 }
 
@@ -88,7 +88,7 @@ impl GpadlView {
 }
 
 impl Deref for GpadlView {
-    type Target = MultiPagedRangeBuf<Vec<u64>>;
+    type Target = MultiPagedRangeBuf;
     fn deref(&self) -> &Self::Target {
         &self.0.buf
     }
@@ -133,7 +133,7 @@ impl GpadlMap {
     }
 
     /// Adds the specified GPADL to the map.
-    pub fn add(&self, id: GpadlId, buf: MultiPagedRangeBuf<Vec<u64>>) {
+    pub fn add(&self, id: GpadlId, buf: MultiPagedRangeBuf) {
         let gpadl = Arc::new(Gpadl {
             id,
             buf,

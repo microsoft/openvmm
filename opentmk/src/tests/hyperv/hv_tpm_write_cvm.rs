@@ -76,7 +76,7 @@ where
         ctx.switch_to_low_vtl();
     }));
 
-    let r = ctx.set_interrupt_idx(18, || {
+    let r = ctx.set_interrupt_idx(18, |_ctx| {
         log::warn!("successfully intercepted interrupt 18");
         panic!("MC should cause a system abort");
     });

@@ -47,6 +47,10 @@ pub enum PipetteRequest {
     WriteFile(FailableRpc<WriteFileRequest, u64>),
     /// Get the current time in the guest.
     GetTime(Rpc<(), Timestamp>),
+    /// Crash the agent.
+    Crash(FailableRpc<(), ()>),
+    /// Crash the kernel.
+    KernelCrash(FailableRpc<(), ()>),
 }
 
 /// A request to execute a command inside the guest.

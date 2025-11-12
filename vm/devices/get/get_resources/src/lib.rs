@@ -91,6 +91,8 @@ pub mod ged {
         pub igvm_attest_test_config: Option<IgvmAttestTestConfig>,
         /// Send the test seed for GspById requests
         pub test_gsp_by_id: bool,
+        /// EFI diagnostics log level
+        pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
     }
 
     /// The firmware and chipset configuration for the guest.
@@ -138,6 +140,18 @@ pub mod ged {
         MicrosoftWindows,
         /// The Microsoft UEFI certificate authority template.
         MicrosoftUefiCertificateAuthority,
+    }
+
+    /// The guest's EFI diagnostics log level type to use.
+    #[derive(MeshPayload, Clone, Debug, Copy, Default)]
+    pub enum EfiDiagnosticsLogLevelType {
+        /// Default log level
+        #[default]
+        Default,
+        /// Include INFO logs
+        Info,
+        /// All logs
+        Full,
     }
 
     /// The boot devices for a PC/AT BIOS.

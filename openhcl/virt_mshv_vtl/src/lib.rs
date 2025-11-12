@@ -62,6 +62,7 @@ use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
+use hvdef::HvPartitionPrivilege;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmPartitionStatus;
@@ -103,6 +104,7 @@ use user_driver::DmaClient;
 use virt::IsolationType;
 use virt::PartitionCapabilities;
 use virt::VpIndex;
+use virt::X86Partition;
 use virt::irqcon::IoApicRouting;
 use virt::irqcon::MsiRequest;
 use virt::x86::apic_software_device::ApicSoftwareDevices;
@@ -585,7 +587,6 @@ impl GetReferenceTime for TscReferenceTimeSource {
     }
 }
 
-#[cfg(guest_arch = "aarch64")]
 impl virt::irqcon::ControlGic for UhPartitionInner {
     fn set_spi_irq(&self, irq_id: u32, high: bool) {
         if let Err(err) = self.hcl.request_interrupt(
@@ -606,7 +607,6 @@ impl virt::irqcon::ControlGic for UhPartitionInner {
     }
 }
 
-#[cfg(guest_arch = "aarch64")]
 impl virt::Aarch64Partition for UhPartition {
     fn control_gic(&self, vtl: Vtl) -> Arc<dyn virt::irqcon::ControlGic> {
         debug_assert!(vtl == Vtl::Vtl0);
@@ -844,7 +844,7 @@ impl virt::Partition for UhPartition {
     }
 }
 
-impl virt::X86Partition for UhPartition {
+impl X86Partition for UhPartition {
     fn ioapic_routing(&self) -> Arc<dyn IoApicRouting> {
         self.inner.clone()
     }
@@ -1530,6 +1530,7 @@ pub struct UhProtoPartition<'a> {
     params: UhPartitionNewParams<'a>,
     hcl: Hcl,
     guest_vsm_available: bool,
+    create_partition_available: bool,
     #[cfg(guest_arch = "x86_64")]
     cpuid: virt::CpuidLeafSet,
 }
@@ -1591,7 +1592,8 @@ impl<'a> UhProtoPartition<'a> {
 
         set_vtl2_vsm_partition_config(&hcl)?;
 
-        let guest_vsm_available = Self::check_guest_vsm_support(&hcl)?;
+        let privs = hcl.get_privileges_and_features_info().map_err(Error::Hcl)?;
+        let guest_vsm_available = Self::check_guest_vsm_support(privs, &hcl)?;
 
         #[cfg(guest_arch = "x86_64")]
         let cpuid = match params.isolation {
@@ -1617,6 +1619,7 @@ impl<'a> UhProtoPartition<'a> {
             hcl,
             params,
             guest_vsm_available,
+            create_partition_available: privs.create_partitions(),
             #[cfg(guest_arch = "x86_64")]
             cpuid,
         })
@@ -1625,6 +1628,12 @@ impl<'a> UhProtoPartition<'a> {
     /// Returns whether VSM support will be available to the guest.
     pub fn guest_vsm_available(&self) -> bool {
         self.guest_vsm_available
+    }
+
+    /// Returns whether this partition has the create partitions hypercall
+    /// available.
+    pub fn create_partition_available(&self) -> bool {
+        self.create_partition_available
     }
 
     /// Returns a new Underhill partition.
@@ -1636,6 +1645,7 @@ impl<'a> UhProtoPartition<'a> {
             mut hcl,
             params,
             guest_vsm_available,
+            create_partition_available: _,
             #[cfg(guest_arch = "x86_64")]
             cpuid,
         } = self;
@@ -1929,6 +1939,22 @@ impl UhPartition {
         }
     }
 
+    /// Trigger the LINT1 interrupt vector on the LAPIC of the BSP.
+    pub fn assert_debug_interrupt(&self, _vtl: u8) {
+        #[cfg(guest_arch = "x86_64")]
+        const LINT_INDEX_1: u8 = 1;
+        #[cfg(guest_arch = "x86_64")]
+        match self.inner.isolation {
+            IsolationType::Snp => {
+                tracing::error!(?_vtl, "Debug interrupts cannot be injected into SNP VMs",);
+            }
+            _ => {
+                let bsp_index = VpIndex::new(0);
+                self.pulse_lint(bsp_index, Vtl::try_from(_vtl).unwrap(), LINT_INDEX_1)
+            }
+        }
+    }
+
     /// Enables or disables the PM timer assist.
     pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), HvError> {
         self.inner.hcl.set_pm_timer_assist(port)
@@ -2028,20 +2054,11 @@ impl UhPartition {
 impl UhProtoPartition<'_> {
     /// Whether Guest VSM is available to the guest. If so, for hardware CVMs,
     /// it is safe to expose Guest VSM support via cpuid.
-    fn check_guest_vsm_support(hcl: &Hcl) -> Result<bool, Error> {
-        #[cfg(guest_arch = "x86_64")]
-        let privs = {
-            let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
-            let num = result.eax as u64 | ((result.ebx as u64) << 32);
-            hvdef::HvPartitionPrivilege::from(num)
-        };
-
-        #[cfg(guest_arch = "aarch64")]
-        let privs = hcl.get_privileges_and_features_info().map_err(Error::Hcl)?;
-
+    fn check_guest_vsm_support(privs: HvPartitionPrivilege, hcl: &Hcl) -> Result<bool, Error> {
         if !privs.access_vsm() {
             return Ok(false);
         }
+
         let guest_vsm_config = hcl.get_guest_vsm_partition_config().map_err(Error::Hcl)?;
         Ok(guest_vsm_config.maximum_vtl() >= u8::from(GuestVtl::Vtl1))
     }

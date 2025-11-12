@@ -8,6 +8,8 @@
 //! Follows the xtask workflow/convention, as described at
 //! <https://github.com/matklad/cargo-xtask>
 
+#![forbid(unsafe_code)]
+
 use anyhow::Context;
 use clap::Parser;
 use clap::Subcommand;

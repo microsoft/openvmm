@@ -286,22 +286,25 @@ impl Vtl2SettingsWorker {
             fixed: Default::default(),
             dynamic: self.old_settings.clone(),
         };
-        let vtl2_settings =
-            Vtl2Settings::read_from(buf, old_settings).map_err(|err| match err {
-                underhill_config::schema::ParseError::Json(err) => {
-                    vec![Vtl2SettingsErrorInfo::new(
-                        Vtl2SettingsErrorCode::JsonFormatError,
-                        err.to_string(),
-                    )]
-                }
-                underhill_config::schema::ParseError::Protobuf(err) => {
-                    vec![Vtl2SettingsErrorInfo::new(
-                        Vtl2SettingsErrorCode::ProtobufFormatError,
-                        err.to_string(),
-                    )]
-                }
-                underhill_config::schema::ParseError::Validation(err) => err.errors,
-            })?;
+        let vtl2_settings = Vtl2Settings::read_from(buf, old_settings).map_err(|err| match err {
+            underhill_config::schema::ParseError::Json(err) => {
+                vec![Vtl2SettingsErrorInfo::new(
+                    Vtl2SettingsErrorCode::JsonFormatError,
+                    err.to_string(),
+                )]
+            }
+            underhill_config::schema::ParseError::Protobuf(err) => {
+                vec![Vtl2SettingsErrorInfo::new(
+                    Vtl2SettingsErrorCode::ProtobufFormatError,
+                    err.to_string(),
+                )]
+            }
+            underhill_config::schema::ParseError::Validation(err) => err.errors,
+        });
+
+        tracing::trace!(CVM_ALLOWED, ?buf, ?vtl2_settings, "VTL2 settings received");
+
+        let vtl2_settings = vtl2_settings?;
 
         let new_settings = vtl2_settings.dynamic;
 
@@ -319,6 +322,11 @@ impl Vtl2SettingsWorker {
         }
 
         if !errors.is_empty() {
+            tracing::warn!(
+                CVM_ALLOWED,
+                ?errors,
+                "Errors preparing VTL2 configuration changes"
+            );
             return Err(errors);
         }
 
@@ -353,6 +361,11 @@ impl Vtl2SettingsWorker {
         }
 
         if !errors.is_empty() {
+            tracing::warn!(
+                CVM_ALLOWED,
+                ?errors,
+                "Errors applying VTL2 configuration changes"
+            );
             return Err(errors);
         }
 

@@ -282,7 +282,7 @@ pub struct HyperVAddVMHardDiskDriveArgs<'a> {
     /// hard disk drive is to be added. If not specified, the first available
     /// location in the controller specified with the ControllerNumber parameter
     /// is used.
-    pub controller_location: Option<u32>,
+    pub controller_location: Option<u8>,
     /// Specifies the number of the controller to which the hard disk drive is
     /// to be added. If not specified, this parameter assumes the value of the
     /// first available controller at the location specified in the
@@ -843,7 +843,7 @@ pub async fn hyperv_halt_events(
 ) -> anyhow::Result<Vec<WinEvent>> {
     let vmid = vmid.to_string();
     run_get_winevent(
-        &[HYPERV_WORKER_TABLE],
+        &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
         Some(start_time),
         Some(&vmid),
         &HALT_EVENT_IDS,
@@ -1149,4 +1149,51 @@ pub async fn run_set_base_vtl2_settings(
     .await
     .map(|_| ())
     .context("set_base_vtl2_settings")
+}
+
+/// Guest state isolation modes for Hyper-V VMs.
+#[derive(Debug)]
+pub enum HyperVGuestStateIsolationMode {
+    /// Default isolation mode.
+    Default = 0,
+    /// No persistent secrets isolation mode.
+    NoPersistentSecrets = 1,
+    /// No management VTL isolation mode.
+    NoManagementVtl = 2,
+}
+
+impl ps::AsVal for HyperVGuestStateIsolationMode {
+    fn as_val(&self) -> impl '_ + AsRef<OsStr> {
+        match self {
+            HyperVGuestStateIsolationMode::Default => "0",
+            HyperVGuestStateIsolationMode::NoPersistentSecrets => "1",
+            HyperVGuestStateIsolationMode::NoManagementVtl => "2",
+        }
+    }
+}
+
+/// Sets the guest state isolation mode for a VM.
+pub async fn run_set_guest_state_isolation_mode(
+    vmid: &Guid,
+    ps_mod: &Path,
+    mode: HyperVGuestStateIsolationMode,
+) -> anyhow::Result<()> {
+    tracing::trace!(?mode, ?vmid, "set guest state isolation mode");
+
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-GuestStateIsolationMode")
+            .arg("Mode", mode)
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("set_guest_state_isolation_mode")
 }

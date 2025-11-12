@@ -3,7 +3,6 @@
 
 //! Handler for the power off request.
 
-#![cfg(any(target_os = "linux", target_os = "windows"))]
 // UNSAFETY: required for Windows shutdown API
 #![cfg_attr(windows, expect(unsafe_code))]
 

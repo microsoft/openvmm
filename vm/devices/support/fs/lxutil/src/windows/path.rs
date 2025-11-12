@@ -100,6 +100,17 @@ pub fn unescape_path(path: &[u16]) -> lx::Result<String> {
     .collect()
 }
 
+// Unescape a path in place.
+pub fn unescape_path_in_place(path: &mut [u16]) {
+    for c in path {
+        if char_needs_unescape(*c) {
+            *c -= PATH_ESCAPE_MIN;
+        } else if (*c) == '\\' as u16 {
+            *c = '/' as u16;
+        }
+    }
+}
+
 // List indicating which characters are legal in NTFS. This was adapted from
 // FsRtl, with two modifications from the original:
 // 1. Slashes are allowed (because escaping is done on full Linux paths).

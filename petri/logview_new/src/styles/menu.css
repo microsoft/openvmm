@@ -80,7 +80,7 @@
 }
 
 .menu-drawer-header {
-  font-size: 1.25rem;
+  font-size: 1.45rem;
   font-weight: 700;
   letter-spacing: 0.5px;
   padding: 1.15rem 1.25rem 1rem;
@@ -125,6 +125,7 @@
   font-weight: 600;
   border-radius: 10px;
   box-sizing: border-box;
+  font-size: 1.1rem;
 }
 
 .drawer-link:hover {

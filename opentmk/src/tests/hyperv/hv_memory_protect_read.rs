@@ -61,8 +61,10 @@ where
         let r = ctx.setup_secure_intercept(0x30);
         tmk_assert!(r.is_ok(), "setup_secure_intercept should succeed");
 
-        let r = ctx.set_interrupt_idx(0x30, move || {
+        let r = ctx.set_interrupt_idx(0x30, move |mut ctx| {
             log::info!("interrupt handled for 0x30!");
+            let r = ctx.signal_intercept_handled();
+            tmk_assert!(r.is_ok(), "signal_intercept_handled should succeed");
         });
         tmk_assert!(r.is_ok(), "set_interrupt_idx should succeed");
 

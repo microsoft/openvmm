@@ -72,7 +72,7 @@ impl VfioDevice {
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
     pub async fn new(
         driver_source: &VmTaskDriverSource,
-        pci_id: &str,
+        pci_id: impl AsRef<str>,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
         Self::restore(driver_source, pci_id, false, dma_client).await
@@ -82,10 +82,11 @@ impl VfioDevice {
     /// or creates a device from the saved state if provided.
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
-        pci_id: &str,
+        pci_id: impl AsRef<str>,
         keepalive: bool,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
+        let pci_id = pci_id.as_ref();
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
         // The vfio device attaches asynchronously after the PCI device is added,
@@ -191,7 +192,7 @@ impl VfioDevice {
         }
         let info = self.device.region_info(n.into())?;
         let mapping = self.device.map(info.offset, info.size as usize, true)?;
-        sparse_mmap::initialize_try_copy();
+        trycopy::initialize_try_copy();
         Ok(MappedRegionWithFallback {
             device: self.device.clone(),
             mapping,
@@ -431,18 +432,18 @@ impl MappedRegionWithFallback {
     fn read_from_mapping<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
         &self,
         offset: usize,
-    ) -> Result<T, sparse_mmap::MemoryError> {
+    ) -> Result<T, trycopy::MemoryError> {
         // SAFETY: the offset is validated to be in bounds and aligned.
-        unsafe { sparse_mmap::try_read_volatile(self.mapping::<T>(offset)) }
+        unsafe { trycopy::try_read_volatile(self.mapping::<T>(offset)) }
     }
 
     fn write_to_mapping<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
         &self,
         offset: usize,
         data: T,
-    ) -> Result<(), sparse_mmap::MemoryError> {
+    ) -> Result<(), trycopy::MemoryError> {
         // SAFETY: the offset is validated to be in bounds and aligned.
-        unsafe { sparse_mmap::try_write_volatile(self.mapping::<T>(offset), &data) }
+        unsafe { trycopy::try_write_volatile(self.mapping::<T>(offset), &data) }
     }
 
     fn read_from_file(&self, offset: usize, buf: &mut [u8]) {

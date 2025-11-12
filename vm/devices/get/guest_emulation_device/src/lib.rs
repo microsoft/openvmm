@@ -44,6 +44,7 @@ use get_protocol::SecureBootTemplateType;
 use get_protocol::StartVtl0Status;
 use get_protocol::UefiConsoleMode;
 use get_protocol::VmgsIoStatus;
+use get_protocol::dps_json::EfiDiagnosticsLogLevelType;
 use get_protocol::dps_json::GuestStateEncryptionPolicy;
 use get_protocol::dps_json::GuestStateLifetime;
 use get_protocol::dps_json::HclSecureBootTemplateId;
@@ -164,6 +165,9 @@ pub struct GuestConfig {
     /// Management VTL feature flags
     #[inspect(debug)]
     pub management_vtl_features: ManagementVtlFeatures,
+    /// EFI diagnostics log level
+    #[inspect(debug)]
+    pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
 }
 
 #[derive(Debug, Clone, Inspect)]
@@ -1401,6 +1405,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     guest_state_lifetime: state.config.guest_state_lifetime,
                     guest_state_encryption_policy: state.config.guest_state_encryption_policy,
                     management_vtl_features: state.config.management_vtl_features,
+                    efi_diagnostics_log_level: state.config.efi_diagnostics_log_level,
                 },
                 dynamic: get_protocol::dps_json::HclDevicePlatformSettingsV2Dynamic {
                     is_servicing_scenario: state.save_restore_buf.is_some(),
