@@ -47,9 +47,6 @@ pub const DEBUG_MANAGEABILITY: u32 = 0x0080_0000;
 /// Error
 pub const DEBUG_ERROR: u32 = 0x8000_0000;
 
-/// Number of debug flags
-pub const DEBUG_FLAG_COUNT: usize = 20;
-
 /// Maps debug levels to their descriptive names.
 pub const DEBUG_FLAG_NAMES: &[(u32, &str)] = &[
     (DEBUG_INIT, "INIT"),

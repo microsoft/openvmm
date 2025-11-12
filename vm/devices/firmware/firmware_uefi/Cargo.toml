@@ -31,8 +31,6 @@ watchdog_core.workspace = true
 chipset_device.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
-
-arrayvec.workspace = true
 guid.workspace = true
 inspect.workspace = true
 local_clock.workspace = true

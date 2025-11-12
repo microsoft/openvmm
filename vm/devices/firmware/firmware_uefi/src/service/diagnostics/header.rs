@@ -18,7 +18,7 @@ pub const MAX_LOG_BUFFER_SIZE: u32 = 0x400000;
 #[derive(Debug, Error)]
 pub enum HeaderParseError {
     /// Expected header signature does not match
-    #[error("Expected header signature: {0:#x}, got: {1:#x} ")]
+    #[error("Expected header signature: {0:#x}, got: {1:#x}")]
     SignatureMismatch(u32, u32),
     /// Log buffer size exceeds maximum allowed size
     #[error("Log buffer size {1:#x} exceeds maximum {0:#x}")]

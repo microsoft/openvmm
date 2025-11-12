@@ -5,14 +5,12 @@
 //! complete log entry with all necessary metadata. It consolidates parsing,
 //! validation, and formatting logic in one place.
 
-use arrayvec::ArrayVec;
 use std::borrow::Cow;
 use std::mem::size_of;
 use thiserror::Error;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerMessageEntryV2;
 use uefi_specs::hyperv::advanced_logger::PHASE_NAMES;
 use uefi_specs::hyperv::advanced_logger::SIG_ENTRY;
-use uefi_specs::hyperv::debug_level::DEBUG_FLAG_COUNT;
 use uefi_specs::hyperv::debug_level::DEBUG_FLAG_NAMES;
 use zerocopy::FromBytes;
 
@@ -59,8 +57,6 @@ pub struct Log {
     pub phase: u16,
     /// The log message content (validated UTF-8)
     pub message: String,
-    /// Number of bytes consumed from the buffer (including alignment)
-    pub consumed_bytes: usize,
 }
 
 impl Log {
@@ -70,8 +66,9 @@ impl Log {
     /// * `buffer` - The buffer slice to parse from
     ///
     /// # Returns
-    /// The validated `Log` entry on success, or a `LogParseError` on failure.
-    pub fn from_buffer(buffer: &[u8]) -> Result<Self, LogParseError> {
+    /// A tuple of `(Log, bytes_consumed)` where `bytes_consumed` indicates how many
+    /// bytes to advance in the buffer, or a `LogParseError` on failure.
+    pub fn from_buffer(buffer: &[u8]) -> Result<(Self, usize), LogParseError> {
         let (raw_entry, _) = AdvancedLoggerMessageEntryV2::read_from_prefix(buffer)
             .map_err(|_| LogParseError::SliceRead)?;
 
@@ -111,13 +108,15 @@ impl Log {
 
         let aligned_size = (base_size + ALIGNMENT_MASK) & !ALIGNMENT_MASK;
 
-        Ok(Self {
-            debug_level: raw_entry.debug_level,
-            time_stamp: raw_entry.time_stamp,
-            phase: raw_entry.phase,
-            message,
-            consumed_bytes: aligned_size,
-        })
+        Ok((
+            Self {
+                debug_level: raw_entry.debug_level,
+                time_stamp: raw_entry.time_stamp,
+                phase: raw_entry.phase,
+                message,
+            },
+            aligned_size,
+        ))
     }
 
     /// Check if this entry represents a complete message (ends with newline).
@@ -159,8 +158,7 @@ pub fn debug_level_to_string(debug_level: u32) -> Cow<'static, str> {
     }
 
     // Handle combined flags or unknown debug levels
-    // Use stack-allocated array to avoid heap allocation
-    let flags: ArrayVec<&str, DEBUG_FLAG_COUNT> = DEBUG_FLAG_NAMES
+    let flags: Vec<&str> = DEBUG_FLAG_NAMES
         .iter()
         .filter(|&&(flag, _)| debug_level & flag != 0)
         .map(|&(_, name)| name)

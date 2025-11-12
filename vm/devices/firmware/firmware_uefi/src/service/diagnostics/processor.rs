@@ -41,7 +41,7 @@ impl<'a> RawLogIterator<'a> {
 }
 
 impl<'a> Iterator for RawLogIterator<'a> {
-    type Item = Result<Log, LogParseError>;
+    type Item = Result<(Log, usize), LogParseError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.buffer.is_empty() {
@@ -49,14 +49,13 @@ impl<'a> Iterator for RawLogIterator<'a> {
         }
 
         match Log::from_buffer(self.buffer) {
-            Ok(log) => {
-                let consumed = log.consumed_bytes;
+            Ok((log, consumed)) => {
                 self.buffer = if consumed >= self.buffer.len() {
                     &[]
                 } else {
                     &self.buffer[consumed..]
                 };
-                Some(Ok(log))
+                Some(Ok((log, consumed)))
             }
             Err(e) => {
                 // Stop processing on error
@@ -181,15 +180,15 @@ impl LogProcessor {
         let mut processor = Self::new();
 
         for result in RawLogIterator::new(buffer_data) {
-            let log = match result {
-                Ok(log) => log,
+            let (log, bytes_consumed) = match result {
+                Ok((log, bytes)) => (log, bytes),
                 Err(e) => {
                     tracelimit::warn_ratelimited!(error = ?e, "Failed to parse log entry, stopping processing");
                     break;
                 }
             };
 
-            processor.bytes_read += log.consumed_bytes;
+            processor.bytes_read += bytes_consumed;
             processor.accumulator.feed(log)?;
 
             if let Some(complete_log) = processor.accumulator.take() {

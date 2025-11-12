@@ -43,7 +43,6 @@ impl LogAccumulator {
             Some(mut current) => {
                 // Append to existing message
                 current.message.push_str(&log.message);
-                current.consumed_bytes += log.consumed_bytes;
 
                 // Validate total length
                 if current.message.len() > MAX_MESSAGE_LENGTH as usize {

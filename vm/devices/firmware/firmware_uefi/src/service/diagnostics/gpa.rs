@@ -42,7 +42,7 @@ impl Gpa {
             return Err(GpaError::InvalidValue(value));
         }
 
-        let non_zero = NonZeroU32::new(value).expect("value is non-zero");
+        let non_zero = NonZeroU32::new(value).ok_or(GpaError::InvalidValue(value))?;
         Ok(Self(non_zero))
     }
 
