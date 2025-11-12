@@ -480,20 +480,42 @@ impl std::error::Error for NvmeError {}
 impl std::fmt::Display for NvmeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0.status_code_type() {
-            spec::StatusCodeType::GENERIC => write!(f, "NVMe SCT general error, SC: {:#x?}", self.0),
+            spec::StatusCodeType::GENERIC => write!(
+                f,
+                "NVMe SCT general error, SC: {:#x?}",
+                self.0.status_code()
+            ),
             spec::StatusCodeType::COMMAND_SPECIFIC => {
-                write!(f, "NVMe SCT command-specific error, SC: {:#x?}", self.0)
+                write!(
+                    f,
+                    "NVMe SCT command-specific error, SC: {:#x?}",
+                    self.0.status_code()
+                )
             }
             spec::StatusCodeType::MEDIA_ERROR => {
-                write!(f, "NVMe SCT media error, SC: {:#x?}", self.0)
+                write!(f, "NVMe SCT media error, SC: {:#x?}", self.0.status_code())
             }
             spec::StatusCodeType::PATH_RELATED => {
-                write!(f, "NVMe SCT path-related error, SC: {:#x?}", self.0)
+                write!(
+                    f,
+                    "NVMe SCT path-related error, SC: {:#x?}",
+                    self.0.status_code()
+                )
             }
             spec::StatusCodeType::VENDOR_SPECIFIC => {
-                write!(f, "NVMe SCT vendor-specific error, SC: {:#x?}", self.0)
+                write!(
+                    f,
+                    "NVMe SCT vendor-specific error, SC: {:#x?}",
+                    self.0.status_code()
+                )
             }
-            _ => write!(f, "(other NVMe SCT), {:#x?}", self.0),
+            _ => write!(
+                f,
+                "NVMe SCT unknown ({:#x?}), SC: {:#x?} (raw: {:#x?})",
+                self.0.status_code_type(),
+                self.0.status_code(),
+                self.0
+            ),
         }
     }
 }
