@@ -40,6 +40,8 @@ pub enum HeaderParseError {
 /// Represents the header metadata for the Advanced Logger buffer.
 #[derive(Debug, Clone)]
 pub struct LogBufferHeader {
+    /// Base GPA of the log buffer header
+    base_gpa: Gpa,
     /// Offset from the header start to the beginning of the log buffer
     buffer_offset: u32,
     /// Size of data currently in the buffer
@@ -54,12 +56,8 @@ impl LogBufferHeader {
     /// * `gm` - Guest memory to read the header from
     ///
     /// # Returns
-    /// A tuple containing the validated header and the GPA on success,
-    /// or a `HeaderParseError` on failure.
-    pub fn from_guest_memory(
-        gpa: Option<Gpa>,
-        gm: &GuestMemory,
-    ) -> Result<(Self, Gpa), HeaderParseError> {
+    /// The validated header on success, or a `HeaderParseError` on failure.
+    pub fn from_guest_memory(gpa: Option<Gpa>, gm: &GuestMemory) -> Result<Self, HeaderParseError> {
         let gpa = gpa.ok_or(HeaderParseError::NoGpa)?;
 
         let raw_header: AdvancedLoggerInfo = gm.read_plain(gpa.as_u64())?;
@@ -91,13 +89,11 @@ impl LogBufferHeader {
             ));
         }
 
-        Ok((
-            Self {
-                buffer_offset: raw_header.log_buffer_offset,
-                used_size,
-            },
-            gpa,
-        ))
+        Ok(Self {
+            base_gpa: gpa,
+            buffer_offset: raw_header.log_buffer_offset,
+            used_size,
+        })
     }
 
     /// Get the size of data currently in the buffer.
@@ -110,18 +106,18 @@ impl LogBufferHeader {
         self.used_size == 0
     }
 
-    /// Calculate the guest physical address where the log buffer starts.
-    ///
-    /// # Arguments
-    /// * `base_gpa` - The base guest physical address of the log buffer header
+    /// Get the guest physical address where the log buffer starts.
     ///
     /// # Returns
-    /// The guest physical address where the log buffer data begins, or a
-    /// `HeaderParseError` if the calculation would overflow.
-    pub fn buffer_start_address(&self, base_gpa: Gpa) -> Result<u32, HeaderParseError> {
-        base_gpa
+    /// The GPA where the log buffer data begins, or a `HeaderParseError`
+    /// if the calculation would overflow.
+    pub fn buffer_start_gpa(&self) -> Result<Gpa, HeaderParseError> {
+        let address = self
+            .base_gpa
             .get()
             .checked_add(self.buffer_offset)
-            .ok_or_else(|| HeaderParseError::Overflow("buffer_start_address"))
+            .ok_or_else(|| HeaderParseError::Overflow("buffer_start_gpa"))?;
+
+        Gpa::new(address).map_err(|_| HeaderParseError::Overflow("buffer_start_gpa"))
     }
 }

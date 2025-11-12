@@ -98,7 +98,7 @@ where
     F: FnMut(&Log),
 {
     // Parse and validate the header
-    let (header, base_gpa) = LogBufferHeader::from_guest_memory(gpa, gm)?;
+    let header = LogBufferHeader::from_guest_memory(gpa, gm)?;
 
     // Early exit if buffer is empty
     if header.is_empty() {
@@ -109,9 +109,9 @@ where
     }
 
     // Read the log buffer from guest memory
-    let buffer_start_addr = header.buffer_start_address(base_gpa)?;
+    let buffer_start_gpa = header.buffer_start_gpa()?;
     let mut buffer_data = vec![0u8; header.used_size() as usize];
-    gm.read_at(buffer_start_addr as u64, &mut buffer_data)?;
+    gm.read_at(buffer_start_gpa.as_u64(), &mut buffer_data)?;
 
     // Process the buffer
     LogProcessor::process_buffer(&buffer_data, log_level, log_handler)?;
