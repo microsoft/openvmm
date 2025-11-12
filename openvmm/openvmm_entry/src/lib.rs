@@ -72,6 +72,7 @@ use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LateMapVtl0MemoryPolicy;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
+use hvlite_defs::config::PcieDeviceConfig;
 use hvlite_defs::config::PcieRootComplexConfig;
 use hvlite_defs::config::PcieRootPortConfig;
 use hvlite_defs::config::PcieSwitchConfig;
@@ -117,6 +118,7 @@ use serial_core::resources::DisconnectedSerialBackendHandle;
 use serial_io::SerialIo;
 use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::future::pending;
 use std::io;
@@ -594,18 +596,23 @@ fn vm_config_from_command_line(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut mana_nics = [(); 3].map(|()| None);
+    let mut vpci_mana_nics = [(); 3].map(|()| None);
+    let mut pcie_mana_nics = BTreeMap::<String, GdmaDeviceHandle>::new();
     let mut underhill_nics = Vec::new();
     let mut vpci_devices = Vec::new();
+    let mut pcie_devices = Vec::new();
 
     let mut nic_index = 0;
     for cli_cfg in &opt.net {
+        if cli_cfg.pcie_port.is_some() {
+            anyhow::bail!("`--net` does not support PCIe");
+        }
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
         if cli_cfg.underhill {
             if !opt.no_alias_map {
                 anyhow::bail!("must specify --no-alias-map to offer NICs to VTL2");
             }
-            let mana = mana_nics[openhcl_vtl as usize].get_or_insert_with(|| {
+            let mana = vpci_mana_nics[openhcl_vtl as usize].get_or_insert_with(|| {
                 let vpci_instance_id = Guid::new_random();
                 underhill_nics.push(vtl2_settings_proto::NicDeviceLegacy {
                     instance_id: vpci_instance_id.to_string(),
@@ -630,6 +637,7 @@ fn vm_config_from_command_line(
                 endpoint: EndpointConfigCli::Consomme { cidr: None },
                 max_queues: None,
                 underhill: false,
+                pcie_port: None,
             },
             &mut nic_index,
             &mut resources,
@@ -685,28 +693,55 @@ fn vm_config_from_command_line(
 
     for vport in &opt.mana {
         let vport = parse_endpoint(vport, &mut nic_index, &mut resources)?;
-        mana_nics[vport.vtl as usize]
-            .get_or_insert_with(|| (Guid::new_random(), GdmaDeviceHandle { vports: Vec::new() }))
-            .1
-            .vports
-            .push(VportDefinition {
-                mac_address: vport.mac_address,
-                endpoint: vport.endpoint,
-            });
+        let vport_array = match (vport.vtl as usize, vport.pcie_port) {
+            (vtl, None) => {
+                &mut vpci_mana_nics[vtl]
+                    .get_or_insert_with(|| {
+                        (Guid::new_random(), GdmaDeviceHandle { vports: Vec::new() })
+                    })
+                    .1
+                    .vports
+            }
+            (0, Some(pcie_port)) => {
+                &mut pcie_mana_nics
+                    .entry(pcie_port)
+                    .or_insert(GdmaDeviceHandle { vports: Vec::new() })
+                    .vports
+            }
+            _ => anyhow::bail!("PCIe NICs only supported to VTL0"),
+        };
+        vport_array.push(VportDefinition {
+            mac_address: vport.mac_address,
+            endpoint: vport.endpoint,
+        });
     }
 
-    vpci_devices.extend(mana_nics.into_iter().enumerate().filter_map(|(vtl, nic)| {
-        nic.map(|(instance_id, handle)| VpciDeviceConfig {
-            vtl: match vtl {
-                0 => DeviceVtl::Vtl0,
-                1 => DeviceVtl::Vtl1,
-                2 => DeviceVtl::Vtl2,
-                _ => unreachable!(),
-            },
-            instance_id,
-            resource: handle.into_resource(),
-        })
-    }));
+    vpci_devices.extend(
+        vpci_mana_nics
+            .into_iter()
+            .enumerate()
+            .filter_map(|(vtl, nic)| {
+                nic.map(|(instance_id, handle)| VpciDeviceConfig {
+                    vtl: match vtl {
+                        0 => DeviceVtl::Vtl0,
+                        1 => DeviceVtl::Vtl1,
+                        2 => DeviceVtl::Vtl2,
+                        _ => unreachable!(),
+                    },
+                    instance_id,
+                    resource: handle.into_resource(),
+                })
+            }),
+    );
+
+    pcie_devices.extend(
+        pcie_mana_nics
+            .into_iter()
+            .map(|(pcie_port, handle)| PcieDeviceConfig {
+                port_name: pcie_port,
+                resource: handle.into_resource(),
+            }),
+    );
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
 
@@ -1323,6 +1358,9 @@ fn vm_config_from_command_line(
         if cli_cfg.underhill {
             anyhow::bail!("use --net uh:[...] to add underhill NICs")
         }
+        if cli_cfg.pcie_port.is_some() {
+            anyhow::bail!("use --mana to add PCIe NICs")
+        }
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
         add_virtio_device(
             VirtioBusCli::Auto,
@@ -1386,7 +1424,7 @@ fn vm_config_from_command_line(
         load_mode,
         floppy_disks,
         pcie_root_complexes,
-        pcie_devices: Vec::new(),
+        pcie_devices,
         pcie_switches,
         vpci_devices,
         ide_disks: Vec::new(),
@@ -1571,6 +1609,7 @@ fn parse_endpoint(
         endpoint,
         mac_address: mac_address.into(),
         max_queues: cli_cfg.max_queues,
+        pcie_port: cli_cfg.pcie_port.clone(),
     })
 }
 
@@ -1581,6 +1620,7 @@ struct NicConfig {
     mac_address: MacAddress,
     endpoint: Resource<NetEndpointHandleKind>,
     max_queues: Option<u16>,
+    pcie_port: Option<String>,
 }
 
 impl NicConfig {
