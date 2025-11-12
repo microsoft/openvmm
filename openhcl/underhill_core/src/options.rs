@@ -78,6 +78,37 @@ impl FromStr for GuestStateEncryptionPolicyCli {
     }
 }
 
+#[derive(Clone, Debug, MeshPayload)]
+pub enum KeepAliveConfig {
+    EnabledHostAndPrivatePoolPresent,
+    DisabledHostAndPrivatePoolPresent,
+    PrivatePoolMissingAndHostSupported,
+    ExplicitlyDisabled,
+}
+
+impl FromStr for KeepAliveConfig {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<KeepAliveConfig, anyhow::Error> {
+        match s {
+            "host,privatepool" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolPresent),
+            "nohost,privatepool" => Ok(KeepAliveConfig::DisabledHostAndPrivatePoolPresent),
+            "host,noprivatepool" => Ok(KeepAliveConfig::PrivatePoolMissingAndHostSupported),
+            "nohost,noprivatepool" => Ok(KeepAliveConfig::ExplicitlyDisabled),
+            _ => Err(anyhow::anyhow!("Invalid keepalive config: {}", s)),
+        }
+    }
+}
+
+impl KeepAliveConfig {
+    pub fn is_enabled(&self) -> bool {
+        match self {
+            KeepAliveConfig::EnabledHostAndPrivatePoolPresent => true,
+            _ => false,
+        }
+    }
+}
+
 // We've made our own parser here instead of using something like clap in order
 // to save on compiled file size. We don't need all the features a crate can provide.
 /// underhill core command-line and environment variable options.
@@ -184,7 +215,7 @@ pub struct Options {
     pub nvme_keep_alive: bool,
 
     /// (OPENHCL_MANA_KEEP_ALIVE=1) Enable MANA keep alive when servicing.
-    pub mana_keep_alive: bool,
+    pub mana_keep_alive: KeepAliveConfig,
 
     /// (OPENHCL_NVME_ALWAYS_FLR=1)
     /// Always use the FLR (Function Level Reset) path for NVMe devices,
@@ -332,7 +363,20 @@ impl Options {
         let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
         let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
         let nvme_keep_alive = parse_env_bool("OPENHCL_NVME_KEEP_ALIVE");
-        let mana_keep_alive = parse_env_bool("OPENHCL_MANA_KEEP_ALIVE");
+        let mana_keep_alive = read_env("OPENHCL_MANA_KEEP_ALIVE")
+                    .map(|x| {
+                        let s = x.to_string_lossy();
+                        match s.parse::<KeepAliveConfig>() {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "failed to parse OPENHCL_MANA_KEEP_ALIVE ('{s}'): {e}. keepalive will be disabled."
+                                );
+                                KeepAliveConfig::ExplicitlyDisabled
+                            }
+                        }
+                    })
+                    .unwrap_or(KeepAliveConfig::ExplicitlyDisabled);
         let nvme_always_flr = parse_env_bool("OPENHCL_NVME_ALWAYS_FLR");
         let test_configuration = read_env("OPENHCL_TEST_CONFIG").and_then(|x| {
             x.to_string_lossy()

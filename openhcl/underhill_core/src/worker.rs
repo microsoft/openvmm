@@ -47,6 +47,7 @@ use crate::nvme_manager::manager::NvmeDiskResolver;
 use crate::nvme_manager::manager::NvmeManager;
 use crate::options::GuestStateEncryptionPolicyCli;
 use crate::options::GuestStateLifetimeCli;
+use crate::options::KeepAliveConfig;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -287,7 +288,7 @@ pub struct UnderhillEnvCfg {
     /// Enable nvme keep alive.
     pub nvme_keep_alive: bool,
     /// Enable mana keep alive.
-    pub mana_keep_alive: bool,
+    pub mana_keep_alive: KeepAliveConfig,
     /// Don't skip FLR for NVMe devices.
     pub nvme_always_flr: bool,
     /// test configuration
@@ -779,9 +780,11 @@ impl UhVmNetworkSettings {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
-        save_restore_supported: bool,
+        keepalive_mode: KeepAliveConfig,
         saved_mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState> {
+        tracing::info!("keepalive mode is: {:?}", keepalive_mode);
+
         let instance_id = nic_config.instance_id;
         let nic_max_sub_channels = nic_config
             .max_sub_channels
@@ -796,7 +799,7 @@ impl UhVmNetworkSettings {
             } else {
                 AllocationVisibility::Private
             },
-            persistent_allocations: save_restore_supported,
+            persistent_allocations: true,
         })?;
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
@@ -810,6 +813,7 @@ impl UhVmNetworkSettings {
             nic_max_sub_channels,
             servicing_netvsp_state,
             self.dma_mode,
+            keepalive_mode,
             dma_client,
             saved_mana_state,
         )
@@ -938,7 +942,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
-        save_restore_supported: bool,
+        save_restore_supported: KeepAliveConfig,
         mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState> {
         if self.vf_managers.contains_key(&instance_id) {
@@ -3248,16 +3252,11 @@ async fn new_underhill_vm(
                 None
             };
 
-            let private_pool_available = !runtime_params.private_pool_ranges().is_empty();
-            let save_restore_supported = env_cfg.mana_keep_alive && private_pool_available;
-
-            if !save_restore_supported && nic_servicing_state.is_some() {
-                anyhow::bail!(
-                    "cannot restore networking state without private pool available and keep-alive enabled - private_pool_available: {}, mana_keep_alive: {}",
-                    private_pool_available,
-                    env_cfg.mana_keep_alive
-                );
-            }
+            let force_keepalive_scenario = if nic_servicing_state.is_some() {
+                KeepAliveConfig::DisabledHostAndPrivatePoolPresent
+            } else {
+                env_cfg.mana_keep_alive.clone()
+            };
 
             let save_state = uh_network_settings
                 .add_network(
@@ -3272,7 +3271,7 @@ async fn new_underhill_vm(
                     &vmbus_server,
                     dma_manager.client_spawner(),
                     isolation.is_isolated(),
-                    save_restore_supported,
+                    force_keepalive_scenario,
                     nic_servicing_state,
                 )
                 .await?;

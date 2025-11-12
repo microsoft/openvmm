@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::dispatch::vtl2_settings_worker::wait_for_pci_path;
+use crate::options::KeepAliveConfig;
 use crate::vpci::HclVpciBusControl;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -75,10 +76,37 @@ async fn create_mana_device(
     pci_id: &str,
     vp_count: u32,
     max_sub_channels: u16,
+    keepalive_mode: KeepAliveConfig,
     dma_client: Arc<dyn DmaClient>,
-    mana_state: Option<&ManaSavedState>,
+    mut mana_state: Option<&ManaSavedState>,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
-    if let Some(mana_state) = mana_state {
+    // This guards from situations where we have saved state from keepalive
+    // but the host does not support restoring it. In this case we log a warning,
+    // free the memory, and continue with a fresh device.
+    if mana_state.is_some()
+        && matches!(
+            keepalive_mode,
+            KeepAliveConfig::DisabledHostAndPrivatePoolPresent
+        )
+    {
+        tracing::warn!("have saved state from keepalive but restoring on an unsupported host");
+
+        // Re-attach pending buffers, but discard them so that they get freed.
+        let buffers = dma_client.attach_pending_buffers();
+        tracing::warn!(
+            "attached {} pending buffers for {}",
+            buffers.iter().len(),
+            pci_id
+        );
+        // Remove the mana saved state so that we don't go through restore path.
+        let _ = mana_state.take();
+    }
+
+    if matches!(
+        keepalive_mode,
+        KeepAliveConfig::EnabledHostAndPrivatePoolPresent
+    ) && let Some(mana_state) = mana_state
+    {
         tracing::info!("restoring MANA device from saved state");
         return try_create_mana_device(
             driver_source,
@@ -756,6 +784,7 @@ impl HclNetworkVFManagerWorker {
                         &self.vtl2_pci_id,
                         self.vp_count,
                         self.max_sub_channels,
+                        KeepAliveConfig::ExplicitlyDisabled,
                         self.dma_client.clone(),
                         None, // No saved state on new device arrival
                     )
@@ -930,6 +959,7 @@ impl HclNetworkVFManager {
         max_sub_channels: u16,
         netvsp_state: &Option<Vec<SavedState>>,
         dma_mode: GuestDmaMode,
+        keepalive_mode: KeepAliveConfig,
         dma_client: Arc<dyn DmaClient>,
         mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<(
@@ -942,6 +972,7 @@ impl HclNetworkVFManager {
             &vtl2_pci_id,
             vp_count,
             max_sub_channels,
+            keepalive_mode.clone(),
             dma_client.clone(),
             mana_state,
         )

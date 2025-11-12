@@ -11,6 +11,7 @@ use crate::ControlRequest;
 use crate::emuplat::EmuplatServicing;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::nvme_manager::manager::NvmeManager;
+use crate::options::KeepAliveConfig;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -115,7 +116,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
-        save_restore_supported: bool,
+        keepalive_mode: KeepAliveConfig,
         mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState>;
 
@@ -193,7 +194,7 @@ pub(crate) struct LoadedVm {
     pub _periodic_telemetry_task: Task<()>,
 
     pub nvme_keep_alive: bool,
-    pub mana_keep_alive: bool,
+    pub mana_keep_alive: KeepAliveConfig,
     pub test_configuration: Option<TestScenarioConfig>,
     pub dma_manager: OpenhclDmaManager,
 }
@@ -305,7 +306,10 @@ impl LoadedVm {
                     WorkerRpc::Restart(rpc) => {
                         let state = async {
                             let running = self.stop().await;
-                            match self.save(None, false, false).await {
+                            match self
+                                .save(None, false, KeepAliveConfig::ExplicitlyDisabled)
+                                .await
+                            {
                                 Ok(servicing_state) => Some((rpc, servicing_state)),
                                 Err(err) => {
                                     if running {
@@ -370,7 +374,9 @@ impl LoadedVm {
                     UhVmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| {
                             let running = self.stop().await;
-                            let r = self.save(None, false, false).await;
+                            let r = self
+                                .save(None, false, KeepAliveConfig::ExplicitlyDisabled)
+                                .await;
                             if running {
                                 self.start(None).await;
                             }
@@ -572,7 +578,12 @@ impl LoadedVm {
         // NOTE: This is set via the corresponding env arg, as this feature is
         // experimental.
         let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
-        let mana_keepalive = self.mana_keep_alive && capabilities_flags.enable_mana_keepalive();
+        let mana_keepalive = if capabilities_flags.enable_mana_keepalive() {
+            self.mana_keep_alive.clone()
+        } else {
+            tracing::warn!("mana keepalive not in servicing flags, disabling keepalive");
+            KeepAliveConfig::ExplicitlyDisabled
+        };
 
         // Do everything before the log flush under a span.
         let r = async {
@@ -750,7 +761,7 @@ impl LoadedVm {
         &mut self,
         _deadline: Option<std::time::Instant>,
         nvme_keepalive_flag: bool,
-        mana_keepalive_flag: bool,
+        mana_keepalive_mode: KeepAliveConfig,
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 
@@ -762,7 +773,7 @@ impl LoadedVm {
         //
         // This has to happen before saving the network state, otherwise its allocations
         // are marked as Free and are unable to be restored.
-        let dma_manager_state = if nvme_keepalive_flag || mana_keepalive_flag {
+        let dma_manager_state = if nvme_keepalive_flag || mana_keepalive_mode.is_enabled() {
             use vmcore::save_restore::SaveRestore;
             Some(self.dma_manager.save().context("dma_manager save failed")?)
         } else {
@@ -786,7 +797,7 @@ impl LoadedVm {
         let units = self.save_units().await.context("state unit save failed")?;
 
         let mana_state = if let Some(network_settings) = &mut self.network_settings
-            && mana_keepalive_flag
+            && mana_keepalive_mode.is_enabled()
         {
             Some(network_settings.save().await)
         } else {
@@ -888,7 +899,7 @@ impl LoadedVm {
                 &self.vmbus_server,
                 self.dma_manager.client_spawner(),
                 self.isolation.is_isolated(),
-                self.mana_keep_alive,
+                self.mana_keep_alive.clone(),
                 None, // No existing mana state
             )
             .await?;
