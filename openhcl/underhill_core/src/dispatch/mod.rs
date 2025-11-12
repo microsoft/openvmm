@@ -754,7 +754,11 @@ impl LoadedVm {
             // to enter a state where subsequent teardown operations will noop. There is a STRONG
             // correlation between save/restore and keepalive.
             n.save(vf_keepalive_flag)
-                .instrument(tracing::info_span!("nvme_manager_save", CVM_ALLOWED))
+                .instrument(tracing::info_span!(
+                    "nvme_manager_save",
+                    vf_keepalive_flag,
+                    CVM_ALLOWED
+                ))
                 .await
                 .map(|s| NvmeSavedState { nvme_state: s })
         } else {

@@ -9,6 +9,7 @@ use hvlite_defs::config::Vtl2BaseAddressType;
 use petri::MemoryConfig;
 use petri::OpenHclServicingFlags;
 use petri::PetriVmBuilder;
+use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::PipetteClient;
@@ -105,7 +106,7 @@ async fn mana_nic_servicing(
 
 /// Test an OpenHCL Linux direct VM with many NVMe devices assigned to VTL2 and vmbus relay.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn many_nvme_devices_servicing(
+async fn many_nvme_devices_servicing_heavy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
@@ -121,6 +122,18 @@ async fn many_nvme_devices_servicing(
 
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
+        .with_vtl2_base_address_type(Vtl2BaseAddressType::MemoryLayout {
+            size: Some(768 * 1024 * 1024), // 768MB
+        })
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=16384") // 64MB of private pool for VTL2 NVMe devices.
+        .with_memory(MemoryConfig {
+            startup_bytes: 8 * 1024 * 1024,
+            ..Default::default()
+        }) // 8GB
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 4,
+            ..Default::default()
+        })
         .modify_backend(|b| {
             b.with_custom_config(|c| {
                 let device_ids = (0..NUM_NVME_DEVICES)
@@ -180,7 +193,7 @@ async fn many_nvme_devices_servicing(
         vm.restart_openhcl(
             igvm_file.clone(),
             OpenHclServicingFlags {
-                enable_nvme_keepalive: false,
+                enable_nvme_keepalive: true,
                 ..Default::default()
             },
         )
