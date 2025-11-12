@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-pub mod ring;
+mod ring;
 
 use super::Access;
 use super::Client;
@@ -396,6 +396,8 @@ impl<T: Client> Access<'_, T> {
         let ip_addr = match ip_addr {
             Some(IpAddr::V4(ip)) => Some(ip),
             Some(IpAddr::V6(_)) => {
+                // REVIEW: How do I exercise this path? I see that this function is called when handling RPC messages, 
+                // but I wasn't able to track down where these ConsommeMessage's are being created/sent from. 
                 return Err(DropReason::UnsupportedEthertype(EthernetProtocol::Ipv6));
             }
             None => None,

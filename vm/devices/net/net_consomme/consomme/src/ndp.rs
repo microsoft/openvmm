@@ -31,6 +31,11 @@ use smoltcp::wire::NdiscRepr;
 use smoltcp::wire::NdiscRouterFlags;
 use smoltcp::wire::RawHardwareAddress;
 
+const NETWORK_PREFIX_BASE: Ipv6Address = Ipv6Address([
+    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00,
+]);
+
 #[derive(Debug)]
 pub enum NdpMessageType {
     RouterSolicit,
@@ -46,15 +51,14 @@ impl<T: Client> Access<'_, T> {
         &mut self,
         frame: &EthernetRepr,
         payload: &[u8],
-        ipv6_src_addr: Ipv6Address,
-        full_frame: &[u8],
+        ipv6_src_addr: Ipv6Address
     ) -> Result<(), DropReason> {
         let icmpv6_packet = Icmpv6Packet::new_unchecked(payload);
         let ndp = NdiscRepr::parse(&icmpv6_packet)?;
 
         match ndp {
             NdiscRepr::RouterSolicit { lladdr } => {
-                self.handle_router_solicit(frame, ipv6_src_addr, lladdr, full_frame)
+                self.handle_router_solicit(frame, ipv6_src_addr, lladdr)
             }
             NdiscRepr::NeighborSolicit {
                 target_addr,
@@ -63,8 +67,7 @@ impl<T: Client> Access<'_, T> {
                 frame,
                 ipv6_src_addr,
                 target_addr,
-                source_lladdr,
-                full_frame,
+                source_lladdr
             ),
             NdiscRepr::NeighborAdvert { .. } => {
                 tracing::debug!("received unsolicited Neighbor Advertisement, ignoring");
@@ -89,20 +92,8 @@ impl<T: Client> Access<'_, T> {
         &mut self,
         frame: &EthernetRepr,
         ipv6_src_addr: Ipv6Address,
-        lladdr: Option<RawHardwareAddress>,
-        full_frame: &[u8],
+        lladdr: Option<RawHardwareAddress>
     ) -> Result<(), DropReason> {
-        let hex_frame = full_frame
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<String>();
-        tracing::info!(
-            src_addr = %ipv6_src_addr,
-            frame_len = full_frame.len(),
-            has_lladdr = lladdr.is_some(),
-            frame = %hex_frame,
-            "received Router Solicitation"
-        );
 
         // RFC 4861 Section 6.1.1: Validate source link-layer address option
         // If source is unspecified (::), there must be no source link-layer address option
@@ -116,7 +107,7 @@ impl<T: Client> Access<'_, T> {
             if let Ok(hw_addr) = lladdr.parse(Medium::Ethernet) {
                 let HardwareAddress::Ethernet(eth_addr) = hw_addr;
                 if eth_addr != self.inner.state.params.client_mac {
-                    tracing::info!("Router Solicitation from unexpected MAC, ignoring");
+                    tracing::warn!("Router Solicitation from unexpected MAC, ignoring");
                     return Ok(());
                 }
             }
@@ -162,45 +153,39 @@ impl<T: Client> Access<'_, T> {
         // Compute the network prefix from our configured IPv6 parameters
         // This is the prefix that clients will use for SLAAC
         let prefix = self.compute_network_prefix(
-            Ipv6Address([
-                0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x01,
-            ]),
+            NETWORK_PREFIX_BASE,
             self.inner.state.params.prefix_len_ipv6,
         );
 
         // RFC 4861 Section 4.6.2: Router Advertisement with Prefix Information
-        // We set the AUTONOMOUS flag to enable SLAAC and ON_LINK flag to indicate
+        // We set the ADDRCONF flag to enable SLAAC and ON_LINK flag to indicate
         // that addresses with this prefix are on-link.
         let ndp_repr = NdiscRepr::RouterAdvert {
-            hop_limit: 64,                    // Default hop limit for outgoing packets
-            flags: NdiscRouterFlags::empty(), // No MANAGED or OTHER flags (stateless only)
-            router_lifetime: smoltcp::time::Duration::from_secs(1800), // 30 minutes
-            reachable_time: smoltcp::time::Duration::from_millis(0), // Unspecified
-            retrans_time: smoltcp::time::Duration::from_millis(0), // Unspecified
+            hop_limit: 64,
+            flags: NdiscRouterFlags::empty(),
+            router_lifetime: smoltcp::time::Duration::from_secs(1800),
+            reachable_time: smoltcp::time::Duration::from_millis(0),
+            retrans_time: smoltcp::time::Duration::from_millis(0),
             lladdr: Some(RawHardwareAddress::from(
                 self.inner.state.params.gateway_mac_ipv6,
             )),
-            mtu: Some(1500), // Standard Ethernet MTU
+            mtu: Some(1500),
             prefix_info: Some(NdiscPrefixInformation {
                 prefix_len: self.inner.state.params.prefix_len_ipv6,
                 prefix,
-                valid_lifetime: smoltcp::time::Duration::from_secs(86400), // 24 hours
-                preferred_lifetime: smoltcp::time::Duration::from_secs(14400), // 4 hours
-                // ADDRCONF: clients can use SLAAC to generate addresses
-                // ON_LINK: addresses with this prefix are on this link
+                valid_lifetime: smoltcp::time::Duration::from_secs(86400),
+                preferred_lifetime: smoltcp::time::Duration::from_secs(14400),
                 flags: NdiscPrefixInfoFlags::ON_LINK | NdiscPrefixInfoFlags::ADDRCONF,
             }),
         };
 
         // Build IPv6 header
-        // RFC 4861 Section 4.2: Router Advertisements MUST have hop limit 255
         let ipv6_repr = Ipv6Repr {
             src_addr: self.inner.state.params.gateway_link_local_ipv6,
             dst_addr,
             next_header: IpProtocol::Icmpv6,
             payload_len: ndp_repr.buffer_len(),
-            hop_limit: 255, // MUST be 255 per RFC 4861
+            hop_limit: 255,
         };
 
         let eth_repr = EthernetRepr {
@@ -209,7 +194,6 @@ impl<T: Client> Access<'_, T> {
             ethertype: EthernetProtocol::Ipv6,
         };
 
-        // Construct the complete packet
         let mut buffer = [0; MIN_MTU];
         let mut eth_frame = EthernetFrame::new_unchecked(&mut buffer);
         eth_repr.emit(&mut eth_frame);
@@ -225,19 +209,6 @@ impl<T: Client> Access<'_, T> {
         );
 
         let total_len = eth_repr.buffer_len() + ipv6_repr.buffer_len() + ndp_repr.buffer_len();
-
-        let hex_frame = buffer[..total_len]
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<String>();
-        tracing::info!(
-            dst_addr = %dst_addr,
-            prefix = %prefix,
-            prefix_len = self.inner.state.params.prefix_len_ipv6,
-            frame_len = total_len,
-            frame = %hex_frame,
-            "sending Router Advertisement with SLAAC prefix"
-        );
 
         self.client.recv(&buffer[..total_len], &ChecksumState::NONE);
         Ok(())
@@ -255,26 +226,12 @@ impl<T: Client> Access<'_, T> {
         ipv6_src_addr: Ipv6Address,
         target_addr: Ipv6Address,
         source_lladdr: Option<RawHardwareAddress>,
-        full_frame: &[u8],
     ) -> Result<(), DropReason> {
-        let hex_frame = full_frame
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<String>();
-        tracing::info!(
-            src_addr = %ipv6_src_addr,
-            target_addr = %target_addr,
-            frame_len = full_frame.len(),
-            has_lladdr = source_lladdr.is_some(),
-            frame = %hex_frame,
-            "received Neighbor Solicitation"
-        );
-
         // RFC 4862 Section 5.4.3: Handle Duplicate Address Detection (DAD)
         // If source is unspecified (::), this is DAD - we should NOT respond
         // to avoid interfering with the client's address configuration
         if ipv6_src_addr.is_unspecified() {
-            tracing::info!(
+            tracing::warn!(
                 target_addr = %target_addr,
                 "received DAD Neighbor Solicitation, silently ignoring per RFC 4862"
             );
@@ -301,7 +258,7 @@ impl<T: Client> Access<'_, T> {
             .unwrap_or(false);
 
         if !client_mac_matches {
-            tracing::info!("Neighbor Solicitation from unexpected MAC, ignoring");
+            tracing::warn!("Neighbor Solicitation from unexpected MAC, ignoring");
             return Ok(());
         }
 
@@ -316,7 +273,7 @@ impl<T: Client> Access<'_, T> {
             if self.inner.state.params.client_ip_ipv6.is_none()
                 || self.inner.state.params.client_ip_ipv6 != Some(ipv6_src_addr)
             {
-                tracing::info!(
+                tracing::debug!(
                     client_ipv6 = %ipv6_src_addr,
                     "learned client IPv6 address from Neighbor Solicitation"
                 );
@@ -401,19 +358,6 @@ impl<T: Client> Access<'_, T> {
         );
 
         let total_len = eth_repr.buffer_len() + ipv6_repr.buffer_len() + ndp_repr.buffer_len();
-
-        let hex_frame = buffer[..total_len]
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<String>();
-        tracing::info!(
-            target_addr = %target_addr,
-            dst_addr = %dst_addr,
-            frame_len = total_len,
-            solicited = solicited,
-            frame = %hex_frame,
-            "sending Neighbor Advertisement"
-        );
 
         self.client.recv(&buffer[..total_len], &ChecksumState::NONE);
         Ok(())

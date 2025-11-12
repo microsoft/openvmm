@@ -346,7 +346,7 @@ impl net_backend::Queue for ConsommeQueue {
             }
 
             if let Err(err) = self.with_consomme(|c| c.send(&buf, &checksum)) {
-                tracing::info!(error = &err as &dyn std::error::Error, "tx packet ignored");
+                tracing::debug!(error = &err as &dyn std::error::Error, "tx packet ignored");
                 match err {
                     consomme::DropReason::SendBufferFull => self.stats.tx_dropped.increment(),
                     consomme::DropReason::UnsupportedEthertype(_)
