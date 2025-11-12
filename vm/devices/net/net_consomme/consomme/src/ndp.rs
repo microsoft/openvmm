@@ -32,8 +32,7 @@ use smoltcp::wire::NdiscRouterFlags;
 use smoltcp::wire::RawHardwareAddress;
 
 const NETWORK_PREFIX_BASE: Ipv6Address = Ipv6Address([
-    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00,
+    0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 #[derive(Debug)]
@@ -51,7 +50,7 @@ impl<T: Client> Access<'_, T> {
         &mut self,
         frame: &EthernetRepr,
         payload: &[u8],
-        ipv6_src_addr: Ipv6Address
+        ipv6_src_addr: Ipv6Address,
     ) -> Result<(), DropReason> {
         let icmpv6_packet = Icmpv6Packet::new_unchecked(payload);
         let ndp = NdiscRepr::parse(&icmpv6_packet)?;
@@ -63,12 +62,7 @@ impl<T: Client> Access<'_, T> {
             NdiscRepr::NeighborSolicit {
                 target_addr,
                 lladdr: source_lladdr,
-            } => self.handle_neighbor_solicit(
-                frame,
-                ipv6_src_addr,
-                target_addr,
-                source_lladdr
-            ),
+            } => self.handle_neighbor_solicit(frame, ipv6_src_addr, target_addr, source_lladdr),
             NdiscRepr::NeighborAdvert { .. } => {
                 tracing::debug!("received unsolicited Neighbor Advertisement, ignoring");
                 Ok(())
@@ -92,9 +86,8 @@ impl<T: Client> Access<'_, T> {
         &mut self,
         frame: &EthernetRepr,
         ipv6_src_addr: Ipv6Address,
-        lladdr: Option<RawHardwareAddress>
+        lladdr: Option<RawHardwareAddress>,
     ) -> Result<(), DropReason> {
-
         // RFC 4861 Section 6.1.1: Validate source link-layer address option
         // If source is unspecified (::), there must be no source link-layer address option
         if ipv6_src_addr.is_unspecified() && lladdr.is_some() {
@@ -152,10 +145,8 @@ impl<T: Client> Access<'_, T> {
     ) -> Result<(), DropReason> {
         // Compute the network prefix from our configured IPv6 parameters
         // This is the prefix that clients will use for SLAAC
-        let prefix = self.compute_network_prefix(
-            NETWORK_PREFIX_BASE,
-            self.inner.state.params.prefix_len_ipv6,
-        );
+        let prefix = self
+            .compute_network_prefix(NETWORK_PREFIX_BASE, self.inner.state.params.prefix_len_ipv6);
 
         // RFC 4861 Section 4.6.2: Router Advertisement with Prefix Information
         // We set the ADDRCONF flag to enable SLAAC and ON_LINK flag to indicate

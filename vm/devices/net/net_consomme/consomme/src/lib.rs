@@ -37,8 +37,8 @@ use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
-use smoltcp::wire::Icmpv6Packet;
 use smoltcp::wire::IPV4_HEADER_LEN;
+use smoltcp::wire::Icmpv6Packet;
 use smoltcp::wire::IpAddress;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Address;
@@ -449,9 +449,7 @@ impl<T: Client> Access<'_, T> {
         let frame = EthernetRepr::parse(&frame_packet)?;
         match frame.ethertype {
             EthernetProtocol::Ipv4 => self.handle_ipv4(&frame, frame_packet.payload(), checksum)?,
-            EthernetProtocol::Ipv6 => {
-                self.handle_ipv6(&frame, frame_packet.payload(), checksum)?
-            }
+            EthernetProtocol::Ipv6 => self.handle_ipv6(&frame, frame_packet.payload(), checksum)?,
             EthernetProtocol::Arp => self.handle_arp(&frame, frame_packet.payload())?,
             _ => return Err(DropReason::UnsupportedEthertype(frame.ethertype)),
         }
@@ -499,8 +497,12 @@ impl<T: Client> Access<'_, T> {
 
         match ipv4.protocol() {
             IpProtocol::Tcp => self.handle_tcp(&IpAddresses::V4(addresses), inner, checksum)?,
-            IpProtocol::Udp => self.handle_udp(frame, &IpAddresses::V4(addresses), inner, checksum)?,
-            IpProtocol::Icmp => self.handle_icmp(frame, &addresses, inner, checksum, ipv4.hop_limit())?,
+            IpProtocol::Udp => {
+                self.handle_udp(frame, &IpAddresses::V4(addresses), inner, checksum)?
+            }
+            IpProtocol::Icmp => {
+                self.handle_icmp(frame, &addresses, inner, checksum, ipv4.hop_limit())?
+            }
             p => return Err(DropReason::UnsupportedIpProtocol(p)),
         };
         Ok(())

@@ -396,8 +396,8 @@ impl<T: Client> Access<'_, T> {
         let ip_addr = match ip_addr {
             Some(IpAddr::V4(ip)) => Some(ip),
             Some(IpAddr::V6(_)) => {
-                // REVIEW: How do I exercise this path? I see that this function is called when handling RPC messages, 
-                // but I wasn't able to track down where these ConsommeMessage's are being created/sent from. 
+                // REVIEW: How do I exercise this path? I see that this function is called when handling RPC messages,
+                // but I wasn't able to track down where these ConsommeMessage's are being created/sent from.
                 return Err(DropReason::UnsupportedEthertype(EthernetProtocol::Ipv6));
             }
             None => None,
@@ -504,7 +504,7 @@ impl<T: Client> Sender<'_, T> {
                 copy_payload_into_buffer(tcp_packet.payload_mut(), payload);
                 tcp_packet
                     .fill_checksum(&(*dst_sockaddr.ip()).into(), &(*src_sockaddr.ip()).into());
-                let n = ETHERNET_HEADER_LEN + ipv6_packet.total_len() as usize;
+                let n = ETHERNET_HEADER_LEN + ipv6_packet.total_len();
                 (n, ChecksumState::TCP6)
             }
             _ => {
@@ -603,10 +603,7 @@ impl TcpConnection {
         }
 
         let socket = PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?;
-        match socket
-            .get()
-            .connect(&SockAddr::from(SocketAddr::from(sender.ft.dst)))
-        {
+        match socket.get().connect(&SockAddr::from(sender.ft.dst)) {
             Ok(_) => unreachable!(),
             Err(err) if is_connect_incomplete_error(&err) => (),
             Err(err) => {
@@ -1272,7 +1269,7 @@ impl TcpListener {
                     Some(addr) => match address.as_socket_ipv4() {
                         Some(src_address) => Ok(Some((
                             socket,
-                            SocketAddrV4::new((*src_address.ip()).into(), addr.port()),
+                            SocketAddrV4::new(*src_address.ip(), addr.port()),
                         ))),
                         None => {
                             tracing::warn!(?address, "Not an IPv4 address from accept");
