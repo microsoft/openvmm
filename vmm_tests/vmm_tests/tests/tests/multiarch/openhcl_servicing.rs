@@ -125,10 +125,7 @@ async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
         config,
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         igvm_file,
-        OpenHclServicingFlags {
-            enable_nvme_keepalive: true,
-            ..Default::default()
-        },
+        OpenHclServicingFlags::default(),
         DEFAULT_SERVICING_COUNT,
     )
     .await
@@ -145,10 +142,7 @@ async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
         config.with_vmbus_redirect(true), // Need this to attach the NVMe device
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         igvm_file,
-        OpenHclServicingFlags {
-            enable_nvme_keepalive: true,
-            ..Default::default()
-        },
+        OpenHclServicingFlags::default(),
         1, // Test is slow with NVMe device, so only do one loop to avoid timeout
     )
     .await
@@ -308,14 +302,8 @@ async fn servicing_keepalive_with_namespace_update(
     cmd!(sh, "ls /dev/sda").run().await?;
 
     fault_start_updater.set(true).await;
-    vm.save_openhcl(
-        igvm_file.clone(),
-        OpenHclServicingFlags {
-            enable_nvme_keepalive: true,
-            ..Default::default()
-        },
-    )
-    .await?;
+    vm.save_openhcl(igvm_file.clone(), OpenHclServicingFlags::default())
+        .await?;
     ns_change_send
         .call(NamespaceChange::ChangeNotification, KEEPALIVE_VTL2_NSID)
         .await?;

@@ -1729,14 +1729,25 @@ pub enum IsolationType {
 }
 
 /// Flags controlling servicing behavior.
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct OpenHclServicingFlags {
     /// Preserve DMA memory for NVMe devices if supported.
+    /// Defaults to `true`.
     pub enable_nvme_keepalive: bool,
     /// Skip any logic that the vmm may have to ignore servicing updates if the supplied igvm file version is not different than the one currently running.
     pub override_version_checks: bool,
     /// Hint to the OpenHCL runtime how much time to wait when stopping / saving the OpenHCL.
     pub stop_timeout_hint_secs: Option<u16>,
+}
+
+impl Default for OpenHclServicingFlags {
+    fn default() -> Self {
+        Self {
+            enable_nvme_keepalive: true,
+            override_version_checks: false,
+            stop_timeout_hint_secs: None,
+        }
+    }
 }
 
 /// Petri disk type

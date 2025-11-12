@@ -123,13 +123,13 @@ async fn many_nvme_devices_servicing_heavy(
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .with_vtl2_base_address_type(Vtl2BaseAddressType::MemoryLayout {
-            size: Some(768 * 1024 * 1024), // 768MB
+            size: Some((960 + 64) * 1024 * 1024), // 960MB as specified in manfiest, plus 64MB extra for private pool.
         })
         .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=16384") // 64MB of private pool for VTL2 NVMe devices.
         .with_memory(MemoryConfig {
-            startup_bytes: 8 * 1024 * 1024,
+            startup_bytes: 8 * 1024 * 1024 * 1024, // 8GB
             ..Default::default()
-        }) // 8GB
+        })
         .with_processor_topology(ProcessorTopology {
             vp_count: 4,
             ..Default::default()
@@ -190,14 +190,8 @@ async fn many_nvme_devices_servicing_heavy(
         // Test that inspect serialization works with the old version.
         vm.test_inspect_openhcl().await?;
 
-        vm.restart_openhcl(
-            igvm_file.clone(),
-            OpenHclServicingFlags {
-                enable_nvme_keepalive: true,
-                ..Default::default()
-            },
-        )
-        .await?;
+        vm.restart_openhcl(igvm_file.clone(), OpenHclServicingFlags::default())
+            .await?;
 
         agent.ping().await?;
 
