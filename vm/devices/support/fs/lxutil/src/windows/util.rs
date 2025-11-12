@@ -132,6 +132,8 @@ pub fn open_relative_file(
 }
 
 // Reopen an existing file handle with different permissions.
+// N.B. The reopened handle will always be opened synchronously, which
+//      matches the behavior in `LxFile::open`.
 pub fn reopen_file(
     file: &OwnedHandle,
     desired_access: W32Fs::FILE_ACCESS_RIGHTS,
@@ -139,10 +141,10 @@ pub fn reopen_file(
     let (handle, _) = open_relative_file(
         Some(file),
         "".as_ref(),
-        desired_access,
+        desired_access | W32Fs::SYNCHRONIZE,
         FileSystem::FILE_OPEN,
         Default::default(),
-        FileSystem::FILE_OPEN_REPARSE_POINT,
+        FileSystem::FILE_SYNCHRONOUS_IO_ALERT | FileSystem::FILE_OPEN_REPARSE_POINT,
         None,
     )?;
 

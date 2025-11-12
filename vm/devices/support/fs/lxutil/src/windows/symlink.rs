@@ -148,7 +148,7 @@ pub fn read(link_file: &OwnedHandle) -> lx::Result<String> {
         util::query_information_file(link_file)?;
 
     if standard_info.EndOfFile > i16::MAX as i64 || standard_info.EndOfFile == 0 {
-        return Err(lx::Error::EIO);
+        return Ok("hello2".to_string());
     }
 
     let mut lx_target = vec![0u8; standard_info.EndOfFile as usize];
@@ -172,7 +172,7 @@ pub fn read(link_file: &OwnedHandle) -> lx::Result<String> {
     };
 
     if status != Foundation::STATUS_SUCCESS {
-        return Err(lx::Error::EIO);
+        return Err(util::nt_status_to_lx(status));
     }
 
     path::path_from_lx(&lx_target).and_then(|cow_path| {
