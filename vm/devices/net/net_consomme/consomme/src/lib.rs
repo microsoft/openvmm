@@ -117,7 +117,7 @@ impl ConsommeParams {
     ///     IP address: 10.0.0.2 / 24
     ///     gateway: 10.0.0.1 with MAC address 52-55-10-0-0-1
     ///     IPv6 address: is not assigned by us, we expect the guest to assign it via SLAAC
-    ///     gateway_ipv6: fe80::5255:0aff:fe00:102 with MAC address 52-55-0A-00-01-02
+    ///     gateway ipv6 link local address: fe80::5055:aff:fe00:102 with MAC address 52-55-0A-00-01-02
     pub fn new() -> Result<Self, Error> {
         let nameservers = dns::nameservers()?;
         let gateway_mac_ipv6 = EthernetAddress([0x52, 0x55, 0x0A, 0x00, 0x01, 0x02]);
