@@ -1133,7 +1133,7 @@ impl FromStr for DebugconSerialConfigCli {
     }
 }
 
-/// (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | file=\<path\> | none)
+/// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
 #[derive(Clone, Debug, PartialEq)]
 pub enum SerialConfigCli {
     None,
@@ -1165,19 +1165,16 @@ impl FromStr for SerialConfigCli {
                 Some(path) => SerialConfigCli::File(path.into()),
                 None => Err("invalid serial configuration: file requires a value")?,
             },
-            "term" => match first_value {
-                Some(path) => {
-                    // If user supplies a name key, use it to title the window
-                    let window_name = keyvalues.iter().find(|(key, _)| key == "name");
-                    let window_name = match window_name {
-                        Some((_, Some(name))) => Some(name.clone()),
-                        _ => None,
-                    };
+            "term" => {
+                // If user supplies a name key, use it to title the window
+                let window_name = keyvalues.iter().find(|(key, _)| key == "name");
+                let window_name = match window_name {
+                    Some((_, Some(name))) => Some(name.clone()),
+                    _ => None,
+                };
 
-                    SerialConfigCli::NewConsole(Some(path.into()), window_name)
-                }
-                None => SerialConfigCli::NewConsole(None, None),
-            },
+                SerialConfigCli::NewConsole(first_value.map(|p| p.into()), window_name)
+            }
             "listen" => match first_value {
                 Some(path) => {
                     if let Some(tcp) = path.strip_prefix("tcp:") {
@@ -1983,6 +1980,20 @@ mod tests {
             assert_eq!(path.to_str().unwrap(), "/path/to/file");
         } else {
             panic!("Expected File variant");
+        }
+
+        // Test term config with name, but no specific path
+        match SerialConfigCli::from_str("term,name=MyTerm").unwrap() {
+            SerialConfigCli::NewConsole(None, Some(name)) => {
+                assert_eq!(name, "MyTerm");
+            }
+            _ => panic!("Expected NewConsole variant with name"),
+        }
+
+        // Test term config without name, but no specific path
+        match SerialConfigCli::from_str("term").unwrap() {
+            SerialConfigCli::NewConsole(None, None) => (),
+            _ => panic!("Expected NewConsole variant without name"),
         }
 
         // Test term config with name

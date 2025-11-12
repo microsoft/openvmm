@@ -307,7 +307,7 @@ fn vm_config_from_command_line(
                     app.or_else(openvmm_terminal_app).as_deref(),
                     &path,
                     ConsoleLaunchOptions {
-                        window_title: Some(window_title + " [OpenVMM]"),
+                        window_title: Some(window_title),
                     },
                 )
                 .context("failed to launch console")?;
