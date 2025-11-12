@@ -45,9 +45,7 @@ use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Packet;
-use std::net::SocketAddr;
 use std::net::SocketAddrV4;
-use std::net::SocketAddrV6;
 use std::task::Context;
 use thiserror::Error;
 
@@ -313,18 +311,6 @@ impl From<SocketAddress> for socket2::SockAddr {
     }
 }
 
-pub trait SupportedAddressFamily {}
-
-impl SupportedAddressFamily for SocketAddrV4 {}
-impl SupportedAddressFamily for SocketAddrV6 {}
-impl SupportedAddressFamily for SocketAddr {}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct FourTuple<T: SupportedAddressFamily> {
-    pub src: T,
-    pub dst: T,
-}
-
 /// The reason a packet was dropped without being handled.
 #[derive(Debug, Error)]
 pub enum DropReason {
@@ -390,22 +376,6 @@ struct Ipv6Addresses {
 enum IpAddresses {
     V4(Ipv4Addresses),
     V6(Ipv6Addresses),
-}
-
-impl IpAddresses {
-    fn src(&self) -> IpAddress {
-        match self {
-            IpAddresses::V4(addrs) => IpAddress::Ipv4(addrs.src_addr),
-            IpAddresses::V6(addrs) => IpAddress::Ipv6(addrs.src_addr),
-        }
-    }
-
-    fn dst(&self) -> IpAddress {
-        match self {
-            IpAddresses::V4(addrs) => IpAddress::Ipv4(addrs.dst_addr),
-            IpAddresses::V6(addrs) => IpAddress::Ipv6(addrs.dst_addr),
-        }
-    }
 }
 
 impl Consomme {
@@ -551,7 +521,7 @@ impl<T: Client> Access<'_, T> {
         let inner = &payload[ipv4.header_len().into()..total_len];
 
         match ipv4.protocol() {
-            IpProtocol::Tcp => self.handle_tcp(&addresses, inner, checksum)?,
+            IpProtocol::Tcp => self.handle_tcp(&IpAddresses::V4(addresses), inner, checksum)?,
             IpProtocol::Udp => {
                 self.handle_udp(frame, &IpAddresses::V4(addresses), inner, checksum)?
             }
@@ -587,7 +557,7 @@ impl<T: Client> Access<'_, T> {
             IpProtocol::Udp => {
                 self.handle_udp(frame, &IpAddresses::V6(addresses), inner, checksum)?
             }
-            IpProtocol::Tcp => self.handle_tcpv6(&addresses, inner, checksum)?,
+            IpProtocol::Tcp => self.handle_tcp(&IpAddresses::V6(addresses), inner, checksum)?,
             IpProtocol::Icmpv6 => {
                 // Check if this is an NDP packet (Neighbor Solicitation or Neighbor Advertisement)
                 use smoltcp::wire::Icmpv6Packet;

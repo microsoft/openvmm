@@ -6,11 +6,9 @@ pub mod ring;
 use super::Access;
 use super::Client;
 use super::DropReason;
-use super::FourTuple;
 use crate::ChecksumState;
 use crate::ConsommeState;
-use crate::Ipv4Addresses;
-use crate::Ipv6Addresses;
+use crate::IpAddresses;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use inspect::Inspect;
@@ -58,9 +56,20 @@ use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
 
+trait SupportedAddressFamily {}
+
+impl SupportedAddressFamily for SocketAddrV4 {}
+impl SupportedAddressFamily for SocketAddrV6 {}
+impl SupportedAddressFamily for SocketAddr {}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+struct FourTuple<T: SupportedAddressFamily> {
+    src: T,
+    dst: T,
+}
+
 pub(crate) struct Tcp {
     connections: HashMap<FourTuple<SocketAddr>, TcpConnection>,
-    v6_connections: HashMap<FourTuple<SocketAddr>, TcpConnection>,
     listeners: HashMap<u16, TcpListener>,
 }
 
@@ -105,7 +114,6 @@ impl Tcp {
     pub fn new() -> Self {
         Self {
             connections: HashMap::new(),
-            v6_connections: HashMap::new(),
             listeners: HashMap::new(),
         }
     }
@@ -302,48 +310,55 @@ impl<T: Client> Access<'_, T> {
                 }
             }
         });
-
-        self.inner.tcp.v6_connections.retain(|_, conn| {
-            let Some(socket) = conn.socket.take() else {
-                return true;
-            };
-            let socket = socket.into_inner();
-            match PolledSocket::new(self.client.driver(), socket) {
-                Ok(socket) => {
-                    conn.socket = Some(socket);
-                    true
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        error = &err as &dyn std::error::Error,
-                        "failed to update driver for tcpv6 connection"
-                    );
-                    false
-                }
-            }
-        })
     }
 
     pub(crate) fn handle_tcp(
         &mut self,
-        addresses: &Ipv4Addresses,
+        addresses: &IpAddresses,
         payload: &[u8],
         checksum: &ChecksumState,
     ) -> Result<(), DropReason> {
         let tcp_packet = TcpPacket::new_checked(payload)?;
-        let tcp = TcpRepr::parse(
-            &tcp_packet,
-            &addresses.src_addr.into(),
-            &addresses.dst_addr.into(),
-            &checksum.caps(),
-        )?;
 
-        tracing::trace!(?tcp, "tcp packet");
-
-        let ft = FourTuple {
-            dst: SocketAddr::V4(SocketAddrV4::new(addresses.dst_addr.into(), tcp.dst_port)),
-            src: SocketAddr::V4(SocketAddrV4::new(addresses.src_addr.into(), tcp.src_port)),
+        let (ft, tcp) = match addresses {
+            IpAddresses::V4(addresses) => {
+                let tcp = TcpRepr::parse(
+                    &tcp_packet,
+                    &addresses.src_addr.into(),
+                    &addresses.dst_addr.into(),
+                    &checksum.caps(),
+                )?;
+                let ft = FourTuple {
+                    dst: SocketAddr::V4(SocketAddrV4::new(addresses.dst_addr.into(), tcp.dst_port)),
+                    src: SocketAddr::V4(SocketAddrV4::new(addresses.src_addr.into(), tcp.src_port)),
+                };
+                (ft, tcp)
+            }
+            IpAddresses::V6(addresses) => {
+                let tcp = TcpRepr::parse(
+                    &tcp_packet,
+                    &addresses.src_addr.into(),
+                    &addresses.dst_addr.into(),
+                    &checksum.caps(),
+                )?;
+                let ft = FourTuple {
+                    dst: SocketAddr::V6(SocketAddrV6::new(
+                        addresses.dst_addr.into(),
+                        tcp.dst_port,
+                        0,
+                        0,
+                    )),
+                    src: SocketAddr::V6(SocketAddrV6::new(
+                        addresses.src_addr.into(),
+                        tcp.src_port,
+                        0,
+                        0,
+                    )),
+                };
+                (ft, tcp)
+            }
         };
+        tracing::trace!(?tcp, "tcp packet");
 
         let mut sender = Sender {
             ft: &ft,
@@ -375,57 +390,6 @@ impl<T: Client> Access<'_, T> {
         Ok(())
     }
 
-    pub(crate) fn handle_tcpv6(
-        &mut self,
-        addresses: &Ipv6Addresses,
-        payload: &[u8],
-        checksum: &ChecksumState,
-    ) -> Result<(), DropReason> {
-        let tcp_packet = TcpPacket::new_checked(payload)?;
-        let tcp = TcpRepr::parse(
-            &tcp_packet,
-            &addresses.src_addr.into(),
-            &addresses.dst_addr.into(),
-            &checksum.caps(),
-        )?;
-
-        tracing::trace!(?tcp, "tcp packet");
-
-        let ft = FourTuple {
-            dst: SocketAddr::V6(SocketAddrV6::new(addresses.dst_addr.into(), tcp.dst_port, 0, 0)),
-            src: SocketAddr::V6(SocketAddrV6::new(addresses.src_addr.into(), tcp.src_port, 0, 0)),
-        };
-
-        let mut sender = Sender {
-            ft: &ft,
-            client: self.client,
-            state: &mut self.inner.state,
-        };
-
-        match self.inner.tcp.connections.entry(ft) {
-            hash_map::Entry::Occupied(mut e) => {
-                let conn = e.get_mut();
-                if !conn.handle_packet(&mut sender, &tcp)? {
-                    e.remove();
-                }
-            }
-            hash_map::Entry::Vacant(e) => {
-                if tcp.control == TcpControl::Rst {
-                    // This connection is already closed. Ignore the packet.
-                } else if let Some(ack) = tcp.ack_number {
-                    // This is for an old connection. Send reset.
-                    sender.rst(ack, None);
-                } else if tcp.control == TcpControl::Syn {
-                    let conn = TcpConnection::new(&mut sender, &tcp)?;
-                    e.insert(conn);
-                } else {
-                    // Ignore the packet.
-                }
-            }
-        }
-        Ok(())
-    }
-    
     /// Binds to the specified host IP and port for listening for incoming
     /// connections.
     pub fn bind_tcp_port(&mut self, ip_addr: Option<IpAddr>, port: u16) -> Result<(), DropReason> {
@@ -443,7 +407,10 @@ impl<T: Client> Access<'_, T> {
             hash_map::Entry::Vacant(e) => {
                 let ft = FourTuple {
                     dst: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
-                    src: SocketAddr::V4(SocketAddrV4::new(ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED), port)),
+                    src: SocketAddr::V4(SocketAddrV4::new(
+                        ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED),
+                        port,
+                    )),
                 };
                 let mut sender = Sender {
                     ft: &ft,
@@ -480,11 +447,18 @@ impl<T: Client> Sender<'_, T> {
     fn send_packet(&mut self, tcp: &TcpRepr<'_>, payload: Option<ring::View<'_>>) {
         let buffer = &mut self.state.buffer;
         let mut eth_packet = EthernetFrame::new_unchecked(&mut buffer[..]);
-        match (self.ft.dst, self.ft.src) {
+        eth_packet.set_dst_addr(self.state.params.client_mac);
+        eth_packet.set_src_addr(self.state.params.gateway_mac);
+        let copy_payload_into_buffer = |buf: &mut [u8], payload: Option<ring::View<'_>>| {
+            if let Some(payload) = payload {
+                for (b, c) in buf.iter_mut().zip(payload.iter()) {
+                    *b = *c;
+                }
+            }
+        };
+        let (n, checksum_state) = match (self.ft.dst, self.ft.src) {
             (SocketAddr::V4(dst_sockaddr), SocketAddr::V4(src_sockaddr)) => {
                 eth_packet.set_ethertype(EthernetProtocol::Ipv4);
-                eth_packet.set_dst_addr(self.state.params.client_mac);
-                eth_packet.set_src_addr(self.state.params.gateway_mac);
                 let mut ipv4_packet = Ipv4Packet::new_unchecked(eth_packet.payload_mut());
                 let ipv4 = Ipv4Repr {
                     src_addr: Ipv4Address::from(*dst_sockaddr.ip()),
@@ -501,19 +475,14 @@ impl<T: Client> Sender<'_, T> {
                     &IpAddress::from(*src_sockaddr.ip()),
                     &ChecksumCapabilities::default(),
                 );
-                if let Some(payload) = payload {
-                    for (b, c) in tcp_packet.payload_mut().iter_mut().zip(payload.iter()) {
-                        *b = *c;
-                    }
-                }
-                tcp_packet.fill_checksum(&(*dst_sockaddr.ip()).into(), &(*src_sockaddr.ip()).into());
+                copy_payload_into_buffer(tcp_packet.payload_mut(), payload);
+                tcp_packet
+                    .fill_checksum(&(*dst_sockaddr.ip()).into(), &(*src_sockaddr.ip()).into());
                 let n = ETHERNET_HEADER_LEN + ipv4_packet.total_len() as usize;
-                self.client.recv(&buffer[..n], &ChecksumState::TCP4);
-            },
+                (n, ChecksumState::TCP4)
+            }
             (SocketAddr::V6(dst_sockaddr), SocketAddr::V6(src_sockaddr)) => {
                 eth_packet.set_ethertype(EthernetProtocol::Ipv6);
-                eth_packet.set_dst_addr(self.state.params.client_mac);
-                eth_packet.set_src_addr(self.state.params.gateway_mac);
                 let mut ipv6_packet = Ipv6Packet::new_unchecked(eth_packet.payload_mut());
                 let ipv6 = Ipv6Repr {
                     src_addr: Ipv6Address::from(*dst_sockaddr.ip()),
@@ -530,21 +499,19 @@ impl<T: Client> Sender<'_, T> {
                     &IpAddress::from(*src_sockaddr.ip()),
                     &ChecksumCapabilities::default(),
                 );
-                if let Some(payload) = payload {
-                    for (b, c) in tcp_packet.payload_mut().iter_mut().zip(payload.iter()) {
-                        *b = *c;
-                    }
-                }
-                tcp_packet.fill_checksum(&(*dst_sockaddr.ip()).into(), &(*src_sockaddr.ip()).into());
+                copy_payload_into_buffer(tcp_packet.payload_mut(), payload);
+                tcp_packet
+                    .fill_checksum(&(*dst_sockaddr.ip()).into(), &(*src_sockaddr.ip()).into());
                 let n = ETHERNET_HEADER_LEN + ipv6_packet.total_len() as usize;
-                self.client.recv(&buffer[..n], &ChecksumState::TCP6);
-            },
+                (n, ChecksumState::TCP6)
+            }
             _ => {
                 tracing::error!("Mismatched address families in TCP send_packet");
                 return;
             }
-        }
-        
+        };
+
+        self.client.recv(&buffer[..n], &checksum_state);
     }
 
     fn rst(&mut self, seq: TcpSeqNumber, ack: Option<TcpSeqNumber>) {
@@ -617,12 +584,10 @@ impl TcpConnection {
         this.initialize_from_first_client_packet(tcp)?;
 
         let socket = match sender.ft.dst {
-            SocketAddr::V4(_) => {
-                Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).map_err(DropReason::Io)?
-            }
-            SocketAddr::V6(_) => {
-                Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP)).map_err(DropReason::Io)?
-            }
+            SocketAddr::V4(_) => Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))
+                .map_err(DropReason::Io)?,
+            SocketAddr::V6(_) => Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))
+                .map_err(DropReason::Io)?,
         };
 
         // On Windows the default behavior for non-existent loopback sockets is

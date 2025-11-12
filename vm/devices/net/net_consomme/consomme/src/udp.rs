@@ -131,14 +131,13 @@ impl UdpConnection {
                     // Set common Ethernet header fields
                     eth.set_src_addr(state.params.gateway_mac);
                     eth.set_dst_addr(self.guest_mac);
-
                     // Build IP and UDP headers based on address version
-                    let (packet_len, checksum_state) = match (src_addr.ip(), dst_addr) {
-                        (IpAddr::V4(src_ip), SocketAddr::V4(dst_addr)) => {
+                    let (packet_len, checksum_state) = match (src_addr, dst_addr) {
+                        (SocketAddr::V4(src_addr), SocketAddr::V4(dst_addr)) => {
                             eth.set_ethertype(EthernetProtocol::Ipv4);
                             let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
                             Ipv4Repr {
-                                src_addr: src_ip.into(),
+                                src_addr: (*src_addr.ip()).into(),
                                 dst_addr: (*dst_addr.ip()).into(),
                                 protocol: IpProtocol::Udp,
                                 payload_len: UDP_HEADER_LEN + n,
@@ -151,18 +150,18 @@ impl UdpConnection {
                             udp.set_src_port(src_addr.port());
                             udp.set_dst_port(dst_addr.port());
                             udp.set_len((UDP_HEADER_LEN + n) as u16);
-                            udp.fill_checksum(&src_ip.into(), &(*dst_addr.ip()).into());
+                            udp.fill_checksum(&(*src_addr.ip()).into(), &(*dst_addr.ip()).into());
 
                             (
                                 ETHERNET_HEADER_LEN + ipv4.total_len() as usize,
                                 ChecksumState::UDP4,
                             )
                         }
-                        (IpAddr::V6(src_ip), SocketAddr::V6(dst_addr)) => {
+                        (SocketAddr::V6(src_addr), SocketAddr::V6(dst_addr)) => {
                             eth.set_ethertype(EthernetProtocol::Ipv6);
                             let mut ipv6 = Ipv6Packet::new_unchecked(eth.payload_mut());
                             Ipv6Repr {
-                                src_addr: src_ip.into(),
+                                src_addr: (*src_addr.ip()).into(),
                                 dst_addr: (*dst_addr.ip()).into(),
                                 next_header: IpProtocol::Udp,
                                 payload_len: UDP_HEADER_LEN + n,
@@ -175,7 +174,7 @@ impl UdpConnection {
                             udp.set_src_port(src_addr.port());
                             udp.set_dst_port(dst_addr.port());
                             udp.set_len((UDP_HEADER_LEN + n) as u16);
-                            udp.fill_checksum(&src_ip.into(), &(*dst_addr.ip()).into());
+                            udp.fill_checksum(&(*src_addr.ip()).into(), &(*dst_addr.ip()).into());
 
                             (
                                 ETHERNET_HEADER_LEN + IPV6_HEADER_LEN + UDP_HEADER_LEN + n,
