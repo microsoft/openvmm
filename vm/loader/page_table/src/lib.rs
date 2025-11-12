@@ -4,6 +4,7 @@
 //! Methods to construct page tables.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+//TODO docs are missing on pub page table functions for aarch64
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
@@ -21,9 +22,11 @@ pub enum Error {
     )]
     BadBufferSize { bytes_buf: usize, struct_buf: usize },
 
-    /// The page table mapping crosses the 512GB boundary
-    #[error("page table builder address {0:#x} resides above the 512GB boundary")]
-    MappingTooLarge(u64),
+    /// The constructed page tables are larger than the amount memory given for construction by the caller
+    #[error(
+        "constructed page tables are larger than the amount memory given for construction by the caller"
+    )]
+    NotEnoughMemory,
 
     /// The page table builder mapping ranges are not sorted
     #[error("the page table builder was invoked with unsorted mapping ranges")]
@@ -36,6 +39,10 @@ pub enum Error {
     /// The page table builder is generating overlapping mappings
     #[error("the page table builder was invoked with overlapping mappings")]
     OverlappingMappings,
+
+    /// The page table builder tried to overwrite a leaf mapping
+    #[error("the page table builder attempted to overwite a leaf mapping")]
+    AttemptedEntryOverwrite,
 }
 
 /// Size of the initial identity map

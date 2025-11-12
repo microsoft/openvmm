@@ -31,7 +31,10 @@ pub const X64_LARGE_PAGE_SIZE: u64 = 0x200000;
 /// Number of bytes in a 1GB page for X64.
 pub const X64_1GB_PAGE_SIZE: u64 = 0x40000000;
 
-/// Maximum number of page tables created for an x64 identity map
+/// An upper bound on the number of page tables that will be built for an x64 identity
+/// map. The builder will greedily map the largest possible page size, a cap of 20 tables
+/// is more than enough for mapping a few gigabytes with mostly large pages, which is
+/// sufficient for all of the current use cases of the identity map builder
 pub const PAGE_TABLE_MAX_COUNT: usize = 20;
 
 static_assertions::const_assert_eq!(
@@ -45,37 +48,43 @@ pub const PAGE_TABLE_MAX_BYTES: usize = PAGE_TABLE_MAX_COUNT * X64_PAGE_SIZE as 
 
 #[derive(Copy, Clone, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[repr(transparent)]
+/// An x64 page table entry
 pub struct PageTableEntry {
     pub(crate) entry: u64,
 }
 
+/// A memory range to be mapped in a page table, and the associated permissions
+/// The default permissions bits are present, R/W, executable
 #[derive(Copy, Clone, Debug)]
 pub struct MappedRange {
     start: u64,
     end: u64,
-    permissions: Option<u64>,
+    permissions: u64,
 }
 
 impl MappedRange {
+    /// Create a new mapped range, with default permissions
     pub fn new(start: u64, end: u64) -> Self {
         Self {
             start,
             end,
-            permissions: Some(X64_PTE_READ_WRITE),
+            permissions: X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE,
         }
     }
 
+    /// The start address of the mapped range
     pub fn start(&self) -> u64 {
         self.start
     }
 
+    /// The end address of the mapped range
     pub fn end(&self) -> u64 {
         self.end
     }
 
-    // Consumes a mapped range, and returns the range as read-only
+    /// Consumes a mapped range, and returns the range without the writable bit set
     pub fn read_only(mut self) -> Self {
-        self.permissions = None;
+        self.permissions &= !X64_PTE_READ_WRITE;
         self
     }
 }
@@ -85,7 +94,6 @@ impl core::fmt::Debug for PageTableEntry {
         f.debug_struct("PageTableEntry")
             .field("entry", &self.entry)
             .field("is_present", &self.is_present())
-            .field("is_large_page", &self.is_large_page())
             .field("gpa", &self.gpa())
             .finish()
     }
@@ -93,127 +101,63 @@ impl core::fmt::Debug for PageTableEntry {
 
 #[derive(Debug, Copy, Clone)]
 pub enum PageTableEntryType {
+    /// 1GB page in a PDPT
     Leaf1GbPage(u64),
+    /// 2MB page in a PD
     Leaf2MbPage(u64),
+    /// 4K page in a PT
     Leaf4kPage(u64),
+    /// A link to a lower level page table in a PML4, PDPT, or PD
     Pde(u64),
 }
 
+/// The depth of an x64 page table
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum EntryLevel {
-    PML4 = 3,
-    PDPT = 2,
-    PD = 1,
-    PT = 0,
+    Pml4 = 3,
+    Pdpt = 2,
+    Pd = 1,
+    Pt = 0,
 }
 
 impl EntryLevel {
+    /// The amount of memory that can be mapped by an entry in a page table.
+    /// If the entry is a leaf, this value represents the size of the entry,
+    /// otherwise it represents the maximum amount of physical memory space
+    /// that can be mapped if all mappings below this entry are used
     pub fn mapping_size(self) -> u64 {
         match self {
-            Self::PML4 => X64_1GB_PAGE_SIZE * 512,
-            Self::PDPT => X64_1GB_PAGE_SIZE,
-            Self::PD => X64_LARGE_PAGE_SIZE,
-            Self::PT => X64_PAGE_SIZE,
+            Self::Pml4 => X64_1GB_PAGE_SIZE * 512,
+            Self::Pdpt => X64_1GB_PAGE_SIZE,
+            Self::Pd => X64_LARGE_PAGE_SIZE,
+            Self::Pt => X64_PAGE_SIZE,
         }
     }
 
+    /// Returns a leaf entry for a virtual address in this level
     pub fn leaf(self, va: u64) -> PageTableEntryType {
         match self {
-            Self::PML4 => panic!("cannot insert a leaf entry into a PML4 table"),
-            Self::PDPT => PageTableEntryType::Leaf1GbPage(va),
-            Self::PD => PageTableEntryType::Leaf2MbPage(va),
-            Self::PT => PageTableEntryType::Leaf4kPage(va),
+            Self::Pml4 => panic!("cannot insert a leaf entry into a PML4 table"),
+            Self::Pdpt => PageTableEntryType::Leaf1GbPage(va),
+            Self::Pd => PageTableEntryType::Leaf2MbPage(va),
+            Self::Pt => PageTableEntryType::Leaf4kPage(va),
         }
     }
 
     fn pa_mask(self) -> u64 {
         match self {
-            Self::PML4 => 0x000f_ffff_c000_0000,
-            Self::PDPT => 0x000f_ffff_ffe0_0000,
-            Self::PD => 0x000f_ffff_ffff_f000,
-            Self::PT => 0x000f_ffff_ffff_f000,
+            Self::Pml4 => 0x000f_ffff_c000_0000,
+            Self::Pdpt => 0x000f_ffff_ffe0_0000,
+            Self::Pd => 0x000f_ffff_ffff_f000,
+            Self::Pt => 0x000f_ffff_ffff_f000,
         }
     }
 
+    /// Returns the physical address of the directory entry for a va at this level
+    /// Assumes that the directory is part of an identity mapping
     pub fn directory_pa(self, va: u64) -> u64 {
         va & self.pa_mask()
-    }
-}
-
-pub trait PteOps {
-    fn get_addr_mask(&self) -> u64;
-    fn get_confidential_mask(&self) -> u64;
-
-    fn build_pte(entry_type: PageTableEntryType, permissions: Option<u64>) -> PageTableEntry {
-        let mut entry: u64 = X64_PTE_PRESENT | X64_PTE_ACCESSED;
-
-        if let Some(permissions) = permissions {
-            assert!(permissions == X64_PTE_READ_WRITE);
-            entry |= permissions;
-        }
-
-        match entry_type {
-            PageTableEntryType::Leaf1GbPage(address) => {
-                // Must be 1GB aligned.
-                assert!(address % X64_1GB_PAGE_SIZE == 0);
-                entry |= address;
-                entry |= X64_PTE_LARGE_PAGE | X64_PTE_DIRTY;
-            }
-            PageTableEntryType::Leaf2MbPage(address) => {
-                // Leaf entry, set like UEFI does for 2MB pages. Must be 2MB aligned.
-                assert!(address % X64_LARGE_PAGE_SIZE == 0);
-                entry |= address;
-                entry |= X64_PTE_LARGE_PAGE | X64_PTE_DIRTY;
-            }
-            PageTableEntryType::Leaf4kPage(address) => {
-                // Must be 4K aligned.
-                assert!(address % X64_PAGE_SIZE == 0);
-                entry |= address;
-                entry |= X64_PTE_DIRTY;
-            }
-            PageTableEntryType::Pde(address) => {
-                // Points to another pagetable.
-                assert!(address % X64_PAGE_SIZE == 0);
-                entry |= address;
-            }
-        }
-
-        PageTableEntry { entry }
-    }
-
-    fn is_pte_present(pte: &PageTableEntry) -> bool {
-        pte.is_present()
-    }
-
-    fn is_pte_large_page(pte: &PageTableEntry) -> bool {
-        pte.is_large_page()
-    }
-
-    fn get_gpa_from_pte(&self, pte: &PageTableEntry) -> Option<u64> {
-        if pte.is_present() {
-            Some(self.get_addr_from_pte(pte))
-        } else {
-            None
-        }
-    }
-
-    fn get_addr_from_pte(&self, pte: &PageTableEntry) -> u64 {
-        pte.entry & self.get_addr_mask()
-    }
-
-    fn set_addr_in_pte(&self, pte: &mut PageTableEntry, address: u64) {
-        let mask = self.get_addr_mask();
-        pte.entry = (pte.entry & !mask) | (address & mask);
-    }
-
-    fn set_pte_confidentiality(&self, pte: &mut PageTableEntry, confidential: bool) {
-        let mask = self.get_confidential_mask();
-        if confidential {
-            pte.entry |= mask;
-        } else {
-            pte.entry &= !mask;
-        }
     }
 }
 
@@ -221,7 +165,7 @@ impl PageTableEntry {
     const VALID_BITS: u64 = 0x000f_ffff_ffff_f000;
 
     /// Set an AMD64 PDE to either represent a leaf 2MB page or PDE.
-    /// This sets the PTE to preset, accessed, dirty, execute.
+    /// This sets the PTE to preset, accessed, dirty, read write execute.
     pub fn set_entry(&mut self, entry_type: PageTableEntryType) {
         self.entry = X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE;
 
@@ -252,14 +196,12 @@ impl PageTableEntry {
         }
     }
 
+    /// Checks if a page table entry is marked as present
     pub fn is_present(&self) -> bool {
         self.entry & X64_PTE_PRESENT == X64_PTE_PRESENT
     }
 
-    pub fn is_large_page(&self) -> bool {
-        self.entry & X64_PTE_LARGE_PAGE == X64_PTE_LARGE_PAGE
-    }
-
+    /// Returns the GPA pointed to by a mapping, if it is present
     pub fn gpa(&self) -> Option<u64> {
         if self.is_present() {
             // bits 51 to 12 describe the gpa of the next page table
@@ -269,6 +211,7 @@ impl PageTableEntry {
         }
     }
 
+    /// Clears the address in an entry, and replaces it with the provided address
     pub fn set_addr(&mut self, addr: u64) {
         assert!(addr & !Self::VALID_BITS == 0);
 
@@ -277,10 +220,12 @@ impl PageTableEntry {
         self.entry |= addr;
     }
 
+    /// Get the address pointed to by a page table entry, regardless of whether the entry is present
     pub fn get_addr(&self) -> u64 {
         self.entry & Self::VALID_BITS
     }
 
+    /// Clear all bits of a page table entry
     pub fn clear(&mut self) {
         self.entry = 0;
     }
@@ -288,11 +233,13 @@ impl PageTableEntry {
 
 #[repr(C)]
 #[derive(Clone, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
+/// A single page table at any level of the page table hierarchy
 pub struct PageTable {
     entries: [PageTableEntry; PAGE_TABLE_ENTRY_COUNT],
 }
 
 impl PageTable {
+    /// Returns a page table as a mutable iterator of page table entries
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut PageTableEntry> {
         self.entries.iter_mut()
     }
@@ -362,13 +309,15 @@ pub fn calculate_pde_table_count(start_gpa: u64, size: u64) -> u64 {
 }
 
 #[derive(Debug, Clone)]
-struct PageTableBuilderParams {
+struct PageTableBuilderInner {
     page_table_gpa: u64,
     confidential_bit: Option<u32>,
 }
 
+/// A builder for an x64 identity-mapped page table
 pub struct PageTableBuilder<'a> {
-    params: PageTableBuilderParams,
+    /// parameters to the page table builder, stored seperately s.t. they can be easily cloned and copied
+    inner: PageTableBuilderInner,
     /// a reference to a mutable slice of PageTables, used as working memory for constructing the page table
     page_table: &'a mut [PageTable],
     /// a reference to a mutable slice of u8s, used to store and return the final page table bytes
@@ -377,7 +326,7 @@ pub struct PageTableBuilder<'a> {
     ranges: &'a [MappedRange],
 }
 
-impl PteOps for PageTableBuilderParams {
+impl PageTableBuilderInner {
     fn get_addr_mask(&self) -> u64 {
         const ALL_ADDR_BITS: u64 = 0x000f_ffff_ffff_f000;
         ALL_ADDR_BITS & !self.get_confidential_mask()
@@ -390,10 +339,59 @@ impl PteOps for PageTableBuilderParams {
             0
         }
     }
+
+    fn build_pte(&self, entry_type: PageTableEntryType, permissions: u64) -> PageTableEntry {
+        let mut entry: u64 = permissions;
+
+        let mask = self.get_confidential_mask();
+        if self.confidential_bit.is_some() {
+            entry |= mask;
+        } else {
+            entry &= mask;
+        }
+
+        match entry_type {
+            PageTableEntryType::Leaf1GbPage(address) => {
+                // Must be 1GB aligned.
+                assert!(address % X64_1GB_PAGE_SIZE == 0);
+                entry |= address;
+                entry |= X64_PTE_LARGE_PAGE | X64_PTE_DIRTY;
+            }
+            PageTableEntryType::Leaf2MbPage(address) => {
+                // Leaf entry, set like UEFI does for 2MB pages. Must be 2MB aligned.
+                assert!(address % X64_LARGE_PAGE_SIZE == 0);
+                entry |= address;
+                entry |= X64_PTE_LARGE_PAGE | X64_PTE_DIRTY;
+            }
+            PageTableEntryType::Leaf4kPage(address) => {
+                // Must be 4K aligned.
+                assert!(address % X64_PAGE_SIZE == 0);
+                entry |= address;
+                entry |= X64_PTE_DIRTY;
+            }
+            PageTableEntryType::Pde(address) => {
+                // Points to another pagetable.
+                assert!(address % X64_PAGE_SIZE == 0);
+                entry |= address;
+            }
+        }
+
+        PageTableEntry { entry }
+    }
+
+    fn get_addr_from_pte(&self, pte: &PageTableEntry) -> u64 {
+        pte.entry & self.get_addr_mask()
+    }
 }
 
 impl<'a> PageTableBuilder<'a> {
-    /// Creates a new instance of PageTableBuilder, taking required arguments for working buffers and the page table gpa.
+    /// Creates a new instance of the page table builder. The [PageTable] slice is working memory
+    /// for constructing the page table, and the [u8] slice is the memory used to output the
+    /// final bytes of the page table
+    ///
+    /// The working memory and output memory are taken as parameters to allow for the caller
+    /// to flexibly choose their allocation strategy, to support usage in no_std environments
+    /// like openhcl_boot
     pub fn new(
         page_table_gpa: u64,
         page_table: &'a mut [PageTable],
@@ -406,13 +404,13 @@ impl<'a> PageTableBuilder<'a> {
                 struct_buf: page_table.len() * PAGE_TABLE_SIZE,
             })
         } else {
-            for (_, range) in ranges.iter().enumerate() {
+            for range in ranges.iter() {
                 if range.start() > range.end() {
-                    return Err(Error::UnsortedMappings);
+                    return Err(Error::InvalidRange);
                 }
             }
 
-            for (_, window) in ranges.windows(2).enumerate() {
+            for window in ranges.windows(2) {
                 let (l, r) = (&window[0], &window[1]);
 
                 if r.start() < l.start() {
@@ -424,7 +422,7 @@ impl<'a> PageTableBuilder<'a> {
                 }
             }
             Ok(PageTableBuilder {
-                params: PageTableBuilderParams {
+                inner: PageTableBuilderInner {
                     page_table_gpa,
                     confidential_bit: None,
                 },
@@ -435,8 +433,9 @@ impl<'a> PageTableBuilder<'a> {
         }
     }
 
+    /// Builds the page tables with the confidential bit set
     pub fn with_confidential_bit(mut self, bit_position: u32) -> Self {
-        self.params.confidential_bit = Some(bit_position);
+        self.inner.confidential_bit = Some(bit_position);
         self
     }
 
@@ -448,26 +447,28 @@ impl<'a> PageTableBuilder<'a> {
             page_table,
             flattened_page_table,
             ranges,
-            params,
+            inner,
         } = self;
 
         // Allocate single PML4E page table.
         let (mut page_table_index, pml4_table_index) = (0, 0);
-        let confidential = params.confidential_bit.is_some();
 
-        // Allocate and link tables underneath the PML4E
-        let mut link_tables = |start_va: u64, end_va: u64, permissions: Option<u64>| {
+        // Allocate and link table
+        let mut link_tables = |start_va: u64, end_va: u64, permissions: u64| -> Result<(), Error> {
             let mut current_va = start_va;
             let mut get_or_insert_entry = |table_index: usize,
                                            entry_level: EntryLevel,
                                            current_va: &mut u64|
-             -> Option<usize> {
+             -> Result<Option<usize>, Error> {
                 // If the current mapping can be inserted at this level as a leaf entry, do so
                 if (*current_va).is_multiple_of(entry_level.mapping_size())
                     && (*current_va + entry_level.mapping_size() <= end_va)
                 {
                     let entry = page_table[table_index].entry(*current_va, entry_level as u8);
-                    assert!(!entry.is_present());
+                    if entry.is_present() {
+                        // This error should be unreachable - something has gone horribly wrong
+                        return Err(Error::AttemptedEntryOverwrite);
+                    }
 
                     #[cfg(feature = "tracing")]
                     tracing::trace!(
@@ -476,15 +477,11 @@ impl<'a> PageTableBuilder<'a> {
                         entry_level
                     );
 
-                    let mut new_entry = PageTableBuilderParams::build_pte(
-                        entry_level.leaf(*current_va),
-                        permissions,
-                    );
-                    params.set_pte_confidentiality(&mut new_entry, confidential);
+                    let new_entry = inner.build_pte(entry_level.leaf(*current_va), permissions);
                     *entry = new_entry;
-                    *current_va += entry_level.mapping_size() as u64;
+                    *current_va += entry_level.mapping_size();
 
-                    None
+                    Ok(None)
                 }
                 // The current mapping cannot be inserted as a leaf at this level
                 //
@@ -492,17 +489,26 @@ impl<'a> PageTableBuilder<'a> {
                 // return the index
                 else {
                     let directory_pa = entry_level.directory_pa(*current_va);
+                    let len = page_table.len();
                     let entry = page_table[table_index].entry(directory_pa, entry_level as u8);
 
                     if !entry.is_present() {
                         page_table_index += 1;
+
+                        if page_table_index >= len {
+                            return Err(Error::NotEnoughMemory);
+                        }
                         // Allocate and link a page directory
                         let output_address =
-                            params.page_table_gpa + page_table_index as u64 * X64_PAGE_SIZE;
+                            inner.page_table_gpa + page_table_index as u64 * X64_PAGE_SIZE;
 
-                        let mut new_entry = PageTableBuilderParams::build_pte(
+                        // Create the directory entry. Directory entries can be shared amongst
+                        // MappedRanges with different sets of permissions, so give a wide set of
+                        // permissions in the directory, and apply the MappedRange permissions in
+                        // the leaf entry
+                        let new_entry = inner.build_pte(
                             PageTableEntryType::Pde(output_address),
-                            permissions,
+                            X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE,
                         );
 
                         #[cfg(feature = "tracing")]
@@ -511,17 +517,16 @@ impl<'a> PageTableBuilder<'a> {
                             directory_pa,
                             entry_level
                         );
-                        params.set_pte_confidentiality(&mut new_entry, confidential);
                         *entry = new_entry;
 
-                        Some(page_table_index)
+                        Ok(Some(page_table_index))
                     } else {
-                        Some(
-                            ((params.get_addr_from_pte(entry) - params.page_table_gpa)
+                        Ok(Some(
+                            ((inner.get_addr_from_pte(entry) - inner.page_table_gpa)
                                 / X64_PAGE_SIZE)
                                 .try_into()
                                 .expect("Valid page table index"),
-                        )
+                        ))
                     }
                 }
             };
@@ -531,24 +536,29 @@ impl<'a> PageTableBuilder<'a> {
                 tracing::trace!("creating entry for va: {:#X}", current_va);
                 // For the current_va, insert entires as needed into the page table hierarchy,
                 // terminating when a leaf entry is inserted
-                get_or_insert_entry(pml4_table_index, EntryLevel::PML4, &mut current_va)
-                    .and_then(|pdpte_table_index| {
-                        get_or_insert_entry(pdpte_table_index, EntryLevel::PDPT, &mut current_va)
-                    })
-                    .and_then(|pde_table_index| {
-                        get_or_insert_entry(pde_table_index, EntryLevel::PD, &mut current_va)
-                    })
-                    .and_then(|pt_table_index| {
-                        get_or_insert_entry(pt_table_index, EntryLevel::PT, &mut current_va)
-                    });
+                let pdpt_table_index =
+                    get_or_insert_entry(pml4_table_index, EntryLevel::Pml4, &mut current_va)?;
+                if let Some(pdpt_table_index) = pdpt_table_index {
+                    let pd_table_index =
+                        get_or_insert_entry(pdpt_table_index, EntryLevel::Pdpt, &mut current_va)?;
+                    if let Some(pd_table_index) = pd_table_index {
+                        let pt_table_index =
+                            get_or_insert_entry(pd_table_index, EntryLevel::Pd, &mut current_va)?;
+                        if let Some(pt_table_index) = pt_table_index {
+                            get_or_insert_entry(pt_table_index, EntryLevel::Pt, &mut current_va)?;
+                        }
+                    }
+                }
             }
+
+            Ok(())
         };
 
         for range in ranges {
-            link_tables(range.start, range.end, range.permissions);
+            link_tables(range.start, range.end, range.permissions)?;
         }
 
-        // flatten page table vec into u8 vec
+        // flatten the [page_table] into a [u8]
         Ok(flatten_page_table(
             page_table,
             flattened_page_table,
@@ -565,6 +575,8 @@ struct IdentityMapBuilderParams {
     pml4e_link: Option<(u64, u64)>,
 }
 
+/// An IdentityMap Builder, which builds either a 4GB or 8GB identity map of the lower address space
+/// FUTURE: This logic can merged with the PageTableBuilder, rather than maintaining two implementations
 pub struct IdentityMapBuilder<'a> {
     params: IdentityMapBuilderParams,
     /// a reference to a mutable slice of PageTables, used as working memory for constructing the page table
@@ -574,6 +586,13 @@ pub struct IdentityMapBuilder<'a> {
 }
 
 impl<'a> IdentityMapBuilder<'a> {
+    /// Creates a new instance of the IdentityMapBuilder. The [PageTable] slice is working memory
+    /// for constructing the page table, and the [u8] slice is the memory used to output the
+    /// final bytes of the page table
+    ///
+    /// The working memory and output memory are taken as parameters to allow for the caller
+    /// to flexibly choose their allocation strategy, to support usage in no_std environments
+    /// like openhcl_boot
     pub fn new(
         page_table_gpa: u64,
         identity_map_size: IdentityMapSize,
@@ -599,6 +618,8 @@ impl<'a> IdentityMapBuilder<'a> {
         }
     }
 
+    /// Builds the page tables with an address bias, a fixed offset between the virtual
+    /// and physical addresses in the identity map
     pub fn with_address_bias(mut self, address_bias: u64) -> Self {
         self.params.address_bias = address_bias;
         self
@@ -694,7 +715,7 @@ impl<'a> IdentityMapBuilder<'a> {
             }
         }
 
-        // Flatten page table vec into u8 vec
+        // Flatten [page_table] into [u8]
         flatten_page_table(page_table, flattened_page_table, page_table_count)
     }
 }
@@ -733,10 +754,20 @@ fn flatten_page_table<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std;
+    use std::vec;
+
+    use super::Error;
+    use super::MappedRange;
+    use super::PAGE_TABLE_MAX_BYTES;
+    use super::PAGE_TABLE_MAX_COUNT;
+    use super::PageTable;
+    use super::PageTableBuilder;
     use super::X64_1GB_PAGE_SIZE;
     use super::align_up_to_large_page_size;
     use super::align_up_to_page_size;
     use super::calculate_pde_table_count;
+    use zerocopy::FromZeros;
 
     #[test]
     fn test_align_up() {
@@ -770,5 +801,121 @@ mod tests {
             calculate_pde_table_count(X64_1GB_PAGE_SIZE, X64_1GB_PAGE_SIZE * 3),
             3
         );
+    }
+
+    fn check_page_table_count(ranges: &[MappedRange], count: usize) {
+        let mut page_table_work_buffer: Vec<PageTable> =
+            vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
+        let mut page_table: Vec<u8> = vec![0; PAGE_TABLE_MAX_BYTES];
+
+        let page_table_builder = PageTableBuilder::new(
+            0,
+            page_table_work_buffer.as_mut_slice(),
+            page_table.as_mut_slice(),
+            ranges,
+        )
+        .expect("page table builder initialization should succeed");
+
+        let page_table = page_table_builder.build().expect("building should succeed");
+        assert_eq!(page_table.len(), count);
+    }
+
+    fn page_table_builder_error(ranges: &[MappedRange]) -> Option<Error> {
+        let mut page_table_work_buffer: Vec<PageTable> =
+            vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
+        let mut page_table: Vec<u8> = vec![0; PAGE_TABLE_MAX_BYTES];
+
+        PageTableBuilder::new(
+            0,
+            page_table_work_buffer.as_mut_slice(),
+            page_table.as_mut_slice(),
+            ranges,
+        )
+        .err()
+    }
+
+    #[test]
+    fn test_page_table_entry_sizing() {
+        const ONE_GIG: u64 = 1024 * 1024 * 1024;
+        const TWO_MB: u64 = 1024 * 1024 * 2;
+        const FOUR_KB: u64 = 4096;
+
+        check_page_table_count(&[MappedRange::new(0, ONE_GIG)], 4096 * 2);
+        check_page_table_count(&[MappedRange::new(0, TWO_MB)], 4096 * 3);
+        check_page_table_count(&[MappedRange::new(0, FOUR_KB)], 4096 * 4);
+        check_page_table_count(&[MappedRange::new(FOUR_KB, ONE_GIG)], 4096 * 4);
+        check_page_table_count(&[MappedRange::new(TWO_MB, ONE_GIG)], 4096 * 3);
+        check_page_table_count(&[MappedRange::new(TWO_MB, ONE_GIG + FOUR_KB)], 4096 * 5);
+        check_page_table_count(&[MappedRange::new(TWO_MB, ONE_GIG + TWO_MB)], 4096 * 4);
+    }
+
+    #[test]
+    fn test_page_table_builder_overlapping_range() {
+        const ONE_GIG: u64 = 1024 * 1024 * 1024;
+        const TWO_MB: u64 = 1024 * 1024 * 2;
+        const FOUR_KB: u64 = 4096;
+
+        let err = page_table_builder_error(&[
+            MappedRange::new(FOUR_KB, ONE_GIG),
+            MappedRange::new(TWO_MB, ONE_GIG),
+        ])
+        .expect("must fail");
+        assert!(matches!(err, Error::OverlappingMappings));
+    }
+
+    #[test]
+    fn test_page_table_builder_invalid_range() {
+        const ONE_GIG: u64 = 1024 * 1024 * 1024;
+        const FOUR_KB: u64 = 4096;
+
+        let err =
+            page_table_builder_error(&[MappedRange::new(ONE_GIG, FOUR_KB)]).expect("must fail");
+        assert!(matches!(err, Error::InvalidRange));
+    }
+
+    #[test]
+    fn test_page_table_builder_oom() {
+        const ONE_GIG: u64 = 1024 * 1024 * 1024;
+
+        let mut page_table_work_buffer: Vec<PageTable> = vec![PageTable::new_zeroed(); 1];
+        let mut page_table: Vec<u8> = vec![0; 4096];
+
+        let err = PageTableBuilder::new(
+            0,
+            page_table_work_buffer.as_mut_slice(),
+            page_table.as_mut_slice(),
+            &[MappedRange::new(0, ONE_GIG)],
+        )
+        .expect("page table builder initialization should succeed")
+        .build()
+        .err()
+        .expect("building page tables should fail");
+
+        assert!(matches!(err, Error::NotEnoughMemory));
+    }
+
+    #[test]
+    fn test_page_table_builder_mismatched_buffers() {
+        const ONE_GIG: u64 = 1024 * 1024 * 1024;
+
+        let mut page_table_work_buffer: Vec<PageTable> = vec![PageTable::new_zeroed(); 4];
+        let mut page_table: Vec<u8> = vec![0; 4096 * 5];
+
+        let err = PageTableBuilder::new(
+            0,
+            page_table_work_buffer.as_mut_slice(),
+            page_table.as_mut_slice(),
+            &[MappedRange::new(0, ONE_GIG)],
+        )
+        .err()
+        .expect("building page tables should fail");
+
+        assert!(matches!(
+            err,
+            Error::BadBufferSize {
+                bytes_buf: _,
+                struct_buf: _
+            }
+        ));
     }
 }
