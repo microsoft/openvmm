@@ -23,7 +23,6 @@ pub fn nameservers() -> Result<Vec<IpAddress>, Error> {
         .iter()
         .filter_map(|ns| match ns {
             ScopedIp::V4(addr) => Some(IpAddress::Ipv4(Ipv4Address::from(*addr))),
-            // REVIEW: Do we want to support scoped IPv6 addresses here?
             ScopedIp::V6(addr, None) => Some(IpAddress::Ipv6(Ipv6Address::from(*addr))),
             ScopedIp::V6(_, Some(_)) => None,
         })

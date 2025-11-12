@@ -23,7 +23,6 @@ mod dns;
 mod icmp;
 mod ndp;
 mod tcp;
-// mod tcpv6;
 mod udp;
 mod windows;
 
@@ -38,6 +37,7 @@ use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
+use smoltcp::wire::Icmpv6Packet;
 use smoltcp::wire::IPV4_HEADER_LEN;
 use smoltcp::wire::IpAddress;
 use smoltcp::wire::IpProtocol;
@@ -45,7 +45,6 @@ use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Packet;
-use std::net::SocketAddrV4;
 use std::task::Context;
 use thiserror::Error;
 
@@ -57,7 +56,6 @@ pub struct Consomme {
     #[inspect(mut)]
     udp: udp::Udp,
     icmp: icmp::Icmp,
-    // tcpv6: tcpv6::Tcpv6,
 }
 
 #[derive(Inspect)]
@@ -97,8 +95,7 @@ pub struct ConsommeParams {
     /// Gateway's link-local IPv6 address (derived from gateway_mac_ipv6).
     ///
     /// This is the address used as the source for NDP Router Advertisements
-    /// and as the target for Neighbor Solicitations. It's computed from the
-    /// gateway MAC address using EUI-64 format (RFC 4291).
+    /// and as the target for Neighbor Solicitations.
     #[inspect(display)]
     pub gateway_link_local_ipv6: Ipv6Address,
     /// Current IPv6 address learned from guest via SLAAC (if any).
@@ -119,7 +116,8 @@ impl ConsommeParams {
     /// Create default dynamic network state. The default state is
     ///     IP address: 10.0.0.2 / 24
     ///     gateway: 10.0.0.1 with MAC address 52-55-10-0-0-1
-    ///     no DNS resolvers
+    ///     IPv6 address: is not assigned by us, we expect the guest to assign it via SLAAC
+    ///     gateway_ipv6: fe80::5255:0aff:fe00:102 with MAC address 52-55-0A-00-01-02
     pub fn new() -> Result<Self, Error> {
         let nameservers = dns::nameservers()?;
         let gateway_mac_ipv6 = EthernetAddress([0x52, 0x55, 0x0A, 0x00, 0x01, 0x02]);
@@ -127,7 +125,7 @@ impl ConsommeParams {
         Ok(Self {
             gateway_ip: Ipv4Address::new(10, 0, 0, 1),
             gateway_mac: EthernetAddress([0x52, 0x55, 10, 0, 0, 1]),
-            client_ip: Ipv4Address::new(10, 0, 0, 10),
+            client_ip: Ipv4Address::new(10, 0, 0, 2),
             client_mac: EthernetAddress([0x0, 0x0, 0x0, 0x0, 0x1, 0x0]),
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
@@ -293,24 +291,6 @@ impl ChecksumState {
 /// frame).
 pub const MIN_MTU: usize = 1514;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-struct SocketAddress {
-    ip: Ipv4Address,
-    port: u16,
-}
-
-impl From<SocketAddress> for SocketAddrV4 {
-    fn from(addr: SocketAddress) -> Self {
-        Self::new(addr.ip.into(), addr.port)
-    }
-}
-
-impl From<SocketAddress> for socket2::SockAddr {
-    fn from(addr: SocketAddress) -> Self {
-        socket2::SockAddr::from(SocketAddrV4::from(addr))
-    }
-}
-
 /// The reason a packet was dropped without being handled.
 #[derive(Debug, Error)]
 pub enum DropReason {
@@ -389,7 +369,6 @@ impl Consomme {
             tcp: tcp::Tcp::new(),
             udp: udp::Udp::new(),
             icmp: icmp::Icmp::new(),
-            // tcpv6: tcpv6::Tcpv6::new(),
         }
     }
 
@@ -425,7 +404,6 @@ impl<T: Client> Access<'_, T> {
     pub fn poll(&mut self, cx: &mut Context<'_>) {
         self.poll_udp(cx);
         self.poll_tcp(cx);
-        // self.poll_tcpv6(cx);
         self.poll_icmp(cx);
     }
 
@@ -435,7 +413,6 @@ impl<T: Client> Access<'_, T> {
     pub fn refresh_driver(&mut self) {
         self.refresh_tcp_driver();
         self.refresh_udp_driver();
-        // self.refresh_tcpv6_driver();
     }
 
     /// Sends an Ethernet frame to the network.
@@ -522,12 +499,8 @@ impl<T: Client> Access<'_, T> {
 
         match ipv4.protocol() {
             IpProtocol::Tcp => self.handle_tcp(&IpAddresses::V4(addresses), inner, checksum)?,
-            IpProtocol::Udp => {
-                self.handle_udp(frame, &IpAddresses::V4(addresses), inner, checksum)?
-            }
-            IpProtocol::Icmp => {
-                self.handle_icmp(frame, &addresses, inner, checksum, ipv4.hop_limit())?
-            }
+            IpProtocol::Udp => self.handle_udp(frame, &IpAddresses::V4(addresses), inner, checksum)?,
+            IpProtocol::Icmp => self.handle_icmp(frame, &addresses, inner, checksum, ipv4.hop_limit())?,
             p => return Err(DropReason::UnsupportedIpProtocol(p)),
         };
         Ok(())
@@ -559,8 +532,7 @@ impl<T: Client> Access<'_, T> {
             }
             IpProtocol::Tcp => self.handle_tcp(&IpAddresses::V6(addresses), inner, checksum)?,
             IpProtocol::Icmpv6 => {
-                // Check if this is an NDP packet (Neighbor Solicitation or Neighbor Advertisement)
-                use smoltcp::wire::Icmpv6Packet;
+                // Check if this is an NDP packet
                 let icmpv6_packet = Icmpv6Packet::new_unchecked(inner);
                 let msg_type = icmpv6_packet.msg_type();
 
@@ -571,11 +543,6 @@ impl<T: Client> Access<'_, T> {
                 {
                     self.handle_ndp(frame, inner, ipv6.src_addr(), full_frame)?;
                 } else {
-                    // Other ICMPv6 types are not supported
-                    tracing::info!(
-                        msg_type = ?msg_type,
-                        "unsupported ICMPv6 message type received"
-                    );
                     return Err(DropReason::UnsupportedIpProtocol(next_header));
                 }
             }

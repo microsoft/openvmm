@@ -23,9 +23,6 @@ use smoltcp::wire::Ipv6Repr;
 use smoltcp::wire::UdpPacket;
 use smoltcp::wire::UdpRepr;
 
-pub const DHCPV6_CLIENT_PORT: u16 = 546;
-pub const DHCPV6_SERVER_PORT: u16 = 547;
-
 impl<T: Client> Access<'_, T> {
     pub(crate) fn handle_dhcpv6(
         &mut self,
@@ -90,9 +87,7 @@ impl<T: Client> Access<'_, T> {
                     .map(|addr| addr.into())
                     .collect();
 
-                let mut dns_servers_len = 0;
                 if !dns_servers.is_empty() {
-                    dns_servers_len = dns_servers.len();
                     reply
                         .opts_mut()
                         .insert(v6::DhcpOption::DomainNameServers(dns_servers));
@@ -109,8 +104,8 @@ impl<T: Client> Access<'_, T> {
                 })?;
 
                 let resp_udp = UdpRepr {
-                    src_port: DHCPV6_SERVER_PORT,
-                    dst_port: DHCPV6_CLIENT_PORT,
+                    src_port: v6::SERVER_PORT,
+                    dst_port: v6::CLIENT_PORT,
                 };
 
                 let client_link_local =
@@ -152,20 +147,6 @@ impl<T: Client> Access<'_, T> {
                     + resp_ipv6.buffer_len()
                     + resp_udp.header_len()
                     + dhcpv6_buffer.len();
-
-                tracing::info!(
-                    dst_addr = %client_link_local,
-                    packet_len = total_len,
-                    dns_servers = dns_servers_len,
-                    "sending DHCPv6 Reply to InformationRequest"
-                );
-
-                // Dump the packet to the log for debugging (in hex)
-                let hex_packet = buffer[..total_len]
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect::<String>();
-                tracing::info!(packet = %hex_packet, "sending DHCPv6 packet");
 
                 self.client.recv(&buffer[..total_len], &ChecksumState::NONE);
             }
