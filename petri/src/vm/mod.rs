@@ -154,6 +154,9 @@ pub trait PetriVmmBackend {
     /// Select backend specific quirks guest and vmm quirks.
     fn quirks(firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks);
 
+    /// Get the default servicing flags (based on what this backend supports)
+    fn default_servicing_flags() -> OpenHclServicingFlags;
+
     /// Resolve any artifacts needed to use this backend
     fn new(resolver: &ArtifactResolver<'_>) -> Self;
 
@@ -696,6 +699,11 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// Get the machine architecture
     pub fn arch(&self) -> MachineArch {
         self.config.arch
+    }
+
+    /// Get the default OpenHCL servicing flags for this config
+    pub fn default_servicing_flags(&self) -> OpenHclServicingFlags {
+        T::default_servicing_flags()
     }
 
     /// Get the backend-specific config builder
@@ -1740,10 +1748,12 @@ pub struct OpenHclServicingFlags {
     pub stop_timeout_hint_secs: Option<u16>,
 }
 
-impl Default for OpenHclServicingFlags {
-    fn default() -> Self {
+impl OpenHclServicingFlags {
+    /// Architecture-specific default flags for servicing OpenHCL.
+    /// e.g. aarch64 does not support NVMe Keepalive at the moment.
+    pub fn default(arch: MachineArch) -> Self {
         Self {
-            enable_nvme_keepalive: true,
+            enable_nvme_keepalive: arch == MachineArch::X86_64,
             override_version_checks: false,
             stop_timeout_hint_secs: None,
         }

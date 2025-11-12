@@ -19,6 +19,7 @@ pub use runtime::PetriVmOpenVmm;
 
 use crate::BootDeviceType;
 use crate::Firmware;
+use crate::OpenHclServicingFlags;
 use crate::PetriDiskType;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
@@ -110,6 +111,14 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
                 flaky_boot: firmware.is_pcat().then_some(Duration::from_secs(15)),
             },
         )
+    }
+
+    fn default_servicing_flags() -> OpenHclServicingFlags {
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: true,
+            override_version_checks: false,
+            stop_timeout_hint_secs: None,
+        }
     }
 
     fn new(resolver: &ArtifactResolver<'_>) -> Self {

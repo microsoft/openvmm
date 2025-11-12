@@ -7,7 +7,6 @@ use crate::x86_64::storage::new_test_vtl2_nvme_device;
 use guid::Guid;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use petri::MemoryConfig;
-use petri::OpenHclServicingFlags;
 use petri::PetriVmBuilder;
 use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
@@ -85,6 +84,7 @@ async fn mana_nic_servicing(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
+    let flags = config.default_servicing_flags();
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(|b| b.with_nic())
@@ -93,8 +93,7 @@ async fn mana_nic_servicing(
 
     validate_mana_nic(&agent).await?;
 
-    vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
-        .await?;
+    vm.restart_openhcl(igvm_file, flags).await?;
 
     validate_mana_nic(&agent).await?;
 
@@ -120,10 +119,12 @@ async fn many_nvme_devices_servicing_heavy(
     const GUID_UPDATE_PREFIX: u16 = 0x1110;
     const NSID_OFFSET: u32 = 0x10;
 
+    let flags = config.default_servicing_flags();
+
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .with_vtl2_base_address_type(Vtl2BaseAddressType::MemoryLayout {
-            size: Some((960 + 64) * 1024 * 1024), // 960MB as specified in manfiest, plus 64MB extra for private pool.
+            size: Some((960 + 64) * 1024 * 1024), // 960MB as specified in manifest, plus 64MB extra for private pool.
         })
         .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=16384") // 64MB of private pool for VTL2 NVMe devices.
         .with_memory(MemoryConfig {
@@ -190,8 +191,7 @@ async fn many_nvme_devices_servicing_heavy(
         // Test that inspect serialization works with the old version.
         vm.test_inspect_openhcl().await?;
 
-        vm.restart_openhcl(igvm_file.clone(), OpenHclServicingFlags::default())
-            .await?;
+        vm.restart_openhcl(igvm_file.clone(), flags).await?;
 
         agent.ping().await?;
 

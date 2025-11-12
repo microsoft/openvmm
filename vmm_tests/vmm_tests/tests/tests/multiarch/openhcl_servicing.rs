@@ -101,17 +101,9 @@ async fn basic_servicing<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
-    openhcl_servicing_core(
-        config,
-        "",
-        igvm_file,
-        OpenHclServicingFlags {
-            override_version_checks: true,
-            ..Default::default()
-        },
-        DEFAULT_SERVICING_COUNT,
-    )
-    .await
+    let mut flags = config.default_servicing_flags();
+    flags.override_version_checks = true;
+    openhcl_servicing_core(config, "", igvm_file, flags, DEFAULT_SERVICING_COUNT).await
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself
@@ -121,11 +113,13 @@ async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
+    let mut flags = config.default_servicing_flags();
+    flags.override_version_checks = true;
     openhcl_servicing_core(
         config,
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         igvm_file,
-        OpenHclServicingFlags::default(),
+        flags,
         DEFAULT_SERVICING_COUNT,
     )
     .await
@@ -138,11 +132,12 @@ async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
+    let flags = config.default_servicing_flags();
     openhcl_servicing_core(
         config.with_vmbus_redirect(true), // Need this to attach the NVMe device
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         igvm_file,
-        OpenHclServicingFlags::default(),
+        flags,
         1, // Test is slow with NVMe device, so only do one loop to avoid timeout
     )
     .await
@@ -159,6 +154,8 @@ async fn servicing_upgrade<T: PetriVmmBackend>(
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     ),
 ) -> anyhow::Result<()> {
+    let flags = config.default_servicing_flags();
+
     // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
     openhcl_servicing_core(
         config
@@ -166,7 +163,7 @@ async fn servicing_upgrade<T: PetriVmmBackend>(
             .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
         "",
         to_igvm,
-        OpenHclServicingFlags::default(),
+        flags,
         DEFAULT_SERVICING_COUNT,
     )
     .await
@@ -184,13 +181,15 @@ async fn servicing_downgrade<T: PetriVmmBackend>(
     ),
 ) -> anyhow::Result<()> {
     // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = false; // NVMe keepalive not supported in 2505 release
     openhcl_servicing_core(
         config
             .with_custom_openhcl(from_igvm)
             .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
         "",
         to_igvm,
-        OpenHclServicingFlags::default(),
+        flags,
         DEFAULT_SERVICING_COUNT,
     )
     .await
@@ -201,6 +200,7 @@ async fn servicing_shutdown_ic(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
+    let flags = config.default_servicing_flags();
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(move |b| {
@@ -245,8 +245,7 @@ async fn servicing_shutdown_ic(
     cmd!(sh, "ls /dev/sda").run().await?;
 
     let shutdown_ic = vm.backend().wait_for_enlightened_shutdown_ready().await?;
-    vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
-        .await?;
+    vm.restart_openhcl(igvm_file, flags).await?;
     // VTL2 will disconnect and then reconnect the shutdown IC across a servicing event.
     tracing::info!("waiting for shutdown IC to close");
     shutdown_ic.await.unwrap_err();
@@ -270,6 +269,7 @@ async fn servicing_keepalive_with_namespace_update(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
+    let flags = config.default_servicing_flags();
     let mut fault_start_updater = CellUpdater::new(false);
     let (ns_change_send, ns_change_recv) = mesh::channel::<NamespaceChange>();
     let (aer_verify_send, aer_verify_recv) = mesh::oneshot::<()>();
@@ -302,8 +302,7 @@ async fn servicing_keepalive_with_namespace_update(
     cmd!(sh, "ls /dev/sda").run().await?;
 
     fault_start_updater.set(true).await;
-    vm.save_openhcl(igvm_file.clone(), OpenHclServicingFlags::default())
-        .await?;
+    vm.save_openhcl(igvm_file.clone(), flags).await?;
     ns_change_send
         .call(NamespaceChange::ChangeNotification, KEEPALIVE_VTL2_NSID)
         .await?;
@@ -427,6 +426,8 @@ async fn apply_fault_with_keepalive(
     mut fault_start_updater: CellUpdater<bool>,
     igvm_file: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
 ) -> Result<(), anyhow::Error> {
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = true;
     let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
 
     agent.ping().await?;
@@ -436,14 +437,7 @@ async fn apply_fault_with_keepalive(
     cmd!(sh, "ls /dev/sda").run().await?;
 
     fault_start_updater.set(true).await;
-    vm.restart_openhcl(
-        igvm_file.clone(),
-        OpenHclServicingFlags {
-            enable_nvme_keepalive: true,
-            ..Default::default()
-        },
-    )
-    .await?;
+    vm.restart_openhcl(igvm_file.clone(), flags).await?;
 
     fault_start_updater.set(false).await;
     agent.ping().await?;
