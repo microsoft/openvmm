@@ -596,6 +596,7 @@ struct LoadedVmInner {
     /// allow the guest to reset without notifying the client
     automatic_guest_reset: bool,
     pcie_host_bridges: Vec<PcieHostBridge>,
+    skip_nvme: bool,
 }
 
 fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
@@ -1761,6 +1762,7 @@ impl InitializedVm {
         let mut vtl2_vmbus_server = None;
         let mut vtl2_hvsock_relay = None;
         let mut vmbus_redirect = false;
+        let mut skip_nvme: bool = false;
 
         // PCI Express topology
 
@@ -2495,6 +2497,7 @@ impl InitializedVm {
                 client_notify_send,
                 automatic_guest_reset: cfg.automatic_guest_reset,
                 pcie_host_bridges,
+                skip_nvme,
             },
         };
 
@@ -2687,6 +2690,7 @@ impl LoadedVmInner {
                     with_vmbus_redirect: self.vmbus_redirect,
                     com_serial,
                     entropy: Some(&entropy),
+                    skip_nvme: self.skip_nvme,
                 };
                 super::vm_loaders::igvm::load_igvm(params)?
             }

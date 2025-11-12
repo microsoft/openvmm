@@ -130,6 +130,8 @@ pub struct PetriVmConfig {
     pub boot_device_type: BootDeviceType,
     /// Configure TPM state persistence
     pub tpm_state_persistence: bool,
+    /// skip nvme
+    pub skip_nvme: bool,
 }
 
 /// Resources used by a Petri VM during contruction and runtime
@@ -219,6 +221,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 openhcl_agent_image: artifacts.openhcl_agent_image,
                 vmgs: PetriVmgsResource::Ephemeral,
                 tpm_state_persistence: true,
+                skip_nvme: false,
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -592,6 +595,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .openhcl_config_mut()
             .expect("VMBus redirection is only supported for OpenHCL firmware.")
             .vmbus_redirect = enable;
+        self
+    }
+
+    /// Run the VM with Enable VMBus relay enabled
+    pub fn with_skip_nvme(mut self, enable: bool) -> Self {
+        self.config
+            .firmware
+            .openhcl_config_mut()
+            .expect("Skip Nvme keepalive only supported for OpenHCL firmware.")
+            .skip_nvme = enable;
         self
     }
 
@@ -1219,6 +1232,8 @@ pub struct OpenHclConfig {
     /// How to place VTL2 in address space. If `None`, the backend VMM
     /// will decide on default behavior.
     pub vtl2_base_address_type: Option<Vtl2BaseAddressType>,
+    /// Whether to skip sending NVMe keepalive messages from OpenHCL to VTL2.
+    pub skip_nvme: bool,
 }
 
 impl OpenHclConfig {
@@ -1266,6 +1281,7 @@ impl Default for OpenHclConfig {
             command_line: None,
             log_levels: OpenHclLogConfig::TestDefault,
             vtl2_base_address_type: None,
+            skip_nvme: false,
         }
     }
 }
