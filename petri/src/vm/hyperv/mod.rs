@@ -172,6 +172,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             boot_device_type,
             vmgs,
             tpm_state_persistence,
+            nvme_keepalive,
         } = config;
 
         let PetriVmResources { driver, log_source } = resources;
@@ -460,6 +461,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 command_line: _,
                 log_levels: _,
                 vtl2_base_address_type,
+                nvme_keepalive: _,
             },
         )) = &openhcl_config
         {

@@ -210,6 +210,7 @@ impl Manifest {
                 EfiDiagnosticsLogLevelType::Info => LogLevel::make_info(),
                 EfiDiagnosticsLogLevelType::Full => LogLevel::make_full(),
             },
+            nvme_keepalive: config.nvme_keepalive,
         }
     }
 }
@@ -255,6 +256,7 @@ pub struct Manifest {
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
     efi_diagnostics_log_level: LogLevel,
+    nvme_keepalive: bool,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -596,7 +598,7 @@ struct LoadedVmInner {
     /// allow the guest to reset without notifying the client
     automatic_guest_reset: bool,
     pcie_host_bridges: Vec<PcieHostBridge>,
-    skip_nvme: bool,
+    nvme_keepalive: bool,
 }
 
 fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
@@ -2497,7 +2499,7 @@ impl InitializedVm {
                 client_notify_send,
                 automatic_guest_reset: cfg.automatic_guest_reset,
                 pcie_host_bridges,
-                skip_nvme,
+                nvme_keepalive: cfg.nvme_keepalive,
             },
         };
 
@@ -2690,7 +2692,7 @@ impl LoadedVmInner {
                     with_vmbus_redirect: self.vmbus_redirect,
                     com_serial,
                     entropy: Some(&entropy),
-                    skip_nvme: self.skip_nvme,
+                    nvme_keepalive: self.nvme_keepalive,
                 };
                 super::vm_loaders::igvm::load_igvm(params)?
             }
@@ -3125,6 +3127,7 @@ impl LoadedVm {
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
             efi_diagnostics_log_level: Default::default(),
+            nvme_keepalive: self.inner.nvme_keepalive,
         };
         RestartState {
             hypervisor: self.inner.hypervisor,

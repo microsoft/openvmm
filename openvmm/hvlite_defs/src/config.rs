@@ -60,6 +60,7 @@ pub struct Config {
     /// allow the guest to reset without notifying the client
     pub automatic_guest_reset: bool,
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
+    pub nvme_keepalive: bool,
 }
 
 // ARM64 needs a larger low gap.

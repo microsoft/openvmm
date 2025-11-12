@@ -28,6 +28,7 @@ pub enum VmRpc {
     ConnectHvsock(FailableRpc<(CancelContext, Guid, DeviceVtl), unix_socket::UnixStream>),
     PulseSaveRestore(Rpc<(), Result<(), PulseSaveRestoreError>>),
     StartReloadIgvm(FailableRpc<File, ()>),
+    // ModifyReloadIgvm(FailableRpc<(u64, Vec<u8>), ()>),
     CompleteReloadIgvm(FailableRpc<bool, ()>),
     ReadMemory(FailableRpc<(u64, usize), Vec<u8>>),
     WriteMemory(FailableRpc<(u64, Vec<u8>), ()>),

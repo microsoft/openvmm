@@ -473,7 +473,7 @@ async fn create_keepalive_test_config(
 
     config
         .with_vmbus_redirect(true)
-        .with_skip_nvme(true)
+        .with_nvme_keepalive(false)
         .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
         .modify_backend(move |b| {
             b.with_custom_config(|c| {
@@ -515,7 +515,6 @@ async fn create_keepalive_test_config(
                         .build(),
                 );
             })
-            .with_custom_vtl2_settings(|v| v.dynamic.as_mut().unwrap().skip_nvme = Some(1))
         })
         .run()
         .await

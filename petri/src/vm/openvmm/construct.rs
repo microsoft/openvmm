@@ -117,6 +117,7 @@ impl PetriVmConfigOpenVmm {
             vmgs,
             boot_device_type,
             tpm_state_persistence,
+            nvme_keepalive,
         } = petri_vm_config;
 
         let PetriVmResources { driver, log_source } = resources;
@@ -468,6 +469,7 @@ impl PetriVmConfigOpenVmm {
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             efi_diagnostics_log_level: Default::default(), // TODO: Add config for tests
+            nvme_keepalive: firmware.openhcl_config().is_some_and(|c| c.nvme_keepalive),
         };
 
         // Make the pipette connection listener.
@@ -713,6 +715,7 @@ impl PetriVmConfigSetupCore<'_> {
                     command_line: _,
                     log_levels: _,
                     vtl2_base_address_type,
+                    nvme_keepalive,
                 } = openhcl_config;
 
                 let mut cmdline = Some(openhcl_config.command_line());
