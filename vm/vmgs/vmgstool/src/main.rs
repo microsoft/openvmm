@@ -28,7 +28,7 @@ use vmgs::Error as VmgsError;
 use vmgs::GspType;
 use vmgs::Vmgs;
 use vmgs::vmgs_helpers::get_active_header;
-use vmgs::vmgs_helpers::validate_and_read_headers;
+use vmgs::vmgs_helpers::read_headers;
 use vmgs::vmgs_helpers::validate_header;
 use vmgs_format::EncryptionAlgorithm;
 use vmgs_format::FileId;
@@ -772,17 +772,17 @@ async fn vmgs_read(vmgs: &mut Vmgs, file_id: FileId, decrypt: bool) -> Result<Ve
 async fn vmgs_file_dump_headers(file_path: impl AsRef<Path>) -> Result<(), Error> {
     let file = File::open(file_path.as_ref()).map_err(Error::VmgsFile)?;
     let disk = vhdfiledisk_open(file, OpenMode::ReadOnly)?;
-    let (headers_result, validate_result) = validate_and_read_headers(disk).await;
 
-    let headers_result = match headers_result {
-        Ok((header1, header2)) => vmgs_dump_headers(&header1, &header2),
-        Err(e) => Err(e.into()),
+    let (headers, res0) = match read_headers(disk).await {
+        Ok(headers) => (Some(headers), Ok(())),
+        Err((e, headers)) => (headers, Err(e.into())),
     };
 
-    if validate_result.is_err() {
-        validate_result.map_err(|e| e.into())
+    if let Some(headers) = headers {
+        let res1 = vmgs_dump_headers(&headers.0, &headers.1);
+        if res0.is_err() { res0 } else { res1 }
     } else {
-        headers_result
+        res0
     }
 }
 
