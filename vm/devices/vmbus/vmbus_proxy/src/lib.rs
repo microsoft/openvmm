@@ -452,6 +452,25 @@ impl VmbusProxy {
         Ok(())
     }
 
+    pub fn get_numa_node_map(&self) -> Result<proxyioctl::VMBUS_PROXY_GET_NUMA_MAP_OUTPUT> {
+        unsafe {
+            // This is a synchronous operation, so don't use the async IO infrastructure.
+            let mut output = zeroed::<proxyioctl::VMBUS_PROXY_GET_NUMA_MAP_OUTPUT>();
+            let mut bytes = 0;
+            DeviceIoControl(
+                HANDLE(self.file.get().as_raw_handle()),
+                proxyioctl::IOCTL_VMBUS_PROXY_GET_NUMA_MAP,
+                None,
+                0,
+                Some(std::ptr::from_mut(&mut output).cast()),
+                size_of_val(&output) as u32,
+                Some(&mut bytes),
+                None,
+            )?;
+            Ok(output)
+        }
+    }
+
     /// Adds GPADL ioctl data to a buffer.
     fn add_gpadl(
         buffer: &mut Vec<u8>,
