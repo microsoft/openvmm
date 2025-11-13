@@ -3252,11 +3252,16 @@ async fn new_underhill_vm(
                 None
             };
 
+            // REMOVE: This is temporary hardcoded logic to test the LM scenario
+            // where we save and migrate to a host that doesn't support the
+            // private pool
+            /*
             let force_keepalive_scenario = if nic_servicing_state.is_some() {
                 KeepAliveConfig::DisabledHostAndPrivatePoolPresent
             } else {
                 env_cfg.mana_keep_alive.clone()
             };
+            */
 
             let save_state = uh_network_settings
                 .add_network(
