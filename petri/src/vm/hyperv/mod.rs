@@ -154,6 +154,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
     fn default_servicing_flags() -> OpenHclServicingFlags {
         OpenHclServicingFlags {
             enable_nvme_keepalive: false, // TODO: Support NVMe KA in the Hyper-V Petri Backend
+            enable_mana_keepalive: false,
             override_version_checks: false,
             stop_timeout_hint_secs: None,
         }
