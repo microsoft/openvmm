@@ -256,6 +256,7 @@ struct VirtioTestGuest {
     driver: DefaultDriver,
     num_queues: u16,
     queue_size: u16,
+    allow_indirect_descriptors: bool,
     use_ring_event_index: bool,
     last_avail_index: Vec<u16>,
     last_used_index: Vec<u16>,
@@ -280,6 +281,7 @@ impl VirtioTestGuest {
             driver: driver.clone(),
             num_queues,
             queue_size,
+            allow_indirect_descriptors: true,
             use_ring_event_index,
             last_avail_index,
             last_used_index,
@@ -325,14 +327,22 @@ impl VirtioTestGuest {
     }
 
     fn queue_features(&self) -> VirtioDeviceFeatures {
-        VirtioDeviceFeatures::new().with_bank(
-            0,
-            if self.use_ring_event_index {
-                VIRTIO_F_RING_EVENT_IDX
-            } else {
-                0
-            },
-        )
+        let flags0 = if self.use_ring_event_index {
+            VIRTIO_F_RING_EVENT_IDX
+        } else {
+            0
+        };
+        let flags0 = if self.allow_indirect_descriptors {
+            flags0 | VIRTIO_F_RING_INDIRECT_DESC
+        } else {
+            flags0
+        };
+
+        let flags1 = VIRTIO_F_VERSION_1;
+
+        VirtioDeviceFeatures::new()
+            .with_bank(0, flags0)
+            .with_bank(1, flags1)
     }
 
     fn queue_params(&self, i: u16) -> QueueParams {
@@ -1419,7 +1429,7 @@ async fn verify_queue_indirect(driver: DefaultDriver) {
 #[async_test]
 async fn verify_queue_linked(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
-    let mut guest = VirtioTestGuest::new(&driver, &test_mem, 1, 5, true);
+    let mut guest = VirtioTestGuest::new(&driver, &test_mem, 1, 8, true);
     let (tx, mut rx) = mesh::mpsc_channel();
     let base_address = guest.get_queue_descriptor_backing_memory_address(0);
     let event = Event::new();
@@ -1456,7 +1466,7 @@ async fn verify_queue_linked(driver: DefaultDriver) {
 #[async_test]
 async fn verify_queue_indirect_linked(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
-    let mut guest = VirtioTestGuest::new(&driver, &test_mem, 1, 5, true);
+    let mut guest = VirtioTestGuest::new(&driver, &test_mem, 1, 8, true);
     let (tx, mut rx) = mesh::mpsc_channel();
     let event = Event::new();
     let mut queues = guest.create_direct_queues(|i| {
