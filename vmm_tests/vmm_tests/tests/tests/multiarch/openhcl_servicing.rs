@@ -557,8 +557,8 @@ async fn mana_nic_servicing_keepalive(
         .with_vmbus_redirect(true)
         .modify_backend(|b| b.with_nic())
         .with_openhcl_command_line(
-            "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off OPENHCL_MANA_KEEP_ALIVE=1",
-        ) // disable sidecar until #1345 is fixed
+            "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_MANA_KEEP_ALIVE=host,privatepool",
+        )
         .run()
         .await?;
 
@@ -600,8 +600,8 @@ async fn mana_nic_servicing_keepalive_upgrade(
         .with_vmbus_redirect(true)
         .modify_backend(|b| b.with_nic())
         .with_openhcl_command_line(
-            "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off OPENHCL_MANA_KEEP_ALIVE=1",
-        ) // disable sidecar until #1345 is fixed
+            "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_MANA_KEEP_ALIVE=host,privatepool",
+        )
         .run()
         .await?;
 

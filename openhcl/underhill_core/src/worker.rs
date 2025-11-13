@@ -799,7 +799,7 @@ impl UhVmNetworkSettings {
             } else {
                 AllocationVisibility::Private
             },
-            persistent_allocations: true,
+            persistent_allocations: keepalive_mode.is_enabled(),
         })?;
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
