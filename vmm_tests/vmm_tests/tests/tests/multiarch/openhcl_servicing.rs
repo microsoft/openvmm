@@ -113,8 +113,7 @@ async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
-    let mut flags = config.default_servicing_flags();
-    flags.override_version_checks = true;
+    let flags = config.default_servicing_flags();
     openhcl_servicing_core(
         config,
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
