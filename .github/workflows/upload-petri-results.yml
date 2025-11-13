@@ -23,7 +23,7 @@ jobs:
 
     steps:
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@v1.3.1
 
       - name: Authenticate to Azure
         uses: azure/login@v1
