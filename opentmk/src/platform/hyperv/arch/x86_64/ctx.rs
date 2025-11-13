@@ -154,7 +154,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         }
         #[cfg(not(target_os = "uefi"))]
         {
-            Err(TmkError::UnsupportedPlatform)
+            Err(TmkError::NotImplemented)
         }
     }
 
