@@ -285,7 +285,7 @@ impl GuestEmulationTransportClient {
                 com2_enabled: json.v1.com2.enable_port,
                 com2_debugger_mode: json.v1.com2.debugger_mode,
                 com2_vmbus_redirector: json.v1.com2.enable_vmbus_redirector,
-                com2_tx_only: json.v1.com1.tx_only,
+                com2_tx_only: json.v1.com2.tx_only,
                 firmware_debugging_enabled: json.v1.enable_firmware_debugging,
                 hibernation_enabled: json.v1.enable_hibernation,
 

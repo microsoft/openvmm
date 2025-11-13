@@ -129,7 +129,7 @@ pub struct GuestConfig {
     pub firmware: GuestFirmwareConfig,
     /// Enable COM1 for VTL0 and the VMBUS redirector in VTL2.
     pub com1: bool,
-    /// If COM1 is enabled, only allow guest to host traffic
+    /// Enable COM2 for VTL0 and the VMBUS redirector in VTL2.
     pub com2: bool,
     /// Only allow guest to host serial traffic
     pub serial_tx_only: bool,
