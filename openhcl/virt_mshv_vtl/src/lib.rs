@@ -1384,6 +1384,8 @@ pub struct UhPartitionNewParams<'a> {
     pub use_mmio_hypercalls: bool,
     /// Intercept guest debug exceptions to support gdbstub.
     pub intercept_debug_exceptions: bool,
+    /// Disable proxy interrupt redirection.
+    pub disable_proxy_redirect: bool,
 }
 
 /// Parameters to [`UhProtoPartition::build`].
@@ -1806,6 +1808,9 @@ impl<'a> UhProtoPartition<'a> {
 
         #[cfg(guest_arch = "x86_64")]
         let vsm_caps = hcl.get_vsm_capabilities().map_err(Error::Hcl)?;
+        #[cfg(guest_arch = "x86_64")]
+        let proxy_interrupt_redirect_available =
+            vsm_caps.proxy_interrupt_redirect_available() && !params.disable_proxy_redirect;
 
         #[cfg(guest_arch = "x86_64")]
         let cvm_state = if is_hardware_isolated {
@@ -1814,7 +1819,7 @@ impl<'a> UhProtoPartition<'a> {
                 late_params.cvm_params.unwrap(),
                 &caps,
                 guest_vsm_available,
-                vsm_caps.proxy_interrupt_redirect_available(),
+                proxy_interrupt_redirect_available,
             )?)
         } else {
             None
