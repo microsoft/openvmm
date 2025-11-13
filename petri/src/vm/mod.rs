@@ -248,7 +248,20 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                             )?;
                             let fs = fatfs::FileSystem::new(partition, fatfs::FsOptions::new())?;
                             for entry in fs.root_dir().iter() {
-                                let entry = entry?;
+                                let Ok(entry) = entry else {
+                                    tracing::warn!(
+                                        ?entry,
+                                        "failed to read entry in guest crash dump disk"
+                                    );
+                                    continue;
+                                };
+                                if !entry.is_file() {
+                                    tracing::warn!(
+                                        ?entry,
+                                        "skipping non-file entry in guest crash dump disk"
+                                    );
+                                    continue;
+                                }
                                 logger.write_attachment(&entry.file_name(), entry.to_file())?;
                             }
                             Ok(())
