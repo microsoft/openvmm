@@ -150,6 +150,10 @@ pub fn setup_vtl2_memory(
             )
             .expect("allocation of space for TDX page tables must succeed");
 
+        let mut local_map = local_map.expect("must be present on TDX");
+        let page_table_region_mapping = local_map.map_pages(page_table_region.range, false);
+        page_table_region_mapping.data.fill(0);
+
         const MAX_RANGE_COUNT: usize = 64;
         let mut ranges = off_stack!(
             ArrayVec::<MappedRange, MAX_RANGE_COUNT>,
@@ -170,8 +174,7 @@ pub fn setup_vtl2_memory(
                             AP_MEMORY_BOUNDARY
                         };
                         Some(MappedRange::new(range.start(), end).read_only())
-                    }
-                    else {
+                    } else {
                         None
                     }
                 }
@@ -195,31 +198,16 @@ pub fn setup_vtl2_memory(
         for _ in 0..PAGE_TABLE_MAX_COUNT {
             page_table_work_buffer.push(PageTable::new_zeroed());
         }
-        let mut page_table = off_stack!(ArrayVec<u8, PAGE_TABLE_MAX_BYTES>, ArrayVec::new_const());
-        for _ in 0..PAGE_TABLE_MAX_BYTES {
-            page_table.push(0);
-        }
 
-        let page_tables = PageTableBuilder::new(
+        PageTableBuilder::new(
             page_table_region.range.start(),
             page_table_work_buffer.as_mut_slice(),
-            page_table.as_mut_slice(),
+            page_table_region_mapping.data,
             ranges.as_slice(),
         )
         .expect("page table builder must return no error")
         .build()
         .expect("page table construction must succeed");
-
-        // SAFETY: The source buffer is owned by the shim, a single-threaded environment
-        // The destination buffer is guaranteed be at least the size of the actual page
-        // tables as PAGE_TABLE_MAX_BYTES has been carved out in the address space
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                page_tables.as_ptr(),
-                page_table_region.range.start() as *mut u8,
-                page_tables.len(),
-            );
-        }
 
         crate::arch::tdx::tdx_prepare_ap_trampoline(page_table_region.range.start());
 
