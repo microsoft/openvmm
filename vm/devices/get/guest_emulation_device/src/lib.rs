@@ -129,8 +129,10 @@ pub struct GuestConfig {
     pub firmware: GuestFirmwareConfig,
     /// Enable COM1 for VTL0 and the VMBUS redirector in VTL2.
     pub com1: bool,
-    /// Enable COM2 for VTL0 and the VMBUS redirector in VTL2.
+    /// If COM1 is enabled, only allow guest to host traffic
     pub com2: bool,
+    /// Only allow guest to host serial traffic
+    pub serial_tx_only: bool,
     /// Enable vmbus redirection.
     pub vmbus_redirection: bool,
     /// Enable the TPM.
@@ -1297,11 +1299,13 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     enable_port: state.config.com1,
                     debugger_mode: false,
                     enable_vmbus_redirector: state.config.com1,
+                    tx_only: state.config.serial_tx_only,
                 },
                 com2: get_protocol::dps_json::HclUartSettings {
                     enable_port: state.config.com2,
                     debugger_mode: false,
                     enable_vmbus_redirector: state.config.com2,
+                    tx_only: state.config.serial_tx_only,
                 },
                 enable_firmware_debugging,
                 enable_tpm: state.config.enable_tpm,
