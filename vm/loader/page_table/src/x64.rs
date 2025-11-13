@@ -165,7 +165,7 @@ impl PageTableEntry {
     const VALID_BITS: u64 = 0x000f_ffff_ffff_f000;
 
     /// Set an AMD64 PDE to either represent a leaf 2MB page or PDE.
-    /// This sets the PTE to preset, accessed, dirty, read write execute.
+    /// This sets the PTE to present, accessed, dirty, read write execute.
     pub fn set_entry(&mut self, entry_type: PageTableEntryType) {
         self.entry = X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE;
 
@@ -343,13 +343,6 @@ impl PageTableBuilderInner {
     fn build_pte(&self, entry_type: PageTableEntryType, permissions: u64) -> PageTableEntry {
         let mut entry: u64 = permissions;
 
-        let mask = self.get_confidential_mask();
-        if self.confidential_bit.is_some() {
-            entry |= mask;
-        } else {
-            entry &= mask;
-        }
-
         match entry_type {
             PageTableEntryType::Leaf1GbPage(address) => {
                 // Must be 1GB aligned.
@@ -374,6 +367,13 @@ impl PageTableBuilderInner {
                 assert!(address % X64_PAGE_SIZE == 0);
                 entry |= address;
             }
+        }
+
+        let mask = self.get_confidential_mask();
+        if self.confidential_bit.is_some() {
+            entry |= mask;
+        } else {
+            entry &= !mask;
         }
 
         PageTableEntry { entry }
@@ -888,8 +888,7 @@ mod tests {
         )
         .expect("page table builder initialization should succeed")
         .build()
-        .err()
-        .expect("building page tables should fail");
+        .expect_err("building page tables should fail");
 
         assert!(matches!(err, Error::NotEnoughMemory));
     }
