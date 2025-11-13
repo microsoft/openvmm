@@ -124,10 +124,22 @@ async fn pcie_root_emulation(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
                     low_mmio_size: 1024 * 1024,
                     high_mmio_size: 1024 * 1024 * 1024,
                     ports: vec![
-                        PcieRootPortConfig { name: "rp0".into() },
-                        PcieRootPortConfig { name: "rp1".into() },
-                        PcieRootPortConfig { name: "rp2".into() },
-                        PcieRootPortConfig { name: "rp3".into() },
+                        PcieRootPortConfig {
+                            name: "rp0".into(),
+                            hotplug: false,
+                        },
+                        PcieRootPortConfig {
+                            name: "rp1".into(),
+                            hotplug: false,
+                        },
+                        PcieRootPortConfig {
+                            name: "rp2".into(),
+                            hotplug: false,
+                        },
+                        PcieRootPortConfig {
+                            name: "rp3".into(),
+                            hotplug: false,
+                        },
                     ],
                 })
             })

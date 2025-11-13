@@ -28,23 +28,20 @@
 # same profile
 filter = 'package(~vmm_tests) and test(very_heavy)'
 # Mark very heavy tests as extra very heavy, as they include up to 32 vps.
-threads-required = 35
+# However most of these vps should spend most of their time idle.
+threads-required = 32
 
 [[profile.default.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile
 filter = 'package(~vmm_tests) and test(heavy) and not (test(very_heavy))'
 # Mark heavy tests as extra heavy, as they include up to 16 vps.
-threads-required = 18
+# However most of these vps should spend most of their time idle.
+threads-required = 8
 
 [[profile.default.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile
-filter = 'package(~vmm_tests) and test(openhcl)'
-# Mark OpenHCL VMM tests as extra heavy, as they have to also run VTL2.
-threads-required = 5
-
-[[profile.default.overrides]]
 filter = 'package(~vmm_tests)'
 # Mark VMM tests as heavy and requiring more threads due to their memory and CPU
 # usage. For local dev runs, you may need to manually restrict the number of

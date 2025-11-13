@@ -320,7 +320,7 @@ impl HyperVVM {
         &mut self,
         path: &Path,
         controller_type: powershell::ControllerType,
-        controller_location: Option<u32>,
+        controller_location: Option<u8>,
         controller_number: Option<u32>,
     ) -> anyhow::Result<()> {
         powershell::run_add_vm_hard_disk_drive(powershell::HyperVAddVMHardDiskDriveArgs {
@@ -403,18 +403,7 @@ impl HyperVVM {
     }
 
     /// Wait for the VM to stop
-    pub async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
-        // If we aren't expecting a restart, tell the VM to turn off if the
-        // guest unexpectedly restarts. This command may fail if the VM is
-        // transitioning between states. In that case, the VM will be shut off
-        // and destroyed later if necessary.
-        if let Err(e) =
-            powershell::run_set_turn_off_on_guest_restart(&self.vmid, &self.ps_mod, !allow_reset)
-                .await
-        {
-            tracing::warn!("failed to set turn off on guest restart: {e:#}");
-        }
-
+    pub async fn wait_for_halt(&mut self, _allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
         let (halt_reason, timestamp) = self.wait_for_some(Self::halt_event).await?;
         if halt_reason == PetriHaltReason::Reset {
             // add 1ms to avoid getting the same event again
