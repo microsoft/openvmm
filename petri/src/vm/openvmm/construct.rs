@@ -953,11 +953,8 @@ impl PetriVmConfigSetupCore<'_> {
             .into_resource(),
         )]);
 
-        let gel = get_resources::gel::GuestEmulationLogHandle.into_resource();
-
         let crash = spawn_dump_handler(self.driver, self.logger).into_resource();
-
-        devices.extend([(DeviceVtl::Vtl2, crash), (DeviceVtl::Vtl2, gel)]);
+        devices.extend([(DeviceVtl::Vtl2, crash)]);
 
         let (guest_request_send, guest_request_recv) = mesh::channel();
 
