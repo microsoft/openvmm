@@ -187,12 +187,6 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
         self
     }
 
-    /// Pagetables that are reported as type [`MemoryVtlType::VTL2_TDX_PAGE_TABLES`].
-    pub fn with_page_tables(mut self, page_tables: MemoryRange) -> Self {
-        self.page_tables = Some(page_tables);
-        self
-    }
-
     /// Log buffer that is reported as type [`MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER`].
     pub fn with_log_buffer(mut self, log_buffer: MemoryRange) -> Self {
         self.log_buffer = Some(log_buffer);
@@ -466,6 +460,9 @@ impl AddressSpaceManager {
                     AllocationType::SidecarNode => {
                         AddressUsage::Reserved(ReservedMemoryType::SidecarNode)
                     }
+                    AllocationType::TdxPageTables => {
+                        AddressUsage::Reserved(ReservedMemoryType::TdxPageTables)
+                    }
                 },
                 allocation_policy,
             )
@@ -506,6 +503,7 @@ impl AddressSpaceManager {
 pub enum AllocationType {
     GpaPool,
     SidecarNode,
+    TdxPageTables,
 }
 
 pub enum AllocationPolicy {
