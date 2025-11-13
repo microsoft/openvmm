@@ -128,7 +128,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
             Box<dyn FnOnce() -> anyhow::Result<Box<dyn fatfs::ReadWriteSeek>>>,
         )>,
     > {
-        Ok(None) // TODO
+        Ok(None) // TODO #2403
     }
 
     fn new(resolver: &ArtifactResolver<'_>) -> Self {
