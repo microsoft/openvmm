@@ -4,6 +4,7 @@
 //! Helpers for unit tests.
 
 #![cfg_attr(not(test), expect(dead_code))]
+#![cfg_attr(not(windows), expect(missing_docs))]
 
 use crate::PacketError;
 use crate::Storvsc;
