@@ -307,7 +307,7 @@ fn vm_config_from_command_line(
                     app.or_else(openvmm_terminal_app).as_deref(),
                     &path,
                     ConsoleLaunchOptions {
-                        window_title: Some(window_title + " [OpenVMM]"),
+                        window_title: Some(window_title),
                     },
                 )
                 .context("failed to launch console")?;
@@ -1990,10 +1990,12 @@ enum InteractiveCommand {
         /// configured path.
         #[clap(long, conflicts_with("user_mode_only"))]
         igvm: Option<PathBuf>,
-        #[clap(long)]
-        /// Enable NVMe keepalive
+        /// Enable keepalive when servicing VTL2 devices.
+        /// Default is `true`.
+        #[clap(long, short = 'n', default_missing_value = "true")]
         nvme_keepalive: bool,
-        /// Enable MANA keepalive
+        /// Enable keepalive when servicing VTL2 devices.
+        /// Default is `false`.
         #[clap(long)]
         mana_keepalive: bool,
     },

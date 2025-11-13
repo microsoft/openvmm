@@ -102,10 +102,7 @@ impl FromStr for KeepAliveConfig {
 
 impl KeepAliveConfig {
     pub fn is_enabled(&self) -> bool {
-        match self {
-            KeepAliveConfig::EnabledHostAndPrivatePoolPresent => true,
-            _ => false,
-        }
+        matches!(self, KeepAliveConfig::EnabledHostAndPrivatePoolPresent)
     }
 }
 

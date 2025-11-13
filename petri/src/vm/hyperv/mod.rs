@@ -151,6 +151,14 @@ impl PetriVmmBackend for HyperVPetriBackend {
         (firmware.quirks().hyperv, VmmQuirks::default())
     }
 
+    fn default_servicing_flags() -> OpenHclServicingFlags {
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: false, // TODO: Support NVMe KA in the Hyper-V Petri Backend
+            override_version_checks: false,
+            stop_timeout_hint_secs: None,
+        }
+    }
+
     fn new(_resolver: &ArtifactResolver<'_>) -> Self {
         HyperVPetriBackend {}
     }

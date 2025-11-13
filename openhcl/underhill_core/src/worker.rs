@@ -3276,7 +3276,7 @@ async fn new_underhill_vm(
                     &vmbus_server,
                     dma_manager.client_spawner(),
                     isolation.is_isolated(),
-                    force_keepalive_scenario,
+                    env_cfg.mana_keep_alive.clone(),
                     nic_servicing_state,
                 )
                 .await?;

@@ -19,6 +19,7 @@ pub use runtime::PetriVmOpenVmm;
 
 use crate::BootDeviceType;
 use crate::Firmware;
+use crate::OpenHclServicingFlags;
 use crate::PetriDiskType;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
@@ -53,6 +54,7 @@ use petri_artifacts_core::ResolvedArtifact;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
+use storvsp_resources::ScsiControllerHandle;
 use tempfile::TempPath;
 use unix_socket::UnixListener;
 use vm_resource::IntoResource;
@@ -111,6 +113,15 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         )
     }
 
+    fn default_servicing_flags() -> OpenHclServicingFlags {
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: true,
+            enable_mana_keepalive: false,
+            override_version_checks: false,
+            stop_timeout_hint_secs: None,
+        }
+    }
+
     fn new(resolver: &ArtifactResolver<'_>) -> Self {
         OpenVmmPetriBackend {
             openvmm_path: resolver
@@ -150,6 +161,9 @@ pub struct PetriVmConfigOpenVmm {
     openvmm_log_file: PetriLogFile,
 
     // Resources that are only used during startup.
+    /// Single VMBus SCSI controller shared for all VTL0 disks added by petri.
+    petri_vtl0_scsi: ScsiControllerHandle,
+
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
     framebuffer_view: Option<framebuffer::View>,
 }
