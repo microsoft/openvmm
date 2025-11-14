@@ -789,7 +789,7 @@ impl HclNetworkVFManagerWorker {
                         &self.vtl2_pci_id,
                         self.vp_count,
                         self.max_sub_channels,
-                        KeepAliveConfig::ExplicitlyDisabled,
+                        KeepAliveConfig::Disabled,
                         self.dma_clients.clone(),
                         None, // No saved state on new device arrival
                     )

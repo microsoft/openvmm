@@ -306,10 +306,7 @@ impl LoadedVm {
                     WorkerRpc::Restart(rpc) => {
                         let state = async {
                             let running = self.stop().await;
-                            match self
-                                .save(None, false, KeepAliveConfig::ExplicitlyDisabled)
-                                .await
-                            {
+                            match self.save(None, false, KeepAliveConfig::Disabled).await {
                                 Ok(servicing_state) => Some((rpc, servicing_state)),
                                 Err(err) => {
                                     if running {
@@ -374,9 +371,7 @@ impl LoadedVm {
                     UhVmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| {
                             let running = self.stop().await;
-                            let r = self
-                                .save(None, false, KeepAliveConfig::ExplicitlyDisabled)
-                                .await;
+                            let r = self.save(None, false, KeepAliveConfig::Disabled).await;
                             if running {
                                 self.start(None).await;
                             }
@@ -582,7 +577,7 @@ impl LoadedVm {
             self.mana_keep_alive.clone()
         } else {
             tracing::warn!("mana keepalive not in servicing flags, disabling keepalive");
-            KeepAliveConfig::ExplicitlyDisabled
+            KeepAliveConfig::Disabled
         };
 
         // Do everything before the log flush under a span.

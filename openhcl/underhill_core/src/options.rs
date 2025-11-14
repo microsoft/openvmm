@@ -83,7 +83,7 @@ pub enum KeepAliveConfig {
     EnabledHostAndPrivatePoolPresent,
     DisabledHostAndPrivatePoolPresent,
     PrivatePoolMissingAndHostSupported,
-    ExplicitlyDisabled,
+    Disabled,
 }
 
 impl FromStr for KeepAliveConfig {
@@ -94,7 +94,7 @@ impl FromStr for KeepAliveConfig {
             "host,privatepool" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolPresent),
             "nohost,privatepool" => Ok(KeepAliveConfig::DisabledHostAndPrivatePoolPresent),
             "host,noprivatepool" => Ok(KeepAliveConfig::PrivatePoolMissingAndHostSupported),
-            "nohost,noprivatepool" => Ok(KeepAliveConfig::ExplicitlyDisabled),
+            "nohost,noprivatepool" => Ok(KeepAliveConfig::Disabled),
             _ => Err(anyhow::anyhow!("Invalid keepalive config: {}", s)),
         }
     }
@@ -369,11 +369,11 @@ impl Options {
                                 tracing::warn!(
                                     "failed to parse OPENHCL_MANA_KEEP_ALIVE ('{s}'): {e}. keepalive will be disabled."
                                 );
-                                KeepAliveConfig::ExplicitlyDisabled
+                                KeepAliveConfig::Disabled
                             }
                         }
                     })
-                    .unwrap_or(KeepAliveConfig::ExplicitlyDisabled);
+                    .unwrap_or(KeepAliveConfig::Disabled);
         let nvme_always_flr = parse_env_bool("OPENHCL_NVME_ALWAYS_FLR");
         let test_configuration = read_env("OPENHCL_TEST_CONFIG").and_then(|x| {
             x.to_string_lossy()
