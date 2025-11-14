@@ -220,10 +220,11 @@ impl VfioNvmeDriverSpawner {
     fn try_update_reset_method(pci_id: &str, method: PciDeviceResetMethod, label: &str) {
         if let Err(err) = vfio_set_device_reset_method(pci_id, method) {
             tracing::warn!(
+                label,
+                ?pci_id,
                 ?method,
                 err = &err as &dyn std::error::Error,
-                "failed to update reset_method for {}",
-                label
+                "failed to update reset_method",
             );
         }
     }

@@ -186,7 +186,7 @@ impl VfioDevice {
             anyhow::bail!("invalid config offset");
         }
 
-        tracing::debug!(pci_id = ?self.pci_id, offset, data, "***writing config");
+        tracing::trace!(pci_id = ?self.pci_id, offset, data, "writing config");
         let buf = data.to_ne_bytes();
         self.device
             .as_ref()
