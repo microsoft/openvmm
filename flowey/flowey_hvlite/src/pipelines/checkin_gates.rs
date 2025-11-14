@@ -969,7 +969,7 @@ impl IntoPipeline for CheckinGatesCli {
         // on non-self-hosted runners. This saves several minutes of CI time
         // that would be used for very few tests. We need to run prep_steps
         // on CVM runners anyways, so we might as well run those tests there.
-        let standard_filter = "all() & !test(very_heavy) &!test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)".to_string();
+        let standard_filter = "all() & !test(very_heavy) & !test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)".to_string();
         let standard_x64_test_artifacts = vec![
             KnownTestArtifacts::FreeBsd13_2X64Vhd,
             KnownTestArtifacts::FreeBsd13_2X64Iso,
