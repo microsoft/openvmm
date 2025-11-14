@@ -73,12 +73,12 @@ impl SimpleFlowNode for Node {
                         .output()?;
                 }
 
-                // let sh = xshell::Shell::new()?;
-                // let binary_path = match prep_steps {
-                //     PrepStepsOutput::WindowsBin { exe, .. } => exe,
-                //     PrepStepsOutput::LinuxBin { bin, .. } => bin,
-                // };
-                // xshell::cmd!(sh, "{binary_path}").envs(env).run()?;
+                let sh = xshell::Shell::new()?;
+                let binary_path = match prep_steps {
+                    PrepStepsOutput::WindowsBin { exe, .. } => exe,
+                    PrepStepsOutput::LinuxBin { bin, .. } => bin,
+                };
+                xshell::cmd!(sh, "{binary_path}").envs(env).run()?;
 
                 Ok(())
             }
