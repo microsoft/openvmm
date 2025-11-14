@@ -869,7 +869,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         &mut self,
         _device_tree_overrides: DeviceTreeOverrideParams,
     ) -> anyhow::Result<()> {
-        anyhow::bail!("toggling device tree overrides are not yet supported on Hyper-V");
+        anyhow::bail!("device tree overrides are not yet supported on Hyper-V");
     }
 }
 

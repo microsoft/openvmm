@@ -664,7 +664,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
-    /// Run the VM with Enable VMBus relay enabled
+    /// Run the VM with test defined device tree overrides
     pub fn with_device_tree_overrides(
         mut self,
         device_tree_overrides: DeviceTreeOverrideParams,
