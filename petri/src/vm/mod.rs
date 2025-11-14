@@ -16,7 +16,7 @@ use crate::disk_image::SECTOR_SIZE;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
-use hvlite_defs::config::DeviceTreeOverridesConfig;
+use hvlite_defs::config::DeviceTreeOverridesParams;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use mesh::CancelContext;
 use pal_async::DefaultDriver;
@@ -1075,7 +1075,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// Update host keepalive support for the VM
     pub async fn update_device_tree_overrides(
         &mut self,
-        device_tree_overrides: DeviceTreeOverridesConfig,
+        device_tree_overrides: DeviceTreeOverridesParams,
     ) -> anyhow::Result<()> {
         self.runtime
             .update_device_tree_overrides(device_tree_overrides)
@@ -1144,7 +1144,7 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     /// Update host keepalive support flag
     async fn update_device_tree_overrides(
         &mut self,
-        device_tree_overrides: DeviceTreeOverridesConfig,
+        device_tree_overrides: DeviceTreeOverridesParams,
     ) -> anyhow::Result<()>;
 }
 

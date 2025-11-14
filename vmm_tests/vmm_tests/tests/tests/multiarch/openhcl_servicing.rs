@@ -9,7 +9,7 @@
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use guid::Guid;
-use hvlite_defs::config::DeviceTreeOverridesConfig;
+use hvlite_defs::config::DeviceTreeOverridesParams;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::VpciDeviceConfig;
 use mesh::CancelContext;
@@ -437,6 +437,10 @@ async fn apply_fault_with_keepalive(
     cmd!(sh, "ls /dev/sda").run().await?;
 
     fault_start_updater.set(true).await;
+    vm.update_device_tree_overrides(DeviceTreeOverridesParams {
+        nvme_keepalive_enable: false,
+    })
+    .await?;
     vm.restart_openhcl(igvm_file.clone(), flags).await?;
 
     fault_start_updater.set(false).await;
