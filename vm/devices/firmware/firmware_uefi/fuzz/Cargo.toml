@@ -30,8 +30,8 @@ ignored = ["libfuzzer-sys"]
 cargo-fuzz = true
 
 [package.metadata.xtask.fuzz.onefuzz-allowlist]
-fuzz_firmware_uefi_nvram = ["**/*.rs", "../src/**/*.rs"]
-fuzz_firmware_uefi_diagnostics = ["**/*.rs", "../src/**/*.rs"]
+fuzz_firmware_uefi_nvram = ["fuzz_nvram.rs", "../src/service/nvram/spec_services/auth_var_crypto.rs"]
+fuzz_firmware_uefi_diagnostics = ["fuzz_diagnostics.rs", "../src/service/diagnostics/*.rs"]
 
 [[bin]]
 name = "fuzz_firmware_uefi_nvram"
