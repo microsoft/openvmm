@@ -15,7 +15,6 @@ use guid::Guid;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
 use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
-use hvlite_defs::config::DeviceTreeOverrideParams;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LoadMode;

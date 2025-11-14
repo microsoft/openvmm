@@ -66,7 +66,6 @@ use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
-use hvlite_defs::config::DeviceTreeOverrideParams;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::EfiDiagnosticsLogLevelType;
 use hvlite_defs::config::HypervisorConfig;
