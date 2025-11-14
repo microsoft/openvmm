@@ -62,3 +62,17 @@ export interface LogEntry {
 // Concurrency settings when fetching test results
 export const CONCURRENCY_FOREGROUND = 15;
 export const CONCURRENCY_BACKGROUND = 5;
+
+export type InspectPrimitive =
+  | { type: "string"; value: string }
+  | { type: "bytes"; value: string }
+  | { type: "unevaluated" }
+  | { type: "boolean"; value: boolean }
+  | { type: "error"; value: string }
+  | { type: "number"; value: string };
+
+export interface InspectObject {
+  type: "object";
+  children: { key: string; value: InspectNode }[];
+}
+export type InspectNode = InspectPrimitive | InspectObject;

@@ -1197,6 +1197,86 @@ fn new_aarch64_topology(
         .context("failed to construct the processor topology")
 }
 
+/// Test guest memory access to sanity check that the expected ranges are
+/// accessible.
+fn guest_memory_access_self_test(
+    mem_layout: &MemoryLayout,
+    is_restoring: bool,
+    create_partition_available: bool,
+    highest_vtl_gm: &GuestMemory,
+    shared_pool: &[MemoryRangeWithNode],
+    vtom: Option<u64>,
+) -> anyhow::Result<()> {
+    tracing::info!(CVM_ALLOWED, "starting guest memory self test");
+
+    // When restoring, and when running in a partition with create partitions
+    // available, VTL0 may have donated pages to the hypervisor and those pages
+    // are no longer accessible. Allow failure in those cases, but still run the
+    // self test.
+    let self_test_failure_allowed = is_restoring && create_partition_available;
+    let test_gm = |accessible: bool, gpa: u64, error: String| {
+        let res = highest_vtl_gm.read_plain::<u8>(gpa);
+        if accessible && res.is_err() {
+            if self_test_failure_allowed {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    gpa = gpa,
+                    "guest memory self test: RAM access failure allowed during restore: {}",
+                    error
+                );
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!(error))
+            }
+        } else if !accessible && res.is_ok() {
+            Err(anyhow::anyhow!(error))
+        } else {
+            Ok(())
+        }
+    };
+    for range in mem_layout.ram() {
+        for gpa in [range.range.start(), range.range.end() - 1] {
+            // Standard RAM is accessible.
+            test_gm(true, gpa, format!("failed to read RAM at {gpa:#x}"))?;
+
+            // It is not initially accessible above VTOM.
+            //
+            // FUTURE: When we support servicing on isolated guests, this may
+            // also need to be allowed to fail, as a guest may have changed
+            // visibility of pages.
+            if let Some(vtom) = vtom {
+                test_gm(
+                    false,
+                    gpa | vtom,
+                    format!("RAM at {gpa:#x} is accessible above VTOM"),
+                )?;
+            }
+        }
+    }
+
+    for range in shared_pool {
+        let gpa = range.range.start();
+        // Shared RAM is not accessible below VTOM.
+        test_gm(
+            false,
+            gpa,
+            format!("shared RAM at {gpa:#x} is accessible below VTOM"),
+        )?;
+
+        // But it is accessible above VTOM.
+        if let Some(vtom) = vtom {
+            test_gm(
+                true,
+                gpa | vtom,
+                format!("failed to read shared RAM at {gpa:#x} above VTOM"),
+            )?;
+        }
+    }
+    tracing::info!(CVM_ALLOWED, "guest memory self test complete");
+
+    Ok(())
+}
+
 /// Run the underhill specific worker entrypoint.
 async fn new_underhill_vm(
     get_spawner: impl Spawn,
@@ -1660,39 +1740,17 @@ async fn new_underhill_vm(
     // Test with the highest VTL for which we have a GuestMemory object
     let highest_vtl_gm = gm.vtl1().unwrap_or(gm.vtl0());
 
-    // Perform a quick validation to make sure each range is appropriately accessible.
-    tracing::info!("starting guest memory self test");
-    for range in mem_layout.ram() {
-        for gpa in [range.range.start(), range.range.end() - 1] {
-            // Standard RAM is accessible.
-            highest_vtl_gm
-                .read_plain::<u8>(gpa)
-                .with_context(|| format!("failed to read RAM at {gpa:#x}"))?;
-
-            // It is not initially accessible above VTOM.
-            if let Some(vtom) = vtom {
-                if highest_vtl_gm.read_plain::<u8>(gpa | vtom).is_ok() {
-                    anyhow::bail!("RAM at {gpa:#x} is accessible above VTOM");
-                }
-            }
-        }
-    }
-
-    for range in &shared_pool {
-        let gpa = range.range.start();
-        // Shared RAM is not accessible below VTOM.
-        if highest_vtl_gm.read_plain::<u8>(gpa).is_ok() {
-            anyhow::bail!("shared RAM at {gpa:#x} is accessible below VTOM");
-        }
-
-        // But it is accessible above VTOM.
-        if let Some(vtom) = vtom {
-            highest_vtl_gm
-                .read_plain::<u8>(gpa | vtom)
-                .with_context(|| format!("failed to read shared RAM at {gpa:#x} above VTOM"))?;
-        }
-    }
-    tracing::info!("guest memory self test complete");
+    // Perform a quick validation to make sure each range is appropriately
+    // accessible.
+    guest_memory_access_self_test(
+        &mem_layout,
+        is_restoring,
+        proto_partition.create_partition_available(),
+        highest_vtl_gm,
+        &shared_pool,
+        vtom,
+    )
+    .context("guest memory access self test failed")?;
 
     // Set the gpa allocator to GET that is required by the attestation message.
     get_client.set_gpa_allocator(

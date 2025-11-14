@@ -2067,7 +2067,6 @@ dependencies = [
  "igvmfilegen_config",
  "log",
  "powershell_builder",
- "quick-xml",
  "serde",
  "serde_json",
  "target-lexicon",
@@ -2321,6 +2320,7 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "firmware_uefi",
+ "guestmem",
  "guid",
  "libfuzzer-sys",
  "openssl",
@@ -2952,6 +2952,7 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "bitvec",
  "build_rs_guest_arch",
+ "cfg-if",
  "cvm_tracing",
  "fs-err",
  "getrandom 0.3.3",
@@ -4296,19 +4297,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mbrman"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76fbcfee7fbe4307a3317ba5d939fd076cad5e8f64a5d9cbc0f6900d513d6f76"
-dependencies = [
- "bincode",
- "bitvec",
- "serde",
- "serde-big-array",
- "thiserror 2.0.16",
-]
-
-[[package]]
 name = "mcr_resources"
 version = "0.0.0"
 dependencies = [
@@ -5089,6 +5077,8 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "disk_backend",
+ "disk_prwrap",
  "disklayer_ram",
  "event-listener",
  "futures",
@@ -5304,7 +5294,9 @@ dependencies = [
  "sidecar_defs",
  "string_page_buf",
  "tdcall",
+ "test_with_tracing",
  "thiserror 2.0.16",
+ "tracing",
  "underhill_confidentiality",
  "x86defs",
  "zerocopy 0.8.25",
@@ -5323,6 +5315,7 @@ dependencies = [
  "memory_range",
  "mesh",
  "page_pool_alloc",
+ "tracing",
  "user_driver",
  "virt",
  "vmcore",
@@ -5921,6 +5914,7 @@ dependencies = [
  "chipset_resources",
  "clap",
  "diag_client",
+ "disk_backend",
  "disk_backend_resources",
  "disk_vhd1",
  "disk_vhdmp",
@@ -5947,7 +5941,6 @@ dependencies = [
  "kmsg",
  "libtest-mimic",
  "linkme",
- "mbrman",
  "mesh",
  "mesh_process",
  "mesh_worker",
@@ -6393,15 +6386,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.106",
-]
-
-[[package]]
-name = "quick-xml"
-version = "0.38.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42a232e7487fc2ef313d96dde7948e7a3c05101870d8985e4fd8d26aedd27b89"
-dependencies = [
- "memchr",
 ]
 
 [[package]]
@@ -6892,15 +6876,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e2c6ed6606019b4e29e69dbaba95b11854410e5347d525002456dbbb786b6"
 dependencies = [
  "serde_derive",
-]
-
-[[package]]
-name = "serde-big-array"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11fc7cc2c76d73e0f27ee52abbd64eec84d46f370c88371120433196934e4b7f"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -8097,6 +8072,7 @@ dependencies = [
  "libc",
  "thiserror 2.0.16",
  "windows-sys 0.61.0",
+ "zerocopy 0.8.25",
 ]
 
 [[package]]
@@ -10137,15 +10113,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "w32-error"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa7c61a6bd91e168c12fc170985725340f6b458eb6f971d1cf6c34f74ffafb43"
-dependencies = [
- "winapi",
-]
-
-[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10274,22 +10241,21 @@ dependencies = [
 
 [[package]]
 name = "win_etw_provider"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a3aa32c55cf5f882e92258c466b75ab216aa7ddc245cef64730150c79641493"
+checksum = "f93d936085c6aac9d7e284def085e0277e769e012279dfb26214e40f8dabf172"
 dependencies = [
- "w32-error",
  "widestring",
  "win_etw_metadata",
  "winapi",
- "zerocopy 0.7.35",
+ "zerocopy 0.8.25",
 ]
 
 [[package]]
 name = "win_etw_tracing"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a60a107937401ac1aa48839f0c7f2e5bdf774d862fd39ef3ba8224980e1b1c9"
+checksum = "fe4ea790d850bc4f1371a8bc877914a9ca4e79a40f29a6902cb310481f2c9747"
 dependencies = [
  "bytes",
  "tracing",
@@ -10814,7 +10780,6 @@ dependencies = [
  "guid",
  "ignore",
  "log",
- "mbrman",
  "object 0.37.3",
  "rayon",
  "serde",
@@ -10824,7 +10789,6 @@ dependencies = [
  "walkdir",
  "which 8.0.0",
  "xshell",
- "zerocopy 0.8.25",
 ]
 
 [[package]]

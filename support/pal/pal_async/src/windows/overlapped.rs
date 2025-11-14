@@ -27,6 +27,7 @@ use winapi::um::fileapi::WriteFile;
 use winapi::um::ioapiset::CancelIoEx;
 use winapi::um::ioapiset::DeviceIoControl;
 use winapi::um::minwinbase::OVERLAPPED;
+use windows_sys::Win32::Foundation::ERROR_IO_PENDING;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -53,15 +54,14 @@ pub trait IoOverlapped: Unpin + Send + Sync {
 
     /// Notifies that an IO has been issued.
     ///
-    /// Returns true if the IO has completed synchronously, false if
-    /// `overlapped_io_complete` will later be called to indicate completion.
-    ///
     /// # Safety
     /// The caller must have called `pre_io`, and `overlapped` must be
-    /// associated with an IO whose syscall just returned `result`. If this
-    /// routine returned `false`, the caller must not deallocate `overlapped`
-    /// until `overlapped_io_complete` is called.
-    unsafe fn post_io(&self, result: &io::Result<()>, overlapped: &Overlapped) -> bool;
+    /// associated with an IO that either completed synchronously (`completed`
+    /// is `true`) or is pending completion (`completed` is `false`).
+    ///
+    /// If `completed` is false, the caller must not deallocate `overlapped`
+    /// until `overlapped_io_complete` is called for this IO.
+    unsafe fn post_io(&self, completed: bool, overlapped: &Overlapped);
 }
 
 /// A file opened for overlapped IO.
@@ -156,8 +156,15 @@ impl<T> Io<T> {
         let handle = file.file.as_raw_handle();
         file.inner.pre_io();
         let result = f(handle, inner.buffers.get_mut(), inner.overlapped.as_ptr());
+        let completed = result.as_ref().map_or_else(
+            |err| err.raw_os_error() != Some(ERROR_IO_PENDING as i32),
+            |_| true,
+        );
         // SAFETY: `pre_io` has been called with `overlapped` as the target.
-        let state = if unsafe { file.inner.post_io(&result, &inner.overlapped) } {
+        unsafe {
+            file.inner.post_io(completed, &inner.overlapped);
+        }
+        let state = if completed {
             // The IO completed synchronously. If an error was returned, store
             // it because the IO status block is not updated in this case.
             IssueState::Complete { inner, result }
