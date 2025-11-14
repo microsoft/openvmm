@@ -3153,7 +3153,8 @@ pub struct HvRegisterVsmCapabilities {
     pub install_intercept_ex: bool,
     /// Only available in VTL2.
     pub intercept_system_reset_available: bool,
-    pub reserved1: bool,
+    #[bits(1)]
+    pub reserved1: u8,
     pub proxy_interrupt_redirect_available: bool,
     #[bits(29)]
     pub reserved2: u64,

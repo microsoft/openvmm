@@ -164,6 +164,8 @@ pub enum Error {
     MissingPrivateMemory,
     #[error("failed to allocate pages for vp")]
     AllocVp(#[source] anyhow::Error),
+    #[error("failed to map redirected device interrupt")]
+    MapRedirectedDeviceInterrupt(#[source] nix::Error),
 }
 
 /// Error for IOCTL errors specifically.
@@ -3374,7 +3376,7 @@ impl Hcl {
         vector: u32,
         apic_id: u32,
         create_mapping: bool,
-    ) -> Option<u32> {
+    ) -> Result<u32, Error> {
         let mut param = mshv_map_device_int {
             vector,
             apic_id,
@@ -3383,15 +3385,11 @@ impl Hcl {
         };
 
         // SAFETY: following the IOCTL definition.
-        // Note: We return None on IOCTL failure rather than panicking, allowing the caller
-        // to gracefully fallback to normal proxy interrupt delivery if the kernel doesn't
-        // support interrupt redirection or if the mapping fails.
-        let output = unsafe {
+        unsafe {
             hcl_map_redirected_device_interrupt(self.mshv_vtl.file.as_raw_fd(), &mut param)
-        };
-        match output {
-            Ok(_) => Some(param.vector),
-            Err(_) => None,
+                .map_err(Error::MapRedirectedDeviceInterrupt)?;
         }
+
+        Ok(param.vector)
     }
 }

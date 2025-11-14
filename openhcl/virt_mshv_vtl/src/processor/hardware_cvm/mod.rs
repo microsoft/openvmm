@@ -93,7 +93,7 @@ impl<'a> RedirectedVectorMapping<'a> {
     /// Creates a new mapping in VTL2 kernel for proxy interrupt redirection. This will be automatically
     /// unmapped when the guard is dropped unless explicitly disarmed.
     fn new(hcl: &'a hcl::ioctl::Hcl, vector: u32, apic_id: u32) -> Option<Self> {
-        let redirected_vector = hcl.map_redirected_device_interrupt(vector, apic_id, true)?;
+        let redirected_vector = hcl.map_redirected_device_interrupt(vector, apic_id, true).ok()?;
         Some(Self {
             hcl,
             apic_id,
@@ -110,9 +110,16 @@ impl<'a> RedirectedVectorMapping<'a> {
 impl Drop for RedirectedVectorMapping<'_> {
     /// Drop guard to unmap the interrupt vector in VTL2 kernel.
     fn drop(&mut self) {
-        self.hcl
+        match self
+            .hcl
             .map_redirected_device_interrupt(self.redirected_vector, self.apic_id, false)
-            .expect("Failed to unmap VTL2 vector for proxy device interrupt");
+        {
+            Ok(_) => {}
+            Err(err) => panic!(
+                "failed to unmap VTL2 vector for proxy device interrupt: redirected_vector={}, apic_id={}, error={:?}",
+                self.redirected_vector, self.apic_id, err
+            ),
+        }
     }
 }
 
@@ -950,7 +957,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     tracelimit::warn_ratelimited!(
                         CVM_ALLOWED,
                         error = %err,
-                        "Proxy interrupt redirection failed, using normal proxy delivery"
+                        "proxy interrupt redirection failed, using normal proxy delivery"
                     );
                 }
             }
