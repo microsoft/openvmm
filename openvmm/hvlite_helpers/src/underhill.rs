@@ -9,6 +9,19 @@ use get_resources::ged::GuestServicingFlags;
 use hvlite_defs::rpc::VmRpc;
 use mesh::rpc::RpcSend;
 
+/// Enable or disable keep-alive support in the Underhill firmware.
+pub async fn toggle_keepalive_support(
+    vm_send: &mesh::Sender<VmRpc>,
+    enable: bool,
+) -> anyhow::Result<()> {
+    tracing::debug!(enable, "modifying NVMe keep-alive support");
+    vm_send
+        .call(VmRpc::ModifyKeepaliveSupport, enable)
+        .await
+        .context("failed to modify NVMe keep-alive support")?;
+    Ok(())
+}
+
 /// Save the running state of Underhill and stage the new version.
 pub async fn save_underhill(
     vm_send: &mesh::Sender<VmRpc>,

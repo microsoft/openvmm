@@ -651,6 +651,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     let address_space: &AddressSpaceManager = address_space;
 
     let mut cmdline = off_stack!(ArrayString<COMMAND_LINE_SIZE>, ArrayString::new_const());
+
+    log!("Partition Info: {:#?}", partition_info);
+
     build_kernel_command_line(BuildKernelCommandLineParams {
         params: &p,
         cmdline: &mut cmdline,

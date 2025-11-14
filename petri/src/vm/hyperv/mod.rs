@@ -766,6 +766,10 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         self.vm.restart_openhcl(flags).await
     }
 
+    async fn toggle_keepalive_support(&mut self, enable: bool) -> anyhow::Result<()> {
+        anyhow::bail!("toggling keepalive not yet supported on Hyper-V");
+    }
+
     async fn save_openhcl(
         &mut self,
         _new_openhcl: &ResolvedArtifact,

@@ -18,6 +18,7 @@ use core::fmt::Write;
 use core::mem::size_of;
 use hvdef::HV_PAGE_SIZE;
 use igvm_defs::MemoryMapEntryType;
+
 #[cfg(feature = "inspect")]
 use inspect::Inspect;
 use memory_range::MemoryRange;

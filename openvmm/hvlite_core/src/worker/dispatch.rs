@@ -2674,6 +2674,10 @@ impl LoadedVmInner {
                 let mut entropy = [0u8; ENTROPY_SIZE];
                 getrandom::fill(&mut entropy).unwrap();
 
+                tracing::info!(
+                    "loading IGVM from file with keepalive: {}",
+                    self.nvme_keepalive,
+                );
                 let params = crate::worker::vm_loaders::igvm::LoadIgvmParams {
                     igvm_file: self.igvm_file.as_ref().expect("should be already read"),
                     gm: &self.gm,
@@ -2846,6 +2850,13 @@ impl LoadedVm {
                 },
                 Event::VmRpc(Err(_)) => break,
                 Event::VmRpc(Ok(message)) => match message {
+                    VmRpc::ModifyKeepaliveSupport(rpc) => rpc.handle_sync(|keepalive| {
+                        // panic!(
+                        //     "Nvme keepalive change was requested with value: {}",
+                        //     keepalive
+                        // );
+                        self.inner.nvme_keepalive = keepalive;
+                    }),
                     VmRpc::Reset(rpc) => {
                         rpc.handle_failable(async |()| self.reset(true).await).await
                     }

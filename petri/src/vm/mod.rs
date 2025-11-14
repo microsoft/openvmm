@@ -935,6 +935,10 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.runtime.send_enlightened_shutdown(kind).await
     }
 
+    pub async fn toggle_keepalive_support(&mut self, enable: bool) -> anyhow::Result<()> {
+        self.runtime.toggle_keepalive_support(enable).await
+    }
+
     /// Instruct the OpenHCL to restart the VTL2 paravisor. Will fail if the VM
     /// is not running OpenHCL. Will also fail if the VM is not running.
     pub async fn restart_openhcl(
@@ -1037,6 +1041,8 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()>;
     /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
     async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()>;
+    /// Set keepalive support for the host.
+    async fn toggle_keepalive_support(&mut self, enable: bool) -> anyhow::Result<()>;
     /// Instruct the OpenHCL to restart the VTL2 paravisor. Will fail if the VM
     /// is not running OpenHCL. Will also fail if the VM is not running.
     async fn restart_openhcl(

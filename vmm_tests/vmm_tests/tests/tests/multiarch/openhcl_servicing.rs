@@ -448,7 +448,8 @@ async fn apply_fault_with_keepalive(
     cmd!(sh, "ls /dev/sda").run().await?;
 
     fault_start_updater.set(true).await;
-    vm.restart_openhcl(
+    vm.toggle_keepalive_support(false).await?;
+    vm.save_openhcl(
         igvm_file.clone(),
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,
@@ -456,6 +457,7 @@ async fn apply_fault_with_keepalive(
         },
     )
     .await?;
+    vm.restore_openhcl().await?;
 
     fault_start_updater.set(false).await;
     agent.ping().await?;
@@ -473,7 +475,7 @@ async fn create_keepalive_test_config(
 
     config
         .with_vmbus_redirect(true)
-        .with_nvme_keepalive(false)
+        .with_nvme_keepalive(true)
         .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
         .modify_backend(move |b| {
             b.with_custom_config(|c| {

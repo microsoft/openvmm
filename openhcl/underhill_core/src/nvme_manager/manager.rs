@@ -81,9 +81,15 @@ impl NvmeManager {
                 nvme_driver_spawner: nvme_driver_spawner.clone(),
             },
         };
+        tracing::info!(
+            "nvme manager created with save/restore support: {}",
+            save_restore_supported
+        );
         let task = driver.spawn("nvme-manager", async move {
-            // Restore saved data (if present) before async worker thread runs.
-            if let Some(s) = saved_state.as_ref() {
+            // Restore saved data (if present) and if keepalive suported before async worker thread runs.
+            if let Some(s) = saved_state.as_ref()
+                && save_restore_supported
+            {
                 if let Err(e) = NvmeManager::restore(&mut worker, s)
                     .instrument(tracing::info_span!("nvme_manager_restore"))
                     .await

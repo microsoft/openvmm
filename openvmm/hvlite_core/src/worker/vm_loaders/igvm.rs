@@ -302,7 +302,7 @@ fn build_device_tree(
     with_vmbus_redirect: bool,
     com_serial: Option<SerialInformation>,
     entropy: Option<&[u8]>,
-    with_nvme_keepalive: bool,
+    nvme_keepalive: bool,
 ) -> Result<Vec<u8>, fdt::builder::Error> {
     let mut buf = vec![0; HV_PAGE_SIZE as usize * 256];
 
@@ -497,12 +497,16 @@ fn build_device_tree(
             .end_node()?;
     }
 
-    if with_nvme_keepalive {
+    if nvme_keepalive {
         // Indicate that NVMe keep-alive feature is supported by this VMM.
         openhcl = openhcl
             .start_node("keep-alive")?
             .add_str(p_vf_keep_alive_devs, "nvme")?
             .end_node()?;
+        tracing::info!(
+            "Added NVMe keep-alive support to device tree with nvme_keepalive={}",
+            nvme_keepalive
+        );
     }
 
     root = openhcl.end_node()?;
@@ -595,6 +599,8 @@ fn load_igvm_x86(
         entropy,
         nvme_keepalive,
     } = params;
+
+    tracing::info!("NVMe keep-alive support enabled: {}", nvme_keepalive);
 
     let relocations_enabled = match vtl2_base_address {
         Vtl2BaseAddressType::File | Vtl2BaseAddressType::Vtl2Allocate { .. } => false,

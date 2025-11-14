@@ -123,6 +123,10 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         Self::send_enlightened_shutdown(self, kind).await
     }
 
+    async fn toggle_keepalive_support(&mut self, enable: bool) -> anyhow::Result<()> {
+        Self::toggle_keepalive_support(self, enable).await
+    }
+
     async fn restart_openhcl(
         &mut self,
         new_openhcl: &ResolvedArtifact,
@@ -225,6 +229,13 @@ impl PetriVmOpenVmm {
         /// Waits for the KVP IC to be ready, returning a sender that can be used
         /// to send requests to it.
         pub async fn wait_for_kvp(&mut self) -> anyhow::Result<mesh::Sender<hyperv_ic_resources::kvp::KvpRpc>>
+    );
+    petri_vm_fn!(
+        /// Stages the new OpenHCL file and saves the existing state.
+        pub async fn toggle_keepalive_support(
+            &mut self,
+            enable: bool
+        ) -> anyhow::Result<()>
     );
     petri_vm_fn!(
         /// Stages the new OpenHCL file and saves the existing state.
@@ -388,6 +399,10 @@ impl PetriVmInner {
             .context("failed to connect to KVP IC")?;
 
         Ok(send)
+    }
+
+    async fn toggle_keepalive_support(&self, enable: bool) -> anyhow::Result<()> {
+        self.worker.toggle_keepalive_support(enable).await
     }
 
     async fn save_openhcl(

@@ -564,6 +564,10 @@ impl LoadedVm {
 
         // NOTE: This is set via the corresponding env arg, as this feature is
         // experimental.
+        tracing::info!(
+            "Setting the nvme_keepalive flag. nvme_keep_alive = {}",
+            self.nvme_keep_alive
+        );
         let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
 
         // Do everything before the log flush under a span.

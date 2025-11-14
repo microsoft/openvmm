@@ -900,6 +900,8 @@ impl PartitionInfo {
         *nvme_keepalive = parsed.nvme_keepalive;
         *boot_options = options;
 
+        log!("Parsed value of nvme_keepalive={}", nvme_keepalive);
+
         Ok(storage)
     }
 }

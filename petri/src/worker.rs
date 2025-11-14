@@ -58,6 +58,10 @@ impl Worker {
         self.rpc.call_failable(VmRpc::PulseSaveRestore, ()).await
     }
 
+    pub(crate) async fn toggle_keepalive_support(&self, enable: bool) -> anyhow::Result<()> {
+        hvlite_helpers::underhill::toggle_keepalive_support(&self.rpc, enable).await
+    }
+
     pub(crate) async fn save_openhcl(
         &self,
         send: &mesh::Sender<get_resources::ged::GuestEmulationRequest>,
