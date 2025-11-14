@@ -68,6 +68,13 @@ struct InterruptState {
     _task: Task<()>,
 }
 
+impl Drop for VfioDevice {
+    fn drop(&mut self) {
+        // Just for tracing ...
+        tracing::trace!(pci_id = ?self.pci_id, "dropping vfio device");
+    }
+}
+
 impl VfioDevice {
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
     pub async fn new(
@@ -102,6 +109,8 @@ impl VfioDevice {
         // Ignore any errors and always attempt to open.
         let _ = ctx.until_cancelled(wait_for_vfio_device).await;
 
+        tracing::trace!(pci_id, keepalive, "device arrived");
+
         let container = vfio_sys::Container::new()?;
         let group_id = vfio_sys::Group::find_group_for_device(&path)?;
         let group = vfio_sys::Group::open_noiommu(group_id)?;
@@ -115,6 +124,7 @@ impl VfioDevice {
             // Prevent physical hardware interaction when restoring.
             group.set_keep_alive(pci_id)?;
         }
+        tracing::trace!(pci_id, "about to open device");
         let device = group.open_device(pci_id)?;
         let msix_info = device.irq_info(vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX)?;
         if msix_info.flags.noresize() {
@@ -134,6 +144,7 @@ impl VfioDevice {
             dma_client,
         };
 
+        tracing::trace!(pci_id, "enabling device...");
         // Ensure bus master enable and memory space enable are set, and that
         // INTx is disabled.
         this.enable_device().context("failed to enable device")?;
@@ -175,6 +186,7 @@ impl VfioDevice {
             anyhow::bail!("invalid config offset");
         }
 
+        tracing::debug!(pci_id = ?self.pci_id, offset, data, "***writing config");
         let buf = data.to_ne_bytes();
         self.device
             .as_ref()

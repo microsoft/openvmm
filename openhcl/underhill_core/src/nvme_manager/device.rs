@@ -96,6 +96,11 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
             .map_err(NvmeSpawnerError::DmaClient)?;
 
         let nvme_driver = if let Some(saved_state) = saved_state {
+            // On restore, always disable FLR. This isn't necessary for the attach path (setting "keepalive"
+            // is sufficient), but *is* necessary to avoid Vfio issuing a reset to the device on shutdown.
+            tracing::debug!(pci_id = pci_id, "Disabling FLR for NVMe device restore");
+            Self::try_update_reset_method(pci_id, PciDeviceResetMethod::NoReset, "nvme_restore");
+
             let vfio_device = VfioDevice::restore(driver_source, pci_id, true, dma_client)
                 .instrument(tracing::info_span!("nvme_vfio_device_restore", pci_id))
                 .await
@@ -142,20 +147,6 @@ impl VfioNvmeDriverSpawner {
         is_isolated: bool,
         dma_client: Arc<dyn user_driver::DmaClient>,
     ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, NvmeSpawnerError> {
-        // Disable FLR on vfio attach/detach; this allows faster system
-        // startup/shutdown with the caveat that the device needs to be properly
-        // sent through the shutdown path during servicing operations, as that is
-        // the only cleanup performed. If the device fails to initialize, turn FLR
-        // on and try again, so that the reset is invoked on the next attach.
-        let update_reset = |method: PciDeviceResetMethod| {
-            if let Err(err) = vfio_set_device_reset_method(pci_id, method) {
-                tracing::warn!(
-                    ?method,
-                    err = &err as &dyn std::error::Error,
-                    "failed to update reset_method"
-                );
-            }
-        };
         let mut last_err = None;
         let reset_methods = if nvme_always_flr {
             &[PciDeviceResetMethod::Flr][..]
@@ -167,7 +158,7 @@ impl VfioNvmeDriverSpawner {
             &[PciDeviceResetMethod::NoReset, PciDeviceResetMethod::Flr][..]
         };
         for reset_method in reset_methods {
-            update_reset(*reset_method);
+            Self::try_update_reset_method(pci_id, *reset_method, "nvme_create");
             match Self::try_create_nvme_device(
                 driver_source,
                 pci_id,
@@ -179,7 +170,13 @@ impl VfioNvmeDriverSpawner {
             {
                 Ok(device) => {
                     if !nvme_always_flr && !matches!(reset_method, PciDeviceResetMethod::NoReset) {
-                        update_reset(PciDeviceResetMethod::NoReset);
+                        // For shutdown: set the reset method to NoReset now that the device
+                        // has been successfully created.
+                        Self::try_update_reset_method(
+                            pci_id,
+                            PciDeviceResetMethod::NoReset,
+                            "nvme_create_post",
+                        );
                     }
                     return Ok(device);
                 }
@@ -218,6 +215,17 @@ impl VfioNvmeDriverSpawner {
             .instrument(tracing::info_span!("nvme_driver_new", pci_id))
             .await
             .map_err(NvmeSpawnerError::DeviceInitFailed)
+    }
+
+    fn try_update_reset_method(pci_id: &str, method: PciDeviceResetMethod, label: &str) {
+        if let Err(err) = vfio_set_device_reset_method(pci_id, method) {
+            tracing::warn!(
+                ?method,
+                err = &err as &dyn std::error::Error,
+                "failed to update reset_method for {}",
+                label
+            );
+        }
     }
 }
 

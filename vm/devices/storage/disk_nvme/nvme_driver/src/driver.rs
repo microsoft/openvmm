@@ -511,6 +511,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Shuts the device down.
     pub async fn shutdown(mut self) {
+        tracing::debug!(pci_id = ?self.device_id, "shutting down nvme driver");
+
         // If nvme_keepalive was requested, return early.
         // The memory is still aliased as we don't flush pending IOs.
         if self.nvme_keepalive {
@@ -651,6 +653,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // It is expected for the device to be alive when restoring.
         let csts = bar0.csts();
         if !csts.rdy() {
+            tracing::error!(
+                csts = u32::from(csts),
+                pci_id = device.id(),
+                "device is not ready during restore"
+            );
             anyhow::bail!(
                 "device is not ready during restore, csts: {:#x}",
                 u32::from(csts)
@@ -924,6 +931,7 @@ impl<T: DeviceBacking> Drop for NvmeDriver<T> {
     fn drop(&mut self) {
         if self.task.is_some() {
             // Do not reset NVMe device when nvme_keepalive is requested.
+            tracing::debug!(nvme_keepalive = self.nvme_keepalive, pci_id = ?self.device_id, "dropping nvme driver");
             if !self.nvme_keepalive {
                 // Reset the device asynchronously so that pending IOs are not
                 // dropped while their memory is aliased.
