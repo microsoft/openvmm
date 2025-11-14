@@ -7,8 +7,6 @@ use bitfield_struct::bitfield;
 use vmbus_core::protocol::UserDefinedData;
 use windows::core::GUID;
 
-pub const VMBUS_PROXY_VNUMA_CHILD_NODE_COUNT_MAX: usize = 64;
-
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct VMBUS_CHANNEL_OFFER {
