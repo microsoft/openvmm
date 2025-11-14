@@ -5007,6 +5007,7 @@ dependencies = [
  "mesh_protobuf",
  "minimal_rt",
  "minimal_rt_build",
+ "page_table",
  "safe_intrinsics",
  "sha2",
  "sidecar_defs",
@@ -5350,6 +5351,8 @@ name = "page_table"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
+ "static_assertions",
+ "thiserror 2.0.16",
  "tracing",
  "zerocopy 0.8.25",
 ]

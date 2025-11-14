@@ -149,6 +149,7 @@ pub fn start_sidecar<'a>(
                 required_ram,
                 AllocationType::SidecarNode,
                 AllocationPolicy::LowMemory,
+                None,
             ) {
                 Some(mem) => mem,
                 None => {
@@ -158,6 +159,7 @@ pub fn start_sidecar<'a>(
                         required_ram,
                         AllocationType::SidecarNode,
                         AllocationPolicy::LowMemory,
+                        None,
                     ) {
                         Some(mem) => {
                             log!(
