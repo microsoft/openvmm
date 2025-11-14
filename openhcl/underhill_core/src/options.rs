@@ -211,7 +211,13 @@ pub struct Options {
     /// (OPENHCL_NVME_KEEP_ALIVE=1) Enable nvme keep alive when servicing.
     pub nvme_keep_alive: bool,
 
-    /// (OPENHCL_MANA_KEEP_ALIVE=1) Enable MANA keep alive when servicing.
+    /// (OPENHCL_MANA_KEEP_ALIVE=\<KeepAliveConfig\>)
+    /// Configure MANA keep alive behavior when servicing.
+    /// Options are:
+    ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
+    ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
+    ///  - "host,noprivatepool" - Used when the host supports keepalive, but no private pool is present. Keepalive is disabled.
+    ///  - "nohost,noprivatepool" - Keepalive is disabled.
     pub mana_keep_alive: KeepAliveConfig,
 
     /// (OPENHCL_NVME_ALWAYS_FLR=1)

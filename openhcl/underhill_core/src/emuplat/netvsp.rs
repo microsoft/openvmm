@@ -93,16 +93,14 @@ async fn create_mana_device(
         tracing::warn!("have saved state from keepalive but restoring on an unsupported host");
 
         // Re-attach pending buffers, but discard them so that they get freed.
-
         let dma_client = match &dma_clients {
             VfioDmaClients::Single(_) => {
                 anyhow::bail!("must have both clients to free previously attached buffers")
             }
             VfioDmaClients::Split { persistent, .. } => persistent,
         };
-
-        // Re-attach the buffers and immediately drop them
         let _ = dma_client.attach_pending_buffers();
+
         // Remove the mana saved state so that we don't go through restore path.
         let _ = mana_state.take();
     }
