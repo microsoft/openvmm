@@ -633,6 +633,7 @@ mod tests {
                 0x1000,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
+                None
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1F000..0x20000));
@@ -644,6 +645,7 @@ mod tests {
                 0x2000,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
+                None
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1D000..0x1F000));
@@ -654,6 +656,7 @@ mod tests {
                 0x3000,
                 AllocationType::GpaPool,
                 AllocationPolicy::LowMemory,
+                None
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0xF000..0x12000));
@@ -664,9 +667,63 @@ mod tests {
                 0x1000,
                 AllocationType::GpaPool,
                 AllocationPolicy::LowMemory,
+                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x12000..0x13000));
+    }
+
+    #[test]
+    fn test_allocate_aligned() {
+        let mut address_space = AddressSpaceManager::new_const();
+        let vtl2_ram = &[MemoryEntry {
+            range: MemoryRange::new(0x0..0x20000),
+            vnode: 0,
+            mem_type: MemoryMapEntryType::MEMORY,
+        }];
+
+        AddressSpaceManagerBuilder::new(
+            &mut address_space,
+            vtl2_ram,
+            MemoryRange::new(0x0..0xF000),
+            MemoryRange::new(0x0..0x2000),
+            [
+                MemoryRange::new(0x3000..0x4000),
+                MemoryRange::new(0x5000..0x6000),
+            ]
+            .iter()
+            .cloned(),
+        )
+        .with_reserved_range(MemoryRange::new(0x8000..0xA000))
+        .with_sidecar_image(MemoryRange::new(0xA000..0xC000))
+        .init()
+        .unwrap();
+
+        let alignment = 4096 * 16;
+        let range = address_space
+            .allocate(
+                None,
+                0x1000,
+                AllocationType::GpaPool,
+                AllocationPolicy::LowMemory,
+                Some(alignment),
+            )
+            .unwrap();
+
+        assert_eq!(0, range.range.start() % alignment);
+
+        let alignment = 4096 * 4;
+        let range = address_space
+            .allocate(
+                None,
+                0x1000,
+                AllocationType::GpaPool,
+                AllocationPolicy::HighMemory,
+                Some(alignment),
+            )
+            .unwrap();
+
+        assert_eq!(0, range.range.end() % alignment);
     }
 
     // test numa allocation
@@ -719,6 +776,7 @@ mod tests {
                 0x1000,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
+                None
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1F000..0x20000));
@@ -730,6 +788,7 @@ mod tests {
                 0x2000,
                 AllocationType::SidecarNode,
                 AllocationPolicy::HighMemory,
+                None
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1D000..0x1F000));
@@ -741,6 +800,7 @@ mod tests {
                 0x3000,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
+                None
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x5D000..0x60000));
@@ -753,6 +813,7 @@ mod tests {
                 0x20000,
                 AllocationType::SidecarNode,
                 AllocationPolicy::HighMemory,
+                None
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x60000..0x80000));
@@ -763,6 +824,7 @@ mod tests {
             0x1000,
             AllocationType::SidecarNode,
             AllocationPolicy::HighMemory,
+            None
         );
         assert!(
             range.is_none(),
@@ -803,6 +865,7 @@ mod tests {
                 0x1001,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
+                None
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1E000..0x20000));
@@ -813,6 +876,7 @@ mod tests {
                 0xFFF,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
+                None
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1D000..0x1E000));
@@ -822,6 +886,7 @@ mod tests {
             0,
             AllocationType::GpaPool,
             AllocationPolicy::HighMemory,
+            None
         );
         assert!(range.is_none());
     }
