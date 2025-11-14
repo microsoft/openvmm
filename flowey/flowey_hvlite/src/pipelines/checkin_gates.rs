@@ -963,7 +963,13 @@ impl IntoPipeline for CheckinGatesCli {
         //
         // Run "very_heavy" tests that require lots of VPs on the self-hosted
         // CVM runners that have more cores.
-        let standard_filter = "all() & !test(very_heavy)".to_string();
+        //
+        // Even though OpenVMM + VBS + Windows tests can run on standard CI
+        // machines, we exclude them here to avoid needing to run prep_steps
+        // on non-self-hosted runners. This saves several minutes of CI time
+        // that would be used for very few tests. We need to run prep_steps
+        // on CVM runners anyways, so we might as well run those tests there.
+        let standard_filter = "all() & !test(very_heavy) &!test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)".to_string();
         let standard_x64_test_artifacts = vec![
             KnownTestArtifacts::FreeBsd13_2X64Vhd,
             KnownTestArtifacts::FreeBsd13_2X64Iso,
@@ -975,8 +981,11 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::VmgsWithBootEntry,
         ];
 
-        let cvm_filter =
-            |arch| format!("test({arch}) + (test(vbs) & test(hyperv)) + test(very_heavy)");
+        let cvm_filter = |arch| {
+            format!(
+                "test({arch}) + (test(vbs) & test(hyperv)) + test(very_heavy) + test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)"
+            )
+        };
         let cvm_x64_test_artifacts = vec![
             KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
