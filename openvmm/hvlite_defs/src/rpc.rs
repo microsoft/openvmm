@@ -31,6 +31,7 @@ pub enum VmRpc {
     CompleteReloadIgvm(FailableRpc<bool, ()>),
     ReadMemory(FailableRpc<(u64, usize), Vec<u8>>),
     WriteMemory(FailableRpc<(u64, Vec<u8>), ()>),
+    UpdateKeepaliveSupport(Rpc<bool, ()>),
 }
 
 #[derive(Debug, MeshPayload, thiserror::Error)]
@@ -63,6 +64,7 @@ impl fmt::Debug for VmRpc {
             VmRpc::CompleteReloadIgvm(_) => "CompleteReloadIgvm",
             VmRpc::ReadMemory(_) => "ReadMemory",
             VmRpc::WriteMemory(_) => "WriteMemory",
+            VmRpc::UpdateKeepaliveSupport(_) => "UpdateKeepaliveSupport",
         };
         f.pad(s)
     }

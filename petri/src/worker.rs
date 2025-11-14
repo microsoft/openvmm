@@ -93,4 +93,9 @@ impl Worker {
         self.handle.join().await?;
         Ok(())
     }
+
+    pub(crate) async fn update_keepalive_support(&self, enable: bool) -> anyhow::Result<()> {
+        self.rpc.call(VmRpc::UpdateKeepaliveSupport, enable).await?;
+        Ok(())
+    }
 }

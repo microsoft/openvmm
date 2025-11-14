@@ -210,6 +210,7 @@ impl Manifest {
                 EfiDiagnosticsLogLevelType::Info => LogLevel::make_info(),
                 EfiDiagnosticsLogLevelType::Full => LogLevel::make_full(),
             },
+            nvme_keepalive_enabled: config.nvme_keepalive_enabled,
         }
     }
 }
@@ -255,6 +256,7 @@ pub struct Manifest {
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
     efi_diagnostics_log_level: LogLevel,
+    nvme_keepalive_enabled: bool,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -596,6 +598,7 @@ struct LoadedVmInner {
     /// allow the guest to reset without notifying the client
     automatic_guest_reset: bool,
     pcie_host_bridges: Vec<PcieHostBridge>,
+    nvme_keepalive_enabled: bool,
 }
 
 fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
@@ -2495,6 +2498,7 @@ impl InitializedVm {
                 client_notify_send,
                 automatic_guest_reset: cfg.automatic_guest_reset,
                 pcie_host_bridges,
+                nvme_keepalive_enabled: cfg.nvme_keepalive_enabled,
             },
         };
 
@@ -2687,6 +2691,7 @@ impl LoadedVmInner {
                     with_vmbus_redirect: self.vmbus_redirect,
                     com_serial,
                     entropy: Some(&entropy),
+                    nvme_keepalive_enabled: self.nvme_keepalive_enabled,
                 };
                 super::vm_loaders::igvm::load_igvm(params)?
             }
@@ -2951,6 +2956,9 @@ impl LoadedVm {
                     VmRpc::WriteMemory(rpc) => rpc.handle_failable_sync(|(gpa, bytes)| {
                         self.inner.gm.write_at(gpa, bytes.as_slice())
                     }),
+                    VmRpc::UpdateKeepaliveSupport(rpc) => rpc.handle_sync(|enable| {
+                        self.inner.nvme_keepalive_enabled = enable;
+                    }),
                 },
                 Event::Halt(Err(_)) => break,
                 Event::Halt(Ok(reason)) => {
@@ -3121,6 +3129,7 @@ impl LoadedVm {
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
             efi_diagnostics_log_level: Default::default(),
+            nvme_keepalive_enabled: self.inner.nvme_keepalive_enabled,
         };
         RestartState {
             hypervisor: self.inner.hypervisor,

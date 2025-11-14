@@ -160,6 +160,10 @@ impl PetriVmRuntime for PetriVmOpenVmm {
     async fn reset(&mut self) -> anyhow::Result<()> {
         Self::reset(self).await
     }
+
+    async fn update_keepalive_support(&mut self, enable: bool) -> anyhow::Result<()> {
+        Self::update_keepalive_support(self, enable).await
+    }
 }
 
 pub(super) struct PetriVmInner {
@@ -252,7 +256,13 @@ impl PetriVmOpenVmm {
         /// Modifies OpenHCL VTL2 settings.
         pub async fn modify_vtl2_settings(&mut self, f: impl FnOnce(&mut Vtl2Settings)) -> anyhow::Result<()>
     );
-
+    petri_vm_fn!(
+        /// Update host keepalive support flag.
+        pub async fn update_keepalive_support(
+            &mut self,
+            enable: bool
+        ) -> anyhow::Result<()>
+    );
     petri_vm_fn!(pub(crate) async fn resume(&mut self) -> anyhow::Result<()>);
     petri_vm_fn!(pub(crate) async fn verify_save_restore(&mut self) -> anyhow::Result<()>);
     petri_vm_fn!(pub(crate) async fn launch_linux_direct_pipette(&mut self) -> anyhow::Result<()>);
@@ -519,6 +529,10 @@ impl PetriVmInner {
             .run_command("mkdir /cidata && mount LABEL=cidata /cidata && sh -c '/cidata/pipette &'")
             .await?;
         Ok(())
+    }
+
+    async fn update_keepalive_support(&mut self, enable: bool) -> anyhow::Result<()> {
+        self.worker.update_keepalive_support(enable).await
     }
 }
 

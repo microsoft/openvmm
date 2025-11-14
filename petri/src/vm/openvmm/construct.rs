@@ -487,6 +487,7 @@ impl PetriVmConfigOpenVmm {
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             efi_diagnostics_log_level: Default::default(), // TODO: Add config for tests
+            nvme_keepalive_enabled: true,
         };
 
         // Make the pipette connection listener.

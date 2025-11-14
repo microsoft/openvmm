@@ -862,6 +862,10 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
         Ok(Some(self.vm.get_guest_state_file().await?))
     }
+
+    async fn update_keepalive_support(&mut self, enable: bool) -> anyhow::Result<()> {
+        anyhow::bail!("toggling keepalive not yet supported on Hyper-V");
+    }
 }
 
 fn acl_read_for_vm(path: &Path, id: Option<guid::Guid>) -> anyhow::Result<()> {

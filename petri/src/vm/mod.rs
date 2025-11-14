@@ -1070,6 +1070,11 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     pub async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
         self.runtime.get_guest_state_file().await
     }
+
+    /// Update host keepalive support for the VM
+    pub async fn update_keepalive_support(&mut self, enable: bool) -> anyhow::Result<()> {
+        self.runtime.update_keepalive_support(enable).await
+    }
 }
 
 /// A running VM that tests can interact with.
@@ -1130,6 +1135,8 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
         Ok(None)
     }
+    /// Update host keepalive support flag
+    async fn update_keepalive_support(&mut self, enable: bool) -> anyhow::Result<()>;
 }
 
 /// Interface for getting information about the state of the VM
