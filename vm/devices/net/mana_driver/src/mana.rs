@@ -34,6 +34,7 @@ use std::sync::Arc;
 use tracing::Instrument;
 use user_driver::DeviceBacking;
 use user_driver::DmaClient;
+use user_driver::DmaPool;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
@@ -376,7 +377,7 @@ impl<T: DeviceBacking> Vport<T> {
         cpu: u32,
     ) -> anyhow::Result<BnicEq> {
         let mut gdma = self.inner.gdma.lock().await;
-        let dma_client = gdma.device().dma_client();
+        let dma_client = gdma.device().dma_client_for(DmaPool::Ephemeral);
         let mem = dma_client
             .allocate_dma_buffer(size as usize)
             .context("Failed to allocate DMA buffer")?;
@@ -418,7 +419,7 @@ impl<T: DeviceBacking> Vport<T> {
         assert!(cq_size >= PAGE_SIZE as u32 && cq_size.is_power_of_two());
         let mut gdma = self.inner.gdma.lock().await;
 
-        let dma_client = gdma.device().dma_client();
+        let dma_client = gdma.device().dma_client_for(DmaPool::Ephemeral);
 
         let mem = dma_client
             .allocate_dma_buffer((wq_size + cq_size) as usize)

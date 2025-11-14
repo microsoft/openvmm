@@ -19,6 +19,11 @@ pub mod memory;
 pub mod page_allocator;
 pub mod vfio;
 
+pub enum DmaPool {
+    Ephemeral,
+    Persistent,
+}
+
 /// An interface to access device hardware.
 pub trait DeviceBacking: 'static + Send + Inspect {
     /// An object for accessing device registers.
@@ -32,6 +37,12 @@ pub trait DeviceBacking: 'static + Send + Inspect {
 
     /// DMA Client for the device.
     fn dma_client(&self) -> Arc<dyn DmaClient>;
+
+    /// Overloaded DMA Client for the device, based on the requested pool.
+    fn dma_client_for(&self, _pool: DmaPool) -> Arc<dyn DmaClient> {
+        // Default implmentation just uses the standard DMA client.
+        self.dma_client()
+    }
 
     /// Returns the maximum number of interrupts that can be mapped.
     fn max_interrupt_count(&self) -> u32;

@@ -136,6 +136,7 @@ use underhill_attestation::AttestationType;
 use underhill_confidentiality::confidential_debug_enabled;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
+use user_driver::vfio::VfioDmaClients;
 use virt::Partition;
 use virt::VpIndex;
 use virt::X86Partition;
@@ -791,16 +792,45 @@ impl UhVmNetworkSettings {
             .unwrap_or(MAX_SUBCHANNELS_PER_VNIC)
             .min(vps_count as u16);
 
-        let dma_client = dma_client_spawner.new_client(DmaClientParameters {
-            device_name: format!("nic_{}", nic_config.pci_id),
+        let allocation_visibility = if is_isolated {
+            AllocationVisibility::Shared
+        } else {
+            AllocationVisibility::Private
+        };
+
+        let ephemeral_dma_client = dma_client_spawner.new_client(DmaClientParameters {
+            device_name: format!("nic_{}_ephemeral", nic_config.pci_id),
             lower_vtl_policy: LowerVtlPermissionPolicy::Any,
-            allocation_visibility: if is_isolated {
-                AllocationVisibility::Shared
-            } else {
-                AllocationVisibility::Private
-            },
-            persistent_allocations: keepalive_mode.is_enabled(),
+            allocation_visibility,
+            persistent_allocations: false,
         })?;
+
+        // We need a persistent client if keepalive is enabled or if there is a
+        // private pool present without keepalive that needs to free previously
+        // persisted memory ranges
+        let persistent_dma_client = if keepalive_mode.is_enabled()
+            || matches!(
+                keepalive_mode,
+                KeepAliveConfig::DisabledHostAndPrivatePoolPresent
+            ) {
+            Some(dma_client_spawner.new_client(DmaClientParameters {
+                device_name: format!("nic_{}", nic_config.pci_id),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                persistent_allocations: true,
+                allocation_visibility,
+            })?)
+        } else {
+            None
+        };
+
+        let dma_clients = if let Some(persistent_dma_client) = persistent_dma_client {
+            VfioDmaClients::Split {
+                ephemeral: ephemeral_dma_client,
+                persistent: persistent_dma_client,
+            }
+        } else {
+            VfioDmaClients::Single(ephemeral_dma_client)
+        };
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
             nic_config.instance_id,
@@ -814,7 +844,7 @@ impl UhVmNetworkSettings {
             servicing_netvsp_state,
             self.dma_mode,
             keepalive_mode,
-            dma_client,
+            dma_clients,
             saved_mana_state,
         )
         .await?;

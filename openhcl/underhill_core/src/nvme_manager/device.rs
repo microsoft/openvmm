@@ -25,6 +25,7 @@ use tracing::Instrument;
 use tracing::Span;
 use user_driver::vfio::PciDeviceResetMethod;
 use user_driver::vfio::VfioDevice;
+use user_driver::vfio::VfioDmaClients;
 use user_driver::vfio::vfio_set_device_reset_method;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -95,8 +96,10 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
             })
             .map_err(NvmeSpawnerError::DmaClient)?;
 
+        let dma_clients = VfioDmaClients::Single(dma_client);
+
         let nvme_driver = if let Some(saved_state) = saved_state {
-            let vfio_device = VfioDevice::restore(driver_source, pci_id, true, dma_client)
+            let vfio_device = VfioDevice::restore(driver_source, pci_id, true, dma_clients)
                 .instrument(tracing::info_span!("nvme_vfio_device_restore", pci_id))
                 .await
                 .map_err(NvmeSpawnerError::Vfio)?;
@@ -121,7 +124,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
                 vp_count,
                 self.nvme_always_flr,
                 self.is_isolated,
-                dma_client,
+                dma_clients,
             )
             .await?
         };
@@ -140,7 +143,7 @@ impl VfioNvmeDriverSpawner {
         vp_count: u32,
         nvme_always_flr: bool,
         is_isolated: bool,
-        dma_client: Arc<dyn user_driver::DmaClient>,
+        dma_clients: VfioDmaClients,
     ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, NvmeSpawnerError> {
         // Disable FLR on vfio attach/detach; this allows faster system
         // startup/shutdown with the caveat that the device needs to be properly
@@ -173,7 +176,7 @@ impl VfioNvmeDriverSpawner {
                 pci_id,
                 vp_count,
                 is_isolated,
-                dma_client.clone(),
+                dma_clients.clone(),
             )
             .await
             {
@@ -204,9 +207,9 @@ impl VfioNvmeDriverSpawner {
         pci_id: &str,
         vp_count: u32,
         is_isolated: bool,
-        dma_client: Arc<dyn user_driver::DmaClient>,
+        dma_clients: VfioDmaClients,
     ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, NvmeSpawnerError> {
-        let device = VfioDevice::new(driver_source, pci_id, dma_client)
+        let device = VfioDevice::new(driver_source, pci_id, dma_clients)
             .instrument(tracing::info_span!("nvme_vfio_device_open", pci_id))
             .await
             .map_err(NvmeSpawnerError::Vfio)?;

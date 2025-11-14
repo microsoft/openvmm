@@ -39,9 +39,10 @@ use std::task::Poll;
 use std::task::ready;
 use tracing::Instrument;
 use uevent::UeventListener;
-use user_driver::DmaClient;
+
 use user_driver::vfio::PciDeviceResetMethod;
 use user_driver::vfio::VfioDevice;
+use user_driver::vfio::VfioDmaClients;
 use user_driver::vfio::vfio_set_device_reset_method;
 use vmcore::vm_task::VmTaskDriverSource;
 use vpci::bus_control::VpciBusControl;
@@ -77,7 +78,7 @@ async fn create_mana_device(
     vp_count: u32,
     max_sub_channels: u16,
     keepalive_mode: KeepAliveConfig,
-    dma_client: Arc<dyn DmaClient>,
+    dma_clients: VfioDmaClients,
     mut mana_state: Option<&ManaSavedState>,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
     // This guards from situations where we have saved state from keepalive
@@ -92,12 +93,16 @@ async fn create_mana_device(
         tracing::warn!("have saved state from keepalive but restoring on an unsupported host");
 
         // Re-attach pending buffers, but discard them so that they get freed.
-        let buffers = dma_client.attach_pending_buffers();
-        tracing::warn!(
-            "attached {} pending buffers for {}",
-            buffers.iter().len(),
-            pci_id
-        );
+
+        let dma_client = match &dma_clients {
+            VfioDmaClients::Single(_) => {
+                anyhow::bail!("must have both clients to free previously attached buffers")
+            }
+            VfioDmaClients::Split { persistent, .. } => persistent,
+        };
+
+        // Re-attach the buffers and immediately drop them
+        let _ = dma_client.attach_pending_buffers();
         // Remove the mana saved state so that we don't go through restore path.
         let _ = mana_state.take();
     }
@@ -113,7 +118,7 @@ async fn create_mana_device(
             pci_id,
             vp_count,
             max_sub_channels,
-            dma_client,
+            dma_clients,
             Some(mana_state),
         )
         .await;
@@ -141,7 +146,7 @@ async fn create_mana_device(
             pci_id,
             vp_count,
             max_sub_channels,
-            dma_client.clone(),
+            dma_clients.clone(),
             None,
         )
         .await
@@ -171,18 +176,18 @@ async fn try_create_mana_device(
     pci_id: &str,
     vp_count: u32,
     max_sub_channels: u16,
-    dma_client: Arc<dyn DmaClient>,
+    dma_clients: VfioDmaClients,
     mana_state: Option<&ManaSavedState>,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
     // Restore the device if we have saved state from servicing, otherwise create a new one.
     let device = if mana_state.is_some() {
         tracing::debug!("Restoring VFIO device from saved state");
-        VfioDevice::restore(driver_source, pci_id, true, dma_client)
+        VfioDevice::restore(driver_source, pci_id, true, dma_clients)
             .instrument(tracing::info_span!("restore_mana_vfio_device"))
             .await
             .context("failed to restore device")?
     } else {
-        VfioDevice::new(driver_source, pci_id, dma_client)
+        VfioDevice::new(driver_source, pci_id, dma_clients)
             .instrument(tracing::info_span!("new_mana_vfio_device"))
             .await
             .context("failed to open device")?
@@ -267,7 +272,7 @@ struct HclNetworkVFManagerWorker {
     #[inspect(skip)]
     dma_mode: GuestDmaMode,
     #[inspect(skip)]
-    dma_client: Arc<dyn DmaClient>,
+    dma_clients: VfioDmaClients,
 }
 
 impl HclNetworkVFManagerWorker {
@@ -283,7 +288,7 @@ impl HclNetworkVFManagerWorker {
         vp_count: u32,
         max_sub_channels: u16,
         dma_mode: GuestDmaMode,
-        dma_client: Arc<dyn DmaClient>,
+        dma_clients: VfioDmaClients,
     ) -> (Self, mesh::Sender<HclNetworkVfManagerMessage>) {
         let (tx_to_worker, worker_rx) = mesh::channel();
         let vtl0_bus_control = if save_state.hidden_vtl0.lock().unwrap_or(false) {
@@ -313,7 +318,7 @@ impl HclNetworkVFManagerWorker {
                 vtl2_bus_control,
                 vtl2_pci_id,
                 dma_mode,
-                dma_client,
+                dma_clients,
             },
             tx_to_worker,
         )
@@ -785,7 +790,7 @@ impl HclNetworkVFManagerWorker {
                         self.vp_count,
                         self.max_sub_channels,
                         KeepAliveConfig::ExplicitlyDisabled,
-                        self.dma_client.clone(),
+                        self.dma_clients.clone(),
                         None, // No saved state on new device arrival
                     )
                     .await
@@ -960,7 +965,7 @@ impl HclNetworkVFManager {
         netvsp_state: &Option<Vec<SavedState>>,
         dma_mode: GuestDmaMode,
         keepalive_mode: KeepAliveConfig,
-        dma_client: Arc<dyn DmaClient>,
+        dma_clients: VfioDmaClients,
         mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<(
         Self,
@@ -973,7 +978,7 @@ impl HclNetworkVFManager {
             vp_count,
             max_sub_channels,
             keepalive_mode.clone(),
-            dma_client.clone(),
+            dma_clients.clone(),
             mana_state,
         )
         .await?;
@@ -1024,7 +1029,7 @@ impl HclNetworkVFManager {
             vp_count,
             max_sub_channels,
             dma_mode,
-            dma_client,
+            dma_clients,
         );
 
         // Queue new endpoints.

@@ -38,6 +38,15 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+#[derive(Clone)]
+pub enum VfioDmaClients {
+    Single(Arc<dyn DmaClient>),
+    Split {
+        persistent: Arc<dyn DmaClient>,
+        ephemeral: Arc<dyn DmaClient>,
+    },
+}
+
 /// A device backend accessed via VFIO.
 #[derive(Inspect)]
 pub struct VfioDevice {
@@ -56,7 +65,8 @@ pub struct VfioDevice {
     interrupts: Vec<Option<InterruptState>>,
     #[inspect(skip)]
     config_space: vfio_sys::RegionInfo,
-    dma_client: Arc<dyn DmaClient>,
+    #[inspect(skip)]
+    dma_clients: VfioDmaClients,
 }
 
 #[derive(Inspect)]
@@ -73,9 +83,9 @@ impl VfioDevice {
     pub async fn new(
         driver_source: &VmTaskDriverSource,
         pci_id: impl AsRef<str>,
-        dma_client: Arc<dyn DmaClient>,
+        dma_clients: VfioDmaClients,
     ) -> anyhow::Result<Self> {
-        Self::restore(driver_source, pci_id, false, dma_client).await
+        Self::restore(driver_source, pci_id, false, dma_clients).await
     }
 
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
@@ -84,7 +94,7 @@ impl VfioDevice {
         driver_source: &VmTaskDriverSource,
         pci_id: impl AsRef<str>,
         keepalive: bool,
-        dma_client: Arc<dyn DmaClient>,
+        dma_clients: VfioDmaClients,
     ) -> anyhow::Result<Self> {
         let pci_id = pci_id.as_ref();
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
@@ -131,7 +141,7 @@ impl VfioDevice {
             config_space,
             driver_source: driver_source.clone(),
             interrupts: Vec::new(),
-            dma_client,
+            dma_clients,
         };
 
         // Ensure bus master enable and memory space enable are set, and that
@@ -233,7 +243,28 @@ impl DeviceBacking for VfioDevice {
     }
 
     fn dma_client(&self) -> Arc<dyn DmaClient> {
-        self.dma_client.clone()
+        // The default behavior is to use the persistent client when it's available, if the caller
+        // wants the ephemeral client when the persistent client is available, they can get it explicitly
+        match &self.dma_clients {
+            VfioDmaClients::Single(client) => client.clone(),
+            VfioDmaClients::Split {
+                persistent,
+                ephemeral: _,
+            } => persistent.clone(),
+        }
+    }
+
+    fn dma_client_for(&self, pool: crate::DmaPool) -> Arc<dyn DmaClient> {
+        match &self.dma_clients {
+            VfioDmaClients::Single(client) => client.clone(),
+            VfioDmaClients::Split {
+                persistent,
+                ephemeral,
+            } => match pool {
+                crate::DmaPool::Persistent => persistent.clone(),
+                crate::DmaPool::Ephemeral => ephemeral.clone(),
+            },
+        }
     }
 
     fn max_interrupt_count(&self) -> u32 {
