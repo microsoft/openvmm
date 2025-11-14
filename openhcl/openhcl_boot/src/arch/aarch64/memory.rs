@@ -3,6 +3,7 @@
 
 //! Setting up memory
 
+use crate::AddressSpaceManager;
 use crate::PartitionInfo;
 use crate::ShimParams;
 use crate::hvcall;
