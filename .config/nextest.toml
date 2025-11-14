@@ -72,4 +72,4 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 filter = 'package(~vmm_tests)'
 # VMM tests contain their own watchdog timer, but keep an extra long timer
 # here as a backup.
-slow-timeout = { period = "15m", terminate-after = 1 }
+slow-timeout = { period = "10m", terminate-after = 2 }

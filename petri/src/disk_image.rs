@@ -140,12 +140,14 @@ impl AgentImage {
     }
 }
 
-enum PathOrBinary<'a> {
+pub(crate) const SECTOR_SIZE: u64 = 512;
+
+pub(crate) enum PathOrBinary<'a> {
     Path(&'a Path),
     Binary(&'a [u8]),
 }
 
-fn build_fat32_disk_image(
+pub(crate) fn build_fat32_disk_image(
     file: &mut (impl Read + Write + Seek),
     gpt_name: &str,
     volume_label: &[u8; 11],
@@ -163,7 +165,6 @@ fn build_fat32_disk_image(
 }
 
 fn build_gpt(file: &mut (impl Read + Write + Seek), name: &str) -> anyhow::Result<Range<u64>> {
-    const SECTOR_SIZE: u64 = 512;
     let mut gpt = gptman::GPT::new_from(file, SECTOR_SIZE, Guid::new_random().into())?;
 
     // Set up the "Protective" Master Boot Record

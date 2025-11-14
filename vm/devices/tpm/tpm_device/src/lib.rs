@@ -1455,7 +1455,7 @@ impl MmioIntercept for Tpm {
                     .ok() // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
                     .and_then(|(cmd_header, _)| cmd_header.command_code.into_enum());
 
-                    tracing::debug!(
+                    tracing::trace!(
                         cmd = ?cmd_header,
                         "executing guest tpm cmd",
                     );
@@ -1483,7 +1483,7 @@ impl MmioIntercept for Tpm {
                         return IoResult::Ok;
                     }
 
-                    tracing::debug!(
+                    tracing::trace!(
                         response_code = ?tpm20proto::protocol::common::ReplyHeader::ref_from_prefix(
                         &self.tpm_engine_helper.reply_buffer,
                         )

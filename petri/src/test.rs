@@ -152,7 +152,7 @@ impl Test {
 
         for hook in post_test_hooks {
             tracing::info!(name = hook.name(), "Running post-test hook");
-            if let Err(e) = hook.run() {
+            if let Err(e) = hook.run(r.is_ok()) {
                 tracing::error!(
                     error = e.as_ref() as &dyn std::error::Error,
                     "Post-test hook failed"
@@ -247,11 +247,11 @@ pub struct PetriPostTestHook {
     /// The name of the hook.
     name: String,
     /// The hook function.
-    hook: Box<dyn FnOnce() -> anyhow::Result<()> + Send>,
+    hook: Box<dyn FnOnce(bool) -> anyhow::Result<()>>,
 }
 
 impl PetriPostTestHook {
-    pub fn new(name: String, hook: impl FnOnce() -> anyhow::Result<()> + Send + 'static) -> Self {
+    pub fn new(name: String, hook: impl FnOnce(bool) -> anyhow::Result<()> + 'static) -> Self {
         Self {
             name,
             hook: Box::new(hook),
@@ -262,8 +262,8 @@ impl PetriPostTestHook {
         &self.name
     }
 
-    pub fn run(self) -> anyhow::Result<()> {
-        (self.hook)()
+    pub fn run(self, test_passed: bool) -> anyhow::Result<()> {
+        (self.hook)(test_passed)
     }
 }
 

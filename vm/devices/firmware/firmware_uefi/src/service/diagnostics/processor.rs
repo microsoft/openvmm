@@ -4,186 +4,209 @@
 //! Core processing logic for EFI diagnostics buffer
 
 use crate::service::diagnostics::LogLevel;
-use crate::service::diagnostics::formatting::EfiDiagnosticsLog;
-use crate::service::diagnostics::message_accumulator::AccumulationError;
-use crate::service::diagnostics::message_accumulator::MessageAccumulator;
-use crate::service::diagnostics::parser::EntryParseError;
-use crate::service::diagnostics::parser::parse_entry;
+use crate::service::diagnostics::accumulator::LogAccumulator;
+use crate::service::diagnostics::gpa::Gpa;
+use crate::service::diagnostics::header::HeaderParseError;
+use crate::service::diagnostics::header::LogBufferHeader;
+use crate::service::diagnostics::log::Log;
+use crate::service::diagnostics::log::LogParseError;
 use guestmem::GuestMemory;
-use guestmem::GuestMemoryError;
+use std::collections::BTreeMap;
 use thiserror::Error;
-use uefi_specs::hyperv::advanced_logger::AdvancedLoggerInfo;
-use uefi_specs::hyperv::advanced_logger::SIG_HEADER;
 
-/// Maximum allowed size of the log buffer
-pub const MAX_LOG_BUFFER_SIZE: u32 = 0x400000; // 4MB
+// Suppress logs that contain these known error/warning messages.
+// These messages are the result of known issues with our UEFI firmware that do
+// not seem to affect the guest.
+// TODO: Fix UEFI to resolve these errors/warnings
+const SUPPRESS_LOGS: [&str; 5] = [
+    "WARNING: There is mismatch of supported HashMask (0x2 - 0x7) between modules",
+    "that are linking different HashInstanceLib instances!",
+    "ConvertPages: failed to find range",
+    "ConvertPages: Incompatible memory types",
+    "ConvertPages: range",
+];
+
+/// Iterator over raw log entries from a buffer.
+///
+/// This iterator parses individual log entries from the buffer slice,
+/// advancing the buffer as it goes. It stops on the first parse error.
+struct RawLogIterator<'a> {
+    buffer: &'a [u8],
+}
+
+impl<'a> RawLogIterator<'a> {
+    fn new(buffer: &'a [u8]) -> Self {
+        Self { buffer }
+    }
+}
+
+impl<'a> Iterator for RawLogIterator<'a> {
+    type Item = Result<(Log, usize), LogParseError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.buffer.is_empty() {
+            return None;
+        }
+
+        match Log::from_buffer(self.buffer) {
+            Ok((log, consumed)) => {
+                self.buffer = if consumed >= self.buffer.len() {
+                    &[]
+                } else {
+                    &self.buffer[consumed..]
+                };
+                Some(Ok((log, consumed)))
+            }
+            Err(e) => {
+                // Stop processing on error
+                self.buffer = &[];
+                Some(Err(e))
+            }
+        }
+    }
+}
 
 /// Errors that occur during processing
 #[derive(Debug, Error)]
 pub enum ProcessingError {
+    /// Failed to parse header from guest memory
+    #[error("Failed to parse header: {0}")]
+    HeaderParse(#[from] HeaderParseError),
     /// Failed to parse a log entry from the buffer
-    #[error("Failed to parse entry: {0}")]
-    EntryParse(#[from] EntryParseError),
-    /// Failed during message accumulation process
-    #[error("Failed during message accumulation: {0}")]
-    MessageAccumulation(#[from] AccumulationError),
-    /// Log buffer header signature does not match expected value
-    #[error("Expected: {0:#x}, got: {1:#x}")]
-    HeaderSignatureMismatch(u32, u32),
-    /// Log buffer size exceeds maximum allowed size
-    #[error("Expected log buffer size < {0:#x}, got: {1:#x}")]
-    HeaderBufferSize(u32, u32),
-    /// Invalid guest physical address provided
-    #[error("Bad GPA value: {0:#x}")]
-    BadGpa(u32),
-    /// No guest physical address has been set
-    #[error("No GPA set")]
-    NoGpa,
-    /// Failed to read data from guest memory
+    #[error("Failed to parse log: {0}")]
+    LogParse(#[from] LogParseError),
+    /// Failed to read from guest memory
     #[error("Failed to read from guest memory: {0}")]
-    GuestMemoryRead(#[from] GuestMemoryError),
-    /// Arithmetic overflow occurred during calculation
-    #[error("Arithmetic overflow in {0}")]
-    Overflow(&'static str),
-    /// Used log buffer size is invalid
-    #[error("Expected used log buffer size < {0:#x}, got: {1:#x}")]
-    BadUsedBufferSize(u32, u32),
+    GuestMemoryRead(#[from] guestmem::GuestMemoryError),
 }
 
 /// Processes diagnostics from guest memory (internal implementation)
 ///
 /// # Arguments
-/// * `gpa` - Mutable reference to the GPA option
-/// * `has_processed_before` - Mutable reference to the processing flag
-/// * `allow_reprocess` - If true, allows processing even if already processed for guest
+/// * `gpa` - The GPA of the diagnostics buffer
 /// * `gm` - Guest memory to read diagnostics from
 /// * `log_level` - Log level for filtering
 /// * `log_handler` - Function to handle each parsed log entry
 pub fn process_diagnostics_internal<F>(
-    gpa: &mut Option<u32>,
-    has_processed_before: &mut bool,
-    allow_reprocess: bool,
+    gpa: Option<Gpa>,
     gm: &GuestMemory,
     log_level: LogLevel,
     log_handler: F,
 ) -> Result<(), ProcessingError>
 where
-    F: FnMut(EfiDiagnosticsLog<'_>, u32),
+    F: FnMut(&Log),
 {
-    // Prevents the guest from spamming diagnostics processing
-    if !allow_reprocess {
-        if *has_processed_before {
-            tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
-            return Ok(());
-        }
-        *has_processed_before = true;
-    }
+    // Parse and validate the header
+    let header = LogBufferHeader::from_guest_memory(gpa, gm)?;
 
-    // Validate the GPA
-    let gpa_value = match *gpa {
-        Some(gpa_val) if gpa_val != 0 && gpa_val != u32::MAX => gpa_val,
-        Some(invalid_gpa) => return Err(ProcessingError::BadGpa(invalid_gpa)),
-        None => return Err(ProcessingError::NoGpa),
-    };
-
-    // Read and validate the header from the guest memory
-    let header: AdvancedLoggerInfo = gm.read_plain(gpa_value as u64)?;
-
-    let signature = header.signature;
-    if signature != u32::from_le_bytes(SIG_HEADER) {
-        return Err(ProcessingError::HeaderSignatureMismatch(
-            u32::from_le_bytes(SIG_HEADER),
-            signature,
-        ));
-    }
-
-    if header.log_buffer_size > MAX_LOG_BUFFER_SIZE {
-        return Err(ProcessingError::HeaderBufferSize(
-            MAX_LOG_BUFFER_SIZE,
-            header.log_buffer_size,
-        ));
-    }
-
-    // Calculate the used portion of the log buffer
-    let used_log_buffer_size = header
-        .log_current_offset
-        .checked_sub(header.log_buffer_offset)
-        .ok_or_else(|| ProcessingError::Overflow("used_log_buffer_size"))?;
-
-    // Early exit if there is no buffer to process
-    if used_log_buffer_size == 0 {
+    // Early exit if buffer is empty
+    if header.is_empty() {
         tracelimit::info_ratelimited!(
             "EFI diagnostics' used log buffer size is 0, ending processing"
         );
         return Ok(());
     }
 
-    if used_log_buffer_size > header.log_buffer_size || used_log_buffer_size > MAX_LOG_BUFFER_SIZE {
-        return Err(ProcessingError::BadUsedBufferSize(
-            MAX_LOG_BUFFER_SIZE,
-            used_log_buffer_size,
-        ));
-    }
-
-    // Calculate start address of the log buffer and read it
-    let buffer_start_addr = gpa_value
-        .checked_add(header.log_buffer_offset)
-        .ok_or_else(|| ProcessingError::Overflow("buffer_start_addr"))?;
-
-    let mut buffer_data = vec![0u8; used_log_buffer_size as usize];
-    gm.read_at(buffer_start_addr as u64, &mut buffer_data)?;
+    // Read the log buffer from guest memory
+    let buffer_start_gpa = header.buffer_start_gpa()?;
+    let mut buffer_data = vec![0u8; header.used_size() as usize];
+    gm.read_at(buffer_start_gpa.as_u64(), &mut buffer_data)?;
 
     // Process the buffer
-    process_buffer(&buffer_data, log_level, log_handler)?;
+    LogProcessor::process_buffer(&buffer_data, log_level, log_handler)?;
 
     Ok(())
 }
 
-/// Process the log buffer and emit completed log entries
-fn process_buffer<F>(
-    buffer_data: &[u8],
-    log_level: LogLevel,
-    mut log_handler: F,
-) -> Result<(), ProcessingError>
-where
-    F: FnMut(EfiDiagnosticsLog<'_>, u32),
-{
-    let mut buffer_slice = buffer_data;
-    let mut accumulator = MessageAccumulator::new();
+/// Internal processor for log entries with suppression tracking
+struct LogProcessor {
+    /// Accumulator for multi-part messages
+    accumulator: LogAccumulator,
+    /// Map of suppressed log patterns to their counts
+    suppressed_logs: BTreeMap<&'static str, u32>,
+    /// Number of entries processed
+    entries_processed: usize,
+    /// Number of bytes read from buffer
+    bytes_read: usize,
+}
 
-    // Process the buffer slice until all entries are processed
-    while !buffer_slice.is_empty() {
-        let entry = parse_entry(buffer_slice)?;
-
-        // Process the entry through the accumulator
-        if let Some((log, raw_debug_level)) = accumulator.process_entry(&entry)?
-            && log_level.should_log(raw_debug_level)
-        {
-            log_handler(log, raw_debug_level);
-        }
-
-        // Move to the next entry
-        if entry.entry_size >= buffer_slice.len() {
-            break; // End of buffer
-        } else {
-            buffer_slice = &buffer_slice[entry.entry_size..];
+impl LogProcessor {
+    fn new() -> Self {
+        Self {
+            accumulator: LogAccumulator::new(),
+            suppressed_logs: BTreeMap::new(),
+            entries_processed: 0,
+            bytes_read: 0,
         }
     }
 
-    // Process any remaining accumulated message
-    if let Some((log, raw_debug_level)) = accumulator.finalize_remaining()
-        && log_level.should_log(raw_debug_level)
+    /// Check if a log should be suppressed based on known patterns
+    fn should_suppress(&mut self, log: &Log) -> bool {
+        for &pattern in &SUPPRESS_LOGS {
+            if log.message.contains(pattern) {
+                *self.suppressed_logs.entry(pattern).or_insert(0) += 1;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Log summary of suppressed messages and statistics
+    fn log_summary(&self) {
+        for (substring, count) in &self.suppressed_logs {
+            tracelimit::warn_ratelimited!(substring, count, "suppressed logs");
+        }
+        tracelimit::info_ratelimited!(
+            entries_processed = self.entries_processed,
+            bytes_read = self.bytes_read,
+            "processed EFI log entries"
+        );
+    }
+
+    /// Check if a log should be emitted based on level and suppression
+    fn should_emit(&mut self, log: &Log, log_level: LogLevel) -> bool {
+        log_level.should_log(log.debug_level) && !self.should_suppress(log)
+    }
+
+    /// Process the log buffer and emit completed log entries
+    fn process_buffer<F>(
+        buffer_data: &[u8],
+        log_level: LogLevel,
+        mut log_handler: F,
+    ) -> Result<(), ProcessingError>
+    where
+        F: FnMut(&Log),
     {
-        log_handler(log, raw_debug_level);
+        let mut processor = Self::new();
+
+        for result in RawLogIterator::new(buffer_data) {
+            let (log, bytes_consumed) = match result {
+                Ok((log, bytes)) => (log, bytes),
+                Err(e) => {
+                    tracelimit::warn_ratelimited!(error = ?e, "Failed to parse log entry, stopping processing");
+                    break;
+                }
+            };
+
+            processor.bytes_read += bytes_consumed;
+            processor.accumulator.feed(log)?;
+
+            if let Some(complete_log) = processor.accumulator.take() {
+                processor.entries_processed += 1;
+                if processor.should_emit(&complete_log, log_level) {
+                    log_handler(&complete_log);
+                }
+            }
+        }
+
+        if let Some(final_log) = processor.accumulator.clear() {
+            processor.entries_processed += 1;
+            if processor.should_emit(&final_log, log_level) {
+                log_handler(&final_log);
+            }
+        }
+
+        processor.log_summary();
+        Ok(())
     }
-
-    // Log suppressed message summary and statistics
-    accumulator.log_suppressed_summary();
-    tracelimit::info_ratelimited!(
-        entries_processed = accumulator.stats.entries_processed,
-        bytes_read = accumulator.stats.bytes_read,
-        "processed EFI log entries"
-    );
-
-    Ok(())
 }
