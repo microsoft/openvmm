@@ -264,49 +264,6 @@ async fn do_main(driver: DefaultDriver, mut tracing: TracingBackend) -> anyhow::
             tracing::debug!(CVM_ALLOWED, meminfo_summary=%summary, "PID_DIAG: meminfo summary");
         }
 
-        // Inode diagnostics: capture global inode stats to help confirm inode exhaustion.
-        if let (Ok(inode_nr), Ok(inode_state)) = (
-            std::fs::read_to_string("/proc/sys/fs/inode-nr"),
-            std::fs::read_to_string("/proc/sys/fs/inode-state"),
-        ) {
-            let inode_nr = inode_nr.trim().to_string();
-            let inode_state = inode_state.trim().to_string();
-            tracing::debug!(
-                CVM_ALLOWED,
-                inode_nr=%inode_nr,
-                inode_state=%inode_state,
-                "PID_DIAG: inode global stats"
-            );
-        }
-
-        // Root directory sample (capped) to approximate breadth of rootfs unpack contents.
-        if let Ok(root_iter) = std::fs::read_dir("/") {
-            let mut total = 0usize;
-            let mut dirs = 0usize;
-            let mut files = 0usize;
-            let mut others = 0usize;
-            for entry in root_iter.flatten().take(256) {
-                total += 1;
-                if let Ok(ft) = entry.file_type() {
-                    if ft.is_dir() {
-                        dirs += 1;
-                    } else if ft.is_file() {
-                        files += 1;
-                    } else {
-                        others += 1;
-                    }
-                }
-            }
-            tracing::debug!(
-                CVM_ALLOWED,
-                root_sample_total = total,
-                root_sample_dirs = dirs,
-                root_sample_files = files,
-                root_sample_other = others,
-                "PID_DIAG: root directory sample (max 256 entries)"
-            );
-        }
-
         // Mount lines (root and /run).
         if let Ok(mounts) = std::fs::read_to_string("/proc/mounts") {
             let root_line = mounts
@@ -412,19 +369,21 @@ async fn do_main(driver: DefaultDriver, mut tracing: TracingBackend) -> anyhow::
                 let raw = e.raw_os_error();
                 let enospc = raw == Some(28); // ENOSPC
                 let kind = e.kind();
-                let probe_outcome = pid_path.parent().map(|p| {
+                let probe_outcome = pid_path.parent().and_then(|p| {
                     let probe = p.join("underhill_probe.tmp");
                     match std::fs::write(&probe, b"probe") {
                         Ok(_) => {
                             let _ = std::fs::remove_file(&probe);
-                            "probe_ok"
+                            Some("probe_ok")
                         }
                         Err(pe) => {
-                            if pe.raw_os_error() == Some(28) {
+                            let rawp = pe.raw_os_error();
+                            let enospcp = rawp == Some(28);
+                            Some(if enospcp {
                                 "probe_failed_enospc"
                             } else {
                                 "probe_failed_other"
-                            }
+                            })
                         }
                     }
                 });
@@ -433,31 +392,6 @@ async fn do_main(driver: DefaultDriver, mut tracing: TracingBackend) -> anyhow::
                         .find(|l| l.starts_with("MemFree:"))
                         .map(|l| l.to_string())
                 });
-                // Multi-file probe to further differentiate inode exhaustion vs byte-size exhaustion.
-                let multi_probe_outcome = pid_path.parent().map(|p| {
-                    let mut created = 0usize;
-                    let mut enospc_failures = 0usize;
-                    for i in 0..8 {
-                        let probe = p.join(format!("underhill_probe_{i}.tmp"));
-                        match std::fs::write(&probe, b"probe") {
-                            Ok(_) => {
-                                created += 1;
-                                let _ = std::fs::remove_file(&probe);
-                            }
-                            Err(pe) => {
-                                if pe.raw_os_error() == Some(28) {
-                                    enospc_failures += 1;
-                                }
-                            }
-                        }
-                    }
-                    format!("multi_created={created} enospc_failures={enospc_failures}")
-                });
-
-                // Capture inode stats again post-failure.
-                let inode_nr_now = std::fs::read_to_string("/proc/sys/fs/inode-nr").ok();
-                let inode_state_now = std::fs::read_to_string("/proc/sys/fs/inode-state").ok();
-
                 tracing::error!(
                     CVM_ALLOWED,
                     pid_path=?pid_path,
@@ -467,10 +401,7 @@ async fn do_main(driver: DefaultDriver, mut tracing: TracingBackend) -> anyhow::
                     raw_os_error=?raw,
                     enospc=?enospc,
                     probe=?probe_outcome,
-                    multi_probe=?multi_probe_outcome,
                     post_memfree=?post_memfree,
-                    inode_nr=?inode_nr_now,
-                    inode_state=?inode_state_now,
                     "PID_DIAG: failed to write pid file"
                 );
                 return Err(anyhow::anyhow!(e)
