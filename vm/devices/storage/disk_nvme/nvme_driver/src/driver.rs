@@ -31,6 +31,8 @@ use pal_async::task::Task;
 use parking_lot::RwLock;
 use save_restore::NvmeDriverWorkerSavedState;
 use std::collections::HashMap;
+use std::mem::ManuallyDrop;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use task_control::AsyncRun;
@@ -87,7 +89,8 @@ struct NamespaceHandle {
 
 #[derive(Inspect)]
 struct DriverWorkerTask<T: DeviceBacking> {
-    device: T,
+    #[inspect(skip)]
+    device: ManuallyDrop<T>,
     #[inspect(skip)]
     driver: VmTaskDriver,
     registers: Arc<DeviceRegisters<T>>,
@@ -99,6 +102,12 @@ struct DriverWorkerTask<T: DeviceBacking> {
     recv: mesh::Receiver<NvmeWorkerRequest>,
     bounce_buffer: bool,
 }
+
+// impl<T: DeviceBacking> Drop for DriverWorkerTask<T> {
+//     fn drop(&mut self) {
+//         tracing::debug!(pci_id = ?self.device.id(), "***dropping nvme driver worker task");
+//     }
+// }
 
 #[derive(Inspect)]
 struct WorkerState {
@@ -279,7 +288,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         Ok(Self {
             device_id: device.id().to_owned(),
             task: Some(TaskControl::new(DriverWorkerTask {
-                device,
+                device: ManuallyDrop::new(device),
                 driver: driver.clone(),
                 registers,
                 admin: None,
@@ -322,7 +331,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // Start the admin queue pair.
         let admin = QueuePair::new(
             self.driver.clone(),
-            &worker.device,
+            worker.device.deref(),
             ADMIN_QID,
             admin_sqes,
             admin_cqes,
@@ -668,7 +677,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         let mut this = Self {
             device_id: device.id().to_owned(),
             task: Some(TaskControl::new(DriverWorkerTask {
-                device,
+                device: ManuallyDrop::new(device),
                 driver: driver.clone(),
                 registers: registers.clone(),
                 admin: None, // Updated below.
@@ -1053,7 +1062,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
 
         let queue = QueuePair::new(
             self.driver.clone(),
-            &self.device,
+            self.device.deref(),
             qid,
             state.qsize,
             state.qsize,
