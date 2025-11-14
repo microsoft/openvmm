@@ -2200,6 +2200,7 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "firmware_uefi",
+ "guestmem",
  "guid",
  "libfuzzer-sys",
  "openssl",

@@ -89,6 +89,7 @@ pub(super) fn generate_html_coverage_report(
             .arg("-object")
             .arg(&coverage_bin)
             .args(["--ignore-filename-regex", "rustc"])
+            .args(["--ignore-filename-regex", "openssl-sys"])
             .stdout(std::process::Stdio::from(lcov_output))
             .spawn()?;
         if !cmd.wait()?.success() {
