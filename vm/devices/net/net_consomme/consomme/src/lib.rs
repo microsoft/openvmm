@@ -358,6 +358,22 @@ enum IpAddresses {
     V6(Ipv6Addresses),
 }
 
+impl IpAddresses {
+    fn src_addr(&self) -> IpAddress {
+        match self {
+            IpAddresses::V4(addrs) => IpAddress::Ipv4(addrs.src_addr),
+            IpAddresses::V6(addrs) => IpAddress::Ipv6(addrs.src_addr),
+        }
+    }
+
+    fn dst_addr(&self) -> IpAddress {
+        match self {
+            IpAddresses::V4(addrs) => IpAddress::Ipv4(addrs.dst_addr),
+            IpAddresses::V6(addrs) => IpAddress::Ipv6(addrs.dst_addr),
+        }
+    }
+}
+
 impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(params: ConsommeParams) -> Self {

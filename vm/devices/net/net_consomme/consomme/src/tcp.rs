@@ -316,15 +316,15 @@ impl<T: Client> Access<'_, T> {
         checksum: &ChecksumState,
     ) -> Result<(), DropReason> {
         let tcp_packet = TcpPacket::new_checked(payload)?;
+        let tcp = TcpRepr::parse(
+            &tcp_packet,
+            &addresses.src_addr().into(),
+            &addresses.dst_addr().into(),
+            &checksum.caps(),
+        )?;
 
         let (ft, tcp) = match addresses {
             IpAddresses::V4(addresses) => {
-                let tcp = TcpRepr::parse(
-                    &tcp_packet,
-                    &addresses.src_addr.into(),
-                    &addresses.dst_addr.into(),
-                    &checksum.caps(),
-                )?;
                 let ft = FourTuple {
                     dst: SocketAddr::V4(SocketAddrV4::new(addresses.dst_addr.into(), tcp.dst_port)),
                     src: SocketAddr::V4(SocketAddrV4::new(addresses.src_addr.into(), tcp.src_port)),
@@ -332,12 +332,6 @@ impl<T: Client> Access<'_, T> {
                 (ft, tcp)
             }
             IpAddresses::V6(addresses) => {
-                let tcp = TcpRepr::parse(
-                    &tcp_packet,
-                    &addresses.src_addr.into(),
-                    &addresses.dst_addr.into(),
-                    &checksum.caps(),
-                )?;
                 let ft = FourTuple {
                     dst: SocketAddr::V6(SocketAddrV6::new(
                         addresses.dst_addr.into(),
@@ -578,12 +572,10 @@ impl TcpConnection {
         let mut this = Self::default();
         this.initialize_from_first_client_packet(tcp)?;
 
-        let socket = match sender.ft.dst {
-            SocketAddr::V4(_) => Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))
-                .map_err(DropReason::Io)?,
-            SocketAddr::V6(_) => Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))
-                .map_err(DropReason::Io)?,
-        };
+        let socket = Socket::new(match sender.ft.dst {
+            SocketAddr::V4(_) => Domain::IPV4,
+            SocketAddr::V6(_) => Domain::IPV6,
+        }, Type::STREAM, Some(Protocol::TCP)).map_err(DropReason::Io)?;
 
         // On Windows the default behavior for non-existent loopback sockets is
         // to wait and try again. This is different than the Linux behavior of
@@ -614,11 +606,7 @@ impl TcpConnection {
                     tracing::warn!("unable to get local socket address");
                 }
                 Some(addr) => {
-                    let is_loopback = match addr {
-                        SocketAddr::V4(addr) => addr.ip().is_loopback(),
-                        SocketAddr::V6(addr) => addr.ip().is_loopback(),
-                    };
-                    if is_loopback {
+                    if addr.ip().is_loopback() {
                         this.loopback_port = LoopbackPortInfo::ProxyForGuestPort {
                             sending_port: addr.port(),
                             guest_port: sender.ft.src.port(),

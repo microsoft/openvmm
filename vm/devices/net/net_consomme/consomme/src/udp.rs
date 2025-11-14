@@ -23,12 +23,12 @@ use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
 use smoltcp::wire::IPV4_HEADER_LEN;
 use smoltcp::wire::IPV6_HEADER_LEN;
+use smoltcp::wire::IpAddress;
 use smoltcp::wire::IpProtocol;
+use smoltcp::wire::IpRepr;
 use smoltcp::wire::Ipv4Packet;
-use smoltcp::wire::Ipv4Repr;
 use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Packet;
-use smoltcp::wire::Ipv6Repr;
 use smoltcp::wire::UDP_HEADER_LEN;
 use smoltcp::wire::UdpPacket;
 use smoltcp::wire::UdpRepr;
@@ -125,62 +125,50 @@ impl UdpConnection {
                 },
             ) {
                 Poll::Ready(Ok((n, src_addr))) => {
-                    // Set common Ethernet header fields
-                    eth.set_src_addr(state.params.gateway_mac);
                     eth.set_dst_addr(self.guest_mac);
-                    // Build IP and UDP headers based on address version
-                    let (packet_len, checksum_state) = match (src_addr, dst_addr) {
-                        (SocketAddr::V4(src_addr), SocketAddr::V4(dst_addr)) => {
-                            eth.set_ethertype(EthernetProtocol::Ipv4);
-                            let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
-                            Ipv4Repr {
-                                src_addr: (*src_addr.ip()).into(),
-                                dst_addr: (*dst_addr.ip()).into(),
-                                next_header: IpProtocol::Udp,
-                                payload_len: UDP_HEADER_LEN + n,
-                                hop_limit: 64,
-                            }
-                            .emit(&mut ipv4, &ChecksumCapabilities::default());
+                    eth.set_src_addr(state.params.gateway_mac);
+                    let ip = IpRepr::new(
+                        src_addr.ip().into(),
+                        dst_addr.ip().into(),
+                        IpProtocol::Udp,
+                        UDP_HEADER_LEN + n,
+                        64,
+                    );
 
-                            // Build UDP header
-                            let mut udp = UdpPacket::new_unchecked(ipv4.payload_mut());
-                            udp.set_src_port(src_addr.port());
-                            udp.set_dst_port(dst_addr.port());
-                            udp.set_len((UDP_HEADER_LEN + n) as u16);
-                            udp.fill_checksum(&(*src_addr.ip()).into(), &(*dst_addr.ip()).into());
+                    match ip {
+                        IpRepr::Ipv4(_) => eth.set_ethertype(EthernetProtocol::Ipv4),
+                        IpRepr::Ipv6(_) => eth.set_ethertype(EthernetProtocol::Ipv6),
+                    }
 
-                            (
-                                ETHERNET_HEADER_LEN + ipv4.total_len() as usize,
-                                ChecksumState::UDP4,
-                            )
+                    let ip_packet_buf = eth.payload_mut();
+                    ip.emit(&mut *ip_packet_buf, &ChecksumCapabilities::default());
+                    let (udp_payload_buf, ip_total_len) = match dst_addr {
+                        SocketAddr::V4(_) => {
+                            let ipv4_packet = Ipv4Packet::new_unchecked(&*ip_packet_buf);
+                            let total_len = ipv4_packet.total_len() as usize;
+                            let payload_offset = ipv4_packet.header_len() as usize;
+                            (&mut ip_packet_buf[payload_offset..], total_len)
                         }
-                        (SocketAddr::V6(src_addr), SocketAddr::V6(dst_addr)) => {
-                            eth.set_ethertype(EthernetProtocol::Ipv6);
-                            let mut ipv6 = Ipv6Packet::new_unchecked(eth.payload_mut());
-                            Ipv6Repr {
-                                src_addr: (*src_addr.ip()).into(),
-                                dst_addr: (*dst_addr.ip()).into(),
-                                next_header: IpProtocol::Udp,
-                                payload_len: UDP_HEADER_LEN + n,
-                                hop_limit: 64,
-                            }
-                            .emit(&mut ipv6);
-
-                            // Build UDP header
-                            let mut udp = UdpPacket::new_unchecked(ipv6.payload_mut());
-                            udp.set_src_port(src_addr.port());
-                            udp.set_dst_port(dst_addr.port());
-                            udp.set_len((UDP_HEADER_LEN + n) as u16);
-                            udp.fill_checksum(&(*src_addr.ip()).into(), &(*dst_addr.ip()).into());
-
-                            (
-                                ETHERNET_HEADER_LEN + IPV6_HEADER_LEN + UDP_HEADER_LEN + n,
-                                ChecksumState::NONE,
-                            )
+                        SocketAddr::V6(_) => {
+                            let ipv6_packet = Ipv6Packet::new_unchecked(&*ip_packet_buf);
+                            let total_len = ipv6_packet.total_len();
+                            let payload_offset = IPV6_HEADER_LEN;
+                            (&mut ip_packet_buf[payload_offset..], total_len)
                         }
-                        _ => {
-                            panic!("Mismatched IP address versions in UDP connection");
-                        }
+                    };
+
+                    let dst_ip_addr: IpAddress = dst_addr.ip().into();
+                    let src_ip_addr: IpAddress = src_addr.ip().into();
+                    let mut udp_packet = UdpPacket::new_unchecked(udp_payload_buf);
+                    udp_packet.set_src_port(src_addr.port());
+                    udp_packet.set_dst_port(dst_addr.port());
+                    udp_packet.set_len((UDP_HEADER_LEN + n) as u16);
+                    udp_packet.fill_checksum(&src_ip_addr, &dst_ip_addr);
+
+                    let packet_len = ETHERNET_HEADER_LEN + ip_total_len;
+                    let checksum_state = match dst_addr {
+                        SocketAddr::V4(_) => ChecksumState::UDP4,
+                        SocketAddr::V6(_) => ChecksumState::NONE,
                     };
 
                     // Send packet to client
@@ -269,7 +257,7 @@ impl<T: Client> Access<'_, T> {
 
                 // Check for gateway-destined packets (IPv6 uses multicast instead of broadcast)
                 if addrs.dst_addr == self.inner.state.params.gateway_link_local_ipv6
-                    || addrs.dst_addr.is_multicast()
+                    || addrs.dst_addr.0[0..2] == [0xff, 0x02] 
                 {
                     if self.handle_gateway_udp_v6(&udp_packet, Some(addrs.src_addr))? {
                         return Ok(());
