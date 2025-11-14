@@ -1,11 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![expect(missing_docs)]
+//! VHD and VHDX disk implementation using the Windows VHDMP driver.
+
 #![cfg(windows)]
 // UNSAFETY: Calling Win32 VirtualDisk APIs and accessing the unions they return.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks)]
 
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
@@ -28,6 +28,7 @@ use vm_resource::kind::DiskHandleKind;
 mod virtdisk {
     #![expect(non_snake_case, dead_code, clippy::upper_case_acronyms)]
 
+    use guid::Guid;
     use std::os::windows::prelude::*;
     use windows_sys::Win32::Security::SECURITY_DESCRIPTOR;
     use windows_sys::Win32::System::IO::OVERLAPPED;
@@ -40,11 +41,19 @@ mod virtdisk {
     type PCWSTR = *const u16; // const WCHAR*
 
     #[repr(C)]
-    #[derive(Copy, Clone)]
+    #[derive(Copy, Clone, Default)]
     pub struct VIRTUAL_STORAGE_TYPE {
         pub DeviceId: u32,
         pub VendorId: GUID,
     }
+
+    pub const VIRTUAL_STORAGE_TYPE_DEVICE_UNKNOWN: u32 = 0;
+    pub const VIRTUAL_STORAGE_TYPE_DEVICE_ISO: u32 = 1;
+    pub const VIRTUAL_STORAGE_TYPE_DEVICE_VHD: u32 = 2;
+    pub const VIRTUAL_STORAGE_TYPE_DEVICE_VHDX: u32 = 3;
+
+    pub const VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT: Guid =
+        guid::guid!("EC984AEC-A0F9-47e9-901F-71415A66345B");
 
     // Open the backing store without opening any differencing chain parents.
     // This allows one to fixup broken parent links.
@@ -379,6 +388,7 @@ mod virtdisk {
 }
 
 #[derive(Debug, MeshPayload)]
+/// Handle for an open VHD file.
 pub struct Vhd(fs::File);
 
 fn chk_win32(err: u32) -> std::io::Result<()> {
@@ -391,25 +401,28 @@ fn chk_win32(err: u32) -> std::io::Result<()> {
 
 impl Vhd {
     fn open(path: &Path, read_only: bool) -> std::io::Result<Self> {
-        let file = unsafe {
-            let mut storage_type = std::mem::zeroed();
-            // Use a unique ID for each open to avoid virtual disk sharing
-            // within VHDMP. In the future, consider taking this as a parameter
-            // to support failover.
-            let resiliency_guid = Guid::new_random();
-            let mut parameters = virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS {
-                Version: 2,
-                u: virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS_u {
-                    Version2: virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS_2 {
-                        ReadOnly: read_only.into(),
-                        ResiliencyGuid: resiliency_guid.into(),
-                        ..std::mem::zeroed()
-                    },
+        let mut storage_type = virtdisk::VIRTUAL_STORAGE_TYPE::default();
+        // Use a unique ID for each open to avoid virtual disk sharing
+        // within VHDMP. In the future, consider taking this as a parameter
+        // to support failover.
+        let resiliency_guid = Guid::new_random();
+        let mut parameters = virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS {
+            Version: 2,
+            u: virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS_u {
+                Version2: virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS_2 {
+                    ReadOnly: read_only.into(),
+                    ResiliencyGuid: resiliency_guid.into(),
+                    GetInfoOnly: 0,
                 },
-            };
-            let mut path16: Vec<_> = path.as_os_str().encode_wide().collect();
-            path16.push(0);
-            let mut handle = std::mem::zeroed();
+            },
+        };
+        let mut path16: Vec<_> = path.as_os_str().encode_wide().collect();
+        path16.push(0);
+        let mut handle = std::ptr::null_mut();
+
+        // SAFETY: All structs are correctly initalized, the path has a null
+        // terminator, and we validate the result immediately.
+        unsafe {
             chk_win32(virtdisk::OpenVirtualDisk(
                 &mut storage_type,
                 path16.as_ptr(),
@@ -418,48 +431,54 @@ impl Vhd {
                 Some(&mut parameters),
                 &mut handle,
             ))?;
-            fs::File::from_raw_handle(handle)
-        };
-        Ok(Self(file))
+            Ok(Self(fs::File::from_raw_handle(handle)))
+        }
     }
 
-    /// Create a new differencing VHD
-    pub fn create_diff(path: &Path, parent_path: &Path) -> std::io::Result<Self> {
-        let file = unsafe {
-            let mut storage_type = std::mem::zeroed();
+    /// Create a new dynamic VHD
+    pub fn create_dynamic(path: &Path, max_size_mb: u64, vhdx: bool) -> std::io::Result<Self> {
+        let mut path16: Vec<_> = path.as_os_str().encode_wide().collect();
+        path16.push(0);
 
-            let path = {
-                let mut path16: Vec<_> = path.as_os_str().encode_wide().collect();
-                path16.push(0);
-                path16
-            };
+        let mut storage_type = virtdisk::VIRTUAL_STORAGE_TYPE {
+            DeviceId: if vhdx {
+                virtdisk::VIRTUAL_STORAGE_TYPE_DEVICE_VHDX
+            } else {
+                virtdisk::VIRTUAL_STORAGE_TYPE_DEVICE_VHD
+            },
+            VendorId: virtdisk::VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT.into(),
+        };
 
-            let parent_path = {
-                let mut parent_path16: Vec<_> = parent_path.as_os_str().encode_wide().collect();
-                parent_path16.push(0);
-                parent_path16
-            };
-
-            // Use a unique ID for each open to avoid virtual disk sharing
-            // within VHDMP. In the future, consider taking this as a parameter
-            // to support failover.
-            let resiliency_guid = Guid::new_random();
-            let mut parameters = virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS {
-                Version: 2,
-                u: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_u {
-                    Version2: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_2 {
-                        ParentPath: parent_path.as_ptr(),
-                        OpenFlags: virtdisk::OPEN_VIRTUAL_DISK_FLAG_CACHED_IO,
-                        ResiliencyGuid: resiliency_guid.into(),
-                        ..std::mem::zeroed()
-                    },
+        // Use a unique ID for each open to avoid virtual disk sharing
+        // within VHDMP. In the future, consider taking this as a parameter
+        // to support failover.
+        let resiliency_guid = Guid::new_random();
+        let mut parameters = virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS {
+            Version: 2,
+            u: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_u {
+                Version2: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_2 {
+                    UniqueId: Guid::new_random().into(),
+                    MaximumSize: max_size_mb * 1024 * 1024,
+                    BlockSizeInBytes: 2 * 1024 * 1024,
+                    SectorSizeInBytes: 512,
+                    OpenFlags: virtdisk::OPEN_VIRTUAL_DISK_FLAG_CACHED_IO,
+                    ResiliencyGuid: resiliency_guid.into(),
+                    PhysicalSectorSizeInBytes: 0,
+                    ParentPath: std::ptr::null(),
+                    SourcePath: std::ptr::null(),
+                    ParentVirtualStorageType: virtdisk::VIRTUAL_STORAGE_TYPE::default(),
+                    SourceVirtualStorageType: virtdisk::VIRTUAL_STORAGE_TYPE::default(),
                 },
-            };
+            },
+        };
+        let mut handle = std::ptr::null_mut();
 
-            let mut handle = std::mem::zeroed();
+        // SAFETY: All structs are correctly initalized, the path has a null
+        // terminator, and we validate the result immediately.
+        unsafe {
             chk_win32(virtdisk::CreateVirtualDisk(
                 &mut storage_type,
-                path.as_ptr(),
+                path16.as_ptr(),
                 0,
                 None,
                 0,
@@ -468,17 +487,72 @@ impl Vhd {
                 None,
                 &mut handle,
             ))?;
-            fs::File::from_raw_handle(handle)
-        };
-        Ok(Self(file))
+            Ok(Self(fs::File::from_raw_handle(handle)))
+        }
     }
 
-    fn attach_for_raw_access(&self, read_only: bool) -> std::io::Result<()> {
+    /// Create a new differencing VHD
+    pub fn create_diff(path: &Path, parent_path: &Path) -> std::io::Result<Self> {
+        let mut storage_type = virtdisk::VIRTUAL_STORAGE_TYPE::default();
+
+        let mut path16: Vec<_> = path.as_os_str().encode_wide().collect();
+        path16.push(0);
+
+        let mut parent_path16: Vec<_> = parent_path.as_os_str().encode_wide().collect();
+        parent_path16.push(0);
+
+        // Use a unique ID for each open to avoid virtual disk sharing
+        // within VHDMP. In the future, consider taking this as a parameter
+        // to support failover.
+        let resiliency_guid = Guid::new_random();
+        let mut parameters = virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS {
+            Version: 2,
+            u: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_u {
+                Version2: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_2 {
+                    ParentPath: parent_path16.as_ptr(),
+                    OpenFlags: virtdisk::OPEN_VIRTUAL_DISK_FLAG_CACHED_IO,
+                    ResiliencyGuid: resiliency_guid.into(),
+                    UniqueId: Guid::ZERO.into(),
+                    MaximumSize: 0,
+                    BlockSizeInBytes: 0,
+                    SectorSizeInBytes: 0,
+                    PhysicalSectorSizeInBytes: 0,
+                    SourcePath: std::ptr::null_mut(),
+                    ParentVirtualStorageType: virtdisk::VIRTUAL_STORAGE_TYPE::default(),
+                    SourceVirtualStorageType: virtdisk::VIRTUAL_STORAGE_TYPE::default(),
+                },
+            },
+        };
+
+        let mut handle = std::ptr::null_mut();
+
+        // SAFETY: All structs are correctly initalized, the path has a null
+        // terminator, and we validate the result immediately.
         unsafe {
-            let mut flags = virtdisk::ATTACH_VIRTUAL_DISK_FLAG_NO_LOCAL_HOST;
-            if read_only {
-                flags |= virtdisk::ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY;
-            }
+            chk_win32(virtdisk::CreateVirtualDisk(
+                &mut storage_type,
+                path16.as_ptr(),
+                0,
+                None,
+                0,
+                0,
+                Some(&mut parameters),
+                None,
+                &mut handle,
+            ))?;
+            Ok(Self(fs::File::from_raw_handle(handle)))
+        }
+    }
+
+    /// Configure the VHD for raw access
+    pub fn attach_for_raw_access(&self, read_only: bool) -> std::io::Result<()> {
+        let mut flags = virtdisk::ATTACH_VIRTUAL_DISK_FLAG_NO_LOCAL_HOST;
+        if read_only {
+            flags |= virtdisk::ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY;
+        }
+        // SAFETY: We are guaranteed to be holding an open handle, and we
+        // validate the result immediately.
+        unsafe {
             chk_win32(virtdisk::AttachVirtualDisk(
                 self.0.as_raw_handle(),
                 None,
@@ -492,6 +566,8 @@ impl Vhd {
     }
 
     fn info_static(&self, info_type: u32) -> std::io::Result<virtdisk::GET_VIRTUAL_DISK_INFO> {
+        // SAFETY: We are guaranteed to be holding an open handle, and we
+        // validate the result immediately.
         unsafe {
             let mut info = virtdisk::GET_VIRTUAL_DISK_INFO {
                 Version: info_type,
@@ -504,11 +580,13 @@ impl Vhd {
                 Some(&mut info),
                 None,
             ))?;
+
             Ok(info)
         }
     }
 
     fn get_size(&self) -> std::io::Result<virtdisk::GET_VIRTUAL_DISK_INFO_Size> {
+        // SAFETY: Accessing the right union field for this call.
         unsafe {
             Ok(self
                 .info_static(virtdisk::GET_VIRTUAL_DISK_INFO_SIZE)?
@@ -518,6 +596,7 @@ impl Vhd {
     }
 
     fn get_physical_sector_size(&self) -> std::io::Result<u32> {
+        // SAFETY: Accessing the right union field for this call.
         unsafe {
             Ok(self
                 .info_static(virtdisk::GET_VIRTUAL_DISK_INFO_VHD_PHYSICAL_SECTOR_SIZE)?
@@ -527,6 +606,7 @@ impl Vhd {
     }
 
     fn get_disk_id(&self) -> std::io::Result<Guid> {
+        // SAFETY: Accessing the right union field for this call.
         unsafe {
             Ok(self
                 .info_static(virtdisk::GET_VIRTUAL_DISK_INFO_VIRTUAL_DISK_ID)?
@@ -538,20 +618,25 @@ impl Vhd {
 }
 
 #[derive(MeshPayload)]
+/// Configuration to open a VHDMP disk.
 pub struct OpenVhdmpDiskConfig(pub Vhd);
 
 impl ResourceId<DiskHandleKind> for OpenVhdmpDiskConfig {
     const ID: &'static str = "vhdmp";
 }
 
+/// Resolver for VHDMP disks.
 pub struct VhdmpDiskResolver;
 declare_static_resolver!(VhdmpDiskResolver, (DiskHandleKind, OpenVhdmpDiskConfig));
 
 #[derive(Debug, Error)]
+/// Errors that can occur when resolving a VHDMP disk.
 pub enum ResolveVhdmpDiskError {
     #[error("failed to open VHD")]
+    /// Error from VHDMP when opening the disk.
     Vhdmp(#[source] Error),
     #[error("invalid disk")]
+    /// The disk is invalid.
     InvalidDisk(#[source] disk_backend::InvalidDisk),
 }
 
@@ -586,14 +671,19 @@ pub struct VhdmpDisk {
 }
 
 #[derive(Debug, Error)]
+/// Errors that can occur when working with VHDMP disks.
 pub enum Error {
     #[error("failed to open VHD")]
+    /// Error opening the disk
     Open(#[source] std::io::Error),
     #[error("failed to create VHD")]
+    /// Error creating the disk
     Create(#[source] std::io::Error),
     #[error("failed to attach VHD")]
+    /// Error attaching the disk
     Attach(#[source] std::io::Error),
     #[error("failed to query VHD metadata")]
+    /// Error querying disk metadata
     Query(#[source] std::io::Error),
 }
 

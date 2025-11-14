@@ -33,6 +33,8 @@ use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::vm::append_cmdline;
 use anyhow::Context;
 use async_trait::async_trait;
+use disk_backend::sync_wrapper::BlockingDisk;
+use disk_vhdmp::VhdmpDisk;
 use get_resources::ged::FirmwareEvent;
 use pal_async::DefaultDriver;
 use pal_async::pipe::PolledPipe;
@@ -50,7 +52,9 @@ use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
+use tempfile::TempPath;
 use vm::HyperVVM;
 use vmgs_resources::GuestStateEncryptionPolicy;
 
@@ -151,6 +155,66 @@ impl PetriVmmBackend for HyperVPetriBackend {
         (firmware.quirks().hyperv, VmmQuirks::default())
     }
 
+    fn default_servicing_flags() -> OpenHclServicingFlags {
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: false, // TODO: Support NVMe KA in the Hyper-V Petri Backend
+            override_version_checks: false,
+            stop_timeout_hint_secs: None,
+        }
+    }
+
+    fn create_guest_dump_disk() -> anyhow::Result<
+        Option<(
+            Arc<TempPath>,
+            Box<dyn FnOnce() -> anyhow::Result<Box<dyn fatfs::ReadWriteSeek>>>,
+        )>,
+    > {
+        // Make a 16 GiB dynamic VHD for guest crash dumps.
+        let crash_disk = tempfile::Builder::new()
+            .suffix(".vhdx")
+            .make(|path| disk_vhdmp::Vhd::create_dynamic(path, 16 * 1024, true))
+            .context("error creating crash dump vhdx")?;
+        let (crash_disk, crash_disk_path) = crash_disk.into_parts();
+        crash_disk
+            .attach_for_raw_access(false)
+            .context("error attaching crash dump vhdx")?;
+        let mut crash_disk = BlockingDisk::new(
+            disk_backend::Disk::new(
+                VhdmpDisk::new(crash_disk, false).context("failed opening vhdmp")?,
+            )
+            .unwrap(),
+        );
+
+        // Format the VHD with FAT32.
+        crate::disk_image::build_fat32_disk_image(
+            &mut crash_disk,
+            "CRASHDUMP",
+            b"crashdump  ",
+            &[],
+        )
+        .context("error writing empty crash disk filesystem")?;
+
+        // Prepare the hook to extract crash dumps after the test.
+        let crash_disk_path = Arc::new(crash_disk_path);
+        let hook_crash_disk = crash_disk_path.clone();
+        let disk_opener = Box::new(move || {
+            let mut vhd = Err(anyhow::Error::msg("haven't tried to open the vhd yet"));
+            // The VM may not be fully shut down immediately, do some retries
+            for _ in 0..5 {
+                vhd = VhdmpDisk::open_vhd(hook_crash_disk.as_ref(), true)
+                    .context("failed opening vhd");
+                if vhd.is_ok() {
+                    break;
+                } else {
+                    std::thread::sleep(Duration::from_secs(3));
+                }
+            }
+            let vhdmp = VhdmpDisk::new(vhd?, true).context("failed opening vhdmp")?;
+            Ok(Box::new(BlockingDisk::new(disk_backend::Disk::new(vhdmp).unwrap())) as _)
+        });
+        Ok(Some((crash_disk_path, disk_opener)))
+    }
+
     fn new(_resolver: &ArtifactResolver<'_>) -> Self {
         HyperVPetriBackend {}
     }
@@ -172,6 +236,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             boot_device_type,
             vmgs,
             tpm_state_persistence,
+            guest_crash_disk,
         } = config;
 
         let PetriVmResources { driver, log_source } = resources;
@@ -384,23 +449,18 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
         }
 
-        let mut vhd_paths = Vec::new();
+        // Share a single scsi controller for all petri-added drives.
+        let petri_vtl0_scsi = vm.add_scsi_controller(0).await?.0;
+
         if let Some((controller_type, controller_number)) = match boot_device_type {
             BootDeviceType::None => None,
             BootDeviceType::Ide => Some((powershell::ControllerType::Ide, 0)),
-            BootDeviceType::Scsi => Some((
-                powershell::ControllerType::Scsi,
-                vm.add_scsi_controller(0).await?.0,
-            )),
+            BootDeviceType::Scsi => Some((powershell::ControllerType::Scsi, petri_vtl0_scsi)),
             BootDeviceType::Nvme => todo!("NVMe boot device not yet supported for Hyper-V"),
         } {
             if let Some(artifact) = guest_artifact {
-                vhd_paths.push((controller_type, controller_number, vec![artifact.get()]));
-            }
-        }
-
-        for (controller_type, controller_number, vhds) in vhd_paths {
-            for (controller_location, vhd) in vhds.iter().enumerate() {
+                let controller_location = super::PETRI_VTL0_SCSI_BOOT_LUN;
+                let vhd = artifact.get();
                 let diff_disk_path = temp_dir.path().join(format!(
                     "{}_{}_{}",
                     controller_number,
@@ -415,7 +475,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 vm.add_vhd(
                     &diff_disk_path,
                     controller_type,
-                    Some(controller_location as u32),
+                    Some(controller_location),
                     Some(controller_number),
                 )
                 .await?;
@@ -447,12 +507,11 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     vm.set_imc(&imc_hive).await?;
                 }
 
-                let controller_number = vm.add_scsi_controller(0).await?.0;
                 vm.add_vhd(
                     &agent_disk_path,
                     powershell::ControllerType::Scsi,
-                    Some(0),
-                    Some(controller_number),
+                    Some(super::PETRI_VTL0_SCSI_PIPETTE_LUN),
+                    Some(petri_vtl0_scsi),
                 )
                 .await?;
             }
@@ -568,6 +627,16 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
         }
 
+        if let Some(guest_crash_disk) = guest_crash_disk {
+            vm.add_vhd(
+                &guest_crash_disk,
+                powershell::ControllerType::Scsi,
+                Some(super::PETRI_VTL0_SCSI_CRASH_LUN),
+                Some(petri_vtl0_scsi),
+            )
+            .await?;
+        }
+
         let serial_pipe_path = vm.set_vm_com_port(1).await?;
         let serial_log_file = log_source.log_file("guest")?;
         log_tasks.push(driver.spawn(
@@ -663,7 +732,7 @@ impl HyperVPetriRuntime {
         &mut self,
         vhd: impl AsRef<Path>,
         controller_type: powershell::ControllerType,
-        controller_location: Option<u32>,
+        controller_location: Option<u8>,
         controller_number: Option<u32>,
     ) -> anyhow::Result<()> {
         self.vm
