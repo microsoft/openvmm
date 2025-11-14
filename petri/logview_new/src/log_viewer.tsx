@@ -13,6 +13,7 @@ import './styles/log_viewer.css';
 import { SearchInput } from './search';
 import { createColumns, columnWidthMap, defaultSorting } from './table_defs/log_viewer';
 import { LogEntry } from './data_defs';
+import { InspectOverlay } from './inspect';
 
 interface LogViewerHeaderProps {
     runId: string;
@@ -22,9 +23,11 @@ interface LogViewerHeaderProps {
     searchFilter: string;
     setSearchFilter: (filter: string) => void;
     searchInputRef?: React.RefObject<HTMLInputElement | null>;
+    /** Whether the search input should have its global key handlers active */
+    searchActive?: boolean;
 }
 
-function LogViewerHeader({ runId, architecture, testNameRemainder, fullTestName, searchFilter, setSearchFilter, searchInputRef }: LogViewerHeaderProps): React.JSX.Element {
+function LogViewerHeader({ runId, architecture, testNameRemainder, fullTestName, searchFilter, setSearchFilter, searchInputRef, searchActive = true }: LogViewerHeaderProps): React.JSX.Element {
     const encodedArchitecture = encodeURIComponent(architecture);
     const encodedRemainder = encodeURIComponent(testNameRemainder);
 
@@ -57,7 +60,7 @@ function LogViewerHeader({ runId, architecture, testNameRemainder, fullTestName,
                 </div>
             </div>
             <div className="runs-header-right-section">
-                <SearchInput value={searchFilter} onChange={setSearchFilter} inputRef={searchInputRef} />
+                <SearchInput value={searchFilter} onChange={setSearchFilter} inputRef={searchInputRef} active={searchActive} />
             </div>
         </>
     );
@@ -77,6 +80,8 @@ export function LogViewer(): React.JSX.Element {
     // Deep link initialization refs
     const initialLogParamRef = useRef<number | null>(null);
     const initializedFromUrlRef = useRef<boolean>(false);
+    // Overlay state: supports parsed inspect tree or raw text view
+    const [inspectOverlay, setInspectOverlay] = useState<{ url: string; raw: boolean } | null>(null);
 
     let { runId, architecture, testName } = useParams();
     runId = runId ? decodeURIComponent(runId) : "";
@@ -170,6 +175,28 @@ export function LogViewer(): React.JSX.Element {
         }
     }, [searchFilter]);
 
+    // Intercept clicks on inspect attachment links (parsed + raw) to open overlay
+    useEffect(() => {
+        const handleClick = (e: MouseEvent) => {
+            const target = e.target as HTMLElement | null;
+            if (!target) return;
+            const parsedAnchor = target.closest('a[data-inspect="true"]') as HTMLAnchorElement | null;
+            if (parsedAnchor) {
+                e.preventDefault();
+                setInspectOverlay({ url: parsedAnchor.href, raw: false });
+                return;
+            }
+            const rawAnchor = target.closest('a[data-inspect-raw="true"]') as HTMLAnchorElement | null;
+            if (rawAnchor) {
+                e.preventDefault();
+                setInspectOverlay({ url: rawAnchor.href, raw: true });
+                return;
+            }
+        };
+        document.addEventListener('click', handleClick);
+        return () => document.removeEventListener('click', handleClick);
+    }, []);
+
     return (
         <div className="common-page-display">
             <div className="common-page-header">
@@ -181,6 +208,7 @@ export function LogViewer(): React.JSX.Element {
                     searchFilter={searchFilter}
                     setSearchFilter={setSearchFilter}
                     searchInputRef={searchInputRef}
+                    searchActive={inspectOverlay == null}
                 />
             </div>
 
@@ -232,6 +260,15 @@ export function LogViewer(): React.JSX.Element {
                             className="logviewer-image-content"
                         />
                 </div>
+            )}
+
+            {/* Inspect Overlay */}
+            {inspectOverlay && (
+                <InspectOverlay
+                    fileUrl={inspectOverlay.url}
+                    rawMode={inspectOverlay.raw}
+                    onClose={() => setInspectOverlay(null)}
+                />
             )}
         </div>
     );

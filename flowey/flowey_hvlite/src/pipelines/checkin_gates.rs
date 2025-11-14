@@ -957,10 +957,13 @@ impl IntoPipeline for CheckinGatesCli {
             needs_prep_run: bool,
         }
 
-        // standard VM-based CI machines should be able to run all tests except
+        // Standard VM-based CI machines should be able to run all tests except
         // those that require special hardware features (tdx/snp) or need to be
-        // run on a baremetal host (hyper-v vbs doesn't seem to work nested)
-        let standard_filter = "all()".to_string();
+        // run on a baremetal host (hyper-v vbs doesn't seem to work nested).
+        //
+        // Run "very_heavy" tests that require lots of VPs on the self-hosted
+        // CVM runners that have more cores.
+        let standard_filter = "all() & !test(very_heavy)".to_string();
         let standard_x64_test_artifacts = vec![
             KnownTestArtifacts::FreeBsd13_2X64Vhd,
             KnownTestArtifacts::FreeBsd13_2X64Iso,
@@ -972,7 +975,8 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::VmgsWithBootEntry,
         ];
 
-        let cvm_filter = |arch| format!("test({arch}) + (test(vbs) & test(hyperv))");
+        let cvm_filter =
+            |arch| format!("test({arch}) + (test(vbs) & test(hyperv)) + test(very_heavy)");
         let cvm_x64_test_artifacts = vec![
             KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,

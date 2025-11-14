@@ -19,6 +19,7 @@ use windows_sys::Wdk::System::OfflineRegistry::ORHKEY;
 use windows_sys::Wdk::System::OfflineRegistry::ORSaveHive;
 use windows_sys::Wdk::System::OfflineRegistry::ORSetValue;
 use windows_sys::Win32::System::Registry::REG_DWORD;
+use windows_sys::Win32::System::Registry::REG_EXPAND_SZ;
 use windows_sys::Win32::System::Registry::REG_MULTI_SZ;
 use windows_sys::Win32::System::Registry::REG_SZ;
 
@@ -146,6 +147,23 @@ impl Key {
                 self.0,
                 name16.as_ptr(),
                 REG_SZ,
+                value16.as_ptr().cast(),
+                value16.len() as u32 * 2,
+            ))?;
+        }
+        Ok(())
+    }
+
+    pub fn set_expand_sz(&self, name: &str, value: &str) -> std::io::Result<()> {
+        let name16 = name.encode_utf16().chain([0]).collect::<Vec<_>>();
+        let value16 = value.encode_utf16().chain([0]).collect::<Vec<_>>();
+        // SAFETY: calling as documented with owned key and null-terminated
+        // name and value.
+        unsafe {
+            chk(ORSetValue(
+                self.0,
+                name16.as_ptr(),
+                REG_EXPAND_SZ,
                 value16.as_ptr().cast(),
                 value16.len() as u32 * 2,
             ))?;

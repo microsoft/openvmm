@@ -24,6 +24,7 @@ use crate::protocol::MSHV_APIC_PAGE_OFFSET;
 use crate::protocol::hcl_intr_offload_flags;
 use crate::protocol::hcl_run;
 use bitvec::vec::BitVec;
+use cfg_if::cfg_if;
 use cvm_tracing::CVM_ALLOWED;
 use deferred::RegisteredDeferredActions;
 use deferred::push_deferred_action;
@@ -3004,16 +3005,26 @@ impl Hcl {
         ))
     }
 
-    #[cfg(guest_arch = "aarch64")]
-    /// Get the [`hvdef::HvPartitionPrivilege`] register
+    /// Get the [`hvdef::HvPartitionPrivilege`] info. On x86_64, this uses
+    /// CPUID. On aarch64, it uses get_vp_register.
     pub fn get_privileges_and_features_info(&self) -> Result<hvdef::HvPartitionPrivilege, Error> {
-        Ok(hvdef::HvPartitionPrivilege::from(
-            self.get_vp_register(
-                HvArm64RegisterName::PrivilegesAndFeaturesInfo,
-                HvInputVtl::CURRENT_VTL,
-            )?
-            .as_u64(),
-        ))
+        cfg_if! {
+            if #[cfg(guest_arch = "x86_64")] {
+                let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
+                let num = result.eax as u64 | ((result.ebx as u64) << 32);
+                Ok(hvdef::HvPartitionPrivilege::from(num))
+            } else if #[cfg(guest_arch = "aarch64")] {
+                Ok(hvdef::HvPartitionPrivilege::from(
+                    self.get_vp_register(
+                        HvArm64RegisterName::PrivilegesAndFeaturesInfo,
+                        HvInputVtl::CURRENT_VTL,
+                    )?
+                    .as_u64(),
+                ))
+            } else {
+                compile_error!("unsupported guest_arch configuration");
+            }
+        }
     }
 
     /// Get the [`hvdef::hypercall::HvGuestOsId`] register for the given VTL.

@@ -611,9 +611,14 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .await?
         {
             Ok(s) => {
-                let mut namespaces = vec![];
-                for handle in self.namespaces.values() {
-                    namespaces.push(handle.namespace.save()?);
+                let mut saved_namespaces = vec![];
+                for (nsid, handle) in self.namespaces.iter() {
+                    saved_namespaces.push(handle.namespace.save().with_context(|| {
+                        format!(
+                            "failed to save namespace nsid {} device {}",
+                            nsid, self.device_id
+                        )
+                    })?);
                 }
                 Ok(NvmeDriverSavedState {
                     identify_ctrl: spec::IdentifyController::read_from_bytes(
@@ -621,7 +626,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     )
                     .unwrap(),
                     device_id: self.device_id.clone(),
-                    namespaces,
+                    namespaces: saved_namespaces,
                     worker_data: s,
                 })
             }

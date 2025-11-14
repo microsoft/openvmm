@@ -62,6 +62,7 @@ use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
+use hvdef::HvPartitionPrivilege;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmPartitionStatus;
@@ -1546,6 +1547,7 @@ pub struct UhProtoPartition<'a> {
     params: UhPartitionNewParams<'a>,
     hcl: Hcl,
     guest_vsm_available: bool,
+    create_partition_available: bool,
     #[cfg(guest_arch = "x86_64")]
     cpuid: virt::CpuidLeafSet,
 }
@@ -1607,7 +1609,8 @@ impl<'a> UhProtoPartition<'a> {
 
         set_vtl2_vsm_partition_config(&hcl)?;
 
-        let guest_vsm_available = Self::check_guest_vsm_support(&hcl)?;
+        let privs = hcl.get_privileges_and_features_info().map_err(Error::Hcl)?;
+        let guest_vsm_available = Self::check_guest_vsm_support(privs, &hcl)?;
 
         #[cfg(guest_arch = "x86_64")]
         let cpuid = match params.isolation {
@@ -1633,6 +1636,7 @@ impl<'a> UhProtoPartition<'a> {
             hcl,
             params,
             guest_vsm_available,
+            create_partition_available: privs.create_partitions(),
             #[cfg(guest_arch = "x86_64")]
             cpuid,
         })
@@ -1641,6 +1645,12 @@ impl<'a> UhProtoPartition<'a> {
     /// Returns whether VSM support will be available to the guest.
     pub fn guest_vsm_available(&self) -> bool {
         self.guest_vsm_available
+    }
+
+    /// Returns whether this partition has the create partitions hypercall
+    /// available.
+    pub fn create_partition_available(&self) -> bool {
+        self.create_partition_available
     }
 
     /// Returns a new Underhill partition.
@@ -1652,6 +1662,7 @@ impl<'a> UhProtoPartition<'a> {
             mut hcl,
             params,
             guest_vsm_available,
+            create_partition_available: _,
             #[cfg(guest_arch = "x86_64")]
             cpuid,
         } = self;
@@ -2067,20 +2078,11 @@ impl UhPartition {
 impl UhProtoPartition<'_> {
     /// Whether Guest VSM is available to the guest. If so, for hardware CVMs,
     /// it is safe to expose Guest VSM support via cpuid.
-    fn check_guest_vsm_support(hcl: &Hcl) -> Result<bool, Error> {
-        #[cfg(guest_arch = "x86_64")]
-        let privs = {
-            let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
-            let num = result.eax as u64 | ((result.ebx as u64) << 32);
-            hvdef::HvPartitionPrivilege::from(num)
-        };
-
-        #[cfg(guest_arch = "aarch64")]
-        let privs = hcl.get_privileges_and_features_info().map_err(Error::Hcl)?;
-
+    fn check_guest_vsm_support(privs: HvPartitionPrivilege, hcl: &Hcl) -> Result<bool, Error> {
         if !privs.access_vsm() {
             return Ok(false);
         }
+
         let guest_vsm_config = hcl.get_guest_vsm_partition_config().map_err(Error::Hcl)?;
         Ok(guest_vsm_config.maximum_vtl() >= u8::from(GuestVtl::Vtl1))
     }
