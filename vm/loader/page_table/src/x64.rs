@@ -346,25 +346,25 @@ impl PageTableBuilderInner {
         match entry_type {
             PageTableEntryType::Leaf1GbPage(address) => {
                 // Must be 1GB aligned.
-                assert!(address % X64_1GB_PAGE_SIZE == 0);
+                assert_eq!(address % X64_1GB_PAGE_SIZE, 0);
                 entry |= address;
                 entry |= X64_PTE_LARGE_PAGE | X64_PTE_DIRTY;
             }
             PageTableEntryType::Leaf2MbPage(address) => {
                 // Leaf entry, set like UEFI does for 2MB pages. Must be 2MB aligned.
-                assert!(address % X64_LARGE_PAGE_SIZE == 0);
+                assert_eq!(address % X64_LARGE_PAGE_SIZE, 0);
                 entry |= address;
                 entry |= X64_PTE_LARGE_PAGE | X64_PTE_DIRTY;
             }
             PageTableEntryType::Leaf4kPage(address) => {
                 // Must be 4K aligned.
-                assert!(address % X64_PAGE_SIZE == 0);
+                assert_eq!(address % X64_PAGE_SIZE, 0);
                 entry |= address;
                 entry |= X64_PTE_DIRTY;
             }
             PageTableEntryType::Pde(address) => {
                 // Points to another pagetable.
-                assert!(address % X64_PAGE_SIZE == 0);
+                assert_eq!(address % X64_PAGE_SIZE, 0);
                 entry |= address;
             }
         }
@@ -392,12 +392,15 @@ impl<'a> PageTableBuilder<'a> {
     /// The working memory and output memory are taken as parameters to allow for the caller
     /// to flexibly choose their allocation strategy, to support usage in no_std environments
     /// like openhcl_boot
+    ///
     pub fn new(
         page_table_gpa: u64,
         page_table: &'a mut [PageTable],
         flattened_page_table: &'a mut [u8],
         ranges: &'a [MappedRange],
     ) -> Result<Self, Error> {
+        // TODO: When const generic expressions are supported, the builder can take arrays
+        // instead of slices, and this validation can be moved to the types
         if flattened_page_table.len() != (page_table.len() * PAGE_TABLE_SIZE) {
             Err(Error::BadBufferSize {
                 bytes_buf: flattened_page_table.len(),
