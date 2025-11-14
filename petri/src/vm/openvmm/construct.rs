@@ -51,7 +51,6 @@ use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
-use hvlite_defs::config::DeviceTreeOverrideParams;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LateMapVtl0MemoryPolicy;
@@ -488,7 +487,9 @@ impl PetriVmConfigOpenVmm {
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             efi_diagnostics_log_level: Default::default(), // TODO: Add config for tests
-            device_tree_overrides: None,
+            device_tree_overrides: firmware
+                .openhcl_config()
+                .and_then(|c| c.device_tree_overrides),
         };
 
         // Make the pipette connection listener.
@@ -734,6 +735,7 @@ impl PetriVmConfigSetupCore<'_> {
                     command_line: _,
                     log_levels: _,
                     vtl2_base_address_type,
+                    device_tree_overrides: _,
                 } = openhcl_config;
 
                 let mut cmdline = Some(openhcl_config.command_line());

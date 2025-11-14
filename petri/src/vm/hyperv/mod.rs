@@ -526,6 +526,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 command_line: _,
                 log_levels: _,
                 vtl2_base_address_type,
+                device_tree_overrides: _,
             },
         )) = &openhcl_config
         {
