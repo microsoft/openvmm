@@ -16,6 +16,7 @@ pub mod ak_cert;
 pub mod logger;
 mod recover;
 pub mod resolver;
+use tpm_lib::AllocateNvIndicesParams;
 use tpm_lib::CommandDebugInfo;
 use tpm_lib::TpmCommandError;
 use tpm_lib::TpmEngine;
@@ -95,8 +96,9 @@ const AK_CERT_RENEW_PERIOD: std::time::Duration = std::time::Duration::new(24 * 
 // 2 seconds
 const REPORT_TIMER_PERIOD: std::time::Duration = std::time::Duration::new(2, 0);
 
-// 16kB: vtpmservice provisions a 16kB blob for the vTPM; HCL/OpenHCL provisions a 32k blob
+// 16kB and 32kB: vtpmservice provisions a 16kB blob for the vTPM; HCL/OpenHCL provisions a 32k blob
 const LEGACY_VTPM_SIZE: usize = 16384;
+const LARGE_VTPM_SIZE: usize = 32768;
 
 /// Operation types for provisioning telemetry.
 #[expect(clippy::enum_variant_names)]
@@ -259,6 +261,7 @@ pub struct Tpm {
     #[inspect(skip)]
     mmio_region: Vec<(&'static str, RangeInclusive<u64>)>,
     allow_ak_cert_renewal: bool,
+    handle_ak_cert_renewal: bool,
 
     // For logging
     bios_guid: Guid,
@@ -331,8 +334,6 @@ pub enum TpmErrorKind {
     CreateAkPublic(#[source] tpm_lib::Error),
     #[error("failed to create ek public")]
     CreateEkPublic(#[source] tpm_lib::Error),
-    #[error("failed to allocate guest attestation nv indices")]
-    AllocateGuestAttestationNvIndices(#[source] tpm_lib::Error),
     #[error("failed to read from nv index")]
     ReadFromNvIndex(#[source] tpm_lib::Error),
     #[error("failed to write to nv index")]
@@ -437,6 +438,7 @@ impl Tpm {
             io_region,
             mmio_region,
             allow_ak_cert_renewal: false,
+            handle_ak_cert_renewal: false,
             bios_guid,
             ak_pub_hash: [0; SHA_256_OUTPUT_SIZE_BYTES],
 
@@ -494,7 +496,8 @@ impl Tpm {
         is_confidential_vm: bool,
     ) -> Result<(), TpmError> {
         use ms_tpm_20_ref::NvError;
-        let mut force_ak_regen = false;
+        let force_ak_regen;
+        let large_vtpm_blob;
         let fixup_16k_ak_cert;
 
         // Check whether or not we need to pave-over the blank TPM with our
@@ -535,9 +538,16 @@ impl Tpm {
 
                 // If this is a small vTPM blob, potentially fixup the AK cert.
                 fixup_16k_ak_cert = blob.len() == LEGACY_VTPM_SIZE;
+
+                large_vtpm_blob = blob.len() >= LARGE_VTPM_SIZE;
             } else {
+                // Don't need to force-regen the AK if there is no existing NVRAM.
+                force_ak_regen = false;
                 // No fixup is required, because there is no existing NVRAM blob.
                 fixup_16k_ak_cert = false;
+                // This is a brand-new vTPM and will get provisioned with at
+                // least 32kB of storage.
+                large_vtpm_blob = true;
             }
         }
 
@@ -692,18 +702,51 @@ impl Tpm {
             // `TPM_RC_HIERARCHY` (0c0290285) error code would return.
             // It means the Nvram index space needs to be allocated before clearing the
             // tpm hierarchy control. NV index value can be rewritten later.
-            self.tpm_engine_helper
+            if let Err(e) = self
+                .tpm_engine_helper
                 .allocate_guest_attestation_nv_indices(
                     auth_value,
-                    !self.refresh_tpm_seeds, // Preserve AK cert if TPM seeds are not refreshed
-                    self.ak_cert_type.attested(),
-                    fixup_16k_ak_cert,
+                    AllocateNvIndicesParams {
+                        preserve_ak_cert: !self.refresh_tpm_seeds, // Preserve AK cert if TPM seeds are not refreshed
+                        support_attestation_report: self.ak_cert_type.attested(),
+                        mitigate_legacy_akcert: fixup_16k_ak_cert,
+                        create_if_missing: large_vtpm_blob,
+                    },
                 )
-                .map_err(TpmErrorKind::AllocateGuestAttestationNvIndices)?;
+            {
+                tracing::error!(
+                    CVM_ALLOWED,
+                    err = &e as &dyn std::error::Error,
+                    "error defining guest attestation NV indices"
+                );
+            }
 
-            // Initialize `TPM_NV_INDEX_AIK_CERT` if `ak_cert_type` requires AK cert and the cert is not pre-provisioned.
-            if !matches!(self.ak_cert_type, TpmAkCertType::TrustedPreProvisionedOnly) {
+            // Determine whether OpenHCL should handle renewing the AKCert.
+            self.handle_ak_cert_renewal = match self.ak_cert_type {
+                TpmAkCertType::Trusted(_, control_renewal) => {
+                    if let Some(handle) = control_renewal {
+                        // If TpmAkCertType::Trusted has the optional bool that
+                        // controls AKCert renewal, follow that.
+                        handle
+                    } else {
+                        // Otherwise, if the existing AKCert index is platform-
+                        // defined and this appears to be an HCL-provisioned
+                        // vTPM, then handle AKCert renewal from OpenHCL.
+                        self.tpm_engine_helper.has_platform_akcert_index() && large_vtpm_blob
+                    }
+                }
+                // If there's no AKCert, then don't handle renewal.
+                TpmAkCertType::None => false,
+                // If TpmAkCertType is one that should always be handled by
+                // OpenHCL, then handle AKCert renewal.
+                TpmAkCertType::HwAttested(_) | TpmAkCertType::SwAttested(_) => true,
+            };
+
+            if self.handle_ak_cert_renewal {
+                tracing::info!(CVM_ALLOWED, "handling AKCert renewal");
                 self.get_ak_cert(false)?;
+            } else {
+                tracing::info!(CVM_ALLOWED, "will not handle AKCert renewal");
             }
 
             // Initialize `TPM_NV_INDEX_ATTESTATION_REPORT` if `ak_cert_type` supports attestation
@@ -1460,12 +1503,7 @@ impl MmioIntercept for Tpm {
                         "executing guest tpm cmd",
                     );
 
-                    if matches!(
-                        self.ak_cert_type,
-                        TpmAkCertType::Trusted(_)
-                            | TpmAkCertType::HwAttested(_)
-                            | TpmAkCertType::SwAttested(_)
-                    ) {
+                    if self.handle_ak_cert_renewal {
                         if let Some(CommandCodeEnum::NV_Read) = cmd_header {
                             self.refresh_device_attestation_data_on_nv_read()
                         }
@@ -2015,7 +2053,7 @@ mod tests {
             monotonic_timer,
             false,
             false,
-            TpmAkCertType::Trusted(Arc::new(TestRequestAkCertHelper)),
+            TpmAkCertType::Trusted(Arc::new(TestRequestAkCertHelper), Some(true)),
             None,
             None,
             false,

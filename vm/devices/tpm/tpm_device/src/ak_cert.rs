@@ -11,12 +11,10 @@ use vm_resource::CanResolveTo;
 pub enum TpmAkCertType {
     /// No Ak cert.
     None,
-    /// Expects an AK cert that is not hardware-attested
-    /// to be pre-provisioned. Used by TVM
-    TrustedPreProvisionedOnly,
-    /// Authorized AK cert that is not hardware-attested.
+    /// Authorized AK cert that is not hardware-attested. Optional bool controls
+    /// whether OpenHCL handles renewal.
     /// Used by TVM
-    Trusted(Arc<dyn RequestAkCert>),
+    Trusted(Arc<dyn RequestAkCert>, Option<bool>),
     /// Authorized and hardware-attested AK cert (backed by
     /// a TEE attestation report).
     /// Used by CVM
@@ -33,8 +31,7 @@ impl TpmAkCertType {
         match self {
             TpmAkCertType::HwAttested(helper) => Some(helper),
             TpmAkCertType::SwAttested(helper) => Some(helper),
-            TpmAkCertType::Trusted(helper) => Some(helper),
-            TpmAkCertType::TrustedPreProvisionedOnly => None,
+            TpmAkCertType::Trusted(helper, _) => Some(helper),
             TpmAkCertType::None => None,
         }
     }
@@ -42,9 +39,7 @@ impl TpmAkCertType {
     pub fn attested(&self) -> bool {
         match self {
             TpmAkCertType::HwAttested(_) | TpmAkCertType::SwAttested(_) => true,
-            TpmAkCertType::Trusted(_)
-            | TpmAkCertType::TrustedPreProvisionedOnly
-            | TpmAkCertType::None => false,
+            TpmAkCertType::Trusted(_, _) | TpmAkCertType::None => false,
         }
     }
 }
