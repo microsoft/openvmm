@@ -152,7 +152,6 @@ async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))
 )]
-#[cfg_attr(not(windows), expect(dead_code))]
 async fn boot_single_proc<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_processor_topology(ProcessorTopology {
