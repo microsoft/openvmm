@@ -28,6 +28,7 @@ use hvdef::Vtl;
 use hvlite_defs::config::Aarch64TopologyConfig;
 use hvlite_defs::config::ArchTopologyConfig;
 use hvlite_defs::config::Config;
+use hvlite_defs::config::DeviceTreeOverridesConfig;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::EfiDiagnosticsLogLevelType;
 use hvlite_defs::config::GicConfig;
@@ -210,7 +211,7 @@ impl Manifest {
                 EfiDiagnosticsLogLevelType::Info => LogLevel::make_info(),
                 EfiDiagnosticsLogLevelType::Full => LogLevel::make_full(),
             },
-            nvme_keepalive_enabled: config.nvme_keepalive_enabled,
+            device_tree_overrides: config.device_tree_overrides,
         }
     }
 }
@@ -256,7 +257,7 @@ pub struct Manifest {
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
     efi_diagnostics_log_level: LogLevel,
-    nvme_keepalive_enabled: bool,
+    device_tree_overrides: DeviceTreeOverridesConfig,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -598,7 +599,7 @@ struct LoadedVmInner {
     /// allow the guest to reset without notifying the client
     automatic_guest_reset: bool,
     pcie_host_bridges: Vec<PcieHostBridge>,
-    nvme_keepalive_enabled: bool,
+    device_tree_overrides: DeviceTreeOverridesConfig,
 }
 
 fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
@@ -2498,7 +2499,7 @@ impl InitializedVm {
                 client_notify_send,
                 automatic_guest_reset: cfg.automatic_guest_reset,
                 pcie_host_bridges,
-                nvme_keepalive_enabled: cfg.nvme_keepalive_enabled,
+                device_tree_overrides: cfg.device_tree_overrides,
             },
         };
 
@@ -2691,7 +2692,7 @@ impl LoadedVmInner {
                     with_vmbus_redirect: self.vmbus_redirect,
                     com_serial,
                     entropy: Some(&entropy),
-                    nvme_keepalive_enabled: self.nvme_keepalive_enabled,
+                    device_tree_overrides: self.device_tree_overrides,
                 };
                 super::vm_loaders::igvm::load_igvm(params)?
             }
@@ -2956,9 +2957,11 @@ impl LoadedVm {
                     VmRpc::WriteMemory(rpc) => rpc.handle_failable_sync(|(gpa, bytes)| {
                         self.inner.gm.write_at(gpa, bytes.as_slice())
                     }),
-                    VmRpc::UpdateKeepaliveSupport(rpc) => rpc.handle_sync(|enable| {
-                        self.inner.nvme_keepalive_enabled = enable;
-                    }),
+                    VmRpc::UpdateDeviceTreeOverrides(rpc) => {
+                        rpc.handle_sync(|device_tree_overrides| {
+                            self.inner.device_tree_overrides = device_tree_overrides;
+                        })
+                    }
                 },
                 Event::Halt(Err(_)) => break,
                 Event::Halt(Ok(reason)) => {
@@ -3129,7 +3132,7 @@ impl LoadedVm {
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
             efi_diagnostics_log_level: Default::default(),
-            nvme_keepalive_enabled: self.inner.nvme_keepalive_enabled,
+            device_tree_overrides: self.inner.device_tree_overrides,
         };
         RestartState {
             hypervisor: self.inner.hypervisor,

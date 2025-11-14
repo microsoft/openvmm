@@ -36,6 +36,7 @@ use async_trait::async_trait;
 use disk_backend::sync_wrapper::BlockingDisk;
 use disk_vhdmp::VhdmpDisk;
 use get_resources::ged::FirmwareEvent;
+use hvlite_defs::config::DeviceTreeOverridesConfig;
 use pal_async::DefaultDriver;
 use pal_async::pipe::PolledPipe;
 use pal_async::socket::PolledSocket;
@@ -863,8 +864,11 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         Ok(Some(self.vm.get_guest_state_file().await?))
     }
 
-    async fn update_keepalive_support(&mut self, enable: bool) -> anyhow::Result<()> {
-        anyhow::bail!("toggling keepalive not yet supported on Hyper-V");
+    async fn update_device_tree_overrides(
+        &mut self,
+        _device_tree_overrides: DeviceTreeOverridesConfig,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("toggling device tree overrides are not yet supported on Hyper-V");
     }
 }
 

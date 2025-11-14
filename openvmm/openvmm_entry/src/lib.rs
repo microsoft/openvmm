@@ -66,6 +66,7 @@ use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
+use hvlite_defs::config::DeviceTreeOverridesConfig;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::EfiDiagnosticsLogLevelType;
 use hvlite_defs::config::HypervisorConfig;
@@ -1464,7 +1465,9 @@ fn vm_config_from_command_line(
                 EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::Full,
             }
         },
-        nvme_keepalive_enabled: true,
+        device_tree_overrides: DeviceTreeOverridesConfig {
+            nvme_keepalive_enable: true,
+        },
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;

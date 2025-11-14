@@ -5,6 +5,7 @@
 
 use guestmem::GuestMemory;
 use hvdef::HV_PAGE_SIZE;
+use hvlite_defs::config::DeviceTreeOverridesConfig;
 use hvlite_defs::config::SerialInformation;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use igvm::IgvmDirectiveHeader;
@@ -302,7 +303,7 @@ fn build_device_tree(
     with_vmbus_redirect: bool,
     com_serial: Option<SerialInformation>,
     entropy: Option<&[u8]>,
-    nvme_keepalive_enabled: bool,
+    device_tree_overrides: DeviceTreeOverridesConfig,
 ) -> Result<Vec<u8>, fdt::builder::Error> {
     let mut buf = vec![0; HV_PAGE_SIZE as usize * 256];
 
@@ -497,7 +498,7 @@ fn build_device_tree(
             .end_node()?;
     }
 
-    if nvme_keepalive_enabled {
+    if device_tree_overrides.nvme_keepalive_enable {
         // Indicate that NVMe keep-alive feature is supported by this VMM.
         openhcl = openhcl
             .start_node("keep-alive")?
@@ -549,8 +550,8 @@ pub struct LoadIgvmParams<'a, T: ArchTopology> {
     pub com_serial: Option<SerialInformation>,
     /// Entropy
     pub entropy: Option<&'a [u8]>,
-    /// Flag to indicating host NVMe keepalive support.
-    pub nvme_keepalive_enabled: bool,
+    /// Flag indicating host device tree overrides.
+    pub device_tree_overrides: DeviceTreeOverridesConfig,
 }
 
 pub fn load_igvm(
@@ -593,7 +594,7 @@ fn load_igvm_x86(
         with_vmbus_redirect,
         com_serial,
         entropy,
-        nvme_keepalive_enabled,
+        device_tree_overrides,
     } = params;
 
     let relocations_enabled = match vtl2_base_address {
@@ -1000,7 +1001,7 @@ fn load_igvm_x86(
                     with_vmbus_redirect,
                     com_serial,
                     entropy,
-                    nvme_keepalive_enabled,
+                    device_tree_overrides,
                 )
                 .map_err(Error::DeviceTree)?;
                 import_parameter(&mut parameter_areas, info, &dt)?;

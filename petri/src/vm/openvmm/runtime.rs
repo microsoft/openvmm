@@ -19,6 +19,7 @@ use framebuffer::View;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use get_resources::ged::FirmwareEvent;
+use hvlite_defs::config::DeviceTreeOverridesConfig;
 use hvlite_defs::rpc::PulseSaveRestoreError;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::CancelContext;
@@ -161,8 +162,11 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         Self::reset(self).await
     }
 
-    async fn update_keepalive_support(&mut self, enable: bool) -> anyhow::Result<()> {
-        Self::update_keepalive_support(self, enable).await
+    async fn update_device_tree_overrides(
+        &mut self,
+        device_tree_overrides: DeviceTreeOverridesConfig,
+    ) -> anyhow::Result<()> {
+        Self::update_device_tree_overrides(self, device_tree_overrides).await
     }
 }
 
@@ -257,10 +261,10 @@ impl PetriVmOpenVmm {
         pub async fn modify_vtl2_settings(&mut self, f: impl FnOnce(&mut Vtl2Settings)) -> anyhow::Result<()>
     );
     petri_vm_fn!(
-        /// Update host keepalive support flag.
-        pub async fn update_keepalive_support(
+        /// Update host device tree overrides.
+        pub async fn update_device_tree_overrides(
             &mut self,
-            enable: bool
+            device_tree_overrides: DeviceTreeOverridesConfig
         ) -> anyhow::Result<()>
     );
     petri_vm_fn!(pub(crate) async fn resume(&mut self) -> anyhow::Result<()>);
@@ -531,8 +535,13 @@ impl PetriVmInner {
         Ok(())
     }
 
-    async fn update_keepalive_support(&mut self, enable: bool) -> anyhow::Result<()> {
-        self.worker.update_keepalive_support(enable).await
+    async fn update_device_tree_overrides(
+        &mut self,
+        device_tree_overrides: DeviceTreeOverridesConfig,
+    ) -> anyhow::Result<()> {
+        self.worker
+            .update_device_tree_overrides(device_tree_overrides)
+            .await
     }
 }
 

@@ -3,6 +3,7 @@
 
 //! RPC types for communicating with the VM worker.
 
+use crate::config::DeviceTreeOverridesConfig;
 use crate::config::DeviceVtl;
 use guid::Guid;
 use mesh::CancelContext;
@@ -31,7 +32,7 @@ pub enum VmRpc {
     CompleteReloadIgvm(FailableRpc<bool, ()>),
     ReadMemory(FailableRpc<(u64, usize), Vec<u8>>),
     WriteMemory(FailableRpc<(u64, Vec<u8>), ()>),
-    UpdateKeepaliveSupport(Rpc<bool, ()>),
+    UpdateDeviceTreeOverrides(Rpc<DeviceTreeOverridesConfig, ()>),
 }
 
 #[derive(Debug, MeshPayload, thiserror::Error)]
@@ -64,7 +65,7 @@ impl fmt::Debug for VmRpc {
             VmRpc::CompleteReloadIgvm(_) => "CompleteReloadIgvm",
             VmRpc::ReadMemory(_) => "ReadMemory",
             VmRpc::WriteMemory(_) => "WriteMemory",
-            VmRpc::UpdateKeepaliveSupport(_) => "UpdateKeepaliveSupport",
+            VmRpc::UpdateDeviceTreeOverrides(_) => "UpdateDeviceTreeOverrides",
         };
         f.pad(s)
     }

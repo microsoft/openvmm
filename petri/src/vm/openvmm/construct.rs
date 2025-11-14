@@ -51,6 +51,7 @@ use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
+use hvlite_defs::config::DeviceTreeOverridesConfig;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LateMapVtl0MemoryPolicy;
@@ -487,7 +488,9 @@ impl PetriVmConfigOpenVmm {
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             efi_diagnostics_log_level: Default::default(), // TODO: Add config for tests
-            nvme_keepalive_enabled: true,
+            device_tree_overrides: DeviceTreeOverridesConfig {
+                nvme_keepalive_enable: true,
+            },
         };
 
         // Make the pipette connection listener.
