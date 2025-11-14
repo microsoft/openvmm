@@ -147,7 +147,7 @@ pub fn setup_vtl2_memory(
                 PAGE_TABLE_MAX_BYTES as u64,
                 AllocationType::TdxPageTables,
                 AllocationPolicy::LowMemory,
-                Some(X64_LARGE_PAGE_SIZE as u64),
+                Some(X64_LARGE_PAGE_SIZE),
             )
             .expect("allocation of space for TDX page tables must succeed");
 

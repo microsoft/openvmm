@@ -1314,7 +1314,7 @@ mod test {
                         AllocationType::SidecarNode
                     },
                     AllocationPolicy::LowMemory,
-                    None
+                    None,
                 )
                 .expect("should be able to allocate sidecar node");
         }

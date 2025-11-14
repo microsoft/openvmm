@@ -503,14 +503,9 @@ impl AddressSpaceManager {
             alignment: Option<u64>,
         ) -> Option<usize> {
             iter.find_map(|(index, range)| {
-                let is_aligned: bool = if !alignment.is_some()
+                let is_aligned: bool = alignment.is_none()
                     || (alignment.is_some()
-                        && range.range.aligned_subrange(alignment.unwrap()).len() >= len)
-                {
-                    true
-                } else {
-                    false
-                };
+                        && range.range.aligned_subrange(alignment.unwrap()).len() >= len);
                 if range.usage == AddressUsage::Free
                     && range.range.len() >= len
                     && preferred_vnode.map(|pv| pv == range.vnode).unwrap_or(true)
@@ -633,7 +628,7 @@ mod tests {
                 0x1000,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
-                None
+                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1F000..0x20000));
@@ -645,7 +640,7 @@ mod tests {
                 0x2000,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
-                None
+                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1D000..0x1F000));
@@ -656,7 +651,7 @@ mod tests {
                 0x3000,
                 AllocationType::GpaPool,
                 AllocationPolicy::LowMemory,
-                None
+                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0xF000..0x12000));
@@ -776,7 +771,7 @@ mod tests {
                 0x1000,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
-                None
+                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1F000..0x20000));
@@ -788,7 +783,7 @@ mod tests {
                 0x2000,
                 AllocationType::SidecarNode,
                 AllocationPolicy::HighMemory,
-                None
+                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1D000..0x1F000));
@@ -800,7 +795,7 @@ mod tests {
                 0x3000,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
-                None
+                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x5D000..0x60000));
@@ -813,7 +808,7 @@ mod tests {
                 0x20000,
                 AllocationType::SidecarNode,
                 AllocationPolicy::HighMemory,
-                None
+                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x60000..0x80000));
@@ -824,7 +819,7 @@ mod tests {
             0x1000,
             AllocationType::SidecarNode,
             AllocationPolicy::HighMemory,
-            None
+            None,
         );
         assert!(
             range.is_none(),
@@ -865,7 +860,7 @@ mod tests {
                 0x1001,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
-                None
+                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1E000..0x20000));
@@ -876,7 +871,7 @@ mod tests {
                 0xFFF,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
-                None
+                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1D000..0x1E000));
@@ -886,7 +881,7 @@ mod tests {
             0,
             AllocationType::GpaPool,
             AllocationPolicy::HighMemory,
-            None
+            None,
         );
         assert!(range.is_none());
     }
