@@ -174,6 +174,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 },
                 com1: resource.com1,
                 com2: resource.com2,
+                serial_tx_only: resource.serial_tx_only,
                 vmbus_redirection: resource.vmbus_redirection,
                 enable_tpm: resource.enable_tpm,
                 vtl2_settings: resource.vtl2_settings,

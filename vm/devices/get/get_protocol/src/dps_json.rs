@@ -74,6 +74,7 @@ pub struct HclUartSettings {
     pub enable_port: bool,
     pub debugger_mode: bool,
     pub enable_vmbus_redirector: bool,
+    pub tx_only: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
