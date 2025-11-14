@@ -4,7 +4,7 @@
 use crate::OpenHclServicingFlags;
 use get_resources::ged::GuestServicingFlags;
 use hvlite_defs::config::Config;
-use hvlite_defs::config::DeviceTreeOverridesParams;
+use hvlite_defs::config::DeviceTreeOverrideParams;
 use hvlite_defs::rpc::PulseSaveRestoreError;
 use hvlite_defs::rpc::VmRpc;
 use hvlite_defs::worker::VM_WORKER;
@@ -97,7 +97,7 @@ impl Worker {
 
     pub(crate) async fn update_device_tree_overrides(
         &self,
-        device_tree_overrides: DeviceTreeOverridesParams,
+        device_tree_overrides: DeviceTreeOverrideParams,
     ) -> anyhow::Result<()> {
         self.rpc
             .call(VmRpc::UpdateDeviceTreeOverrides, device_tree_overrides)

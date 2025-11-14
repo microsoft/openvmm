@@ -28,7 +28,7 @@ use hvdef::Vtl;
 use hvlite_defs::config::Aarch64TopologyConfig;
 use hvlite_defs::config::ArchTopologyConfig;
 use hvlite_defs::config::Config;
-use hvlite_defs::config::DeviceTreeOverridesParams;
+use hvlite_defs::config::DeviceTreeOverrideParams;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::EfiDiagnosticsLogLevelType;
 use hvlite_defs::config::GicConfig;
@@ -257,7 +257,7 @@ pub struct Manifest {
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
     efi_diagnostics_log_level: LogLevel,
-    device_tree_overrides: DeviceTreeOverridesParams,
+    device_tree_overrides: Option<DeviceTreeOverrideParams>,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -599,7 +599,7 @@ struct LoadedVmInner {
     /// allow the guest to reset without notifying the client
     automatic_guest_reset: bool,
     pcie_host_bridges: Vec<PcieHostBridge>,
-    device_tree_overrides: DeviceTreeOverridesParams,
+    device_tree_overrides: Option<DeviceTreeOverrideParams>,
 }
 
 fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
@@ -2959,7 +2959,7 @@ impl LoadedVm {
                     }),
                     VmRpc::UpdateDeviceTreeOverrides(rpc) => {
                         rpc.handle_sync(|device_tree_overrides| {
-                            self.inner.device_tree_overrides = device_tree_overrides;
+                            self.inner.device_tree_overrides = Some(device_tree_overrides);
                         })
                     }
                 },

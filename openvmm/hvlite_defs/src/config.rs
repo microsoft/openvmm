@@ -60,7 +60,7 @@ pub struct Config {
     /// allow the guest to reset without notifying the client
     pub automatic_guest_reset: bool,
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
-    pub device_tree_overrides: DeviceTreeOverridesParams,
+    pub device_tree_overrides: Option<DeviceTreeOverrideParams>,
 }
 
 // ARM64 needs a larger low gap.
@@ -458,6 +458,6 @@ pub enum EfiDiagnosticsLogLevelType {
 }
 
 #[derive(Copy, Clone, Debug, MeshPayload, Default)]
-pub struct DeviceTreeOverridesParams {
+pub struct DeviceTreeOverrideParams {
     pub nvme_keepalive_enable: bool,
 }

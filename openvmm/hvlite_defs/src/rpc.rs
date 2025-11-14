@@ -3,7 +3,7 @@
 
 //! RPC types for communicating with the VM worker.
 
-use crate::config::DeviceTreeOverridesParams;
+use crate::config::DeviceTreeOverrideParams;
 use crate::config::DeviceVtl;
 use guid::Guid;
 use mesh::CancelContext;
@@ -32,7 +32,7 @@ pub enum VmRpc {
     CompleteReloadIgvm(FailableRpc<bool, ()>),
     ReadMemory(FailableRpc<(u64, usize), Vec<u8>>),
     WriteMemory(FailableRpc<(u64, Vec<u8>), ()>),
-    UpdateDeviceTreeOverrides(Rpc<DeviceTreeOverridesParams, ()>),
+    UpdateDeviceTreeOverrides(Rpc<DeviceTreeOverrideParams, ()>),
 }
 
 #[derive(Debug, MeshPayload, thiserror::Error)]

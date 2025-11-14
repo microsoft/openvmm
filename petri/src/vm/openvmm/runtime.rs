@@ -19,7 +19,7 @@ use framebuffer::View;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use get_resources::ged::FirmwareEvent;
-use hvlite_defs::config::DeviceTreeOverridesParams;
+use hvlite_defs::config::DeviceTreeOverrideParams;
 use hvlite_defs::rpc::PulseSaveRestoreError;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::CancelContext;
@@ -164,7 +164,7 @@ impl PetriVmRuntime for PetriVmOpenVmm {
 
     async fn update_device_tree_overrides(
         &mut self,
-        device_tree_overrides: DeviceTreeOverridesParams,
+        device_tree_overrides: DeviceTreeOverrideParams,
     ) -> anyhow::Result<()> {
         Self::update_device_tree_overrides(self, device_tree_overrides).await
     }
@@ -264,7 +264,7 @@ impl PetriVmOpenVmm {
         /// Update host device tree overrides.
         pub async fn update_device_tree_overrides(
             &mut self,
-            device_tree_overrides: DeviceTreeOverridesParams
+            device_tree_overrides: DeviceTreeOverrideParams
         ) -> anyhow::Result<()>
     );
     petri_vm_fn!(pub(crate) async fn resume(&mut self) -> anyhow::Result<()>);
@@ -537,7 +537,7 @@ impl PetriVmInner {
 
     async fn update_device_tree_overrides(
         &mut self,
-        device_tree_overrides: DeviceTreeOverridesParams,
+        device_tree_overrides: DeviceTreeOverrideParams,
     ) -> anyhow::Result<()> {
         self.worker
             .update_device_tree_overrides(device_tree_overrides)
