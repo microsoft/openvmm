@@ -531,6 +531,7 @@ fn topology_from_host_dt(
                 pool_size_bytes,
                 AllocationType::GpaPool,
                 AllocationPolicy::LowMemory,
+                None,
             ) {
                 Some(pool) => {
                     log!("allocated VTL2 pool at {:#x?}", pool.range);

@@ -399,6 +399,78 @@ impl AddressSpaceManager {
         allocated
     }
 
+    /// Split a free range into two, with allocation policy deciding if we
+    /// allocate the low part or high part.
+    ///
+    /// Requires that the caller provides a memory range that has room to
+    /// be chopped up into an aligned range of length len, with the
+    /// remainders on the left and right returned to free memory
+    fn allocate_range_aligned(
+        &mut self,
+        index: usize,
+        len: u64,
+        usage: AddressUsage,
+        allocation_policy: AllocationPolicy,
+        alignment: u64,
+    ) -> AllocatedRange {
+        assert!(usage != AddressUsage::Free);
+        let range = self.address_space.get_mut(index).expect("valid index");
+        assert_eq!(range.usage, AddressUsage::Free);
+        assert!(range.range.len() >= len);
+
+        let aligned_range = range.range.aligned_subrange(alignment);
+        assert!(aligned_range != MemoryRange::EMPTY);
+
+        let used = match allocation_policy {
+            AllocationPolicy::LowMemory => {
+                // Allocate from the beginning (low addresses)
+                let (used, _) = aligned_range.split_at_offset(len);
+                used
+            }
+            AllocationPolicy::HighMemory => {
+                // Allocate from the end (high addresses)
+                let (_, used) = aligned_range.split_at_offset(len);
+                used
+            }
+        };
+
+        let left = MemoryRange::new(range.range.start()..used.start());
+        let right = MemoryRange::new(used.end()..range.range.end());
+
+        let to_address_range = |r: MemoryRange| -> Option<AddressRange> {
+            if !r.is_empty() {
+                Some(AddressRange {
+                    range: r,
+                    vnode: range.vnode,
+                    usage: AddressUsage::Free,
+                })
+            } else {
+                None
+            }
+        };
+
+        let left = to_address_range(left);
+        let right = to_address_range(right);
+
+        // Update this range to mark it as used
+        range.usage = usage;
+        range.range = used;
+        let allocated = AllocatedRange {
+            range: used,
+            vnode: range.vnode,
+        };
+
+        if let Some(right) = right {
+            self.address_space.insert(index + 1, right);
+        }
+
+        if let Some(left) = left {
+            self.address_space.insert(index, left);
+        }
+
+        allocated
+    }
+
     /// Allocate a new range of memory with the given type and policy. None is
     /// returned if the allocation was unable to be satisfied.
     ///
@@ -414,6 +486,7 @@ impl AddressSpaceManager {
         len: u64,
         allocation_type: AllocationType,
         allocation_policy: AllocationPolicy,
+        alignment: Option<u64>,
     ) -> Option<AllocatedRange> {
         if len == 0 {
             return None;
@@ -427,11 +500,21 @@ impl AddressSpaceManager {
             mut iter: impl Iterator<Item = (usize, &'a AddressRange)>,
             preferred_vnode: Option<u32>,
             len: u64,
+            alignment: Option<u64>,
         ) -> Option<usize> {
             iter.find_map(|(index, range)| {
+                let is_aligned: bool = if !alignment.is_some()
+                    || (alignment.is_some()
+                        && range.range.aligned_subrange(alignment.unwrap()).len() >= len)
+                {
+                    true
+                } else {
+                    false
+                };
                 if range.usage == AddressUsage::Free
                     && range.range.len() >= len
                     && preferred_vnode.map(|pv| pv == range.vnode).unwrap_or(true)
+                    && is_aligned
                 {
                     Some(index)
                 } else {
@@ -444,28 +527,27 @@ impl AddressSpaceManager {
         let index = {
             let iter = self.address_space.iter().enumerate();
             match allocation_policy {
-                AllocationPolicy::LowMemory => find_index(iter, required_vnode, len),
-                AllocationPolicy::HighMemory => find_index(iter.rev(), required_vnode, len),
+                AllocationPolicy::LowMemory => find_index(iter, required_vnode, len, alignment),
+                AllocationPolicy::HighMemory => {
+                    find_index(iter.rev(), required_vnode, len, alignment)
+                }
+            }
+        };
+
+        let address_usage = match allocation_type {
+            AllocationType::GpaPool => AddressUsage::Reserved(ReservedMemoryType::Vtl2GpaPool),
+            AllocationType::SidecarNode => AddressUsage::Reserved(ReservedMemoryType::SidecarNode),
+            AllocationType::TdxPageTables => {
+                AddressUsage::Reserved(ReservedMemoryType::TdxPageTables)
             }
         };
 
         let alloc = index.map(|index| {
-            self.allocate_range(
-                index,
-                len,
-                match allocation_type {
-                    AllocationType::GpaPool => {
-                        AddressUsage::Reserved(ReservedMemoryType::Vtl2GpaPool)
-                    }
-                    AllocationType::SidecarNode => {
-                        AddressUsage::Reserved(ReservedMemoryType::SidecarNode)
-                    }
-                    AllocationType::TdxPageTables => {
-                        AddressUsage::Reserved(ReservedMemoryType::TdxPageTables)
-                    }
-                },
-                allocation_policy,
-            )
+            if let Some(alignment) = alignment {
+                self.allocate_range_aligned(index, len, address_usage, allocation_policy, alignment)
+            } else {
+                self.allocate_range(index, len, address_usage, allocation_policy)
+            }
         });
 
         if allocation_type == AllocationType::GpaPool && alloc.is_some() {
