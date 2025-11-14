@@ -5,6 +5,7 @@
 
 use guestmem::GuestMemory;
 use hvdef::HV_PAGE_SIZE;
+use hvlite_defs::config::DeviceTreeOverrideParams;
 use hvlite_defs::config::SerialInformation;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use igvm::IgvmDirectiveHeader;
@@ -302,6 +303,7 @@ fn build_device_tree(
     with_vmbus_redirect: bool,
     com_serial: Option<SerialInformation>,
     entropy: Option<&[u8]>,
+    device_tree_overrides: Option<DeviceTreeOverrideParams>,
 ) -> Result<Vec<u8>, fdt::builder::Error> {
     let mut buf = vec![0; HV_PAGE_SIZE as usize * 256];
 
@@ -496,11 +498,14 @@ fn build_device_tree(
             .end_node()?;
     }
 
-    // Indicate that NVMe keep-alive feature is supported by this VMM.
-    openhcl = openhcl
-        .start_node("keep-alive")?
-        .add_str(p_vf_keep_alive_devs, "nvme")?
-        .end_node()?;
+    // Default to enabling NVMe keep-alive unless explicitly disabled.
+    if device_tree_overrides.is_none() || device_tree_overrides.unwrap().nvme_keepalive_enable {
+        // Indicate that NVMe keep-alive feature is supported by this VMM.
+        openhcl = openhcl
+            .start_node("keep-alive")?
+            .add_str(p_vf_keep_alive_devs, "nvme")?
+            .end_node()?;
+    }
 
     root = openhcl.end_node()?;
 
@@ -546,6 +551,8 @@ pub struct LoadIgvmParams<'a, T: ArchTopology> {
     pub com_serial: Option<SerialInformation>,
     /// Entropy
     pub entropy: Option<&'a [u8]>,
+    /// Flag indicating host device tree overrides.
+    pub device_tree_overrides: Option<DeviceTreeOverrideParams>,
 }
 
 pub fn load_igvm(
@@ -588,6 +595,7 @@ fn load_igvm_x86(
         with_vmbus_redirect,
         com_serial,
         entropy,
+        device_tree_overrides,
     } = params;
 
     let relocations_enabled = match vtl2_base_address {
@@ -994,6 +1002,7 @@ fn load_igvm_x86(
                     with_vmbus_redirect,
                     com_serial,
                     entropy,
+                    device_tree_overrides,
                 )
                 .map_err(Error::DeviceTree)?;
                 import_parameter(&mut parameter_areas, info, &dt)?;

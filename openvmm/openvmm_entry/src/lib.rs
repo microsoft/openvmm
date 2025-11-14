@@ -1464,6 +1464,7 @@ fn vm_config_from_command_line(
                 EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::Full,
             }
         },
+        device_tree_overrides: None,
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;

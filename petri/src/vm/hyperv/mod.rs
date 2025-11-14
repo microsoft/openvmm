@@ -36,6 +36,7 @@ use async_trait::async_trait;
 use disk_backend::sync_wrapper::BlockingDisk;
 use disk_vhdmp::VhdmpDisk;
 use get_resources::ged::FirmwareEvent;
+use hvlite_defs::config::DeviceTreeOverrideParams;
 use pal_async::DefaultDriver;
 use pal_async::pipe::PolledPipe;
 use pal_async::socket::PolledSocket;
@@ -525,6 +526,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 command_line: _,
                 log_levels: _,
                 vtl2_base_address_type,
+                device_tree_overrides: _,
             },
         )) = &openhcl_config
         {
@@ -861,6 +863,13 @@ impl PetriVmRuntime for HyperVPetriRuntime {
 
     async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
         Ok(Some(self.vm.get_guest_state_file().await?))
+    }
+
+    async fn update_device_tree_overrides(
+        &mut self,
+        _device_tree_overrides: DeviceTreeOverrideParams,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("device tree overrides are not yet supported on Hyper-V");
     }
 }
 

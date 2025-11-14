@@ -28,6 +28,7 @@ use hvdef::Vtl;
 use hvlite_defs::config::Aarch64TopologyConfig;
 use hvlite_defs::config::ArchTopologyConfig;
 use hvlite_defs::config::Config;
+use hvlite_defs::config::DeviceTreeOverrideParams;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::EfiDiagnosticsLogLevelType;
 use hvlite_defs::config::GicConfig;
@@ -210,6 +211,7 @@ impl Manifest {
                 EfiDiagnosticsLogLevelType::Info => LogLevel::make_info(),
                 EfiDiagnosticsLogLevelType::Full => LogLevel::make_full(),
             },
+            device_tree_overrides: config.device_tree_overrides,
         }
     }
 }
@@ -255,6 +257,7 @@ pub struct Manifest {
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
     efi_diagnostics_log_level: LogLevel,
+    device_tree_overrides: Option<DeviceTreeOverrideParams>,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -596,6 +599,7 @@ struct LoadedVmInner {
     /// allow the guest to reset without notifying the client
     automatic_guest_reset: bool,
     pcie_host_bridges: Vec<PcieHostBridge>,
+    device_tree_overrides: Option<DeviceTreeOverrideParams>,
 }
 
 fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
@@ -2495,6 +2499,7 @@ impl InitializedVm {
                 client_notify_send,
                 automatic_guest_reset: cfg.automatic_guest_reset,
                 pcie_host_bridges,
+                device_tree_overrides: cfg.device_tree_overrides,
             },
         };
 
@@ -2687,6 +2692,7 @@ impl LoadedVmInner {
                     with_vmbus_redirect: self.vmbus_redirect,
                     com_serial,
                     entropy: Some(&entropy),
+                    device_tree_overrides: self.device_tree_overrides,
                 };
                 super::vm_loaders::igvm::load_igvm(params)?
             }
@@ -2951,6 +2957,11 @@ impl LoadedVm {
                     VmRpc::WriteMemory(rpc) => rpc.handle_failable_sync(|(gpa, bytes)| {
                         self.inner.gm.write_at(gpa, bytes.as_slice())
                     }),
+                    VmRpc::UpdateDeviceTreeOverrides(rpc) => {
+                        rpc.handle_sync(|device_tree_overrides| {
+                            self.inner.device_tree_overrides = Some(device_tree_overrides);
+                        })
+                    }
                 },
                 Event::Halt(Err(_)) => break,
                 Event::Halt(Ok(reason)) => {
@@ -3121,6 +3132,7 @@ impl LoadedVm {
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
             efi_diagnostics_log_level: Default::default(),
+            device_tree_overrides: self.inner.device_tree_overrides,
         };
         RestartState {
             hypervisor: self.inner.hypervisor,

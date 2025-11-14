@@ -16,6 +16,7 @@ use crate::disk_image::SECTOR_SIZE;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
+use hvlite_defs::config::DeviceTreeOverrideParams;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use mesh::CancelContext;
 use pal_async::DefaultDriver;
@@ -663,6 +664,19 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Run the VM with test defined device tree overrides
+    pub fn with_device_tree_overrides(
+        mut self,
+        device_tree_overrides: DeviceTreeOverrideParams,
+    ) -> Self {
+        self.config
+            .firmware
+            .openhcl_config_mut()
+            .expect("Device tree overrides are only supported for OpenHCL firmware.")
+            .device_tree_overrides = Some(device_tree_overrides);
+        self
+    }
+
     /// Specify the guest state lifetime for the VM
     pub fn with_guest_state_lifetime(
         mut self,
@@ -1070,6 +1084,16 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     pub async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
         self.runtime.get_guest_state_file().await
     }
+
+    /// Update host keepalive support for the VM
+    pub async fn update_device_tree_overrides(
+        &mut self,
+        device_tree_overrides: DeviceTreeOverrideParams,
+    ) -> anyhow::Result<()> {
+        self.runtime
+            .update_device_tree_overrides(device_tree_overrides)
+            .await
+    }
 }
 
 /// A running VM that tests can interact with.
@@ -1130,6 +1154,11 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
         Ok(None)
     }
+    /// Update host keepalive support flag
+    async fn update_device_tree_overrides(
+        &mut self,
+        device_tree_overrides: DeviceTreeOverrideParams,
+    ) -> anyhow::Result<()>;
 }
 
 /// Interface for getting information about the state of the VM
@@ -1292,6 +1321,8 @@ pub struct OpenHclConfig {
     /// How to place VTL2 in address space. If `None`, the backend VMM
     /// will decide on default behavior.
     pub vtl2_base_address_type: Option<Vtl2BaseAddressType>,
+    /// Apply device tree overrides at boot time.
+    pub device_tree_overrides: Option<DeviceTreeOverrideParams>,
 }
 
 impl OpenHclConfig {
@@ -1339,6 +1370,7 @@ impl Default for OpenHclConfig {
             command_line: None,
             log_levels: OpenHclLogConfig::TestDefault,
             vtl2_base_address_type: None,
+            device_tree_overrides: None,
         }
     }
 }
