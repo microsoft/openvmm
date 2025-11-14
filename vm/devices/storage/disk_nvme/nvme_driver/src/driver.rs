@@ -89,7 +89,11 @@ struct NamespaceHandle {
 
 #[derive(Inspect)]
 struct DriverWorkerTask<T: DeviceBacking> {
-    #[inspect(skip)]
+    /// The VFIO device backing this driver. For KeepAlive cases, the VFIO handle
+    /// is never dropped, otherwise there is a chance that VFIO will reset the
+    /// device. We don't want that.
+    ///
+    /// Dropped in `NvmeDriver::reset`.
     device: ManuallyDrop<T>,
     #[inspect(skip)]
     driver: VmTaskDriver,
@@ -102,12 +106,6 @@ struct DriverWorkerTask<T: DeviceBacking> {
     recv: mesh::Receiver<NvmeWorkerRequest>,
     bounce_buffer: bool,
 }
-
-// impl<T: DeviceBacking> Drop for DriverWorkerTask<T> {
-//     fn drop(&mut self) {
-//         tracing::debug!(pci_id = ?self.device.id(), "***dropping nvme driver worker task");
-//     }
-// }
 
 #[derive(Inspect)]
 struct WorkerState {
@@ -531,6 +529,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     fn reset(&mut self) -> impl Send + Future<Output = ()> + use<T> {
         let driver = self.driver.clone();
+        let id = self.device_id.clone();
         let mut task = std::mem::take(&mut self.task).unwrap();
         async move {
             task.stop().await;
@@ -548,6 +547,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             if let Err(e) = worker.registers.bar0.reset(&driver).await {
                 tracing::info!(csts = e, "device reset failed");
             }
+
+            let _vfio = ManuallyDrop::into_inner(worker.device);
+            tracing::debug!(pci_id = ?id, "dropping vfio handle to device");
         }
     }
 
