@@ -93,7 +93,9 @@ impl<'a> RedirectedVectorMapping<'a> {
     /// Creates a new mapping in VTL2 kernel for proxy interrupt redirection. This will be automatically
     /// unmapped when the guard is dropped unless explicitly disarmed.
     fn new(hcl: &'a hcl::ioctl::Hcl, vector: u32, apic_id: u32) -> Option<Self> {
-        let redirected_vector = hcl.map_redirected_device_interrupt(vector, apic_id, true).ok()?;
+        let redirected_vector = hcl
+            .map_redirected_device_interrupt(vector, apic_id, true)
+            .ok()?;
         Some(Self {
             hcl,
             apic_id,
@@ -1016,6 +1018,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         let masks = [processor_mask];
         let redirected_processor = ProcessorSet::from_processor_masks(1u64 << mask_index, &masks)
             .ok_or(ProxyInterruptRedirectionError::ProcessorSetError)?;
+        let redirected_vector = guard.redirected_vector();
 
         // Issue HvCallRetargetDeviceInterrupt hypercall with posted interrupt redirection enabled
         self.vp
@@ -1024,7 +1027,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             .retarget_device_interrupt(
                 device_id,
                 entry,
-                guard.redirected_vector(),
+                redirected_vector,
                 multicast,
                 redirected_processor,
                 true,
@@ -1033,6 +1036,29 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
 
         // Disarm the guard upon success to prevent unmapping.
         std::mem::forget(guard);
+
+        // Record the redirection for debugging/inspection purposes.
+        let mut proxy_redirect_interrupts = self
+            .vp
+            .cvm_partition()
+            .vp_inner(first_processor_index)
+            .proxy_redirect_interrupts
+            .lock();
+        proxy_redirect_interrupts.insert(
+            redirected_vector,
+            crate::ProxyRedirectVectorInfo {
+                device_id,
+                original_vector: vector,
+            },
+        );
+        tracelimit::info_ratelimited!(
+            CVM_ALLOWED,
+            device_id,
+            target_vp_index = first_processor_index,
+            original_vector = vector,
+            redirected_vector,
+            "proxy interrupt redirection successfully mapped"
+        );
         Ok(())
     }
 

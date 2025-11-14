@@ -88,6 +88,7 @@ use parking_lot::RwLock;
 use processor::BackingSharedParams;
 use processor::SidecarExitReason;
 use sidecar_client::NewSidecarClientError;
+use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
@@ -434,6 +435,16 @@ pub struct SecureRegisterInterceptState {
     ia32_misc_enable_mask: u64,
 }
 
+/// Information about a redirected interrupt for a specific vector.
+/// Stored per-processor, indexed by the redirected vector number in VTL2.
+#[derive(Clone, Inspect)]
+struct ProxyRedirectVectorInfo {
+    /// Device ID that owns this interrupt
+    device_id: u64,
+    /// Original interrupt vector from the device
+    original_vector: u32,
+}
+
 #[derive(Inspect)]
 /// Partition-wide state for CVMs.
 struct UhCvmPartitionState {
@@ -495,6 +506,9 @@ struct UhCvmVpInner {
     /// Start context for StartVp and EnableVpVtl calls.
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
     hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<VpStartEnableVtl>>>, 2>,
+    /// Tracking of proxy redirect interrupts mapped on this VP.
+    #[inspect(with = "|x| inspect::adhoc(|req| inspect::iter_by_key(&*x.lock()).inspect(req))")]
+    proxy_redirect_interrupts: Mutex<HashMap<u32, ProxyRedirectVectorInfo>>,
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -2089,6 +2103,7 @@ impl UhProtoPartition<'_> {
                 vtl1_enable_called: Mutex::new(false),
                 started: AtomicBool::new(vp_index == 0),
                 hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
+                proxy_redirect_interrupts: Mutex::new(HashMap::new()),
             })
             .collect();
         let tlb_locked_vps =
