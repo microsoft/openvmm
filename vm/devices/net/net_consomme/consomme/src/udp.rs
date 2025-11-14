@@ -61,10 +61,7 @@ impl InspectMut for Udp {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         let mut resp = req.respond();
         for (addr, conn) in &mut self.connections {
-            let key = match addr {
-                SocketAddr::V4(addr) => format!("{}:{}", addr.ip(), addr.port()),
-                SocketAddr::V6(addr) => format!("[{}]:{}", addr.ip(), addr.port()),
-            };
+            let key = addr.to_string();
             resp.field_mut(&key, conn);
         }
     }
@@ -113,8 +110,8 @@ impl UdpConnection {
             }
 
             let header_offset = match dst_addr {
-                SocketAddr::V4 { .. } => IPV4_HEADER_LEN + UDP_HEADER_LEN,
-                SocketAddr::V6 { .. } => IPV6_HEADER_LEN + UDP_HEADER_LEN,
+                SocketAddr::V4(_) => IPV4_HEADER_LEN + UDP_HEADER_LEN,
+                SocketAddr::V6(_) => IPV6_HEADER_LEN + UDP_HEADER_LEN,
             };
 
             match self.socket.as_mut().unwrap().poll_io(
@@ -139,7 +136,7 @@ impl UdpConnection {
                             Ipv4Repr {
                                 src_addr: (*src_addr.ip()).into(),
                                 dst_addr: (*dst_addr.ip()).into(),
-                                protocol: IpProtocol::Udp,
+                                next_header: IpProtocol::Udp,
                                 payload_len: UDP_HEADER_LEN + n,
                                 hop_limit: 64,
                             }
@@ -182,10 +179,7 @@ impl UdpConnection {
                             )
                         }
                         _ => {
-                            tracing::error!(
-                                "IP version mismatch between socket and destination address"
-                            );
-                            break false;
+                            panic!("Mismatched IP address versions in UDP connection");
                         }
                     };
 
@@ -325,10 +319,10 @@ impl<T: Client> Access<'_, T> {
             hash_map::Entry::Occupied(conn) => Ok(conn.into_mut()),
             hash_map::Entry::Vacant(e) => {
                 let bind_addr: SocketAddr = match guest_addr {
-                    SocketAddr::V4 { .. } => {
+                    SocketAddr::V4(_) => {
                         SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))
                     }
-                    SocketAddr::V6 { .. } => {
+                    SocketAddr::V6(_) => {
                         SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0))
                     }
                 };
@@ -377,9 +371,9 @@ impl<T: Client> Access<'_, T> {
     /// packets to the guest.
     pub fn bind_udp_port(&mut self, ip_addr: Option<IpAddr>, port: u16) -> Result<(), DropReason> {
         let guest_addr = match ip_addr {
-            Some(IpAddr::V4(ip)) => SocketAddr::V4(SocketAddrV4::new(ip.into(), port)),
-            Some(IpAddr::V6(ip)) => SocketAddr::V6(SocketAddrV6::new(ip.into(), port, 0, 0)),
-            None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED.into(), port)),
+            Some(IpAddr::V4(ip)) => SocketAddr::V4(SocketAddrV4::new(ip, port)),
+            Some(IpAddr::V6(ip)) => SocketAddr::V6(SocketAddrV6::new(ip, port, 0, 0)),
+            None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
         };
         let _ = self.get_or_insert(guest_addr, None)?;
         Ok(())

@@ -23,12 +23,9 @@ use smoltcp::wire::IPV4_HEADER_LEN;
 use smoltcp::wire::IPV6_HEADER_LEN;
 use smoltcp::wire::IpAddress;
 use smoltcp::wire::IpProtocol;
-use smoltcp::wire::Ipv4Address;
+use smoltcp::wire::IpRepr;
 use smoltcp::wire::Ipv4Packet;
-use smoltcp::wire::Ipv4Repr;
-use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Packet;
-use smoltcp::wire::Ipv6Repr;
 use smoltcp::wire::TcpControl;
 use smoltcp::wire::TcpPacket;
 use smoltcp::wire::TcpRepr;
@@ -396,8 +393,8 @@ impl<T: Client> Access<'_, T> {
         let ip_addr = match ip_addr {
             Some(IpAddr::V4(ip)) => Some(ip),
             Some(IpAddr::V6(_)) => {
-                // REVIEW: How do I exercise this path? I see that this function is called when handling RPC messages, 
-                // but I wasn't able to track down where these ConsommeMessage's are being created/sent from. 
+                // REVIEW: How do I exercise this path? I see that this function is called when handling RPC messages,
+                // but I wasn't able to track down where these ConsommeMessage's are being created/sent from.
                 return Err(DropReason::UnsupportedEthertype(EthernetProtocol::Ipv6));
             }
             None => None,
@@ -458,59 +455,55 @@ impl<T: Client> Sender<'_, T> {
                 }
             }
         };
-        let (n, checksum_state) = match (self.ft.dst, self.ft.src) {
-            (SocketAddr::V4(dst_sockaddr), SocketAddr::V4(src_sockaddr)) => {
-                eth_packet.set_ethertype(EthernetProtocol::Ipv4);
-                let mut ipv4_packet = Ipv4Packet::new_unchecked(eth_packet.payload_mut());
-                let ipv4 = Ipv4Repr {
-                    src_addr: Ipv4Address::from(*dst_sockaddr.ip()),
-                    dst_addr: Ipv4Address::from(*src_sockaddr.ip()),
-                    protocol: IpProtocol::Tcp,
-                    payload_len: tcp.header_len() + payload.as_ref().map_or(0, |p| p.len()),
-                    hop_limit: 64,
-                };
-                ipv4.emit(&mut ipv4_packet, &ChecksumCapabilities::default());
-                let mut tcp_packet = TcpPacket::new_unchecked(ipv4_packet.payload_mut());
-                tcp.emit(
-                    &mut tcp_packet,
-                    &IpAddress::from(*dst_sockaddr.ip()),
-                    &IpAddress::from(*src_sockaddr.ip()),
-                    &ChecksumCapabilities::default(),
-                );
-                copy_payload_into_buffer(tcp_packet.payload_mut(), payload);
-                tcp_packet
-                    .fill_checksum(&(*dst_sockaddr.ip()).into(), &(*src_sockaddr.ip()).into());
-                let n = ETHERNET_HEADER_LEN + ipv4_packet.total_len() as usize;
-                (n, ChecksumState::TCP4)
+        let ip = IpRepr::new(
+            self.ft.dst.ip().into(),
+            self.ft.src.ip().into(),
+            IpProtocol::Tcp,
+            tcp.header_len() + payload.as_ref().map_or(0, |p| p.len()),
+            64,
+        );
+        // Set the ethernet type based on IP version
+        match ip {
+            IpRepr::Ipv4(_) => eth_packet.set_ethertype(EthernetProtocol::Ipv4),
+            IpRepr::Ipv6(_) => eth_packet.set_ethertype(EthernetProtocol::Ipv6),
+        }
+
+        // Emit IP packet and get the TCP payload buffer (works for both IPv4 and IPv6)
+        let ip_packet_buf = eth_packet.payload_mut();
+        ip.emit(&mut *ip_packet_buf, &ChecksumCapabilities::default());
+
+        let (tcp_payload_buf, ip_total_len) = match self.ft.dst {
+            SocketAddr::V4(_) => {
+                let ipv4_packet = Ipv4Packet::new_unchecked(&*ip_packet_buf);
+                let total_len = ipv4_packet.total_len() as usize;
+                let payload_offset = ipv4_packet.header_len() as usize;
+                (&mut ip_packet_buf[payload_offset..], total_len)
             }
-            (SocketAddr::V6(dst_sockaddr), SocketAddr::V6(src_sockaddr)) => {
-                eth_packet.set_ethertype(EthernetProtocol::Ipv6);
-                let mut ipv6_packet = Ipv6Packet::new_unchecked(eth_packet.payload_mut());
-                let ipv6 = Ipv6Repr {
-                    src_addr: Ipv6Address::from(*dst_sockaddr.ip()),
-                    dst_addr: Ipv6Address::from(*src_sockaddr.ip()),
-                    next_header: IpProtocol::Tcp,
-                    payload_len: tcp.header_len() + payload.as_ref().map_or(0, |p| p.len()),
-                    hop_limit: 64,
-                };
-                ipv6.emit(&mut ipv6_packet);
-                let mut tcp_packet = TcpPacket::new_unchecked(ipv6_packet.payload_mut());
-                tcp.emit(
-                    &mut tcp_packet,
-                    &IpAddress::from(*dst_sockaddr.ip()),
-                    &IpAddress::from(*src_sockaddr.ip()),
-                    &ChecksumCapabilities::default(),
-                );
-                copy_payload_into_buffer(tcp_packet.payload_mut(), payload);
-                tcp_packet
-                    .fill_checksum(&(*dst_sockaddr.ip()).into(), &(*src_sockaddr.ip()).into());
-                let n = ETHERNET_HEADER_LEN + ipv6_packet.total_len() as usize;
-                (n, ChecksumState::TCP6)
+            SocketAddr::V6(_) => {
+                let ipv6_packet = Ipv6Packet::new_unchecked(&*ip_packet_buf);
+                let total_len = ipv6_packet.total_len();
+                let payload_offset = IPV6_HEADER_LEN;
+                (&mut ip_packet_buf[payload_offset..], total_len)
             }
-            _ => {
-                tracing::error!("Mismatched address families in TCP send_packet");
-                return;
-            }
+        };
+
+        let dst_ip_addr: IpAddress = self.ft.dst.ip().into();
+        let src_ip_addr: IpAddress = self.ft.src.ip().into();
+        let mut tcp_packet = TcpPacket::new_unchecked(tcp_payload_buf);
+        tcp.emit(
+            &mut tcp_packet,
+            &dst_ip_addr,
+            &src_ip_addr,
+            &ChecksumCapabilities::default(),
+        );
+
+        // Copy payload into TCP packet
+        copy_payload_into_buffer(tcp_packet.payload_mut(), payload);
+        tcp_packet.fill_checksum(&self.ft.dst.ip().into(), &self.ft.src.ip().into());
+        let n = ETHERNET_HEADER_LEN + ip_total_len;
+        let checksum_state = match self.ft.dst {
+            SocketAddr::V4(_) => ChecksumState::TCP4,
+            SocketAddr::V6(_) => ChecksumState::TCP6,
         };
 
         self.client.recv(&buffer[..n], &checksum_state);
@@ -603,10 +596,7 @@ impl TcpConnection {
         }
 
         let socket = PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?;
-        match socket
-            .get()
-            .connect(&SockAddr::from(SocketAddr::from(sender.ft.dst)))
-        {
+        match socket.get().connect(&SockAddr::from(sender.ft.dst)) {
             Ok(_) => unreachable!(),
             Err(err) if is_connect_incomplete_error(&err) => (),
             Err(err) => {
@@ -1272,7 +1262,7 @@ impl TcpListener {
                     Some(addr) => match address.as_socket_ipv4() {
                         Some(src_address) => Ok(Some((
                             socket,
-                            SocketAddrV4::new((*src_address.ip()).into(), addr.port()),
+                            SocketAddrV4::new(*src_address.ip(), addr.port()),
                         ))),
                         None => {
                             tracing::warn!(?address, "Not an IPv4 address from accept");

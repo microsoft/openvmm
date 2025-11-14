@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 dhcproto.workspace = true
+heapless.workspace = true
 inspect.workspace = true
 inspect_counters.workspace = true
 pal_async.workspace = true

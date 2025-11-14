@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::str::FromStr;
-
 use super::Access;
 use super::Client;
 use super::DropReason;
@@ -23,6 +21,9 @@ use smoltcp::wire::Ipv6Repr;
 use smoltcp::wire::UdpPacket;
 use smoltcp::wire::UdpRepr;
 
+const DHCPV6_ALL_AGENTS_MULTICAST: Ipv6Address =
+    Ipv6Address([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2]);
+
 impl<T: Client> Access<'_, T> {
     pub(crate) fn handle_dhcpv6(
         &mut self,
@@ -35,7 +36,7 @@ impl<T: Client> Access<'_, T> {
                 error = &x as &dyn std::error::Error,
                 "failed to decode DHCPv6 message"
             );
-            DropReason::Packet(smoltcp::Error::Malformed)
+            DropReason::Packet(smoltcp::wire::Error)
         })?;
 
         match msg.msg_type() {
@@ -100,7 +101,7 @@ impl<T: Client> Access<'_, T> {
                         error = &x as &dyn std::error::Error,
                         "failed to encode DHCPv6 message"
                     );
-                    DropReason::Packet(smoltcp::Error::Malformed)
+                    DropReason::Packet(smoltcp::wire::Error)
                 })?;
 
                 let resp_udp = UdpRepr {
@@ -108,8 +109,7 @@ impl<T: Client> Access<'_, T> {
                     dst_port: v6::CLIENT_PORT,
                 };
 
-                let client_link_local =
-                    client_ip.unwrap_or_else(|| Ipv6Address::from_str("ff02::1:2").unwrap());
+                let client_link_local = client_ip.unwrap_or(DHCPV6_ALL_AGENTS_MULTICAST);
                 let resp_ipv6 = Ipv6Repr {
                     src_addr: self.inner.state.params.gateway_link_local_ipv6,
                     dst_addr: client_link_local,

@@ -6,6 +6,7 @@ use super::Client;
 use super::DropReason;
 use crate::ChecksumState;
 use crate::MIN_MTU;
+use heapless::Vec;
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::DHCP_MAX_DNS_SERVER_COUNT;
 use smoltcp::wire::DhcpMessageType;
@@ -48,10 +49,10 @@ impl<T: Client> Access<'_, T> {
         }
 
         let dns_servers = if self.inner.state.params.nameservers.is_empty() {
-            None
+            let dns_servers: Vec<Ipv4Address, DHCP_MAX_DNS_SERVER_COUNT> = Vec::new();
+            Some(dns_servers)
         } else {
-            let mut dns_servers = [None; DHCP_MAX_DNS_SERVER_COUNT];
-            for (s, d) in self
+            let dns_servers: Vec<Ipv4Address, DHCP_MAX_DNS_SERVER_COUNT> = self
                 .inner
                 .state
                 .params
@@ -61,16 +62,15 @@ impl<T: Client> Access<'_, T> {
                     IpAddress::Ipv4(addr) => Some(*addr),
                     _ => None,
                 })
-                .zip(&mut dns_servers)
-            {
-                *d = Some(s);
-            }
+                .take(DHCP_MAX_DNS_SERVER_COUNT)
+                .collect::<Vec<Ipv4Address, DHCP_MAX_DNS_SERVER_COUNT>>();
             Some(dns_servers)
         };
 
         let resp_dhcp = if let Some(your_ip) = your_ip {
             DhcpRepr {
                 message_type,
+                secs: 0,
                 transaction_id: dhcp_req.transaction_id,
                 client_hardware_address: dhcp_req.client_hardware_address,
                 client_ip: Ipv4Address::UNSPECIFIED,
@@ -87,10 +87,14 @@ impl<T: Client> Access<'_, T> {
                 dns_servers,
                 max_size: None,
                 lease_duration: Some(86400),
+                rebind_duration: None,
+                renew_duration: None,
+                additional_options: &[],
             }
         } else {
             DhcpRepr {
                 message_type: DhcpMessageType::Nak,
+                secs: 0,
                 transaction_id: dhcp_req.transaction_id,
                 client_hardware_address: dhcp_req.client_hardware_address,
                 client_ip: Ipv4Address::UNSPECIFIED,
@@ -107,6 +111,9 @@ impl<T: Client> Access<'_, T> {
                 dns_servers: None,
                 max_size: None,
                 lease_duration: None,
+                rebind_duration: None,
+                renew_duration: None,
+                additional_options: &[],
             }
         };
 
@@ -117,7 +124,7 @@ impl<T: Client> Access<'_, T> {
         let resp_ipv4 = Ipv4Repr {
             src_addr: self.inner.state.params.gateway_ip,
             dst_addr: Ipv4Address::BROADCAST,
-            protocol: IpProtocol::Udp,
+            next_header: IpProtocol::Udp,
             payload_len: resp_udp.header_len() + resp_dhcp.buffer_len(),
             hop_limit: 64,
         };

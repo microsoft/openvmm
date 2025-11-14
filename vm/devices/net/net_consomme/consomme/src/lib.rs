@@ -37,8 +37,8 @@ use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
-use smoltcp::wire::Icmpv6Packet;
 use smoltcp::wire::IPV4_HEADER_LEN;
+use smoltcp::wire::Icmpv6Packet;
 use smoltcp::wire::IpAddress;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Address;
@@ -296,7 +296,7 @@ pub const MIN_MTU: usize = 1514;
 pub enum DropReason {
     /// The packet could not be parsed.
     #[error("packet parsing error")]
-    Packet(#[from] smoltcp::Error),
+    Packet(#[from] smoltcp::wire::Error),
     /// The ethertype is unknown.
     #[error("unsupported ethertype {0}")]
     UnsupportedEthertype(EthernetProtocol),
@@ -449,9 +449,7 @@ impl<T: Client> Access<'_, T> {
         let frame = EthernetRepr::parse(&frame_packet)?;
         match frame.ethertype {
             EthernetProtocol::Ipv4 => self.handle_ipv4(&frame, frame_packet.payload(), checksum)?,
-            EthernetProtocol::Ipv6 => {
-                self.handle_ipv6(&frame, frame_packet.payload(), checksum)?
-            }
+            EthernetProtocol::Ipv6 => self.handle_ipv6(&frame, frame_packet.payload(), checksum)?,
             EthernetProtocol::Arp => self.handle_arp(&frame, frame_packet.payload())?,
             _ => return Err(DropReason::UnsupportedEthertype(frame.ethertype)),
         }
@@ -470,7 +468,7 @@ impl<T: Client> Access<'_, T> {
             || payload.len() < ipv4.header_len().into()
             || payload.len() < ipv4.total_len().into()
         {
-            return Err(DropReason::Packet(smoltcp::Error::Malformed));
+            return Err(DropReason::Packet(smoltcp::wire::Error));
         }
 
         let total_len = if checksum.tso.is_some() {
@@ -479,11 +477,11 @@ impl<T: Client> Access<'_, T> {
             ipv4.total_len().into()
         };
         if total_len < ipv4.header_len().into() {
-            return Err(DropReason::Packet(smoltcp::Error::Malformed));
+            return Err(DropReason::Packet(smoltcp::wire::Error));
         }
 
         if ipv4.more_frags() || ipv4.frag_offset() != 0 {
-            return Err(DropReason::Packet(smoltcp::Error::Fragmented));
+            return Err(DropReason::Packet(smoltcp::wire::Error));
         }
 
         if !checksum.ipv4 && !ipv4.verify_checksum() {
@@ -497,10 +495,14 @@ impl<T: Client> Access<'_, T> {
 
         let inner = &payload[ipv4.header_len().into()..total_len];
 
-        match ipv4.protocol() {
+        match ipv4.next_header() {
             IpProtocol::Tcp => self.handle_tcp(&IpAddresses::V4(addresses), inner, checksum)?,
-            IpProtocol::Udp => self.handle_udp(frame, &IpAddresses::V4(addresses), inner, checksum)?,
-            IpProtocol::Icmp => self.handle_icmp(frame, &addresses, inner, checksum, ipv4.hop_limit())?,
+            IpProtocol::Udp => {
+                self.handle_udp(frame, &IpAddresses::V4(addresses), inner, checksum)?
+            }
+            IpProtocol::Icmp => {
+                self.handle_icmp(frame, &addresses, inner, checksum, ipv4.hop_limit())?
+            }
             p => return Err(DropReason::UnsupportedIpProtocol(p)),
         };
         Ok(())
@@ -514,7 +516,7 @@ impl<T: Client> Access<'_, T> {
     ) -> Result<(), DropReason> {
         let ipv6 = Ipv6Packet::new_unchecked(payload);
         if payload.len() < smoltcp::wire::IPV6_HEADER_LEN || ipv6.version() != 6 {
-            return Err(DropReason::Packet(smoltcp::Error::Malformed));
+            return Err(DropReason::Packet(smoltcp::wire::Error));
         }
 
         //TODO: Walk extension headers.
