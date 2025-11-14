@@ -10,7 +10,6 @@
 
 use super::vmbusioctl::VMBUS_CHANNEL_OFFER;
 use super::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
-use crate::vmbusioctl::VMBUS_PROXY_VNUMA_CHILD_NODE_COUNT_MAX;
 use bitfield_struct::bitfield;
 use guid::Guid;
 use windows::Win32::Foundation::NTSTATUS;
@@ -212,5 +211,6 @@ pub struct VMBUS_PROXY_TL_CONNECT_REQUEST_INPUT {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct VMBUS_PROXY_GET_NUMA_MAP_OUTPUT {
-    pub NumaNodes: [u8; VMBUS_PROXY_VNUMA_CHILD_NODE_COUNT_MAX],
+    pub NodeCount: u32,
+    pub NumaNodes: [u8; 0],
 }

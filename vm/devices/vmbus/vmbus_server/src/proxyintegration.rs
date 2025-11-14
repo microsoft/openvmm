@@ -62,7 +62,6 @@ use vmbus_core::protocol;
 use vmbus_proxy::Gpadl;
 use vmbus_proxy::ProxyAction;
 use vmbus_proxy::VmbusProxy;
-use vmbus_proxy::vmbusioctl::VMBUS_PROXY_VNUMA_CHILD_NODE_COUNT_MAX;
 use vmbus_proxy::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use vmcore::interrupt::Interrupt;
 use windows::Win32::Foundation::ERROR_NOT_FOUND;
@@ -242,6 +241,24 @@ impl SavedStatePair {
     }
 }
 
+struct NumaNodeMap {
+    nodes: Vec<u8>,
+}
+
+impl NumaNodeMap {
+    fn new(nodes: Vec<u8>) -> Self {
+        Self { nodes }
+    }
+
+    fn get_numa_node(&self, vp_index: u32) -> u16 {
+        self.nodes
+            .get(vp_index as usize)
+            .copied()
+            .unwrap_or(0)
+            .into()
+    }
+}
+
 struct ProxyTask {
     channels: Arc<Mutex<HashMap<u64, Channel>>>,
     gpadls: Arc<Mutex<HashMap<u64, HashSet<GpadlId>>>>,
@@ -251,7 +268,7 @@ struct ProxyTask {
     hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
     vtl2_hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
     saved_states: Arc<AsyncMutex<SavedStatePair>>,
-    numa_node_map: [u8; VMBUS_PROXY_VNUMA_CHILD_NODE_COUNT_MAX],
+    numa_node_map: NumaNodeMap,
 }
 
 impl ProxyTask {
@@ -261,7 +278,7 @@ impl ProxyTask {
         hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
         vtl2_hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
         proxy: Arc<VmbusProxy>,
-        numa_node_map: [u8; VMBUS_PROXY_VNUMA_CHILD_NODE_COUNT_MAX],
+        numa_node_map: NumaNodeMap,
     ) -> Self {
         Self {
             channels: Arc::new(Mutex::new(HashMap::new())),
@@ -330,7 +347,9 @@ impl ProxyTask {
                 &VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS {
                     RingBufferGpadlHandle: open_request.open_data.ring_gpadl_id.0,
                     DownstreamRingBufferPageOffset: open_request.open_data.ring_offset,
-                    NodeNumber: self.numa_node_map[open_request.open_data.target_vp as usize]
+                    NodeNumber: self
+                        .numa_node_map
+                        .get_numa_node(open_request.open_data.target_vp)
                         .into(),
                     Padding: 0,
                 },
@@ -960,7 +979,7 @@ impl ProxyTask {
                     .map(|request| VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS {
                         RingBufferGpadlHandle: request.ring_buffer_gpadl_id.0,
                         DownstreamRingBufferPageOffset: request.downstream_ring_buffer_page_offset,
-                        NodeNumber: self.numa_node_map[request.target_vp as usize].into(),
+                        NodeNumber: self.numa_node_map.get_numa_node(request.target_vp),
                         Padding: 0,
                     });
 
@@ -1130,13 +1149,10 @@ async fn proxy_thread(
 
     let (send, recv) = mesh::channel();
     let proxy = Arc::new(proxy);
-    let numa_node_map = proxy
-        .get_numa_node_map()
-        .map(|output| output.NumaNodes)
-        .unwrap_or_else(|_| {
-            tracing::warn!("failed to get NUMA node map from proxy");
-            [0; VMBUS_PROXY_VNUMA_CHILD_NODE_COUNT_MAX]
-        });
+    let numa_node_map = NumaNodeMap::new(proxy.get_numa_node_map().unwrap_or_else(|_| {
+        tracing::warn!("failed to get NUMA node map from proxy");
+        Vec::new()
+    }));
     let task = Arc::new(ProxyTask::new(
         server.control,
         vtl2_control,
