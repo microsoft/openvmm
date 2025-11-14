@@ -43,7 +43,9 @@ pub trait OverlappedIoDriver: Unpin {
     /// # Safety
     ///
     /// The caller must ensure that they exclusively own `handle`, and that
-    /// `handle` stays alive until the new handler is dropped.
+    /// `handle` stays alive until the new handler is dropped. The file must
+    /// not be reused to issue IO without first disassociating it from this
+    /// handler by calling [`IoOverlapped::disassociate`].
     unsafe fn new_overlapped_file(&self, handle: RawHandle) -> io::Result<Self::OverlappedIo>;
 }
 
@@ -62,6 +64,18 @@ pub trait IoOverlapped: Unpin + Send + Sync {
     /// If `completed` is false, the caller must not deallocate `overlapped`
     /// until `overlapped_io_complete` is called for this IO.
     unsafe fn post_io(&self, completed: bool, overlapped: &Overlapped);
+
+    /// Disassociates the file from the overlapped IO handler so that the file
+    /// can be reused for other purposes.
+    ///
+    /// # Panic
+    /// This function may panic if there are still pending IO operations
+    /// associated with this handler.
+    ///
+    /// # Safety
+    /// The caller must not call `pre_io` or `post_io` after calling this
+    /// function.
+    unsafe fn disassociate(&mut self);
 }
 
 /// A file opened for overlapped IO.
@@ -74,15 +88,26 @@ impl OverlappedFile {
     /// Prepares `file` for overlapped IO.
     ///
     /// `file` must have been opened with `FILE_FLAG_OVERLAPPED`.
-    pub fn new(driver: &(impl ?Sized + Driver), file: File) -> io::Result<Self> {
+    ///
+    /// # Safety
+    /// The caller must ensure that they exclusively own the underlying file,
+    /// i.e., that the underlying handle has not been duplicated, and that it
+    /// won't be used for asynchronous IO outside of this `OverlappedFile` until
+    /// [`into_inner`](Self::into_inner) is called.
+    pub unsafe fn new(driver: &(impl ?Sized + Driver), file: File) -> io::Result<Self> {
         // SAFETY: `file` is exclusively owned by the caller.
         let inner = unsafe { driver.new_dyn_overlapped_file(file.as_raw_handle())? };
         Ok(Self { inner, file })
     }
 
     /// Returns the inner file.
-    pub fn into_inner(self) -> File {
-        drop(self.inner);
+    ///
+    /// # Panic
+    /// This function will panic if the inner file is still in use by pending IO
+    /// operations.
+    pub fn into_inner(mut self) -> File {
+        // SAFETY: `inner` is being dropped here, so no further IO will be issued.
+        unsafe { self.inner.disassociate() };
         self.file
     }
 

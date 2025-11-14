@@ -130,8 +130,11 @@ unsafe impl<T> IoBufMut for StaticIoctlBuffer<T> {
 
 impl VmbusProxy {
     pub fn new(driver: &dyn Driver, handle: ProxyHandle, ctx: CancelContext) -> Result<Self> {
+        // SAFETY: TODO, analyze whether we are guaranteed to follow the safety
+        // contract.
+        let file = unsafe { OverlappedFile::new(driver, handle.0)? };
         Ok(Self {
-            file: OverlappedFile::new(driver, handle.0)?,
+            file,
             guest_memory: None,
             cancel: ctx,
         })

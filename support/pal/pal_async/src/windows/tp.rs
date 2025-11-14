@@ -530,13 +530,13 @@ impl IoOverlapped for OverlappedIo {
             unsafe { self.tp_io.cancel_io() };
         }
     }
-}
 
-impl Drop for OverlappedIo {
-    fn drop(&mut self) {
-        // SAFETY: the caller guarantees handle is still owned.
+    unsafe fn disassociate(&mut self) {
+        // SAFETY: the caller guarantees the handle is still owned and that no
+        // further IO will be issued.
         unsafe {
-            disassociate_completion_port(self.handle.0).unwrap();
+            disassociate_completion_port(self.handle.0)
+                .expect("caller bug: no pending IO should be in flight");
         }
     }
 }
