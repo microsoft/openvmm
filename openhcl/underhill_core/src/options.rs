@@ -181,6 +181,7 @@ pub struct Options {
     pub no_sidecar_hotplug: bool,
 
     /// (OPENHCL_NVME_KEEP_ALIVE=1) Enable nvme keep alive when servicing.
+    /// See note in openhcl_boot/src/main.rs and then change this type to an enum.
     pub nvme_keep_alive: bool,
 
     /// (OPENHCL_NVME_ALWAYS_FLR=1)
