@@ -25,6 +25,7 @@ members = [
   # hyper-v tooling
   "hyperv/tools/hypestv",
   # fuzzing
+  "support/fast_memcpy/fuzz",
   "support/inspect/fuzz",
   "support/mesh/mesh_rpc/fuzz",
   "support/sparse_mmap/fuzz",
