@@ -829,7 +829,7 @@ impl UhVmNetworkSettings {
                 persistent: persistent_dma_client,
             }
         } else {
-            VfioDmaClients::Single(ephemeral_dma_client)
+            VfioDmaClients::EphemeralOnly(ephemeral_dma_client)
         };
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(

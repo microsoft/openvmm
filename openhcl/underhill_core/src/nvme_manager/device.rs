@@ -96,7 +96,11 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
             })
             .map_err(NvmeSpawnerError::DmaClient)?;
 
-        let dma_clients = VfioDmaClients::Single(dma_client);
+        let dma_clients = if save_restore_supported {
+            VfioDmaClients::PersistentOnly(dma_client)
+        } else {
+            VfioDmaClients::EphemeralOnly(dma_client)
+        };
 
         let nvme_driver = if let Some(saved_state) = saved_state {
             let vfio_device = VfioDevice::restore(driver_source, pci_id, true, dma_clients)

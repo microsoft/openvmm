@@ -94,7 +94,7 @@ async fn create_mana_device(
 
         // Re-attach pending buffers, but discard them so that they get freed.
         let dma_client = match &dma_clients {
-            VfioDmaClients::Single(_) => {
+            VfioDmaClients::EphemeralOnly(_) | VfioDmaClients::PersistentOnly(_) => {
                 anyhow::bail!("must have both clients to free previously attached buffers")
             }
             VfioDmaClients::Split { persistent, .. } => persistent,

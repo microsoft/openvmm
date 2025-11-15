@@ -40,7 +40,8 @@ use zerocopy::KnownLayout;
 
 #[derive(Clone)]
 pub enum VfioDmaClients {
-    Single(Arc<dyn DmaClient>),
+    PersistentOnly(Arc<dyn DmaClient>),
+    EphemeralOnly(Arc<dyn DmaClient>),
     Split {
         persistent: Arc<dyn DmaClient>,
         ephemeral: Arc<dyn DmaClient>,
@@ -243,10 +244,11 @@ impl DeviceBacking for VfioDevice {
     }
 
     fn dma_client(&self) -> Arc<dyn DmaClient> {
-        // The default behavior is to use the persistent client when it's available, if the caller
-        // wants the ephemeral client when the persistent client is available, they can get it explicitly
+        // Default to the only present client, or if both are available default to the
+        // persistent client.
         match &self.dma_clients {
-            VfioDmaClients::Single(client) => client.clone(),
+            VfioDmaClients::EphemeralOnly(client) => client.clone(),
+            VfioDmaClients::PersistentOnly(client) => client.clone(),
             VfioDmaClients::Split {
                 persistent,
                 ephemeral: _,
@@ -254,15 +256,30 @@ impl DeviceBacking for VfioDevice {
         }
     }
 
-    fn dma_client_for(&self, pool: crate::DmaPool) -> Arc<dyn DmaClient> {
+    fn dma_client_for(&self, pool: crate::DmaPool) -> anyhow::Result<Arc<dyn DmaClient>> {
         match &self.dma_clients {
-            VfioDmaClients::Single(client) => client.clone(),
+            VfioDmaClients::PersistentOnly(client) => match pool {
+                crate::DmaPool::Persistent => Ok(client.clone()),
+                crate::DmaPool::Ephemeral => {
+                    anyhow::bail!(
+                        "ephemeral dma pool requested but only persistent client available"
+                    )
+                }
+            },
+            VfioDmaClients::EphemeralOnly(client) => match pool {
+                crate::DmaPool::Ephemeral => Ok(client.clone()),
+                crate::DmaPool::Persistent => {
+                    anyhow::bail!(
+                        "persistent dma pool requested but only ephemeral client available"
+                    )
+                }
+            },
             VfioDmaClients::Split {
                 persistent,
                 ephemeral,
             } => match pool {
-                crate::DmaPool::Persistent => persistent.clone(),
-                crate::DmaPool::Ephemeral => ephemeral.clone(),
+                crate::DmaPool::Persistent => Ok(persistent.clone()),
+                crate::DmaPool::Ephemeral => Ok(ephemeral.clone()),
             },
         }
     }

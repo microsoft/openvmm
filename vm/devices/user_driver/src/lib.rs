@@ -39,9 +39,11 @@ pub trait DeviceBacking: 'static + Send + Inspect {
     fn dma_client(&self) -> Arc<dyn DmaClient>;
 
     /// Overloaded DMA Client for the device, based on the requested pool.
-    fn dma_client_for(&self, _pool: DmaPool) -> Arc<dyn DmaClient> {
-        // Default implmentation just uses the standard DMA client.
-        self.dma_client()
+    ///
+    /// Default implementation returns an error as this is only currently implemented
+    /// by VfioDevice's implementation.
+    fn dma_client_for(&self, _pool: DmaPool) -> anyhow::Result<Arc<dyn DmaClient>> {
+        anyhow::bail!("multiple dma clients are not supported by this DmaClient");
     }
 
     /// Returns the maximum number of interrupts that can be mapped.
