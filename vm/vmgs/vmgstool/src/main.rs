@@ -1202,10 +1202,12 @@ async fn vmgs_file_query_file_size(
 
     let file_size = vmgs_query_file_size(&vmgs, file_id)?;
 
-    println!(
+    eprintln!(
         "File ID {} ({:?}) has a size of {}",
         file_id.0, file_id, file_size
     );
+
+    println!("{file_size}");
 
     Ok(())
 }
