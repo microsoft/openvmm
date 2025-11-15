@@ -78,6 +78,34 @@ impl FromStr for GuestStateEncryptionPolicyCli {
     }
 }
 
+#[derive(Clone, Debug, MeshPayload)]
+pub enum KeepAliveConfig {
+    EnabledHostAndPrivatePoolPresent,
+    DisabledHostAndPrivatePoolPresent,
+    PrivatePoolMissingAndHostSupported,
+    Disabled,
+}
+
+impl FromStr for KeepAliveConfig {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<KeepAliveConfig, anyhow::Error> {
+        match s {
+            "host,privatepool" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolPresent),
+            "nohost,privatepool" => Ok(KeepAliveConfig::DisabledHostAndPrivatePoolPresent),
+            "host,noprivatepool" => Ok(KeepAliveConfig::PrivatePoolMissingAndHostSupported),
+            "nohost,noprivatepool" => Ok(KeepAliveConfig::Disabled),
+            _ => Err(anyhow::anyhow!("Invalid keepalive config: {}", s)),
+        }
+    }
+}
+
+impl KeepAliveConfig {
+    pub fn is_enabled(&self) -> bool {
+        matches!(self, KeepAliveConfig::EnabledHostAndPrivatePoolPresent)
+    }
+}
+
 // We've made our own parser here instead of using something like clap in order
 // to save on compiled file size. We don't need all the features a crate can provide.
 /// underhill core command-line and environment variable options.
@@ -182,6 +210,15 @@ pub struct Options {
 
     /// (OPENHCL_NVME_KEEP_ALIVE=1) Enable nvme keep alive when servicing.
     pub nvme_keep_alive: bool,
+
+    /// (OPENHCL_MANA_KEEP_ALIVE=\<KeepAliveConfig\>)
+    /// Configure MANA keep alive behavior when servicing.
+    /// Options are:
+    ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
+    ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
+    ///  - "host,noprivatepool" - Used when the host supports keepalive, but no private pool is present. Keepalive is disabled.
+    ///  - "nohost,noprivatepool" - Keepalive is disabled.
+    pub mana_keep_alive: KeepAliveConfig,
 
     /// (OPENHCL_NVME_ALWAYS_FLR=1)
     /// Always use the FLR (Function Level Reset) path for NVMe devices,
@@ -329,6 +366,20 @@ impl Options {
         let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
         let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
         let nvme_keep_alive = parse_env_bool("OPENHCL_NVME_KEEP_ALIVE");
+        let mana_keep_alive = read_env("OPENHCL_MANA_KEEP_ALIVE")
+                    .map(|x| {
+                        let s = x.to_string_lossy();
+                        match s.parse::<KeepAliveConfig>() {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "failed to parse OPENHCL_MANA_KEEP_ALIVE ('{s}'): {e}. keepalive will be disabled."
+                                );
+                                KeepAliveConfig::Disabled
+                            }
+                        }
+                    })
+                    .unwrap_or(KeepAliveConfig::Disabled);
         let nvme_always_flr = parse_env_bool("OPENHCL_NVME_ALWAYS_FLR");
         let test_configuration = read_env("OPENHCL_TEST_CONFIG").and_then(|x| {
             x.to_string_lossy()
@@ -415,6 +466,7 @@ impl Options {
             halt_on_guest_halt,
             no_sidecar_hotplug,
             nvme_keep_alive,
+            mana_keep_alive,
             nvme_always_flr,
             test_configuration,
             disable_uefi_frontpage,

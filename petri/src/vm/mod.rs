@@ -1807,6 +1807,8 @@ pub struct OpenHclServicingFlags {
     /// Preserve DMA memory for NVMe devices if supported.
     /// Defaults to `true`.
     pub enable_nvme_keepalive: bool,
+    /// Preserve DMA memory for MANA devices if supported.
+    pub enable_mana_keepalive: bool,
     /// Skip any logic that the vmm may have to ignore servicing updates if the supplied igvm file version is not different than the one currently running.
     pub override_version_checks: bool,
     /// Hint to the OpenHCL runtime how much time to wait when stopping / saving the OpenHCL.

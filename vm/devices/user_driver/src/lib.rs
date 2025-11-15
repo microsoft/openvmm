@@ -19,6 +19,11 @@ pub mod memory;
 pub mod page_allocator;
 pub mod vfio;
 
+pub enum DmaPool {
+    Ephemeral,
+    Persistent,
+}
+
 /// An interface to access device hardware.
 pub trait DeviceBacking: 'static + Send + Inspect {
     /// An object for accessing device registers.
@@ -32,6 +37,14 @@ pub trait DeviceBacking: 'static + Send + Inspect {
 
     /// DMA Client for the device.
     fn dma_client(&self) -> Arc<dyn DmaClient>;
+
+    /// Overloaded DMA Client for the device, based on the requested pool.
+    ///
+    /// Default implementation returns an error as this is only currently implemented
+    /// by VfioDevice's implementation.
+    fn dma_client_for(&self, _pool: DmaPool) -> anyhow::Result<Arc<dyn DmaClient>> {
+        anyhow::bail!("multiple dma clients are not supported by this DmaClient");
+    }
 
     /// Returns the maximum number of interrupts that can be mapped.
     fn max_interrupt_count(&self) -> u32;

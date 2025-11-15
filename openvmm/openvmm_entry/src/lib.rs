@@ -1994,6 +1994,10 @@ enum InteractiveCommand {
         /// Default is `true`.
         #[clap(long, short = 'n', default_missing_value = "true")]
         nvme_keepalive: bool,
+        /// Enable keepalive when servicing VTL2 devices.
+        /// Default is `false`.
+        #[clap(long)]
+        mana_keepalive: bool,
     },
 
     /// Read guest memory
@@ -2847,6 +2851,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             InteractiveCommand::ServiceVtl2 {
                 user_mode_only,
                 igvm,
+                mana_keepalive,
                 nvme_keepalive,
             } => {
                 let paravisor_diag = paravisor_diag.clone();
@@ -2865,7 +2870,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         hvlite_helpers::underhill::save_underhill(
                             &vm_rpc,
                             ged_rpc.as_ref().context("no GED")?,
-                            GuestServicingFlags { nvme_keepalive },
+                            GuestServicingFlags {
+                                nvme_keepalive,
+                                mana_keepalive,
+                            },
                             file.into(),
                         )
                         .await?;
