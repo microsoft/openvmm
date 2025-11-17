@@ -20,20 +20,19 @@ use guestmem::GuestMemoryError;
 use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use inspect_counters::Counter;
-use mesh::Cancel;
-use mesh::CancelContext;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use nvme_spec::AsynchronousEventRequestDw0;
 use pal_async::driver::SpawnDriver;
-use pal_async::task::Task;
 use safeatomic::AtomicSliceOps;
 use slab::Slab;
 use std::future::poll_fn;
 use std::num::Wrapping;
 use std::sync::Arc;
 use std::task::Poll;
+use task_control::AsyncRun;
+use task_control::TaskControl;
 use thiserror::Error;
 use user_driver::DeviceBacking;
 use user_driver::interrupt::DeviceInterrupt;
@@ -65,11 +64,9 @@ const PER_QUEUE_PAGES_NO_BOUNCE_BUFFER: usize = 64;
 const SQ_ENTRIES_PER_PAGE: usize = PAGE_SIZE / SQ_ENTRY_SIZE;
 
 #[derive(Inspect)]
-pub(crate) struct QueuePair<T: AerHandler> {
+pub(crate) struct QueuePair<T: AerHandler, S: DeviceBacking> {
     #[inspect(skip)]
-    task: Task<QueueHandler<T>>,
-    #[inspect(skip)]
-    cancel: Cancel,
+    task: TaskControl<QueueHandlerLoop<T, S>, ()>,
     #[inspect(flatten, with = "|x| inspect::send(&x.send, Req::Inspect)")]
     issuer: Arc<Issuer>,
     #[inspect(skip)]
@@ -183,7 +180,33 @@ impl PendingCommands {
     }
 }
 
-impl<T: AerHandler> QueuePair<T> {
+struct QueueHandlerLoop<T: AerHandler, S: DeviceBacking> {
+    queue_handler: QueueHandler<T>,
+    registers: Arc<DeviceRegisters<S>>,
+    recv: Option<mesh::Receiver<Req>>,
+    interrupt: DeviceInterrupt,
+}
+
+impl<T: AerHandler, S: DeviceBacking> AsyncRun<()> for QueueHandlerLoop<T, S> {
+    async fn run(
+        &mut self,
+        stop: &mut task_control::StopTask<'_>,
+        _: &mut (),
+    ) -> Result<(), task_control::Cancelled> {
+        stop.until_stopped(async {
+            self.queue_handler
+                .run(
+                    &self.registers,
+                    self.recv.take().unwrap(),
+                    &mut self.interrupt,
+                )
+                .await;
+        })
+        .await
+    }
+}
+
+impl<T: AerHandler, S: DeviceBacking> QueuePair<T, S> {
     /// Create a new queue pair.
     ///
     /// `sq_entries` and `cq_entries` are the requested sizes in entries.
@@ -195,12 +218,12 @@ impl<T: AerHandler> QueuePair<T> {
     /// calls to [`QueuePair::sq_entries`] and [`QueuePair::cq_entries`] AFTER calling this routine.
     pub fn new(
         spawner: impl SpawnDriver,
-        device: &impl DeviceBacking,
+        device: &S,
         qid: u16,
         sq_entries: u16,
         cq_entries: u16,
         interrupt: DeviceInterrupt,
-        registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        registers: Arc<DeviceRegisters<S>>,
         bounce_buffer: bool,
         aer_handler: T,
     ) -> anyhow::Result<Self> {
@@ -244,8 +267,8 @@ impl<T: AerHandler> QueuePair<T> {
         qid: u16,
         sq_entries: u16,
         cq_entries: u16,
-        mut interrupt: DeviceInterrupt,
-        registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        interrupt: DeviceInterrupt,
+        registers: Arc<DeviceRegisters<S>>,
         mem: MemoryBlock,
         saved_state: Option<&QueueHandlerSavedState>,
         bounce_buffer: bool,
@@ -299,7 +322,7 @@ impl<T: AerHandler> QueuePair<T> {
         let sq_addr = sq_mem_block.pfns()[0] * PAGE_SIZE64;
         let cq_addr = cq_mem_block.pfns()[0] * PAGE_SIZE64;
 
-        let mut queue_handler = match saved_state {
+        let queue_handler = match saved_state {
             Some(s) => QueueHandler::restore(sq_mem_block, cq_mem_block, s, aer_handler)?,
             None => {
                 // Create a new one.
@@ -315,17 +338,14 @@ impl<T: AerHandler> QueuePair<T> {
         };
 
         let (send, recv) = mesh::channel();
-        let (mut ctx, cancel) = CancelContext::new().with_cancel();
-        let task = spawner.spawn("nvme-queue", {
-            async move {
-                ctx.until_cancelled(async {
-                    queue_handler.run(&registers, recv, &mut interrupt).await;
-                })
-                .await
-                .ok();
-                queue_handler
-            }
+        let mut task = TaskControl::new(QueueHandlerLoop {
+            queue_handler,
+            registers,
+            recv: Some(recv),
+            interrupt,
         });
+        task.insert(spawner, "nvme-queue", ());
+        task.start();
 
         // Convert the queue pages to bytes, and assert that queue size is large
         // enough.
@@ -354,7 +374,6 @@ impl<T: AerHandler> QueuePair<T> {
 
         Ok(Self {
             task,
-            cancel,
             issuer: Arc::new(Issuer { send, alloc }),
             mem,
             qid,
@@ -388,8 +407,8 @@ impl<T: AerHandler> QueuePair<T> {
     }
 
     pub async fn shutdown(mut self) -> impl Send {
-        self.cancel.cancel();
-        self.task.await
+        self.task.stop().await;
+        self.task.into_inner().0.queue_handler
     }
 
     /// Save queue pair state for servicing.
@@ -416,7 +435,7 @@ impl<T: AerHandler> QueuePair<T> {
     pub fn restore(
         spawner: impl SpawnDriver,
         interrupt: DeviceInterrupt,
-        registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        registers: Arc<DeviceRegisters<S>>,
         mem: MemoryBlock,
         saved_state: &QueuePairSavedState,
         bounce_buffer: bool,
