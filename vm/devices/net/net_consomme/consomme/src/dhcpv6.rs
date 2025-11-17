@@ -131,7 +131,7 @@ impl Message {
                     }
                     OptionCode::DnsServers => {
                         // DNS servers option contains a list of IPv6 addresses (16 bytes each)
-                        if option_len % 16 != 0 {
+                        if !option_len.is_multiple_of(16) {
                             return Err("Invalid DNS servers option length");
                         }
                         let mut dns_servers = Vec::new();
@@ -309,7 +309,7 @@ impl<T: Client> Access<'_, T> {
 
                 self.client.recv(&buffer[..total_len], &ChecksumState::NONE);
             }
-            _ => return Err(DropReason::UnsupportedDhcpv6(msg.msg_type.into())),
+            _ => return Err(DropReason::UnsupportedDhcpv6(msg.msg_type)),
         }
 
         Ok(())
