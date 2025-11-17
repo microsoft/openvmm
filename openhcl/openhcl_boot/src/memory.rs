@@ -580,6 +580,7 @@ impl AddressSpaceManager {
 pub enum AllocationType {
     GpaPool,
     SidecarNode,
+    #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     TdxPageTables,
 }
 
