@@ -5,10 +5,10 @@ use super::Access;
 use super::Client;
 use super::DropReason;
 use super::dhcp::DHCP_SERVER;
+use super::dhcpv6::DHCPV6_SERVER;
 use crate::ChecksumState;
 use crate::ConsommeState;
 use crate::IpAddresses;
-use dhcproto::v6::SERVER_PORT as DHCPV6_SERVER_PORT;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -347,7 +347,7 @@ impl<T: Client> Access<'_, T> {
     ) -> Result<bool, DropReason> {
         let payload = udp.payload();
         match udp.dst_port() {
-            DHCPV6_SERVER_PORT => {
+            DHCPV6_SERVER => {
                 self.handle_dhcpv6(payload, client_ip)?;
                 Ok(true)
             }

@@ -26,7 +26,6 @@ mod tcp;
 mod udp;
 mod windows;
 
-use dhcproto::v6::MessageType as Dhcpv6MessageType;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal_async::driver::Driver;
@@ -326,7 +325,7 @@ pub enum DropReason {
     PortNotBound,
     /// The DHCPv6 message type is unsupported.
     #[error("unsupported dhcpv6 message type {0:?}")]
-    UnsupportedDhcpv6(Dhcpv6MessageType),
+    UnsupportedDhcpv6(dhcpv6::MessageType),
     /// The NDP message type is unsupported.
     #[error("unsupported ndp message type {0:?}")]
     UnsupportedNdp(ndp::NdpMessageType),
