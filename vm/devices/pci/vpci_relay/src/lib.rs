@@ -272,7 +272,18 @@ impl VpciRelay {
         if !self.allowed_devices.is_empty()
             && !self.allowed_devices.iter().any(|d| d.allows(hw_ids))
         {
-            tracing::warn!(%instance_id, vendor_id = hw_ids.vendor_id, device_id = hw_ids.device_id, "device not allowed on VPCI bus");
+            let prog_if = hw_ids.prog_if;
+            let sub_class = hw_ids.sub_class;
+            let base_class = hw_ids.base_class;
+            tracing::warn!(
+                %instance_id,
+                vendor_id = hw_ids.vendor_id,
+                device_id = hw_ids.device_id,
+                ?prog_if,
+                ?sub_class,
+                ?base_class,
+                "device not allowed on VPCI bus"
+            );
             return Ok(());
         }
 

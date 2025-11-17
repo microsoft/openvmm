@@ -164,7 +164,7 @@ pub mod hwid {
             MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME = 0x02,
 
             // Ethernet Controller (Class code: 0x02, Subclass: 0x00)
-            NETWORK_CONTROLLER_ETHERNET_GDMA = 0x01,
+            NETWORK_CONTROLLER_ETHERNET_GDMA = 0x00,
         }
     }
 
