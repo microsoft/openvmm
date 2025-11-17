@@ -165,7 +165,7 @@ pub enum Error {
     MissingPrivateMemory,
     #[error("failed to allocate pages for vp")]
     AllocVp(#[source] anyhow::Error),
-    #[error("failed to map redirected device interrupt")]
+    #[error("failed to map or unmap redirected device interrupt")]
     MapRedirectedDeviceInterrupt(#[source] nix::Error),
 }
 
