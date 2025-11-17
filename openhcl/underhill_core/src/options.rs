@@ -215,7 +215,6 @@ pub struct Options {
     /// Options are:
     ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
     ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
-    ///  - "host,noprivatepool" - Used when the host supports keepalive, but no private pool is present. Keepalive is disabled.
     ///  - "nohost,noprivatepool" - Keepalive is disabled.
     pub mana_keep_alive: KeepAliveConfig,
 

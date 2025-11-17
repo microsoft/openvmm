@@ -178,7 +178,6 @@ impl<T: DeviceBacking> ManaDevice<T> {
         let mut driver = inner.gdma.into_inner();
 
         if let Ok(saved_state) = driver.save().await {
-            tracing::info!("Saved MANA device state");
             let mana_saved_state = ManaDeviceSavedState { gdma: saved_state };
 
             (Ok(mana_saved_state), driver.into_device())
