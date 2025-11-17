@@ -35,10 +35,6 @@ use memory_range::MemoryRange;
 use page_table::aarch64::Arm64PageSize;
 use page_table::aarch64::MemoryAttributeEl1;
 use page_table::aarch64::MemoryAttributeIndirectionEl1;
-use page_table::x64::MappedRange;
-use page_table::x64::PAGE_TABLE_MAX_BYTES;
-use page_table::x64::PAGE_TABLE_MAX_COUNT;
-use page_table::x64::PageTable;
 use page_table::x64::PageTableBuilder;
 use page_table::x64::X64_LARGE_PAGE_SIZE;
 use page_table::x64::align_up_to_large_page_size;
@@ -90,8 +86,6 @@ pub enum Error {
     NotEnoughMemory(u64),
     #[error("importer error")]
     Importer(#[from] anyhow::Error),
-    #[error("PageTableBuilder: {0}")]
-    PageTableBuilder(#[from] page_table::Error),
 }
 
 /// Kernel Command line type.
@@ -454,48 +448,29 @@ where
 
     tracing::debug!(page_table_region_start, page_table_region_size);
 
-    // Construct the memory ranges that will be identity mapped
-    let mut ranges: Vec<MappedRange> = Vec::new();
-
-    ranges.push(MappedRange::new(
-        memory_start_address,
-        memory_start_address + memory_size,
-    ));
+    let mut page_table_builder = PageTableBuilder::new(page_table_region_start)
+        .with_mapped_region(memory_start_address, page_table_mapping_size);
 
     if let Some((local_map_start, size)) = local_map {
-        ranges.push(MappedRange::new(local_map_start, local_map_start + size));
+        page_table_builder = page_table_builder.with_local_map(local_map_start, size);
     }
 
-    if isolation_type == IsolationType::Tdx {
-        const RESET_VECTOR_ADDR: u64 = 0xffff_f000;
-        ranges.push(MappedRange::new(
-            RESET_VECTOR_ADDR,
-            RESET_VECTOR_ADDR + page_table::x64::X64_PAGE_SIZE,
-        ));
+    match isolation_type {
+        IsolationType::Snp => {
+            page_table_builder = page_table_builder.with_confidential_bit(51);
+        }
+        IsolationType::Tdx => {
+            page_table_builder = page_table_builder.with_reset_vector(true);
+        }
+        _ => {}
     }
 
-    ranges.sort_by_key(|r| r.start());
-
-    // Initialize the page table builder, and build the page table
-    let mut page_table_work_buffer: Vec<PageTable> =
-        vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
-    let mut page_table: Vec<u8> = vec![0; PAGE_TABLE_MAX_BYTES];
-    let mut page_table_builder = PageTableBuilder::new(
-        page_table_region_start,
-        page_table_work_buffer.as_mut_slice(),
-        page_table.as_mut_slice(),
-        ranges.as_slice(),
-    )?;
-
-    if isolation_type == IsolationType::Snp {
-        page_table_builder = page_table_builder.with_confidential_bit(51);
-    }
-
-    let page_table = page_table_builder.build()?;
+    let page_table = page_table_builder.build();
 
     assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     let page_table_page_base = page_table_region_start / HV_PAGE_SIZE;
     assert!(page_table.len() as u64 <= page_table_region_size);
+
     let offset = offset;
 
     if with_relocation {
@@ -585,7 +560,7 @@ where
         page_table_page_count,
         "underhill-page-tables",
         BootPageAcceptance::Exclusive,
-        page_table,
+        &page_table,
     )?;
 
     // Set selectors and control registers
@@ -1264,13 +1239,12 @@ where
         MemoryAttributeEl1::Device_nGnRnE,
         MemoryAttributeEl1::Device_nGnRnE,
     ]);
-    let mut page_tables: Vec<u8> = vec![0; page_table_region_size as usize];
     let page_tables = page_table::aarch64::build_identity_page_tables_aarch64(
         page_table_region_start,
         memory_start_address,
         memory_size,
         memory_attribute_indirection,
-        page_tables.as_mut_slice(),
+        page_table_region_size as usize,
     );
     assert!((page_tables.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     let page_table_page_base = page_table_region_start / HV_PAGE_SIZE;
@@ -1304,7 +1278,7 @@ where
         page_table_page_count,
         "underhill-page-tables",
         BootPageAcceptance::Exclusive,
-        page_tables,
+        &page_tables,
     )?;
 
     tracing::trace!("Importing register state");
