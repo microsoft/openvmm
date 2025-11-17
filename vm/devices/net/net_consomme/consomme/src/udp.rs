@@ -36,15 +36,21 @@ use std::net::Ipv4Addr;
 use std::net::UdpSocket;
 use std::task::Context;
 use std::task::Poll;
+use std::time::Duration;
+use std::time::Instant;
 
 pub(crate) struct Udp {
     connections: HashMap<SocketAddress, UdpConnection>,
+    timeout: Duration,
 }
 
 impl Udp {
-    pub fn new() -> Self {
+    pub fn new(timeout: Duration) -> Self {
         Self {
             connections: HashMap::new(),
+            // Per RFC 4787, UDP NAT bindings should timeout after 5 minutes.
+            // This value should be configurable.
+            timeout,
         }
     }
 }
@@ -67,6 +73,8 @@ struct UdpConnection {
     stats: Stats,
     #[inspect(mut)]
     recycle: bool,
+    #[inspect(skip)]
+    last_activity: Instant,
 }
 
 #[derive(Inspect, Default)]
@@ -135,6 +143,7 @@ impl UdpConnection {
                     let len = ETHERNET_HEADER_LEN + ipv4.total_len() as usize;
                     client.recv(&eth.as_ref()[..len], &ChecksumState::UDP4);
                     self.stats.rx_packets.increment();
+                    self.last_activity = Instant::now();
                 }
                 Poll::Ready(Err(err)) => {
                     tracing::error!(error = &err as &dyn std::error::Error, "recv error");
@@ -148,7 +157,19 @@ impl UdpConnection {
 
 impl<T: Client> Access<'_, T> {
     pub(crate) fn poll_udp(&mut self, cx: &mut Context<'_>) {
+        let timeout = self.inner.udp.timeout;
+        let now = Instant::now();
+
         self.inner.udp.connections.retain(|dst_addr, conn| {
+            // Check if connection has timed out
+            if now.duration_since(conn.last_activity) > timeout {
+                tracing::warn!(
+                    addr = %format!("{}:{}", dst_addr.ip, dst_addr.port),
+                    "UDP connection timed out"
+                );
+                return false;
+            }
+
             conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
         });
     }
@@ -207,6 +228,7 @@ impl<T: Client> Access<'_, T> {
         ) {
             Ok(_) => {
                 conn.stats.tx_packets.increment();
+                conn.last_activity = Instant::now();
                 Ok(())
             }
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
@@ -239,6 +261,7 @@ impl<T: Client> Access<'_, T> {
                     guest_mac: guest_mac.unwrap_or(self.inner.state.params.client_mac),
                     stats: Default::default(),
                     recycle: false,
+                    last_activity: Instant::now(),
                 };
                 Ok(e.insert(conn))
             }

@@ -80,6 +80,9 @@ pub struct ConsommeParams {
     /// Current list of DNS resolvers.
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
     pub nameservers: Vec<Ipv4Address>,
+    /// UDP NAT binding timeout duration.
+    #[inspect(skip)]
+    pub udp_timeout: std::time::Duration,
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -101,6 +104,7 @@ impl ConsommeParams {
             client_mac: EthernetAddress([0x0, 0x0, 0x0, 0x0, 0x1, 0x0]),
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
+            udp_timeout: std::time::Duration::from_secs(300),
         })
     }
 
@@ -298,12 +302,12 @@ impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(params: ConsommeParams) -> Self {
         Self {
+            udp: udp::Udp::new(params.udp_timeout),
             state: ConsommeState {
                 params,
                 buffer: Box::new([0; 65536]),
             },
             tcp: tcp::Tcp::new(),
-            udp: udp::Udp::new(),
             icmp: icmp::Icmp::new(),
         }
     }
