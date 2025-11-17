@@ -91,7 +91,7 @@ impl SimpleFlowNode for Node {
 
                 // New logviewer.
                 flowey_lib_common::_util::copy_dir_all(
-                    repo.join("petri/logview_new/dist"),
+                    repo.join("petri/logview_new/dist_manual"),
                     consolidated_html.join("test-results"),
                 )?;
 

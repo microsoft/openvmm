@@ -43,6 +43,9 @@ impl SimpleFlowNode for Node {
                 path.push("logview_new");
 
                 sh.change_dir(&path);
+
+                // Because the project is using vite, the output will go
+                // directly to the 'dist' folder
                 xshell::cmd!(sh, "npm install").run()?;
                 xshell::cmd!(sh, "npm run build").run()?;
 
