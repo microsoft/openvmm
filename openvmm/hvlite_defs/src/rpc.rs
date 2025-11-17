@@ -32,6 +32,9 @@ pub enum VmRpc {
     CompleteReloadIgvm(FailableRpc<bool, ()>),
     ReadMemory(FailableRpc<(u64, usize), Vec<u8>>),
     WriteMemory(FailableRpc<(u64, Vec<u8>), ()>),
+    /// Updating device tree overrides are not supported during runtime. Even
+    /// though the RPC will succeed, the changes will not be observed by the
+    /// guest until the next boot (or servicing).
     UpdateDeviceTreeOverrides(Rpc<DeviceTreeOverrideParams, ()>),
 }
 
