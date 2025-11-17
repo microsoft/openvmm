@@ -459,7 +459,7 @@ where
 
     ranges.push(MappedRange::new(
         memory_start_address,
-        memory_start_address + memory_size,
+        memory_start_address + page_table_mapping_size,
     ));
 
     if let Some((local_map_start, size)) = local_map {
