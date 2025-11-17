@@ -186,7 +186,7 @@ impl DiagnosticsServices {
     /// * `allow_reprocess` - If true, allows processing even if already processed for guest
     /// * `gm` - Guest memory to read diagnostics from
     /// * `log_handler` - Function to handle each parsed log entry
-    fn process_diagnostics<F>(
+    pub fn process_diagnostics<F>(
         &mut self,
         allow_reprocess: bool,
         gm: &GuestMemory,
