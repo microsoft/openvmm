@@ -7,6 +7,7 @@
 
 use anyhow::Context;
 use anyhow::bail;
+use inspect::Inspect;
 use mesh::MeshPayload;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -78,7 +79,7 @@ impl FromStr for GuestStateEncryptionPolicyCli {
     }
 }
 
-#[derive(Clone, Debug, MeshPayload)]
+#[derive(Clone, Debug, MeshPayload, Inspect)]
 pub enum KeepAliveConfig {
     EnabledHostAndPrivatePoolPresent,
     DisabledHostAndPrivatePoolPresent,
@@ -89,7 +90,7 @@ impl FromStr for KeepAliveConfig {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<KeepAliveConfig, anyhow::Error> {
-        match s {
+        match s.to_lowercase().as_str() {
             "host,privatepool" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolPresent),
             "nohost,privatepool" => Ok(KeepAliveConfig::DisabledHostAndPrivatePoolPresent),
             "nohost,noprivatepool" => Ok(KeepAliveConfig::Disabled),

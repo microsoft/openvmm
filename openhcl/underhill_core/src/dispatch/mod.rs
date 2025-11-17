@@ -350,6 +350,7 @@ impl LoadedVm {
                         resp.field("vmbus_client", &self.vmbus_client);
                         resp.field("vmbus_filter", &self.vmbus_filter);
                         resp.field("vpci_relay", &self.vpci_relay);
+                        resp.field("mana_keepalive_mode", &self.mana_keep_alive);
                     }),
                 },
                 Event::Vtl2ConfigNicRpc(message) => {
@@ -573,10 +574,8 @@ impl LoadedVm {
         // NOTE: This is set via the corresponding env arg, as this feature is
         // experimental.
         let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
-        let mana_keepalive = if capabilities_flags.enable_mana_keepalive() {
-            self.mana_keep_alive.clone()
-        } else {
-            KeepAliveConfig::Disabled
+        if !capabilities_flags.enable_mana_keepalive() {
+            self.mana_keep_alive = KeepAliveConfig::Disabled
         };
 
         // Do everything before the log flush under a span.
@@ -592,7 +591,7 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
-            let mut state = self.save(Some(deadline), nvme_keepalive, mana_keepalive).await?;
+            let mut state = self.save(Some(deadline), nvme_keepalive, self.mana_keep_alive.clone()).await?;
             state.init_state.correlation_id = Some(correlation_id);
 
             // Unload any network devices.
