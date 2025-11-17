@@ -318,8 +318,8 @@ impl<T: Client> Access<'_, T> {
         let tcp_packet = TcpPacket::new_checked(payload)?;
         let tcp = TcpRepr::parse(
             &tcp_packet,
-            &addresses.src_addr().into(),
-            &addresses.dst_addr().into(),
+            &addresses.src_addr(),
+            &addresses.dst_addr(),
             &checksum.caps(),
         )?;
 
@@ -572,10 +572,15 @@ impl TcpConnection {
         let mut this = Self::default();
         this.initialize_from_first_client_packet(tcp)?;
 
-        let socket = Socket::new(match sender.ft.dst {
-            SocketAddr::V4(_) => Domain::IPV4,
-            SocketAddr::V6(_) => Domain::IPV6,
-        }, Type::STREAM, Some(Protocol::TCP)).map_err(DropReason::Io)?;
+        let socket = Socket::new(
+            match sender.ft.dst {
+                SocketAddr::V4(_) => Domain::IPV4,
+                SocketAddr::V6(_) => Domain::IPV6,
+            },
+            Type::STREAM,
+            Some(Protocol::TCP),
+        )
+        .map_err(DropReason::Io)?;
 
         // On Windows the default behavior for non-existent loopback sockets is
         // to wait and try again. This is different than the Linux behavior of
