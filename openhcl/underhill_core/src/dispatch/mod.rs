@@ -576,7 +576,6 @@ impl LoadedVm {
         let mana_keepalive = if capabilities_flags.enable_mana_keepalive() {
             self.mana_keep_alive.clone()
         } else {
-            tracing::warn!("mana keepalive not in servicing flags, disabling keepalive");
             KeepAliveConfig::Disabled
         };
 

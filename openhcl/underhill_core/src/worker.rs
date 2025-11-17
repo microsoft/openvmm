@@ -784,8 +784,6 @@ impl UhVmNetworkSettings {
         keepalive_mode: KeepAliveConfig,
         saved_mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState> {
-        tracing::info!("keepalive mode is: {:?}", keepalive_mode);
-
         let instance_id = nic_config.instance_id;
         let nic_max_sub_channels = nic_config
             .max_sub_channels
