@@ -933,6 +933,7 @@ async fn handle_asynchronous_events(
 
 impl<T: DeviceBacking> Drop for NvmeDriver<T> {
     fn drop(&mut self) {
+        tracing::trace!(pci_id = ?self.device_id, ka = self.nvme_keepalive, task = self.task.is_some(), "dropping nvme driver");
         if self.task.is_some() {
             // Do not reset NVMe device when nvme_keepalive is requested.
             if !self.nvme_keepalive {
@@ -970,22 +971,25 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
         stop: &mut task_control::StopTask<'_>,
         state: &mut WorkerState,
     ) -> Result<(), task_control::Cancelled> {
-        stop.until_stopped(async {
-            loop {
-                match self.recv.next().await {
-                    Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
-                        rpc.handle(async |cpu| self.create_io_issuer(state, cpu).await)
-                            .await
+        let r = stop
+            .until_stopped(async {
+                loop {
+                    match self.recv.next().await {
+                        Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
+                            rpc.handle(async |cpu| self.create_io_issuer(state, cpu).await)
+                                .await
+                        }
+                        Some(NvmeWorkerRequest::Save(rpc)) => {
+                            rpc.handle(async |span| self.save(state).instrument(span).await)
+                                .await
+                        }
+                        None => break,
                     }
-                    Some(NvmeWorkerRequest::Save(rpc)) => {
-                        rpc.handle(async |span| self.save(state).instrument(span).await)
-                            .await
-                    }
-                    None => break,
                 }
-            }
-        })
-        .await
+            })
+            .await;
+        tracing::debug!("nvme worker task exiting");
+        r
     }
 }
 

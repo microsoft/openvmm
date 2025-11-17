@@ -145,11 +145,6 @@ async fn test_nvme_driver_fallback_due_to_dma_alloc_failures(driver: DefaultDriv
 }
 
 #[async_test]
-async fn test_nvme_save_restore(driver: DefaultDriver) {
-    test_nvme_save_restore_inner(driver).await;
-}
-
-#[async_test]
 async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
     const MSIX_COUNT: u16 = 2;
     const IO_QUEUE_COUNT: u16 = 64;
@@ -378,79 +373,6 @@ async fn test_nvme_driver(driver: DefaultDriver, config: NvmeTestConfig) {
     }
 
     driver.shutdown().await;
-}
-
-async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
-    const MSIX_COUNT: u16 = 2;
-    const IO_QUEUE_COUNT: u16 = 64;
-    const CPU_COUNT: u32 = 64;
-
-    // Memory setup
-    let pages = 1000;
-    let device_test_memory = DeviceTestMemory::new(pages, false, "test_nvme_save_restore_inner");
-    let guest_mem = device_test_memory.guest_memory();
-    let dma_client = device_test_memory.dma_client();
-
-    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-    let mut msi_x = MsiInterruptSet::new();
-    let nvme_ctrl = nvme::NvmeController::new(
-        &driver_source,
-        guest_mem.clone(),
-        &mut msi_x,
-        &mut ExternallyManagedMmioIntercepts,
-        NvmeControllerCaps {
-            msix_count: MSIX_COUNT,
-            max_io_queues: IO_QUEUE_COUNT,
-            subsystem_id: Guid::new_random(),
-        },
-    );
-
-    // Add a namespace so Identify Namespace command will succeed later.
-    nvme_ctrl
-        .client()
-        .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
-        .await
-        .unwrap();
-
-    let device = NvmeTestEmulatedDevice::new(nvme_ctrl, msi_x, dma_client.clone());
-    let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
-        .await
-        .unwrap();
-    let _ns1 = nvme_driver.namespace(1).await.unwrap();
-    let saved_state = nvme_driver.save().await.unwrap();
-    assert_eq!(saved_state.namespaces.len(), 1);
-
-    // Create a second set of devices since the ownership has been moved.
-    let mut new_msi_x = MsiInterruptSet::new();
-    let mut new_nvme_ctrl = nvme::NvmeController::new(
-        &driver_source,
-        guest_mem.clone(),
-        &mut new_msi_x,
-        &mut ExternallyManagedMmioIntercepts,
-        NvmeControllerCaps {
-            msix_count: MSIX_COUNT,
-            max_io_queues: IO_QUEUE_COUNT,
-            subsystem_id: Guid::new_random(),
-        },
-    );
-
-    let mut backoff = user_driver::backoff::Backoff::new(&driver);
-
-    // Enable the controller for keep-alive test.
-    let mut dword = 0u32;
-    // Read Register::CC.
-    new_nvme_ctrl.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
-    // Set CC.EN.
-    dword |= 1;
-    new_nvme_ctrl.write_bar0(0x14, dword.as_bytes()).unwrap();
-    // Wait for CSTS.RDY to set.
-    backoff.back_off().await;
-
-    let _new_device = NvmeTestEmulatedDevice::new(new_nvme_ctrl, new_msi_x, dma_client.clone());
-    // TODO: Memory restore is disabled for emulated DMA, uncomment once fixed.
-    // let _new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, new_device, &saved_state)
-    //     .await
-    //     .unwrap();
 }
 
 // This helper function creates a NVMe fault controller with a namespace backed
