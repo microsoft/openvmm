@@ -162,25 +162,14 @@ pub struct BasicNic {
 
 impl BasicNic {
     fn find_task_by_handle(&mut self, vport_idx: u64, wq_obj_handle: u64) -> Option<usize> {
-        for (i, task) in self
-            .vports
+        self.vports
             .get(vport_idx as usize)?
             .tasks
             .iter()
-            .enumerate()
-        {
-            if let Some((_, _, h)) = task.queue_cfg.tx {
-                if h == wq_obj_handle {
-                    return Some(i);
-                }
-            }
-            if let Some((_, _, h)) = task.queue_cfg.rx {
-                if h == wq_obj_handle {
-                    return Some(i);
-                }
-            }
-        }
-        None
+            .position(|task| {
+                matches!(task.queue_cfg.tx, Some((_, _, h)) if h == wq_obj_handle)
+                    || matches!(task.queue_cfg.rx, Some((_, _, h)) if h == wq_obj_handle)
+            })
     }
 }
 
@@ -216,10 +205,12 @@ struct VportTask {
 impl InspectMut for VportTask {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.respond()
-            .field("tx_wq", self.queue_cfg.tx.map(|(wq, _cq, _wq_obj)| wq))
-            .field("tx_cq", self.queue_cfg.tx.map(|(_wq, cq, _wq_obj)| cq))
-            .field("rx_wq", self.queue_cfg.rx.map(|(wq, _cq, _wq_obj)| wq))
-            .field("rx_cq", self.queue_cfg.rx.map(|(_wq, cq, _wq_obj)| cq))
+            .field("tx_wq", self.queue_cfg.tx.map(|(wq, _, _)| wq))
+            .field("tx_cq", self.queue_cfg.tx.map(|(_, cq, _)| cq))
+            .field("rx_wq", self.queue_cfg.rx.map(|(wq, _, _)| wq))
+            .field("rx_cq", self.queue_cfg.rx.map(|(_, cq, _)| cq))
+            .field("wq_tx_obj_handle", self.queue_cfg.tx.map(|(_, _, h)| h))
+            .field("wq_rx_obj_handle", self.queue_cfg.rx.map(|(_, _, h)| h))
             .merge(&mut self.task);
     }
 }
@@ -338,7 +329,14 @@ impl BasicNic {
 
                 // Make the top 32 bits the vport index
                 let mut wq_handle = req.vport << 32;
-                wq_handle |= self.next_wq_handle.fetch_add(1, Ordering::Relaxed);
+                let handle_counter = self.next_wq_handle.fetch_add(1, Ordering::Relaxed);
+
+                assert!(
+                    handle_counter < u32::MAX as u64,
+                    "wq_handle counter wrapped around - need to implement handle reclaim logic"
+                );
+
+                wq_handle |= handle_counter;
                 let placed = vport.tasks.iter_mut().any(|task| {
                     let queue_slot = if is_send {
                         &mut task.queue_cfg.tx
@@ -435,10 +433,16 @@ impl BasicNic {
                         let mut configs = Vec::new();
                         let mut rx_packets_list: Vec<Arc<Mutex<Slab<RxPacket>>>> = Vec::new();
 
+                        let mut all_running = true;
+                        let mut incomplete_pair_count = 0;
+
                         for (idx, task) in vport.tasks.iter_mut().enumerate() {
                             if task.task.is_running() {
                                 continue;
                             }
+                            all_running = false;
+
+                            // Only configure queues that have both TX and RX WQOs assigned.
                             if task.queue_cfg.tx.is_some() && task.queue_cfg.rx.is_some() {
                                 // prepare per-task rx packet pool and QueueConfig
                                 let rx_packets = Arc::new(Default::default());
@@ -453,11 +457,19 @@ impl BasicNic {
                                     driver: Box::new(state.queues.driver.clone()),
                                 });
                                 start_indices.push(idx);
+                            } else if task.queue_cfg.tx.is_some() || task.queue_cfg.rx.is_some() {
+                                incomplete_pair_count += 1;
                             }
                         }
 
                         if start_indices.is_empty() {
-                            anyhow::bail!("queues not configured");
+                            if all_running {
+                                anyhow::bail!("all tasks are already running");
+                            } else if incomplete_pair_count == vport.tasks.len() {
+                                anyhow::bail!("no queues have both TX and RX configured");
+                            } else {
+                                anyhow::bail!("no queues are configured");
+                            }
                         }
 
                         let mut epqueues = vec![];
