@@ -84,12 +84,7 @@ async fn create_mana_device(
     // This guards from situations where we have saved state from keepalive
     // but the host does not support restoring it. In this case we log a warning,
     // free the memory, and continue with a fresh device.
-    if mana_state.is_some()
-        && matches!(
-            keepalive_mode,
-            KeepAliveConfig::DisabledHostAndPrivatePoolPresent
-        )
-    {
+    if mana_state.is_some() && !keepalive_mode.is_enabled() {
         tracing::warn!("have saved state from keepalive but restoring on an unsupported host");
 
         // Re-attach pending buffers, but discard them so that they get freed.
@@ -105,68 +100,71 @@ async fn create_mana_device(
         let _ = mana_state.take();
     }
 
-    if matches!(
-        keepalive_mode,
-        KeepAliveConfig::EnabledHostAndPrivatePoolPresent
-    ) && let Some(mana_state) = mana_state
-    {
-        tracing::info!("restoring MANA device from saved state");
-        return try_create_mana_device(
-            driver_source,
-            pci_id,
-            vp_count,
-            max_sub_channels,
-            dma_clients,
-            Some(mana_state),
-        )
-        .await;
-    }
-
-    // Disable FLR on vfio attach/detach; this allows faster system
-    // startup/shutdown with the caveat that the device needs to be properly
-    // sent through the shutdown path during servicing operations, as that is
-    // the only cleanup performed. If the device fails to initialize, turn FLR
-    // on and try again, so that the reset is invoked on the next attach.
-    let update_reset = |method: PciDeviceResetMethod| {
-        if let Err(err) = vfio_set_device_reset_method(pci_id, method) {
-            tracing::warn!(
-                ?method,
-                err = &err as &dyn std::error::Error,
-                "Failed to update reset_method"
-            );
-        }
-    };
-    let mut last_err = None;
-    for reset_method in [PciDeviceResetMethod::NoReset, PciDeviceResetMethod::Flr] {
-        update_reset(reset_method);
-        match try_create_mana_device(
+    if keepalive_mode.is_enabled() && mana_state.is_some() {
+        try_create_mana_device(
             driver_source,
             pci_id,
             vp_count,
             max_sub_channels,
             dma_clients.clone(),
-            None,
+            mana_state,
         )
         .await
-        {
-            Ok(device) => {
-                if !matches!(reset_method, PciDeviceResetMethod::NoReset) {
-                    update_reset(PciDeviceResetMethod::NoReset);
-                }
-                return Ok(device);
-            }
-            Err(err) => {
-                tracing::error!(
-                    pci_id,
-                    ?reset_method,
-                    err = err.as_ref() as &dyn std::error::Error,
-                    "failed to create mana device"
+    } else {
+        // Disable FLR on vfio attach/detach; this allows faster system
+        // startup/shutdown with the caveat that the device needs to be properly
+        // sent through the shutdown path during servicing operations, as that is
+        // the only cleanup performed. If the device fails to initialize, turn FLR
+        // on and try again, so that the reset is invoked on the next attach.
+        let update_reset = |method: PciDeviceResetMethod| {
+            if let Err(err) = vfio_set_device_reset_method(pci_id, method) {
+                tracing::warn!(
+                    ?method,
+                    err = &err as &dyn std::error::Error,
+                    "Failed to update reset_method"
                 );
-                last_err = Some(err);
+            }
+        };
+        let mut last_err: Option<anyhow::Error> = None;
+        let mut created: Option<ManaDevice<VfioDevice>> = None;
+
+        for reset_method in [PciDeviceResetMethod::NoReset, PciDeviceResetMethod::Flr] {
+            update_reset(reset_method);
+            match try_create_mana_device(
+                driver_source,
+                pci_id,
+                vp_count,
+                max_sub_channels,
+                dma_clients.clone(),
+                None,
+            )
+            .await
+            {
+                Ok(device) => {
+                    if !matches!(reset_method, PciDeviceResetMethod::NoReset) {
+                        // Restore the faster path for subsequent attaches.
+                        update_reset(PciDeviceResetMethod::NoReset);
+                    }
+                    created = Some(device);
+                    break;
+                }
+                Err(err) => {
+                    tracing::error!(
+                        pci_id,
+                        ?reset_method,
+                        err = err.as_ref() as &dyn std::error::Error,
+                        "failed to create mana device"
+                    );
+                    last_err = Some(err);
+                }
             }
         }
+
+        match created {
+            Some(device) => Ok(device),
+            None => Err(last_err.unwrap()).context("failed to create mana device"),
+        }
     }
-    Err(last_err.unwrap()).context("failed to create mana device")
 }
 
 async fn try_create_mana_device(

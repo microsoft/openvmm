@@ -806,11 +806,7 @@ impl UhVmNetworkSettings {
         // We need a persistent client if keepalive is enabled or if there is a
         // private pool present without keepalive that needs to free previously
         // persisted memory ranges
-        let persistent_dma_client = if keepalive_mode.is_enabled()
-            || matches!(
-                keepalive_mode,
-                KeepAliveConfig::DisabledHostAndPrivatePoolPresent
-            ) {
+        let persistent_dma_client = if keepalive_mode.is_enabled() || saved_mana_state.is_some() {
             Some(dma_client_spawner.new_client(DmaClientParameters {
                 device_name: format!("nic_{}", nic_config.pci_id),
                 lower_vtl_policy: LowerVtlPermissionPolicy::Any,

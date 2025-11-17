@@ -82,7 +82,6 @@ impl FromStr for GuestStateEncryptionPolicyCli {
 pub enum KeepAliveConfig {
     EnabledHostAndPrivatePoolPresent,
     DisabledHostAndPrivatePoolPresent,
-    PrivatePoolMissingAndHostSupported,
     Disabled,
 }
 
@@ -93,7 +92,6 @@ impl FromStr for KeepAliveConfig {
         match s {
             "host,privatepool" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolPresent),
             "nohost,privatepool" => Ok(KeepAliveConfig::DisabledHostAndPrivatePoolPresent),
-            "host,noprivatepool" => Ok(KeepAliveConfig::PrivatePoolMissingAndHostSupported),
             "nohost,noprivatepool" => Ok(KeepAliveConfig::Disabled),
             _ => Err(anyhow::anyhow!("Invalid keepalive config: {}", s)),
         }
