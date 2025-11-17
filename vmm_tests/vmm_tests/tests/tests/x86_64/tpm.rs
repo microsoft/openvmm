@@ -17,7 +17,6 @@ use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X6
 use pipette_client::PipetteClient;
 use std::path::Path;
 use vmm_test_macros::openvmm_test;
-use vmm_test_macros::openvmm_test_no_agent;
 #[cfg(windows)]
 use vmm_test_macros::vmm_test;
 
@@ -325,8 +324,8 @@ async fn tpm_ak_cert_retry<T>(
 }
 
 /// VBS boot test with attestation enabled
-#[openvmm_test_no_agent(
-    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
+#[openvmm_test(
+    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))
 )]
 async fn vbs_boot_with_attestation(
