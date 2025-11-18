@@ -80,6 +80,7 @@ pub struct OpenhclIgvmRecipeDetailsLocalOnly {
     pub custom_kernel: Option<PathBuf>,
     pub custom_sidecar: Option<PathBuf>,
     pub custom_extra_rootfs: Vec<PathBuf>,
+    pub include_debug_build_info: bool,
 }
 
 #[expect(clippy::large_enum_variant)]
@@ -316,6 +317,7 @@ impl SimpleFlowNode for Node {
             custom_kernel,
             custom_sidecar,
             custom_extra_rootfs,
+            include_debug_build_info,
         } = local_only.unwrap_or(OpenhclIgvmRecipeDetailsLocalOnly {
             openvmm_hcl_no_strip: false,
             openhcl_initrd_extra_params: None,
@@ -325,6 +327,7 @@ impl SimpleFlowNode for Node {
             custom_kernel: None,
             custom_sidecar: None,
             custom_extra_rootfs: Vec::new(),
+            include_debug_build_info: false,
         });
 
         let target = custom_target.unwrap_or(target);
@@ -469,6 +472,7 @@ impl SimpleFlowNode for Node {
                     // manually strip later, depending on provided igvm flags
                     no_split_dbg_info: true,
                     max_trace_level,
+                    include_debug_build_info,
                 },
                 openvmm_hcl_output: v,
             }
