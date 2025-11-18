@@ -2437,6 +2437,7 @@ async fn new_underhill_vm(
         serial_inputs[0] = Some(Resource::new(
             vmbus_serial_guest::OpenVmbusSerialGuestConfig::open(
                 &vmbus_serial_guest::UART_INTERFACE_INSTANCE_COM1,
+                dps.general.com1_tx_only,
             )
             .context("failed to open com1")?,
         ));
@@ -2446,6 +2447,7 @@ async fn new_underhill_vm(
         serial_inputs[1] = Some(Resource::new(
             vmbus_serial_guest::OpenVmbusSerialGuestConfig::open(
                 &vmbus_serial_guest::UART_INTERFACE_INSTANCE_COM2,
+                dps.general.com2_tx_only,
             )
             .context("failed to open com2")?,
         ));
@@ -3525,8 +3527,10 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         tpm_enabled: _,
         com1_enabled: _,
         com1_vmbus_redirector: _,
+        com1_tx_only: _,
         com2_enabled: _,
         com2_vmbus_redirector: _,
+        com2_tx_only: _,
         suppress_attestation: _,
         bios_guid: _,
         vpci_boot_enabled: _,
