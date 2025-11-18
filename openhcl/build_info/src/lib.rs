@@ -8,7 +8,21 @@
 use inspect::Inspect;
 
 #[derive(Debug, Inspect)]
-pub struct BuildInfo {
+pub struct DebugBuildInfo {
+    #[inspect(safe)]
+    author_name: &'static str,
+    #[inspect(safe)]
+    author_email: &'static str,
+    #[inspect(safe)]
+    build_timestamp: &'static str,
+    #[inspect(safe)]
+    build_machine: &'static str,
+    #[inspect(safe)]
+    built_with_uncommitted_changes: &'static str,
+}
+
+#[derive(Debug, Inspect)]
+pub struct BaseBuildInfo {
     #[inspect(safe)]
     crate_name: &'static str,
     #[inspect(safe, rename = "scm_revision")]
@@ -23,52 +37,76 @@ pub struct BuildInfo {
     openhcl_version: &'static str,
 }
 
+#[derive(Debug, Inspect)]
+#[inspect(untagged)]
+pub enum BuildInfo {
+    #[inspect(transparent)]
+    WithoutDebugInfo(BaseBuildInfo),
+    WithDebugInfo {
+        #[inspect(flatten)]
+        build: BaseBuildInfo,
+        #[inspect(flatten)]
+        debug_build_info: DebugBuildInfo,
+    },
+}
+
+/// Helper to convert Option<&'static str> to &'static str in const context.
+/// An empty string is returned if the Option is None.
+const fn empty_if_none(env: Option<&'static str>) -> &'static str {
+    if let Some(value) = env { value } else { "" }
+}
+
 impl BuildInfo {
     pub const fn new() -> Self {
         // TODO: Once Option::unwrap_or() is stable in the const context
-        // can replace the if statements with it.
+        // can replace the empty_if_none helper with that.
         // Deliberately not storing `Option` to the build information
         // structure to be closer to PODs.
-        Self {
+        let build = BaseBuildInfo {
             crate_name: env!("CARGO_PKG_NAME"),
-            revision: if let Some(r) = option_env!("VERGEN_GIT_SHA") {
-                r
-            } else {
-                ""
-            },
-            branch: if let Some(b) = option_env!("VERGEN_GIT_BRANCH") {
-                b
-            } else {
-                ""
-            },
-            internal_scm_revision: if let Some(r) = option_env!("INTERNAL_GIT_SHA") {
-                r
-            } else {
-                ""
-            },
-            internal_scm_branch: if let Some(r) = option_env!("INTERNAL_GIT_BRANCH") {
-                r
-            } else {
-                ""
-            },
-            openhcl_version: if let Some(r) = option_env!("OPENHCL_VERSION") {
-                r
-            } else {
-                ""
-            },
+            revision: empty_if_none(option_env!("VERGEN_GIT_SHA")),
+            branch: empty_if_none(option_env!("VERGEN_GIT_BRANCH")),
+            internal_scm_revision: empty_if_none(option_env!("INTERNAL_GIT_SHA")),
+            internal_scm_branch: empty_if_none(option_env!("INTERNAL_GIT_BRANCH")),
+            openhcl_version: empty_if_none(option_env!("OPENHCL_VERSION")),
+        };
+        if option_env!("INCLUDE_DEBUG_BUILD_INFO").is_some() {
+            Self::WithDebugInfo {
+                build,
+                debug_build_info: DebugBuildInfo {
+                    author_name: empty_if_none(option_env!("VERGEN_GIT_COMMIT_AUTHOR_NAME")),
+                    author_email: empty_if_none(option_env!("VERGEN_GIT_COMMIT_AUTHOR_EMAIL")),
+                    build_timestamp: empty_if_none(option_env!("SOURCE_DATE_EPOCH")),
+                    build_machine: empty_if_none(option_env!("DEBUG_BUILD_INFO_MACHINE_NAME")),
+                    built_with_uncommitted_changes: empty_if_none(option_env!(
+                        "DEBUG_BUILD_INFO_UNCOMMITTED_CHANGES"
+                    )),
+                },
+            }
+        } else {
+            Self::WithoutDebugInfo(build)
         }
     }
 
     pub fn crate_name(&self) -> &'static str {
-        self.crate_name
+        match self {
+            BuildInfo::WithDebugInfo { build, .. } => build.crate_name,
+            BuildInfo::WithoutDebugInfo(info) => info.crate_name,
+        }
     }
 
     pub fn scm_revision(&self) -> &'static str {
-        self.revision
+        match self {
+            BuildInfo::WithDebugInfo { build, .. } => build.revision,
+            BuildInfo::WithoutDebugInfo(info) => info.revision,
+        }
     }
 
     pub fn scm_branch(&self) -> &'static str {
-        self.branch
+        match self {
+            BuildInfo::WithDebugInfo { build, .. } => build.branch,
+            BuildInfo::WithoutDebugInfo(info) => info.branch,
+        }
     }
 }
 

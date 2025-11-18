@@ -407,8 +407,11 @@ dependencies = [
 name = "build_info"
 version = "0.0.0"
 dependencies = [
+ "hostname",
  "inspect",
+ "time",
  "vergen",
+ "xshell",
 ]
 
 [[package]]
@@ -2925,6 +2928,17 @@ dependencies = [
  "inspect",
  "memory_range",
  "tracing",
+]
+
+[[package]]
+name = "hostname"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a56f203cd1c76362b69e3863fd987520ac36cf70a8c92627449b2f64a8cf7d65"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link 0.1.3",
 ]
 
 [[package]]
