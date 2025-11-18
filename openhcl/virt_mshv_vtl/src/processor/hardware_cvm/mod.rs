@@ -78,8 +78,8 @@ enum ProxyInterruptRedirectionError {
     #[error("failed to map redirected device interrupt in VTL2 kernel")]
     MapInterruptFailed,
     /// HvCallRetargetDeviceInterrupt hypercall failed in hypervisor.
-    #[error("HvCallRetargetDeviceInterrupt with proxy redirect failed in hypervisor")]
-    RetargetDeviceInterruptFailed,
+    #[error("HvCallRetargetDeviceInterrupt with proxy redirect failed in hypervisor: {0}")]
+    RetargetDeviceInterruptFailed(HvError),
 }
 
 /// Manages redirected interrupt vector mapping in VTL2 for proxy interrupt redirection.
@@ -1032,7 +1032,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 redirected_processor,
                 true,
             )
-            .map_err(|_| ProxyInterruptRedirectionError::RetargetDeviceInterruptFailed)?;
+            .map_err(ProxyInterruptRedirectionError::RetargetDeviceInterruptFailed)?;
 
         // Disarm the guard upon success to prevent unmapping.
         std::mem::forget(guard);
