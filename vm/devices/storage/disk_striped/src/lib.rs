@@ -15,7 +15,6 @@ use disk_backend::UnmapBehavior;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;
 use disk_backend_resources::StripedDiskHandle;
-use futures::future::join_all;
 use futures::future::try_join_all;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
@@ -116,7 +115,8 @@ struct Chunk {
     disk_index: usize,
     // The chunk starting sector and offset on the disk.
     disk_sector_index: u64,
-    // The chunk length. It can be less the sector_count_per_chunk for the first and last chunk.
+    // The chunk length. It can be less than the sector_count_per_chunk for the
+    // first and last chunk.
     chunk_length_in_sectors: u32,
 }
 
@@ -125,7 +125,7 @@ impl StripedDisk {
         &self,
         start_sector: u64,
         end_sector: u64,
-    ) -> Result<impl Iterator<Item = Chunk>, DiskError> {
+    ) -> Result<impl 'static + Iterator<Item = Chunk>, DiskError> {
         if end_sector > self.sector_count {
             return Err(DiskError::IllegalBlock);
         }
@@ -147,10 +147,11 @@ impl StripedDisk {
             };
 
             let disk_index = (i % (disk_count as u64)) as usize;
-            let disk_sector_index = (i / disk_count as u64) * self.sector_count_per_chunk as u64
-                + sector_offset_in_chunk;
+            let disk_sector_index =
+                (i / disk_count as u64) * sector_count_per_chunk as u64 + sector_offset_in_chunk;
 
-            // The disk end offset can be in middle of the chunk for the last chunk.
+            // The disk end offset can be in middle of the chunk for the last
+            // chunk.
             let disk_end_offset_in_sectors = (i / disk_count as u64)
                 * sector_count_per_chunk as u64
                 + if i == end_chunk_index - 1 {
@@ -159,7 +160,8 @@ impl StripedDisk {
                     sector_count_per_chunk as u64
                 };
 
-            // The chunk length can be less the sector_count_per_chunk for the first and last chunk.
+            // The chunk length can be less than the sector_count_per_chunk for
+            // the first and last chunk.
             let chunk_length_in_sectors = (disk_end_offset_in_sectors - disk_sector_index) as u32;
 
             Chunk {
@@ -307,11 +309,7 @@ impl DiskIo for StripedDisk {
     }
 
     async fn eject(&self) -> Result<(), DiskError> {
-        let futures = self
-            .block_devices
-            .iter()
-            .map(|disk| disk.eject())
-            .collect::<Vec<_>>();
+        let futures = self.block_devices.iter().map(|disk| disk.eject()).collect();
         await_all_and_check(futures).await?;
         Ok(())
     }
@@ -344,7 +342,7 @@ impl DiskIo for StripedDisk {
                         })
                 }
             })
-            .collect::<Vec<_>>();
+            .collect();
 
         assert_eq!(cur_buf_offset, buf_total_size);
 
@@ -381,7 +379,7 @@ impl DiskIo for StripedDisk {
                         })
                 }
             })
-            .collect::<Vec<_>>();
+            .collect();
 
         assert_eq!(cur_buf_offset, buf_total_size);
 
@@ -400,7 +398,7 @@ impl DiskIo for StripedDisk {
                     err,
                 })
             })
-            .collect::<Vec<_>>();
+            .collect();
         await_all_and_check(all_futures).await?;
         Ok(())
     }
@@ -451,7 +449,7 @@ impl DiskIo for StripedDisk {
                     }
                 }
             })
-            .collect::<Vec<_>>();
+            .collect();
 
         await_all_and_check(all_futures).await?;
         Ok(())
@@ -470,15 +468,15 @@ impl DiskIo for StripedDisk {
     }
 }
 
-async fn await_all_and_check<T, E>(futures: T) -> Result<(), E>
+/// Waits for all IOs to complete and checks for errors.
+///
+/// Use `JoinAll` to wait for all IOs even if one fails. This is necessary to
+/// avoid dropping IOs while they are in flight.
+async fn await_all_and_check<F, E>(futures: futures::future::JoinAll<F>) -> Result<(), E>
 where
-    T: IntoIterator,
-    T::Item: Future<Output = Result<(), E>>,
+    F: Future<Output = Result<(), E>>,
 {
-    // Use join_all to wait for all IOs even if one fails. This is necessary to
-    // avoid dropping IOs while they are in flight.
-    let results = join_all(futures).await;
-    for result in results {
+    for result in futures.await {
         result?;
     }
     Ok(())
@@ -901,7 +899,7 @@ mod tests {
         let read_buffers = OwnedRequestBuffers::new(&[1]);
         let buf_sector_count = read_buffers.len().div_ceil(disk.sector_size as usize);
         disk.read_vectored(
-            &write_buffers.buffer(&guest_mem),
+            &read_buffers.buffer(&guest_mem),
             disk.sector_count() - buf_sector_count as u64 + 1,
         )
         .await

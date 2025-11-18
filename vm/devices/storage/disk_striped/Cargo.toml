@@ -19,7 +19,6 @@ inspect.workspace = true
 pal_async.workspace = true
 futures.workspace = true
 thiserror.workspace = true
-tracelimit.workspace = true
 tracing.workspace = true
 vm_resource.workspace = true
 
