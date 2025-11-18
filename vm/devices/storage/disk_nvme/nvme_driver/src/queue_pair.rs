@@ -408,6 +408,7 @@ impl<T: AerHandler, S: DeviceBacking> QueuePair<T, S> {
 
     pub async fn shutdown(mut self) -> impl Send {
         self.task.stop().await;
+        self.task.into_inner().0.queue_handler
     }
 
     /// Save queue pair state for servicing.
