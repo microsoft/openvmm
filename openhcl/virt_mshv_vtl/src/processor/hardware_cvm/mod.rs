@@ -75,8 +75,8 @@ enum ProxyInterruptRedirectionError {
     #[error("processor set operation failed")]
     ProcessorSetError,
     /// Failed to map the redirected device interrupt in VTL2 kernel.
-    #[error("failed to map redirected device interrupt in VTL2 kernel")]
-    MapInterruptFailed,
+    #[error("failed to map redirected device interrupt in VTL2 kernel: {0}")]
+    MapInterruptFailed(#[source] hcl::ioctl::Error),
     /// HvCallRetargetDeviceInterrupt hypercall failed in hypervisor.
     #[error("HvCallRetargetDeviceInterrupt with proxy redirect failed in hypervisor: {0}")]
     RetargetDeviceInterruptFailed(HvError),
@@ -92,11 +92,9 @@ struct RedirectedVectorMapping<'a> {
 impl<'a> RedirectedVectorMapping<'a> {
     /// Creates a new mapping in VTL2 kernel for proxy interrupt redirection. This will be automatically
     /// unmapped when the guard is dropped unless explicitly disarmed.
-    fn new(hcl: &'a hcl::ioctl::Hcl, vector: u32, apic_id: u32) -> Option<Self> {
-        let redirected_vector = hcl
-            .map_redirected_device_interrupt(vector, apic_id, true)
-            .ok()?;
-        Some(Self {
+    fn new(hcl: &'a hcl::ioctl::Hcl, vector: u32, apic_id: u32) -> Result<Self, hcl::ioctl::Error> {
+        let redirected_vector = hcl.map_redirected_device_interrupt(vector, apic_id, true)?;
+        Ok(Self {
             hcl,
             apic_id,
             redirected_vector,
@@ -1010,7 +1008,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
 
         // Map the interrupt vector in VTL2 and create guard for automatic cleanup.
         let guard = RedirectedVectorMapping::new(&self.vp.partition.hcl, vector, first_apic_id)
-            .ok_or(ProxyInterruptRedirectionError::MapInterruptFailed)?;
+            .map_err(ProxyInterruptRedirectionError::MapInterruptFailed)?;
 
         // Create new sparse ProcessorSet containing only the first processor.
         let mask_index = first_processor_index / 64;
