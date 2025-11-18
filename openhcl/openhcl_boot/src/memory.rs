@@ -702,6 +702,43 @@ mod tests {
         assert_eq!(0, range.range.end() % alignment);
     }
 
+    #[test]
+    fn test_failed_alignment() {
+        let mut address_space = AddressSpaceManager::new_const();
+        let vtl2_ram = &[MemoryEntry {
+            range: MemoryRange::new(0x0..0x20000),
+            vnode: 0,
+            mem_type: MemoryMapEntryType::MEMORY,
+        }];
+
+        AddressSpaceManagerBuilder::new(
+            &mut address_space,
+            vtl2_ram,
+            MemoryRange::new(0x0..0xF000),
+            MemoryRange::new(0x0..0x2000),
+            [
+                MemoryRange::new(0x3000..0x4000),
+                MemoryRange::new(0x5000..0x6000),
+            ]
+            .iter()
+            .cloned(),
+        )
+        .with_reserved_range(MemoryRange::new(0x8000..0xA000))
+        .with_sidecar_image(MemoryRange::new(0xA000..0xC000))
+        .init()
+        .unwrap();
+
+        let alignment = 1024 * 1024 * 2;
+        let range = address_space.allocate_aligned(
+            None,
+            0x1000,
+            AllocationType::GpaPool,
+            AllocationPolicy::LowMemory,
+            alignment,
+        );
+        assert!(range.is_none());
+    }
+
     // test numa allocation
     #[test]
     fn test_allocate_numa() {
