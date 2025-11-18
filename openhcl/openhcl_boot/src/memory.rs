@@ -340,8 +340,7 @@ impl AddressSpaceManager {
     /// allocate the low part or high part.
     ///
     /// Requires that the caller provides a memory range that has room to
-    /// be chopped up into an aligned range of length len, with the
-    /// remainders on the left and right returned to free memory
+    /// be chopped up into an aligned range of length len.
     fn allocate_range(
         &mut self,
         index: usize,
@@ -414,41 +413,7 @@ impl AddressSpaceManager {
         allocated
     }
 
-    /// Allocate a new range of memory with the given type and policy. None is
-    /// returned if the allocation was unable to be satisfied.
-    ///
-    /// `len` is the number of bytes to allocate. The number of bytes are
-    /// rounded up to the next 4K page size increment. if `len` is 0, then
-    /// `None` is returned.
-    ///
-    /// `required_vnode` if `Some(u32)` is the vnode to allocate from. If there
-    /// are no free ranges left in that vnode, None is returned.
-    pub fn allocate(
-        &mut self,
-        required_vnode: Option<u32>,
-        len: u64,
-        allocation_type: AllocationType,
-        allocation_policy: AllocationPolicy,
-    ) -> Option<AllocatedRange> {
-        self.allocate_aligned(
-            required_vnode,
-            len,
-            allocation_type,
-            allocation_policy,
-            None,
-        )
-    }
-
-    /// Allocate a new range of memory with the given type and policy. None is
-    /// returned if the allocation was unable to be satisfied.
-    ///
-    /// `len` is the number of bytes to allocate. The number of bytes are
-    /// rounded up to the next 4K page size increment. if `len` is 0, then
-    /// `None` is returned.
-    ///
-    /// `required_vnode` if `Some(u32)` is the vnode to allocate from. If there
-    /// are no free ranges left in that vnode, None is returned.
-    pub fn allocate_aligned(
+    fn allocate_impl(
         &mut self,
         required_vnode: Option<u32>,
         len: u64,
@@ -514,6 +479,60 @@ impl AddressSpaceManager {
         }
 
         alloc
+    }
+
+    /// Allocate a new range of memory with the given type and policy. None is
+    /// returned if the allocation was unable to be satisfied.
+    ///
+    /// `len` is the number of bytes to allocate. The number of bytes are
+    /// rounded up to the next 4K page size increment. if `len` is 0, then
+    /// `None` is returned.
+    ///
+    /// `required_vnode` if `Some(u32)` is the vnode to allocate from. If there
+    /// are no free ranges left in that vnode, None is returned.
+    pub fn allocate(
+        &mut self,
+        required_vnode: Option<u32>,
+        len: u64,
+        allocation_type: AllocationType,
+        allocation_policy: AllocationPolicy,
+    ) -> Option<AllocatedRange> {
+        self.allocate_impl(
+            required_vnode,
+            len,
+            allocation_type,
+            allocation_policy,
+            None,
+        )
+    }
+
+    /// Allocate a new range of memory with the given type and policy. None is
+    /// returned if the allocation was unable to be satisfied.
+    ///
+    /// `len` is the number of bytes to allocate. The number of bytes are
+    /// rounded up to the next 4K page size increment. if `len` is 0, then
+    /// `None` is returned.
+    ///
+    /// `required_vnode` if `Some(u32)` is the vnode to allocate from. If there
+    /// are no free ranges left in that vnode, None is returned.
+    ///
+    /// `alignment` aligns the top of HighMemory allocations to `alignment`
+    /// bytes, and aligns the bottom of LowMemory allocations
+    pub fn allocate_aligned(
+        &mut self,
+        required_vnode: Option<u32>,
+        len: u64,
+        allocation_type: AllocationType,
+        allocation_policy: AllocationPolicy,
+        alignment: u64,
+    ) -> Option<AllocatedRange> {
+        self.allocate_impl(
+            required_vnode,
+            len,
+            allocation_type,
+            allocation_policy,
+            Some(alignment),
+        )
     }
 
     /// Returns an iterator for all VTL2 ranges.

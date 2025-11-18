@@ -18,6 +18,7 @@ fdt.workspace = true
 memory_range.workspace = true
 sidecar_defs.workspace = true
 string_page_buf.workspace = true
+static_assertions.workspace = true
 
 mesh_protobuf.workspace = true
 

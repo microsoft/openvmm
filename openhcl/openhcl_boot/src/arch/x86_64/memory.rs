@@ -25,6 +25,7 @@ use page_table::x64::PageTable;
 use page_table::x64::PageTableBuilder;
 use sha2::Digest;
 use sha2::Sha384;
+use static_assertions::const_assert;
 use x86defs::X64_LARGE_PAGE_SIZE;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use zerocopy::FromZeros;
@@ -141,19 +142,19 @@ pub fn setup_vtl2_memory(
     // to use during the mailbox spinloop, and carve out memory for TDCALL based hypercalls
     if shim_params.isolation_type == IsolationType::Tdx {
         // Allocate a range of memory for AP page tables
-        //
-        // We align the range to 2MB, since the local map only maps
-        // a single 2MB PTE per allocation
-        assert!((PAGE_TABLE_MAX_BYTES as u64) < X64_LARGE_PAGE_SIZE);
         let page_table_region = address_space
             .allocate_aligned(
                 None,
                 PAGE_TABLE_MAX_BYTES as u64,
                 AllocationType::TdxPageTables,
                 AllocationPolicy::LowMemory,
-                Some(X64_LARGE_PAGE_SIZE),
+                X64_LARGE_PAGE_SIZE,
             )
             .expect("allocation of space for TDX page tables must succeed");
+
+        // The local map will map a single 2MB PTE per allocation
+        const_assert!((PAGE_TABLE_MAX_BYTES as u64) < X64_LARGE_PAGE_SIZE);
+        assert_eq!(page_table_region.range.start() % X64_LARGE_PAGE_SIZE, 0);
 
         let mut local_map = local_map.expect("must be present on TDX");
         let page_table_region_mapping = local_map.map_pages(page_table_region.range, false);
