@@ -338,98 +338,41 @@ impl AddressSpaceManager {
 
     /// Split a free range into two, with allocation policy deciding if we
     /// allocate the low part or high part.
+    ///
+    /// Requires that the caller provides a memory range that has room to
+    /// be chopped up into an aligned range of length len, with the
+    /// remainders on the left and right returned to free memory
     fn allocate_range(
         &mut self,
         index: usize,
         len: u64,
         usage: AddressUsage,
         allocation_policy: AllocationPolicy,
+        alignment: Option<u64>,
     ) -> AllocatedRange {
         assert!(usage != AddressUsage::Free);
         let range = self.address_space.get_mut(index).expect("valid index");
         assert_eq!(range.usage, AddressUsage::Free);
-        assert!(range.range.len() >= len);
 
-        let (used, remainder) = match allocation_policy {
-            AllocationPolicy::LowMemory => {
-                // Allocate from the beginning (low addresses)
-                range.range.split_at_offset(len)
-            }
-            AllocationPolicy::HighMemory => {
-                // Allocate from the end (high addresses)
-                let offset = range.range.len() - len;
-                let (remainder, used) = range.range.split_at_offset(offset);
-                (used, remainder)
-            }
-        };
-
-        let remainder = if !remainder.is_empty() {
-            Some(AddressRange {
-                range: remainder,
-                vnode: range.vnode,
-                usage: AddressUsage::Free,
-            })
+        let subrange = if let Some(alignment) = alignment {
+            range.range.aligned_subrange(alignment)
         } else {
-            None
+            range.range.clone()
         };
 
-        // Update this range to mark it as used
-        range.usage = usage;
-        range.range = used;
-        let allocated = AllocatedRange {
-            range: used,
-            vnode: range.vnode,
-        };
-
-        if let Some(remainder) = remainder {
-            match allocation_policy {
-                AllocationPolicy::LowMemory => {
-                    // When allocating from low memory, the remainder goes after
-                    // the allocated range
-                    self.address_space.insert(index + 1, remainder);
-                }
-                AllocationPolicy::HighMemory => {
-                    // When allocating from high memory, the remainder goes
-                    // before the allocated range
-                    self.address_space.insert(index, remainder);
-                }
-            }
-        }
-
-        allocated
-    }
-
-    /// Split a free range into two, with allocation policy deciding if we
-    /// allocate the low part or high part.
-    ///
-    /// Requires that the caller provides a memory range that has room to
-    /// be chopped up into an aligned range of length len, with the
-    /// remainders on the left and right returned to free memory
-    fn allocate_range_aligned(
-        &mut self,
-        index: usize,
-        len: u64,
-        usage: AddressUsage,
-        allocation_policy: AllocationPolicy,
-        alignment: u64,
-    ) -> AllocatedRange {
-        assert!(usage != AddressUsage::Free);
-        let range = self.address_space.get_mut(index).expect("valid index");
-        assert_eq!(range.usage, AddressUsage::Free);
-        assert!(range.range.len() >= len);
-
-        let aligned_range = range.range.aligned_subrange(alignment);
-        assert!(aligned_range != MemoryRange::EMPTY);
+        assert!(subrange.len() >= len);
+        assert_ne!(subrange, MemoryRange::EMPTY);
 
         let used = match allocation_policy {
             AllocationPolicy::LowMemory => {
                 // Allocate from the beginning (low addresses)
-                let (used, _) = aligned_range.split_at_offset(len);
+                let (used, _) = subrange.split_at_offset(len);
                 used
             }
             AllocationPolicy::HighMemory => {
                 // Allocate from the end (high addresses)
-                let (_, used) = aligned_range.split_at_offset(len);
+                let offset = subrange.len() - len;
+                let (_, used) = subrange.split_at_offset(offset);
                 used
             }
         };
@@ -486,6 +429,31 @@ impl AddressSpaceManager {
         len: u64,
         allocation_type: AllocationType,
         allocation_policy: AllocationPolicy,
+    ) -> Option<AllocatedRange> {
+        self.allocate_aligned(
+            required_vnode,
+            len,
+            allocation_type,
+            allocation_policy,
+            None
+        )
+    }
+
+    /// Allocate a new range of memory with the given type and policy. None is
+    /// returned if the allocation was unable to be satisfied.
+    ///
+    /// `len` is the number of bytes to allocate. The number of bytes are
+    /// rounded up to the next 4K page size increment. if `len` is 0, then
+    /// `None` is returned.
+    ///
+    /// `required_vnode` if `Some(u32)` is the vnode to allocate from. If there
+    /// are no free ranges left in that vnode, None is returned.
+    pub fn allocate_aligned(
+        &mut self,
+        required_vnode: Option<u32>,
+        len: u64,
+        allocation_type: AllocationType,
+        allocation_policy: AllocationPolicy,
         alignment: Option<u64>,
     ) -> Option<AllocatedRange> {
         if len == 0 {
@@ -503,7 +471,7 @@ impl AddressSpaceManager {
             alignment: Option<u64>,
         ) -> Option<usize> {
             iter.find_map(|(index, range)| {
-                let is_aligned: bool = alignment.is_none()
+            let is_aligned: bool = alignment.is_none()
                     || (alignment.is_some()
                         && range.range.aligned_subrange(alignment.unwrap()).len() >= len);
                 if range.usage == AddressUsage::Free
@@ -538,11 +506,7 @@ impl AddressSpaceManager {
         };
 
         let alloc = index.map(|index| {
-            if let Some(alignment) = alignment {
-                self.allocate_range_aligned(index, len, address_usage, allocation_policy, alignment)
-            } else {
-                self.allocate_range(index, len, address_usage, allocation_policy)
-            }
+            self.allocate_range(index, len, address_usage, allocation_policy, alignment)
         });
 
         if allocation_type == AllocationType::GpaPool && alloc.is_some() {
@@ -629,7 +593,6 @@ mod tests {
                 0x1000,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
-                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1F000..0x20000));
@@ -641,7 +604,6 @@ mod tests {
                 0x2000,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
-                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1D000..0x1F000));
@@ -652,7 +614,6 @@ mod tests {
                 0x3000,
                 AllocationType::GpaPool,
                 AllocationPolicy::LowMemory,
-                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0xF000..0x12000));
@@ -663,7 +624,6 @@ mod tests {
                 0x1000,
                 AllocationType::GpaPool,
                 AllocationPolicy::LowMemory,
-                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x12000..0x13000));
@@ -697,7 +657,7 @@ mod tests {
 
         let alignment = 4096 * 16;
         let range = address_space
-            .allocate(
+            .allocate_aligned(
                 None,
                 0x1000,
                 AllocationType::GpaPool,
@@ -710,7 +670,7 @@ mod tests {
 
         let alignment = 4096 * 4;
         let range = address_space
-            .allocate(
+            .allocate_aligned(
                 None,
                 0x1000,
                 AllocationType::GpaPool,
@@ -772,7 +732,6 @@ mod tests {
                 0x1000,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
-                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1F000..0x20000));
@@ -784,7 +743,6 @@ mod tests {
                 0x2000,
                 AllocationType::SidecarNode,
                 AllocationPolicy::HighMemory,
-                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1D000..0x1F000));
@@ -796,7 +754,6 @@ mod tests {
                 0x3000,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
-                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x5D000..0x60000));
@@ -809,7 +766,6 @@ mod tests {
                 0x20000,
                 AllocationType::SidecarNode,
                 AllocationPolicy::HighMemory,
-                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x60000..0x80000));
@@ -820,7 +776,6 @@ mod tests {
             0x1000,
             AllocationType::SidecarNode,
             AllocationPolicy::HighMemory,
-            None,
         );
         assert!(
             range.is_none(),
@@ -861,7 +816,6 @@ mod tests {
                 0x1001,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
-                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1E000..0x20000));
@@ -872,7 +826,6 @@ mod tests {
                 0xFFF,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
-                None,
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1D000..0x1E000));
@@ -882,7 +835,6 @@ mod tests {
             0,
             AllocationType::GpaPool,
             AllocationPolicy::HighMemory,
-            None,
         );
         assert!(range.is_none());
     }

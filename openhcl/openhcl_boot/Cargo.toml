@@ -33,7 +33,7 @@ thiserror.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-page_table = { workspace = true, features = ["no_std"] }
+page_table.workspace = true
 safe_intrinsics.workspace = true
 tdcall.workspace = true
 x86defs.workspace = true

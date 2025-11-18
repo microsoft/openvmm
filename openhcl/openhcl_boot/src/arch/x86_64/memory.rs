@@ -141,8 +141,12 @@ pub fn setup_vtl2_memory(
     // to use during the mailbox spinloop, and carve out memory for TDCALL based hypercalls
     if shim_params.isolation_type == IsolationType::Tdx {
         // Allocate a range of memory for AP page tables
+        //
+        // We align the range to 2MB, since the local map only maps
+        // a single 2MB PTE per allocation
+        assert!(PAGE_TABLE_MAX_BYTES as u64 < X64_LARGE_PAGE_SIZE);
         let page_table_region = address_space
-            .allocate(
+            .allocate_aligned(
                 None,
                 PAGE_TABLE_MAX_BYTES as u64,
                 AllocationType::TdxPageTables,
