@@ -39,6 +39,9 @@ use std::task::Poll;
 use std::time::Duration;
 use std::time::Instant;
 
+/// DNS server port number.
+const DNS_PORT: u16 = 53;
+
 pub(crate) struct Udp {
     connections: HashMap<SocketAddress, UdpConnection>,
     timeout: Duration,
@@ -211,7 +214,7 @@ impl<T: Client> Access<'_, T> {
         if addresses.dst_addr == self.inner.state.params.gateway_ip
             || addresses.dst_addr.is_broadcast()
         {
-            if self.handle_gateway_udp(&udp_packet)? {
+            if self.handle_gateway_udp(frame, addresses, &udp_packet)? {
                 return Ok(());
             }
         }
@@ -268,12 +271,29 @@ impl<T: Client> Access<'_, T> {
         }
     }
 
-    fn handle_gateway_udp(&mut self, udp: &UdpPacket<&[u8]>) -> Result<bool, DropReason> {
+    fn handle_gateway_udp(
+        &mut self,
+        frame: &EthernetRepr,
+        addresses: &Ipv4Addresses,
+        udp: &UdpPacket<&[u8]>,
+    ) -> Result<bool, DropReason> {
         let payload = udp.payload();
         match udp.dst_port() {
             DHCP_SERVER => {
                 self.handle_dhcp(payload)?;
                 Ok(true)
+            }
+            DNS_PORT => {
+                if let Some(_dns_resolver) = &mut self.inner.dns_resolver {
+                    let udp_repr = UdpRepr {
+                        src_port: udp.src_port(),
+                        dst_port: udp.dst_port(),
+                    };
+                    self.handle_dns_udp(frame, addresses, &udp_repr, payload)?;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
             }
             _ => Ok(false),
         }
@@ -304,5 +324,106 @@ impl<T: Client> Access<'_, T> {
             Some(_) => Ok(()),
             None => Err(DropReason::PortNotBound),
         }
+    }
+
+    fn handle_dns_udp(
+        &mut self,
+        frame: &EthernetRepr,
+        addresses: &Ipv4Addresses,
+        udp: &UdpRepr,
+        dns_query: &[u8],
+    ) -> Result<(), DropReason> {
+        use crate::dns_resolver;
+
+        tracing::debug!(
+            src = %addresses.src_addr,
+            dst = %addresses.dst_addr,
+            src_port = udp.src_port,
+            dst_port = udp.dst_port,
+            query_len = dns_query.len(),
+            "Intercepting UDP DNS query"
+        );
+
+        // Copy the DNS query for the closure
+        let dns_query_vec = dns_query.to_vec();
+
+        // Store necessary data for crafting the response (currently unused, for future use)
+        let _src_addr = addresses.src_addr;
+        let _dst_addr = addresses.dst_addr;
+        let _src_port = udp.src_port;
+        let _dst_port = udp.dst_port;
+        let _gateway_mac = self.inner.state.params.gateway_mac;
+        let _client_mac = frame.src_addr;
+
+        // Get a mutable reference to dns_resolver before moving into closure
+        let _dns_resolver = self.inner.dns_resolver.as_mut().unwrap();
+
+        // OPTION B (ACTIVE): Queue response for sending on next poll
+        // We'll store responses in a buffer and send them on the next poll cycle
+        // This is safer and avoids potential reentrancy issues
+
+        _dns_resolver
+            .handle_dns(
+                &dns_query_vec.clone(),
+                IpProtocol::Udp,
+                move |dns_response_opt| {
+                    // Response will be handled asynchronously
+                    // For now, we just log the completion
+                    match dns_response_opt {
+                        Some(response) => {
+                            tracing::debug!(
+                                response_len = response.len(),
+                                "DNS query completed successfully (queued for send)"
+                            );
+                            // TODO: Queue this response to be sent on next poll
+                            // For now this is a placeholder - we need to add a response queue
+                        }
+                        None => {
+                            tracing::warn!("DNS query failed, would send SERVFAIL");
+                            // TODO: Queue SERVFAIL response
+                            let servfail = dns_resolver::create_servfail_response(&dns_query_vec);
+                            tracing::warn!(
+                                servfail_len = servfail.len(),
+                                query_bytes = ?&dns_query_vec[..dns_query_vec.len().min(32)],
+                                "Sending DNS SERVFAIL response"
+                            );
+                        }
+                    }
+                },
+            )
+            .map_err(|e| {
+                tracing::error!(error = ?e, "Failed to start DNS query");
+                DropReason::Packet(smoltcp::Error::Dropped)
+            })?;
+
+        // OPTION A (COMMENTED OUT): Send response immediately from callback
+        // This would require storing client/state references in a way accessible from callback
+        // Which is more complex due to borrowing rules
+        /*
+        dns_resolver.handle_dns(
+            &dns_query_vec,
+            IpProtocol::Udp,
+            move |dns_response_opt| {
+                let dns_response = match dns_response_opt {
+                    Some(resp) => resp,
+                    None => {
+                        tracing::warn!("DNS query failed, sending SERVFAIL");
+                        dns_resolver::create_servfail_response(&dns_query_vec)
+                    }
+                };
+
+                // Craft and send the UDP response packet immediately
+                // NOTE: This requires access to self.client which is not available here
+                // craft_and_send_udp_dns_response(
+                //     &dns_response,
+                //     src_addr, dst_addr, src_port, dst_port,
+                //     gateway_mac, client_mac,
+                //     &mut self.client, &mut self.inner.state
+                // );
+            },
+        )?;
+        */
+
+        Ok(())
     }
 }

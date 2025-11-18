@@ -19,8 +19,11 @@ mod dhcp;
 #[cfg_attr(unix, path = "dns_unix.rs")]
 #[cfg_attr(windows, path = "dns_windows.rs")]
 mod dns;
-#[cfg(windows)]
+
+#[cfg_attr(windows, path = "dns_resolver_windows.rs")]
+#[cfg_attr(unix, path = "dns_resolver_unix.rs")]
 pub mod dns_resolver;
+
 mod icmp;
 mod tcp;
 mod udp;
@@ -52,6 +55,8 @@ pub struct Consomme {
     #[inspect(mut)]
     udp: udp::Udp,
     icmp: icmp::Icmp,
+    #[inspect(skip)]
+    dns_resolver: Option<dns_resolver::DnsResolver>,
 }
 
 #[derive(Inspect)]
@@ -98,7 +103,8 @@ impl ConsommeParams {
     ///     gateway: 10.0.0.1 with MAC address 52-55-10-0-0-1
     ///     no DNS resolvers
     pub fn new() -> Result<Self, Error> {
-        let nameservers = dns::nameservers()?;
+        // let nameservers = dns::nameservers()?;
+        let nameservers = vec![Ipv4Address::new(10, 0, 0, 1)];
         Ok(Self {
             gateway_ip: Ipv4Address::new(10, 0, 0, 1),
             gateway_mac: EthernetAddress([0x52, 0x55, 10, 0, 0, 1]),
@@ -303,6 +309,8 @@ struct Ipv4Addresses {
 impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(params: ConsommeParams) -> Self {
+        let dns_resolver = dns_resolver::DnsResolver::new().ok();
+
         Self {
             udp: udp::Udp::new(params.udp_timeout),
             state: ConsommeState {
@@ -311,6 +319,7 @@ impl Consomme {
             },
             tcp: tcp::Tcp::new(),
             icmp: icmp::Icmp::new(),
+            dns_resolver,
         }
     }
 
