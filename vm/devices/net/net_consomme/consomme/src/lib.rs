@@ -19,6 +19,8 @@ mod dhcp;
 #[cfg_attr(unix, path = "dns_unix.rs")]
 #[cfg_attr(windows, path = "dns_windows.rs")]
 mod dns;
+#[cfg(windows)]
+pub mod dns_resolver;
 mod icmp;
 mod tcp;
 mod udp;
