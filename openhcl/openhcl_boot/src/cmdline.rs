@@ -84,11 +84,17 @@ impl<S: AsRef<str>> From<S> for Vtl2GpaPoolConfig {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum SidecarState {
+    Enabled(bool), // bool indicates if logging is enabled
+    DisabledServicing,
+    DisabledCommandLine,
+}
+
+#[derive(Debug, PartialEq)]
 pub struct BootCommandLineOptions {
     pub confidential_debug: bool,
     pub enable_vtl2_gpa_pool: Vtl2GpaPoolConfig,
-    pub sidecar: bool,
-    pub sidecar_logging: bool,
+    pub sidecar: SidecarState,
     pub disable_nvme_keep_alive: bool,
 }
 
@@ -97,8 +103,7 @@ impl BootCommandLineOptions {
         BootCommandLineOptions {
             confidential_debug: false,
             enable_vtl2_gpa_pool: Vtl2GpaPoolConfig::Heuristics(Vtl2GpaPoolLookupTable::Release), // use the release config by default
-            sidecar: true, // sidecar is enabled by default
-            sidecar_logging: false,
+            sidecar: SidecarState::Enabled(false), // sidecar is enabled by default, logging disabled
             disable_nvme_keep_alive: false,
         }
     }
@@ -130,9 +135,9 @@ impl BootCommandLineOptions {
                 if let Some((_, arg)) = arg.split_once('=') {
                     for arg in arg.split(',') {
                         match arg {
-                            "off" => self.sidecar = false,
-                            "on" => self.sidecar = true,
-                            "log" => self.sidecar_logging = true,
+                            "off" => self.sidecar = SidecarState::DisabledCommandLine,
+                            "on" => self.sidecar = SidecarState::Enabled(false),
+                            "log" => self.sidecar = SidecarState::Enabled(true),
                             _ => {}
                         }
                     }
@@ -221,37 +226,35 @@ mod tests {
         assert_eq!(
             parse_boot_command_line("OPENHCL_SIDECAR=on"),
             BootCommandLineOptions {
-                sidecar: true,
+                sidecar: SidecarState::Enabled(false),
                 ..BootCommandLineOptions::new()
             }
         );
         assert_eq!(
             parse_boot_command_line("OPENHCL_SIDECAR=off"),
             BootCommandLineOptions {
-                sidecar: false,
+                sidecar: SidecarState::DisabledCommandLine,
                 ..BootCommandLineOptions::new()
             }
         );
         assert_eq!(
             parse_boot_command_line("OPENHCL_SIDECAR=on,off"),
             BootCommandLineOptions {
-                sidecar: false,
+                sidecar: SidecarState::DisabledCommandLine,
                 ..BootCommandLineOptions::new()
             }
         );
         assert_eq!(
             parse_boot_command_line("OPENHCL_SIDECAR=on,log"),
             BootCommandLineOptions {
-                sidecar: true,
-                sidecar_logging: true,
+                sidecar: SidecarState::Enabled(true),
                 ..BootCommandLineOptions::new()
             }
         );
         assert_eq!(
             parse_boot_command_line("OPENHCL_SIDECAR=log"),
             BootCommandLineOptions {
-                sidecar: true,
-                sidecar_logging: true,
+                sidecar: SidecarState::Enabled(true),
                 ..BootCommandLineOptions::new()
             }
         );

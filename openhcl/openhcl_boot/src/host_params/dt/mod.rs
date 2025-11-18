@@ -7,6 +7,7 @@ use super::PartitionInfo;
 use super::shim_params::ShimParams;
 use crate::boot_logger::log;
 use crate::cmdline::BootCommandLineOptions;
+use crate::cmdline::SidecarState;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
@@ -832,11 +833,17 @@ impl PartitionInfo {
         init_heap(params);
 
         let persisted_state_header = read_persisted_region_header(params);
-        let topology = if let Some(header) = persisted_state_header {
+        let (topology, is_restoring) = if let Some(header) = persisted_state_header {
             log!("found persisted state header");
-            topology_from_persisted_state(header, params, parsed, address_space)?
+            (
+                topology_from_persisted_state(header, params, parsed, address_space)?,
+                true,
+            )
         } else {
-            topology_from_host_dt(params, parsed, &options, address_space)?
+            (
+                topology_from_host_dt(params, parsed, &options, address_space)?,
+                false,
+            )
         };
 
         let Self {
@@ -857,6 +864,22 @@ impl PartitionInfo {
             nvme_keepalive,
             boot_options,
         } = storage;
+
+        match (&boot_options.sidecar, is_restoring) {
+            (SidecarState::Enabled(_), true) => {
+                if parsed.cpu_count() < 100 {
+                    // If we are in the restore path, disable sidecar for small VMs, as the amortiziation
+                    // benefits don't apply when devices are kept alive; the CPUs need to be powered on anyway
+                    // to check for interrupts.
+                    //
+                    // TODO: rather, just do this for _any_ VM that is restoring and has
+                    // device persistent state.
+                    log!("disabling sidecar, as we are restoring from persisted state");
+                    boot_options.sidecar = SidecarState::DisabledServicing;
+                }
+            }
+            (_, _) => {}
+        }
 
         // Set ram and memory alloction mode.
         vtl2_ram.clear();
