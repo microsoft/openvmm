@@ -754,7 +754,7 @@ fn flatten_page_table<'a>(
     &flattened_page_table[0..PAGE_TABLE_SIZE * page_table_count]
 }
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(test)]
 mod tests {
     use std;
     use std::vec;

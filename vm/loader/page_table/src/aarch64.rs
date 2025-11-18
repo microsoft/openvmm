@@ -724,7 +724,7 @@ pub fn build_identity_page_tables_aarch64(
     &page_table_space[0..used_space]
 }
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(test)]
 mod tests {
     use std;
 

@@ -435,7 +435,7 @@ impl AddressSpaceManager {
             len,
             allocation_type,
             allocation_policy,
-            None
+            None,
         )
     }
 
@@ -471,7 +471,7 @@ impl AddressSpaceManager {
             alignment: Option<u64>,
         ) -> Option<usize> {
             iter.find_map(|(index, range)| {
-            let is_aligned: bool = alignment.is_none()
+                let is_aligned: bool = alignment.is_none()
                     || (alignment.is_some()
                         && range.range.aligned_subrange(alignment.unwrap()).len() >= len);
                 if range.usage == AddressUsage::Free
