@@ -518,6 +518,7 @@ impl AddressSpaceManager {
     ///
     /// `alignment` aligns the top of HighMemory allocations to `alignment`
     /// bytes, and aligns the bottom of LowMemory allocations
+    #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     pub fn allocate_aligned(
         &mut self,
         required_vnode: Option<u32>,
@@ -681,7 +682,7 @@ mod tests {
                 0x1000,
                 AllocationType::GpaPool,
                 AllocationPolicy::LowMemory,
-                Some(alignment),
+                alignment,
             )
             .unwrap();
 
@@ -694,7 +695,7 @@ mod tests {
                 0x1000,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
-                Some(alignment),
+                alignment,
             )
             .unwrap();
 
