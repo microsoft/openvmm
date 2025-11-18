@@ -5393,11 +5393,17 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 PacketData::SubChannelRequest(request) if state.primary.is_some() => {
                     let mut subchannel_count = 0;
                     let status = if request.operation == protocol::SubchannelOperation::ALLOCATE
-                        && request.num_sub_channels <= self.adapter.max_queues.into()
+                        && request.num_sub_channels < self.adapter.max_queues.into()
                     {
                         subchannel_count = request.num_sub_channels;
                         protocol::Status::SUCCESS
                     } else {
+                        tracing::warn!(
+                            "Subchannel request failed: request operation {:?}, requested {} subchannels, the maximum number of supported subchannels is {}",
+                            request.operation,
+                            request.num_sub_channels,
+                            self.adapter.max_queues - 1
+                        );
                         protocol::Status::FAILURE
                     };
 
