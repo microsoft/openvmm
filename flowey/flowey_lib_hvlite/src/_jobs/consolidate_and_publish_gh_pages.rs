@@ -95,6 +95,13 @@ impl SimpleFlowNode for Node {
                     consolidated_html.join("test-results"),
                 )?;
 
+                // Testing CI changes to minimize disruptions to petri site
+                // availability. Will remove this once CI build changes are in.
+                flowey_lib_common::_util::copy_dir_all(
+                    repo.join("petri/logview_new/dist"),
+                    consolidated_html.join("test-results-ci"),
+                )?;
+
                 // as we do not currently have any form of "landing page",
                 // redirect `openvmm.dev` to `openvmm.dev/guide`
                 fs_err::write(consolidated_html.join("index.html"), REDIRECT)?;
