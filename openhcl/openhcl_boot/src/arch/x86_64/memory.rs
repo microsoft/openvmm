@@ -144,7 +144,7 @@ pub fn setup_vtl2_memory(
         //
         // We align the range to 2MB, since the local map only maps
         // a single 2MB PTE per allocation
-        assert!(PAGE_TABLE_MAX_BYTES as u64 < X64_LARGE_PAGE_SIZE);
+        assert!((PAGE_TABLE_MAX_BYTES as u64) < X64_LARGE_PAGE_SIZE);
         let page_table_region = address_space
             .allocate_aligned(
                 None,
