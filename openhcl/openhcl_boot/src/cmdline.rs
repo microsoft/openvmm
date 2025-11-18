@@ -84,9 +84,13 @@ impl<S: AsRef<str>> From<S> for Vtl2GpaPoolConfig {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum SidecarState {
-    Enabled(bool), // bool indicates if logging is enabled
+pub enum SidecarOptions {
+    /// Sidecar is enabled (either via command line or by default).
+    Enabled { enable_logging: bool },
+    /// Sidecar is disabled because this is a restore from save state (during servicing),
+    /// and sidecar will not benefit this specific scenario.
     DisabledServicing,
+    /// Sidecar is explicitly disabled via command line.
     DisabledCommandLine,
 }
 
@@ -94,7 +98,7 @@ pub enum SidecarState {
 pub struct BootCommandLineOptions {
     pub confidential_debug: bool,
     pub enable_vtl2_gpa_pool: Vtl2GpaPoolConfig,
-    pub sidecar: SidecarState,
+    pub sidecar: SidecarOptions,
     pub disable_nvme_keep_alive: bool,
 }
 
@@ -103,7 +107,9 @@ impl BootCommandLineOptions {
         BootCommandLineOptions {
             confidential_debug: false,
             enable_vtl2_gpa_pool: Vtl2GpaPoolConfig::Heuristics(Vtl2GpaPoolLookupTable::Release), // use the release config by default
-            sidecar: SidecarState::Enabled(false), // sidecar is enabled by default, logging disabled
+            sidecar: SidecarOptions::Enabled {
+                enable_logging: false,
+            },
             disable_nvme_keep_alive: false,
         }
     }
@@ -135,9 +141,17 @@ impl BootCommandLineOptions {
                 if let Some((_, arg)) = arg.split_once('=') {
                     for arg in arg.split(',') {
                         match arg {
-                            "off" => self.sidecar = SidecarState::DisabledCommandLine,
-                            "on" => self.sidecar = SidecarState::Enabled(false),
-                            "log" => self.sidecar = SidecarState::Enabled(true),
+                            "off" => self.sidecar = SidecarOptions::DisabledCommandLine,
+                            "on" => {
+                                self.sidecar = SidecarOptions::Enabled {
+                                    enable_logging: false,
+                                }
+                            }
+                            "log" => {
+                                self.sidecar = SidecarOptions::Enabled {
+                                    enable_logging: true,
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -226,35 +240,41 @@ mod tests {
         assert_eq!(
             parse_boot_command_line("OPENHCL_SIDECAR=on"),
             BootCommandLineOptions {
-                sidecar: SidecarState::Enabled(false),
+                sidecar: SidecarOptions::Enabled {
+                    enable_logging: false,
+                },
                 ..BootCommandLineOptions::new()
             }
         );
         assert_eq!(
             parse_boot_command_line("OPENHCL_SIDECAR=off"),
             BootCommandLineOptions {
-                sidecar: SidecarState::DisabledCommandLine,
+                sidecar: SidecarOptions::DisabledCommandLine,
                 ..BootCommandLineOptions::new()
             }
         );
         assert_eq!(
             parse_boot_command_line("OPENHCL_SIDECAR=on,off"),
             BootCommandLineOptions {
-                sidecar: SidecarState::DisabledCommandLine,
+                sidecar: SidecarOptions::DisabledCommandLine,
                 ..BootCommandLineOptions::new()
             }
         );
         assert_eq!(
             parse_boot_command_line("OPENHCL_SIDECAR=on,log"),
             BootCommandLineOptions {
-                sidecar: SidecarState::Enabled(true),
+                sidecar: SidecarOptions::Enabled {
+                    enable_logging: true
+                },
                 ..BootCommandLineOptions::new()
             }
         );
         assert_eq!(
             parse_boot_command_line("OPENHCL_SIDECAR=log"),
             BootCommandLineOptions {
-                sidecar: SidecarState::Enabled(true),
+                sidecar: SidecarOptions::Enabled {
+                    enable_logging: true
+                },
                 ..BootCommandLineOptions::new()
             }
         );

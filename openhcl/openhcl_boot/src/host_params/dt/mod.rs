@@ -7,7 +7,7 @@ use super::PartitionInfo;
 use super::shim_params::ShimParams;
 use crate::boot_logger::log;
 use crate::cmdline::BootCommandLineOptions;
-use crate::cmdline::SidecarState;
+use crate::cmdline::SidecarOptions;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
@@ -865,20 +865,17 @@ impl PartitionInfo {
             boot_options,
         } = storage;
 
-        match (&boot_options.sidecar, is_restoring) {
-            (SidecarState::Enabled(_), true) => {
-                if parsed.cpu_count() < 100 {
-                    // If we are in the restore path, disable sidecar for small VMs, as the amortiziation
-                    // benefits don't apply when devices are kept alive; the CPUs need to be powered on anyway
-                    // to check for interrupts.
-                    //
-                    // TODO: rather, just do this for _any_ VM that is restoring and has
-                    // device persistent state.
-                    log!("disabling sidecar, as we are restoring from persisted state");
-                    boot_options.sidecar = SidecarState::DisabledServicing;
-                }
+        if let (SidecarOptions::Enabled { .. }, true) = (&boot_options.sidecar, is_restoring) {
+            if parsed.cpu_count() < 100 {
+                // If we are in the restore path, disable sidecar for small VMs, as the amortization
+                // benefits don't apply when devices are kept alive; the CPUs need to be powered on anyway
+                // to check for interrupts.
+                //
+                // TODO: rather, just do this for _any_ VM that is restoring and has
+                // device persistent state.
+                log!("disabling sidecar, as we are restoring from persisted state");
+                boot_options.sidecar = SidecarOptions::DisabledServicing;
             }
-            (_, _) => {}
         }
 
         // Set ram and memory alloction mode.

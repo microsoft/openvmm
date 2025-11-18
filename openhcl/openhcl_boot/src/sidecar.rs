@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::boot_logger::log;
+use crate::cmdline::SidecarOptions;
 use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::PartitionInfo;
@@ -74,15 +75,15 @@ pub fn start_sidecar<'a>(
     }
 
     match partition_info.boot_options.sidecar {
-        crate::cmdline::SidecarState::DisabledCommandLine => {
+        SidecarOptions::DisabledCommandLine => {
             log!("sidecar: disabled via command line");
             return None;
         }
-        crate::cmdline::SidecarState::DisabledServicing => {
+        SidecarOptions::DisabledServicing => {
             log!("sidecar: disabled because this is a servicing restore");
             return None;
         }
-        crate::cmdline::SidecarState::Enabled(enable_logging) => {
+        SidecarOptions::Enabled { enable_logging } => {
             sidecar_params.enable_logging = enable_logging;
         }
     }
