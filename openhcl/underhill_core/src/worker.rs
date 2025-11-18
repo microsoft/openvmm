@@ -1393,11 +1393,16 @@ async fn new_underhill_vm(
         }
     }
 
-    // Always enable default boot always attempt for non-Trusted Launch VMs.
-    // This is roughly equivalent to not having secure boot or TPM enabled.
-    // This is necessary because the VMGS is not swapped with the OS disk
-    // for these VMs in Azure (and in any case on-prem), causing the VM to
-    // fail to boot after an OS swap.
+    // Temporarily override the host provided default_boot_always_attempt
+    // value for non-Trusted Launch VMs until all hosts in Azure have been
+    // updated to provide the correct value.
+    //
+    // Trusted Launch is roughly equivalent to not having secure boot or
+    // TPM enabled. Default boot is necessary because the VMGS is not swapped
+    // with the OS disk for these VMs in Azure (and in any case on-prem),
+    // causing the VM to fail to boot after an OS swap.
+    //
+    // TODO: remove this once host changes are saturated
     if !dps.general.secure_boot_enabled
         && !dps.general.tpm_enabled
         && !dps.general.default_boot_always_attempt
