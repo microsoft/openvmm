@@ -413,7 +413,7 @@ impl AddressSpaceManager {
         allocated
     }
 
-    fn allocate_impl(
+    fn allocate_inner(
         &mut self,
         required_vnode: Option<u32>,
         len: u64,
@@ -497,7 +497,7 @@ impl AddressSpaceManager {
         allocation_type: AllocationType,
         allocation_policy: AllocationPolicy,
     ) -> Option<AllocatedRange> {
-        self.allocate_impl(
+        self.allocate_inner(
             required_vnode,
             len,
             allocation_type,
@@ -527,7 +527,7 @@ impl AddressSpaceManager {
         allocation_policy: AllocationPolicy,
         alignment: u64,
     ) -> Option<AllocatedRange> {
-        self.allocate_impl(
+        self.allocate_inner(
             required_vnode,
             len,
             allocation_type,
