@@ -357,7 +357,7 @@ impl AddressSpaceManager {
         let subrange = if let Some(alignment) = alignment {
             range.range.aligned_subrange(alignment)
         } else {
-            range.range.clone()
+            range.range
         };
 
         assert!(subrange.len() >= len);
