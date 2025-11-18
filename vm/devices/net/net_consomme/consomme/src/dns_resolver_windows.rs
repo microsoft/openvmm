@@ -7,38 +7,71 @@
 //! (DnsQueryRaw, DnsCancelQueryRaw, DnsQueryRawResultFree) that allow
 //! for raw DNS query processing similar to the WSL DnsResolver implementation.
 
+// UNSAFETY: This module uses unsafe code to interface with Windows APIs and for FFI bindings.
 #![expect(unsafe_code)]
-
+use smoltcp::wire::EthernetAddress;
+use smoltcp::wire::IpProtocol;
+use smoltcp::wire::Ipv4Address;
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_TCP;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_UDP;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_NO_MULTICAST;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_CANCEL;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST;
+use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST_0;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST_VERSION1;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULT;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULTS_VERSION1;
 use windows_sys::Win32::NetworkManagement::Dns::DnsQueryRaw;
 use windows_sys::Win32::NetworkManagement::Dns::DnsQueryRawResultFree;
+use windows_sys::Win32::Networking::WinSock::AF_INET;
+use windows_sys::Win32::Networking::WinSock::IN_ADDR;
+use windows_sys::Win32::Networking::WinSock::IN_ADDR_0;
+use windows_sys::Win32::Networking::WinSock::SOCKADDR_IN;
 
-use smoltcp::wire::IpProtocol;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
+/// A queued DNS response ready to be sent to the guest.
+#[derive(Debug, Clone)]
+pub struct DnsResponse {
+    /// Source IP address (the client)
+    pub src_addr: Ipv4Address,
+    /// Destination IP address (the gateway)
+    pub dst_addr: Ipv4Address,
+    /// Source port (the client's port)
+    pub src_port: u16,
+    /// Destination port (DNS port 53)
+    pub dst_port: u16,
+    /// Gateway MAC address
+    pub gateway_mac: EthernetAddress,
+    /// Client MAC address
+    pub client_mac: EthernetAddress,
+    /// The DNS response data
+    pub response_data: Vec<u8>,
+}
 
 // DNS query context for active requests
 struct DnsQueryContext {
     id: u64,
     _protocol: IpProtocol,
     cancel_handle: DNS_QUERY_RAW_CANCEL,
-    completion_callback: Box<dyn FnOnce(Option<Vec<u8>>) + Send>,
+    src_addr: Ipv4Address,
+    dst_addr: Ipv4Address,
+    src_port: u16,
+    dst_port: u16,
+    gateway_mac: EthernetAddress,
+    client_mac: EthernetAddress,
+    response_queue: Arc<Mutex<VecDeque<DnsResponse>>>,
 }
 
 /// DNS resolver that manages active DNS queries using Windows DNS Raw APIs.
 pub struct DnsResolver {
     next_request_id: AtomicU64,
     active_requests: Arc<Mutex<HashMap<u64, Box<DnsQueryContext>>>>,
+    response_queue: Arc<Mutex<VecDeque<DnsResponse>>>,
 }
 
 /// DNS resolver errors.
@@ -56,6 +89,7 @@ impl DnsResolver {
         Ok(Self {
             next_request_id: AtomicU64::new(0),
             active_requests: Arc::new(Mutex::new(HashMap::new())),
+            response_queue: Arc::new(Mutex::new(VecDeque::new())),
         })
     }
 
@@ -64,7 +98,12 @@ impl DnsResolver {
         &mut self,
         dns_query: &[u8],
         protocol: IpProtocol,
-        callback: impl FnOnce(Option<Vec<u8>>) + Send + 'static,
+        src_addr: Ipv4Address,
+        dst_addr: Ipv4Address,
+        src_port: u16,
+        dst_port: u16,
+        gateway_mac: EthernetAddress,
+        client_mac: EthernetAddress,
     ) -> Result<(), DnsError> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
 
@@ -83,7 +122,13 @@ impl DnsResolver {
             id: request_id,
             _protocol: protocol,
             cancel_handle: DNS_QUERY_RAW_CANCEL::default(),
-            completion_callback: Box::new(callback),
+            src_addr,
+            dst_addr,
+            src_port,
+            dst_port,
+            gateway_mac,
+            client_mac,
+            response_queue: self.response_queue.clone(),
         });
 
         let context_ptr = &mut *context as *mut DnsQueryContext as *mut core::ffi::c_void;
@@ -93,6 +138,27 @@ impl DnsResolver {
             IpProtocol::Tcp => DNS_PROTOCOL_TCP,
             IpProtocol::Udp => DNS_PROTOCOL_UDP,
             _ => return Err(DnsError::QueryFailed(0)),
+        };
+
+        let addr = SOCKADDR_IN {
+            sin_family: AF_INET as u16,
+            sin_port: 56221u16.to_be(), // DNS port in network byte order
+            sin_addr: IN_ADDR {
+                S_un: IN_ADDR_0 {
+                    S_addr: u32::from_be_bytes([10, 137, 184, 83]),
+                },
+            }, // Google DNS
+            sin_zero: [0; 8],
+        };
+
+        let mut anonymous = DNS_QUERY_RAW_REQUEST_0::default();
+        unsafe {
+            // Copy the exact bytes of SOCKADDR_IN into the buffer
+            std::ptr::copy_nonoverlapping(
+                &addr as *const SOCKADDR_IN as *const u8,
+                anonymous.maxSa.as_mut_ptr() as *mut u8,
+                size_of::<SOCKADDR_IN>(),
+            );
         };
 
         let request = DNS_QUERY_RAW_REQUEST {
@@ -110,7 +176,7 @@ impl DnsResolver {
             customServersSize: 0,
             customServers: std::ptr::null_mut(),
             protocol: dns_protocol,
-            Anonymous: Default::default(),
+            Anonymous: anonymous,
         };
 
         // Store the context before making the call
@@ -129,15 +195,28 @@ impl DnsResolver {
             DnsQueryRaw(&request, &mut context.cancel_handle)
         };
 
-        if result != 0 && result != 997 {
-            // 997 is DNS_REQUEST_PENDING
+        if result != 0 && result != 9506 {
+            // 9506 is DNS_REQUEST_PENDING
             tracing::error!(request_id, result, "DnsQueryRaw failed");
 
             // Remove the context on failure
             let mut requests = self.active_requests.lock().unwrap();
-            if let Some(context) = requests.remove(&request_id) {
-                // Call the callback with None to indicate failure
-                (context.completion_callback)(None);
+            let context = requests.remove(&request_id);
+            drop(requests);
+
+            if let Some(ctx) = context {
+                // Queue a SERVFAIL response
+                let servfail = create_servfail_response(dns_query);
+                let response = DnsResponse {
+                    src_addr: ctx.src_addr,
+                    dst_addr: ctx.dst_addr,
+                    src_port: ctx.src_port,
+                    dst_port: ctx.dst_port,
+                    gateway_mac: ctx.gateway_mac,
+                    client_mac: ctx.client_mac,
+                    response_data: servfail,
+                };
+                ctx.response_queue.lock().unwrap().push_back(response);
             }
 
             return Err(DnsError::QueryFailed(result));
@@ -151,6 +230,12 @@ impl DnsResolver {
     pub fn cancel_all(&mut self) {
         let mut requests = self.active_requests.lock().unwrap();
         requests.clear();
+    }
+
+    /// Poll for completed DNS responses.
+    /// Returns the next available response, if any.
+    pub fn poll_responses(&mut self) -> Option<DnsResponse> {
+        self.response_queue.lock().unwrap().pop_front()
     }
 }
 
@@ -200,7 +285,7 @@ unsafe extern "system" fn dns_query_raw_callback(
     let context = unsafe { Box::from_raw(context_ptr) };
 
     // Process the results
-    let dns_response = if query_results.is_null() {
+    let dns_response_data = if query_results.is_null() {
         tracing::warn!(request_id = context.id, "DNS query returned null results");
         None
     } else {
@@ -242,8 +327,46 @@ unsafe extern "system" fn dns_query_raw_callback(
         }
     }
 
-    // Call the completion callback
-    (context.completion_callback)(dns_response);
+    // Queue the response for the main thread to process
+    if let Some(response_data) = dns_response_data {
+        let response = DnsResponse {
+            src_addr: context.src_addr,
+            dst_addr: context.dst_addr,
+            src_port: context.src_port,
+            dst_port: context.dst_port,
+            gateway_mac: context.gateway_mac,
+            client_mac: context.client_mac,
+            response_data,
+        };
+        context.response_queue.lock().unwrap().push_back(response);
+
+        tracing::debug!(request_id = context.id, "DNS response queued successfully");
+    } else {
+        tracing::warn!(
+            request_id = context.id,
+            "DNS query completed but no response data, queueing SERVFAIL"
+        );
+        // Queue a SERVFAIL response if we got no data
+        // Note: We don't have the original query here, so we create a minimal SERVFAIL
+        let servfail = vec![
+            0, 0, // Transaction ID (will be wrong, but better than nothing)
+            0x81, 0x82, // Flags: Response, SERVFAIL
+            0, 0, // Questions: 0
+            0, 0, // Answers: 0
+            0, 0, // Authority: 0
+            0, 0, // Additional: 0
+        ];
+        let response = DnsResponse {
+            src_addr: context.src_addr,
+            dst_addr: context.dst_addr,
+            src_port: context.src_port,
+            dst_port: context.dst_port,
+            gateway_mac: context.gateway_mac,
+            client_mac: context.client_mac,
+            response_data: servfail,
+        };
+        context.response_queue.lock().unwrap().push_back(response);
+    }
 }
 
 #[cfg(test)]
