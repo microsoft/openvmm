@@ -585,13 +585,6 @@ async fn default_boot(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),
 ) -> Result<(), anyhow::Error> {
-    // HACK: enable secure boot so we don't trigger the override in OpenHCL
-    let config = if config.is_openhcl() {
-        config.with_secure_boot()
-    } else {
-        config
-    };
-
     let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .with_backing_vmgs(initial_vmgs)
@@ -619,13 +612,6 @@ async fn clear_vmgs(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),
 ) -> Result<(), anyhow::Error> {
-    // HACK: enable secure boot so we don't trigger the override in OpenHCL
-    let config = if config.is_openhcl() {
-        config.with_secure_boot()
-    } else {
-        config
-    };
-
     let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Reprovision)
         .with_backing_vmgs(initial_vmgs)
@@ -637,6 +623,11 @@ async fn clear_vmgs(
 
     Ok(())
 }
+
+// Disable this test for now since default boot always attempt
+// will get enabled automatically in OpenHCL.
+// TODO: re-enable this test if the OpenHCL override is removed
+/*
 
 /// Verify that UEFI fails to boot if invalid boot entries exist
 ///
@@ -654,13 +645,6 @@ async fn boot_expect_fail(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),
 ) -> Result<(), anyhow::Error> {
-    // HACK: enable secure boot so we don't trigger the override in OpenHCL
-    let config = if config.is_openhcl() {
-        config.with_secure_boot()
-    } else {
-        config
-    };
-
     let vm = config
         .with_expect_boot_failure()
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
@@ -672,3 +656,5 @@ async fn boot_expect_fail(
 
     Ok(())
 }
+
+*/
