@@ -83,7 +83,6 @@ struct BuildKernelCommandLineParams<'a> {
     is_confidential_debug: bool,
     sidecar: Option<&'a SidecarConfig<'a>>,
     vtl2_pool_supported: bool,
-    disable_keep_alive: bool,
 }
 
 /// Read and setup the underhill kernel command line into the specified buffer.
@@ -98,7 +97,6 @@ fn build_kernel_command_line(
         is_confidential_debug,
         sidecar,
         vtl2_pool_supported,
-        disable_keep_alive,
     } = fn_params;
 
     // For reference:
@@ -290,7 +288,10 @@ fn build_kernel_command_line(
 
     // Only when explicitly supported by Host.
     // TODO: Move from command line to device tree when stabilized.
-    if partition_info.nvme_keepalive && vtl2_pool_supported && !disable_keep_alive {
+    if partition_info.nvme_keepalive
+        && vtl2_pool_supported
+        && !partition_info.boot_options.disable_nvme_keep_alive
+    {
         write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=1 ")?;
     }
 
@@ -659,7 +660,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         is_confidential_debug,
         sidecar: sidecar.as_ref(),
         vtl2_pool_supported: address_space.has_vtl2_pool(),
-        disable_keep_alive: partition_info.boot_options.disable_nvme_keep_alive,
     })
     .unwrap();
 
