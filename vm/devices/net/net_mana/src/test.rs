@@ -14,6 +14,7 @@ use inspect_counters::Counter;
 use mana_driver::mana::ManaDevice;
 use mesh::CancelContext;
 use mesh::CancelReason;
+use net_backend::BufferAccess;
 use net_backend::Endpoint;
 use net_backend::QueueConfig;
 use net_backend::RxId;
@@ -33,6 +34,45 @@ use vmcore::vm_task::VmTaskDriverSource;
 
 const IPV4_HEADER_LENGTH: usize = 54;
 const MAX_GDMA_SGE_PER_TX_PACKET: usize = 31;
+
+struct TxPacketBuilder {
+    /// Tracks segments for all the packets
+    segments: Vec<TxSegment>,
+    /// Total length of all the segments
+    total_len: u64,
+    /// Tracks the length of each packet. The length of this vector is the number of packets.
+    pkt_len: Vec<u64>,
+}
+
+impl TxPacketBuilder {
+    fn new() -> Self {
+        Self {
+            segments: Vec::new(),
+            total_len: 0,
+            pkt_len: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, segment: TxSegment) {
+        self.total_len += segment.len as u64;
+        if let net_backend::TxSegmentType::Head(metadata) = &segment.ty {
+            self.pkt_len.push(metadata.len as u64);
+        }
+        self.segments.push(segment);
+    }
+
+    fn packet_data(&self) -> Vec<u8> {
+        (0..self.total_len).map(|v| v as u8).collect::<Vec<u8>>()
+    }
+
+    fn data_len(&self) -> u64 {
+        self.total_len
+    }
+
+    fn segments(&self) -> &[TxSegment] {
+        &self.segments
+    }
+}
 
 /// Constructs a mana emulator backed by the loopback endpoint, then hooks a
 /// mana driver up to it, puts the net_mana endpoint on top of that, and
@@ -360,6 +400,148 @@ async fn test_lso_segment_coalescing_only_header(driver: DefaultDriver) {
     .await;
 }
 
+// Tests for multiple packets in a single Tx call.
+#[async_test]
+async fn test_multi_packet(driver: DefaultDriver) {
+    let mut num_packets = 0;
+    let mut pkt_builder = TxPacketBuilder::new();
+    let packet_len = 550;
+    let num_segments = 1;
+    let enable_lso = false;
+    build_tx_segments(packet_len, num_segments, enable_lso, &mut pkt_builder);
+    num_packets += 1;
+
+    // Coalescing
+    let packet_len = 2040;
+    let num_segments = MAX_GDMA_SGE_PER_TX_PACKET + 3;
+    build_tx_segments(packet_len, num_segments, enable_lso, &mut pkt_builder);
+    num_packets += 1;
+
+    // Split headers
+    let segment_len = 1;
+    let num_segments = IPV4_HEADER_LENGTH - 10;
+    let packet_len = num_segments * segment_len;
+    build_tx_segments(packet_len, num_segments, enable_lso, &mut pkt_builder);
+    num_packets += 1;
+
+    let packet_len = 650;
+    let num_segments = 10;
+    build_tx_segments(packet_len, num_segments, enable_lso, &mut pkt_builder);
+    num_packets += 1;
+
+    let mut expected_stats = QueueStats {
+        ..Default::default()
+    };
+    expected_stats.tx_packets.add(num_packets);
+    expected_stats.rx_packets.add(num_packets);
+
+    send_test_packet_multi(
+        driver.clone(),
+        GuestDmaMode::DirectDma,
+        &mut pkt_builder,
+        None,                 // Test config
+        Some(expected_stats), // Default expected stats
+    )
+    .await;
+}
+
+// Tests for multiple LSO packets in a single Tx call.
+#[async_test]
+async fn test_multi_lso_packet(driver: DefaultDriver) {
+    let mut num_packets = 0;
+    let enable_lso = true;
+    let mut pkt_builder = TxPacketBuilder::new();
+    // Header equals head segment.
+    let segment_len = IPV4_HEADER_LENGTH;
+    let num_segments = MAX_GDMA_SGE_PER_TX_PACKET - 10;
+    let packet_len = segment_len * num_segments;
+    build_tx_segments(packet_len, num_segments, enable_lso, &mut pkt_builder);
+    num_packets += 1;
+
+    // Coalescing
+    let num_segments = MAX_GDMA_SGE_PER_TX_PACKET + 1;
+    let packet_len = num_segments * segment_len;
+    build_tx_segments(packet_len, num_segments, enable_lso, &mut pkt_builder);
+    num_packets += 1;
+
+    // Excessive splitting of split headers
+    let segment_len = 1;
+    let num_segments = IPV4_HEADER_LENGTH + 10;
+    let packet_len = num_segments * segment_len;
+    build_tx_segments(packet_len, num_segments, enable_lso, &mut pkt_builder);
+    num_packets += 1;
+
+    // Header greater than head segment.
+    let segment_len = IPV4_HEADER_LENGTH - 5;
+    let num_segments = MAX_GDMA_SGE_PER_TX_PACKET - 10;
+    let packet_len = num_segments * segment_len;
+    build_tx_segments(packet_len, num_segments, enable_lso, &mut pkt_builder);
+    num_packets += 1;
+
+    let mut expected_stats = QueueStats {
+        ..Default::default()
+    };
+    expected_stats.tx_packets.add(num_packets);
+    expected_stats.rx_packets.add(num_packets);
+
+    send_test_packet_multi(
+        driver.clone(),
+        GuestDmaMode::DirectDma,
+        &mut pkt_builder,
+        None,                 // Test config
+        Some(expected_stats), // Default expected stats
+    )
+    .await;
+}
+
+// Tests for multiple mixed (LSO and non-LSO) packets in a single Tx call.
+#[async_test]
+async fn test_multi_mixed_packet(driver: DefaultDriver) {
+    let mut num_packets = 0;
+    let mut pkt_builder = TxPacketBuilder::new();
+
+    // Simple non-LSO packet
+    let packet_len = 550;
+    let num_segments = 1;
+    build_tx_segments(packet_len, num_segments, false, &mut pkt_builder);
+    num_packets += 1;
+
+    // Excessive splitting of split headers for LSO packet
+    let segment_len = 1;
+    let num_segments = IPV4_HEADER_LENGTH + 10;
+    let packet_len = num_segments * segment_len;
+    build_tx_segments(packet_len, num_segments, true, &mut pkt_builder);
+    num_packets += 1;
+
+    // Coalescing for non-LSO packet
+    let packet_len = 2040;
+    let num_segments = MAX_GDMA_SGE_PER_TX_PACKET + 3;
+    build_tx_segments(packet_len, num_segments, false, &mut pkt_builder);
+    num_packets += 1;
+
+    // Finish with a LSO packet.
+    let segment_len = IPV4_HEADER_LENGTH - 5;
+    let num_segments = MAX_GDMA_SGE_PER_TX_PACKET - 10;
+    let packet_len = num_segments * segment_len;
+    build_tx_segments(packet_len, num_segments, true, &mut pkt_builder);
+    num_packets += 1;
+
+    let mut expected_stats = QueueStats {
+        ..Default::default()
+    };
+    expected_stats.tx_packets.add(num_packets);
+    expected_stats.rx_packets.add(num_packets);
+
+    send_test_packet_multi(
+        driver.clone(),
+        GuestDmaMode::DirectDma,
+        &mut pkt_builder,
+        None,                 // Test config
+        Some(expected_stats), // Default expected stats
+    )
+    .await;
+}
+
 #[async_test]
 async fn test_vport_with_query_filter_state(driver: DefaultDriver) {
     let pages = 512; // 2MB
@@ -400,8 +582,25 @@ async fn send_test_packet(
     test_config: Option<ManaTestConfiguration>,
     expected_stats: Option<QueueStats>,
 ) {
-    let (data_to_send, tx_segments) = build_tx_segments(packet_len, num_segments, enable_lso);
+    let mut pkt_builder = TxPacketBuilder::new();
+    build_tx_segments(packet_len, num_segments, enable_lso, &mut pkt_builder);
+    send_test_packet_multi(
+        driver,
+        dma_mode,
+        &mut pkt_builder,
+        test_config,
+        expected_stats,
+    )
+    .await;
+}
 
+async fn send_test_packet_multi(
+    driver: DefaultDriver,
+    dma_mode: GuestDmaMode,
+    pkt_builder: &mut TxPacketBuilder,
+    test_config: Option<ManaTestConfiguration>,
+    expected_stats: Option<QueueStats>,
+) {
     let test_config = test_config.unwrap_or_default();
     let expected_stats = expected_stats.unwrap_or_else(|| {
         let mut tx_packets = Counter::new();
@@ -420,10 +619,9 @@ async fn send_test_packet(
     let stats = test_endpoint(
         driver,
         dma_mode,
-        packet_len,
-        tx_segments,
-        data_to_send,
+        pkt_builder,
         expected_stats.rx_packets.get() as usize,
+        expected_stats.tx_packets.get() as usize,
         test_config,
     )
     .await;
@@ -454,12 +652,11 @@ fn build_tx_segments(
     packet_len: usize,
     num_segments: usize,
     enable_lso: bool,
-) -> (Vec<u8>, Vec<TxSegment>) {
+    pkt_builder: &mut TxPacketBuilder,
+) {
     // Packet length must be divisible by number of segments.
     assert_eq!(packet_len % num_segments, 0);
-    let data_to_send = (0..packet_len).map(|v| v as u8).collect::<Vec<u8>>();
     let tx_id = 1;
-    let mut tx_segments = Vec::new();
     let segment_len = packet_len / num_segments;
     let mut tx_metadata = net_backend::TxMetadata {
         id: TxId(tx_id),
@@ -479,41 +676,38 @@ fn build_tx_segments(
         IPV4_HEADER_LENGTH
     );
     assert_eq!(packet_len % num_segments, 0);
-    assert_eq!(data_to_send.len(), packet_len);
 
-    tx_segments.push(TxSegment {
+    let mut gpa = pkt_builder.data_len();
+    pkt_builder.push(TxSegment {
         ty: net_backend::TxSegmentType::Head(tx_metadata.clone()),
-        gpa: 0,
+        gpa,
         len: segment_len as u32,
     });
 
-    for j in 0..(num_segments - 1) {
-        let gpa = (j + 1) * segment_len;
-        tx_segments.push(TxSegment {
+    for _ in 0..(num_segments - 1) {
+        gpa += segment_len as u64;
+        pkt_builder.push(TxSegment {
             ty: net_backend::TxSegmentType::Tail,
-            gpa: gpa as u64,
+            gpa,
             len: segment_len as u32,
         });
     }
-
-    assert_eq!(tx_segments.len(), num_segments);
-    (data_to_send, tx_segments)
 }
 
 async fn test_endpoint(
     driver: DefaultDriver,
     dma_mode: GuestDmaMode,
-    packet_len: usize,
-    tx_segments: Vec<TxSegment>,
-    data_to_send: Vec<u8>,
+    pkt_builder: &TxPacketBuilder,
+    expected_num_send_packets: usize,
     expected_num_received_packets: usize,
     test_configuration: ManaTestConfiguration,
 ) -> QueueStats {
-    let tx_id = 1;
     let pages = 256; // 1MB
     let allow_dma = dma_mode == GuestDmaMode::DirectDma;
     let mem: DeviceTestMemory = DeviceTestMemory::new(pages * 2, allow_dma, "test_endpoint");
     let payload_mem = mem.payload_mem();
+    let data_to_send = pkt_builder.packet_data();
+    let tx_segments = pkt_builder.segments();
 
     let mut msi_set = MsiInterruptSet::new();
     let device = gdma::GdmaDevice::new(
@@ -545,7 +739,7 @@ async fn test_endpoint(
     endpoint
         .get_queues(
             vec![QueueConfig {
-                pool: Box::new(pool),
+                pool: Box::new(pool.clone()),
                 initial_rx: &(1..128).map(RxId).collect::<Vec<_>>(),
                 driver: Box::new(driver.clone()),
             }],
@@ -557,12 +751,16 @@ async fn test_endpoint(
 
     payload_mem.write_at(0, &data_to_send).unwrap();
 
-    queues[0].tx_avail(tx_segments.as_slice()).unwrap();
+    queues[0].tx_avail(tx_segments).unwrap();
 
     // Poll for completion
-    let mut rx_packets = [RxId(0); 2];
+    // Keep at least couple of elements in the Rx and Tx done vectors to
+    // allow for zero packet tests.
+    let mut rx_packets = (0..expected_num_received_packets.max(2))
+        .map(|i| RxId(i as u32))
+        .collect::<Vec<_>>();
     let mut rx_packets_n = 0;
-    let mut tx_done = [TxId(0); 2];
+    let mut tx_done = vec![TxId(0); expected_num_send_packets.max(2)];
     let mut tx_done_n = 0;
     while rx_packets_n == 0 {
         let mut context = CancelContext::new().with_timeout(Duration::from_secs(1));
@@ -595,19 +793,35 @@ async fn test_endpoint(
     }
 
     // Check tx
-    assert_eq!(tx_done_n, 1);
-    assert_eq!(tx_done[0].0, tx_id);
+    assert_eq!(tx_done_n, expected_num_send_packets);
+    // GDMA emulator always returns TxId(1) for completed packets.
+    for done in tx_done.iter().take(expected_num_send_packets) {
+        assert_eq!(done.0, 1);
+    }
 
     // Check rx
-    assert_eq!(rx_packets[0].0, 1);
-    let rx_id = rx_packets[0];
-
-    let mut received_data = vec![0; packet_len];
-    payload_mem
-        .read_at(2048 * rx_id.0 as u64, &mut received_data)
-        .unwrap();
-    assert_eq!(received_data.len(), packet_len);
-    assert_eq!(&received_data[..], data_to_send, "{:?}", rx_id);
+    let mut offset = 0;
+    for (i, rx_id) in rx_packets
+        .iter()
+        .enumerate()
+        .take(expected_num_received_packets)
+    {
+        let this_pkt_len = pkt_builder.pkt_len[i] as usize;
+        let mut received_data = vec![0; this_pkt_len];
+        assert_eq!(rx_id.0, (i + 1) as u32);
+        let buffer_size = pool.capacity(*rx_id) as u64;
+        payload_mem
+            .read_at(buffer_size * rx_id.0 as u64, &mut received_data)
+            .unwrap();
+        assert_eq!(received_data.len(), this_pkt_len);
+        assert_eq!(
+            &received_data,
+            &data_to_send[offset..offset + this_pkt_len],
+            "{:?}",
+            rx_id
+        );
+        offset += this_pkt_len;
+    }
 
     let stats = get_queue_stats(queues[0].queue_stats());
     drop(queues);
