@@ -101,6 +101,8 @@ struct DriverWorkerTask<T: DeviceBacking> {
     admin: Option<QueuePair<AdminAerHandler>>,
     #[inspect(iter_by_index)]
     io: Vec<IoQueue>,
+    #[inspect(skip)]
+    proto_io: HashMap<u32, ProtoIoQueue>, // queued by cpu
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
     recv: mesh::Receiver<NvmeWorkerRequest>,
@@ -137,6 +139,13 @@ pub enum DeviceError {
     // Other device related errors
     #[error(transparent)]
     Other(anyhow::Error),
+}
+
+#[derive(Debug, Clone)]
+struct ProtoIoQueue {
+    save_state: IoQueueSavedState,
+    mem: MemoryBlock,
+    cpu: u32,
 }
 
 #[derive(Inspect)]
@@ -187,7 +196,6 @@ impl IoQueue {
 }
 
 #[derive(Debug, Inspect)]
-#[inspect(transparent)]
 pub(crate) struct IoIssuers {
     #[inspect(iter_by_index)]
     per_cpu: Vec<OnceLock<IoIssuer>>,
@@ -291,6 +299,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 registers,
                 admin: None,
                 io: Vec::new(),
+                proto_io: HashMap::new(),
                 io_issuers: io_issuers.clone(),
                 recv,
                 bounce_buffer,
@@ -691,6 +700,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 registers: registers.clone(),
                 admin: None, // Updated below.
                 io: Vec::new(),
+                proto_io: HashMap::new(),
                 io_issuers: io_issuers.clone(),
                 recv,
                 bounce_buffer,
@@ -795,16 +805,24 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         );
 
         // Restore I/O queues.
+        // (1) Restore qid0 and any queues that have pending commands.
         // Interrupt vector 0 is shared between Admin queue and I/O queue #1.
         worker.io = saved_state
             .worker_data
             .io
             .iter()
+            .filter(|q| {
+                q.queue_data.qid == 0 || !q.queue_data.handler_data.pending_cmds.commands.is_empty()
+            })
             .flat_map(|q| -> Result<IoQueue, anyhow::Error> {
+                let qid = q.queue_data.qid;
+                let cpu = q.cpu;
+                tracing::info!(qid, cpu, "restoring queue");
                 let interrupt = worker
                     .device
                     .map_interrupt(q.iv, q.cpu)
                     .context("failed to map interrupt")?;
+                tracing::info!(qid, cpu, "restoring queue: search for mem block");
                 let mem_block = restored_memory
                     .iter()
                     .find(|mem| {
@@ -812,6 +830,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     })
                     .expect("unable to find restored mem block")
                     .to_owned();
+                tracing::info!(qid, cpu, "restoring queue: restore IoQueue");
                 let q = IoQueue::restore(
                     driver.clone(),
                     interrupt,
@@ -820,12 +839,42 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     q,
                     bounce_buffer,
                 )?;
+                tracing::info!(qid, cpu, "restoring queue: create issuer");
                 let issuer = IoIssuer {
                     issuer: q.queue.issuer().clone(),
                     cpu: q.cpu,
                 };
                 this.io_issuers.per_cpu[q.cpu as usize].set(issuer).unwrap();
                 Ok(q)
+            })
+            .collect();
+
+        // (2) Create prototype entries for any queues that don't currenly have outstanding commands.
+        // They will be restored on demand later.
+        worker.proto_io = saved_state
+            .worker_data
+            .io
+            .iter()
+            .filter(|q| {
+                q.queue_data.qid != 0 && q.queue_data.handler_data.pending_cmds.commands.is_empty()
+            })
+            .map(|q| {
+                // Create a prototype IO queue entry.
+                let mem_block = restored_memory
+                    .iter()
+                    .find(|mem| {
+                        mem.len() == q.queue_data.mem_len && q.queue_data.base_pfn == mem.pfns()[0]
+                    })
+                    .expect("unable to find restored mem block")
+                    .to_owned();
+                (
+                    q.cpu,
+                    ProtoIoQueue {
+                        save_state: q.clone(),
+                        mem: mem_block,
+                        cpu: q.cpu,
+                    },
+                )
             })
             .collect();
 
@@ -956,6 +1005,7 @@ impl<T: DeviceBacking> Drop for NvmeDriver<T> {
 
 impl IoIssuers {
     pub async fn get(&self, cpu: u32) -> Result<&Issuer, RequestError> {
+        // todo mattkur: create an issuer here if there is a proto issuer.
         if let Some(v) = self.per_cpu[cpu as usize].get() {
             return Ok(&v.issuer);
         }
@@ -1002,10 +1052,56 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
 }
 
 impl<T: DeviceBacking> DriverWorkerTask<T> {
+    fn restore_io_issuer(&mut self, proto: ProtoIoQueue) -> anyhow::Result<()> {
+        tracing::debug!(cpu = proto.cpu, "restoring io issuer from prototype");
+
+        let interrupt = self
+            .device
+            .map_interrupt(proto.save_state.iv, proto.cpu)
+            .context("failed to map interrupt")?;
+
+        let queue = IoQueue::restore(
+            self.driver.clone(),
+            interrupt,
+            self.registers.clone(),
+            proto.mem,
+            &proto.save_state,
+            self.bounce_buffer,
+        )
+        .context("failed to restore io queue")?;
+
+        let issuer = IoIssuer {
+            issuer: queue.queue.issuer().clone(),
+            cpu: proto.cpu,
+        };
+
+        self.io_issuers.per_cpu[proto.cpu as usize]
+            .set(issuer)
+            .ok()
+            .unwrap();
+
+        Ok(())
+    }
+
     async fn create_io_issuer(&mut self, state: &mut WorkerState, cpu: u32) {
         tracing::debug!(cpu, "issuer request");
         if self.io_issuers.per_cpu[cpu as usize].get().is_some() {
             return;
+        }
+
+        if let Some(proto) = self.proto_io.remove(&cpu) {
+            match self.restore_io_issuer(proto) {
+                Ok(()) => return,
+                Err(err) => {
+                    // The memory block will be dropped as `proto` goes out of scope.
+
+                    tracing::error!(
+                        cpu,
+                        error = ?err,
+                        "failed to restore io queue from prototype, creating new queue"
+                    );
+                }
+            }
         }
 
         let issuer = match self
