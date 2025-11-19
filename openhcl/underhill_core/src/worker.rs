@@ -1230,6 +1230,25 @@ async fn new_underhill_vm(
 
     let hardware_isolated = isolation.is_hardware_isolated();
 
+    // Temporarily override the host provided default_boot_always_attempt
+    // value for non-Trusted Launch VMs until all hosts in Azure have been
+    // updated to provide the correct value.
+    //
+    // Trusted Launch is roughly equivalent to not having secure boot or
+    // TPM enabled. Default boot is necessary because the VMGS is not swapped
+    // with the OS disk for these VMs in Azure (and in any case on-prem),
+    // causing the VM to fail to boot after an OS swap.
+    //
+    // TODO: remove this (and petri workaround) once host changes are saturated
+    if !isolation.is_isolated()
+        && !dps.general.secure_boot_enabled
+        && !dps.general.tpm_enabled
+        && !dps.general.default_boot_always_attempt
+    {
+        tracing::info!("overriding dps to enable default_boot_always_attempt");
+        dps.general.default_boot_always_attempt = true;
+    }
+
     let driver_source = VmTaskDriverSource::new(ThreadpoolBackend::new(tp.clone()));
 
     let is_restoring = servicing_state.is_some();
