@@ -11,8 +11,11 @@ anyhow.workspace = true
 fs-err.workspace = true
 linkme.workspace = true
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 serde_yaml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

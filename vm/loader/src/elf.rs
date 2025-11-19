@@ -133,9 +133,29 @@ where
     }
 
     let e_entry = ehdr.e_entry.get(LE);
-    let load_offset = if assume_pic && e_entry < start_address {
-        // The kernel is assumed to contain PIC
-        start_address + load_offset
+    let phdrs = ehdr
+        .program_headers(LE, &reader)
+        .map_err(Error::InvalidProgramHeader)?;
+
+    // For PIC kernels, calculate load offset by checking lowest paddr in program headers.
+    // If it is below start_address, relocate kernel upward. Handles both:
+    // - Old kernels (< v6.17): startup code is in .head.text at start of .text, low entry point,
+    //   and matches physical load address
+    // - New kernels (≥ v6.17): startup code is in .init.text (commit: "x86/boot: Move startup code out of __head section"),
+    //   high entry point but low physical load address
+    let load_offset = if assume_pic {
+        let mut lowest_paddr = u64::MAX;
+        for phdr in phdrs {
+            if phdr.p_type.get(LE) == elf::PT_LOAD {
+                let p_paddr = phdr.p_paddr.get(LE);
+                lowest_paddr = lowest_paddr.min(p_paddr);
+            }
+        }
+        if lowest_paddr < start_address {
+            start_address - lowest_paddr + load_offset
+        } else {
+            load_offset
+        }
     } else {
         load_offset
     };
@@ -154,10 +174,6 @@ where
             load_offset,
         });
     }
-
-    let phdrs = ehdr
-        .program_headers(LE, &reader)
-        .map_err(Error::InvalidProgramHeader)?;
 
     // The first pass on the sections provides the layout data
     let (lowest_addr, last_offset, reloc_bias) = {
@@ -250,9 +266,11 @@ where
         let page_base = mem_offset / HV_PAGE_SIZE;
         let page_count =
             ((mem_offset & page_mask) + phdr.p_memsz.get(LE) + page_mask) / HV_PAGE_SIZE;
-        importer
-            .import_pages(page_base, page_count, tag, acceptance, &v)
-            .map_err(Error::ImportPages)?;
+        if page_count > 0 {
+            importer
+                .import_pages(page_base, page_count, tag, acceptance, &v)
+                .map_err(Error::ImportPages)?;
+        }
     }
 
     Ok(LoadInfo {

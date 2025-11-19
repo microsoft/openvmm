@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use anyhow::Context;
+use cvm_tracing::CVM_ALLOWED;
 use inspect::Request;
 use inspect::Response;
 use inspect::SensitivityLevel;
@@ -209,7 +210,7 @@ pub async fn periodic_telemetry_task(driver: VmTaskDriver) {
         let results = inspection.results();
         let json = results.json();
         // The below message needs to be valid JSON for ease of processing
-        tracing::info!("{{\"periodic_memory_status\":{}}}", json);
+        tracing::info!(CVM_ALLOWED, "{{\"periodic_memory_status\":{}}}", json);
         // Wait a day before logging again
         timer.sleep(Duration::from_secs(60 * 60 * 24)).await;
     }

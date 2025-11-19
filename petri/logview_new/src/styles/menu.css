@@ -1,0 +1,153 @@
+/* Copyright (c) Microsoft Corporation. */
+/* Licensed under the MIT License. */
+
+/* Styles scoped for the new Hamburger drawer component */
+
+/* Trigger (small button placed inline near page title) */
+.menu-trigger {
+  background: #ffffff;
+  /* white icon background */
+  border: none;
+  /* removed border */
+  cursor: pointer;
+  padding: 0.7rem 0.75rem;
+  /* larger clickable area while keeping inner lines small */
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease-in-out;
+  box-shadow: none;
+  margin-right: 0.5rem;
+  /* no shadow for a flatter look */
+}
+
+.menu-trigger:hover,
+.menu-trigger:focus-visible {
+  background: #f2f2f2;
+  outline: none;
+}
+
+.menu-lines {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  /* tighter gap for smaller icon */
+}
+
+.menu-lines span {
+  width: 16px;
+  /* reduced width */
+  height: 2px;
+  background: #222222;
+  /* black/dark lines on white */
+  display: block;
+  border-radius: 1px;
+}
+
+/* Overlay */
+.menu-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.25);
+  /* slightly lighter and no blur */
+  /* removed blur for cleaner overlay */
+  z-index: 5000;
+}
+
+/* Drawer */
+.menu-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 250px;
+  /* reduced width */
+  max-width: 100%;
+  height: 100vh;
+  background: #444444;
+  /* lightened from #333 */
+  box-shadow: 2px 0 12px rgba(0, 0, 0, 0.15);
+  transform: translateX(-100%);
+  transition: transform 180ms ease-out;
+  z-index: 5001;
+  display: flex;
+  flex-direction: column;
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+}
+
+.menu-drawer.open {
+  transform: translateX(0);
+}
+
+.menu-drawer-header {
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 1.15rem 1.25rem 1rem;
+  border-bottom: 1px solid #555;
+  background: #444444;
+  color: #ffffff;
+  font-family: Arial, sans-serif;
+}
+
+.menu-nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.75rem 0.85rem 1rem;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* remove horizontal scrollbar */
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  /* space between buttons */
+}
+
+.drawer-link {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 0.9rem 1rem 0.9rem 1rem;
+  /* slightly more vertical space */
+  font-size: 0.96rem;
+  cursor: pointer;
+  color: #efefef;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  text-decoration: none;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+  font-weight: 600;
+  border-radius: 10px;
+  box-sizing: border-box;
+  font-size: 1.1rem;
+}
+
+.drawer-link:hover {
+  background: #525252;
+  color: #ffffff;
+}
+
+.drawer-link.active {
+  background: #5a5a5a;
+  /* darker for active but within lighter palette */
+  color: #ffffff;
+}
+
+.drawer-link.external::after {
+  content: "↗";
+  font-size: 0.7rem;
+  opacity: 0.6;
+  margin-left: 0.25rem;
+}
+
+.drawer-separator {
+  margin: 0.8rem 0 0.8rem;
+  border-top: 1px solid #555;
+  height: 0;
+}

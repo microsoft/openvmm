@@ -17,6 +17,7 @@ use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use closeable_mutex::CloseableMutex;
+use cvm_tracing::CVM_ALLOWED;
 use firmware_uefi::UefiCommandSet;
 use framebuffer::Framebuffer;
 use framebuffer::FramebufferDevice;
@@ -320,8 +321,9 @@ impl<'a> BaseChipsetBuilder<'a> {
                 Box::new(move || power.on_power_event(PowerEvent::Reset))
             };
 
-            let set_a20_signal =
-                Box::new(move |active| tracing::info!(?active, "setting stubbed A20 signal"));
+            let set_a20_signal = Box::new(move |active| {
+                tracing::info!(CVM_ALLOWED, active, "setting stubbed A20 signal")
+            });
 
             builder
                 .arc_mutex_device("piix4-pci-isa-bridge")
@@ -516,7 +518,7 @@ impl<'a> BaseChipsetBuilder<'a> {
         let pm_action = || {
             let power = foundation.power_event_handler.clone();
             move |action: pm::PowerAction| {
-                tracing::info!(?action, "guest initiated");
+                tracing::info!(CVM_ALLOWED, ?action, "guest initiated");
                 let req = match action {
                     pm::PowerAction::PowerOff => PowerEvent::PowerOff,
                     pm::PowerAction::Hibernate => PowerEvent::Hibernate,
@@ -603,6 +605,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             nvram_storage,
             generation_id_recv,
             watchdog_platform,
+            watchdog_recv,
             vsm_config,
             time_source,
         }) = deps_hyperv_firmware_uefi
@@ -626,6 +629,7 @@ impl<'a> BaseChipsetBuilder<'a> {
                         logger,
                         vmtime,
                         watchdog_platform,
+                        watchdog_recv,
                         generation_id_deps: generation_id::GenerationIdRuntimeDeps {
                             generation_id_recv,
                             gm,
@@ -793,7 +797,10 @@ impl ConfigureChipsetDevice for ArcMutexChipsetServices<'_, '_> {
 mod weak_mutex_pci {
     use crate::chipset::PciConflict;
     use crate::chipset::PciConflictReason;
+    use crate::chipset::PcieConflict;
+    use crate::chipset::PcieConflictReason;
     use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPci;
+    use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPcie;
     use chipset_device::ChipsetDevice;
     use chipset_device::io::IoResult;
     use closeable_mutex::CloseableMutex;
@@ -827,6 +834,36 @@ mod weak_mutex_pci {
                     .pci_cfg_write(offset, value),
             )
         }
+
+        fn pci_cfg_read_forward(
+            &mut self,
+            bus: u8,
+            device_function: u8,
+            offset: u16,
+            value: &mut u32,
+        ) -> Option<IoResult> {
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()
+                .expect("builder code ensures supports_pci.is_some()")
+                .pci_cfg_read_forward(bus, device_function, offset, value)
+        }
+
+        fn pci_cfg_write_forward(
+            &mut self,
+            bus: u8,
+            device_function: u8,
+            offset: u16,
+            value: u32,
+        ) -> Option<IoResult> {
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()
+                .expect("builder code ensures supports_pci.is_some()")
+                .pci_cfg_write_forward(bus, device_function, offset, value)
+        }
     }
 
     // wiring to enable using the generic PCI bus alongside the Arc+CloseableMutex device infra
@@ -847,9 +884,9 @@ mod weak_mutex_pci {
                     name.clone(),
                     WeakMutexPciDeviceWrapper(dev),
                 )
-                .map_err(|(_, existing_dev)| PciConflict {
+                .map_err(|occ_err| PciConflict {
                     bdf: (bus, device, function),
-                    reason: PciConflictReason::ExistingDev(existing_dev),
+                    reason: PciConflictReason::ExistingDev(occ_err.existing_device_name),
                     conflict_dev: name,
                 })
         }
@@ -874,11 +911,53 @@ mod weak_mutex_pci {
                     name.clone(),
                     WeakMutexPciDeviceWrapper(dev),
                 )
-                .map_err(|(_, existing_dev)| PciConflict {
+                .map_err(|occ_err| PciConflict {
                     bdf: (bus, device, function),
-                    reason: PciConflictReason::ExistingDev(existing_dev),
+                    reason: PciConflictReason::ExistingDev(occ_err.existing_device_name),
                     conflict_dev: name,
                 })
+        }
+    }
+
+    // wiring to enable using the generic PCIe root port alongside the Arc+CloseableMutex device infra
+    impl RegisterWeakMutexPcie for Arc<CloseableMutex<pcie::root::GenericPcieRootComplex>> {
+        fn add_pcie_device(
+            &mut self,
+            port: u8,
+            name: Arc<str>,
+            dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+        ) -> Result<(), PcieConflict> {
+            self.lock()
+                .add_pcie_device(port, name.clone(), Box::new(WeakMutexPciDeviceWrapper(dev)))
+                .map_err(|existing_dev_name| PcieConflict {
+                    reason: PcieConflictReason::ExistingDev(existing_dev_name),
+                    conflict_dev: name,
+                })
+        }
+
+        fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
+            self.lock().downstream_ports()
+        }
+    }
+
+    // wiring to enable using the PCIe switch alongside the Arc+CloseableMutex device infra
+    impl RegisterWeakMutexPcie for Arc<CloseableMutex<pcie::switch::GenericPcieSwitch>> {
+        fn add_pcie_device(
+            &mut self,
+            port: u8,
+            name: Arc<str>,
+            dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+        ) -> Result<(), PcieConflict> {
+            self.lock()
+                .add_pcie_device(port, &name, Box::new(WeakMutexPciDeviceWrapper(dev)))
+                .map_err(|err| PcieConflict {
+                    reason: PcieConflictReason::ExistingDev(err.to_string().into()),
+                    conflict_dev: name,
+                })
+        }
+
+        fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
+            self.lock().downstream_ports()
         }
     }
 }
@@ -1316,12 +1395,14 @@ pub mod options {
             /// Interface to log UEFI BIOS events
             pub logger: Box<dyn firmware_uefi::platform::logger::UefiLogger>,
             /// Interface for storing/retrieving UEFI NVRAM variables
-            pub nvram_storage: Box<dyn uefi_nvram_storage::InspectableNvramStorage>,
+            pub nvram_storage: Box<dyn uefi_nvram_storage::VmmNvramStorage>,
             /// Channel to receive updated generation ID values
             pub generation_id_recv: mesh::Receiver<[u8; 16]>,
             /// Device-specific functions the platform must provide in order
             /// to use the UEFI watchdog device.
             pub watchdog_platform: Box<dyn watchdog_core::platform::WatchdogPlatform>,
+            /// Channel receiver for watchdog timeout notifications.
+            pub watchdog_recv: mesh::Receiver<()>,
             /// Interface to revoke VSM on `ExitBootServices()` if requested
             /// by the guest.
             pub vsm_config: Option<Box<dyn firmware_uefi::platform::nvram::VsmConfig>>,

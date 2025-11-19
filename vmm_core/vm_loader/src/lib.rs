@@ -6,6 +6,7 @@
 //! DEVNOTE: this organization isn't great, and should be reconsidered...
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use anyhow::Context;
 use guestmem::GuestMemory;

@@ -7,6 +7,7 @@ use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclKernelPackage;
+use flowey_lib_hvlite::build_openvmm_hcl::MaxTraceLevel;
 use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
 use std::path::PathBuf;
 
@@ -50,13 +51,17 @@ where
     /// into a VTL2 initrd, what `igvmfilegen` manifest is being used, etc...
     pub recipe: Recipe,
 
-    /// Build using release variants of all constituent components.
+    /// Build using release variants of all constituent binary components.
     ///
     /// Uses --profile=boot-release for openhcl_boot, --profile=openhcl-ship
-    /// when building openvmm_hcl, `--min-interactive` vtl2 initrd
-    /// configuration, `-release.json` manifest variant, etc...
+    /// when building openvmm_hcl, etc...
     #[clap(long)]
     pub release: bool,
+
+    /// Configure the IGVM file with the appropriate `-release.json`
+    /// manifest variant, and disable debug-only features.
+    #[clap(long)]
+    pub release_cfg: bool,
 
     /// pass `--verbose` to cargo
     #[clap(long)]
@@ -165,6 +170,11 @@ pub struct BuildIgvmCliCustomizations {
     /// will be built.
     #[clap(long, requires = "with_sidecar")]
     pub custom_sidecar: Option<PathBuf>,
+
+    /// The maximum trace level to set for the openvmm_hcl build. Defaults
+    /// to `trace` for debug builds and `debug` for release builds.
+    #[clap(long)]
+    pub max_trace_level: Option<MaxTraceLevelCli>,
 }
 
 #[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
@@ -177,6 +187,35 @@ pub enum KernelPackageKindCli {
     Dev,
     /// CVM kernel from the hcl-dev brnach
     CvmDev,
+}
+
+#[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
+pub enum MaxTraceLevelCli {
+    /// All trace events.
+    Trace,
+    /// Debug and higher.
+    Debug,
+    /// Info and higher.
+    Info,
+    /// Warn and higher.
+    Warn,
+    /// Error events only.
+    Error,
+    /// No tracing.
+    Off,
+}
+
+impl From<MaxTraceLevelCli> for MaxTraceLevel {
+    fn from(cli: MaxTraceLevelCli) -> Self {
+        match cli {
+            MaxTraceLevelCli::Trace => MaxTraceLevel::Trace,
+            MaxTraceLevelCli::Debug => MaxTraceLevel::Debug,
+            MaxTraceLevelCli::Info => MaxTraceLevel::Info,
+            MaxTraceLevelCli::Warn => MaxTraceLevel::Warn,
+            MaxTraceLevelCli::Error => MaxTraceLevel::Error,
+            MaxTraceLevelCli::Off => MaxTraceLevel::Off,
+        }
+    }
 }
 
 #[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
@@ -230,6 +269,7 @@ impl IntoPipeline for BuildIgvmCli {
         let Self {
             recipe,
             release,
+            release_cfg,
             verbose,
             locked,
             install_missing_deps,
@@ -253,15 +293,12 @@ impl IntoPipeline for BuildIgvmCli {
                     with_sidecar,
                     custom_sidecar,
                     mut custom_extra_rootfs,
+                    max_trace_level,
                 },
         } = self;
 
         if with_perf_tools {
-            custom_extra_rootfs.push(
-                crate::repo_root()
-                    .join("openhcl/perftoolsfs.config")
-                    .clone(),
-            );
+            custom_extra_rootfs.push(crate::repo_root().join("openhcl/perftoolsfs.config"));
         }
 
         let mut pipeline = Pipeline::new();
@@ -309,6 +346,7 @@ impl IntoPipeline for BuildIgvmCli {
                     OpenhclRecipeCli::Aarch64Devkern => OpenhclIgvmRecipe::Aarch64Devkern,
                 },
                 release,
+                release_cfg,
 
                 customizations: flowey_lib_hvlite::_jobs::local_build_igvm::Customizations {
                     build_label,
@@ -329,6 +367,7 @@ impl IntoPipeline for BuildIgvmCli {
                     override_openvmm_hcl_feature,
                     custom_sidecar,
                     override_manifest,
+                    override_max_trace_level: max_trace_level.map(Into::into),
                     custom_openvmm_hcl,
                     custom_openhcl_boot,
                     custom_uefi,

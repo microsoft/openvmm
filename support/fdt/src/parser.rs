@@ -185,7 +185,7 @@ impl<'a> Parser<'a> {
 
     /// Create a new instance of a FDT parser.
     pub fn new(buf: &'a [u8]) -> Result<Self, Error<'a>> {
-        if buf.as_ptr() as usize % size_of::<u32>() != 0 {
+        if !(buf.as_ptr() as usize).is_multiple_of(size_of::<u32>()) {
             return Err(Error(ErrorKind::BufferAlignment));
         }
 
@@ -235,7 +235,7 @@ impl<'a> Parser<'a> {
         let struct_offset = u32::from(header.off_dt_struct) as usize;
         let struct_len = u32::from(header.size_dt_struct) as usize;
 
-        if struct_offset % size_of::<u32>() != 0 {
+        if !struct_offset.is_multiple_of(size_of::<u32>()) {
             return Err(Error(ErrorKind::StructureBlockAlignment));
         }
 

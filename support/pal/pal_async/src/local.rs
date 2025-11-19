@@ -86,9 +86,10 @@ pub(crate) struct LocalInner {
     wait_cancel: sys::WaitCancel,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Default)]
 enum OpState {
     // The executor is running.
+    #[default]
     Running,
     // The executor should poll its task again without waiting.
     RunAgain,
@@ -98,15 +99,10 @@ enum OpState {
     Woken,
 }
 
-impl Default for OpState {
-    fn default() -> Self {
-        Self::Running
-    }
-}
-
 #[derive(Debug, Default)]
 struct LocalState {
     op_state: OpState,
+    state_waiters: usize,
     sys: sys::State,
     timers: TimerQueue,
 }
@@ -123,31 +119,39 @@ impl LocalInner {
     // post_wait.
     fn lock_state(&self) -> MutexGuard<'_, LocalState> {
         let mut guard = self.state.lock();
-        loop {
-            match guard.op_state {
-                OpState::Running | OpState::RunAgain => break,
 
-                OpState::Waiting => {
-                    guard.op_state = OpState::Woken;
-                    // Although it would be better to call this outside the
-                    // lock, doing so might result in live lock since the
-                    // executor could loop around and take the lock again before
-                    // we get a chance to. With this approach, the condition
-                    // variable notify will put this thread directly on the
-                    // mutex queue.
-                    self.wait_cancel.cancel_wait();
-                    self.condvar.wait(&mut guard);
-                }
-                OpState::Woken => {
-                    self.condvar.wait(&mut guard);
-                }
+        match guard.op_state {
+            OpState::Running | OpState::RunAgain => return guard,
+            OpState::Waiting => {
+                guard.state_waiters += 1;
+                guard.op_state = OpState::Woken;
+                drop(guard);
+                self.wait_cancel.cancel_wait();
+                guard = self.state.lock();
             }
+            OpState::Woken => {
+                guard.state_waiters += 1;
+            }
+        };
+        self.condvar
+            .wait_while(&mut guard, |state| state.op_state == OpState::Woken);
+        assert_ne!(guard.op_state, OpState::Waiting);
+        guard.state_waiters -= 1;
+        if guard.state_waiters == 0 {
+            // Notify the executor that it can proceed with its wait after the
+            // mutex guard is dropped.
+            self.condvar.notify_all();
         }
         guard
     }
 
     fn wait(&self) {
         let mut state = self.state.lock();
+        // Wait until any threads that want to manipulate the state have
+        // done so.
+        self.condvar.wait_while(&mut state, |state| {
+            state.op_state == OpState::Running && state.state_waiters > 0
+        });
         if state.op_state != OpState::Running {
             assert_eq!(state.op_state, OpState::RunAgain);
             state.op_state = OpState::Running;

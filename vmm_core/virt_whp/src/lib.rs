@@ -29,7 +29,6 @@ use hv1_emulator::hv::GlobalHv;
 use hv1_emulator::hv::GlobalHvParams;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::message_queues::MessageQueues;
-use hv1_structs::VtlArray;
 use hv1_structs::VtlSet;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvMessage;
@@ -71,9 +70,11 @@ use vmcore::reference_time::ReferenceTimeResult;
 use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::vmtime::VmTimeAccess;
 use vmcore::vmtime::VmTimeSource;
-use vp::WhpRunVpError;
 use vp_state::WhpVpStateAccess;
 use x86defs::cpuid::Vendor;
+
+#[cfg(guest_arch = "aarch64")]
+pub use aarch64::WHP_PMU_GSIV;
 
 #[derive(Debug)]
 pub struct Whp;
@@ -174,7 +175,7 @@ struct RunState {
     active_vtl: Vtl,
     enabled_vtls: VtlSet,
     runnable_vtls: VtlSet,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     vtl2_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     vtl2_wakeup_vmtime: Option<VmTimeAccess>,
     #[inspect(skip)]
@@ -202,7 +203,7 @@ struct PerVtlRunState {
     #[cfg(guest_arch = "x86_64")]
     lapic: Option<apic::ApicState>,
     hv: Option<ProcessorVtlHv>,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     deliverability_notifications: HvDeliverabilityNotificationsRegister,
     // Only used when `hv` is `None`.
     vp_assist_page: u64,
@@ -451,7 +452,7 @@ impl virt::ResetPartition for WhpPartition {
                 .reset(true);
         }
 
-        self.inner.hvstate.reset();
+        self.inner.hvstate.reset(&self.inner.gm);
 
         Ok(())
     }
@@ -463,6 +464,8 @@ impl virt::ScrubVtl for WhpPartition {
     fn scrub(&self, vtl: Vtl) -> Result<(), Error> {
         assert!(!self.inner.isolation.is_isolated());
         assert_eq!(vtl, Vtl::Vtl2);
+
+        tracing::info!(?vtl, "scrubbing partition");
 
         let vtl2 = self.inner.vtl2.as_ref().ok_or(Error::NoVtl2)?;
 
@@ -536,6 +539,14 @@ impl virt::Partition for WhpPartition {
         self: &Arc<Self>,
         minimum_vtl: Vtl,
     ) -> Option<Arc<dyn DoorbellRegistration>> {
+        Some(self.with_vtl(minimum_vtl).clone())
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn msi_interrupt_target(
+        self: &Arc<Self>,
+        minimum_vtl: Vtl,
+    ) -> Option<Arc<dyn pci_core::msi::MsiInterruptTarget>> {
         Some(self.with_vtl(minimum_vtl).clone())
     }
 
@@ -622,8 +633,6 @@ impl virt::BindProcessor for WhpProcessorBinder {
                 .vtl2
                 .as_ref()
                 .map(|vtl2| &vtl2.vplcs[self.index.index() as usize]),
-
-            tlb_lock: false,
         };
 
         let vp_info = &vp.inner.vp_info;
@@ -675,11 +684,6 @@ pub struct WhpProcessor<'a> {
     state: RunState,
     vplc0: &'a Vplc,
     vplc2: Option<&'a Vplc>,
-
-    /// Whether the VTL 0 TLB is locked by VTL 2 or not.
-    // TODO: This doesn't actually control anything, we just
-    // track it so we can report it back correctly when asked.
-    tlb_lock: bool,
 }
 
 #[derive(Copy, Clone)]
@@ -688,6 +692,7 @@ struct WhpVpRef<'a> {
     index: VpIndex,
 }
 
+// TODO: Chunk this up into smaller types.
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("whp error, failed to {operation}")]
@@ -696,8 +701,6 @@ pub enum Error {
         #[source]
         source: whp::WHvError,
     },
-    #[error("vtl2 memory process creation")]
-    Vtl2MemoryProcess(#[source] std::io::Error),
     #[error("guest debugging not supported")]
     GuestDebuggingNotSupported,
     #[error(transparent)]
@@ -707,11 +710,13 @@ pub enum Error {
     #[error("failed to create virtual device")]
     NewDevice(#[source] virt::x86::apic_software_device::DeviceIdInUse),
     #[error("resetting memory mappings failed")]
-    ResetMemoryMapping(#[source] virt::Error),
+    ResetMemoryMapping(#[source] anyhow::Error),
     #[error("accepting pages failed")]
-    AcceptPages(#[source] virt::Error),
+    AcceptPages(#[source] anyhow::Error),
     #[error("invalid apic base")]
     InvalidApicBase(#[source] virt_support_apic::InvalidApicBase),
+    #[error("host does not support required cpu capabilities")]
+    Capabilities(virt::PartitionCapabilitiesError),
 }
 
 trait WhpResultExt<T> {
@@ -1009,7 +1014,8 @@ impl WhpPartitionInner {
                         &[output.Eax, output.Ebx, output.Ecx, output.Edx],
                     )
                 },
-            );
+            )
+            .map_err(Error::Capabilities)?;
             caps.can_freeze_time = true;
             caps.xsaves_state_bv_broken = true;
             caps.dr6_tsx_broken = true;
@@ -1043,7 +1049,6 @@ impl WhpPartitionInner {
                     tsc_frequency,
                     ref_time,
                     is_ref_time_backed_by_tsc: false,
-                    guest_memory: VtlArray::from_fn(|_| config.guest_memory.clone()),
                 }))
             }
         } else {
@@ -1161,6 +1166,8 @@ impl VtlPartition {
     fn new(config: &ProtoPartitionConfig<'_>, vtl: Vtl) -> Result<Self, Error> {
         let mut hypervisor_enlightened = false;
 
+        let mut extended_exits = whp::abi::WHV_EXTENDED_VM_EXITS(0);
+
         let user_mode_apic = config.user_mode_apic
             || config
                 .hv_config
@@ -1173,6 +1180,10 @@ impl VtlPartition {
                 config.processor_topology.apic_mode(),
                 vm_topology::processor::x86::ApicMode::XApic
             );
+            if x2apic_capable {
+                // Needed to set the x2apic bit.
+                extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::X64CpuidExit;
+            }
             let lapic = virt_support_apic::LocalApicSet::builder()
                 .x2apic_capable(x2apic_capable)
                 .hyperv_enlightenments(config.hv_config.is_some())
@@ -1192,7 +1203,6 @@ impl VtlPartition {
             ))
             .for_op("set processor count")?;
 
-        let mut extended_exits = whp::abi::WHV_EXTENDED_VM_EXITS(0);
         #[cfg(guest_arch = "x86_64")]
         {
             use vm_topology::processor::x86::ApicMode;
@@ -1448,20 +1458,31 @@ impl VtlPartition {
     }
 }
 
-struct WhpNoVtlProtections;
-impl hv1_emulator::hv::VtlProtectHypercallOverlay for WhpNoVtlProtections {
-    fn change_overlay(&mut self, _gpn: u64) {}
-    fn disable_overlay(&mut self) {}
+struct WhpNoVtlProtections<'a>(&'a GuestMemory);
+impl<'a> hv1_emulator::VtlProtectAccess for WhpNoVtlProtections<'a> {
+    fn check_modify_and_lock_overlay_page(
+        &mut self,
+        gpn: u64,
+        _check_perms: hvdef::HvMapGpaFlags,
+        _new_perms: Option<hvdef::HvMapGpaFlags>,
+    ) -> Result<guestmem::LockedPages, hvdef::HvError> {
+        Ok(self.0.lock_gpns(false, &[gpn]).unwrap())
+    }
+
+    fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), hvdef::HvError> {
+        Ok(())
+    }
 }
 
 impl Hv1State {
-    fn reset(&self) {
+    fn reset(&self, guest_memory: &GuestMemory) {
         match self {
             Hv1State::Emulated(hv) => hv.reset(
                 [
-                    &mut WhpNoVtlProtections
-                        as &mut dyn hv1_emulator::hv::VtlProtectHypercallOverlay,
-                    &mut WhpNoVtlProtections,
+                    &mut WhpNoVtlProtections(guest_memory)
+                        as &mut dyn hv1_emulator::VtlProtectAccess,
+                    &mut WhpNoVtlProtections(guest_memory),
+                    &mut WhpNoVtlProtections(guest_memory),
                 ]
                 .into(),
             ),
@@ -1479,8 +1500,6 @@ impl Drop for WhpProcessor<'_> {
 }
 
 impl<'p> virt::Processor for WhpProcessor<'p> {
-    type Error = Error;
-    type RunVpError = WhpRunVpError;
     type StateAccess<'a>
         = WhpVpStateAccess<'a, 'p>
     where
@@ -1490,7 +1509,7 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         &mut self,
         _vtl: Vtl,
         _state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), <WhpVpStateAccess<'_, 'p> as virt::vp::AccessVpState>::Error> {
         Err(Error::GuestDebuggingNotSupported)
     }
 
@@ -1504,17 +1523,16 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<WhpRunVpError>> {
+    ) -> Result<Infallible, VpHaltReason> {
         self.run_vp(stop, dev).await
     }
 
-    fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
+    fn flush_async_requests(&mut self) {
         // TODO: flush more (e.g. HvStartVp context)
-        self.flush_apic(Vtl::Vtl0)?;
+        self.flush_apic(Vtl::Vtl0);
         if self.state.vtls.vtl2.is_some() {
-            self.flush_apic(Vtl::Vtl2)?;
+            self.flush_apic(Vtl::Vtl2);
         }
-        Ok(())
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
@@ -1666,6 +1684,9 @@ mod aarch64 {
     use hvdef::Vtl;
     use virt::VpIndex;
     use virt::irqcon::MsiRequest;
+
+    /// On aarch64, the platform configured GSIV value for the PMU.
+    pub const WHP_PMU_GSIV: u32 = 0x17;
 
     impl WhpPartitionInner {
         pub(crate) fn synic_interrupt(

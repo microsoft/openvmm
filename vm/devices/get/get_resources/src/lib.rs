@@ -44,6 +44,7 @@ pub mod crash {
 
 /// Guest Emulation Device resources.
 pub mod ged {
+    use inspect::Inspect;
     use mesh::MeshPayload;
     use mesh::error::RemoteError;
     use mesh::payload::Protobuf;
@@ -51,9 +52,9 @@ pub mod ged {
     use thiserror::Error;
     use vm_resource::Resource;
     use vm_resource::ResourceId;
-    use vm_resource::kind::DiskHandleKind;
     use vm_resource::kind::FramebufferHandleKind;
     use vm_resource::kind::VmbusDeviceHandleKind;
+    use vmgs_resources::VmgsResource;
 
     /// A resource handle for a guest emulation device.
     #[derive(MeshPayload)]
@@ -71,9 +72,7 @@ pub mod ged {
         /// Encoded VTL2 settings.
         pub vtl2_settings: Option<Vec<u8>>,
         /// The disk to back the GET's VMGS interface.
-        ///
-        /// If `None`, then VMGS services will not be provided to the guest.
-        pub vmgs_disk: Option<Resource<DiskHandleKind>>,
+        pub vmgs: VmgsResource,
         /// Framebuffer device control.
         pub framebuffer: Option<Resource<FramebufferHandleKind>>,
         /// Access to VTL2 functionality.
@@ -90,6 +89,10 @@ pub mod ged {
         pub no_persistent_secrets: bool,
         /// Test configuration for IGVM Attest message.
         pub igvm_attest_test_config: Option<IgvmAttestTestConfig>,
+        /// Send the test seed for GspById requests
+        pub test_gsp_by_id: bool,
+        /// EFI diagnostics log level
+        pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
     }
 
     /// The firmware and chipset configuration for the guest.
@@ -136,7 +139,19 @@ pub mod ged {
         /// The microsoft windows template.
         MicrosoftWindows,
         /// The Microsoft UEFI certificate authority template.
-        MicrosoftUefiCertificateAuthoritiy,
+        MicrosoftUefiCertificateAuthority,
+    }
+
+    /// The guest's EFI diagnostics log level type to use.
+    #[derive(MeshPayload, Clone, Debug, Copy, Default)]
+    pub enum EfiDiagnosticsLogLevelType {
+        /// Default log level
+        #[default]
+        Default,
+        /// Include INFO logs
+        Info,
+        /// All logs
+        Full,
     }
 
     /// The boot devices for a PC/AT BIOS.
@@ -159,8 +174,10 @@ pub mod ged {
     /// Define servicing behavior.
     #[derive(MeshPayload, Default)]
     pub struct GuestServicingFlags {
-        /// Retain memory for DMA-attached devices.
+        /// Retain memory for NVMe devices.
         pub nvme_keepalive: bool,
+        /// Retain memory for MANA devices.
+        pub mana_keepalive: bool,
     }
 
     /// Actions a client can request that the Guest Emulation
@@ -225,7 +242,7 @@ pub mod ged {
 
     /// Configuration to the GED's IGVM Attest request handler
     /// for test scenarios.
-    #[derive(Debug, MeshPayload, Copy, Clone)]
+    #[derive(Debug, MeshPayload, Copy, Clone, Inspect)]
     pub enum IgvmAttestTestConfig {
         /// Config for testing AK cert retry after failure.
         AkCertRequestFailureAndRetry,

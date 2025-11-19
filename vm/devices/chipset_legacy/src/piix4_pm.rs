@@ -74,9 +74,9 @@ struct Piix4PmState {
     counter_info_a: u32,
     counter_info_b: u32,
     general_purpose_config_info: u32,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     device_resource_flags: [u32; 10],
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     device_activity_flags: [u32; 2],
 }
 

@@ -18,14 +18,29 @@ use vmotherboard::Chipset;
 pub struct ChipsetPlusSynic {
     pub synic_ports: Arc<SynicPorts>,
     pub chipset: Arc<Chipset>,
+    fatal_policy: FatalErrorPolicy,
+}
+
+#[derive(Clone)]
+pub enum FatalErrorPolicy {
+    /// Panic the process, running the given closure immediately before panicking.
+    Panic(Arc<dyn Fn() + Send + Sync>),
+    /// Convert the failure to a debugger break, and send the error over the
+    /// given channel.
+    DebugBreak(mesh::Sender<Box<dyn std::error::Error + Send + Sync>>),
 }
 
 impl ChipsetPlusSynic {
     #[expect(missing_docs)]
-    pub fn new(synic_ports: Arc<SynicPorts>, chipset: Arc<Chipset>) -> Self {
+    pub fn new(
+        synic_ports: Arc<SynicPorts>,
+        chipset: Arc<Chipset>,
+        fatal_policy: FatalErrorPolicy,
+    ) -> Self {
         Self {
             synic_ports,
             chipset,
+            fatal_policy,
         }
     }
 }
@@ -58,40 +73,38 @@ impl CpuIo for ChipsetPlusSynic {
             .on_post_message(vtl, connection_id, secure, message)
     }
 
-    fn read_mmio(
-        &self,
-        vp: VpIndex,
-        address: u64,
-        data: &mut [u8],
-    ) -> impl std::future::Future<Output = ()> {
+    fn read_mmio(&self, vp: VpIndex, address: u64, data: &mut [u8]) -> impl Future<Output = ()> {
         self.chipset.mmio_read(vp.index(), address, data)
     }
 
-    fn write_mmio(
-        &self,
-        vp: VpIndex,
-        address: u64,
-        data: &[u8],
-    ) -> impl std::future::Future<Output = ()> {
+    fn write_mmio(&self, vp: VpIndex, address: u64, data: &[u8]) -> impl Future<Output = ()> {
         self.chipset.mmio_write(vp.index(), address, data)
     }
 
-    fn read_io(
-        &self,
-        vp: VpIndex,
-        port: u16,
-        data: &mut [u8],
-    ) -> impl std::future::Future<Output = ()> {
+    fn read_io(&self, vp: VpIndex, port: u16, data: &mut [u8]) -> impl Future<Output = ()> {
         self.chipset.io_read(vp.index(), port, data)
     }
 
-    fn write_io(
-        &self,
-        vp: VpIndex,
-        port: u16,
-        data: &[u8],
-    ) -> impl std::future::Future<Output = ()> {
+    fn write_io(&self, vp: VpIndex, port: u16, data: &[u8]) -> impl Future<Output = ()> {
         self.chipset.io_write(vp.index(), port, data)
+    }
+
+    #[track_caller]
+    fn fatal_error(&self, error: Box<dyn std::error::Error + Send + Sync>) -> virt::VpHaltReason {
+        tracing::error!(
+            err = error.as_ref() as &dyn std::error::Error,
+            "fatal error"
+        );
+        match &self.fatal_policy {
+            FatalErrorPolicy::Panic(prep) => {
+                prep();
+                panic!("fatal error: {}", error)
+            }
+            FatalErrorPolicy::DebugBreak(channel) => {
+                channel.send(error);
+                virt::VpHaltReason::SingleStep
+            }
+        }
     }
 }
 

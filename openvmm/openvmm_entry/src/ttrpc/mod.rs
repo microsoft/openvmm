@@ -14,6 +14,7 @@ use futures::StreamExt;
 use guid::Guid;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
+use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LoadMode;
@@ -457,6 +458,9 @@ impl VmService {
             load_mode,
             ide_disks: vec![],
             floppy_disks: vec![],
+            pcie_root_complexes: vec![],
+            pcie_devices: vec![],
+            pcie_switches: vec![],
             vpci_devices: vec![],
             memory: MemoryConfig {
                 mem_size: req_config
@@ -468,6 +472,7 @@ impl VmService {
                     .context("invalid memory configuration")?,
                 mmio_gaps: DEFAULT_MMIO_GAPS_X86.into(),
                 prefetch_memory: false,
+                pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
             },
             chipset: chipset.chipset,
             processor_topology: ProcessorTopologyConfig {
@@ -498,8 +503,7 @@ impl VmService {
             vmbus_devices: vec![],
             #[cfg(windows)]
             vpci_resources: vec![],
-            vmgs_disk: None,
-            format_vmgs: false,
+            vmgs: None,
             secure_boot_enabled: false,
             custom_uefi_vars: Default::default(),
             firmware_event_send: None,
@@ -507,6 +511,8 @@ impl VmService {
             chipset_devices: chipset.chipset_devices,
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
+            automatic_guest_reset: true,
+            efi_diagnostics_log_level: Default::default(),
         };
 
         let mut scsi_rpc = None;
@@ -525,6 +531,7 @@ impl VmService {
                         devices,
                         io_queue_depth: None,
                         requests: Some(recv),
+                        poll_mode_queue_depth: None,
                     }
                     .into_resource(),
                 ));

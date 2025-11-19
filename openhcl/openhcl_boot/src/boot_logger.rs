@@ -15,15 +15,11 @@ use crate::single_threaded::SingleThreaded;
 use core::cell::RefCell;
 use core::fmt;
 use core::fmt::Write;
+use memory_range::MemoryRange;
 #[cfg(target_arch = "x86_64")]
 use minimal_rt::arch::InstrIoAccess;
 use minimal_rt::arch::Serial;
-
-/// The logging type to use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoggerType {
-    Serial,
-}
+use string_page_buf::StringBuffer;
 
 enum Logger {
     #[cfg(target_arch = "x86_64")]
@@ -48,32 +44,57 @@ impl Logger {
 
 pub struct BootLogger {
     logger: SingleThreaded<RefCell<Logger>>,
+    in_memory_logger: SingleThreaded<RefCell<Option<StringBuffer<'static>>>>,
 }
 
 pub static BOOT_LOGGER: BootLogger = BootLogger {
     logger: SingleThreaded(RefCell::new(Logger::None)),
+    in_memory_logger: SingleThreaded(RefCell::new(None)),
 };
 
-/// Initialize the boot logger. This replaces any previous init calls.
-///
-/// If a given `logger_type` is unavailable on a given isolation type, the
-/// logger will ignore it, and no logging will be initialized.
-pub fn boot_logger_init(isolation_type: IsolationType, logger_type: LoggerType) {
+/// Initialize the in-memory log buffer. This range must be identity mapped, and
+/// unused by anything else.
+pub fn boot_logger_memory_init(buffer: MemoryRange) {
+    if buffer.is_empty() {
+        return;
+    }
+
+    let log_buffer_ptr = buffer.start() as *mut u8;
+    // SAFETY: At file build time, this range is enforced to be unused by
+    // anything else. The rest of the bootshim will mark this range as reserved
+    // and not free to be used by anything else.
+    //
+    // The VA is valid as we are identity mapped.
+    let log_buffer_slice =
+        unsafe { core::slice::from_raw_parts_mut(log_buffer_ptr, buffer.len() as usize) };
+
+    *BOOT_LOGGER.in_memory_logger.borrow_mut() = Some(
+        StringBuffer::new(log_buffer_slice)
+            .expect("log buffer should be valid from fixed at build config"),
+    );
+}
+
+/// Initialize the runtime boot logger, for logging to serial or other outputs.
+pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_available: bool) {
     let mut logger = BOOT_LOGGER.logger.borrow_mut();
 
-    *logger = match (isolation_type, logger_type) {
+    *logger = match (isolation_type, com3_serial_available) {
         #[cfg(target_arch = "x86_64")]
-        (IsolationType::None, LoggerType::Serial) => Logger::Serial(Serial::init(InstrIoAccess)),
+        (IsolationType::None, true) => Logger::Serial(Serial::init(InstrIoAccess)),
         #[cfg(target_arch = "aarch64")]
-        (IsolationType::None, LoggerType::Serial) => Logger::Serial(Serial::init()),
+        (IsolationType::None, true) => Logger::Serial(Serial::init()),
         #[cfg(target_arch = "x86_64")]
-        (IsolationType::Tdx, LoggerType::Serial) => Logger::TdxSerial(Serial::init(TdxIoAccess)),
+        (IsolationType::Tdx, true) => Logger::TdxSerial(Serial::init(TdxIoAccess)),
         _ => Logger::None,
     };
 }
 
 impl Write for &BootLogger {
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        if let Some(buf) = self.in_memory_logger.borrow_mut().as_mut() {
+            // Ignore the errors from the in memory logger.
+            let _ = buf.append(s);
+        }
         self.logger.borrow_mut().write_str(s)
     }
 }
@@ -112,3 +133,13 @@ macro_rules! debug_log {
 // lints against it in CI.
 #[expect(unused_imports)]
 pub(crate) use debug_log;
+
+/// Write the current in-memory boot log to serial output, if any.
+/// Useful to capture the in-memory log before switching to a different
+/// environment where the in-memory log may be lost.
+pub fn boot_logger_write_memory_log_to_runtime() {
+    if let Some(buf) = BOOT_LOGGER.in_memory_logger.borrow().as_ref() {
+        let mut logger = BOOT_LOGGER.logger.borrow_mut();
+        let _ = logger.write_str(buf.contents());
+    }
+}

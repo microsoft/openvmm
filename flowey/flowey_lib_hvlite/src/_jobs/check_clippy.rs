@@ -3,7 +3,6 @@
 
 //! Ensure the OpenVMM repo is `clippy` clean.
 
-use crate::download_lxutil::LxutilArch;
 use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonPlatform;
@@ -11,6 +10,7 @@ use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoBuildProfile;
+use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use flowey_lib_common::run_cargo_clippy::CargoPackage;
 
 flowey_request! {
@@ -31,7 +31,6 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_xtask::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
-        ctx.import::<crate::init_openvmm_magicpath_lxutil::Node>();
         ctx.import::<crate::install_openvmm_rust_build_essential::Node>();
         ctx.import::<crate::init_cross_build::Node>();
         ctx.import::<flowey_lib_common::install_rust::Node>();
@@ -50,18 +49,16 @@ impl SimpleFlowNode for Node {
         let flowey_platform = ctx.platform();
         let flowey_arch = ctx.arch();
 
-        let (boot_target, uefi_target, sysroot_arch, lxutil_arch) = match target.architecture {
+        let (boot_target, uefi_target, sysroot_arch) = match target.architecture {
             target_lexicon::Architecture::X86_64 => (
                 "x86_64-unknown-none",
                 "x86_64-unknown-uefi",
                 OpenvmmSysrootArch::X64,
-                LxutilArch::X86_64,
             ),
             target_lexicon::Architecture::Aarch64(_) => (
                 "aarch64-unknown-linux-musl",
                 "aarch64-unknown-uefi",
                 OpenvmmSysrootArch::Aarch64,
-                LxutilArch::Aarch64,
             ),
             arch => anyhow::bail!("unsupported arch {arch}"),
         };
@@ -82,12 +79,6 @@ impl SimpleFlowNode for Node {
             );
         }
 
-        // required due to build-scripts in the openvmm repo
-        pre_build_deps.push(ctx.reqv(|v| crate::init_openvmm_magicpath_lxutil::Request {
-            arch: lxutil_arch,
-            done: v,
-        }));
-
         ctx.req(flowey_lib_common::install_rust::Request::InstallTargetTriple(target.clone()));
         if also_check_misc_nostd_crates {
             ctx.req(
@@ -104,7 +95,7 @@ impl SimpleFlowNode for Node {
 
         pre_build_deps.push(
             ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
-                package_names: vec!["libssl-dev".into()],
+                package_names: vec!["libssl-dev".into(), "build-essential".into()],
                 done: v,
             }),
         );
@@ -196,22 +187,28 @@ impl SimpleFlowNode for Node {
             }
         });
 
-        let extra_env = if matches!(
+        // HACK: the following behavior has been cargo-culted from our old
+        // CI, and at some point, we should actually improve the testing
+        // story on windows, so that we can run with FeatureSet::All in CI.
+        //
+        // On windows & mac, we can't build with all features, as many crates
+        // require openSSL for crypto, which isn't supported in CI yet.
+        let features = if matches!(
             target.operating_system,
-            target_lexicon::OperatingSystem::Darwin(_)
+            target_lexicon::OperatingSystem::Windows | target_lexicon::OperatingSystem::Darwin(_)
         ) {
-            Some(vec![("SPARSE_MMAP_NO_BUILD".into(), "1".into())])
+            CargoFeatureSet::None
         } else {
-            None
+            CargoFeatureSet::All
         };
 
         let mut reqs = vec![ctx.reqv(|v| flowey_lib_common::run_cargo_clippy::Request {
             in_folder: openvmm_repo_path.clone(),
             package: CargoPackage::Workspace,
             profile: profile.clone(),
-            features: Some(vec!["ci".into()]),
+            features: features.clone(),
             target,
-            extra_env,
+            extra_env: None,
             exclude,
             keep_going: true,
             all_targets: true,
@@ -224,7 +221,7 @@ impl SimpleFlowNode for Node {
                 in_folder: openvmm_repo_path.clone(),
                 package: CargoPackage::Crate("openhcl_boot".into()),
                 profile: profile.clone(),
-                features: None,
+                features: features.clone(),
                 target: target_lexicon::triple!(boot_target),
                 extra_env: Some(vec![("MINIMAL_RT_BUILD".into(), "1".into())]),
                 exclude: ReadVar::from_static(None),
@@ -239,7 +236,7 @@ impl SimpleFlowNode for Node {
                 in_folder: openvmm_repo_path.clone(),
                 package: CargoPackage::Crate("guest_test_uefi".into()),
                 profile: profile.clone(),
-                features: None,
+                features,
                 target: target_lexicon::triple!(uefi_target),
                 extra_env: None,
                 exclude: ReadVar::from_static(None),

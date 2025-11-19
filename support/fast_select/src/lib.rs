@@ -293,10 +293,10 @@ impl State {
     /// The caller must guarantee that `data` is a valid pointer into an `Arc<State>`.
     unsafe fn from_ptr(data: *const ()) -> (ManuallyDrop<Arc<Self>>, usize) {
         let align_mask = align_of::<Self>() - 1;
-        let i = (data as usize) & align_mask;
-        let this = (data as usize & !align_mask) as *const Self;
+        let i = (data.addr()) & align_mask;
+        let this = data.map_addr(|addr| addr & !align_mask);
         // SAFETY: caller guarantees that this is a valid reference.
-        let this = unsafe { Arc::from_raw(this) };
+        let this = unsafe { Arc::from_raw(this.cast()) };
         (ManuallyDrop::new(this), i)
     }
 
@@ -347,9 +347,13 @@ impl State {
     }
 
     fn waker_ref(self: &Arc<Self>, i: usize) -> WakerRef<'_> {
-        let data = ((Arc::as_ptr(self) as usize) | i) as *const ();
+        // Make sure we don't clobber the pointer.
+        let align_mask = align_of::<Self>() - 1;
+        debug_assert!(i <= align_mask);
+
+        let data = Arc::as_ptr(self).map_addr(|addr| addr | i);
         let waker = RawWaker::new(
-            data,
+            data.cast(),
             &RawWakerVTable::new(
                 Self::clone_fn,
                 Self::wake_by_ref_fn,
@@ -393,7 +397,14 @@ mod tests {
         let mut select = FastSelect::new();
         let mut timer = PolledTimer::new(&driver);
         select
-            .select((pending(), pending(), timer.sleep(Duration::from_millis(30))))
+            .select((
+                pending(),
+                pending(),
+                pending(),
+                pending(),
+                pending(),
+                timer.sleep(Duration::from_millis(30)),
+            ))
             .await;
     }
 }

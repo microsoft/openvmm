@@ -21,6 +21,7 @@ Currently, it can:
   terminal window
 * Enable paravisor log output to standard output or another terminal window
 * Inspect paravisor state
+* Modify the paravisor (update the paravisor command line, reload the paravisor)
 
 In the future, it might be able to:
 
@@ -36,7 +37,7 @@ command line. To select a VM to work on, the VM named `tdxvm` in this example,
 use the `select` command. If successful, you will now see the name and VM state
 in the prompt:
 
-```
+```text
 > select tdxvm
 tdxvm [off]>
 ```
@@ -48,14 +49,14 @@ To enable serial port output, use the `serial` command. This can be used at any
 time, even while the VM is not running. E.g., to open a separate window for
 interactive use of COM1 and enable logging serial port output for COM2:
 
-```
+```text
 tdxvm [off]> serial 1 term
 tdxvm [off]> serial 2 log
 ```
 
 You can also enable paravisor log output at any time:
 
-```
+```text
 tdxvm [off]> paravisor kmsg log
 ```
 
@@ -67,7 +68,7 @@ serial ports connecting.
 Note that, due to limitations of the `rustyline` crate, the displayed VM state
 on the prompt may not be accurate until you type another command or press Enter.
 
-```
+```text
 tdxvm [off]> start
 com1 connected
 com2 connected
@@ -80,7 +81,7 @@ At this point, the VM is running, including the paravisor (if one is
 configured). As in the OpenVMM interactive console, you can inspect paravisor
 state with the `inspect` or `x` command, but under the `paravisor`/`pv` command:
 
-```
+```text
 tdxvm [running]> pv x
 {
     build_info: _,
@@ -98,7 +99,7 @@ ports as well, but they will reconnect next time the VM starts. Killing a VM
 does not detach/deselect it; subsequent commands will continue to operate on the
 VM.
 
-```
+```text
 tdxvm [running]> kill
 com1 disconnected
 com2 disconnected

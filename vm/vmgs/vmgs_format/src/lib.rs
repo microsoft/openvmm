@@ -4,6 +4,7 @@
 //! VMGS format definitions
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 #![no_std]
 
 use bitfield_struct::bitfield;
@@ -45,6 +46,7 @@ open_enum! {
         GUEST_WATCHDOG = 10,
         HW_KEY_PROTECTOR = 11,
         GUEST_SECRET_KEY = 13,
+        HIBERNATION_FIRMWARE = 14,
 
         EXTENDED_FILE_TABLE = 63,
     }
@@ -158,7 +160,7 @@ pub struct VmgsHeader {
 
     // V3 fields
     pub encryption_algorithm: EncryptionAlgorithm,
-    pub reserved: u16,
+    pub markers: VmgsMarkers,
     pub metadata_keys: [VmgsEncryptionKey; 2],
     pub reserved_1: u32,
 }
@@ -172,7 +174,7 @@ pub struct VmgsFileTable {
 }
 
 const_assert!(size_of::<VmgsFileTable>() == 4096);
-const_assert!(size_of::<VmgsFileTable>() as u32 % VMGS_BYTES_PER_BLOCK == 0);
+const_assert!((size_of::<VmgsFileTable>() as u32).is_multiple_of(VMGS_BYTES_PER_BLOCK));
 pub const VMGS_FILE_TABLE_BLOCK_SIZE: u32 =
     size_of::<VmgsFileTable>() as u32 / VMGS_BYTES_PER_BLOCK;
 
@@ -183,7 +185,7 @@ pub struct VmgsExtendedFileTable {
 }
 
 const_assert!(size_of::<VmgsExtendedFileTable>() == 4096);
-const_assert!(size_of::<VmgsExtendedFileTable>() as u32 % VMGS_BYTES_PER_BLOCK == 0);
+const_assert!((size_of::<VmgsExtendedFileTable>() as u32).is_multiple_of(VMGS_BYTES_PER_BLOCK));
 pub const VMGS_EXTENDED_FILE_TABLE_BLOCK_SIZE: u32 =
     size_of::<VmgsExtendedFileTable>() as u32 / VMGS_BYTES_PER_BLOCK;
 
@@ -209,4 +211,14 @@ open_enum! {
         /// AES 256 GCM encryption
         AES_GCM = 1,
     }
+}
+
+/// Markers used internally to indicate how the VMGS should be treated
+#[cfg_attr(feature = "inspect", derive(Inspect))]
+#[bitfield(u16)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
+pub struct VmgsMarkers {
+    pub reprovisioned: bool,
+    #[bits(15)]
+    _reserved: u16,
 }

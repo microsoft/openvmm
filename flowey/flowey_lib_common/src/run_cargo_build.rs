@@ -12,7 +12,6 @@
 use crate::_util::cargo_output;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub enum CargoBuildProfile {
@@ -28,6 +27,48 @@ impl CargoBuildProfile {
         match value {
             true => CargoBuildProfile::Release,
             false => CargoBuildProfile::Debug,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Default)]
+pub enum CargoFeatureSet {
+    All,
+    Specific(Vec<String>),
+    #[default]
+    None,
+}
+
+impl<T, const N: usize> From<[T; N]> for CargoFeatureSet
+where
+    T: AsRef<str>,
+{
+    fn from(value: [T; N]) -> Self {
+        Self::from(value.as_slice())
+    }
+}
+
+impl<T> From<&[T]> for CargoFeatureSet
+where
+    T: AsRef<str>,
+{
+    fn from(value: &[T]) -> Self {
+        CargoFeatureSet::Specific(value.iter().map(|s| s.as_ref().to_owned()).collect())
+    }
+}
+
+impl CargoFeatureSet {
+    pub fn to_cargo_arg_strings(&self) -> Vec<String> {
+        match self {
+            CargoFeatureSet::All => vec!["--all-features".into()],
+            CargoFeatureSet::Specific(features) => {
+                if features.is_empty() {
+                    vec![]
+                } else {
+                    vec!["--features".into(), features.join(",")]
+                }
+            }
+            CargoFeatureSet::None => vec![],
         }
     }
 }
@@ -85,7 +126,7 @@ flowey_request! {
         pub crate_name: String,
         pub out_name: String,
         pub profile: CargoBuildProfile,
-        pub features: BTreeSet<String>,
+        pub features: CargoFeatureSet,
         pub output_kind: CargoCrateType,
         pub target: Option<target_lexicon::Triple>,
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
@@ -148,8 +189,6 @@ impl FlowNode for Node {
 
                     let crate::cfg_cargo_common_flags::Flags { locked, verbose } = flags;
 
-                    let features = features.into_iter().collect::<Vec<_>>().join(",");
-
                     let cargo_profile = match &profile {
                         CargoBuildProfile::Debug => "dev",
                         CargoBuildProfile::Release => "release",
@@ -188,10 +227,7 @@ impl FlowNode for Node {
                             }
                             v.push("-p".into());
                             v.push(crate_name.clone());
-                            if !features.is_empty() {
-                                v.push("--features".into());
-                                v.push(features);
-                            }
+                            v.extend(features.to_cargo_arg_strings().into_iter());
                             if let Some(target) = &target {
                                 v.push("--target".into());
                                 v.push(target.to_string());
@@ -219,7 +255,7 @@ impl FlowNode for Node {
                     let CargoBuildCommand {
                         argv0,
                         params,
-                        with_env,
+                        mut with_env,
                         cargo_work_dir,
                         out_name,
                         crate_type,
@@ -231,15 +267,28 @@ impl FlowNode for Node {
 
                     sh.change_dir(cargo_work_dir);
                     let mut cmd = xshell::cmd!(sh, "{argv0} {params...}");
-                    // if running in CI, no need to waste time with incremental
-                    // build artifacts
                     if !matches!(rt.backend(), FlowBackend::Local) {
-                        cmd = cmd.env("CARGO_INCREMENTAL", "0");
+                        // if running in CI, no need to waste time with incremental
+                        // build artifacts
+                        with_env.insert("CARGO_INCREMENTAL".to_owned(), "0".to_owned());
+                    } else {
+                        // if build locally, use per-package target dirs
+                        // to avoid rebuilding
+                        // TODO: remove this once cargo's caching improves
+                        cmd = cmd
+                            .arg("--target-dir")
+                            .arg(in_folder.join("target").join(&crate_name));
                     }
-                    for (key, val) in with_env {
-                        log::info!("extra_env: {key}={val}");
-                        cmd = cmd.env(key, val);
-                    }
+                    cmd = cmd.envs(&with_env);
+
+                    log::info!(
+                        "$ {}{cmd}",
+                        with_env
+                            .iter()
+                            .map(|(k, v)| format!("{k}={v} "))
+                            .collect::<Vec<_>>()
+                            .concat()
+                    );
                     let json = cmd.read()?;
                     let messages: Vec<cargo_output::Message> =
                         serde_json::Deserializer::from_str(&json)

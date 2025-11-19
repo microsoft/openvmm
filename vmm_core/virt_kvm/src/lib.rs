@@ -47,6 +47,8 @@ pub enum KvmError {
     InvalidState(&'static str),
     #[error("misaligned gic base address")]
     Misaligned,
+    #[error("host does not support required cpu capabilities")]
+    Capabilities(virt::PartitionCapabilitiesError),
 }
 
 #[derive(Debug, Inspect)]
@@ -89,14 +91,16 @@ struct KvmPartitionInner {
     cpuid: virt::CpuidLeafSet,
 }
 
+// TODO: Chunk this up into smaller types.
 #[derive(Debug, Error)]
-pub enum KvmRunVpError {
+enum KvmRunVpError {
     #[error("KVM internal error: {0:#x}")]
     InternalError(u32),
     #[error("invalid vp state")]
     InvalidVpState,
     #[error("failed to run VP")]
     Run(#[source] kvm::Error),
+    #[cfg(guest_arch = "x86_64")]
     #[error("failed to inject an extint interrupt")]
     ExtintInterrupt(#[source] kvm::Error),
 }
@@ -139,7 +143,7 @@ impl KvmPartitionInner {
         size: usize,
         addr: u64,
         readonly: bool,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         let mut state = self.memory.lock();
 
         // Memory slots cannot be resized but can be moved within the guest
@@ -188,12 +192,12 @@ impl virt::PartitionMemoryMap for KvmPartitionInner {
         addr: u64,
         writable: bool,
         _exec: bool,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         // SAFETY: guaranteed by caller.
         unsafe { self.map_region(data, size, addr, !writable) }
     }
 
-    fn unmap_range(&self, addr: u64, size: u64) -> Result<(), virt::Error> {
+    fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
         let range = MemoryRange::new(addr..addr + size);
         let mut state = self.memory.lock();
         for (slot, entry) in state.ranges.iter_mut().enumerate() {

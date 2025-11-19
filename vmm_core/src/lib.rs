@@ -5,6 +5,7 @@
 //! Used by both hvlite and underhill today.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod acpi_builder;
 pub mod cpuid;

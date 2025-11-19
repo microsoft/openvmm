@@ -42,7 +42,6 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::download_lxutil::Node>();
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
         ctx.import::<crate::download_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
@@ -86,6 +85,10 @@ impl SimpleFlowNode for Node {
             ctx.req(flowey_lib_common::install_rust::Request::AutoInstall(true));
             ctx.req(flowey_lib_common::install_rust::Request::IgnoreVersion(
                 false,
+            ));
+            let token = ctx.get_gh_context_var().global().token();
+            ctx.req(flowey_lib_common::use_gh_cli::Request::WithAuth(
+                flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(token),
             ));
         } else if matches!(ctx.backend(), FlowBackend::Ado) {
             if local_only.is_some() {

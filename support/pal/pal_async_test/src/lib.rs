@@ -3,6 +3,8 @@
 
 //! Async test attribute macro for `pal_async` crate.
 
+#![forbid(unsafe_code)]
+
 use quote::quote;
 use syn::Error;
 use syn::ItemFn;

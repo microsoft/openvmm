@@ -1,0 +1,22 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "pcie"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chipset_device.workspace = true
+inspect.workspace = true
+pal_async.workspace = true
+pci_bus.workspace = true
+pci_core.workspace = true
+tracing.workspace = true
+tracelimit.workspace = true
+vmcore.workspace = true
+zerocopy.workspace = true
+
+[lints]
+workspace = true

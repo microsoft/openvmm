@@ -6,6 +6,8 @@
 //! Might end up getting deprecated, if/when
 //! <https://github.com/rust-fuzz/cargo-fuzz/issues/346> is resolved
 
+#![forbid(unsafe_code)]
+
 use std::sync::OnceLock;
 
 static IS_REPRO: OnceLock<bool> = OnceLock::new();

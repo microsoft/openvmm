@@ -3,6 +3,8 @@
 
 //! Trait definition for chipset device state transitions.
 
+#![forbid(unsafe_code)]
+
 use std::future::Future;
 
 /// Trait for transitioning device state.

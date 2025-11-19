@@ -4,6 +4,7 @@
 //! A VNC server implementation.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod rfb;
 mod scancode;

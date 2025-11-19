@@ -66,6 +66,8 @@ fn linux_distro() -> FlowPlatformLinuxDistro {
             FlowPlatformLinuxDistro::Ubuntu
         } else if etc_os_release.contains("ID=fedora") {
             FlowPlatformLinuxDistro::Fedora
+        } else if etc_os_release.contains("ID=arch") {
+            FlowPlatformLinuxDistro::Arch
         } else {
             FlowPlatformLinuxDistro::Unknown
         }
@@ -157,12 +159,18 @@ pub struct AdoPrTriggers {
 /// Trigger ADO pipelines per PR
 #[derive(Debug, Default)]
 pub struct AdoCiTriggers {
-    /// Run the pipeline whenever there is a PR to these specified branches
+    /// Run the pipeline whenever there is a change to these specified branches
     /// (supports glob syntax)
     pub branches: Vec<String>,
     /// Specify any branches which should be filtered out from the list of
     /// `branches` (supports glob syntax)
     pub exclude_branches: Vec<String>,
+    /// Run the pipeline whenever a matching tag is created (supports glob
+    /// syntax)
+    pub tags: Vec<String>,
+    /// Specify any tags which should be filtered out from the list of `tags`
+    /// (supports glob syntax)
+    pub exclude_tags: Vec<String>,
     /// Whether to batch changes per branch.
     pub batch: bool,
 }
@@ -238,14 +246,14 @@ pub struct GhPrTriggers {
 /// Trigger Github Actions pipelines per PR
 #[derive(Debug, Default)]
 pub struct GhCiTriggers {
-    /// Run the pipeline whenever there is a PR to these specified branches
+    /// Run the pipeline whenever there is a change to these specified branches
     /// (supports glob syntax)
     pub branches: Vec<String>,
     /// Specify any branches which should be filtered out from the list of
     /// `branches` (supports glob syntax)
     pub exclude_branches: Vec<String>,
-    /// Run the pipeline whenever there is a PR to these specified tags
-    /// (supports glob syntax)
+    /// Run the pipeline whenever a matching tag is created (supports glob
+    /// syntax)
     pub tags: Vec<String>,
     /// Specify any tags which should be filtered out from the list of `tags`
     /// (supports glob syntax)
@@ -272,16 +280,14 @@ impl GhPrTriggers {
 #[derive(Debug, Clone, PartialEq)]
 pub enum GhRunnerOsLabel {
     UbuntuLatest,
+    Ubuntu2404,
     Ubuntu2204,
-    Ubuntu2004,
     WindowsLatest,
+    Windows2025,
     Windows2022,
-    Windows2019,
-    MacOsLatest,
-    MacOs14,
-    MacOs13,
-    MacOs12,
-    MacOs11,
+    Ubuntu2404Arm,
+    Ubuntu2204Arm,
+    Windows11Arm,
     Custom(String),
 }
 
@@ -592,6 +598,7 @@ impl Pipeline {
             platform,
             arch,
             cond_param_idx: None,
+            timeout_minutes: None,
             ado_pool: None,
             ado_variables: BTreeMap::new(),
             gh_override_if: None,
@@ -861,10 +868,7 @@ impl PipelineJobCtx<'_> {
     /// Create a new `WriteVar<SideEffect>` anchored to the pipeline job.
     pub fn new_done_handle(&mut self) -> WriteVar<crate::node::SideEffect> {
         self.pipeline.dummy_done_idx += 1;
-        crate::node::thin_air_write_runtime_var(
-            format!("start{}", self.pipeline.dummy_done_idx),
-            false,
-        )
+        crate::node::thin_air_write_runtime_var(format!("start{}", self.pipeline.dummy_done_idx))
     }
 
     /// Claim that this job will use this artifact, obtaining a path to a folder
@@ -874,10 +878,10 @@ impl PipelineJobCtx<'_> {
             .used_by_jobs
             .insert(self.job_idx);
 
-        crate::node::thin_air_read_runtime_var(
-            consistent_artifact_runtime_var_name(&self.pipeline.artifacts[artifact.idx].name, true),
-            false,
-        )
+        crate::node::thin_air_read_runtime_var(consistent_artifact_runtime_var_name(
+            &self.pipeline.artifacts[artifact.idx].name,
+            true,
+        ))
     }
 
     /// Claim that this job will publish this artifact, obtaining a path to a
@@ -889,13 +893,10 @@ impl PipelineJobCtx<'_> {
             .replace(self.job_idx);
         assert!(existing.is_none()); // PublishArtifact isn't cloneable
 
-        crate::node::thin_air_read_runtime_var(
-            consistent_artifact_runtime_var_name(
-                &self.pipeline.artifacts[artifact.idx].name,
-                false,
-            ),
+        crate::node::thin_air_read_runtime_var(consistent_artifact_runtime_var_name(
+            &self.pipeline.artifacts[artifact.idx].name,
             false,
-        )
+        ))
     }
 
     fn helper_request<R: IntoRequest>(&mut self, req: R)
@@ -914,8 +915,8 @@ impl PipelineJobCtx<'_> {
         self.pipeline.artifact_map_idx += 1;
 
         let backing_var = format!("artifact_map{}", artifact_map_idx);
-        let read_var = crate::node::thin_air_read_runtime_var(backing_var.clone(), false);
-        let write_var = crate::node::thin_air_write_runtime_var(backing_var, false);
+        let read_var = crate::node::thin_air_read_runtime_var(backing_var.clone());
+        let write_var = crate::node::thin_air_write_runtime_var(backing_var);
         (read_var, write_var)
     }
 
@@ -960,7 +961,6 @@ impl PipelineJobCtx<'_> {
                 .parameter
                 .name()
                 .to_string(),
-            false,
         )
     }
 
@@ -1195,12 +1195,21 @@ impl PipelineJob<'_> {
         self
     }
 
-    /// Only run the job if the specified condition is true.
+    /// Set a timeout for the job, in minutes.
     ///
-    /// When running locally, the `cond`'s default value will be used to
-    /// determine if the job will be run.
+    /// Not calling this will result in the platform's default timeout being used,
+    /// which is typically 60 minutes, but may vary.
+    pub fn with_timeout_in_minutes(self, timeout: u32) -> Self {
+        self.pipeline.jobs[self.job_idx].timeout_minutes = Some(timeout);
+        self
+    }
+
+    /// (ADO+Local Only) Only run the job if the specified condition is true.
     pub fn with_condition(self, cond: UseParameter<bool>) -> Self {
         self.pipeline.jobs[self.job_idx].cond_param_idx = Some(cond.idx);
+        self.pipeline.parameters[cond.idx]
+            .used_by_jobs
+            .insert(self.job_idx);
         self
     }
 
@@ -1263,6 +1272,90 @@ pub enum PipelineBackendHint {
     Github,
 }
 
+/// Trait for types that can be converted into a [`Pipeline`].
+///
+/// This is the primary entry point for defining flowey pipelines. Implement this trait
+/// to create a pipeline definition that can be executed locally or converted to CI YAML.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use flowey_core::pipeline::{IntoPipeline, Pipeline, PipelineBackendHint};
+/// use flowey_core::node::{FlowPlatform, FlowPlatformLinuxDistro, FlowArch};
+///
+/// struct MyPipeline;
+///
+/// impl IntoPipeline for MyPipeline {
+///     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
+///         let mut pipeline = Pipeline::new();
+///         
+///         // Define a job that runs on Linux x86_64
+///         let _job = pipeline
+///             .new_job(
+///                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+///                 FlowArch::X86_64,
+///                 "build"
+///             )
+///             .finish();
+///         
+///         Ok(pipeline)
+///     }
+/// }
+/// ```
+///
+/// # Complex Example with Parameters and Artifacts
+///
+/// ```rust,ignore
+/// use flowey_core::pipeline::{IntoPipeline, Pipeline, PipelineBackendHint, ParameterKind};
+/// use flowey_core::node::{FlowPlatform, FlowPlatformLinuxDistro, FlowArch};
+///
+/// struct BuildPipeline;
+///
+/// impl IntoPipeline for BuildPipeline {
+///     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
+///         let mut pipeline = Pipeline::new();
+///         
+///         // Define a runtime parameter
+///         let enable_tests = pipeline.new_parameter_bool(
+///             "enable_tests",
+///             "Whether to run tests",
+///             ParameterKind::Stable,
+///             Some(true) // default value
+///         );
+///         
+///         // Create an artifact for passing data between jobs
+///         let (publish_build, use_build) = pipeline.new_artifact("build-output");
+///         
+///         // Job 1: Build
+///         let build_job = pipeline
+///             .new_job(
+///                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+///                 FlowArch::X86_64,
+///                 "build"
+///             )
+///             .with_timeout_in_minutes(30)
+///             .dep_on(|ctx| flowey_lib_hvlite::_jobs::example_node::Request {
+///                 output_dir: ctx.publish_artifact(publish_build),
+///             })
+///             .finish();
+///         
+///         // Job 2: Test (conditionally run based on parameter)
+///         let _test_job = pipeline
+///             .new_job(
+///                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+///                 FlowArch::X86_64,
+///                 "test"
+///             )
+///             .with_condition(enable_tests)
+///             .dep_on(|ctx| flowey_lib_hvlite::_jobs::example_node2::Request {
+///                 input_dir: ctx.use_artifact(&use_build),
+///             })
+///             .finish();
+///         
+///         Ok(pipeline)
+///     }
+/// }
+/// ```
 pub trait IntoPipeline {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline>;
 }
@@ -1309,6 +1402,7 @@ pub mod internal {
         pub platform: FlowPlatform,
         pub arch: FlowArch,
         pub cond_param_idx: Option<usize>,
+        pub timeout_minutes: Option<u32>,
         // backend specific
         pub ado_pool: Option<AdoPool>,
         pub ado_variables: BTreeMap<String, String>,

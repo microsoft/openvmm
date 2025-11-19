@@ -13,6 +13,7 @@ use std::io::Seek;
 use thiserror::Error;
 use vm_loader::Loader;
 use vm_topology::memory::MemoryLayout;
+use vm_topology::pcie::PcieHostBridge;
 use vm_topology::processor::ProcessorTopology;
 use zerocopy::IntoBytes;
 
@@ -37,6 +38,7 @@ pub struct UefiLoadSettings {
     pub serial: bool,
     pub uefi_console_mode: Option<UefiConsoleMode>,
     pub default_boot_always_attempt: bool,
+    pub bios_guid: Guid,
 }
 
 /// Loads the UEFI firmware.
@@ -47,9 +49,11 @@ pub fn load_uefi(
     gm: &GuestMemory,
     processor_topology: &ProcessorTopology,
     mem_layout: &MemoryLayout,
+    pcie_host_bridges: &Vec<PcieHostBridge>,
     load_settings: UefiLoadSettings,
     madt: &[u8],
     srat: &[u8],
+    mcfg: Option<&[u8]>,
     pptt: Option<&[u8]>,
 ) -> Result<Vec<Register>, Error> {
     if mem_layout.mmio().len() < 2 {
@@ -123,7 +127,7 @@ pub fn load_uefi(
     .add_raw(config::BlobStructureType::Madt, madt)
     .add_raw(config::BlobStructureType::Srat, srat)
     .add_raw(config::BlobStructureType::MemoryMap, memory_map.as_bytes())
-    .add(&config::BiosGuid(Guid::new_random()))
+    .add(&config::BiosGuid(load_settings.bios_guid))
     .add(&config::Entropy(entropy))
     .add(&config::MmioRanges([
         config::Mmio {
@@ -148,15 +152,33 @@ pub fn load_uefi(
     .add(&flags);
 
     #[cfg(guest_arch = "aarch64")]
-    {
-        cfg.add(&config::Gic {
-            gic_distributor_base: processor_topology.gic_distributor_base(),
-            gic_redistributors_base: processor_topology.gic_redistributors_base(),
-        });
+    cfg.add(&config::Gic {
+        gic_distributor_base: processor_topology.gic_distributor_base(),
+        gic_redistributors_base: processor_topology.gic_redistributors_base(),
+    });
+
+    if let Some(mcfg) = mcfg {
+        cfg.add_raw(config::BlobStructureType::Mcfg, mcfg);
     }
 
     if let Some(pptt) = pptt {
         cfg.add_raw(config::BlobStructureType::Pptt, pptt);
+    }
+
+    if !pcie_host_bridges.is_empty() {
+        let mut ssdt = acpi::ssdt::Ssdt::new();
+        for bridge in pcie_host_bridges {
+            ssdt.add_pcie(
+                bridge.index,
+                bridge.segment,
+                bridge.start_bus,
+                bridge.end_bus,
+                bridge.ecam_range,
+                bridge.low_mmio,
+                bridge.high_mmio,
+            );
+        }
+        cfg.add_raw(config::BlobStructureType::Ssdt, &ssdt.to_bytes());
     }
 
     let mut loader = Loader::new(gm.clone(), mem_layout, hvdef::Vtl::Vtl0);

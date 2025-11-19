@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 //! A collection of end-to-end VMM tests.
 //!
@@ -27,6 +28,8 @@ mod ttrpc;
 mod x86_64;
 // Tests that will only ever run when targeting x86-64.
 mod x86_64_exclusive;
+// Tests that will only ever run targeting Aarch64/ARM64.
+mod aarch64_exclusive;
 
 pub fn main() {
     petri::test_main(|name, requirements| {

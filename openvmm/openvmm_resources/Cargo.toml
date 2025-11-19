@@ -10,6 +10,9 @@ rust-version.workspace = true
 # Enable gdbstub support.
 gdb = ["hvlite_core/gdb", "dep:debug_worker"]
 
+# Enable building with TPM device support.
+tpm = ["dep:tpm_device"]
+
 # Enable building with /dev/mshv support.
 virt_mshv = ["hvlite_core/virt_mshv"]
 
@@ -35,6 +38,7 @@ serial_socket.workspace = true
 # Disks
 disk_blob = { workspace = true, optional = true }
 disk_crypt = { workspace = true, optional = true }
+disk_delay.workspace = true
 disk_file.workspace = true
 disk_layered.workspace = true
 disk_prwrap.workspace = true
@@ -48,7 +52,7 @@ missing_dev.workspace = true
 serial_16550.workspace = true
 serial_debugcon.workspace = true
 serial_pl011.workspace = true
-tpm = { workspace = true, optional = true, features = ["tpm"] }
+tpm_device = { workspace = true, optional = true, features = ["tpm"] }
 
 # Non-volatile stores
 vmcore.workspace = true
@@ -56,6 +60,7 @@ vmcore.workspace = true
 # PCI devices
 gdma.workspace = true
 nvme.workspace = true
+nvme_test.workspace = true
 
 # SCSI
 scsidisk.workspace = true
@@ -73,7 +78,7 @@ virtio_pmem.workspace = true
 
 # Vmbus devices
 guest_crash_device.workspace = true
-guest_emulation_device.workspace = true
+guest_emulation_device = { workspace = true, features = ["test_igvm_agent"] }
 guest_emulation_log.workspace = true
 hyperv_ic.workspace = true
 netvsp.workspace = true

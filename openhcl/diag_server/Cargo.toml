@@ -10,6 +10,7 @@ rust-version.workspace = true
 diag_proto.workspace = true
 
 azure_profiler_proto.workspace = true
+cvm_tracing.workspace = true
 inspect_proto.workspace = true
 inspect = { workspace = true, features = ["defer"] }
 mesh = { workspace = true, features = ["socket2"] }
@@ -36,9 +37,6 @@ hvdef.workspace = true
 
 [features]
 profiler = ["dep:profiler_worker"]
-
-[build-dependencies]
-build_rs_guest_arch.workspace = true
 
 [lints]
 workspace = true

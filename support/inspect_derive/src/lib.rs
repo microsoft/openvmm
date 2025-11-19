@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use heck::ToSnakeCase;
 use proc_macro2::Ident;
@@ -63,6 +64,7 @@ enum StructAttr {
     With(syn::Expr),
     Extra(syn::Expr),
     Bound(Punctuated<WherePredicate, Token![,]>),
+    Hex,
 }
 
 #[derive(Clone)]
@@ -74,6 +76,8 @@ enum FieldAttr {
     With(syn::Expr),
     Safe,
     Sensitive,
+    Hex,
+    Binary,
 }
 
 enum SensitivityLevel {
@@ -89,6 +93,7 @@ enum EnumAttr {
     Tag(LitStr),
     Extra(syn::Expr),
     Bound(Punctuated<WherePredicate, Token![,]>),
+    Hex,
 }
 
 enum VariantAttr {
@@ -117,6 +122,21 @@ fn parse_string_attr(input: ParseStream<'_>) -> syn::Result<LitStr> {
     input.parse()
 }
 
+fn parse_wrapped_attr<T: Parse>(input: ParseStream<'_>) -> syn::Result<T> {
+    let _: syn::token::Eq = input.parse()?;
+    let lit: LitStr = input.parse()?;
+    lit.parse()
+}
+
+fn parse_wrapped_attr_with<T>(
+    input: ParseStream<'_>,
+    parser: impl FnOnce(ParseStream<'_>) -> syn::Result<T>,
+) -> syn::Result<T> {
+    let _: syn::token::Eq = input.parse()?;
+    let lit: LitStr = input.parse()?;
+    lit.parse_with(parser)
+}
+
 impl Parse for StructAttr {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let ident = Ident::parse_any(input)?;
@@ -132,18 +152,20 @@ impl Parse for StructAttr {
             };
             Self::Transparent(field_attr)
         } else if ident == "with" {
-            let with = parse_string_attr(input)?;
-            Self::With(with.parse()?)
+            Self::With(parse_wrapped_attr(input)?)
         } else if ident == "display" {
             Self::With(parse_quote_spanned!(ident.span()=> ::inspect::AsDisplay))
         } else if ident == "debug" {
             Self::With(parse_quote_spanned!(ident.span()=> ::inspect::AsDebug))
         } else if ident == "extra" {
-            let with = parse_string_attr(input)?;
-            Self::Extra(with.parse()?)
+            Self::Extra(parse_wrapped_attr(input)?)
         } else if ident == "bound" {
-            let val = parse_string_attr(input)?;
-            Self::Bound(val.parse_with(Punctuated::parse_terminated)?)
+            Self::Bound(parse_wrapped_attr_with(
+                input,
+                Punctuated::parse_terminated,
+            )?)
+        } else if ident == "hex" {
+            Self::Hex
         } else {
             return Err(syn::Error::new(
                 ident.span(),
@@ -162,16 +184,16 @@ impl Parse for FieldAttr {
         } else if ident == "format" {
             let format = parse_string_attr(input)?;
             Self::With(parse_quote!(|x| ::inspect::adhoc(
-                move |req| req.value(::core::format_args!(#format, x).into())
+                move |req| req.value(::core::format_args!(#format, x))
             )))
         } else if ident == "display" {
             Self::With(parse_quote_spanned!(ident.span()=> ::inspect::AsDisplay))
         } else if ident == "debug" {
             Self::With(parse_quote_spanned!(ident.span()=> ::inspect::AsDebug))
         } else if ident == "hex" {
-            Self::With(parse_quote_spanned!(ident.span()=> ::inspect::AsHex))
+            Self::Hex
         } else if ident == "binary" {
-            Self::With(parse_quote_spanned!(ident.span()=> ::inspect::AsBinary))
+            Self::Binary
         } else if ident == "bytes" {
             Self::With(parse_quote_spanned!(ident.span()=> ::inspect::AsBytes))
         } else if ident == "iter_by_key" {
@@ -189,8 +211,10 @@ impl Parse for FieldAttr {
         } else if ident == "sensitive" {
             Self::Sensitive
         } else if ident == "with" {
-            let with = parse_string_attr(input)?;
-            Self::With(with.parse()?)
+            Self::With(parse_wrapped_attr(input)?)
+        } else if ident == "send" {
+            let map: syn::Expr = parse_wrapped_attr(input)?;
+            Self::With(parse_quote!(|x| ::inspect::send(x, #map)))
         } else {
             return Err(syn::Error::new(
                 ident.span(),
@@ -207,8 +231,7 @@ impl Parse for EnumAttr {
         let kind = if ident == "skip" {
             Self::Skip
         } else if ident == "with" {
-            let with = parse_string_attr(input)?;
-            Self::With(with.parse()?)
+            Self::With(parse_wrapped_attr(input)?)
         } else if ident == "external_tag" {
             Self::ExternalTag
         } else if ident == "tag" {
@@ -220,11 +243,14 @@ impl Parse for EnumAttr {
         } else if ident == "debug" {
             Self::With(parse_quote_spanned!(ident.span()=> ::inspect::AsDebug))
         } else if ident == "extra" {
-            let with = parse_string_attr(input)?;
-            Self::Extra(with.parse()?)
+            Self::Extra(parse_wrapped_attr(input)?)
         } else if ident == "bound" {
-            let val = parse_string_attr(input)?;
-            Self::Bound(val.parse_with(Punctuated::parse_terminated)?)
+            Self::Bound(parse_wrapped_attr_with(
+                input,
+                Punctuated::parse_terminated,
+            )?)
+        } else if ident == "hex" {
+            Self::Hex
         } else {
             return Err(syn::Error::new(
                 ident.span(),
@@ -295,6 +321,7 @@ fn derive_struct(
     let mut struct_with = None;
     let mut extra = None;
     let mut bound = None;
+    let mut hex = false;
     let bitfield = parse_bitfield_attr(&input.attrs)?;
     for attr in parse_attrs(&input.attrs)? {
         match attr.kind {
@@ -307,6 +334,7 @@ fn derive_struct(
             StructAttr::With(with) => insert_or_fail(&mut struct_with, attr.span, with)?,
             StructAttr::Extra(x) => insert_or_fail(&mut extra, attr.span, x)?,
             StructAttr::Bound(x) => insert_or_fail(&mut bound, attr.span, x)?,
+            StructAttr::Hex => hex = true,
         }
     }
 
@@ -348,7 +376,7 @@ fn derive_struct(
         fields_response(&data.fields, &[], &req, bitfield, transparent, extra)?
     };
 
-    impl_defs(input, mutable, bound, &req, &respond)
+    impl_defs(input, mutable, bound, &req, &respond, hex)
 }
 
 fn impl_defs(
@@ -357,6 +385,7 @@ fn impl_defs(
     bound: Option<Punctuated<WherePredicate, Token![,]>>,
     req: &Ident,
     respond: &TokenStream,
+    hex: bool,
 ) -> Result<TokenStream, syn::Error> {
     let mut generics = input.generics.clone();
     if let Some(bound) = bound {
@@ -365,11 +394,18 @@ fn impl_defs(
 
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
+    let fmt = if hex {
+        quote!(let #req = #req.with_hex_format();)
+    } else {
+        quote!()
+    };
+
     let type_name = &input.ident;
     let tokens = if mutable {
         quote! {
             impl #impl_generics ::inspect::InspectMut for #type_name #type_generics #where_clause {
                 fn inspect_mut(&mut self, #req: ::inspect::Request<'_>) {
+                    #fmt
                     #respond
                 }
             }
@@ -378,6 +414,7 @@ fn impl_defs(
         quote! {
             impl #impl_generics ::inspect::Inspect for #type_name #type_generics #where_clause {
                 fn inspect(&self, #req: ::inspect::Request<'_>) {
+                    #fmt
                     #respond
                 }
             }
@@ -388,7 +425,7 @@ fn impl_defs(
 
 fn fields_response(
     fields: &syn::Fields,
-    field_vars: &[TokenStream],
+    field_vars: &[(TokenStream, String)],
     req: &Ident,
     bitfield: Option<Ident>,
     transparent: Option<(Span, Vec<Attr<FieldAttr>>)>,
@@ -398,7 +435,7 @@ fn fields_response(
     let field_vars =
         field_vars
             .iter()
-            .map(|x| Some(x.clone()))
+            .map(|x| Some(x.clone()).unzip())
             .chain(fields.iter().enumerate().map(|(field_index, field)| {
                 // Bitfield fields starting with '_' don't have accessor methods, so skip them.
                 let skip = bitfield.is_some()
@@ -407,26 +444,31 @@ fn fields_response(
                         .as_ref()
                         .is_some_and(|id| id.to_string().starts_with('_'));
 
-                (!skip).then(|| {
-                    let ident = field.ident.as_ref().map_or_else(
-                        || syn::Index::from(field_index).into_token_stream(),
-                        |ident| ident.into_token_stream(),
-                    );
-                    if bitfield.is_some() {
-                        quote!(self.#ident())
-                    } else {
-                        quote!(self.#ident)
-                    }
-                })
+                (!skip)
+                    .then(|| {
+                        let ident = field.ident.as_ref().map_or_else(
+                            || syn::Index::from(field_index).into_token_stream(),
+                            |ident| ident.into_token_stream(),
+                        );
+                        let field_ident = if bitfield.is_some() {
+                            quote!(self.#ident())
+                        } else {
+                            quote!(self.#ident)
+                        };
+                        let inspect_name = ident.to_string();
+                        (field_ident, inspect_name)
+                    })
+                    .unzip()
             }));
 
     let mut fields = fields
         .iter()
         .zip(field_vars)
-        .map(|(field, ident)| {
+        .map(|(field, (ident, name))| {
             field_response(
                 field,
                 ident,
+                name,
                 transparent.as_ref().map(|(_, attr)| attr.as_slice()),
                 req,
                 &resp,
@@ -469,6 +511,7 @@ fn fields_response(
 fn field_response(
     field: &syn::Field,
     ident: Option<TokenStream>,
+    mut inspect_name: Option<String>,
     transparent_attrs: Option<&[Attr<FieldAttr>]>,
     req: &Ident,
     resp: &Ident,
@@ -502,11 +545,18 @@ fn field_response(
         Transparent,
     }
 
-    let mut inspect_name = None;
+    #[derive(PartialEq, Eq)]
+    enum Format {
+        Default,
+        Hex,
+        Binary,
+    }
+
     let mut sensitivity = None;
     let mut is_mut = false;
     let mut kind = None;
     let mut with = None;
+    let mut format = Format::Default;
     for attr in attrs {
         let mut new_with = None;
         let mut new_sen = None;
@@ -531,6 +581,20 @@ fn field_response(
             }
             FieldAttr::Sensitive => {
                 new_sen = Some(SensitivityLevel::Sensitive);
+                None
+            }
+            FieldAttr::Hex => {
+                if format != Format::Default {
+                    return Err(syn::Error::new(attr.span, "too many field formats"));
+                }
+                format = Format::Hex;
+                None
+            }
+            FieldAttr::Binary => {
+                if format != Format::Default {
+                    return Err(syn::Error::new(attr.span, "too many field formats"));
+                }
+                format = Format::Binary;
                 None
             }
         };
@@ -612,15 +676,19 @@ fn field_response(
         }
     }
 
+    match format {
+        Format::Hex => {
+            field_ref = quote!(#ref_ty ::inspect::AsHex(#field_ref));
+        }
+        Format::Binary => {
+            field_ref = quote!(#ref_ty ::inspect::AsBinary(#field_ref));
+        }
+        Format::Default => {}
+    }
+
     let tokens = match kind {
         Kind::Field => {
-            let name = match inspect_name {
-                Some(name) => name,
-                None => match &field.ident {
-                    Some(name) => name.to_string(),
-                    None => return Err(syn::Error::new(field.span(), "field name not specified")),
-                },
-            };
+            let name = inspect_name.unwrap();
             let func = if is_mut {
                 "sensitivity_field_mut"
             } else {
@@ -668,6 +736,7 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum, mutable: bool) -> syn::Resu
     let mut tag = None;
     let mut extra = None;
     let mut bound = None;
+    let mut hex = false;
     for attr in parse_attrs(&input.attrs)? {
         match attr.kind {
             EnumAttr::Skip => {
@@ -681,6 +750,7 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum, mutable: bool) -> syn::Resu
             EnumAttr::Untagged => insert_or_fail(&mut tag, attr.span, TagMode::Untagged)?,
             EnumAttr::Extra(x) => insert_or_fail(&mut extra, attr.span, x)?,
             EnumAttr::Bound(x) => insert_or_fail(&mut bound, attr.span, x)?,
+            EnumAttr::Hex => hex = true,
         }
     }
 
@@ -730,7 +800,7 @@ fn derive_enum(input: &DeriveInput, data: &DataEnum, mutable: bool) -> syn::Resu
         }
     };
 
-    impl_defs(input, mutable, bound, &req, &respond)
+    impl_defs(input, mutable, bound, &req, &respond, hex)
 }
 
 enum TagMode {
@@ -793,7 +863,11 @@ fn derive_tagged_enum(
             // `fields_response` will want to apply the appropriate reference
             // type, but we already have references from destructuring the enum
             // variant.
-            let dereferenced = field_vars.iter().map(|x| quote!((*#x))).collect::<Vec<_>>();
+            let dereferenced = field_vars
+                .iter()
+                .zip(fields.iter())
+                .map(|(x, name)| (quote!((*#x)), name.to_string()))
+                .collect::<Vec<_>>();
 
             let inner_req = Ident::new("req", Span::call_site());
             let inner_response = fields_response(
@@ -889,14 +963,14 @@ fn derive_unit_only_enum(data: &DataEnum, mutable: bool, req: &Ident) -> syn::Re
                         }
                     };
                     *self = v;
-                    let v = req.new_value().into();
+                    let v = req.new_value().to_string();
                     req.succeed(v);
                 }
                 Err(req) => {
                     let name = match self {
                         #(Self::#field_name2 => #inspect_name2,)*
                     };
-                    req.value(name.into());
+                    req.value(name);
                 }
             }
         }
@@ -905,7 +979,7 @@ fn derive_unit_only_enum(data: &DataEnum, mutable: bool, req: &Ident) -> syn::Re
             let name: &str = match self {
                 #(Self::#field_name => #inspect_name,)*
             };
-            #req.value(name.into());
+            #req.value(name);
         }
     };
     Ok(tokens)

@@ -11,6 +11,7 @@ use super::generic::ResolvedJobUseParameter;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
 use crate::cli::pipeline::CheckMode;
+use crate::cli::var_db::VarDbRequestBuilder;
 use crate::flow_resolver::stage1_dag::OutputGraphEntry;
 use crate::flow_resolver::stage1_dag::Step;
 use crate::pipeline_resolver::common_yaml::FloweySource;
@@ -88,16 +89,23 @@ pub fn github_yaml(
             arch,
             ref external_read_vars,
             ado_pool: _,
+            timeout_minutes,
             ref gh_override_if,
             ref gh_global_env,
             ref gh_pool,
             ref gh_permissions,
-            cond_param_idx: _,
+            cond_param_idx,
             ref parameters_used,
             ref artifacts_used,
             ref artifacts_published,
             ado_variables: _,
         } = graph[job_idx];
+
+        if cond_param_idx.is_some() {
+            anyhow::bail!(
+                "conditional params are not supported in GitHub backend, use `gh_dangerous_override_if` instead"
+            );
+        }
 
         let flowey_bin = platform.binary("flowey");
         let (steps, req_db) = resolve_flow_as_github_yaml_steps(
@@ -211,18 +219,13 @@ pub fn github_yaml(
             gh_steps.push(map.into());
         }
 
+        let var_db = VarDbRequestBuilder::new(&flowey_bin, job_idx.index());
+
         let bootstrap_bash_var_db_inject = |var, is_raw_string| {
-            crate::cli::var_db::construct_var_db_cli(
-                &flowey_bin,
-                job_idx.index(),
-                var,
-                false,
-                true,
-                None,
-                is_raw_string,
-                None,
-                None,
-            )
+            var_db
+                .update_from_stdin(var, false)
+                .raw_string(is_raw_string)
+                .to_string()
         };
 
         // if this was a bootstrap job, also take a moment to run a "self check"
@@ -444,6 +447,7 @@ EOF
                         with:
                             name: {name}
                             path: {RUNNER_TEMP}/publish_artifacts/{name}/
+                            include-hidden-files: true
                     "#
                 ))
                 .unwrap();
@@ -487,16 +491,14 @@ EOF
         let runner_kind_to_yaml = |runner: &GhRunner| match runner {
             GhRunner::GhHosted(s) => github_yaml_defs::Runner::GhHosted(match s {
                 GhRunnerOsLabel::UbuntuLatest => github_yaml_defs::RunnerOsLabel::UbuntuLatest,
+                GhRunnerOsLabel::Ubuntu2404 => github_yaml_defs::RunnerOsLabel::Ubuntu2404,
                 GhRunnerOsLabel::Ubuntu2204 => github_yaml_defs::RunnerOsLabel::Ubuntu2204,
-                GhRunnerOsLabel::Ubuntu2004 => github_yaml_defs::RunnerOsLabel::Ubuntu2004,
                 GhRunnerOsLabel::WindowsLatest => github_yaml_defs::RunnerOsLabel::WindowsLatest,
+                GhRunnerOsLabel::Windows2025 => github_yaml_defs::RunnerOsLabel::Windows2025,
                 GhRunnerOsLabel::Windows2022 => github_yaml_defs::RunnerOsLabel::Windows2022,
-                GhRunnerOsLabel::Windows2019 => github_yaml_defs::RunnerOsLabel::Windows2019,
-                GhRunnerOsLabel::MacOsLatest => github_yaml_defs::RunnerOsLabel::MacOsLatest,
-                GhRunnerOsLabel::MacOs14 => github_yaml_defs::RunnerOsLabel::MacOs14,
-                GhRunnerOsLabel::MacOs13 => github_yaml_defs::RunnerOsLabel::MacOs13,
-                GhRunnerOsLabel::MacOs12 => github_yaml_defs::RunnerOsLabel::MacOs12,
-                GhRunnerOsLabel::MacOs11 => github_yaml_defs::RunnerOsLabel::MacOs11,
+                GhRunnerOsLabel::Ubuntu2404Arm => github_yaml_defs::RunnerOsLabel::Ubuntu2404Arm,
+                GhRunnerOsLabel::Ubuntu2204Arm => github_yaml_defs::RunnerOsLabel::Ubuntu2204Arm,
+                GhRunnerOsLabel::Windows11Arm => github_yaml_defs::RunnerOsLabel::Windows11Arm,
                 GhRunnerOsLabel::Custom(s) => github_yaml_defs::RunnerOsLabel::Custom(s.into()),
             }),
             GhRunner::SelfHosted(v) => github_yaml_defs::Runner::SelfHosted(v.to_vec()),
@@ -550,6 +552,7 @@ EOF
             format!("job{}", job_idx.index()),
             github_yaml_defs::Job {
                 name: label.clone(),
+                timeout_minutes,
                 runs_on: gh_pool.clone().map(|runner| runner_kind_to_yaml(&runner)),
                 permissions: job_permissions
                     .iter()
@@ -605,7 +608,7 @@ EOF
                                     description: Some(description.clone()),
                                     default: default
                                         .as_ref()
-                                        .map(|s| github_yaml_defs::Default::String(s.to_string())),
+                                        .map(|s| github_yaml_defs::Default::String(s.clone())),
                                     required: default.is_none(),
                                     ty: github_yaml_defs::InputType::String,
                                 },
@@ -631,8 +634,8 @@ EOF
             Some(gh_pr_triggers) => {
                 if gh_pr_triggers.auto_cancel {
                     concurrency = Some(github_yaml_defs::Concurrency {
-                        // only cancel in-progress jobs or runs for the same branch
-                        group: Some("${{ github.ref }}".to_string()),
+                        // only cancel in-progress jobs for the same workflow and branch
+                        group: Some("${{ github.workflow }}-${{ github.ref }}".to_string()),
                         cancel_in_progress: Some(true),
                     })
                 };
@@ -729,6 +732,8 @@ fn resolve_flow_as_github_yaml_steps(
     let output_order = petgraph::algo::toposort(&output_graph, None)
         .expect("runtime variables cannot introduce a DAG cycle");
 
+    let var_db = VarDbRequestBuilder::new(flowey_bin, job_idx);
+
     for node_idx in output_order.into_iter().rev() {
         let OutputGraphEntry { node_handle, step } = output_graph[node_idx].1.take().unwrap();
 
@@ -766,25 +771,6 @@ fn resolve_flow_as_github_yaml_steps(
                 condvar,
                 permissions,
             } => {
-                let var_db_cmd = |var: &str,
-                                  is_secret,
-                                  update_from_stdin,
-                                  is_raw_string,
-                                  write_to_gh_env: Option<String>,
-                                  condvar: Option<String>| {
-                    crate::cli::var_db::construct_var_db_cli(
-                        flowey_bin,
-                        job_idx,
-                        var,
-                        is_secret,
-                        update_from_stdin,
-                        None,
-                        is_raw_string,
-                        write_to_gh_env.as_deref(),
-                        condvar.as_deref(),
-                    )
-                };
-
                 for permission in permissions {
                     if let Some(permission_map) = gh_permissions.get(&node_handle) {
                         if let Some(permission_value) = permission_map.get(&permission.0) {
@@ -807,38 +793,20 @@ fn resolve_flow_as_github_yaml_steps(
                 }
 
                 for gh_var_state in rust_to_gh {
-                    let mut cmd = String::new();
+                    let set_gh_env_var = var_db
+                        .write_to_gh_env(&gh_var_state.backing_var, &gh_var_state.raw_name)
+                        .raw_string(!gh_var_state.is_object)
+                        .condvar(condvar.as_deref());
 
-                    let set_gh_env_var = var_db_cmd(
-                        &gh_var_state.backing_var,
-                        gh_var_state.is_secret,
-                        false,
-                        !gh_var_state.is_object,
-                        gh_var_state.raw_name,
-                        condvar.clone(),
-                    );
-                    writeln!(cmd, r#"{set_gh_env_var}"#)?;
-
-                    bash_commands.push_minor(cmd);
+                    bash_commands.push_minor(format!("{set_gh_env_var}\n"));
                 }
 
                 if !uses.is_empty() {
                     if let Some(condvar) = &condvar {
-                        let mut cmd = String::new();
-
                         // guaranteed to be a bare bool `true`/`false`, hence
                         // is_raw_string = false
-                        let set_condvar = var_db_cmd(
-                            condvar,
-                            false,
-                            false,
-                            false,
-                            Some("FLOWEY_CONDITION".to_string()),
-                            None,
-                        );
-                        writeln!(cmd, r#"{set_condvar}"#)?;
-
-                        bash_commands.push_minor(cmd);
+                        let set_condvar = var_db.write_to_gh_env(condvar, "FLOWEY_CONDITION");
+                        bash_commands.push_minor(format!("{set_condvar}\n"));
                     }
 
                     let mut map = serde_yaml::Mapping::new();
@@ -862,24 +830,17 @@ fn resolve_flow_as_github_yaml_steps(
                 }
 
                 for gh_var_state in gh_to_rust {
-                    let raw_name = gh_var_state
-                        .raw_name
-                        .expect("couldn't get raw name for variable");
-
                     let value = if gh_var_state.is_object {
-                        format!(r#"${{{{ toJSON({}) }}}}"#, raw_name)
+                        format!(r#"${{{{ toJSON({}) }}}}"#, gh_var_state.raw_name)
                     } else {
-                        format!(r#"${{{{ {} }}}}"#, raw_name)
+                        format!(r#"${{{{ {} }}}}"#, gh_var_state.raw_name)
                     };
 
-                    let write_var = var_db_cmd(
-                        &gh_var_state.backing_var,
-                        gh_var_state.is_secret,
-                        true,
-                        !gh_var_state.is_object,
-                        None,
-                        condvar.clone(),
-                    );
+                    let write_var = var_db
+                        .update_from_stdin(&gh_var_state.backing_var, gh_var_state.is_secret)
+                        .raw_string(!gh_var_state.is_object)
+                        .condvar(condvar.as_deref())
+                        .env_source(Some(&gh_var_state.raw_name));
 
                     let cmd = format!("{write_var} <<EOF\n{value}\nEOF",);
                     bash_commands.push_minor(cmd);

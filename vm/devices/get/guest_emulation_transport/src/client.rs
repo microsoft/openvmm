@@ -6,6 +6,7 @@ use super::process_loop::msg::IgvmAttestRequestData;
 use crate::api::GuestSaveRequest;
 use crate::api::platform_settings;
 use chipset_resources::battery::HostBatteryUpdate;
+use cvm_tracing::CVM_ALLOWED;
 use get_protocol::RegisterState;
 use get_protocol::TripleFaultType;
 use guid::Guid;
@@ -16,6 +17,13 @@ use std::sync::Arc;
 use user_driver::DmaClient;
 use vpci::bus_control::VpciBusEvent;
 use zerocopy::IntoBytes;
+
+/// Operation types for provisioning telemetry.
+#[derive(Debug)]
+enum LogOpType {
+    BeginGspCallback,
+    GspCallback,
+}
 
 /// Guest-side client for the GET.
 ///
@@ -31,14 +39,8 @@ pub struct GuestEmulationTransportClient {
     version: get_protocol::ProtocolVersion,
 }
 
-#[derive(Debug)]
-struct ProcessLoopControl(mesh::Sender<msg::Msg>);
-
-impl Inspect for ProcessLoopControl {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.0.send(msg::Msg::Inspect(req.defer()));
-    }
-}
+#[derive(Debug, Inspect)]
+struct ProcessLoopControl(#[inspect(flatten, send = "msg::Msg::Inspect")] mesh::Sender<msg::Msg>);
 
 impl ProcessLoopControl {
     async fn call<I, R: 'static + Send>(
@@ -336,6 +338,10 @@ impl GuestEmulationTransportClient {
                 firmware_mode_is_pcat: json.v2.r#static.firmware_mode_is_pcat,
                 imc_enabled: json.v2.r#static.imc_enabled,
                 cxl_memory_enabled: json.v2.r#static.cxl_memory_enabled,
+                efi_diagnostics_log_level: json.v2.r#static.efi_diagnostics_log_level,
+                guest_state_lifetime: json.v2.r#static.guest_state_lifetime,
+                guest_state_encryption_policy: json.v2.r#static.guest_state_encryption_policy,
+                management_vtl_features: json.v2.r#static.management_vtl_features,
             },
             acpi_tables: json.v2.dynamic.acpi_tables,
         })
@@ -348,7 +354,14 @@ impl GuestEmulationTransportClient {
         gsp_extended_status: crate::api::GspExtendedStatusFlags,
     ) -> crate::api::GuestStateProtection {
         let mut buffer = [0; get_protocol::GSP_CLEARTEXT_MAX as usize * 2];
+        let start_time = std::time::SystemTime::now();
         getrandom::fill(&mut buffer).expect("rng failure");
+
+        tracing::info!(
+            CVM_ALLOWED,
+            op_type = ?LogOpType::BeginGspCallback,
+            "Getting guest state protection data"
+        );
 
         let gsp_request = get_protocol::GuestStateProtectionRequest::new(
             buffer,
@@ -360,6 +373,15 @@ impl GuestEmulationTransportClient {
             .control
             .call(msg::Msg::GuestStateProtection, Box::new(gsp_request))
             .await;
+
+        tracing::info!(
+            CVM_ALLOWED,
+            op_type = ?LogOpType::GspCallback,
+            latency = std::time::SystemTime::now()
+                .duration_since(start_time)
+                .map_or(0, |d| d.as_millis()),
+            "Got guest state protection data"
+        );
 
         crate::api::GuestStateProtection {
             encrypted_gsp: response.encrypted_gsp,
@@ -377,6 +399,12 @@ impl GuestEmulationTransportClient {
     pub fn set_gpa_allocator(&mut self, gpa_allocator: Arc<dyn DmaClient>) {
         self.control
             .notify(msg::Msg::SetGpaAllocator(gpa_allocator));
+    }
+
+    /// Set the the callback to trigger the debug interrupt.
+    pub fn set_debug_interrupt_callback(&mut self, callback: Box<dyn Fn(u8) + Send + Sync>) {
+        self.control
+            .notify(msg::Msg::SetDebugInterruptCallback(callback));
     }
 
     /// Send the attestation request to the IGVM agent on the host.

@@ -4,6 +4,7 @@
 //! Mesh tracing backend.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod bounded;
 
@@ -49,44 +50,53 @@ pub struct MeshFilter {
 impl MeshFilter {
     /// Wraps `layer` in a filter that will be dynamically updated by incoming
     /// mesh messages.
-    pub fn apply<L, S>(
+    ///
+    /// Returns a future that polls for filter updates and applies them to the
+    /// layer.
+    pub fn apply<L, S, T>(
         self,
-        spawn: impl Spawn,
         layer: L,
-    ) -> anyhow::Result<reload::Layer<Filtered<L, Targets, S>, S>>
+        parse: impl Fn(&str) -> anyhow::Result<T> + Send + 'static,
+    ) -> anyhow::Result<(
+        reload::Layer<Filtered<L, T, S>, S>,
+        impl Future<Output = ()> + 'static,
+    )>
     where
         L: Layer<S> + Send + Sync,
         S: tracing::Subscriber + for<'span> LookupSpan<'span>,
+        T: tracing_subscriber::layer::Filter<S> + Send + Sync + 'static,
     {
-        let targets: Targets = self
+        let targets = self
             .filter
-            .with(|filter| filter.parse())
+            .with(|filter| parse(filter))
             .context("failed to parse filter")?;
 
         let (layer, reload_handle) = reload::Layer::new(layer.with_filter(targets));
-
         let mut filter_cell = self.filter;
-        spawn
-            .spawn("tracing filter refresh", async move {
-                loop {
-                    filter_cell.wait_next().await;
-                    filter_cell.with(|filter| match filter.parse::<Targets>() {
-                        Ok(new_targets) => {
-                            let _ = reload_handle.modify(|layer| *layer.filter_mut() = new_targets);
-                            tracing::info!(filter = filter.as_str(), "updated trace filter");
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                error = &err as &dyn std::error::Error,
-                                "failed to update filter"
-                            );
-                        }
-                    })
-                }
-            })
-            .detach();
+        let task = async move {
+            loop {
+                // Apply the current filter. This runs even the first time
+                // through to ensure that any events emited by this path are
+                // logged--before this task starts, the tracing subscriber has
+                // not yet been registered.
+                filter_cell.with(|filter| match parse(filter) {
+                    Ok(new_targets) => {
+                        let _ = reload_handle.modify(|layer| *layer.filter_mut() = new_targets);
+                        tracing::info!(filter = filter.as_str(), "updated trace filter");
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            error = err.as_ref() as &dyn std::error::Error,
+                            "failed to update filter"
+                        );
+                    }
+                });
+                // Wait for the next value.
+                filter_cell.wait_next().await;
+            }
+        };
 
-        Ok(layer)
+        Ok((layer, task))
     }
 }
 
@@ -112,10 +122,10 @@ impl InspectMut for MeshFilterUpdater {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         match req.update() {
             Ok(req) => match self.update(req.new_value()) {
-                Ok(()) => req.succeed(self.get().into()),
+                Ok(()) => req.succeed(self.get()),
                 Err(err) => req.fail(err),
             },
-            Err(req) => req.value(self.get().into()),
+            Err(req) => req.value(self.get()),
         }
     }
 }
@@ -150,11 +160,11 @@ impl InspectMut for MeshFlusher {
                 self.spawn
                     .spawn("trace-flush", async move {
                         let _ = join.await;
-                        req.succeed(true.into());
+                        req.succeed(true);
                     })
                     .detach();
             }
-            Err(req) => req.value(false.into()),
+            Err(req) => req.value(false),
         }
     }
 }

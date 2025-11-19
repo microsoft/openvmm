@@ -13,6 +13,7 @@ use chipset_device_resources::IRQ_LINE_SET;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
+use firmware_uefi::LogLevel;
 use firmware_uefi::UefiCommandSet;
 use floppy_resources::FloppyDiskConfig;
 use futures::FutureExt;
@@ -28,11 +29,16 @@ use hvlite_defs::config::Aarch64TopologyConfig;
 use hvlite_defs::config::ArchTopologyConfig;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
+use hvlite_defs::config::EfiDiagnosticsLogLevelType;
 use hvlite_defs::config::GicConfig;
 use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
+use hvlite_defs::config::PcieDeviceConfig;
+use hvlite_defs::config::PcieRootComplexConfig;
+use hvlite_defs::config::PcieSwitchConfig;
+use hvlite_defs::config::PmuGsivConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialPipes;
 use hvlite_defs::config::VirtioBus;
@@ -73,6 +79,9 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pci_core::PciInterruptPin;
 use pci_core::msi::MsiInterruptSet;
+use pcie::root::GenericPcieRootComplex;
+use pcie::root::GenericPcieRootPortDefinition;
+use pcie::switch::GenericPcieSwitch;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::SimpleScsiDisk;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
@@ -105,12 +114,12 @@ use vm_resource::kind::MouseInputHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_topology::memory::MemoryLayout;
+use vm_topology::pcie::PcieHostBridge;
 use vm_topology::processor::ArchTopology;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
 use vm_topology::processor::aarch64::Aarch64Topology;
 use vm_topology::processor::aarch64::GicInfo;
-use vm_topology::processor::x86::X2ApicState;
 use vm_topology::processor::x86::X86Topology;
 use vmbus_channel::channel::VmbusDevice;
 use vmbus_server::HvsockRelayChannel;
@@ -123,6 +132,8 @@ use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmcore::vmtime::VmTimeSource;
 use vmgs_broker::resolver::VmgsFileResolver;
+use vmgs_resources::GuestStateEncryptionPolicy;
+use vmgs_resources::VmgsResource;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
 use vmm_core::input_distributor::InputDistributor;
 use vmm_core::partition_unit::Halt;
@@ -143,6 +154,9 @@ use vmotherboard::options::BaseChipsetDevices;
 use vmotherboard::options::BaseChipsetFoundation;
 use vmotherboard::options::BaseChipsetManifest;
 use vpci::bus::VpciBus;
+use watchdog_core::platform::BaseWatchdogPlatform;
+use watchdog_core::platform::WatchdogCallback;
+use watchdog_core::platform::WatchdogPlatform;
 
 const PM_BASE: u16 = 0x400;
 const SYSTEM_IRQ_ACPI: u32 = 9;
@@ -160,6 +174,9 @@ impl Manifest {
             load_mode: config.load_mode,
             floppy_disks: config.floppy_disks,
             ide_disks: config.ide_disks,
+            pcie_root_complexes: config.pcie_root_complexes,
+            pcie_devices: config.pcie_devices,
+            pcie_switches: config.pcie_switches,
             vpci_devices: config.vpci_devices,
             hypervisor: config.hypervisor,
             memory: config.memory,
@@ -178,8 +195,7 @@ impl Manifest {
             vtl2_vmbus: config.vtl2_vmbus,
             #[cfg(all(windows, feature = "virt_whp"))]
             vpci_resources: config.vpci_resources,
-            format_vmgs: config.format_vmgs,
-            vmgs_disk: config.vmgs_disk,
+            vmgs: config.vmgs,
             secure_boot_enabled: config.secure_boot_enabled,
             custom_uefi_vars: config.custom_uefi_vars,
             firmware_event_send: config.firmware_event_send,
@@ -188,6 +204,12 @@ impl Manifest {
             chipset_devices: config.chipset_devices,
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
+            automatic_guest_reset: config.automatic_guest_reset,
+            efi_diagnostics_log_level: match config.efi_diagnostics_log_level {
+                EfiDiagnosticsLogLevelType::Default => LogLevel::make_default(),
+                EfiDiagnosticsLogLevelType::Info => LogLevel::make_info(),
+                EfiDiagnosticsLogLevelType::Full => LogLevel::make_full(),
+            },
         }
     }
 }
@@ -201,6 +223,9 @@ pub struct Manifest {
     load_mode: LoadMode,
     floppy_disks: Vec<FloppyDiskConfig>,
     ide_disks: Vec<IdeDeviceConfig>,
+    pcie_root_complexes: Vec<PcieRootComplexConfig>,
+    pcie_devices: Vec<PcieDeviceConfig>,
+    pcie_switches: Vec<PcieSwitchConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
     memory: MemoryConfig,
     processor_topology: ProcessorTopologyConfig,
@@ -219,8 +244,7 @@ pub struct Manifest {
     vtl2_vmbus: Option<VmbusConfig>,
     #[cfg(all(windows, feature = "virt_whp"))]
     vpci_resources: Vec<virt_whp::device::DeviceHandle>,
-    format_vmgs: bool,
-    vmgs_disk: Option<Resource<DiskHandleKind>>,
+    vmgs: Option<VmgsResource>,
     secure_boot_enabled: bool,
     custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
@@ -229,6 +253,8 @@ pub struct Manifest {
     chipset_devices: Vec<ChipsetDeviceHandle>,
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
+    automatic_guest_reset: bool,
+    efi_diagnostics_log_level: LogLevel,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -242,13 +268,14 @@ async fn open_simple_disk(
     resolver: &ResourceResolver,
     disk_type: Resource<DiskHandleKind>,
     read_only: bool,
+    driver_source: &VmTaskDriverSource,
 ) -> anyhow::Result<Disk> {
     let disk = resolver
         .resolve(
             disk_type,
             ResolveDiskParameters {
                 read_only,
-                _async_trait_workaround: &(),
+                driver_source,
             },
         )
         .await?;
@@ -379,7 +406,7 @@ struct InitializedVm {
 }
 
 trait BuildTopology<T: ArchTopology + Inspect> {
-    fn to_topology(&self) -> anyhow::Result<ProcessorTopology<T>>;
+    fn to_topology(&self, hypervisor: Hypervisor) -> anyhow::Result<ProcessorTopology<T>>;
 }
 
 trait ExtractTopologyConfig {
@@ -406,8 +433,14 @@ impl ExtractTopologyConfig for ProcessorTopology<X86Topology> {
     }
 }
 
+#[cfg(guest_arch = "x86_64")]
 impl BuildTopology<X86Topology> for ProcessorTopologyConfig {
-    fn to_topology(&self) -> anyhow::Result<ProcessorTopology<X86Topology>> {
+    fn to_topology(
+        &self,
+        _hypervisor: Hypervisor,
+    ) -> anyhow::Result<ProcessorTopology<X86Topology>> {
+        use vm_topology::processor::x86::X2ApicState;
+
         let arch = match &self.arch {
             None => Default::default(),
             Some(ArchTopologyConfig::X86(arch)) => arch.clone(),
@@ -446,13 +479,17 @@ impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
                     gic_distributor_base: self.gic_distributor_base(),
                     gic_redistributors_base: self.gic_redistributors_base(),
                 }),
+                pmu_gsiv: PmuGsivConfig::Gsiv(self.pmu_gsiv()),
             })),
         }
     }
 }
 
 impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
-    fn to_topology(&self) -> anyhow::Result<ProcessorTopology<Aarch64Topology>> {
+    fn to_topology(
+        &self,
+        hypervisor: Hypervisor,
+    ) -> anyhow::Result<ProcessorTopology<Aarch64Topology>> {
         let arch = match &self.arch {
             None => Default::default(),
             Some(ArchTopologyConfig::Aarch64(arch)) => arch.clone(),
@@ -469,8 +506,19 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
                 gic_redistributors_base: hvlite_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE,
             }
         };
+        let pmu_gsiv = match arch.pmu_gsiv {
+            PmuGsivConfig::Gsiv(gsiv) => gsiv,
+            PmuGsivConfig::Platform => platform_gsiv(hypervisor),
+        };
 
-        let mut builder = TopologyBuilder::new_aarch64(gic);
+        // TODO: When this value is supported on all platforms, we should change
+        // the arch config to not be an option. For now, warn since the ARM VBSA
+        // expects this to be available.
+        if pmu_gsiv == 0 {
+            tracing::warn!("PMU GSIV is set to 0");
+        }
+
+        let mut builder = TopologyBuilder::new_aarch64(gic, pmu_gsiv);
         if let Some(smt) = self.enable_smt {
             builder.smt_enabled(smt);
         }
@@ -541,6 +589,13 @@ struct LoadedVmInner {
     next_igvm_file: Option<IgvmFile>,
     _vmgs_task: Option<Task<()>>,
     vmgs_client_inspect_handle: Option<vmgs_broker::VmgsClient>,
+
+    // relay halt messages, intercepting reset if configured.
+    halt_recv: mesh::Receiver<HaltReason>,
+    client_notify_send: mesh::Sender<HaltReason>,
+    /// allow the guest to reset without notifying the client
+    automatic_guest_reset: bool,
+    pcie_host_bridges: Vec<PcieHostBridge>,
 }
 
 fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
@@ -567,6 +622,29 @@ fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
         }
     }
     anyhow::bail!("no hypervisor available");
+}
+
+fn platform_gsiv(hypervisor: Hypervisor) -> u32 {
+    let gsiv = match hypervisor {
+        #[cfg(all(
+            feature = "virt_whp",
+            target_os = "windows",
+            guest_is_native,
+            guest_arch = "aarch64"
+        ))]
+        Hypervisor::Whp => virt_whp::WHP_PMU_GSIV,
+        // TODO: hvf supports the PMU interrupt, but enabling it didn't seem to
+        // make it work it a Linux guest. More investigation required.
+        #[cfg(all(target_os = "macos", guest_is_native, guest_arch = "aarch64"))]
+        Hypervisor::Hvf => 0,
+        _ => 0,
+    };
+
+    if gsiv == 0 {
+        tracing::warn!(?hypervisor, "no platform GSIV available for hypervisor");
+    }
+
+    gsiv
 }
 
 fn convert_vtl2_config(
@@ -761,7 +839,7 @@ impl InitializedVm {
             None
         };
 
-        let processor_topology = cfg.processor_topology.to_topology()?;
+        let processor_topology = cfg.processor_topology.to_topology(hypervisor_type)?;
 
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
@@ -872,9 +950,13 @@ impl InitializedVm {
 
         // Add in Hyper-V VMM CPUID leaves.
         if cfg.hypervisor.with_hv {
+            let confidential_vmbus = false;
             // Only advertise extended IOAPIC on non-PCAT systems.
             let extended_ioapic_rte = !matches!(cfg.load_mode, LoadMode::Pcat { .. });
-            cpuid.extend(vmm_core::cpuid::hyperv_cpuid_leaves(extended_ioapic_rte));
+            cpuid.extend(vmm_core::cpuid::hyperv_cpuid_leaves(
+                extended_ioapic_rte,
+                confidential_vmbus,
+            ));
         }
 
         // Add in topology CPUID leaves.
@@ -966,18 +1048,49 @@ impl InitializedVm {
             }
         }
 
-        let (vmgs_client, vmgs_task) = if let Some(vmgs_file) = cfg.vmgs_disk {
-            let disk = open_simple_disk(&resolver, vmgs_file, false).await?;
-            let vmgs = if cfg.format_vmgs {
-                vmgs::Vmgs::format_new(disk, None)
-                    .await
-                    .context("failed to format vmgs file")?
-            } else {
-                vmgs::Vmgs::open(disk, None)
-                    .await
-                    .context("failed to open vmgs file")?
-            };
+        if cfg
+            .vmgs
+            .as_ref()
+            .is_some_and(|x| !matches!(x.encryption_policy(), GuestStateEncryptionPolicy::None(_)))
+        {
+            unimplemented!("guest state encryption not supported on openvmm");
+        }
 
+        let vmgs = match cfg.vmgs {
+            Some(VmgsResource::Disk(disk)) => Some(
+                vmgs::Vmgs::try_open(
+                    open_simple_disk(&resolver, disk.disk, false, &driver_source).await?,
+                    None,
+                    true,
+                    false,
+                )
+                .await
+                .context("failed to open vmgs file")?,
+            ),
+            Some(VmgsResource::ReprovisionOnFailure(disk)) => Some(
+                vmgs::Vmgs::try_open(
+                    open_simple_disk(&resolver, disk.disk, false, &driver_source).await?,
+                    None,
+                    true,
+                    true,
+                )
+                .await
+                .context("failed to open vmgs file")?,
+            ),
+            Some(VmgsResource::Reprovision(disk)) => Some(
+                vmgs::Vmgs::request_format(
+                    open_simple_disk(&resolver, disk.disk, false, &driver_source).await?,
+                    None,
+                )
+                .await
+                .context("failed to format vmgs file")?,
+            ),
+            Some(VmgsResource::Ephemeral) => None,
+            // TODO: make sure we don't need a VMGS
+            None => None,
+        };
+
+        let (vmgs_client, vmgs_task) = if let Some(vmgs) = vmgs {
             let (vmgs_client, vmgs_task) =
                 vmgs_broker::spawn_vmgs_broker(driver_source.builder().build("vmgs_broker"), vmgs);
             resolver.add_resolver(VmgsFileResolver::new(vmgs_client.clone()));
@@ -1025,6 +1138,7 @@ impl InitializedVm {
         let mut deps_hyperv_firmware_uefi = None;
         match &cfg.load_mode {
             LoadMode::Uefi { .. } => {
+                let (watchdog_send, watchdog_recv) = mesh::channel();
                 deps_hyperv_firmware_uefi = Some(dev::HyperVFirmwareUefi {
                     config: firmware_uefi::UefiConfig {
                         custom_uefi_vars: cfg.custom_uefi_vars,
@@ -1040,6 +1154,7 @@ impl InitializedVm {
                         } else {
                             UefiCommandSet::Aarch64
                         },
+                        diagnostics_log_level: cfg.efi_diagnostics_log_level,
                     },
                     logger,
                     nvram_storage: {
@@ -1060,38 +1175,34 @@ impl InitializedVm {
                     },
                     generation_id_recv,
                     watchdog_platform: {
-                        use emuplat::watchdog::HvLiteWatchdogPlatform;
                         use vmcore::non_volatile_store::EphemeralNonVolatileStore;
 
                         // UEFI watchdog doesn't persist to VMGS at this time
                         let store = EphemeralNonVolatileStore::new_boxed();
 
-                        // Request an NMI on watchdog timeout.
+                        // Create the base watchdog platform
+                        let mut base_watchdog_platform = BaseWatchdogPlatform::new(store).await?;
+
+                        // Inject NMI on watchdog timeout
                         #[cfg(guest_arch = "x86_64")]
-                        let on_timeout = {
-                            let partition = partition.clone();
-                            Box::new(move || {
-                                // Unlike Hyper-V, we only send the NMI to the BSP.
-                                partition.request_msi(
-                                    Vtl::Vtl0,
-                                    virt::irqcon::MsiRequest::new_x86(
-                                        virt::irqcon::DeliveryMode::NMI,
-                                        0,
-                                        false,
-                                        0,
-                                        false,
-                                    ),
-                                );
-                            })
-                        };
-                        #[cfg(guest_arch = "aarch64")]
-                        let on_timeout = {
-                            let halt = halt_vps.clone();
-                            Box::new(move || halt.halt(HaltReason::Reset))
+                        let watchdog_callback = WatchdogTimeoutNmi {
+                            partition: partition.clone(),
+                            watchdog_send: Some(watchdog_send),
                         };
 
-                        Box::new(HvLiteWatchdogPlatform::new(store, on_timeout).await?)
+                        // ARM64 does not have NMI support yet, so halt instead
+                        #[cfg(guest_arch = "aarch64")]
+                        let watchdog_callback = WatchdogTimeoutReset {
+                            halt_vps: halt_vps.clone(),
+                            watchdog_send: Some(watchdog_send),
+                        };
+
+                        // Add callbacks
+                        base_watchdog_platform.add_callback(Box::new(watchdog_callback));
+
+                        Box::new(base_watchdog_platform)
                     },
+                    watchdog_recv,
                     vsm_config: None,
                     // TODO: persist SystemTimeClock time across reboots.
                     time_source: Box::new(local_clock::SystemTimeClock::new(
@@ -1119,6 +1230,7 @@ impl InitializedVm {
                             processor_topology: &processor_topology,
                             mem_layout: &mem_layout,
                             cache_topology: None,
+                            pcie_host_bridges: &Vec::new(),
                             with_ioapic: cfg.chipset.with_generic_ioapic,
                             with_pic: cfg.chipset.with_generic_pic,
                             with_pit: cfg.chipset.with_generic_pit,
@@ -1261,9 +1373,10 @@ impl InitializedVm {
                         read_only,
                         disk_parameters,
                     } => {
-                        let disk = open_simple_disk(&resolver, disk_type, read_only)
-                            .await
-                            .context("failed to open IDE disk")?;
+                        let disk =
+                            open_simple_disk(&resolver, disk_type, read_only, &driver_source)
+                                .await
+                                .context("failed to open IDE disk")?;
 
                         // Only disks get accelerator channels. DVDs dont.
                         let scsi_disk = ScsiControllerDisk::new(Arc::new(SimpleScsiDisk::new(
@@ -1296,7 +1409,6 @@ impl InitializedVm {
             Some(dev::HyperVGuestWatchdogDeps {
                 port_base: WDAT_PORT,
                 watchdog_platform: {
-                    use emuplat::watchdog::HvLiteWatchdogPlatform;
                     use vmcore::non_volatile_store::EphemeralNonVolatileStore;
 
                     let store = match vmgs_client {
@@ -1306,13 +1418,20 @@ impl InitializedVm {
                         None => EphemeralNonVolatileStore::new_boxed(),
                     };
 
-                    // TODO: use a `PowerRequestHandleKind` resource.
-                    let trigger_reset = {
-                        let halt = halt_vps.clone();
-                        Box::new(move || halt.halt(HaltReason::Reset))
+                    // Create the base watchdog platform
+                    let mut base_watchdog_platform = BaseWatchdogPlatform::new(store).await?;
+
+                    // Create callback to reset on watchdog timeout
+                    let watchdog_callback = WatchdogTimeoutReset {
+                        halt_vps: halt_vps.clone(),
+                        watchdog_send: None, // This is not the UEFI watchdog, so no need to send
+                                             // watchdog notifications
                     };
 
-                    Box::new(HvLiteWatchdogPlatform::new(store, trigger_reset).await?)
+                    // Add callbacks
+                    base_watchdog_platform.add_callback(Box::new(watchdog_callback));
+
+                    Box::new(base_watchdog_platform)
                 },
             })
         } else {
@@ -1369,7 +1488,7 @@ impl InitializedVm {
                     read_only,
                 } = disk_cfg;
 
-                let disk = open_simple_disk(&resolver, disk_type, read_only)
+                let disk = open_simple_disk(&resolver, disk_type, read_only, &driver_source)
                     .await
                     .context("failed to open floppy disk")?;
                 tracing::trace!("floppy opened based on config into DriveRibbon");
@@ -1643,6 +1762,100 @@ impl InitializedVm {
         let mut vtl2_hvsock_relay = None;
         let mut vmbus_redirect = false;
 
+        // PCI Express topology
+
+        let mut pcie_host_bridges = Vec::new();
+        {
+            // ECAM allocation starts at the configured base and grows upwards.
+            // Low MMIO allocation for PCIe starts just below the low MMIO window for other
+            // devices and grows downwards.
+            // High MMIO allocation for PCIe starts just above the high MMIO window for
+            // other devices and grows upwards.
+            let mut ecam_address = cfg.memory.pcie_ecam_base;
+            let mut low_mmio_address = cfg.memory.mmio_gaps[0].start();
+            let mut high_mmio_address = cfg.memory.mmio_gaps[1].end();
+
+            for rc in cfg.pcie_root_complexes {
+                let device_name = format!("pcie-root:{}", rc.name);
+                let root_complex =
+                    chipset_builder
+                        .arc_mutex_device(device_name)
+                        .add(|services| {
+                            let root_port_definitions = rc
+                                .ports
+                                .into_iter()
+                                .map(|rp_cfg| GenericPcieRootPortDefinition {
+                                    name: rp_cfg.name.into(),
+                                    hotplug: rp_cfg.hotplug,
+                                })
+                                .collect();
+
+                            GenericPcieRootComplex::new(
+                                &mut services.register_mmio(),
+                                rc.start_bus,
+                                rc.end_bus,
+                                ecam_address,
+                                root_port_definitions,
+                            )
+                        })?;
+
+                let ecam_size = root_complex.lock().ecam_size();
+                let low_mmio_size = rc.low_mmio_size as u64;
+                pcie_host_bridges.push(PcieHostBridge {
+                    index: rc.index,
+                    segment: rc.segment,
+                    start_bus: rc.start_bus,
+                    end_bus: rc.end_bus,
+                    ecam_range: MemoryRange::new(ecam_address..ecam_address + ecam_size),
+                    low_mmio: MemoryRange::new(low_mmio_address - low_mmio_size..low_mmio_address),
+                    high_mmio: MemoryRange::new(
+                        high_mmio_address..high_mmio_address + rc.high_mmio_size,
+                    ),
+                });
+
+                let bus_id = vmotherboard::BusId::new(&rc.name);
+                chipset_builder.register_weak_mutex_pcie_enumerator(bus_id, Box::new(root_complex));
+
+                ecam_address += ecam_size;
+                low_mmio_address -= low_mmio_size;
+                high_mmio_address += rc.high_mmio_size;
+            }
+
+            for switch in cfg.pcie_switches {
+                let device_name = format!("pcie-switch:{}", switch.name);
+                let switch_device = chipset_builder
+                    .arc_mutex_device(device_name)
+                    .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
+                    .add(|_services| {
+                        let definition = pcie::switch::GenericPcieSwitchDefinition {
+                            name: switch.name.clone().into(),
+                            downstream_port_count: switch.num_downstream_ports,
+                            hotplug: switch.hotplug,
+                        };
+                        GenericPcieSwitch::new(definition)
+                    })?;
+
+                let bus_id = vmotherboard::BusId::new(&switch.name);
+                chipset_builder
+                    .register_weak_mutex_pcie_enumerator(bus_id, Box::new(switch_device));
+            }
+        }
+
+        for dev_cfg in cfg.pcie_devices {
+            vmm_core::device_builder::build_pcie_device(
+                &mut chipset_builder,
+                dev_cfg.port_name.into(),
+                &driver_source,
+                &resolver,
+                &gm,
+                dev_cfg.resource,
+                partition.clone().into_doorbell_registration(Vtl::Vtl0),
+                Some(&mapper),
+                partition.clone().into_msi_target(Vtl::Vtl0),
+            )
+            .await?;
+        }
+
         if let Some(vmbus_cfg) = cfg.vmbus {
             if !cfg.hypervisor.with_hv {
                 anyhow::bail!("vmbus required hypervisor enlightements");
@@ -1656,18 +1869,19 @@ impl InitializedVm {
                 let vtl2_hvsock_channel = HvsockRelayChannel::new();
 
                 let vmbus_driver = driver_source.simple();
-                let vtl2_vmbus = VmbusServer::builder(&vmbus_driver, synic.clone(), gm.clone())
-                    .vtl(Vtl::Vtl2)
-                    .max_version(
-                        vtl2_vmbus_cfg
-                            .vmbus_max_version
-                            .map(vmbus_core::MaxVersionInfo::new),
-                    )
-                    .hvsock_notify(Some(vtl2_hvsock_channel.server_half))
-                    .external_requests(Some(server_request_recv))
-                    .enable_mnf(true)
-                    .build()
-                    .context("failed to create VTL2 vmbus server")?;
+                let vtl2_vmbus =
+                    VmbusServer::builder(vmbus_driver.clone(), synic.clone(), gm.clone())
+                        .vtl(Vtl::Vtl2)
+                        .max_version(
+                            vtl2_vmbus_cfg
+                                .vmbus_max_version
+                                .map(vmbus_core::MaxVersionInfo::new),
+                        )
+                        .hvsock_notify(Some(vtl2_hvsock_channel.server_half))
+                        .external_requests(Some(server_request_recv))
+                        .enable_mnf(true)
+                        .build()
+                        .context("failed to create VTL2 vmbus server")?;
 
                 let vtl2_vmbus = VmbusServerHandle::new(
                     &vmbus_driver,
@@ -1693,7 +1907,7 @@ impl InitializedVm {
             };
 
             let vmbus_driver = driver_source.simple();
-            let vmbus = VmbusServer::builder(&vmbus_driver, synic.clone(), gm.clone())
+            let vmbus = VmbusServer::builder(vmbus_driver.clone(), synic.clone(), gm.clone())
                 .hvsock_notify(Some(hvsock_channel.server_half))
                 .external_server(vtl2_request_send)
                 .use_message_redirect(vmbus_cfg.vtl2_redirect)
@@ -1710,19 +1924,21 @@ impl InitializedVm {
             // Start the vmbus kernel proxy if it's in use.
             #[cfg(windows)]
             if let Some(proxy_handle) = vmbus_cfg.vmbusproxy_handle {
-                vmbus_proxy = Some(
-                    vmbus_server::ProxyIntegration::start(
-                        &vmbus_driver,
-                        proxy_handle,
-                        vmbus_server::ProxyServerInfo::new(vmbus.control(), None),
-                        vtl2_vmbus.as_ref().map(|server| {
-                            vmbus_server::ProxyServerInfo::new(server.control().clone(), None)
-                        }),
-                        Some(&gm),
+                vmbus_proxy =
+                    Some(
+                        vmbus_server::ProxyIntegration::builder(
+                            &vmbus_driver,
+                            proxy_handle,
+                            vmbus_server::ProxyServerInfo::new(vmbus.control()),
+                        )
+                        .vtl2_server(vtl2_vmbus.as_ref().map(|server| {
+                            vmbus_server::ProxyServerInfo::new(server.control().clone())
+                        }))
+                        .memory(Some(&gm))
+                        .build()
+                        .await
+                        .context("failed to start the vmbus proxy")?,
                     )
-                    .await
-                    .context("failed to start the vmbus proxy")?,
-                )
             }
 
             let vmbus = VmbusServerHandle::new(&vmbus_driver, state_units.add("vmbus"), vmbus)
@@ -1798,6 +2014,7 @@ impl InitializedVm {
                         &mut mmio,
                         vmbus.control().as_ref(),
                         interrupt_mapper,
+                        None,
                     )
                     .await?;
 
@@ -1912,6 +2129,7 @@ impl InitializedVm {
                                 hv_device.clone().interrupt_mapper(),
                             ))
                         },
+                        None,
                     )
                     .await?;
                 }
@@ -1938,8 +2156,11 @@ impl InitializedVm {
                     let device = chipset_builder
                         .arc_mutex_device(device_name)
                         .with_external_pci()
-                        .try_add(|_services| {
-                            virt_whp::device::AssignedPciDevice::new(hv_device.clone())
+                        .try_add(|services| {
+                            virt_whp::device::AssignedPciDevice::new(
+                                &mut services.register_mmio(),
+                                hv_device.clone(),
+                            )
                         })
                         .context("failed to assign device")?;
 
@@ -1953,6 +2174,7 @@ impl InitializedVm {
                                 &mut services.register_mmio(),
                                 vmbus,
                                 crate::partition::VpciDevice::interrupt_mapper(hv_device),
+                                None,
                             )
                             .await
                         })
@@ -2163,7 +2385,16 @@ impl InitializedVm {
         assert!(virtio_mmio_start >= mem_layout.mmio()[1].start());
 
         let (chipset, devices) = chipset_builder.build()?;
-        let chipset = vmm_core::vmotherboard_adapter::ChipsetPlusSynic::new(synic.clone(), chipset);
+        let (fatal_error_send, _fatal_error_recv) = mesh::channel();
+        let chipset = vmm_core::vmotherboard_adapter::ChipsetPlusSynic::new(
+            synic.clone(),
+            chipset,
+            // TODO: Support this being a cmd line option
+            vmm_core::vmotherboard_adapter::FatalErrorPolicy::DebugBreak(fatal_error_send),
+        );
+
+        // create a new channel to intercept guest resets
+        let (halt_send, halt_recv) = mesh::channel();
 
         let (partition_unit, vp_runners) = PartitionUnit::new(
             driver_source.simple(),
@@ -2176,7 +2407,7 @@ impl InitializedVm {
                 processor_topology: &processor_topology,
                 halt_vps,
                 halt_request_recv,
-                client_notify_send,
+                client_notify_send: halt_send,
                 vtl_guest_memory: [
                     Some(&gm),
                     None,
@@ -2260,6 +2491,10 @@ impl InitializedVm {
                 next_igvm_file: None,
                 _vmgs_task: vmgs_task,
                 vmgs_client_inspect_handle,
+                halt_recv,
+                client_notify_send,
+                automatic_guest_reset: cfg.automatic_guest_reset,
+                pcie_host_bridges,
             },
         };
 
@@ -2289,6 +2524,7 @@ impl LoadedVmInner {
             processor_topology: &self.processor_topology,
             mem_layout: &self.mem_layout,
             cache_topology: cache_topology.as_ref(),
+            pcie_host_bridges: &self.pcie_host_bridges,
             with_ioapic: self.chipset_cfg.with_generic_ioapic,
             with_psp: self.chipset_cfg.with_generic_psp,
             with_pic: self.chipset_cfg.with_generic_pic,
@@ -2381,9 +2617,11 @@ impl LoadedVmInner {
                 enable_vpci_boot,
                 uefi_console_mode,
                 default_boot_always_attempt,
+                bios_guid,
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
+                let mcfg = (!self.pcie_host_bridges.is_empty()).then(|| acpi_builder.build_mcfg());
                 let pptt = cache_topology.is_some().then(|| acpi_builder.build_pptt());
                 let load_settings = super::vm_loaders::uefi::UefiLoadSettings {
                     debugging: enable_debugging,
@@ -2396,15 +2634,18 @@ impl LoadedVmInner {
                     serial: enable_serial,
                     uefi_console_mode,
                     default_boot_always_attempt,
+                    bios_guid,
                 };
                 let regs = super::vm_loaders::uefi::load_uefi(
                     firmware,
                     &self.gm,
                     &self.processor_topology,
                     &self.mem_layout,
+                    &self.pcie_host_bridges,
                     load_settings,
                     &madt,
                     &srat,
+                    mcfg.as_deref(),
                     pptt.as_deref(),
                 )?;
 
@@ -2526,6 +2767,7 @@ impl LoadedVm {
         enum Event {
             WorkerRpc(Result<WorkerRpc<RestartState>, mesh::RecvError>),
             VmRpc(Result<VmRpc, mesh::RecvError>),
+            Halt(Result<HaltReason, mesh::RecvError>),
         }
 
         // Start a task to handle state unit inspections by filtering the worker
@@ -2538,9 +2780,8 @@ impl LoadedVm {
                 while let Some(rpc) = worker_rpc.next().await {
                     match rpc {
                         WorkerRpc::Inspect(req) => req.respond(|resp| {
-                            worker_rpc_send.send(WorkerRpc::Inspect(
-                                resp.merge(&state_units).request().defer(),
-                            ));
+                            resp.merge(&state_units)
+                                .merge(inspect::send(&worker_rpc_send, WorkerRpc::Inspect));
                         }),
                         rpc => worker_rpc_send.send(rpc),
                     }
@@ -2553,7 +2794,8 @@ impl LoadedVm {
             let event: Event = {
                 let a = rpc_recv.recv().map(Event::VmRpc);
                 let b = worker_rpc.recv().map(Event::WorkerRpc);
-                (a, b).race().await
+                let c = self.inner.halt_recv.recv().map(Event::Halt);
+                (a, b, c).race().await
             };
 
             match event {
@@ -2710,6 +2952,18 @@ impl LoadedVm {
                         self.inner.gm.write_at(gpa, bytes.as_slice())
                     }),
                 },
+                Event::Halt(Err(_)) => break,
+                Event::Halt(Ok(reason)) => {
+                    if matches!(reason, HaltReason::Reset) && self.inner.automatic_guest_reset {
+                        tracing::info!("guest-initiated reset");
+                        if let Err(err) = self.reset(true).await {
+                            tracing::error!(?err, "failed to reset VM");
+                            break;
+                        }
+                    } else {
+                        self.inner.client_notify_send.send(reason);
+                    }
+                }
             }
         }
 
@@ -2833,9 +3087,12 @@ impl LoadedVm {
 
         let manifest = Manifest {
             load_mode: self.inner.load_mode,
-            floppy_disks: vec![], // TODO
-            ide_disks: vec![],    // TODO
-            vpci_devices: vec![], // TODO
+            floppy_disks: vec![],        // TODO
+            ide_disks: vec![],           // TODO
+            pcie_root_complexes: vec![], // TODO
+            pcie_devices: vec![],        // TODO
+            pcie_switches: vec![],       // TODO
+            vpci_devices: vec![],        // TODO
             memory: self.inner.memory_cfg,
             processor_topology: self.inner.processor_topology.to_config(),
             chipset: self.inner.chipset_cfg,
@@ -2853,8 +3110,7 @@ impl LoadedVm {
             virtio_devices: vec![], // TODO
             #[cfg(all(windows, feature = "virt_whp"))]
             vpci_resources: vec![], // TODO
-            vmgs_disk: None,        // TODO
-            format_vmgs: false,     // TODO
+            vmgs: None,             // TODO
             secure_boot_enabled: false, // TODO
             custom_uefi_vars: Default::default(), // TODO
             firmware_event_send: self.inner.firmware_event_send,
@@ -2863,6 +3119,8 @@ impl LoadedVm {
             chipset_devices: vec![],   // TODO
             generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
+            automatic_guest_reset: self.inner.automatic_guest_reset,
+            efi_diagnostics_log_level: Default::default(),
         };
         RestartState {
             hypervisor: self.inner.hypervisor,
@@ -2964,4 +3222,42 @@ fn add_devices_to_dsdt(
 
     dsdt.add_vmbus(cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge);
     dsdt.add_rtc();
+}
+
+#[cfg(guest_arch = "x86_64")]
+struct WatchdogTimeoutNmi {
+    partition: Arc<dyn HvlitePartition>,
+    watchdog_send: Option<mesh::Sender<()>>,
+}
+
+#[cfg(guest_arch = "x86_64")]
+#[async_trait::async_trait]
+impl WatchdogCallback for WatchdogTimeoutNmi {
+    async fn on_timeout(&mut self) {
+        // Unlike Hyper-V, we only send the NMI to the BSP.
+        self.partition.request_msi(
+            Vtl::Vtl0,
+            virt::irqcon::MsiRequest::new_x86(virt::irqcon::DeliveryMode::NMI, 0, false, 0, false),
+        );
+
+        if let Some(watchdog_send) = &self.watchdog_send {
+            watchdog_send.send(());
+        }
+    }
+}
+
+struct WatchdogTimeoutReset {
+    halt_vps: Arc<Halt>,
+    watchdog_send: Option<mesh::Sender<()>>,
+}
+
+#[async_trait::async_trait]
+impl WatchdogCallback for WatchdogTimeoutReset {
+    async fn on_timeout(&mut self) {
+        self.halt_vps.halt(HaltReason::Reset);
+
+        if let Some(watchdog_send) = &self.watchdog_send {
+            watchdog_send.send(());
+        }
+    }
 }

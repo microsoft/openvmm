@@ -57,7 +57,6 @@ use vmbus_channel::bus::OfferInput;
 use vmbus_channel::bus::OfferResources;
 use vmbus_channel::bus::OpenData;
 use vmbus_channel::bus::OpenRequest;
-use vmbus_channel::bus::OpenResult;
 use vmbus_channel::bus::ParentBus;
 use vmbus_channel::channel::ChannelHandle;
 use vmbus_channel::channel::VmbusDevice;
@@ -87,7 +86,7 @@ use zerocopy::KnownLayout;
 const VMNIC_CHANNEL_TYPE_GUID: Guid = guid::guid!("f8615163-df3e-46c5-913f-f2d2f965ed0e");
 
 enum ChannelResponse {
-    Open(Option<OpenResult>),
+    Open(bool),
     Close,
     Gpadl(bool),
     // TeardownGpadl(GpadlId),
@@ -137,6 +136,7 @@ struct TestNicEndpointState {
     pub use_vf: Option<bool>,
     // Used for any queries since use_vf is often reset after check.
     pub last_use_vf: Option<bool>,
+    pub vf_state: Option<TestVirtualFunctionState>,
     pub stop_endpoint_counter: usize,
     pub link_status_updater: Option<mesh::Sender<VecDeque<bool>>>,
     pub queues: Vec<mesh::Sender<Vec<u8>>>,
@@ -148,6 +148,7 @@ impl TestNicEndpointState {
             poll_iterations_required: 1,
             use_vf: None,
             last_use_vf: None,
+            vf_state: None,
             stop_endpoint_counter: 0,
             link_status_updater: None,
             queues: Vec::new(),
@@ -275,14 +276,28 @@ impl net_backend::Endpoint for TestNicEndpoint {
     }
 
     async fn set_data_path_to_guest_vf(&self, use_vf: bool) -> anyhow::Result<()> {
+        tracing::info!(use_vf, "set_data_path_to_guest_vf");
         let inner = self.inner.clone();
         let mut iter = {
             let locked_inner = inner.lock().await;
             let endpoint_state = locked_inner.endpoint_state.as_ref().unwrap();
             let mut locked_data = endpoint_state.lock();
-            locked_data.use_vf = Some(use_vf);
-            locked_data.last_use_vf = Some(use_vf);
-            locked_data.poll_iterations_required
+            if locked_data
+                .vf_state
+                .as_ref()
+                .is_none_or(|vf_state| vf_state.is_ready())
+            {
+                locked_data.use_vf = Some(use_vf);
+                locked_data.last_use_vf = Some(use_vf);
+                locked_data.poll_iterations_required
+            } else {
+                if use_vf {
+                    anyhow::bail!("VF not ready");
+                } else {
+                    // VF not available, but switching away from using it.
+                    return Ok(());
+                }
+            }
         };
         std::future::poll_fn(move |cx| {
             if iter <= 1 {
@@ -333,20 +348,32 @@ impl NetQueue for TestNicQueue {
         if self.rx_ids.is_empty() {
             return Poll::Pending;
         }
-        let recv = std::pin::pin!(self.rx.recv());
-        self.next_rx_packet = Some(std::task::ready!(recv.poll(cx)).unwrap());
+        if self.next_rx_packet.is_none() {
+            let recv = std::pin::pin!(self.rx.recv());
+            match std::task::ready!(recv.poll(cx)) {
+                Ok(packet) => {
+                    self.next_rx_packet = Some(packet);
+                }
+                Err(err) => {
+                    tracing::error!(?err, "Error receiving packet");
+                    return Poll::Pending;
+                }
+            }
+        }
         Poll::Ready(())
     }
 
     fn rx_avail(&mut self, done: &[RxId]) {
-        for rx_id in done.iter() {
-            self.rx_ids.push_back(*rx_id);
-        }
+        self.rx_ids.extend(done);
     }
 
     fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
-        if packets.is_empty() {
+        if packets.is_empty() || self.rx_ids.is_empty() {
             return Ok(0);
+        }
+
+        if self.next_rx_packet.is_none() {
+            self.next_rx_packet = self.rx.try_recv().ok();
         }
 
         if let Some(packet) = self.next_rx_packet.take() {
@@ -545,7 +572,7 @@ impl TestNicDevice {
         let (ring_gpadl_id, page_array) = self.add_guest_pages(4).await;
         gpadl_map.add(
             ring_gpadl_id,
-            MultiPagedRangeBuf::new(1, page_array).unwrap(),
+            MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap(),
         );
 
         let host_to_guest_event = Arc::new(SlimEvent::new());
@@ -575,18 +602,19 @@ impl TestNicDevice {
             .await
             .expect("open successful");
 
-        let ChannelResponse::Open(Some(result)) = open_response else {
+        let ChannelResponse::Open(true) = open_response else {
             panic!("Unexpected return value");
         };
 
         let mem = self.mock_vmbus.memory.clone();
+        let guest_to_host_interrupt = self.offer_input.event.clone();
         TestNicChannel::new(
             self,
             &mem,
             gpadl_map,
             ring_gpadl_id,
             host_to_guest_event,
-            result.guest_to_host_interrupt,
+            guest_to_host_interrupt,
         )
     }
 
@@ -595,7 +623,7 @@ impl TestNicDevice {
         let (ring_gpadl_id, page_array) = self.add_guest_pages(4).await;
         gpadl_map.add(
             ring_gpadl_id,
-            MultiPagedRangeBuf::new(1, page_array).unwrap(),
+            MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap(),
         );
 
         let host_to_guest_event = Arc::new(SlimEvent::new());
@@ -630,16 +658,17 @@ impl TestNicDevice {
             .await
             .expect("open successful");
 
-        let ChannelResponse::Open(Some(result)) = open_response else {
+        let ChannelResponse::Open(true) = open_response else {
             panic!("Unexpected return value");
         };
 
+        let guest_to_host_interrupt = self.offer_input.event.clone();
         TestNicSubchannel::new(
             &self.mock_vmbus.memory,
             gpadl_map,
             ring_gpadl_id,
             host_to_guest_event,
-            result.guest_to_host_interrupt,
+            guest_to_host_interrupt,
         )
     }
 
@@ -657,14 +686,17 @@ impl TestNicDevice {
 
     pub async fn retarget_vp(&self, vp: u32) {
         let modify_request = ModifyRequest::TargetVp { target_vp: vp };
-        let modify_response = self
-            .send_to_channel(
-                0,
-                ChannelRequest::Modify,
-                modify_request,
-                ChannelResponse::Modify,
-            )
+        let send_request = self.send_to_channel(
+            0,
+            ChannelRequest::Modify,
+            modify_request,
+            ChannelResponse::Modify,
+        );
+        let modify_response = mesh::CancelContext::new()
+            .with_timeout(Duration::from_millis(333))
+            .until_cancelled(send_request)
             .await
+            .expect("response received")
             .expect("modify successful");
 
         assert!(matches!(modify_response, ChannelResponse::Modify(0)));
@@ -686,7 +718,7 @@ impl TestNicDevice {
         next_avail_guest_page: usize,
         next_avail_gpadl_id: u32,
         host_to_guest_interrupt: Interrupt,
-    ) -> anyhow::Result<Option<Interrupt>> {
+    ) -> anyhow::Result<()> {
         // Restore the previous memory settings
         assert_eq!(self.next_avail_gpadl_id, 1);
         self.next_avail_gpadl_id = next_avail_gpadl_id;
@@ -703,9 +735,8 @@ impl TestNicDevice {
                     None
                 }
             })
-            .collect::<Vec<(GpadlId, MultiPagedRangeBuf<Vec<u64>>)>>();
+            .collect::<Vec<(GpadlId, MultiPagedRangeBuf)>>();
 
-        let mut guest_to_host_interrupt = None;
         mesh::CancelContext::new()
             .with_timeout(Duration::from_millis(1000))
             .until_cancelled(async {
@@ -718,18 +749,16 @@ impl TestNicDevice {
                             match request {
                                 vmbus_channel::bus::ChannelServerRequest::Restore(rpc) => {
                                     let gpadls = gpadl_map_contents.iter().map(|(gpadl_id, pages)| {
-                                        let pages = pages.clone();
                                         vmbus_channel::bus::RestoredGpadl {
                                             request: GpadlRequest {
                                                 id: *gpadl_id,
                                                 count: 1,
-                                                buf: pages.into_buffer(),
+                                                buf: pages.range_buffer().to_vec(),
                                             },
                                             accepted: true,
                                         }
                                     }).collect::<Vec<vmbus_channel::bus::RestoredGpadl>>();
-                                    rpc.handle_sync(|open| {
-                                        guest_to_host_interrupt = open.map(|open| open.guest_to_host_interrupt);
+                                    rpc.handle_sync(|_open| {
                                         Ok(vmbus_channel::bus::RestoreResult {
                                             open_request: Some(OpenRequest {
                                                 open_data: OpenData {
@@ -757,7 +786,7 @@ impl TestNicDevice {
             .await
             .unwrap()?;
 
-        Ok(guest_to_host_interrupt)
+        Ok(())
     }
 }
 
@@ -800,6 +829,18 @@ impl TestNicSubchannel {
     }
 }
 
+struct NvspMessage<T> {
+    header: protocol::MessageHeader,
+    data: T,
+    padding: &'static [u8],
+}
+
+impl<T: IntoBytes + Immutable + KnownLayout> NvspMessage<T> {
+    fn payload(&self) -> [&[u8]; 3] {
+        [self.header.as_bytes(), self.data.as_bytes(), self.padding]
+    }
+}
+
 struct TestNicChannel<'a> {
     pub mtu: u32,
     nic: &'a mut TestNicDevice,
@@ -808,6 +849,7 @@ struct TestNicChannel<'a> {
     gpadl_map: Arc<GpadlMap>,
     recv_buf_id: GpadlId,
     send_buf_id: GpadlId,
+    send_offset: usize,
     channel_id: GpadlId,
     host_to_guest_event: Arc<SlimEvent>,
     subchannels: HashMap<u32, TestNicSubchannel>,
@@ -842,6 +884,7 @@ impl<'a> TestNicChannel<'a> {
             gpadl_map,
             recv_buf_id: GpadlId(0),
             send_buf_id: GpadlId(0),
+            send_offset: 0,
             channel_id,
             host_to_guest_event,
             subchannels: HashMap::new(),
@@ -970,6 +1013,35 @@ impl<'a> TestNicChannel<'a> {
             .await
     }
 
+    pub async fn read_rndis_packet_complete_message_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Option<protocol::Message1SendRndisPacketComplete> {
+        self.read_with_timeout(timeout, |packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE
+                );
+                let completion_data: protocol::Message1SendRndisPacketComplete =
+                    reader.read_plain().unwrap();
+                Some(completion_data)
+            }
+            _ => panic!("Unexpected packet!"),
+        })
+        .await
+        .unwrap_or(None)
+    }
+
+    pub async fn read_rndis_packet_complete_message(
+        &mut self,
+    ) -> Option<protocol::Message1SendRndisPacketComplete> {
+        self.read_rndis_packet_complete_message_with_timeout(Duration::from_millis(333))
+            .await
+    }
+
     pub async fn write(&mut self, packet: OutgoingPacket<'_, '_>) {
         let (_, mut writer) = self.queue.split();
         writer.write(packet).await.unwrap();
@@ -1079,7 +1151,7 @@ impl<'a> TestNicChannel<'a> {
             * sub_allocation_size_for_mtu(DEFAULT_MTU) as usize)
             .div_ceil(PAGE_SIZE);
         let (gpadl_handle, page_array) = self.nic.add_guest_pages(min_buffer_pages).await;
-        let recv_range = MultiPagedRangeBuf::new(1, page_array).unwrap();
+        let recv_range = MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap();
         self.gpadl_map.add(gpadl_handle, recv_range);
         self.recv_buf_id = gpadl_handle;
 
@@ -1121,7 +1193,7 @@ impl<'a> TestNicChannel<'a> {
 
     pub async fn send_send_buffer_message(&mut self) {
         let (gpadl_handle, page_array) = self.nic.add_guest_pages(1).await;
-        let send_range = MultiPagedRangeBuf::new(1, page_array).unwrap();
+        let send_range = MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap();
         self.gpadl_map.add(gpadl_handle, send_range);
         self.send_buf_id = gpadl_handle;
 
@@ -1185,7 +1257,9 @@ impl<'a> TestNicChannel<'a> {
         let message_length = size_of::<rndisprot::MessageHeader>() + size_of::<T>() + extra.len();
         let mem = self.nic.mock_vmbus.memory.clone();
         let gpadl_view = self.gpadl_map.clone().view().map(self.send_buf_id).unwrap();
-        let mut buf_writer = PagedRanges::new(&*gpadl_view).writer(&mem);
+        let mut range = PagedRanges::new(&*gpadl_view);
+        range.skip(self.send_offset);
+        let mut buf_writer = range.writer(&mem);
         buf_writer
             .write(
                 rndisprot::MessageHeader {
@@ -1214,13 +1288,17 @@ impl<'a> TestNicChannel<'a> {
             padding: &[],
         };
         let gpadl_map_view = self.gpadl_map.clone().view().map(self.send_buf_id).unwrap();
-        let gpa_range = gpadl_map_view.first().unwrap().subrange(0, message_length);
+        let gpa_range = gpadl_map_view
+            .first()
+            .unwrap()
+            .subrange(self.send_offset, message_length);
         self.write(OutgoingPacket {
             transaction_id: self.transaction_id,
             packet_type: OutgoingPacketType::GpaDirect(&[gpa_range]),
             payload: &message.payload(),
         })
         .await;
+        self.send_offset += message_length;
         self.transaction_id += 1;
     }
 
@@ -1242,6 +1320,188 @@ impl<'a> TestNicChannel<'a> {
         })
         .await
         .expect("completion message");
+    }
+
+    pub async fn send_rndis_multiplepacket_no_completion<T: IntoBytes + Immutable + KnownLayout>(
+        &mut self,
+        messages: Vec<T>,
+        extras: Vec<Vec<u8>>,
+    ) {
+        let mem = self.nic.mock_vmbus.memory.clone();
+        let gpadl_view = self.gpadl_map.clone().view().map(self.send_buf_id).unwrap();
+        let mut buf_writer = PagedRanges::new(&*gpadl_view).writer(&mem);
+        let mut total_message_length = 0;
+
+        for (message, extra) in messages.iter().zip(extras.iter()) {
+            let message_length = size_of::<rndisprot::MessageHeader>()
+                + size_of::<rndisprot::Packet>()
+                + extra.len();
+            total_message_length += message_length;
+
+            buf_writer
+                .write(
+                    rndisprot::MessageHeader {
+                        message_type: rndisprot::MESSAGE_TYPE_PACKET_MSG,
+                        message_length: message_length as u32,
+                    }
+                    .as_bytes(),
+                )
+                .unwrap();
+
+            buf_writer.write(message.as_bytes()).unwrap();
+            buf_writer.write(extra.as_bytes()).unwrap();
+        }
+
+        let message = NvspMessage {
+            header: protocol::MessageHeader {
+                message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET,
+            },
+            data: protocol::Message1SendRndisPacket {
+                channel_type: protocol::CONTROL_CHANNEL_TYPE,
+                send_buffer_section_index: 0xffffffff,
+                send_buffer_section_size: 0,
+            },
+            padding: &[],
+        };
+        let gpadl_map_view = self.gpadl_map.clone().view().map(self.send_buf_id).unwrap();
+        let gpa_range = gpadl_map_view
+            .first()
+            .unwrap()
+            .subrange(0, total_message_length);
+        self.write(OutgoingPacket {
+            transaction_id: self.transaction_id,
+            packet_type: OutgoingPacketType::GpaDirect(&[gpa_range]),
+            payload: &message.payload(),
+        })
+        .await;
+        self.transaction_id += 1;
+    }
+
+    pub async fn send_rndis_packet_offload(
+        &mut self,
+        data: &[u8],
+        tcp_checksum: bool,
+        udp_checksum: bool,
+        lso: bool,
+    ) {
+        let mem = self.nic.mock_vmbus.memory.clone();
+        let gpadl_view = self.gpadl_map.clone().view().map(self.send_buf_id).unwrap();
+        let mut buf_writer = PagedRanges::new(&*gpadl_view).writer(&mem);
+
+        assert!(lso || tcp_checksum || udp_checksum);
+        // Calculate packet info length based on the offloads requested
+        let per_packet_info_offset = size_of::<rndisprot::Packet>() as u32;
+        let mut per_packet_info_length = size_of::<rndisprot::PerPacketInfo>() as u32;
+        if tcp_checksum || udp_checksum {
+            per_packet_info_length += size_of::<rndisprot::TxTcpIpChecksumInfo>() as u32;
+            assert!(!lso);
+        }
+        if lso {
+            per_packet_info_length += size_of::<rndisprot::TcpLsoInfo>() as u32;
+            assert!(!(tcp_checksum || udp_checksum));
+        }
+
+        let message_length = size_of::<rndisprot::MessageHeader>()
+            + size_of::<rndisprot::Packet>()
+            + per_packet_info_length as usize
+            + data.len();
+
+        // Write RNDIS packet message header
+        buf_writer
+            .write(
+                rndisprot::MessageHeader {
+                    message_type: rndisprot::MESSAGE_TYPE_PACKET_MSG,
+                    message_length: message_length as u32,
+                }
+                .as_bytes(),
+            )
+            .unwrap();
+
+        let packet = rndisprot::Packet {
+            data_offset: per_packet_info_offset + per_packet_info_length,
+            data_length: data.len() as u32,
+            oob_data_offset: 0,
+            oob_data_length: 0,
+            num_oob_data_elements: 0,
+            per_packet_info_offset,
+            per_packet_info_length,
+            vc_handle: 0,
+            reserved: 0,
+        };
+
+        // Write RNDIS packet
+        buf_writer.write(packet.as_bytes()).unwrap();
+
+        // Write per-packet info for checksum offload
+        const TCP_HEADER_OFFSET: u16 = 34; // Ethernet (14) + IPv4 (20)
+        if tcp_checksum || udp_checksum {
+            let checksum_info = rndisprot::TxTcpIpChecksumInfo::new_zeroed()
+                .set_is_ipv4(true)
+                .set_tcp_checksum(tcp_checksum)
+                .set_udp_checksum(udp_checksum)
+                .set_ip_header_checksum(true)
+                .set_tcp_header_offset(TCP_HEADER_OFFSET);
+
+            buf_writer
+                .write(
+                    rndisprot::PerPacketInfo {
+                        size: size_of::<rndisprot::PerPacketInfo>() as u32
+                            + size_of::<rndisprot::TxTcpIpChecksumInfo>() as u32,
+                        typ: rndisprot::PPI_TCP_IP_CHECKSUM,
+                        per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+                    }
+                    .as_bytes(),
+                )
+                .unwrap();
+            buf_writer.write(checksum_info.as_bytes()).unwrap();
+        }
+
+        // Write per-packet info for LSO
+        if lso {
+            const NORMAL_MTU: u32 = 1460; // 1500 MTU - 40 bytes (IP + TCP Headers). 8960 would be jumbo frames.
+            let maximum_segment_size = NORMAL_MTU;
+            let lso_info = rndisprot::TcpLsoInfo(
+                maximum_segment_size | ((TCP_HEADER_OFFSET as u32) << 20), // MSS in low 20 bits, TCP header offset in bits 20-29
+            );
+
+            buf_writer
+                .write(
+                    rndisprot::PerPacketInfo {
+                        size: size_of::<rndisprot::PerPacketInfo>() as u32
+                            + size_of::<rndisprot::TcpLsoInfo>() as u32,
+                        typ: rndisprot::PPI_LSO,
+                        per_packet_information_offset: size_of::<rndisprot::PerPacketInfo>() as u32,
+                    }
+                    .as_bytes(),
+                )
+                .unwrap();
+            buf_writer.write(lso_info.as_bytes()).unwrap();
+        }
+
+        // Write the packet data
+        buf_writer.write(data).unwrap();
+
+        let message = NvspMessage {
+            header: protocol::MessageHeader {
+                message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET,
+            },
+            data: protocol::Message1SendRndisPacket {
+                channel_type: protocol::DATA_CHANNEL_TYPE,
+                send_buffer_section_index: 0xffffffff,
+                send_buffer_section_size: 0,
+            },
+            padding: &[],
+        };
+
+        let gpadl_map_view = self.gpadl_map.clone().view().map(self.send_buf_id).unwrap();
+        let gpa_range = gpadl_map_view.first().unwrap().subrange(0, message_length);
+        self.write(OutgoingPacket {
+            transaction_id: self.transaction_id,
+            packet_type: OutgoingPacketType::GpaDirect(&[gpa_range]),
+            payload: &message.payload(),
+        })
+        .await;
+        self.transaction_id += 1;
     }
 
     pub async fn connect_subchannel(&mut self, idx: u32) {
@@ -1271,6 +1531,7 @@ impl<'a> TestNicChannel<'a> {
         buffer: SavedStateBlob,
     ) -> anyhow::Result<TestNicChannel<'_>> {
         let mem = self.nic.mock_vmbus.memory.clone();
+        let guest_to_host_interrupt = nic.offer_input.event.clone();
         let host_to_guest_interrupt = {
             let event = self.host_to_guest_event.clone();
             Interrupt::from_fn(move || event.signal())
@@ -1281,17 +1542,15 @@ impl<'a> TestNicChannel<'a> {
         let next_avail_guest_page = self.nic.next_avail_guest_page;
         let next_avail_gpadl_id = self.nic.next_avail_gpadl_id;
 
-        let guest_to_host_interrupt = nic
-            .restore(
-                buffer,
-                gpadl_map.clone(),
-                channel_id,
-                next_avail_guest_page,
-                next_avail_gpadl_id,
-                host_to_guest_interrupt,
-            )
-            .await?
-            .expect("should be open");
+        nic.restore(
+            buffer,
+            gpadl_map.clone(),
+            channel_id,
+            next_avail_guest_page,
+            next_avail_gpadl_id,
+            host_to_guest_interrupt,
+        )
+        .await?;
 
         Ok(TestNicChannel::new(
             nic,
@@ -1321,7 +1580,7 @@ impl RndisMessageParser {
         &self,
         data: &queue::DataPacket<'_, GpadlRingMem>,
         channel_type: u32,
-    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf<GpnList>) {
+    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf) {
         // Check for RNDIS packet
         let mut reader = data.reader();
         let header: protocol::MessageHeader = reader.read_plain().unwrap();
@@ -1333,12 +1592,14 @@ impl RndisMessageParser {
         assert_eq!(rndis_data.channel_type, channel_type);
 
         // Fetch RNDIS packet from external memory
-        let external_ranges = if let Some(id) = data.transfer_buffer_id() {
+        let mut external_ranges = MultiPagedRangeBuf::new();
+        if let Some(id) = data.transfer_buffer_id() {
             assert_eq!(id, 0);
 
-            data.read_transfer_ranges(self.buf.iter()).unwrap()
+            data.read_transfer_ranges(self.buf.first().unwrap(), &mut external_ranges)
+                .unwrap()
         } else {
-            data.read_external_ranges().unwrap()
+            data.read_external_ranges(&mut external_ranges).unwrap()
         };
         let mut direct_reader = PagedRanges::new(external_ranges.iter()).reader(&self.mem);
 
@@ -1349,18 +1610,18 @@ impl RndisMessageParser {
     pub fn parse_data_message(
         &self,
         data: &queue::DataPacket<'_, GpadlRingMem>,
-    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf<GpnList>) {
+    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf) {
         self.parse_message(data, protocol::DATA_CHANNEL_TYPE)
     }
 
     pub fn parse_control_message(
         &self,
         data: &queue::DataPacket<'_, GpadlRingMem>,
-    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf<GpnList>) {
+    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf) {
         self.parse_message(data, protocol::CONTROL_CHANNEL_TYPE)
     }
 
-    pub fn get<T>(&self, external_ranges: &MultiPagedRangeBuf<GpnList>) -> T
+    pub fn get<T>(&self, external_ranges: &MultiPagedRangeBuf) -> T
     where
         T: IntoBytes + FromBytes + Immutable + KnownLayout,
     {
@@ -1374,7 +1635,7 @@ impl RndisMessageParser {
         reader.read_plain::<T>().unwrap()
     }
 
-    pub fn get_data_packet_content<T>(&self, external_ranges: &MultiPagedRangeBuf<GpnList>) -> T
+    pub fn get_data_packet_content<T>(&self, external_ranges: &MultiPagedRangeBuf) -> T
     where
         T: IntoBytes + FromBytes + Immutable + KnownLayout,
     {
@@ -1394,7 +1655,8 @@ enum TestVirtualFunctionStateChange {
 struct TestVirtualFunctionState {
     id: Arc<parking_lot::Mutex<Option<u32>>>,
     send_runtime_update: Arc<parking_lot::Mutex<mesh::Sender<TestVirtualFunctionStateChange>>>,
-    is_ready: Arc<(parking_lot::Mutex<Option<bool>>, event_listener::Event)>,
+    is_ready: Arc<parking_lot::Mutex<bool>>,
+    is_ready_update: Arc<(parking_lot::Mutex<Option<bool>>, event_listener::Event)>,
     oneshot_ready_callback: Arc<parking_lot::Mutex<Option<mesh::OneshotSender<Rpc<bool, ()>>>>>,
 }
 
@@ -1406,7 +1668,8 @@ impl TestVirtualFunctionState {
         Self {
             id: Arc::new(parking_lot::Mutex::new(id)),
             send_runtime_update: Arc::new(parking_lot::Mutex::new(send_runtime_update)),
-            is_ready: Default::default(),
+            is_ready: Arc::new(parking_lot::Mutex::new(false)),
+            is_ready_update: Default::default(),
             oneshot_ready_callback: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
@@ -1421,6 +1684,9 @@ impl TestVirtualFunctionState {
         timeout: Option<Duration>,
     ) -> anyhow::Result<()> {
         *self.id.lock() = new_id;
+        if new_id.is_none() && self.is_ready() {
+            self.set_ready(false).await;
+        }
         let send_update = self
             .send_runtime_update
             .lock()
@@ -1442,9 +1708,9 @@ impl TestVirtualFunctionState {
         let mut ctx = mesh::CancelContext::new().with_timeout(timeout);
 
         loop {
-            let listener = self.is_ready.1.listen();
+            let listener = self.is_ready_update.1.listen();
             {
-                let mut val = self.is_ready.0.lock();
+                let mut val = self.is_ready_update.0.lock();
                 if *val == Some(is_ready) {
                     val.take();
                     return Ok(());
@@ -1455,16 +1721,22 @@ impl TestVirtualFunctionState {
     }
 
     pub fn is_ready_unchanged(&self) -> bool {
-        self.is_ready.0.lock().is_none()
+        self.is_ready_update.0.lock().is_none()
+    }
+
+    pub fn is_ready(&self) -> bool {
+        *self.is_ready.lock()
     }
 
     pub async fn set_ready(&self, is_ready: bool) {
+        tracing::info!(is_ready, "set_ready");
+        *self.is_ready.lock() = is_ready;
         let ready_callback = self.oneshot_ready_callback.lock().take();
         if let Some(ready_callback) = ready_callback {
             ready_callback.call(|x| x, is_ready).await.unwrap();
         }
-        *self.is_ready.0.lock() = Some(is_ready);
-        self.is_ready.1.notify(usize::MAX);
+        *self.is_ready_update.0.lock() = Some(is_ready);
+        self.is_ready_update.1.notify(usize::MAX);
     }
 }
 
@@ -1474,10 +1746,10 @@ struct TestVirtualFunction {
 }
 
 impl TestVirtualFunction {
-    pub fn new(id: u32) -> Self {
+    pub fn new(id: Option<u32>) -> Self {
         let (tx, rx) = mesh::channel();
         Self {
-            state: TestVirtualFunctionState::new(Some(id), tx),
+            state: TestVirtualFunctionState::new(id, tx),
             recv_update: rx,
         }
     }
@@ -1493,8 +1765,18 @@ impl VirtualFunction for TestVirtualFunction {
         self.state.id()
     }
     async fn guest_ready_for_device(&mut self) {
-        tracing::info!(id = self.state.id(), "VF ready");
+        if self.state.is_ready() {
+            return;
+        }
         self.state.set_ready(true).await;
+        // Wait a random amount of time before completing the request.
+        let mut wait_ms: u64 = 0;
+        getrandom::fill(wait_ms.as_mut_bytes()).expect("rng failure");
+        wait_ms %= 50;
+        tracing::info!(id = self.state.id(), wait_ms, "Readying VF...");
+        let mut ctx = mesh::CancelContext::new().with_timeout(Duration::from_millis(wait_ms));
+        let _ = ctx.until_cancelled(pending::<()>()).await;
+        tracing::info!(id = self.state.id(), "VF ready");
     }
     async fn wait_for_state_change(&mut self) -> Rpc<(), ()> {
         match self.recv_update.select_next_some().await {
@@ -1689,7 +1971,7 @@ async fn initialize_rndis_no_sendbuffer(driver: DefaultDriver) {
     // Note: send_send_buffer_message() not called
     // Creating a Gpadl for the Rndis Init Message
     let (gpadl_handle, page_array) = channel.nic.add_guest_pages(1).await;
-    let send_range = MultiPagedRangeBuf::new(1, page_array).unwrap();
+    let send_range = MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap();
     channel.gpadl_map.add(gpadl_handle, send_range);
     channel.send_buf_id = gpadl_handle;
     channel
@@ -1752,7 +2034,7 @@ async fn initialize_rndis_no_sendbuffer_no_recvbuffer(driver: DefaultDriver) {
     // Note: send_send_buffer_message() not called
     // Creating a Gpadl for the Rndis Init Message
     let (gpadl_handle, page_array) = channel.nic.add_guest_pages(1).await;
-    let send_range = MultiPagedRangeBuf::new(1, page_array).unwrap();
+    let send_range = MultiPagedRangeBuf::from_range_buffer(1, page_array).unwrap();
     channel.gpadl_map.add(gpadl_handle, send_range);
     channel.send_buf_id = gpadl_handle;
     channel
@@ -1771,9 +2053,18 @@ async fn initialize_rndis_no_sendbuffer_no_recvbuffer(driver: DefaultDriver) {
 
 #[async_test]
 async fn initialize_rndis_with_vf(driver: DefaultDriver) {
+    test_initialize_rndis_with_vf_common(driver, true).await;
+}
+
+#[async_test]
+async fn initialize_rndis_with_vf_without_completion(driver: DefaultDriver) {
+    test_initialize_rndis_with_vf_common(driver, false).await;
+}
+
+async fn test_initialize_rndis_with_vf_common(driver: DefaultDriver, with_vf_completion: bool) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -1840,13 +2131,15 @@ async fn initialize_rndis_with_vf(driver: DefaultDriver) {
             .is_ok()
     );
 
-    channel
-        .write(OutgoingPacket {
-            transaction_id,
-            packet_type: OutgoingPacketType::Completion,
-            payload: &[],
-        })
-        .await;
+    if with_vf_completion {
+        channel
+            .write(OutgoingPacket {
+                transaction_id,
+                packet_type: OutgoingPacketType::Completion,
+                payload: &[],
+            })
+            .await;
+    }
 
     assert!(test_vf_state.is_ready_unchanged());
 
@@ -1911,7 +2204,7 @@ async fn initialize_rndis_with_vf(driver: DefaultDriver) {
 async fn initialize_rndis_with_vf_alternate_id(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let get_guest_os_id = Box::new(move || -> HvGuestOsId {
         let id: u64 = HvGuestOsMicrosoft::new()
@@ -2030,7 +2323,7 @@ async fn initialize_rndis_with_vf_alternate_id(driver: DefaultDriver) {
 async fn initialize_rndis_with_vf_multi_open(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -2210,7 +2503,7 @@ async fn initialize_rndis_with_vf_multi_open(driver: DefaultDriver) {
 async fn initialize_rndis_with_prev_vf_switch_data_path(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -2297,10 +2590,107 @@ async fn initialize_rndis_with_prev_vf_switch_data_path(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn rndis_handle_packet_errors(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let initialize_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(initialize_complete.request_id, 123);
+    assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
+    assert_eq!(initialize_complete.major_version, rndisprot::MAJOR_VERSION);
+    assert_eq!(initialize_complete.minor_version, rndisprot::MINOR_VERSION);
+
+    // Not expecting an association packet because virtual function is not present
+    assert!(
+        channel
+            .read_with(|_| panic!("No packet expected"))
+            .await
+            .is_err()
+    );
+
+    assert_eq!(endpoint_state.lock().stop_endpoint_counter, 1);
+
+    // Send a packet with an invalid data offset.
+    // Expecting the channel to handle WorkerError::RndisMessageTooSmall
+    channel
+        .send_rndis_control_message_no_completion(
+            rndisprot::MESSAGE_TYPE_PACKET_MSG,
+            rndisprot::Packet {
+                data_offset: 7777,
+                data_length: 0,
+                oob_data_offset: 0,
+                oob_data_length: 0,
+                num_oob_data_elements: 0,
+                per_packet_info_offset: 0,
+                per_packet_info_length: 0,
+                vc_handle: 0,
+                reserved: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::FAILURE);
+
+    // Verify the channel is still processing packets by sending another (also invalid).
+    channel
+        .send_rndis_control_message_no_completion(
+            rndisprot::MESSAGE_TYPE_PACKET_MSG,
+            rndisprot::Packet {
+                data_offset: 8888,
+                data_length: 0,
+                oob_data_offset: 0,
+                oob_data_length: 0,
+                num_oob_data_elements: 0,
+                per_packet_info_offset: 0,
+                per_packet_info_length: 0,
+                vc_handle: 0,
+                reserved: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::FAILURE);
+}
+
+#[async_test]
 async fn stop_start_with_vf(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -2405,15 +2795,7 @@ async fn stop_start_with_vf(driver: DefaultDriver) {
         .expect("completion message");
 
     assert_eq!(endpoint_state.lock().use_vf.take().unwrap(), true);
-
-    // The switch data path triggers a VF update as it uses the common restore
-    // 'guest VF' state logic.
-    assert!(
-        test_vf_state
-            .await_ready(true, Duration::ZERO)
-            .await
-            .is_ok()
-    );
+    assert!(test_vf_state.is_ready_unchanged());
 
     // VF should remain visible through start/stop
     channel.stop().await;
@@ -2428,7 +2810,7 @@ async fn stop_start_with_vf(driver: DefaultDriver) {
 async fn save_restore_with_vf(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -2496,7 +2878,7 @@ async fn save_restore_with_vf(driver: DefaultDriver) {
 
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let old_test_vf_state = test_vf_state;
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
@@ -2537,7 +2919,7 @@ async fn save_restore_with_vf(driver: DefaultDriver) {
 
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let old_test_vf_state = test_vf_state;
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
@@ -2603,7 +2985,7 @@ async fn save_restore_with_vf(driver: DefaultDriver) {
 
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -2625,7 +3007,7 @@ async fn save_restore_with_vf(driver: DefaultDriver) {
 async fn save_restore_with_vf_multi_open(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -2771,7 +3153,7 @@ async fn save_restore_with_vf_multi_open(driver: DefaultDriver) {
 
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let old_test_vf_state = test_vf_state;
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
@@ -2864,7 +3246,7 @@ async fn save_restore_with_vf_multi_open(driver: DefaultDriver) {
 
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -2879,6 +3261,160 @@ async fn save_restore_with_vf_multi_open(driver: DefaultDriver) {
     channel.start();
     assert!(test_vf_state.is_ready_unchanged());
     assert_eq!(endpoint_state.lock().use_vf.take().unwrap_or(false), false);
+}
+
+async fn test_save_restore_with_rss_table(
+    driver: DefaultDriver,
+    restore_indirection_table_size: u16,
+) -> anyhow::Result<()> {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
+    let builder = Nic::builder();
+    let nic = builder.virtual_function(test_vf).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    // Initialize channel
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    let mock_vmbus = nic.mock_vmbus.clone();
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .await;
+
+    // RSS parameters
+    #[repr(C)]
+    #[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+    struct RssParams {
+        params: rndisprot::NdisReceiveScaleParameters,
+        hash_secret_key: [u8; 40],
+        indirection_table: [u32; 4],
+    }
+
+    let rss_params = RssParams {
+        params: rndisprot::NdisReceiveScaleParameters {
+            header: rndisprot::NdisObjectHeader {
+                object_type: rndisprot::NdisObjectType::RSS_PARAMETERS,
+                revision: 1,
+                size: size_of::<RssParams>() as u16,
+            },
+            flags: 0,
+            base_cpu_number: 0,
+            hash_information: rndisprot::NDIS_HASH_FUNCTION_TOEPLITZ,
+            indirection_table_size: 4 * size_of::<u32>() as u16,
+            pad0: 0,
+            indirection_table_offset: offset_of!(RssParams, indirection_table) as u32,
+            hash_secret_key_size: 40,
+            pad1: 0,
+            hash_secret_key_offset: offset_of!(RssParams, hash_secret_key) as u32,
+            processor_masks_offset: 0,
+            number_of_processor_masks: 0,
+            processor_masks_entry_size: 0,
+            default_processor_number: 0,
+        },
+        hash_secret_key: [0; 40],
+        indirection_table: [0, 1, 2, 3],
+    };
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: 0,
+                oid: rndisprot::Oid::OID_GEN_RECEIVE_SCALE_PARAMETERS,
+                information_buffer_length: size_of::<RssParams>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            rss_params.as_bytes(),
+        )
+        .await;
+    let rndis_parser = channel.rndis_message_parser();
+
+    // Send MESSAGE_TYPE_SET_CMPLT packet
+    let transaction_id = channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(packet) => {
+                let (header, external_ranges) = rndis_parser.parse_control_message(packet);
+                assert_eq!(header.message_type, rndisprot::MESSAGE_TYPE_SET_CMPLT);
+                let set_complete: rndisprot::SetComplete = rndis_parser.get(&external_ranges);
+                assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+                packet.transaction_id().unwrap()
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("RSS completion message");
+
+    // Complete the MESSAGE_TYPE_SET_CMPLT packet
+    channel
+        .write(OutgoingPacket {
+            transaction_id,
+            packet_type: OutgoingPacketType::Completion,
+            payload: &NvspMessage {
+                header: protocol::MessageHeader {
+                    message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                },
+                data: protocol::Message1SendRndisPacketComplete {
+                    status: protocol::Status::SUCCESS,
+                },
+                padding: &[],
+            }
+            .payload(),
+        })
+        .await;
+
+    // Invoke save/restore
+    channel.stop().await;
+    let restore_state = channel.save().await.unwrap().unwrap();
+    let endpoint_state = TestNicEndpointState::new();
+    let mut endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    // Change the indirection table size on the endpoint
+    endpoint.multiqueue_support.indirection_table_size = restore_indirection_table_size;
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
+    let builder = Nic::builder();
+    let nic = builder.virtual_function(test_vf).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+    let mut nic = TestNicDevice::new_with_nic_and_vmbus(&driver, mock_vmbus.clone(), nic).await;
+    let mut channel = channel.restore(&mut nic, restore_state).await?;
+    channel.start();
+    Ok(())
+}
+
+#[async_test]
+async fn save_restore_reduced_rss_table_size(driver: DefaultDriver) {
+    // Reduce the RSS table size from 128 to 16.
+    let result = test_save_restore_with_rss_table(driver, 16).await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.to_string(), "saved state is invalid");
+    if let Some(cause) = err.source() {
+        assert_eq!(cause.to_string(), "reduced indirection table size");
+    }
+}
+
+#[async_test]
+async fn save_restore_same_rss_table_size(driver: DefaultDriver) {
+    // Supply the same RSS table size of 128.
+    let result = test_save_restore_with_rss_table(driver, 128).await;
+    assert!(result.is_ok());
+}
+
+#[async_test]
+async fn save_restore_increased_rss_table_size(driver: DefaultDriver) {
+    // Increase the RSS table size from 128 to 256.
+    let result = test_save_restore_with_rss_table(driver, 256).await;
+    assert!(result.is_ok());
 }
 
 async fn remove_vf_with_async_messages(
@@ -2993,7 +3529,7 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
     proxy_endpoint_control.connect(Box::new(endpoint)).unwrap();
     proxy_endpoint.wait_for_endpoint_action().await;
 
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -3092,7 +3628,10 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
         })
         .await;
 
-    assert!(test_vf_state.is_ready_unchanged());
+    test_vf_state
+        .await_ready(false, Duration::ZERO)
+        .await
+        .unwrap();
 
     //
     // Add back VF capability and switch data path
@@ -3161,12 +3700,7 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
         .expect("completion message");
 
     assert_eq!(endpoint_state.lock().use_vf.take().unwrap(), true);
-    assert!(
-        test_vf_state
-            .await_ready(true, Duration::from_millis(333))
-            .await
-            .is_ok()
-    );
+    assert!(test_vf_state.is_ready_unchanged());
 
     //
     // Remove VF ID. The VF state that tracks whether the VF can be offered
@@ -3182,7 +3716,10 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
         .unwrap();
 
     assert_eq!(endpoint_state.lock().use_vf.take().unwrap(), false);
-    assert!(test_vf_state.is_ready_unchanged());
+    test_vf_state
+        .await_ready(false, Duration::ZERO)
+        .await
+        .unwrap();
 
     //
     // Disconnect and reconnect endpoint
@@ -3283,12 +3820,7 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
             .await
             .is_err()
     );
-    assert!(
-        test_vf_state
-            .await_ready(true, Duration::from_millis(333))
-            .await
-            .is_ok()
-    );
+    assert!(test_vf_state.is_ready_unchanged());
     assert!(endpoint_state.lock().use_vf.is_none());
 }
 
@@ -3300,7 +3832,7 @@ async fn link_status_update(driver: DefaultDriver) {
     proxy_endpoint_control.connect(Box::new(endpoint)).unwrap();
     proxy_endpoint.wait_for_endpoint_action().await;
 
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -3371,13 +3903,11 @@ async fn link_status_update(driver: DefaultDriver) {
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_CONNECT);
-    // The rndis read will wait for the link timeout duration. Just add a bit more delay as to
-    // allow the notification to come through with higher reliability.
-    PolledTimer::new(&driver)
-        .sleep(Duration::from_millis(50))
-        .await;
     let link_status_msg: rndisprot::IndicateStatus = channel
-        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG)
+        .read_rndis_control_message_with_timeout(
+            rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG,
+            LINK_DELAY_DURATION * 2,
+        )
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_DISCONNECT);
@@ -3405,19 +3935,17 @@ async fn link_status_update(driver: DefaultDriver) {
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_DISCONNECT);
-    // The rndis read will wait for the link timeout duration. Just add a bit more delay as to
-    // allow the notification to come through with higher reliability.
-    PolledTimer::new(&driver)
-        .sleep(Duration::from_millis(250))
-        .await;
     let link_status_msg: rndisprot::IndicateStatus = channel
-        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG)
+        .read_rndis_control_message_with_timeout(
+            rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG,
+            LINK_DELAY_DURATION * 2,
+        )
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_CONNECT);
 
     // Sending the same state as the current is considered a toggle.
-    // For example, if the link is up, sending a up is a toggle up->down->up and vice versa.
+    // For example, if the link is up, sending an up is a toggle up->down->up and vice versa.
     // And, there is a time delay in between the transition.
     TestNicEndpointState::update_link_status(&endpoint_state, [true].as_slice());
     let link_status_msg: rndisprot::IndicateStatus = channel
@@ -3425,13 +3953,11 @@ async fn link_status_update(driver: DefaultDriver) {
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_DISCONNECT);
-    // The rndis read will wait for the link timeout duration. Just add a bit more delay as to
-    // allow the notification to come through with higher reliability.
-    PolledTimer::new(&driver)
-        .sleep(Duration::from_millis(50))
-        .await;
     let link_status_msg: rndisprot::IndicateStatus = channel
-        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG)
+        .read_rndis_control_message_with_timeout(
+            rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG,
+            LINK_DELAY_DURATION * 2,
+        )
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_CONNECT);
@@ -3488,7 +4014,7 @@ async fn link_status_update(driver: DefaultDriver) {
     let link_status_msg: Option<rndisprot::IndicateStatus> = channel
         .read_rndis_control_message_with_timeout(
             rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG,
-            Duration::from_millis(10),
+            LINK_DELAY_DURATION / 10,
         )
         .await;
     assert!(link_status_msg.is_none());
@@ -3507,7 +4033,7 @@ async fn link_status_update(driver: DefaultDriver) {
 async fn send_rndis_reset_message(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -3539,7 +4065,7 @@ async fn send_rndis_reset_message(driver: DefaultDriver) {
 async fn send_rndis_indicate_status_message(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -3571,10 +4097,294 @@ async fn send_rndis_indicate_status_message(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
+    const TOTAL_QUEUES: u32 = 4;
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
+    let builder = Nic::builder();
+    let nic = builder.virtual_function(test_vf).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(
+            TOTAL_QUEUES as usize - 1,
+            protocol::NdisConfigCapabilities::new().with_sriov(true),
+        )
+        .await;
+
+    let rndis_parser = channel.rndis_message_parser();
+
+    // Send and verify Initialization
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(_) => (),
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("association packet");
+
+    // Allocate subchannels
+    let message = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE5_TYPE_SUB_CHANNEL,
+        },
+        data: protocol::Message5SubchannelRequest {
+            operation: protocol::SubchannelOperation::ALLOCATE,
+            num_sub_channels: TOTAL_QUEUES - 1,
+        },
+        padding: &[],
+    };
+    channel
+        .write(OutgoingPacket {
+            transaction_id: 123,
+            packet_type: OutgoingPacketType::InBandWithCompletion,
+            payload: &message.payload(),
+        })
+        .await;
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(header.message_type, protocol::MESSAGE5_TYPE_SUB_CHANNEL);
+                let completion_data: protocol::Message5SubchannelComplete =
+                    reader.read_plain().unwrap();
+                assert_eq!(completion_data.status, protocol::Status::SUCCESS);
+                assert_eq!(completion_data.num_sub_channels, TOTAL_QUEUES - 1);
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("completion message");
+
+    for idx in 1..TOTAL_QUEUES {
+        channel.connect_subchannel(idx).await;
+    }
+
+    // Send Indirection Table
+    let transaction_id = channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(packet) => {
+                let mut reader = packet.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE5_TYPE_SEND_INDIRECTION_TABLE
+                );
+                packet.transaction_id()
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("indirection table message after all channels connected");
+    if let Some(transaction_id) = transaction_id {
+        channel
+            .write(OutgoingPacket {
+                transaction_id,
+                packet_type: OutgoingPacketType::Completion,
+                payload: &NvspMessage {
+                    header: protocol::MessageHeader {
+                        message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                    },
+                    data: protocol::Message1SendRndisPacketComplete {
+                        status: protocol::Status::SUCCESS,
+                    },
+                    padding: &[],
+                }
+                .payload(),
+            })
+            .await;
+    }
+
+    // Send a packet on every queue.
+    {
+        let locked_state = endpoint_state.lock();
+        for (idx, queue) in locked_state.queues.iter().enumerate() {
+            queue.send(vec![idx as u8]);
+        }
+    }
+
+    // Expect no packets
+    for idx in 0..TOTAL_QUEUES {
+        channel
+            .read_subchannel_with(idx, |_| panic!("Unexpected packet on subchannel {}", idx))
+            .await
+            .expect_err("Packet should have been filtered");
+    }
+
+    // Set packet filter
+    let request_id = 456;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NPROTO_PACKET_FILTER.to_le_bytes(),
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+
+    assert_eq!(set_complete.request_id, request_id);
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+
+    // Send a packet on every queue.
+    {
+        let locked_state = endpoint_state.lock();
+        for (idx, queue) in locked_state.queues.iter().enumerate() {
+            queue.send(vec![idx as u8]);
+        }
+    }
+
+    // Receive and complete the data packets.
+    for idx in 0..TOTAL_QUEUES {
+        let txid = channel
+            .read_subchannel_with(idx, |packet| match packet {
+                IncomingPacket::Data(packet) => {
+                    let (_, external_ranges) = rndis_parser.parse_data_message(packet);
+                    let data: u8 = rndis_parser.get_data_packet_content(&external_ranges);
+                    assert_eq!(idx, data as u32);
+                    packet
+                        .transaction_id()
+                        .expect("data packets should have txid")
+                }
+                _ => panic!("Unexpected packet on subchannel {}", idx),
+            })
+            .await
+            .expect("Data packet");
+        channel
+            .write_subchannel(
+                idx,
+                OutgoingPacket {
+                    transaction_id: txid,
+                    packet_type: OutgoingPacketType::Completion,
+                    payload: &NvspMessage {
+                        header: protocol::MessageHeader {
+                            message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                        },
+                        data: protocol::Message1SendRndisPacketComplete {
+                            status: protocol::Status::SUCCESS,
+                        },
+                        padding: &[],
+                    }
+                    .payload(),
+                },
+            )
+            .await;
+    }
+
+    // Set packet filter to None
+    let request_id = 789;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NDIS_PACKET_TYPE_NONE.to_le_bytes(),
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+
+    assert_eq!(set_complete.request_id, request_id);
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+
+    // Test sending packets with the filter set to None.
+    for _ in 0..2 {
+        let locked_state = endpoint_state.lock();
+        for (idx, queue) in locked_state.queues.iter().enumerate() {
+            queue.send(vec![idx as u8]);
+        }
+    }
+
+    // Expect no packets
+    for idx in 0..TOTAL_QUEUES {
+        channel
+            .read_subchannel_with(idx, |_| panic!("Unexpected packet on subchannel {}", idx))
+            .await
+            .expect_err("Packet should have been filtered");
+    }
+
+    // Set packet filter to receive new packets.
+    let request_id = 456;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NPROTO_PACKET_FILTER.to_le_bytes(),
+        )
+        .await;
+
+    let _: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+
+    // Expect processing of rx packets to have stopped because of the filter
+    // state. For the test queues, this means they should still have pending
+    // data, so rx packets should be available.
+    for idx in 0..TOTAL_QUEUES {
+        channel
+            .read_subchannel_with(idx, |_| ())
+            .await
+            .expect("Data packet");
+    }
+}
+
+#[async_test]
 async fn send_rndis_set_ex_message(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -3611,7 +4421,7 @@ async fn send_rndis_set_ex_message(driver: DefaultDriver) {
 async fn set_rss_parameter(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -3709,7 +4519,7 @@ async fn set_rss_parameter(driver: DefaultDriver) {
 async fn set_rss_parameter_no_valid_queues(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -3811,7 +4621,7 @@ async fn set_rss_parameter_no_valid_queues(driver: DefaultDriver) {
 async fn set_rss_parameter_unused_first_queue(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -4004,6 +4814,157 @@ async fn set_rss_parameter_unused_first_queue(driver: DefaultDriver) {
         .await;
 }
 
+#[async_test]
+async fn rndis_send_single_packet_message(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let initialize_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(initialize_complete.request_id, 123);
+    assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
+    assert_eq!(initialize_complete.major_version, rndisprot::MAJOR_VERSION);
+    assert_eq!(initialize_complete.minor_version, rndisprot::MINOR_VERSION);
+
+    assert_eq!(endpoint_state.lock().stop_endpoint_counter, 1);
+
+    let frame = vec![0xCC; 60];
+    channel
+        .send_rndis_control_message_no_completion(
+            rndisprot::MESSAGE_TYPE_PACKET_MSG,
+            rndisprot::Packet {
+                data_offset: size_of::<rndisprot::MessageHeader>() as u32,
+                data_length: frame.len() as u32,
+                oob_data_offset: 0,
+                oob_data_length: 0,
+                num_oob_data_elements: 0,
+                per_packet_info_offset: 0,
+                per_packet_info_length: 0,
+                vc_handle: 0,
+                reserved: 0,
+            },
+            frame.as_slice(),
+        )
+        .await;
+
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
+}
+
+#[async_test]
+async fn rndis_send_multiple_packet_message(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let initialize_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(initialize_complete.request_id, 123);
+    assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
+    assert_eq!(initialize_complete.major_version, rndisprot::MAJOR_VERSION);
+    assert_eq!(initialize_complete.minor_version, rndisprot::MINOR_VERSION);
+
+    assert_eq!(endpoint_state.lock().stop_endpoint_counter, 1);
+
+    let extras = vec![vec![0xAA; 20], vec![0xBB; 20]];
+    let mut packets = vec![
+        rndisprot::Packet {
+            data_offset: size_of::<rndisprot::MessageHeader>() as u32,
+            data_length: extras[0].len() as u32,
+            oob_data_offset: 0,
+            oob_data_length: 0,
+            num_oob_data_elements: 0,
+            per_packet_info_offset: 0,
+            per_packet_info_length: 0,
+            vc_handle: 0,
+            reserved: 0,
+        },
+        rndisprot::Packet {
+            data_offset: size_of::<rndisprot::MessageHeader>() as u32,
+            data_length: extras[1].len() as u32,
+            oob_data_offset: 0,
+            oob_data_length: 0,
+            num_oob_data_elements: 0,
+            per_packet_info_offset: 0,
+            per_packet_info_length: 0,
+            vc_handle: 0,
+            reserved: 0,
+        },
+    ];
+    channel
+        .send_rndis_multiplepacket_no_completion(packets.clone(), extras.clone())
+        .await;
+
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
+
+    // Assign the second RNDIS packet an invalid length
+    packets[1].data_length = 0;
+
+    channel
+        .send_rndis_multiplepacket_no_completion(packets, extras)
+        .await;
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::FAILURE);
+}
+
 // Start with six queues (primary plus five subchannels) each with one receive
 // buffer. Send an rx packet on each queue. Then reduce active queues to four,
 // such that the total receive buffers (six) does not evenly divide among the
@@ -4015,7 +4976,7 @@ async fn set_rss_parameter_bufs_not_evenly_divisible(driver: DefaultDriver) {
     const TOTAL_QUEUES: u32 = 6;
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -4133,6 +5094,29 @@ async fn set_rss_parameter_bufs_not_evenly_divisible(driver: DefaultDriver) {
             })
             .await;
     }
+
+    // Set packet filter
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: 0,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NPROTO_PACKET_FILTER.to_le_bytes(),
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+
+    assert_eq!(set_complete.request_id, 0);
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
 
     // Receive a packet on every queue.
     {
@@ -4275,7 +5259,7 @@ async fn set_rss_parameter_bufs_not_evenly_divisible(driver: DefaultDriver) {
 async fn race_coordinator_and_worker_stop_events(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -4358,7 +5342,23 @@ async fn race_coordinator_and_worker_stop_events(driver: DefaultDriver) {
         } else {
             false
         };
-        // send switch data path message
+        // Change the VF availability every other instance.
+        if (i % 2) == 0 {
+            let is_add = (i % 4) == 0;
+            test_vf_state
+                .update_id(
+                    if is_add { Some(124) } else { None },
+                    Some(Duration::from_millis(100)),
+                )
+                .await
+                .unwrap();
+
+            if is_add {
+                PolledTimer::new(&driver).sleep(VF_DEVICE_DELAY).await;
+            }
+        }
+
+        // send switch data path messages
         channel
             .write(OutgoingPacket {
                 transaction_id: 123,
@@ -4368,11 +5368,23 @@ async fn race_coordinator_and_worker_stop_events(driver: DefaultDriver) {
                         message_type: protocol::MESSAGE4_TYPE_SWITCH_DATA_PATH,
                     },
                     data: protocol::Message4SwitchDataPath {
-                        active_data_path: if i % 2 == 0 {
-                            protocol::DataPath::VF.0
-                        } else {
-                            protocol::DataPath::SYNTHETIC.0
-                        },
+                        active_data_path: protocol::DataPath::SYNTHETIC.0,
+                    },
+                    padding: &[],
+                }
+                .payload(),
+            })
+            .await;
+        channel
+            .write(OutgoingPacket {
+                transaction_id: 123,
+                packet_type: OutgoingPacketType::InBandWithCompletion,
+                payload: &NvspMessage {
+                    header: protocol::MessageHeader {
+                        message_type: protocol::MESSAGE4_TYPE_SWITCH_DATA_PATH,
+                    },
+                    data: protocol::Message4SwitchDataPath {
+                        active_data_path: protocol::DataPath::VF.0,
                     },
                     padding: &[],
                 }
@@ -4390,6 +5402,7 @@ async fn race_coordinator_and_worker_stop_events(driver: DefaultDriver) {
                 )
                 .await;
         }
+
         // Trigger a retarget VP 2/3 of the time offset with the link update,
         // such that 1/3 times only link update or retarget VP will be
         // triggered.
@@ -4408,14 +5421,44 @@ async fn race_coordinator_and_worker_stop_events(driver: DefaultDriver) {
                 .read_with(|packet| match packet {
                     IncomingPacket::Completion(_) => None,
                     IncomingPacket::Data(data) => {
-                        let (rndis_header, _) = rndis_parser.parse_control_message(data);
-                        if rndis_header.message_type == rndisprot::MESSAGE_TYPE_KEEPALIVE_CMPLT {
-                            tracing::info!("Got keepalive completion");
-                            Some(data.transaction_id().expect("should request completion"))
-                        } else {
-                            tracing::info!(rndis_header.message_type, "Got link status update");
-                            Some(data.transaction_id().expect("should request completion"))
+                        let mut reader = data.reader();
+                        let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                        match header.message_type {
+                            protocol::MESSAGE4_TYPE_SEND_VF_ASSOCIATION => {
+                                let association_data: protocol::Message4SendVfAssociation =
+                                    reader.read_plain().unwrap();
+                                tracing::info!(
+                                    is_vf = association_data.vf_allocated,
+                                    vfid = association_data.serial_number,
+                                    "Message: VF association"
+                                );
+                            }
+                            protocol::MESSAGE4_TYPE_SWITCH_DATA_PATH => {
+                                tracing::info!("Message: switch data path");
+                                let switch_result: protocol::Message4SwitchDataPath =
+                                    reader.read_plain().unwrap();
+                                // Switch data path is expected when the data
+                                // path is forced to synthetic.
+                                assert_eq!(
+                                    switch_result.active_data_path,
+                                    protocol::DataPath::SYNTHETIC.0
+                                );
+                            }
+                            _ => {
+                                let (rndis_header, _) = rndis_parser.parse_control_message(data);
+                                if rndis_header.message_type
+                                    == rndisprot::MESSAGE_TYPE_KEEPALIVE_CMPLT
+                                {
+                                    tracing::info!("Message: keepalive completion");
+                                } else {
+                                    tracing::info!(
+                                        rndis_header.message_type,
+                                        "Message: link status update"
+                                    );
+                                }
+                            }
                         }
+                        Some(data.transaction_id().expect("should request completion"))
                     }
                 })
                 .await
@@ -4433,4 +5476,114 @@ async fn race_coordinator_and_worker_stop_events(driver: DefaultDriver) {
             }
         }
     }
+}
+
+#[async_test]
+async fn rndis_send_lso_packet(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let initialize_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(initialize_complete.request_id, 123);
+    assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
+    assert_eq!(initialize_complete.major_version, rndisprot::MAJOR_VERSION);
+    assert_eq!(initialize_complete.minor_version, rndisprot::MINOR_VERSION);
+
+    assert_eq!(endpoint_state.lock().stop_endpoint_counter, 1);
+
+    let data = vec![0xCC; 60];
+    let tcp_checksum = false;
+    let udp_checksum = false;
+    let lso = true;
+    channel
+        .send_rndis_packet_offload(data.as_slice(), tcp_checksum, udp_checksum, lso)
+        .await;
+
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
+}
+
+#[async_test]
+async fn rndis_send_tcp_checksum_packet(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let initialize_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(initialize_complete.request_id, 123);
+    assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
+    assert_eq!(initialize_complete.major_version, rndisprot::MAJOR_VERSION);
+    assert_eq!(initialize_complete.minor_version, rndisprot::MINOR_VERSION);
+
+    assert_eq!(endpoint_state.lock().stop_endpoint_counter, 1);
+
+    let data = vec![0xCC; 60];
+    let tcp_checksum = true;
+    let udp_checksum = false;
+    let lso = false;
+    channel
+        .send_rndis_packet_offload(data.as_slice(), tcp_checksum, udp_checksum, lso)
+        .await;
+
+    let completion = channel.read_rndis_packet_complete_message().await.unwrap();
+    assert_eq!(completion.status, protocol::Status::SUCCESS);
 }

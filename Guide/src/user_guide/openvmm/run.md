@@ -27,10 +27,6 @@ scroll down to select an appropriate `*-openvmm` artifact for your particular
 architecture and operating system.  **You must be signed into GitHub in order
 to download artifacts**.
 
-**On Windows:** You must also download a copy of `lxutil.dll` from
-[`microsoft/openvmm-deps`](https://github.com/microsoft/openvmm-deps/releases/tag/Microsoft.WSL.LxUtil.10.0.26100.1-240331-1435.ge-release)
-on GitHub, and ensure it is in the same directory as `openvmm.exe`.
-
 ## Examples
 
 ```admonish tip
@@ -122,7 +118,7 @@ in, the fact DOS is able to boot in OpenVMM serves as a testament to OpenVMM's
 solid support of legacy x86 devices and infrastructure.
 
 The following command will boot a copy of DOS from a virtual floppy disk, using
-the [Hyper-V PCAT BIOS](../../../reference/devices/firmware/pcat_bios.md).
+the [Hyper-V PCAT BIOS](../../reference/devices/firmware/pcat_bios.md).
 
 Booting via PCAT is not just for DOS though! Many older operating systems,
 including older copies of Windows / Linux, require booting via BIOS.

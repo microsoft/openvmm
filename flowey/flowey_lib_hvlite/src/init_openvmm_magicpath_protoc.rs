@@ -32,12 +32,10 @@ impl FlowNode for Node {
             let openvmm_magicpath = openvmm_magicpath.claim(ctx);
             move |rt| {
                 let expected_protoc_bin = {
-                    if cfg!(target_os = "windows") {
-                        "protoc.exe"
-                    } else if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
-                        "protoc"
-                    } else {
-                        unreachable!("unknown host os")
+                    match rt.platform() {
+                        FlowPlatform::Windows => "protoc.exe",
+                        FlowPlatform::MacOs | FlowPlatform::Linux(_) => "protoc",
+                        _ => unreachable!("unknown host os"),
                     }
                 };
 
@@ -59,17 +57,7 @@ impl FlowNode for Node {
 
                 if !dst.exists() {
                     fs_err::hard_link(src.clone(), &dst)?;
-
-                    // Make sure protoc is executable
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let old_mode = dst.metadata()?.permissions().mode();
-                        fs_err::set_permissions(
-                            src,
-                            std::fs::Permissions::from_mode(old_mode | 0o111),
-                        )?;
-                    }
+                    dst.make_executable()?;
                 }
 
                 Ok(())

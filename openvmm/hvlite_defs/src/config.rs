@@ -13,10 +13,10 @@ use net_backend_resources::mac_address::MacAddress;
 use std::fmt;
 use std::fs::File;
 use vm_resource::Resource;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
+use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
 
@@ -25,6 +25,9 @@ pub struct Config {
     pub load_mode: LoadMode,
     pub floppy_disks: Vec<floppy_resources::FloppyDiskConfig>,
     pub ide_disks: Vec<ide_resources::IdeDeviceConfig>,
+    pub pcie_root_complexes: Vec<PcieRootComplexConfig>,
+    pub pcie_devices: Vec<PcieDeviceConfig>,
+    pub pcie_switches: Vec<PcieSwitchConfig>,
     pub vpci_devices: Vec<VpciDeviceConfig>,
     pub memory: MemoryConfig,
     pub processor_topology: ProcessorTopologyConfig,
@@ -43,8 +46,7 @@ pub struct Config {
     pub virtio_devices: Vec<(VirtioBus, Resource<VirtioDeviceHandle>)>,
     #[cfg(windows)]
     pub vpci_resources: Vec<virt_whp::device::DeviceHandle>,
-    pub format_vmgs: bool,
-    pub vmgs_disk: Option<Resource<DiskHandleKind>>,
+    pub vmgs: Option<VmgsResource>,
     pub secure_boot_enabled: bool,
     pub custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     // TODO: move FirmwareEvent somewhere not GED-specific.
@@ -55,6 +57,9 @@ pub struct Config {
     pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
+    /// allow the guest to reset without notifying the client
+    pub automatic_guest_reset: bool,
+    pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
 }
 
 // ARM64 needs a larger low gap.
@@ -95,6 +100,8 @@ pub const DEFAULT_GIC_REDISTRIBUTORS_BASE: u64 = if cfg!(target_os = "linux") {
     0xEFFE_E000
 };
 
+pub const DEFAULT_PCIE_ECAM_BASE: u64 = 0x8_0000_0000; // 32GB, size depends on configuration
+
 #[derive(MeshPayload, Debug)]
 pub enum LoadMode {
     Linux {
@@ -115,6 +122,7 @@ pub enum LoadMode {
         enable_vpci_boot: bool,
         uefi_console_mode: Option<UefiConsoleMode>,
         default_boot_always_attempt: bool,
+        bios_guid: Guid,
     },
     Pcat {
         firmware: RomFileLocation,
@@ -164,8 +172,42 @@ pub enum Vtl2BaseAddressType {
 }
 
 #[derive(Debug, MeshPayload)]
+pub struct PcieRootComplexConfig {
+    pub index: u32,
+    pub name: String,
+    pub segment: u16,
+    pub start_bus: u8,
+    pub end_bus: u8,
+    pub low_mmio_size: u32,
+    pub high_mmio_size: u64,
+    pub ports: Vec<PcieRootPortConfig>,
+}
+
+#[derive(Debug, MeshPayload)]
+pub struct PcieRootPortConfig {
+    pub name: String,
+    pub hotplug: bool,
+}
+
+#[derive(Debug, MeshPayload)]
+pub struct PcieSwitchConfig {
+    pub name: String,
+    pub num_downstream_ports: u8,
+    pub parent_port: String,
+    pub hotplug: bool,
+}
+
+#[derive(Debug, MeshPayload)]
+pub struct PcieDeviceConfig {
+    pub port_name: String,
+    pub resource: Resource<PciDeviceHandleKind>,
+}
+
+#[derive(Debug, MeshPayload)]
 pub struct VpciDeviceConfig {
     pub vtl: DeviceVtl,
+    /// The ID of the device. Vpci devices are identified by a portion of `data2` and `data3` of the
+    /// instance ID, which is used to generate the guest-visible device ID.
     pub instance_id: Guid,
     pub resource: Resource<PciDeviceHandleKind>,
 }
@@ -200,8 +242,18 @@ pub enum X2ApicConfig {
 }
 
 #[derive(Debug, Protobuf, Default, Clone)]
+pub enum PmuGsivConfig {
+    #[default]
+    /// Use the hypervisor's platform GSIV value for the PMU.
+    Platform,
+    /// Use the specified GSIV value for the PMU.
+    Gsiv(u32),
+}
+
+#[derive(Debug, Protobuf, Default, Clone)]
 pub struct Aarch64TopologyConfig {
     pub gic_config: Option<GicConfig>,
+    pub pmu_gsiv: PmuGsivConfig,
 }
 
 #[derive(Debug, Protobuf, Clone)]
@@ -221,6 +273,7 @@ pub struct MemoryConfig {
     pub mem_size: u64,
     pub mmio_gaps: Vec<MemoryRange>,
     pub prefetch_memory: bool,
+    pub pcie_ecam_base: u64,
 }
 
 #[derive(Debug, MeshPayload, Default)]
@@ -390,4 +443,15 @@ pub enum UefiConsoleMode {
     Com1,
     Com2,
     None,
+}
+
+#[derive(Copy, Clone, Debug, MeshPayload, Default)]
+pub enum EfiDiagnosticsLogLevelType {
+    /// Default log level
+    #[default]
+    Default,
+    /// Include INFO logs
+    Info,
+    /// All logs
+    Full,
 }

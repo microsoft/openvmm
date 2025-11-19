@@ -221,6 +221,9 @@ pub trait AssertVirtualInterrupt {
 impl<T: AssertVirtualInterrupt> HypercallDispatch<HvAssertVirtualInterrupt> for T {
     fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         HvAssertVirtualInterrupt::run(params, |input| {
+            if input.rsvd0 != 0 || input.rsvd1 != 0 {
+                return Err(HvError::InvalidParameter);
+            }
             self.assert_virtual_interrupt(
                 input.partition_id,
                 input.interrupt_control,
@@ -1007,6 +1010,27 @@ impl<T: SendSyntheticClusterIpiEx> HypercallDispatch<HvSendSyntheticClusterIpiEx
                 ProcessorSet::from_processor_masks(header.vp_set_valid_banks_mask, input)
                     .ok_or(HvError::InvalidParameter)?,
             )
+        })
+    }
+}
+
+/// Defines the `HvVbsVmCallReport` hypercall.
+pub type HvVbsVmCallReport = SimpleHypercall<
+    defs::VbsVmCallReport,
+    defs::VbsVmCallReportOutput,
+    { HypercallCode::HvCallVbsVmCallReport.0 },
+>;
+
+/// Implements the `HvVbsVmCallReport` hypercall.
+pub trait VbsVmCallReport {
+    /// Generates a VBS VM call report.
+    fn vbs_vm_call_report(&self, report_data: &[u8]) -> HvResult<defs::VbsVmCallReportOutput>;
+}
+
+impl<T: VbsVmCallReport> HypercallDispatch<HvVbsVmCallReport> for T {
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        HvVbsVmCallReport::run(params, |header| {
+            self.vbs_vm_call_report(&header.report_data)
         })
     }
 }

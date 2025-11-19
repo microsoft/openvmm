@@ -10,8 +10,8 @@
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoBuildProfile;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
+use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 
 /// In the HvLite repo, we use a custom step to strip debug info from linux
 /// binaries
@@ -270,7 +270,7 @@ pub enum BuildProfile {
     UnderhillShip,
     BootDev,
     BootRelease,
-    Xtask,
+    Light,
 }
 
 flowey_request! {
@@ -278,7 +278,7 @@ flowey_request! {
         pub crate_name: String,
         pub out_name: String,
         pub profile: BuildProfile, // lock to only hvlite build profiles
-        pub features: BTreeSet<String>,
+        pub features: CargoFeatureSet,
         pub crate_type: CargoCrateType,
         pub target: target_lexicon::Triple,
         /// If supported by the target, build without split debuginfo.
@@ -414,7 +414,7 @@ impl FlowNode for Node {
                     }
                     BuildProfile::BootDev => CargoBuildProfile::Custom("boot-dev".into()),
                     BuildProfile::BootRelease => CargoBuildProfile::Custom("boot-release".into()),
-                    BuildProfile::Xtask => CargoBuildProfile::Custom("xtask".into()),
+                    BuildProfile::Light => CargoBuildProfile::Custom("light".into()),
                 },
                 features,
                 output_kind: crate_type,

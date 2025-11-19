@@ -3,6 +3,8 @@
 
 //! Tool for using petri functionality from the command line.
 
+#![forbid(unsafe_code)]
+
 use anyhow::Context as _;
 use clap::Parser;
 use petri::ArtifactResolver;
@@ -42,17 +44,24 @@ fn main() -> anyhow::Result<()> {
     match args.command {
         Command::CloudInit { output, arch } => {
             let image = build_with_artifacts(|resolver: ArtifactResolver<'_>| {
-                petri::disk_image::AgentImage::new(
-                    &resolver,
-                    match arch {
-                        MachineArch::X86_64 => petri_artifacts_common::tags::MachineArch::X86_64,
-                        MachineArch::Aarch64 => petri_artifacts_common::tags::MachineArch::Aarch64,
-                    },
-                    petri_artifacts_common::tags::OsFlavor::Linux,
-                )
+                petri::disk_image::AgentImage::new(petri_artifacts_common::tags::OsFlavor::Linux)
+                    .with_pipette(
+                        &resolver,
+                        match arch {
+                            MachineArch::X86_64 => {
+                                petri_artifacts_common::tags::MachineArch::X86_64
+                            }
+                            MachineArch::Aarch64 => {
+                                petri_artifacts_common::tags::MachineArch::Aarch64
+                            }
+                        },
+                    )
             })?;
 
-            let disk = image.build().context("failed to build disk image")?;
+            let disk = image
+                .build()
+                .context("failed to build disk image")?
+                .context("no files for the this platform")?;
             disk.persist(output)
                 .context("failed to persist disk image")?;
 

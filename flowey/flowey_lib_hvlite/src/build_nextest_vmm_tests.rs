@@ -8,7 +8,6 @@ use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoBuildProfile;
 use flowey_lib_common::run_cargo_nextest_run::TestResults;
-use flowey_lib_common::run_cargo_nextest_run::build_params::FeatureSet;
 use flowey_lib_common::run_cargo_nextest_run::build_params::TestPackages;
 use std::collections::BTreeMap;
 
@@ -119,7 +118,7 @@ impl FlowNode for Node {
                     packages: ReadVar::from_static(TestPackages::Crates {
                         crates: vec!["vmm_tests".into()],
                     }),
-                    features: FeatureSet::Specific(Vec::new()),
+                    features: Default::default(),
                     no_default_features: false,
                     unstable_panic_abort_tests: None, // don't run VMM tests on musl hvlite
                     target: target.clone(),
@@ -148,6 +147,8 @@ impl FlowNode for Node {
                             ),
                         nextest_profile,
                         nextest_filter_expr,
+                        nextest_working_dir: None,
+                        nextest_config_file: None,
                         run_ignored: false,
                         extra_env: Some(extra_env),
                         pre_run_deps: ambient_deps,

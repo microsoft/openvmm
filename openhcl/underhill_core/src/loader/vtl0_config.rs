@@ -68,7 +68,7 @@ pub struct MeasuredVtl0Info {
 
 impl MeasuredVtl0Info {
     /// Read measured VTL0 load information from guest memory.
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(CVM_ALLOWED))]
     pub fn read_from_memory(gm: &GuestMemory) -> Result<Self, Error> {
         // Read the measured config, noting which pages the config was stored
         // in. These pages will need to be zeroed out afterwards (the memory

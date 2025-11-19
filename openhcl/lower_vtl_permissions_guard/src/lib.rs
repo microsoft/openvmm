@@ -24,7 +24,7 @@ use virt::VtlMemoryProtection;
 struct PagesAccessibleToLowerVtl {
     #[inspect(skip)]
     vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     pages: Vec<u64>,
 }
 

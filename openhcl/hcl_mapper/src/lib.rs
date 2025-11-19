@@ -5,6 +5,7 @@
 //! crate to map guest memory.
 
 #![cfg(target_os = "linux")]
+#![forbid(unsafe_code)]
 
 use anyhow::Context;
 use hcl::ioctl::MshvVtlLow;

@@ -1,10 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#[cfg(guest_arch = "x86_64")]
-use firmware_pcat::PcatEvent;
-#[cfg(guest_arch = "x86_64")]
-use firmware_pcat::PcatLogger;
+use cvm_tracing::CVM_ALLOWED;
 use firmware_uefi::platform::logger::UefiEvent;
 use firmware_uefi::platform::logger::UefiLogger;
 use guest_emulation_transport::GuestEmulationTransportClient;
@@ -42,11 +39,11 @@ impl UefiLogger for UnderhillLogger {
 }
 
 #[cfg(guest_arch = "x86_64")]
-impl PcatLogger for UnderhillLogger {
-    fn log_event(&self, event: PcatEvent) {
+impl firmware_pcat::PcatLogger for UnderhillLogger {
+    fn log_event(&self, event: firmware_pcat::PcatEvent) {
         let log_event_id = match event {
-            PcatEvent::BootFailure => EventLogId::BOOT_FAILURE,
-            PcatEvent::BootAttempt => EventLogId::BOOT_ATTEMPT,
+            firmware_pcat::PcatEvent::BootFailure => EventLogId::BOOT_FAILURE,
+            firmware_pcat::PcatEvent::BootAttempt => EventLogId::BOOT_ATTEMPT,
         };
         self.get.event_log(log_event_id);
     }
@@ -62,6 +59,7 @@ impl firmware_uefi::platform::nvram::VsmConfig for UnderhillVsmConfig {
         if let Some(partition) = self.partition.upgrade() {
             if let Err(err) = partition.revoke_guest_vsm() {
                 tracing::warn!(
+                    CVM_ALLOWED,
                     error = &err as &dyn std::error::Error,
                     "failed to revoke guest vsm"
                 );

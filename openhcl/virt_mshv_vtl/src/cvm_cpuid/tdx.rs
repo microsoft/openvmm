@@ -12,6 +12,7 @@ use super::CpuidSubtable;
 use super::ParsedCpuidEntry;
 use super::TopologyError;
 use core::arch::x86_64::CpuidResult;
+use cvm_tracing::CVM_ALLOWED;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::x86::X86Topology;
 use x86defs::cpuid;
@@ -159,7 +160,21 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
             .into_iter()
             .map(|(leaf, subleaf)| {
                 let subleaf = subleaf.unwrap_or(0);
-                let result = Self::cpuid(leaf.0, subleaf);
+                let mut result = Self::cpuid(leaf.0, subleaf);
+
+                // Apply TDX specific fixups.
+                #[expect(clippy::single_match)] // More may come later
+                match leaf {
+                    // Always tell the guest that MCE, MCA, and MTRR are supported.
+                    CpuidFunction::VersionAndFeatures => {
+                        let mut features = cpuid::VersionAndFeaturesEdx::from(result.edx);
+                        features.set_mce(true);
+                        features.set_mca(true);
+                        features.set_mtrr(true);
+                        result.edx = features.into();
+                    }
+                    _ => {}
+                }
 
                 ParsedCpuidEntry {
                     leaf,
@@ -230,6 +245,7 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
             || (extended_topology_ecx_0.level_type() != super::CPUID_LEAF_B_LEVEL_TYPE_SMT)
         {
             tracing::error!(
+                CVM_ALLOWED,
                 "Incorrect values received: {:?}. Level Number should represent sub-leaf 0, while Level Type should represent domain type 1 for logical processor.",
                 extended_topology_ecx_0
             );
@@ -244,6 +260,7 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
             || (extended_topology_ecx_1.level_type() != super::CPUID_LEAF_B_LEVEL_TYPE_CORE)
         {
             tracing::error!(
+                CVM_ALLOWED,
                 "Incorrect values received: {:?}. Level Number should represent sub-leaf 1, while Level Type should represent domain type 2 for Core.",
                 extended_topology_ecx_1
             );
@@ -284,7 +301,8 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
             .with_xmm_registers_for_fast_hypercall_available(true)
             .with_register_pat_available(true)
             .with_fast_hypercall_output_available(true)
-            .with_translate_gva_flags_available(true);
+            .with_translate_gva_flags_available(true)
+            .with_guest_crash_regs_available(true);
 
         let use_apic_msrs = match self.topology.apic_mode() {
             vm_topology::processor::x86::ApicMode::XApic => {
@@ -307,7 +325,6 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
             .with_use_ex_processor_masks(true)
             .with_use_apic_msrs(use_apic_msrs)
             .with_long_spin_wait_count(!0)
-            .with_use_synthetic_cluster_ipi(true)
             .with_use_hypercall_for_remote_flush_and_local_flush_entire(true);
 
         let hardware_features = hvdef::HvHardwareFeatures::new()

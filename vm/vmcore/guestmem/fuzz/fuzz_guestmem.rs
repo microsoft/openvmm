@@ -41,7 +41,6 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
         self.bitmap.as_ref().map(|bm| BitmapInfo {
             read_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
             write_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
-            execute_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
             bit_offset: 0,
         })
     }
@@ -116,18 +115,6 @@ impl LockedRange for LockedIoVecs {
     fn push_sub_range(&mut self, sub_range: &[AtomicU8]) {
         self.0.push(sub_range.into());
     }
-
-    fn pop_sub_range(&mut self) -> Option<(*const AtomicU8, usize)> {
-        self.0.pop().map(|buffer| (buffer.address, buffer.len))
-    }
-}
-
-#[derive(Arbitrary, Debug)]
-enum CompareExchangeInput {
-    One([u8; 1]),
-    Two([u8; 2]),
-    Four([u8; 4]),
-    Eight([u8; 8]),
 }
 
 #[derive(Arbitrary, Debug)]
@@ -164,10 +151,6 @@ enum GuestMemAction {
         gpa: u64,
         current: u8,
         new: u8,
-    },
-    CompareExchangeBytes {
-        gpa: u64,
-        new: CompareExchangeInput,
     },
     Iova {
         gpa: u64,
@@ -256,16 +239,6 @@ fn do_fuzz(input: FuzzCase) {
             GuestMemAction::Fill { gpa, val, len } => _ = gm.fill_at(gpa, val, len),
             GuestMemAction::CompareExchange { gpa, current, new } => {
                 _ = gm.compare_exchange(gpa, current, new)
-            }
-            GuestMemAction::CompareExchangeBytes { gpa, new } => {
-                let new_ref = match &new {
-                    CompareExchangeInput::One(v) => &v[..],
-                    CompareExchangeInput::Two(v) => &v[..],
-                    CompareExchangeInput::Four(v) => &v[..],
-                    CompareExchangeInput::Eight(v) => &v[..],
-                };
-                let mut current = vec![0u8; new_ref.len()];
-                _ = gm.compare_exchange_bytes(gpa, &mut current[..], new_ref)
             }
             GuestMemAction::Iova { gpa } => _ = gm.iova(gpa),
             GuestMemAction::LockGpns { gpns } => {

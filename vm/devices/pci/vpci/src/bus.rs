@@ -7,8 +7,7 @@ use crate::device::NotPciDevice;
 use crate::device::VpciChannel;
 use crate::device::VpciConfigSpace;
 use crate::device::VpciConfigSpaceOffset;
-use crate::protocol;
-use crate::protocol::SlotNumber;
+use crate::device::VpciConfigSpaceVtom;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -32,6 +31,8 @@ use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vpci_msi::VpciInterruptMapper;
+use vpci_protocol as protocol;
+use vpci_protocol::SlotNumber;
 
 /// A VPCI bus, which can be used to enumerate PCI devices to a guest over
 /// vmbus.
@@ -40,13 +41,26 @@ use vmcore::vpci_msi::VpciInterruptMapper;
 /// In practice, this is the only used and well-tested configuration in Hyper-V.
 #[derive(InspectMut)]
 pub struct VpciBus {
-    #[inspect(skip)]
-    device: Arc<CloseableMutex<dyn ChipsetDevice>>,
+    #[inspect(mut, flatten)]
+    bus_device: VpciBusDevice,
     #[inspect(flatten)]
     channel: SimpleDeviceHandle<VpciChannel>,
+}
+
+/// The chipset device portion of the VPCI bus.
+///
+/// This is primarily used for testing. You should use [`VpciBus`] in
+/// product code to get a single device/state unit.
+#[derive(InspectMut)]
+pub struct VpciBusDevice {
+    #[inspect(skip)]
+    device: Arc<CloseableMutex<dyn ChipsetDevice>>,
     config_space_offset: VpciConfigSpaceOffset,
     #[inspect(with = "|&x| u32::from(x)")]
     current_slot: SlotNumber,
+    /// Track vtom as when isolated with vtom enabled, guests may access mmio
+    /// with or without vtom set.
+    vtom: Option<u64>,
 }
 
 /// An error creating a VPCI bus.
@@ -60,6 +74,38 @@ pub enum CreateBusError {
     Offer(#[source] anyhow::Error),
 }
 
+impl VpciBusDevice {
+    /// Returns a new VPCI bus device, along with the vmbus channel used for bus
+    /// communications.
+    pub fn new(
+        instance_id: Guid,
+        device: Arc<CloseableMutex<dyn ChipsetDevice>>,
+        register_mmio: &mut dyn RegisterMmioIntercept,
+        msi_controller: VpciInterruptMapper,
+        vtom: Option<u64>,
+    ) -> Result<(Self, VpciChannel), NotPciDevice> {
+        let config_space = VpciConfigSpace::new(
+            register_mmio.new_io_region(&format!("vpci-{instance_id}-config"), 2 * HV_PAGE_SIZE),
+            vtom.map(|vtom| VpciConfigSpaceVtom {
+                vtom,
+                control_mmio: register_mmio
+                    .new_io_region(&format!("vpci-{instance_id}-config-vtom"), 2 * HV_PAGE_SIZE),
+            }),
+        );
+        let config_space_offset = config_space.offset().clone();
+        let channel = VpciChannel::new(&device, instance_id, config_space, msi_controller)?;
+
+        let this = Self {
+            device,
+            config_space_offset,
+            current_slot: SlotNumber::from(0),
+            vtom,
+        };
+
+        Ok((this, channel))
+    }
+}
+
 impl VpciBus {
     /// Creates a new VPCI bus.
     pub async fn new(
@@ -68,23 +114,24 @@ impl VpciBus {
         device: Arc<CloseableMutex<dyn ChipsetDevice>>,
         register_mmio: &mut dyn RegisterMmioIntercept,
         vmbus: &dyn vmbus_channel::bus::ParentBus,
-        msi_controller: Arc<dyn VpciInterruptMapper>,
+        msi_controller: VpciInterruptMapper,
+        vtom: Option<u64>,
     ) -> Result<Self, CreateBusError> {
-        let config_space = VpciConfigSpace::new(
-            register_mmio.new_io_region(&format!("vpci-{instance_id}-config"), 2 * HV_PAGE_SIZE),
-        );
-        let config_space_offset = config_space.offset().clone();
-        let channel = VpciChannel::new(&device, instance_id, config_space, msi_controller)
-            .map_err(CreateBusError::NotPci)?;
+        let (bus, channel) = VpciBusDevice::new(
+            instance_id,
+            device.clone(),
+            register_mmio,
+            msi_controller.clone(),
+            vtom,
+        )
+        .map_err(CreateBusError::NotPci)?;
         let channel = offer_simple_device(driver_source, vmbus, channel)
             .await
             .map_err(CreateBusError::Offer)?;
 
         Ok(Self {
-            device,
+            bus_device: bus,
             channel,
-            config_space_offset,
-            current_slot: SlotNumber::from(0),
         })
     }
 }
@@ -118,12 +165,23 @@ impl SaveRestore for VpciBus {
 
 impl ChipsetDevice for VpciBus {
     fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
+        self.bus_device.supports_mmio()
+    }
+}
+
+impl ChipsetDevice for VpciBusDevice {
+    fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
         Some(self)
     }
 }
 
-impl MmioIntercept for VpciBus {
+impl MmioIntercept for VpciBusDevice {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
+        tracing::trace!(addr, "VPCI bus MMIO read");
+
+        // Remove vtom, as the guest may access it with or without set.
+        let addr = addr & !self.vtom.unwrap_or(0);
+
         let reg = match self.register(addr, data.len()) {
             Ok(reg) => reg,
             Err(err) => return IoResult::Err(err),
@@ -152,6 +210,11 @@ impl MmioIntercept for VpciBus {
     }
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
+        tracing::trace!(addr, "VPCI bus MMIO write");
+
+        // Remove vtom, as the guest may access it with or without set.
+        let addr = addr & !self.vtom.unwrap_or(0);
+
         let reg = match self.register(addr, data.len()) {
             Ok(reg) => reg,
             Err(err) => return IoResult::Err(err),
@@ -195,7 +258,7 @@ enum Register {
     ConfigSpace(u16),
 }
 
-impl VpciBus {
+impl VpciBusDevice {
     fn register(&self, addr: u64, len: usize) -> Result<Register, IoError> {
         // Note that this base address might be concurrently changing. We can
         // ignore accesses that are to addresses that don't make sense.

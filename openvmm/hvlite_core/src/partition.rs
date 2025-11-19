@@ -48,6 +48,7 @@ use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
+use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vmm_core::partition_unit::RequestYield;
 use vmm_core::partition_unit::RunCancelled;
@@ -88,6 +89,9 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
         self: Arc<Self>,
         minimum_vtl: Vtl,
     ) -> Option<Arc<dyn DoorbellRegistration>>;
+
+    /// Gets the [`MsiInterruptTarget`] interface for a particular VTL.
+    fn into_msi_target(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn MsiInterruptTarget>>;
 
     /// Returns whether virtual devices are supported.
     fn supports_virtual_devices(&self) -> bool;
@@ -166,7 +170,7 @@ where
 {
     #[cfg(guest_arch = "x86_64")]
     fn into_lint_target(self: Arc<Self>, vtl: Vtl) -> Arc<dyn LineSetTarget> {
-        Arc::new(virt::irqcon::ApicLintLineTarget::new(self, vtl))
+        Arc::new(vmm_core::emuplat::apic::ApicLintLineTarget::new(self, vtl))
     }
 
     fn caps(&self) -> &PartitionCapabilities {
@@ -201,6 +205,10 @@ where
         minimum_vtl: Vtl,
     ) -> Option<Arc<dyn DoorbellRegistration>> {
         self.doorbell_registration(minimum_vtl)
+    }
+
+    fn into_msi_target(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn MsiInterruptTarget>> {
+        self.msi_interrupt_target(minimum_vtl)
     }
 
     fn supports_virtual_devices(&self) -> bool {
@@ -268,15 +276,15 @@ impl SaveRestore for WrappedPartition {
 pub trait VpciDevice {
     /// Gets the [`VpciInterruptMapper`] interface to create interrupt mapping
     /// table entries.
-    fn interrupt_mapper(self: Arc<Self>) -> Arc<dyn VpciInterruptMapper>;
+    fn interrupt_mapper(self: Arc<Self>) -> VpciInterruptMapper;
 
-    /// Gets the [`VpciInterruptMapper`] interface to signal interrupts.
+    /// Gets the [`MsiInterruptTarget`] interface to signal interrupts.
     fn target(self: Arc<Self>) -> Arc<dyn MsiInterruptTarget>;
 }
 
-impl<T: 'static + VpciInterruptMapper + MsiInterruptTarget> VpciDevice for T {
-    fn interrupt_mapper(self: Arc<Self>) -> Arc<dyn VpciInterruptMapper> {
-        self
+impl<T: 'static + MapVpciInterrupt + MsiInterruptTarget> VpciDevice for T {
+    fn interrupt_mapper(self: Arc<Self>) -> VpciInterruptMapper {
+        VpciInterruptMapper::new(self)
     }
 
     fn target(self: Arc<Self>) -> Arc<dyn MsiInterruptTarget> {
@@ -293,8 +301,6 @@ impl<T: InspectMut> InspectMut for WrappedVp<'_, T> {
 }
 
 impl<T: Processor> Processor for WrappedVp<'_, T> {
-    type Error = T::Error;
-    type RunVpError = T::RunVpError;
     type StateAccess<'a>
         = T::StateAccess<'a>
     where
@@ -304,7 +310,7 @@ impl<T: Processor> Processor for WrappedVp<'_, T> {
         &mut self,
         vtl: Vtl,
         state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), <T::StateAccess<'_> as AccessVpState>::Error> {
         self.0.set_debug_state(vtl, state)
     }
 
@@ -312,11 +318,11 @@ impl<T: Processor> Processor for WrappedVp<'_, T> {
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<Self::RunVpError>> {
+    ) -> Result<Infallible, VpHaltReason> {
         self.0.run_vp(stop, dev).await
     }
 
-    fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
+    fn flush_async_requests(&mut self) {
         self.0.flush_async_requests()
     }
 
@@ -334,9 +340,7 @@ impl<T: Processor> SaveRestore for WrappedVp<'_, T> {
 
     fn save(&mut self) -> Result<Self::SavedState, SaveError> {
         // Ensure all async requests are reflected in the saved state.
-        self.0
-            .flush_async_requests()
-            .map_err(|err| SaveError::Other(err.into()))?;
+        self.0.flush_async_requests();
 
         self.0
             .access_state(Vtl::Vtl0)
@@ -378,6 +382,6 @@ impl<T: Processor> HvliteVp for T {
         mut runner: VpRunner,
         chipset: &vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
     ) {
-        while let Err(RunCancelled) = runner.run(&mut WrappedVp(self), chipset).await {}
+        while let Err(RunCancelled { .. }) = runner.run(&mut WrappedVp(self), chipset).await {}
     }
 }

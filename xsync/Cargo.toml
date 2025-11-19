@@ -7,8 +7,8 @@ members = ["xsync"]
 resolver = "2"
 
 [workspace.package]
-rust-version = "1.86"
-edition = "2021"
+rust-version = "1.90"
+edition = "2024"
 
 [workspace.dependencies]
 anyhow = "1.0"
@@ -57,7 +57,6 @@ inefficient_to_string = "warn"
 linkedlist = "warn"
 lossy_float_literal = "warn"
 macro_use_imports = "warn"
-match_on_vec_items = "warn"
 needless_continue = "warn"
 option_option = "warn"
 ptr_as_ptr = "warn"

@@ -6,6 +6,8 @@ use crate::GedChannel;
 use crate::GuestConfig;
 use crate::GuestEmulationDevice;
 use crate::GuestFirmwareConfig;
+use crate::IgvmAgentTestPlan;
+use crate::IgvmAgentTestSetting;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
 use get_protocol::SecureBootTemplateType;
@@ -99,7 +101,7 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                 .await
                 .map_err(Error::Vmbus)?;
 
-            if version_request.message_header.message_id != HostRequests::VERSION {
+            if version_request.message_header.message_id() != HostRequests::VERSION {
                 return Err(Error::InvalidSequence);
             }
 
@@ -136,7 +138,7 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
             if header.message_type == get_protocol::MessageTypes::HOST_NOTIFICATION {
                 let header: get_protocol::HeaderHostNotification =
                     header.try_into().expect("valid host request");
-                match header.message_id {
+                match header.message_id() {
                     HostNotifications::EVENT_LOG => {
                         let notification = get_protocol::EventLogNotification::read_from_prefix(
                             &message_buf[..size_of::<get_protocol::EventLogNotification>()],
@@ -170,7 +172,7 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                             get_protocol::MessageTypes::HOST_RESPONSE => {
                                 let header: get_protocol::HeaderHostRequest =
                                     header.try_into().expect("valid host request");
-                                match header.message_id {
+                                match header.message_id() {
                                     HostRequests::VMGS_READ => {
                                         let request_size =
                                             size_of::<get_protocol::VmgsReadRequest>();
@@ -235,6 +237,8 @@ pub fn create_host_channel(
     host_vmbus: MessagePipe<FlatRingMem>,
     ged_responses: Option<Vec<TestGetResponses>>,
     version: get_protocol::ProtocolVersion,
+    guest_memory: Option<GuestMemory>,
+    igvm_agent_plan: Option<IgvmAgentTestPlan>,
 ) -> TestGedClient {
     let guest_config = GuestConfig {
         firmware: GuestFirmwareConfig::Uefi {
@@ -253,6 +257,10 @@ pub fn create_host_channel(
         secure_boot_template: SecureBootTemplateType::SECURE_BOOT_DISABLED,
         enable_battery: false,
         no_persistent_secrets: true,
+        guest_state_lifetime: Default::default(),
+        guest_state_encryption_policy: Default::default(),
+        management_vtl_features: Default::default(),
+        efi_diagnostics_log_level: Default::default(),
     };
 
     let halt_reason = Arc::new(Mutex::new(None));
@@ -275,7 +283,8 @@ pub fn create_host_channel(
         recv,
         None,
         Some(disklayer_ram::ram_disk(TEST_VMGS_CAPACITY as u64, false).unwrap()),
-        None,
+        igvm_agent_plan.map(IgvmAgentTestSetting::TestPlan),
+        false,
     );
 
     if let Some(ged_responses) = ged_responses {
@@ -291,10 +300,13 @@ pub fn create_host_channel(
         }
     } else {
         let mut task = TaskControl::new(ged_state);
+        // Optionally provide a guest memory backing so handlers like IGVM_ATTEST can write
+        // response payloads into the shared buffer GPAs provided by GET.
+        let gm = guest_memory.unwrap_or_else(GuestMemory::empty);
         task.insert(
             spawn,
             "automated GED host channel",
-            GedChannel::new(host_vmbus, GuestMemory::empty()),
+            GedChannel::new(host_vmbus, gm),
         );
         task.start();
 

@@ -384,7 +384,7 @@ impl fuse::Fuse for SectionFs {
 
         let mut inodes = self.inodes.lock();
         let inode = inodes.get_mut(request.node_id()).ok_or(lx::Error::EINVAL)?;
-        if arg.offset != 0 || arg.length % PAGE_SIZE != 0 {
+        if arg.offset != 0 || !arg.length.is_multiple_of(PAGE_SIZE) {
             return Err(lx::Error::EINVAL);
         }
         let size = arg.length;

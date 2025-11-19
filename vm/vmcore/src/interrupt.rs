@@ -3,6 +3,8 @@
 
 //! Types to support delivering notifications to the guest.
 
+#![forbid(unsafe_code)]
+
 use crate::local_only::LocalOnly;
 use mesh::MeshPayload;
 use std::fmt::Debug;

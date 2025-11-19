@@ -5,7 +5,7 @@
 #![cfg(windows)]
 // UNSAFETY: Calling WHP APIs.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 pub mod abi;
 mod api;
@@ -18,6 +18,7 @@ pub use arm64::*;
 #[cfg(target_arch = "x86_64")]
 pub use x64::*;
 
+use guid::Guid;
 use std::alloc::Layout;
 use std::ffi::c_void;
 use std::fmt;
@@ -29,7 +30,6 @@ use std::os::windows::prelude::*;
 use std::ptr::NonNull;
 use std::ptr::null;
 use std::ptr::null_mut;
-use winapi::shared::guiddef::GUID;
 use winapi::shared::ntdef::LUID;
 use winapi::shared::winerror;
 use winapi::um::winnt::DEVICE_POWER_STATE;
@@ -373,6 +373,7 @@ impl Partition {
 
         let banks;
         let synth_banks;
+        let abi_bool;
         let data = match &property {
             PartitionProperty::ExtendedVmExits(val) => set(partition_prop::ExtendedVmExits, val),
             #[cfg(target_arch = "x86_64")]
@@ -380,7 +381,8 @@ impl Partition {
                 set(partition_prop::ExceptionExitBitmap, val)
             }
             PartitionProperty::SeparateSecurityDomain(val) => {
-                set(partition_prop::SeparateSecurityDomain, val)
+                abi_bool = (*val).into();
+                set(partition_prop::SeparateSecurityDomain, &abi_bool)
             }
             #[cfg(target_arch = "x86_64")]
             PartitionProperty::X64MsrExitBitmap(val) => set(partition_prop::X64MsrExitBitmap, val),
@@ -393,9 +395,13 @@ impl Partition {
                 set(partition_prop::ProcessorFrequencyCap, val)
             }
             PartitionProperty::AllowDeviceAssignment(val) => {
-                set(partition_prop::AllowDeviceAssignment, val)
+                abi_bool = (*val).into();
+                set(partition_prop::AllowDeviceAssignment, &abi_bool)
             }
-            PartitionProperty::DisableSmt(val) => set(partition_prop::DisableSmt, val),
+            PartitionProperty::DisableSmt(val) => {
+                abi_bool = (*val).into();
+                set(partition_prop::DisableSmt, &abi_bool)
+            }
             PartitionProperty::ProcessorFeatures(val) => {
                 let ProcessorFeatures {
                     bank0: b0,
@@ -438,7 +444,8 @@ impl Partition {
             }
             #[cfg(target_arch = "x86_64")]
             PartitionProperty::ApicRemoteReadSupport(val) => {
-                set(partition_prop::ApicRemoteReadSupport, val)
+                abi_bool = (*val).into();
+                set(partition_prop::ApicRemoteReadSupport, &abi_bool)
             }
             PartitionProperty::ReferenceTime(val) => set(partition_prop::ReferenceTime, val),
             PartitionProperty::SyntheticProcessorFeatures(val) => {
@@ -899,7 +906,7 @@ pub struct VpciResource(OwnedHandle);
 
 impl VpciResource {
     pub fn new(
-        provider: Option<&GUID>,
+        provider: Option<&Guid>,
         flags: abi::WHV_ALLOCATE_VPCI_RESOURCE_FLAGS,
         descriptor: &VpciResourceDescriptor<'_>,
     ) -> Result<Self> {
@@ -931,8 +938,9 @@ impl VpciResource {
                 VpciResourceDescriptor::Opaque(d) => d,
             };
             let mut handle = null_mut();
+            let guid_win = provider.map(|g| windows_sys::core::GUID::from(*g));
             check_hresult(api::WHvAllocateVpciResource(
-                provider,
+                guid_win.as_ref(),
                 flags,
                 data.as_ptr().cast(),
                 data.len().try_into().unwrap(),

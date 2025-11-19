@@ -3,10 +3,10 @@
 
 //! Build `openvmm` binaries
 
-use crate::download_lxutil::LxutilArch;
 use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
+use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -55,7 +55,6 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::init_openvmm_magicpath_lxutil::Node>();
         ctx.import::<crate::run_cargo_build::Node>();
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
@@ -78,19 +77,6 @@ impl FlowNode for Node {
         } in requests
         {
             let mut pre_build_deps = vec![installed_apt_deps.clone()];
-
-            let lxutil_arch = match target.as_triple().architecture {
-                target_lexicon::Architecture::Aarch64(_) => LxutilArch::Aarch64,
-                target_lexicon::Architecture::X86_64 => LxutilArch::X86_64,
-                arch => anyhow::bail!("no lxutil package for specified arch: {:?}", arch),
-            };
-
-            // NOTE: OpenVMM's code is currently hard-coded to assume lxutil
-            // package is in a particular place
-            pre_build_deps.push(ctx.reqv(|v| crate::init_openvmm_magicpath_lxutil::Request {
-                arch: lxutil_arch,
-                done: v,
-            }));
 
             // TODO: also need to take into account any default features in
             // openvmm's Cargo.toml?
@@ -115,17 +101,19 @@ impl FlowNode for Node {
                 out_name: "openvmm".into(),
                 crate_type: flowey_lib_common::run_cargo_build::CargoCrateType::Bin,
                 profile: profile.into(),
-                features: features
-                    .into_iter()
-                    .map(|f| {
-                        match f {
-                            OpenvmmFeature::Gdb => "gdb",
-                            OpenvmmFeature::Tpm => "tpm",
-                            OpenvmmFeature::UnstableWhp => "unstable_whp",
-                        }
-                        .into()
-                    })
-                    .collect(),
+                features: CargoFeatureSet::Specific(
+                    features
+                        .into_iter()
+                        .map(|f| {
+                            match f {
+                                OpenvmmFeature::Gdb => "gdb",
+                                OpenvmmFeature::Tpm => "tpm",
+                                OpenvmmFeature::UnstableWhp => "unstable_whp",
+                            }
+                            .into()
+                        })
+                        .collect(),
+                ),
                 target: target.as_triple(),
                 no_split_dbg_info: false,
                 extra_env: None,

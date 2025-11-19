@@ -23,6 +23,8 @@ use vmcore::interrupt::Interrupt;
 pub struct OfferInput {
     /// Parameters describing the offer.
     pub params: OfferParams,
+    /// The event to signal when the guest needs attention.
+    pub event: Interrupt,
     /// A mesh channel to send channel-related requests to.
     pub request_send: mesh::Sender<ChannelRequest>,
     /// A mesh channel to receive channel-related requests to.
@@ -79,7 +81,7 @@ impl OfferResources {
 #[derive(Debug, MeshPayload)]
 pub enum ChannelRequest {
     /// Open the channel.
-    Open(Rpc<OpenRequest, Option<OpenResult>>),
+    Open(Rpc<OpenRequest, bool>),
     /// Close the channel.
     ///
     /// Although there is no response from the host, this is still modeled as an
@@ -92,14 +94,6 @@ pub enum ChannelRequest {
     TeardownGpadl(Rpc<GpadlId, ()>),
     /// Modify the channel's target VP.
     Modify(Rpc<ModifyRequest, i32>),
-}
-
-/// The successful result of an open request.
-#[derive(Debug, MeshPayload)]
-pub struct OpenResult {
-    /// The interrupt object vmbus should signal when the guest signals the
-    /// host.
-    pub guest_to_host_interrupt: Interrupt,
 }
 
 /// GPADL information from the guest.
@@ -128,8 +122,8 @@ pub enum ModifyRequest {
 pub enum ChannelServerRequest {
     /// A request to restore the channel.
     ///
-    /// The input parameter provides the open result if the channel was saved open.
-    Restore(FailableRpc<Option<OpenResult>, RestoreResult>),
+    /// The input parameter indicates if the channel was saved open.
+    Restore(FailableRpc<bool, RestoreResult>),
     /// A request to revoke the channel.
     ///
     /// A channel can also be revoked by dropping it. This request is only necessary if you need to
@@ -176,8 +170,7 @@ pub trait ParentBus: Send + Sync {
     /// time.
     fn clone_bus(&self) -> Box<dyn ParentBus>;
 
-    /// Returns whether [`OpenResult::guest_to_host_interrupt`] needs to be
-    /// backed by an OS event.
+    /// Returns whether [`OfferInput::event`] needs to be backed by an OS event.
     ///
     /// TODO: Remove this and just return the appropriate notify type directly
     /// once subchannel creation and enable are separated.
@@ -237,7 +230,7 @@ impl OpenRequest {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Protobuf)]
+#[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Protobuf, Inspect)]
 /// The identifying IDs for a channel offer.
 #[mesh(package = "vmbus")]
 pub struct OfferKey {
@@ -259,6 +252,16 @@ impl Display for OfferKey {
             "{{{}}}-{{{}}}-{}",
             self.interface_id, self.instance_id, self.subchannel_index
         )
+    }
+}
+
+impl From<&protocol::OfferChannel> for OfferKey {
+    fn from(offer: &protocol::OfferChannel) -> Self {
+        Self {
+            interface_id: offer.interface_id,
+            instance_id: offer.instance_id,
+            subchannel_index: offer.subchannel_index,
+        }
     }
 }
 
@@ -284,7 +287,7 @@ pub struct OfferParams {
     pub mnf_interrupt_latency: Option<Duration>,
     /// The order in which channels with the same interface will be offered to
     /// the guest (optional).
-    pub offer_order: Option<u32>,
+    pub offer_order: Option<u64>,
     /// Indicates whether the channel supports using encrypted memory for any
     /// external GPADLs and GPA direct ranges. This is only used when hardware
     /// isolation is in use.

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 #![cfg(any(windows, target_os = "linux"))]
 
 pub mod resolver;
@@ -63,8 +64,8 @@ impl LegacyVirtioDevice for VirtioPlan9Device {
     }
 
     fn read_registers_u32(&self, offset: u16) -> u32 {
-        assert!(self.tag.len() % 4 == 0);
-        assert!(offset % 4 == 0);
+        assert!(self.tag.len().is_multiple_of(4));
+        assert!(offset.is_multiple_of(4));
 
         let offset = offset as usize;
         if offset < self.tag.len() {

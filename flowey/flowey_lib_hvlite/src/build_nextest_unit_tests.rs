@@ -7,7 +7,6 @@
 //! doesn't require any special dependencies (e.g: additional binaries, disk
 //! images, etc...), and can be run simply by invoking the test bin itself.
 
-use crate::download_lxutil::LxutilArch;
 use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonPlatform;
@@ -16,8 +15,8 @@ use crate::run_cargo_build::common::CommonTriple;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoBuildProfile;
+use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use flowey_lib_common::run_cargo_nextest_run::TestResults;
-use flowey_lib_common::run_cargo_nextest_run::build_params::FeatureSet;
 use flowey_lib_common::run_cargo_nextest_run::build_params::PanicAbortTests;
 use flowey_lib_common::run_cargo_nextest_run::build_params::TestPackages;
 
@@ -64,7 +63,6 @@ impl FlowNode for Node {
         ctx.import::<crate::build_xtask::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
-        ctx.import::<crate::init_openvmm_magicpath_lxutil::Node>();
         ctx.import::<crate::install_openvmm_rust_build_essential::Node>();
         ctx.import::<crate::run_cargo_nextest_run::Node>();
         ctx.import::<crate::init_cross_build::Node>();
@@ -162,24 +160,11 @@ impl FlowNode for Node {
         {
             let mut pre_run_deps = ambient_deps.clone();
 
-            let (sysroot_arch, lxutil_arch) = match target.architecture {
-                target_lexicon::Architecture::X86_64 => {
-                    (OpenvmmSysrootArch::X64, LxutilArch::X86_64)
-                }
-                target_lexicon::Architecture::Aarch64(_) => {
-                    (OpenvmmSysrootArch::Aarch64, LxutilArch::Aarch64)
-                }
+            let sysroot_arch = match target.architecture {
+                target_lexicon::Architecture::X86_64 => OpenvmmSysrootArch::X64,
+                target_lexicon::Architecture::Aarch64(_) => OpenvmmSysrootArch::Aarch64,
                 arch => anyhow::bail!("unsupported arch {arch}"),
             };
-
-            // lxutil is required by certain build.rs scripts.
-            //
-            // FUTURE: should prob have a way to opt-out of this lxutil build
-            // script requirement in non-interactive scenarios?
-            pre_run_deps.push(ctx.reqv(|v| crate::init_openvmm_magicpath_lxutil::Request {
-                arch: lxutil_arch,
-                done: v,
-            }));
 
             // See comment in `crate::cargo_build` for why this is necessary.
             //
@@ -207,9 +192,9 @@ impl FlowNode for Node {
                 target.operating_system,
                 target_lexicon::OperatingSystem::Windows
             ) {
-                FeatureSet::Specific(vec!["ci".into()])
+                CargoFeatureSet::Specific(vec!["ci".into()])
             } else {
-                FeatureSet::All
+                CargoFeatureSet::All
             };
 
             let injected_env = ctx.reqv(|v| crate::init_cross_build::Request {
@@ -223,7 +208,7 @@ impl FlowNode for Node {
                     features,
                     no_default_features: false,
                     unstable_panic_abort_tests,
-                    target,
+                    target: target.clone(),
                     profile: match profile {
                         CommonProfile::Release => CargoBuildProfile::Release,
                         CommonProfile::Debug => CargoBuildProfile::Debug,
@@ -242,6 +227,8 @@ impl FlowNode for Node {
                     ),
                     nextest_profile,
                     nextest_filter_expr: None,
+                    nextest_working_dir: None,
+                    nextest_config_file: None,
                     run_ignored: false,
                     extra_env: None,
                     pre_run_deps,

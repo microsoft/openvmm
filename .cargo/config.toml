@@ -2,8 +2,8 @@
 # Licensed under the MIT License.
 
 [alias]
-xflowey = "run --quiet -p flowey_trampoline -- run -p flowey_hvlite --profile flowey -- pipeline run"
-xtask = "run -p xtask --profile xtask --"
+xflowey = "run -p flowey_hvlite -- pipeline run"
+xtask = "run -p xtask --profile light --"
 
 [env]
 # Use the packaged openssl libraries on musl targets.
@@ -31,10 +31,6 @@ CC_x86_64_unknown_linux_musl = { value = "build_support/underhill_cross/x86_64-u
 
 # Use the packaged verison of protoc, symlinked by repo setup tooling
 PROTOC = { value = ".packages/Google.Protobuf.Tools/tools/protoc", relative = true }
-
-# Path to lxutil.dll
-X86_64_LXUTIL_DLL_DIR = { value = ".packages/Microsoft.WSL.LxUtil.amd64fre/build/native/bin", relative = true }
-AARCH64_LXUTIL_DLL_DIR = { value = ".packages/Microsoft.WSL.LxUtil.arm64fre/build/native/bin", relative = true }
 
 # Path to sysroot (used by build_support/underhill_cross)
 X86_64_SYSROOT = { value = ".packages/extracted/x86_64-sysroot", relative = true }
@@ -89,6 +85,8 @@ rustflags = [
 rustflags = [
   # Use the musl from the sysroot, not from the Rust distribution.
   "-Clink-self-contained=n",
+  # Force musl to be statically linked in
+  "-Ctarget-feature=+crt-static",
   # Use RELR relocation format, which is considerably smaller.
   "-Clink-arg=-Wl,-z,pack-relative-relocs",
 ]

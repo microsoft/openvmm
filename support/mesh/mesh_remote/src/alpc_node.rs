@@ -741,6 +741,7 @@ impl Connection {
 
 impl SendEvent for Connection {
     fn event(&self, event: OutgoingEvent<'_>) {
+        let len = event.len();
         match self.send_event(event) {
             Ok(_) => (),
             Err(err) => {
@@ -748,6 +749,7 @@ impl SendEvent for Connection {
                     node = ?self.local_id,
                     remote_node = ?self.remote_id,
                     error = err.as_error(),
+                    len,
                     "error sending packet"
                 );
                 // Notify the connection task of the failure.
@@ -823,6 +825,18 @@ mod tests {
         drop(recv2);
         node1.shutdown().await;
         node2.shutdown().await;
+    }
+
+    #[async_test]
+    async fn test_message_sizes(driver: DefaultDriver) {
+        let (p1, p2) = mesh_node::local_node::Port::new_pair();
+        let (p3, p4) = mesh_node::local_node::Port::new_pair();
+        let node1 = AlpcNode::new(driver.clone()).unwrap();
+        let (invitation, _handle) = node1.invite(p2).unwrap();
+        let _node2 = AlpcNode::join(driver.clone(), invitation, p3).unwrap();
+
+        crate::test_common::test_message_sizes(p1, p4, 0..=super::MAX_SMALL_EVENT_SIZE + 0x1000)
+            .await;
     }
 
     #[async_test]

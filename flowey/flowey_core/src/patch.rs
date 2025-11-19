@@ -83,10 +83,7 @@ where
         M: FlowNodeBase,
     {
         let backing_var = self.backend.new_side_effect_var();
-        let req = f(crate::node::thin_air_write_runtime_var(
-            backing_var.clone(),
-            false,
-        ));
+        let req = f(crate::node::thin_air_write_runtime_var(backing_var.clone()));
 
         self.backend.on_patch_event(PatchEvent::InjectSideEffect {
             from_old_node: NodeHandle::from_type::<N>(),
@@ -101,7 +98,7 @@ where
 pub fn patchfn_by_modpath() -> &'static BTreeMap<String, PatchFn> {
     static MODPATH_LOOKUP: OnceLock<BTreeMap<String, PatchFn>> = OnceLock::new();
 
-    let lookup = MODPATH_LOOKUP.get_or_init(|| {
+    MODPATH_LOOKUP.get_or_init(|| {
         let mut lookup = BTreeMap::new();
         for (f, module_path, fn_name) in private::PATCH_FNS {
             let existing = lookup.insert(format!("{}::{}", module_path, fn_name), *f);
@@ -109,9 +106,7 @@ pub fn patchfn_by_modpath() -> &'static BTreeMap<String, PatchFn> {
             assert!(existing.is_none());
         }
         lookup
-    });
-
-    lookup
+    })
 }
 
 /// [`PatchResolver`]

@@ -3,16 +3,15 @@
 
 //! Helpers to modify a [`PetriVmConfigOpenVmm`] from its defaults.
 
+// TODO: Delete all modification functions that are not backend-specific
+// from this file, add necessary settings to the backend-agnostic
+// `PetriVmConfig`, and add corresponding functions to `PetriVmBuilder`.
+
 use super::MANA_INSTANCE;
 use super::NIC_MAC_ADDRESS;
 use super::PetriVmConfigOpenVmm;
-use crate::ProcessorTopology;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
-use disk_backend_resources::LayeredDiskHandle;
-use disk_backend_resources::layer::DiskLayerHandle;
-use disk_backend_resources::layer::RamDiskLayerHandle;
-use fs_err::File;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
 use get_resources::ged::IgvmAttestTestConfig;
@@ -21,10 +20,6 @@ use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
-use hvlite_helpers::disk::open_disk_type;
-use petri_artifacts_common::tags::MachineArch;
-use petri_artifacts_core::ResolvedArtifact;
-use std::path::Path;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
 use vm_resource::IntoResource;
@@ -33,22 +28,6 @@ use vmotherboard::ChipsetDeviceHandle;
 use vtl2_settings_proto::Vtl2Settings;
 
 impl PetriVmConfigOpenVmm {
-    /// Enable VMBus redirection.
-    pub fn with_vmbus_redirect(mut self) -> Self {
-        self.config
-            .vmbus
-            .as_mut()
-            .expect("vmbus not configured")
-            .vtl2_redirect = true;
-
-        let Some(ged) = &mut self.ged else {
-            panic!("VMBus redirection is only supported for OpenHCL.")
-        };
-        ged.vmbus_redirection = true;
-
-        self
-    }
-
     /// Enable the VTL0 alias map.
     // TODO: Remove once #912 is fixed.
     pub fn with_vtl0_alias_map(mut self) -> Self {
@@ -76,6 +55,9 @@ impl PetriVmConfigOpenVmm {
                     register_layout: TpmRegisterLayout::IoPort,
                     guest_secret_key: None,
                     logger: None,
+                    is_confidential_vm: self.firmware.isolation().is_some(),
+                    // TODO: generate an actual BIOS GUID and put it here
+                    bios_guid: guid::guid!("00000000-0000-0000-0000-000000000000"),
                 }
                 .into_resource(),
             });
@@ -84,74 +66,6 @@ impl PetriVmConfigOpenVmm {
             }
         }
 
-        self
-    }
-
-    /// Set the VM to use the specified number of virtual processors.
-    ///
-    /// Using 1 CPU is useful for heavier OpenHCL tests, as our WHP emulation
-    /// layer is rather slow when dealing with cross-cpu communication.
-    pub fn with_processor_topology(mut self, topology: ProcessorTopology) -> Self {
-        let ProcessorTopology {
-            vp_count,
-            enable_smt,
-            vps_per_socket,
-            apic_mode,
-        } = topology;
-        self.config.processor_topology.proc_count = vp_count;
-        self.config.processor_topology.enable_smt = enable_smt;
-        self.config.processor_topology.vps_per_socket = vps_per_socket;
-        self.config.processor_topology.arch = Some(match self.arch {
-            MachineArch::X86_64 => hvlite_defs::config::ArchTopologyConfig::X86(
-                hvlite_defs::config::X86TopologyConfig {
-                    x2apic: match apic_mode {
-                        None => hvlite_defs::config::X2ApicConfig::Auto,
-                        Some(x) => match x {
-                            crate::ApicMode::Xapic => {
-                                hvlite_defs::config::X2ApicConfig::Unsupported
-                            }
-                            crate::ApicMode::X2apicSupported => {
-                                hvlite_defs::config::X2ApicConfig::Supported
-                            }
-                            crate::ApicMode::X2apicEnabled => {
-                                hvlite_defs::config::X2ApicConfig::Enabled
-                            }
-                        },
-                    },
-                    ..Default::default()
-                },
-            ),
-            MachineArch::Aarch64 => hvlite_defs::config::ArchTopologyConfig::Aarch64(
-                hvlite_defs::config::Aarch64TopologyConfig::default(),
-            ),
-        });
-        self
-    }
-
-    /// Enable secure boot for the VM.
-    pub fn with_secure_boot(mut self) -> Self {
-        if !self.firmware.is_uefi() {
-            panic!("Secure boot is only supported for UEFI firmware.");
-        }
-        if self.firmware.is_openhcl() {
-            self.ged.as_mut().unwrap().secure_boot_enabled = true;
-        } else {
-            self.config.secure_boot_enabled = true;
-        }
-        self
-    }
-
-    /// Inject Windows secure boot templates into the VM's UEFI.
-    pub fn with_windows_secure_boot_template(mut self) -> Self {
-        if !self.firmware.is_uefi() {
-            panic!("Secure boot templates are only supported for UEFI firmware.");
-        }
-        if self.firmware.is_openhcl() {
-            self.ged.as_mut().unwrap().secure_boot_template =
-                get_resources::ged::GuestSecureBootTemplateType::MicrosoftWindows;
-        } else {
-            self.config.custom_uefi_vars = hyperv_secure_boot_templates::x64::microsoft_windows();
-        }
         self
     }
 
@@ -179,7 +93,7 @@ impl PetriVmConfigOpenVmm {
     }
 
     /// Enable TPM state persistence
-    pub fn with_tpm_state_persistence(mut self) -> Self {
+    pub fn with_tpm_state_persistence(mut self, tpm_state_persistence: bool) -> Self {
         if !self.firmware.is_openhcl() {
             panic!("TPM state persistence is only supported for OpenHCL.")
         };
@@ -188,7 +102,7 @@ impl PetriVmConfigOpenVmm {
 
         // Disable no_persistent_secrets implies preserving TPM states
         // across boots
-        ged.no_persistent_secrets = false;
+        ged.no_persistent_secrets = !tpm_state_persistence;
 
         self
     }
@@ -212,7 +126,7 @@ impl PetriVmConfigOpenVmm {
     pub fn with_nic(mut self) -> Self {
         let endpoint =
             net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
-        if self.vtl2_settings.is_some() {
+        if self.resources.vtl2_settings.is_some() {
             self.config.vpci_devices.push(VpciDeviceConfig {
                 vtl: DeviceVtl::Vtl2,
                 instance_id: MANA_INSTANCE,
@@ -225,7 +139,8 @@ impl PetriVmConfigOpenVmm {
                 .into_resource(),
             });
 
-            self.vtl2_settings
+            self.resources
+                .vtl2_settings
                 .as_mut()
                 .unwrap()
                 .dynamic
@@ -254,128 +169,12 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    /// Specifies whether the UEFI frontpage app is enabled.
-    ///
-    /// If it is disabled, then the VM will shutdown if there are no configured
-    /// boot apps.
-    pub fn with_uefi_frontpage(mut self, enable_frontpage: bool) -> Self {
-        match self.config.load_mode {
-            LoadMode::Uefi {
-                ref mut disable_frontpage,
-                ..
-            } => {
-                *disable_frontpage = !enable_frontpage;
-            }
-            LoadMode::Igvm { .. } => {
-                let ged = self.ged.as_mut().expect("no GED to configure DPS");
-                match ged.firmware {
-                    get_resources::ged::GuestFirmwareConfig::Uefi {
-                        ref mut disable_frontpage,
-                        ..
-                    } => {
-                        *disable_frontpage = !enable_frontpage;
-                    }
-                    _ => {
-                        panic!("not a UEFI boot");
-                    }
-                }
-            }
-            _ => panic!("not a UEFI boot"),
-        }
-        self
-    }
-
-    /// Specifies whether the UEFI will always attempt a default boot
-    pub fn with_default_boot_always_attempt(mut self, val: bool) -> Self {
-        match self.config.load_mode {
-            LoadMode::Uefi {
-                ref mut default_boot_always_attempt,
-                ..
-            } => {
-                *default_boot_always_attempt = val;
-            }
-            LoadMode::Igvm { .. } => {
-                let ged = self.ged.as_mut().expect("no GED to configure DPS");
-                match ged.firmware {
-                    get_resources::ged::GuestFirmwareConfig::Uefi {
-                        ref mut default_boot_always_attempt,
-                        ..
-                    } => {
-                        *default_boot_always_attempt = val;
-                    }
-                    _ => {
-                        panic!("not a UEFI boot");
-                    }
-                }
-            }
-            _ => panic!("not a UEFI boot"),
-        }
-        self
-    }
-
-    /// Specifies an existing VMGS file to use
-    pub fn with_vmgs(mut self, vmgs_path: impl AsRef<Path>) -> Self {
-        let vmgs_disk = LayeredDiskHandle {
-            layers: vec![
-                RamDiskLayerHandle { len: None }.into_resource().into(),
-                DiskLayerHandle(
-                    open_disk_type(vmgs_path.as_ref(), true).expect("failed to open VMGS file"),
-                )
-                .into_resource()
-                .into(),
-            ],
-        }
-        .into_resource();
-
-        if self.firmware.is_openhcl() {
-            self.ged.as_mut().unwrap().vmgs_disk = Some(vmgs_disk);
-        } else {
-            self.config.vmgs_disk = Some(vmgs_disk);
-        }
-        self
-    }
-
-    /// Add custom command line arguments to OpenHCL.
-    pub fn with_openhcl_command_line(mut self, additional_cmdline: &str) -> Self {
-        if !self.firmware.is_openhcl() {
-            panic!("Not an OpenHCL firmware.");
-        }
-        let LoadMode::Igvm { cmdline, .. } = &mut self.config.load_mode else {
-            unreachable!()
-        };
-        cmdline.push(' ');
-        cmdline.push_str(additional_cmdline);
-        self
-    }
-
-    /// Enable confidential filtering, even if the VM is not confidential.
-    pub fn with_confidential_filtering(self) -> Self {
-        if !self.firmware.is_openhcl() {
-            panic!("Confidential filtering is only supported for OpenHCL");
-        }
-        self.with_openhcl_command_line(&format!(
-            "{}=1 {}=0",
-            underhill_confidentiality::OPENHCL_CONFIDENTIAL_ENV_VAR_NAME,
-            underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME
-        ))
-    }
-
-    /// Load a custom OpenHCL firmware file.
-    pub fn with_custom_openhcl(mut self, artifact: ResolvedArtifact) -> Self {
-        let LoadMode::Igvm { file, .. } = &mut self.config.load_mode else {
-            panic!("Custom OpenHCL is only supported for OpenHCL firmware.")
-        };
-        *file = File::open(artifact)
-            .expect("Failed to open custom OpenHCL file")
-            .into();
-        self
-    }
-
     /// Add custom VTL 2 settings.
     // TODO: At some point we want to replace uses of this with nicer with_disk,
     // with_nic, etc. methods.
     pub fn with_custom_vtl2_settings(mut self, f: impl FnOnce(&mut Vtl2Settings)) -> Self {
         f(self
+            .resources
             .vtl2_settings
             .as_mut()
             .expect("Custom VTL 2 settings are only supported with OpenHCL."));
@@ -399,22 +198,6 @@ impl PetriVmConfigOpenVmm {
     /// pattern.
     pub fn with_custom_config(mut self, f: impl FnOnce(&mut Config)) -> Self {
         f(&mut self.config);
-        self
-    }
-
-    /// Adds a file to the agent image.
-    pub fn with_agent_file(mut self, name: &str, artifact: ResolvedArtifact) -> Self {
-        self.resources.agent_image.add_file(name, artifact);
-        self
-    }
-
-    /// Adds a file to the OpenHCL agent image.
-    pub fn with_openhcl_agent_file(mut self, name: &str, artifact: ResolvedArtifact) -> Self {
-        self.resources
-            .openhcl_agent_image
-            .as_mut()
-            .unwrap()
-            .add_file(name, artifact);
         self
     }
 

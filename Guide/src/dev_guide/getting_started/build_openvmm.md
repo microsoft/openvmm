@@ -7,7 +7,7 @@
   - [Getting started on Linux / WSL2](./linux.md).
 
 ```admonish tip
-It is strongly suggested that you use WSL2, and [cross compile](./suggested_dev_env.md#wsl2-cross-compiling-from-wsl2-to-windows)
+It is strongly suggested that you use WSL2, and [cross compile](./cross_compile.md)
 for Windows when necessary.
 ```
 
@@ -52,7 +52,7 @@ GitHub Issue tracker.
 
 **Error:**
 
-```
+```text
 error: failed to run custom build command for `inspect_proto v0.0.0 (/home/daprilik/src/openvmm/support/inspect_proto)`
 
 Caused by:
@@ -76,7 +76,7 @@ Please run `cargo xflowey restore-packages`, and try again.
 
 **Error:**
 
-```
+```text
 error[E0658]: use of unstable library feature 'absolute_path'
   --> flowey/flowey/src/lib.rs:37:17
    |

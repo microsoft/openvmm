@@ -156,7 +156,7 @@ macro_rules! define_tmk_test {
             };
 
             // UNSAFETY: needed to specify the link section for the test.
-            #[allow(unsafe_code)]
+            #[expect(unsafe_code)]
             #[unsafe(link_section = "tmk_tests")]
             #[used]
             static TEST: $crate::TestDescriptor = $crate::TestDescriptor {

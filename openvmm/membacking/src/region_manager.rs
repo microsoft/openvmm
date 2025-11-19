@@ -20,17 +20,13 @@ use thiserror::Error;
 use vmcore::local_only::LocalOnly;
 
 /// The region manager.
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
 pub struct RegionManager {
+    #[inspect(
+        flatten,
+        with = "|x| inspect::send(&x.req_send, RegionRequest::Inspect)"
+    )]
     client: RegionManagerClient,
-}
-
-impl Inspect for RegionManager {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.client
-            .req_send
-            .send(RegionRequest::Inspect(req.defer()));
-    }
 }
 
 /// Provides access to the region manager.

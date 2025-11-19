@@ -156,12 +156,15 @@ pub struct ParsedBootDtInfo {
     pub config_ranges: Vec<MemoryRange>,
     /// The VTL2 reserved range.
     pub vtl2_reserved_range: MemoryRange,
+    /// The memory range that contains the persisted header describing the
+    /// persisted protobuf region.
+    pub vtl2_persisted_header: MemoryRange,
+    /// The memory range that contains the persisted protobuf region.
+    pub vtl2_persisted_protobuf_region: MemoryRange,
     /// The ranges that were accepted at load time by the host on behalf of the
     /// guest.
     #[inspect(iter_by_index)]
     pub accepted_ranges: Vec<MemoryRange>,
-    /// GIC information
-    pub gic: Option<GicInfo>,
     /// The memory allocation mode the bootloader decided to use.
     pub memory_allocation_mode: MemoryAllocationMode,
     /// The isolation type of the partition.
@@ -169,6 +172,11 @@ pub struct ParsedBootDtInfo {
     /// VTL2 range for private pool memory.
     #[inspect(iter_by_index)]
     pub private_pool_ranges: Vec<MemoryRangeWithNode>,
+
+    /// GIC information, on AArch64.
+    pub gic: Option<GicInfo>,
+    /// PMU GSIV, on AArch64.
+    pub pmu_gsiv: Option<u32>,
 }
 
 fn err_to_owned(e: fdt::parser::Error<'_>) -> anyhow::Error {
@@ -207,6 +215,8 @@ struct OpenhclInfo {
     memory_allocation_mode: MemoryAllocationMode,
     isolation: IsolationType,
     private_pool_ranges: Vec<MemoryRangeWithNode>,
+    vtl2_persisted_header: MemoryRange,
+    vtl2_persisted_protobuf_region: MemoryRange,
 }
 
 fn parse_memory_openhcl(node: &Node<'_>) -> anyhow::Result<AddressRange> {
@@ -389,6 +399,48 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         })
         .collect();
 
+    // Report the persisted header range.
+    let vtl2_persisted_header = {
+        let mut header_iter = memory.iter().filter_map(|entry| {
+            if entry.vtl_usage() == MemoryVtlType::VTL2_PERSISTED_STATE_HEADER {
+                Some(*entry.range())
+            } else {
+                None
+            }
+        });
+
+        let header = header_iter
+            .next()
+            .ok_or(anyhow::anyhow!("no VTL2 persisted header range found"))?;
+
+        if header_iter.next().is_some() {
+            bail!("multiple VTL2 persisted header ranges found");
+        }
+
+        header
+    };
+
+    // Report the persisted protobuf region range.
+    let vtl2_persisted_protobuf_region = {
+        let mut region_iter = memory.iter().filter_map(|entry| {
+            if entry.vtl_usage() == MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF {
+                Some(*entry.range())
+            } else {
+                None
+            }
+        });
+
+        let region = region_iter.next().ok_or(anyhow::anyhow!(
+            "no VTL2 persisted protobuf region range found"
+        ))?;
+
+        if region_iter.next().is_some() {
+            bail!("multiple VTL2 persisted protobuf region ranges found");
+        }
+
+        region
+    };
+
     let vtl0_alias_map = try_find_property(node, "vtl0-alias-map")
         .map(|prop| prop.read_u64(0).map_err(err_to_owned))
         .transpose()
@@ -416,6 +468,8 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         memory_allocation_mode,
         isolation,
         private_pool_ranges,
+        vtl2_persisted_header,
+        vtl2_persisted_protobuf_region,
     })
 }
 
@@ -460,7 +514,7 @@ fn parse_memory(node: &Node<'_>) -> anyhow::Result<MemoryRangeWithNode> {
     let base = reg[0];
     let len = reg[1];
     let numa_node_id = try_find_property(node, "numa-node-id")
-        .context("{node.name} missing numa-node-id")?
+        .context(format!("{} missing numa-node-id", node.name))?
         .read_u32(0)
         .map_err(err_to_owned)
         .context("unable to read numa-node-id")?;
@@ -485,6 +539,34 @@ fn parse_gic(node: &Node<'_>) -> anyhow::Result<GicInfo> {
     })
 }
 
+fn parse_pmu(node: &Node<'_>) -> anyhow::Result<u32> {
+    let interrupts =
+        try_find_property(node, "interrupts").context("pmu node missing interrupts")?;
+    let interrupts_typ = interrupts
+        .read_u32(0)
+        .map_err(err_to_owned)
+        .context("missing pmu interrupts typ")?;
+    let interrupts_ppi_index = interrupts
+        .read_u32(1)
+        .map_err(err_to_owned)
+        .context("missing pmu interrupts index")?;
+
+    // The interrupt is expected to be a PPI.
+    const GIC_PPI: u32 = 1;
+    if interrupts_typ != GIC_PPI {
+        bail!("pmu node has unexpected interrupt type {interrupts_typ}");
+    }
+
+    // The index is the index off of the PPI base of 16. PPIs only exist from 16
+    // to 31, so the index should be < 16.
+    if interrupts_ppi_index >= 16 {
+        bail!("pmu node has unexpected interrupt index {interrupts_ppi_index}");
+    }
+
+    const PPI_BASE: u32 = 16;
+    Ok(PPI_BASE + interrupts_ppi_index)
+}
+
 impl ParsedBootDtInfo {
     /// Read parameters passed via device tree by openhcl_boot, at
     /// /sys/firmware/fdt.
@@ -502,6 +584,7 @@ impl ParsedBootDtInfo {
         let mut config_ranges = Vec::new();
         let mut vtl2_memory = Vec::new();
         let mut gic = None;
+        let mut pmu_gsiv = None;
         let mut partition_memory_map = Vec::new();
         let mut accepted_ranges = Vec::new();
         let mut vtl0_alias_map = None;
@@ -509,6 +592,8 @@ impl ParsedBootDtInfo {
         let mut isolation = IsolationType::None;
         let mut vtl2_reserved_range = MemoryRange::EMPTY;
         let mut private_pool_ranges = Vec::new();
+        let mut vtl2_persisted_header = MemoryRange::EMPTY;
+        let mut vtl2_persisted_protobuf_region = MemoryRange::EMPTY;
 
         let parser = Parser::new(raw)
             .map_err(err_to_owned)
@@ -538,6 +623,8 @@ impl ParsedBootDtInfo {
                         memory_allocation_mode: n_memory_allocation_mode,
                         isolation: n_isolation,
                         private_pool_ranges: n_private_pool_ranges,
+                        vtl2_persisted_header: n_vtl2_persisted_header,
+                        vtl2_persisted_protobuf_region: n_vtl2_persisted_protobuf_region,
                     } = parse_openhcl(&child)?;
                     vtl0_mmio = n_vtl0_mmio;
                     config_ranges = n_config_ranges;
@@ -548,6 +635,8 @@ impl ParsedBootDtInfo {
                     isolation = n_isolation;
                     vtl2_reserved_range = n_vtl2_reserved_range;
                     private_pool_ranges = n_private_pool_ranges;
+                    vtl2_persisted_header = n_vtl2_persisted_header;
+                    vtl2_persisted_protobuf_region = n_vtl2_persisted_protobuf_region;
                 }
 
                 _ if child.name.starts_with("memory@") => {
@@ -557,6 +646,11 @@ impl ParsedBootDtInfo {
                 _ if child.name.starts_with("intc@") => {
                     // TODO: make sure we are on aarch64
                     gic = Some(parse_gic(&child)?);
+                }
+
+                _ if child.name.starts_with("pmu") => {
+                    // TODO: make sure we are on aarch64
+                    pmu_gsiv = Some(parse_pmu(&child)?);
                 }
 
                 _ => {
@@ -576,10 +670,13 @@ impl ParsedBootDtInfo {
             vtl0_alias_map,
             accepted_ranges,
             gic,
+            pmu_gsiv,
             memory_allocation_mode,
             isolation,
             vtl2_reserved_range,
             private_pool_ranges,
+            vtl2_persisted_header,
+            vtl2_persisted_protobuf_region,
         })
     }
 }
@@ -677,6 +774,7 @@ mod tests {
         let p_numa_node_id = builder.add_string("numa-node-id")?;
         let p_igvm_type = builder.add_string(IGVM_DT_IGVM_TYPE_PROPERTY)?;
         let p_openhcl_memory = builder.add_string("openhcl,memory-type")?;
+        let p_interrupts = builder.add_string("interrupts")?;
 
         let mut root_builder = builder
             .start_node("")?
@@ -738,6 +836,18 @@ mod tests {
                 .add_null(p_interrupt_controller)?
                 .add_u32(p_phandle, 1)?
                 .add_null(p_ranges)?
+                .end_node()?;
+        }
+
+        // PMU
+        if let Some(pmu_gsiv) = info.pmu_gsiv {
+            assert!((16..32).contains(&pmu_gsiv));
+            const GIC_PPI: u32 = 1;
+            const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
+            root_builder = root_builder
+                .start_node("pmu")?
+                .add_str(p_compatible, "arm,armv8-pmuv3")?
+                .add_u32_array(p_interrupts, &[GIC_PPI, pmu_gsiv - 16, IRQ_TYPE_LEVEL_HIGH])?
                 .end_node()?;
         }
 
@@ -899,6 +1009,22 @@ mod tests {
                 }),
                 AddressRange::Memory(Memory {
                     range: MemoryRangeWithNode {
+                        range: MemoryRange::new(0x50000..0x51000),
+                        vnode: 0,
+                    },
+                    vtl_usage: MemoryVtlType::VTL2_PERSISTED_STATE_HEADER,
+                    igvm_type: MemoryMapEntryType::VTL2_PROTECTABLE,
+                }),
+                AddressRange::Memory(Memory {
+                    range: MemoryRangeWithNode {
+                        range: MemoryRange::new(0x51000..0x52000),
+                        vnode: 0,
+                    },
+                    vtl_usage: MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF,
+                    igvm_type: MemoryMapEntryType::VTL2_PROTECTABLE,
+                }),
+                AddressRange::Memory(Memory {
+                    range: MemoryRangeWithNode {
                         range: MemoryRange::new(0x60000..0x70000),
                         vnode: 0,
                     },
@@ -931,6 +1057,7 @@ mod tests {
                 gic_distributor_base: 0x10000,
                 gic_redistributors_base: 0x20000,
             }),
+            pmu_gsiv: Some(0x17),
             accepted_ranges: vec![
                 MemoryRange::new(0x10000..0x20000),
                 MemoryRange::new(0x1000000..0x1500000),
@@ -945,6 +1072,8 @@ mod tests {
                 range: MemoryRange::new(0x60000..0x70000),
                 vnode: 0,
             }],
+            vtl2_persisted_header: MemoryRange::new(0x50000..0x51000),
+            vtl2_persisted_protobuf_region: MemoryRange::new(0x51000..0x52000),
         };
 
         let dt = build_dt(&orig_info).unwrap();

@@ -5,15 +5,16 @@
 //! `/dev/mshv_vtl` to interact with the Microsoft hypervisor while running in
 //! VTL2.
 
-#![cfg(target_os = "linux")]
+#![cfg(all(guest_is_native, target_os = "linux"))]
 
 mod devmsr;
 
 cfg_if::cfg_if!(
-    if #[cfg(target_arch = "x86_64")] { // xtask-fmt allow-target-arch sys-crate
+    if #[cfg(guest_arch = "x86_64")] {
         mod cvm_cpuid;
         pub use processor::snp::SnpBacked;
         pub use processor::tdx::TdxBacked;
+        use crate::processor::HardwareIsolatedBacking;
         pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
         use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use bitvec::prelude::BitArray;
@@ -30,10 +31,9 @@ cfg_if::cfg_if!(
         /// Bitarray type for representing IRR bits in a x86-64 APIC
         /// Each bit represent the 256 possible vectors.
         type IrrBitmap = BitArray<[u32; 8], Lsb0>;
-    } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
+    } else if #[cfg(guest_arch = "aarch64")] {
         pub use crate::processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
         use crate::processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
-        use hvdef::HvArm64RegisterName;
     }
 );
 
@@ -45,7 +45,9 @@ use anyhow::Context as AnyhowContext;
 use bitfield_struct::bitfield;
 use bitvec::boxed::BitBox;
 use bitvec::vec::BitVec;
+use cvm_tracing::CVM_ALLOWED;
 use guestmem::GuestMemory;
+use guestmem::GuestMemoryBackingError;
 use hcl::GuestVtl;
 use hcl::ioctl::Hcl;
 use hcl::ioctl::SetVsmPartitionConfigError;
@@ -55,10 +57,12 @@ use hv1_emulator::synic::GlobalSynic;
 use hv1_emulator::synic::SintProxied;
 use hv1_structs::VtlArray;
 use hvdef::GuestCrashCtl;
+use hvdef::HV_PAGE_SHIFT;
 use hvdef::HV_PAGE_SIZE;
-use hvdef::HvAllArchRegisterName;
+use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
+use hvdef::HvPartitionPrivilege;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmPartitionStatus;
@@ -100,6 +104,7 @@ use user_driver::DmaClient;
 use virt::IsolationType;
 use virt::PartitionCapabilities;
 use virt::VpIndex;
+use virt::X86Partition;
 use virt::irqcon::IoApicRouting;
 use virt::irqcon::MsiRequest;
 use virt::x86::apic_software_device::ApicSoftwareDevices;
@@ -168,6 +173,8 @@ pub enum Error {
     InvalidDebugConfiguration,
     #[error("failed to allocate TLB flush page")]
     AllocateTlbFlushPage(#[source] anyhow::Error),
+    #[error("host does not support required cpu capabilities")]
+    Capabilities(virt::PartitionCapabilitiesError),
 }
 
 /// Error revoking guest VSM.
@@ -208,10 +215,14 @@ struct UhPartitionInner {
     cpuid: virt::CpuidLeafSet,
     lower_vtl_memory_layout: MemoryLayout,
     gm: VtlArray<GuestMemory, 2>,
+    vtl0_kernel_exec_gm: GuestMemory,
+    vtl0_user_exec_gm: GuestMemory,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     #[inspect(skip)]
     crash_notification_send: mesh::Sender<VtlCrash>,
     monitor_page: MonitorPage,
+    #[inspect(skip)]
+    allocated_monitor_page: Mutex<Option<user_driver::memory::MemoryBlock>>,
     software_devices: Option<ApicSoftwareDevices>,
     #[inspect(skip)]
     vmtime: VmTimeSource,
@@ -223,13 +234,13 @@ struct UhPartitionInner {
     intercept_debug_exceptions: bool,
     #[cfg(guest_arch = "x86_64")]
     // N.B For now, only one device vector table i.e. for VTL0 only
-    #[inspect(with = "|x| inspect::iter_by_index(x.read().into_inner().map(inspect::AsHex))")]
+    #[inspect(hex, with = "|x| inspect::iter_by_index(x.read().into_inner())")]
     device_vector_table: RwLock<IrrBitmap>,
     vmbus_relay: bool,
 }
 
 #[derive(Inspect)]
-#[inspect(external_tag)]
+#[inspect(untagged)]
 enum BackingShared {
     Hypervisor(#[inspect(flatten)] HypervisorBackedShared),
     #[cfg(guest_arch = "x86_64")]
@@ -273,20 +284,6 @@ impl BackingShared {
             #[cfg(guest_arch = "x86_64")]
             BackingShared::Snp(SnpBackedShared { cvm, .. })
             | BackingShared::Tdx(TdxBackedShared { cvm, .. }) => Some(cvm),
-        }
-    }
-
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    fn guest_vsm_disabled(&self) -> bool {
-        match self {
-            BackingShared::Hypervisor(h) => {
-                matches!(*h.guest_vsm.read(), GuestVsmState::NotPlatformSupported)
-            }
-            #[cfg(guest_arch = "x86_64")]
-            BackingShared::Snp(SnpBackedShared { cvm, .. })
-            | BackingShared::Tdx(TdxBackedShared { cvm, .. }) => {
-                matches!(*cvm.guest_vsm.read(), GuestVsmState::NotPlatformSupported)
-            }
         }
     }
 
@@ -426,9 +423,10 @@ impl UhCvmVpState {
 
 #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect, Default)]
+#[inspect(hex)]
 /// Configuration of VTL 1 registration for intercepts on certain registers
 pub struct SecureRegisterInterceptState {
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(with = "|&x| u64::from(x)")]
     intercept_control: hvdef::HvRegisterCrInterceptControl,
     cr0_mask: u64,
     cr4_mask: u64,
@@ -501,12 +499,15 @@ struct UhCvmVpInner {
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 #[derive(Inspect)]
-#[inspect(tag = "guest vsm state")]
+#[inspect(tag = "guest_vsm_state")]
 /// Partition-wide state for guest vsm.
 enum GuestVsmState<T: Inspect> {
     NotPlatformSupported,
     NotGuestEnabled,
-    Enabled { vtl1: T },
+    Enabled {
+        #[inspect(flatten)]
+        vtl1: T,
+    },
 }
 
 impl<T: Inspect> GuestVsmState<T> {
@@ -519,7 +520,7 @@ impl<T: Inspect> GuestVsmState<T> {
     }
 }
 
-#[derive(Default, Inspect)]
+#[derive(Inspect)]
 struct CvmVtl1State {
     /// Whether VTL 1 has been enabled on any vp
     enabled_on_any_vp: bool,
@@ -531,6 +532,25 @@ struct CvmVtl1State {
     pub mbec_enabled: bool,
     /// Whether shadow supervisor stack is enabled.
     pub shadow_supervisor_stack_enabled: bool,
+    #[inspect(with = "|bb| inspect::iter_by_index(bb.iter().map(|v| *v))")]
+    io_read_intercepts: BitBox<u64>,
+    #[inspect(with = "|bb| inspect::iter_by_index(bb.iter().map(|v| *v))")]
+    io_write_intercepts: BitBox<u64>,
+}
+
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+impl CvmVtl1State {
+    fn new(mbec_enabled: bool) -> Self {
+        Self {
+            enabled_on_any_vp: false,
+            zero_memory_on_reset: false,
+            deny_lower_vtl_startup: false,
+            mbec_enabled,
+            shadow_supervisor_stack_enabled: false,
+            io_read_intercepts: BitVec::repeat(false, u16::MAX as usize + 1).into_boxed_bitslice(),
+            io_write_intercepts: BitVec::repeat(false, u16::MAX as usize + 1).into_boxed_bitslice(),
+        }
+    }
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -567,7 +587,6 @@ impl GetReferenceTime for TscReferenceTimeSource {
     }
 }
 
-#[cfg(guest_arch = "aarch64")]
 impl virt::irqcon::ControlGic for UhPartitionInner {
     fn set_spi_irq(&self, irq_id: u32, high: bool) {
         if let Err(err) = self.hcl.request_interrupt(
@@ -588,7 +607,6 @@ impl virt::irqcon::ControlGic for UhPartitionInner {
     }
 }
 
-#[cfg(guest_arch = "aarch64")]
 impl virt::Aarch64Partition for UhPartition {
     fn control_gic(&self, vtl: Vtl) -> Arc<dyn virt::irqcon::ControlGic> {
         debug_assert!(vtl == Vtl::Vtl0);
@@ -826,7 +844,7 @@ impl virt::Partition for UhPartition {
     }
 }
 
-impl virt::X86Partition for UhPartition {
+impl X86Partition for UhPartition {
     fn ioapic_routing(&self) -> Arc<dyn IoApicRouting> {
         self.inner.clone()
     }
@@ -934,11 +952,7 @@ impl UhPartitionInner {
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn vsm_status(&self) -> Result<HvRegisterVsmPartitionStatus, hcl::ioctl::Error> {
         // TODO: It might be possible to cache VsmPartitionStatus.
-        let reg = self.hcl.get_vp_register(
-            HvAllArchRegisterName::VsmPartitionStatus,
-            HvInputVtl::CURRENT_VTL,
-        )?;
-        Ok(reg.as_u64().into())
+        self.hcl.get_vsm_partition_status()
     }
 }
 
@@ -947,6 +961,7 @@ impl virt::Synic for UhPartition {
         let vtl = GuestVtl::try_from(vtl).expect("higher vtl not configured");
         let Some(vp) = self.inner.vp(vp_index) else {
             tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
                 vp = vp_index.index(),
                 "invalid vp target for post_message"
             );
@@ -984,29 +999,45 @@ impl virt::Synic for UhPartition {
     }
 
     fn monitor_support(&self) -> Option<&dyn virt::SynicMonitor> {
-        // TODO TDX TODO SNP: Disable monitor support for TDX and SNP as support
-        // for VTL2 protections is needed to emulate this page, which is not
-        // implemented yet.
-        if self.inner.isolation.is_hardware_isolated() {
-            None
-        } else {
-            Some(self)
-        }
+        Some(self)
     }
 }
 
 impl virt::SynicMonitor for UhPartition {
-    fn set_monitor_page(&self, _vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
+        // Keep this locked the whole function to avoid racing with allocate_monitor_page.
+        let mut allocated_block = self.inner.allocated_monitor_page.lock();
         let old_gpa = self.inner.monitor_page.set_gpa(gpa);
+
+        // Take ownership of any allocated monitor page so it will be freed on function exit.
+        let allocated_page = allocated_block.take();
         if let Some(old_gpa) = old_gpa {
-            self.inner
-                .hcl
-                .modify_vtl_protection_mask(
-                    MemoryRange::new(old_gpa..old_gpa + HV_PAGE_SIZE),
-                    hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
-                    HvInputVtl::CURRENT_VTL,
-                )
-                .context("failed to unregister old monitor page")?;
+            let allocated_gpa = allocated_page
+                .as_ref()
+                .map(|b| b.pfns()[0] << HV_PAGE_SHIFT);
+
+            // Revert the old page's permissions, using the appropriate method depending on
+            // whether it was allocated or guest-supplied.
+            let result = if allocated_gpa == Some(old_gpa) {
+                let vtl = GuestVtl::try_from(vtl).unwrap();
+                self.unregister_cvm_dma_overlay_page(vtl, old_gpa >> HV_PAGE_SHIFT)
+            } else {
+                self.inner
+                    .hcl
+                    .modify_vtl_protection_mask(
+                        MemoryRange::new(old_gpa..old_gpa + HV_PAGE_SIZE),
+                        hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
+                        HvInputVtl::CURRENT_VTL,
+                    )
+                    .map_err(|err| anyhow::anyhow!(err))
+            };
+
+            result
+                .context("failed to unregister old monitor page")
+                .inspect_err(|_| {
+                    // Leave the page unset if returning a failure.
+                    self.inner.monitor_page.set_gpa(None);
+                })?;
 
             tracing::debug!(old_gpa, "unregistered monitor page");
         }
@@ -1014,21 +1045,18 @@ impl virt::SynicMonitor for UhPartition {
         if let Some(gpa) = gpa {
             // Disallow VTL0 from writing to the page, so we'll get an intercept. Note that read
             // permissions must be enabled or this doesn't work correctly.
-            let result = self
-                .inner
+            self.inner
                 .hcl
                 .modify_vtl_protection_mask(
                     MemoryRange::new(gpa..gpa + HV_PAGE_SIZE),
                     HvMapGpaFlags::new().with_readable(true),
                     HvInputVtl::CURRENT_VTL,
                 )
-                .context("failed to register monitor page");
-
-            if result.is_err() {
-                // Unset the page so trying to remove it later won't fail too.
-                self.inner.monitor_page.set_gpa(None);
-                return result;
-            }
+                .context("failed to register monitor page")
+                .inspect_err(|_| {
+                    // Leave the page unset if returning a failure.
+                    self.inner.monitor_page.set_gpa(None);
+                })?;
 
             tracing::debug!(gpa, "registered monitor page");
         }
@@ -1044,6 +1072,64 @@ impl virt::SynicMonitor for UhPartition {
         self.inner
             .monitor_page
             .register_monitor(monitor_id, connection_id)
+    }
+
+    fn allocate_monitor_page(&self, vtl: Vtl) -> anyhow::Result<Option<u64>> {
+        let vtl = GuestVtl::try_from(vtl).unwrap();
+
+        // Allocating a monitor page is only supported for CVMs.
+        let Some(state) = self.inner.backing_shared.cvm_state() else {
+            return Ok(None);
+        };
+
+        let mut allocated_block = self.inner.allocated_monitor_page.lock();
+        if let Some(block) = allocated_block.as_ref() {
+            // An allocated monitor page is already in use; no need to change it.
+            let gpa = block.pfns()[0] << HV_PAGE_SHIFT;
+            assert_eq!(self.inner.monitor_page.gpa(), Some(gpa));
+            return Ok(Some(gpa));
+        }
+
+        let block = state
+            .private_dma_client
+            .allocate_dma_buffer(HV_PAGE_SIZE_USIZE)
+            .context("failed to allocate monitor page")?;
+
+        let gpn = block.pfns()[0];
+        *allocated_block = Some(block);
+        let gpa = gpn << HV_PAGE_SHIFT;
+        let old_gpa = self.inner.monitor_page.set_gpa(Some(gpa));
+        if let Some(old_gpa) = old_gpa {
+            // The old GPA is guaranteed not to be allocated, since that was checked above, so
+            // revert its permissions using the method for guest-supplied memory.
+            self.inner
+                .hcl
+                .modify_vtl_protection_mask(
+                    MemoryRange::new(old_gpa..old_gpa + HV_PAGE_SIZE),
+                    hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
+                    HvInputVtl::CURRENT_VTL,
+                )
+                .context("failed to unregister old monitor page")
+                .inspect_err(|_| {
+                    // Leave the page unset if returning a failure.
+                    self.inner.monitor_page.set_gpa(None);
+                })?;
+
+            tracing::debug!(old_gpa, "unregistered monitor page");
+        }
+
+        // Disallow VTL0 from writing to the page, so we'll get an intercept. Note that read
+        // permissions must be enabled or this doesn't work correctly.
+        self.register_cvm_dma_overlay_page(vtl, gpn, HvMapGpaFlags::new().with_readable(true))
+            .context("failed to unregister monitor page")
+            .inspect_err(|_| {
+                // Leave the page unset if returning a failure.
+                self.inner.monitor_page.set_gpa(None);
+            })?;
+
+        tracing::debug!(gpa, "registered allocated monitor page");
+
+        Ok(Some(gpa))
     }
 }
 
@@ -1189,25 +1275,6 @@ impl virt::DeviceBuilder for UhPartition {
     }
 }
 
-impl virt::VtlMemoryProtection for UhPartition {
-    /// TODO CVM GUEST_VSM:
-    ///     GH954: Review alternatives to dynamically allocating from VTL2 RAM
-    ///     (e.g. reserve pages for this purpose), or constrain it for more
-    ///     safety.  The concern is freeing a page but forgetting to reset
-    ///     permissions. See PagesAccessibleToLowerVtl for a sample wrapper.
-    fn modify_vtl_page_setting(&self, pfn: u64, flags: HvMapGpaFlags) -> anyhow::Result<()> {
-        let address = pfn << hvdef::HV_PAGE_SHIFT;
-        self.inner
-            .hcl
-            .modify_vtl_protection_mask(
-                MemoryRange::new(address..address + HV_PAGE_SIZE),
-                flags,
-                HvInputVtl::CURRENT_VTL,
-            )
-            .context("failed to modify VTL page permissions")
-    }
-}
-
 struct UhInterruptTarget {
     partition: Arc<UhPartitionInner>,
     vtl: GuestVtl,
@@ -1237,6 +1304,7 @@ impl UhPartitionInner {
                 vtl,
             ) {
                 tracelimit::warn_ratelimited!(
+                    CVM_ALLOWED,
                     error = &err as &dyn std::error::Error,
                     address = request.address,
                     data = request.data,
@@ -1301,8 +1369,6 @@ pub struct UhPartitionNewParams<'a> {
     pub cvm_cpuid_info: Option<&'a [u8]>,
     /// The unparsed CVM secrets page.
     pub snp_secrets: Option<&'a [u8]>,
-    /// Whether underhill was configured to support guest vsm for CVMs
-    pub env_cvm_guest_vsm: bool,
     /// The virtual top of memory for hardware-isolated VMs.
     ///
     /// Must be a power of two.
@@ -1324,6 +1390,10 @@ pub struct UhPartitionNewParams<'a> {
 pub struct UhLateParams<'a> {
     /// Guest memory for lower VTLs.
     pub gm: VtlArray<GuestMemory, 2>,
+    /// Guest memory for VTL 0 kernel execute access.
+    pub vtl0_kernel_exec_gm: GuestMemory,
+    /// Guest memory for VTL 0 user execute access.
+    pub vtl0_user_exec_gm: GuestMemory,
     /// The CPUID leaves to expose to the guest.
     #[cfg(guest_arch = "x86_64")]
     pub cpuid: Vec<CpuidLeaf>,
@@ -1350,11 +1420,21 @@ pub struct CvmLateParams {
     pub private_dma_client: Arc<dyn DmaClient>,
 }
 
+/// Represents a GPN that is either in guest memory or was allocated by dma_client.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum GpnSource {
+    /// The GPN is in regular guest RAM.
+    GuestMemory,
+    /// The GPN was allocated by dma_client and is not in guest RAM.
+    Dma,
+}
+
 /// Trait for CVM-related protections on guest memory.
 pub trait ProtectIsolatedMemory: Send + Sync {
     /// Changes host visibility on guest memory.
     fn change_host_visibility(
         &self,
+        vtl: GuestVtl,
         shared: bool,
         gpns: &[u64],
         tlb_access: &mut dyn TlbFlushLockAccess,
@@ -1375,7 +1455,7 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// hardware-isolated VMs, they apply just to the given vtl.
     fn change_default_vtl_protections(
         &self,
-        vtl: GuestVtl,
+        target_vtl: GuestVtl,
         protections: HvMapGpaFlags,
         tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), HvError>;
@@ -1383,22 +1463,45 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// Changes the vtl protections on a range of guest memory.
     fn change_vtl_protections(
         &self,
-        vtl: GuestVtl,
+        target_vtl: GuestVtl,
         gpns: &[u64],
         protections: HvMapGpaFlags,
         tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), (HvError, usize)>;
 
-    /// Changes the overlay for the hypercall code page for a target VTL.
-    fn change_hypercall_overlay(
+    /// Registers a page as an overlay page by first validating it has the
+    /// required permissions, optionally modifying them, then locking them.
+    fn register_overlay_page(
+        &self,
+        vtl: GuestVtl,
+        gpn: u64,
+        gpn_source: GpnSource,
+        check_perms: HvMapGpaFlags,
+        new_perms: Option<HvMapGpaFlags>,
+        tlb_access: &mut dyn TlbFlushLockAccess,
+    ) -> Result<(), HvError>;
+
+    /// Unregisters an overlay page, removing its permission lock and restoring
+    /// the previous permissions.
+    fn unregister_overlay_page(
         &self,
         vtl: GuestVtl,
         gpn: u64,
         tlb_access: &mut dyn TlbFlushLockAccess,
-    );
+    ) -> Result<(), HvError>;
 
-    /// Disables the overlay for the hypercall code page for a target VTL.
-    fn disable_hypercall_overlay(&self, vtl: GuestVtl, tlb_access: &mut dyn TlbFlushLockAccess);
+    /// Checks whether a page is currently registered as an overlay page.
+    fn is_overlay_page(&self, vtl: GuestVtl, gpn: u64) -> bool;
+
+    /// Locks the permissions and mappings for a set of guest pages.
+    fn lock_gpns(&self, vtl: GuestVtl, gpns: &[u64]) -> Result<(), GuestMemoryBackingError>;
+
+    /// Unlocks the permissions and mappings for a set of guest pages.
+    ///
+    /// Panics if asked to unlock a page that was not previously locked. The
+    /// caller must ensure that the given slice has the same ordering as the
+    /// one passed to `lock_gpns`.
+    fn unlock_gpns(&self, vtl: GuestVtl, gpns: &[u64]);
 
     /// Alerts the memory protector that vtl 1 is ready to set vtl protections
     /// on lower-vtl memory, and that these protections should be enforced.
@@ -1427,6 +1530,7 @@ pub struct UhProtoPartition<'a> {
     params: UhPartitionNewParams<'a>,
     hcl: Hcl,
     guest_vsm_available: bool,
+    create_partition_available: bool,
     #[cfg(guest_arch = "x86_64")]
     cpuid: virt::CpuidLeafSet,
 }
@@ -1488,7 +1592,8 @@ impl<'a> UhProtoPartition<'a> {
 
         set_vtl2_vsm_partition_config(&hcl)?;
 
-        let guest_vsm_available = Self::check_guest_vsm_support(&hcl, &params)?;
+        let privs = hcl.get_privileges_and_features_info().map_err(Error::Hcl)?;
+        let guest_vsm_available = Self::check_guest_vsm_support(privs, &hcl)?;
 
         #[cfg(guest_arch = "x86_64")]
         let cpuid = match params.isolation {
@@ -1514,6 +1619,7 @@ impl<'a> UhProtoPartition<'a> {
             hcl,
             params,
             guest_vsm_available,
+            create_partition_available: privs.create_partitions(),
             #[cfg(guest_arch = "x86_64")]
             cpuid,
         })
@@ -1522,6 +1628,12 @@ impl<'a> UhProtoPartition<'a> {
     /// Returns whether VSM support will be available to the guest.
     pub fn guest_vsm_available(&self) -> bool {
         self.guest_vsm_available
+    }
+
+    /// Returns whether this partition has the create partitions hypercall
+    /// available.
+    pub fn create_partition_available(&self) -> bool {
+        self.create_partition_available
     }
 
     /// Returns a new Underhill partition.
@@ -1533,6 +1645,7 @@ impl<'a> UhProtoPartition<'a> {
             mut hcl,
             params,
             guest_vsm_available,
+            create_partition_available: _,
             #[cfg(guest_arch = "x86_64")]
             cpuid,
         } = self;
@@ -1682,7 +1795,8 @@ impl<'a> UhProtoPartition<'a> {
             &cpuid,
             isolation,
             params.hide_isolation,
-        );
+        )
+        .map_err(Error::Capabilities)?;
 
         if params.handle_synic && !matches!(isolation, IsolationType::Tdx) {
             // The hypervisor will manage the untrusted SINTs (or the whole
@@ -1706,7 +1820,6 @@ impl<'a> UhProtoPartition<'a> {
                 &params,
                 late_params.cvm_params.unwrap(),
                 &caps,
-                late_params.gm.clone(),
                 guest_vsm_available,
             )?)
         } else {
@@ -1720,7 +1833,6 @@ impl<'a> UhProtoPartition<'a> {
             &params,
             BackingSharedParams {
                 cvm_state,
-                guest_memory: late_params.gm.clone(),
                 #[cfg(guest_arch = "x86_64")]
                 cpuid: &cpuid,
                 hcl: &hcl,
@@ -1738,10 +1850,13 @@ impl<'a> UhProtoPartition<'a> {
             enter_modes: Mutex::new(enter_modes),
             enter_modes_atomic: u8::from(hcl::protocol::EnterModes::from(enter_modes)).into(),
             gm: late_params.gm,
+            vtl0_kernel_exec_gm: late_params.vtl0_kernel_exec_gm,
+            vtl0_user_exec_gm: late_params.vtl0_user_exec_gm,
             #[cfg(guest_arch = "x86_64")]
             cpuid,
             crash_notification_send: late_params.crash_notification_send,
             monitor_page: MonitorPage::new(),
+            allocated_monitor_page: Mutex::new(None),
             software_devices,
             lower_vtl_memory_layout: params.lower_vtl_memory_layout.clone(),
             vmtime: late_params.vmtime.clone(),
@@ -1794,13 +1909,10 @@ impl UhPartition {
             hv.guest_os_id(Vtl::Vtl0)
         } else {
             // Ask the hypervisor for this value.
-            let reg_value = self
-                .inner
+            self.inner
                 .hcl
-                .get_vp_register(HvAllArchRegisterName::GuestOsId, Vtl::Vtl0.into())
-                .map_err(Error::Hcl)?;
-
-            HvGuestOsId::from(reg_value.as_u64())
+                .get_guest_os_id(Vtl::Vtl0)
+                .map_err(Error::Hcl)?
         };
         Ok(id)
     }
@@ -1827,66 +1939,126 @@ impl UhPartition {
         }
     }
 
+    /// Trigger the LINT1 interrupt vector on the LAPIC of the BSP.
+    pub fn assert_debug_interrupt(&self, _vtl: u8) {
+        #[cfg(guest_arch = "x86_64")]
+        const LINT_INDEX_1: u8 = 1;
+        #[cfg(guest_arch = "x86_64")]
+        match self.inner.isolation {
+            IsolationType::Snp => {
+                tracing::error!(?_vtl, "Debug interrupts cannot be injected into SNP VMs",);
+            }
+            _ => {
+                let bsp_index = VpIndex::new(0);
+                self.pulse_lint(bsp_index, Vtl::try_from(_vtl).unwrap(), LINT_INDEX_1)
+            }
+        }
+    }
+
     /// Enables or disables the PM timer assist.
     pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), HvError> {
         self.inner.hcl.set_pm_timer_assist(port)
+    }
+
+    /// Sets guest memory protections for a monitor page.
+    fn register_cvm_dma_overlay_page(
+        &self,
+        vtl: GuestVtl,
+        gpn: u64,
+        new_perms: HvMapGpaFlags,
+    ) -> anyhow::Result<()> {
+        // How the monitor page is protected depends on the isolation type of the VM.
+        match &self.inner.backing_shared {
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Snp(snp_backed_shared) => snp_backed_shared
+                .cvm
+                .isolated_memory_protector
+                .register_overlay_page(
+                    vtl,
+                    gpn,
+                    // On a CVM, the monitor page is always DMA-allocated.
+                    GpnSource::Dma,
+                    HvMapGpaFlags::new(),
+                    Some(new_perms),
+                    &mut SnpBacked::tlb_flush_lock_access(
+                        None,
+                        self.inner.as_ref(),
+                        snp_backed_shared,
+                    ),
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Tdx(tdx_backed_shared) => tdx_backed_shared
+                .cvm
+                .isolated_memory_protector
+                .register_overlay_page(
+                    vtl,
+                    gpn,
+                    GpnSource::Dma,
+                    HvMapGpaFlags::new(),
+                    Some(new_perms),
+                    &mut TdxBacked::tlb_flush_lock_access(
+                        None,
+                        self.inner.as_ref(),
+                        tdx_backed_shared,
+                    ),
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+            BackingShared::Hypervisor(_) => {
+                let _ = (vtl, gpn, new_perms);
+                unreachable!()
+            }
+        }
+    }
+
+    /// Reverts guest memory protections for a monitor page.
+    fn unregister_cvm_dma_overlay_page(&self, vtl: GuestVtl, gpn: u64) -> anyhow::Result<()> {
+        // How the monitor page is protected depends on the isolation type of the VM.
+        match &self.inner.backing_shared {
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Snp(snp_backed_shared) => snp_backed_shared
+                .cvm
+                .isolated_memory_protector
+                .unregister_overlay_page(
+                    vtl,
+                    gpn,
+                    &mut SnpBacked::tlb_flush_lock_access(
+                        None,
+                        self.inner.as_ref(),
+                        snp_backed_shared,
+                    ),
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Tdx(tdx_backed_shared) => tdx_backed_shared
+                .cvm
+                .isolated_memory_protector
+                .unregister_overlay_page(
+                    vtl,
+                    gpn,
+                    &mut TdxBacked::tlb_flush_lock_access(
+                        None,
+                        self.inner.as_ref(),
+                        tdx_backed_shared,
+                    ),
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+            BackingShared::Hypervisor(_) => {
+                let _ = (vtl, gpn);
+                unreachable!()
+            }
+        }
     }
 }
 
 impl UhProtoPartition<'_> {
     /// Whether Guest VSM is available to the guest. If so, for hardware CVMs,
     /// it is safe to expose Guest VSM support via cpuid.
-    fn check_guest_vsm_support(
-        hcl: &Hcl,
-        params: &UhPartitionNewParams<'_>,
-    ) -> Result<bool, Error> {
-        match params.isolation {
-            IsolationType::None | IsolationType::Vbs => {}
-            #[cfg(guest_arch = "x86_64")]
-            IsolationType::Tdx => {
-                if !params.env_cvm_guest_vsm {
-                    return Ok(false);
-                }
-            }
-            #[cfg(guest_arch = "x86_64")]
-            IsolationType::Snp => {
-                if !params.env_cvm_guest_vsm {
-                    return Ok(false);
-                }
-                // Require RMP Query
-                let rmp_query = x86defs::cpuid::ExtendedSevFeaturesEax::from(
-                    safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::ExtendedSevFeatures.0, 0)
-                        .eax,
-                )
-                .rmp_query();
-
-                if !rmp_query {
-                    tracing::info!("rmp query not supported, cannot enable vsm");
-                    return Ok(false);
-                }
-            }
-            #[allow(unreachable_patterns)]
-            isolation => panic!("unsupported isolation type {:?}", isolation),
-        }
-
-        #[cfg(guest_arch = "x86_64")]
-        let privs = {
-            let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
-            result.eax as u64 | ((result.ebx as u64) << 32)
-        };
-
-        #[cfg(guest_arch = "aarch64")]
-        let privs = hcl
-            .get_vp_register(
-                HvArm64RegisterName::PrivilegesAndFeaturesInfo,
-                HvInputVtl::CURRENT_VTL,
-            )
-            .map_err(Error::Hcl)?
-            .as_u64();
-
-        if !hvdef::HvPartitionPrivilege::from(privs).access_vsm() {
+    fn check_guest_vsm_support(privs: HvPartitionPrivilege, hcl: &Hcl) -> Result<bool, Error> {
+        if !privs.access_vsm() {
             return Ok(false);
         }
+
         let guest_vsm_config = hcl.get_guest_vsm_partition_config().map_err(Error::Hcl)?;
         Ok(guest_vsm_config.maximum_vtl() >= u8::from(GuestVtl::Vtl1))
     }
@@ -1897,7 +2069,6 @@ impl UhProtoPartition<'_> {
         params: &UhPartitionNewParams<'_>,
         late_params: CvmLateParams,
         caps: &PartitionCapabilities,
-        guest_memory: VtlArray<GuestMemory, 2>,
         guest_vsm_available: bool,
     ) -> Result<UhCvmPartitionState, Error> {
         use vmcore::reference_time::ReferenceTimeSource;
@@ -1936,14 +2107,7 @@ impl UhProtoPartition<'_> {
             tsc_frequency,
             ref_time,
             is_ref_time_backed_by_tsc: true,
-            guest_memory,
         });
-
-        if guest_vsm_available {
-            tracing::warn!(
-                "Advertising guest vsm as being supported to the guest. This feature is in development, so the guest might crash."
-            );
-        }
 
         Ok(UhCvmPartitionState {
             vps_per_socket: params.topology.reserved_vps_per_socket(),
@@ -2017,7 +2181,7 @@ impl UhPartition {
         cpuid: &virt::CpuidLeafSet,
         isolation: IsolationType,
         hide_isolation: bool,
-    ) -> virt::x86::X86PartitionCapabilities {
+    ) -> Result<virt::x86::X86PartitionCapabilities, virt::x86::X86PartitionCapabilitiesError> {
         let mut native_cpuid_fn;
         let mut cvm_cpuid_fn;
 
@@ -2037,7 +2201,7 @@ impl UhPartition {
         };
 
         // Compute and validate capabilities.
-        let mut caps = virt::x86::X86PartitionCapabilities::from_cpuid(topology, cpuid_fn);
+        let mut caps = virt::x86::X86PartitionCapabilities::from_cpuid(topology, cpuid_fn)?;
         match isolation {
             IsolationType::Tdx => {
                 assert_eq!(caps.vtom.is_some(), !hide_isolation);
@@ -2052,35 +2216,7 @@ impl UhPartition {
             }
         }
 
-        caps
-    }
-
-    /// Forward a (virtual) MMIO read to the host for handling.
-    pub fn host_mmio_read(&self, addr: u64, data: &mut [u8]) {
-        if !self.inner.use_mmio_hypercalls {
-            return;
-        }
-        // There isn't anything reasonable that can be done in the face of errors from the host.
-        if let Err(err) = self.inner.hcl.memory_mapped_io_read(addr, data) {
-            tracelimit::error_ratelimited!(
-                error = &err as &dyn std::error::Error,
-                "Failed host MMIO read"
-            );
-        }
-    }
-
-    /// Forward a (virtual) MMIO write to the host for handling.
-    pub fn host_mmio_write(&self, addr: u64, data: &[u8]) {
-        if !self.inner.use_mmio_hypercalls {
-            return;
-        }
-        // There isn't anything reasonable that can be done in the face of errors from the host.
-        if let Err(err) = self.inner.hcl.memory_mapped_io_write(addr, data) {
-            tracelimit::error_ratelimited!(
-                error = &err as &dyn std::error::Error,
-                "Failed host MMIO write"
-            );
-        }
+        Ok(caps)
     }
 }
 
@@ -2173,7 +2309,10 @@ impl UhPartitionInner {
                     // Probably a build that doesn't support range wrapping yet.
                     // Don't try again.
                     SKIP_RANGE.store(true, Ordering::Relaxed);
-                    tracing::warn!("old hypervisor build; using slow path for intercept ranges");
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        "old hypervisor build; using slow path for intercept ranges"
+                    );
                 }
                 Err(err) => {
                     panic!("io port range registration failure: {err:?}");
@@ -2212,30 +2351,6 @@ impl UhPartitionInner {
             !write || self.monitor_page.gpa() != Some(gpa & !(HV_PAGE_SIZE - 1))
         } else {
             false
-        }
-    }
-
-    /// Gets the CPUID result, applying any necessary runtime modifications.
-    #[cfg(guest_arch = "x86_64")]
-    fn cpuid_result(&self, eax: u32, ecx: u32, default: &[u32; 4]) -> [u32; 4] {
-        let r = self.cpuid.result(eax, ecx, default);
-        if eax == hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES {
-            // Update the VSM access privilege.
-            //
-            // FUTURE: Investigate if this is really necessary for non-CVM--the
-            // hypervisor should already update this correctly.
-            //
-            // If it is only for CVM, then it should be moved to the
-            // CVM-specific cpuid fixups.
-            //
-            // TODO TDX GUEST VSM: Consider changing TLB hypercall flag too
-            let mut features = hvdef::HvFeatures::from_cpuid(r);
-            if self.backing_shared.guest_vsm_disabled() {
-                features.set_privileges(features.privileges().with_access_vsm(false));
-            }
-            features.into_cpuid()
-        } else {
-            r
         }
     }
 }
