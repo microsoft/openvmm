@@ -51,6 +51,8 @@ pub struct DnsResponse {
     pub client_mac: EthernetAddress,
     /// The DNS response data
     pub response_data: Vec<u8>,
+    /// The protocol (UDP or TCP)
+    pub protocol: IpProtocol,
 }
 
 // DNS query context for active requests
@@ -67,7 +69,7 @@ struct DnsQueryContext {
     response_queue: Arc<Mutex<VecDeque<DnsResponse>>>,
 }
 
-/// DNS resolver that manages active DNS queries using Windows DNS Raw APIs.
+/// DNS resolver that manages active DNS queries using Windows DNS APIs.
 pub struct DnsResolver {
     next_request_id: AtomicU64,
     active_requests: Arc<Mutex<HashMap<u64, Box<DnsQueryContext>>>>,
@@ -215,6 +217,7 @@ impl DnsResolver {
                     gateway_mac: ctx.gateway_mac,
                     client_mac: ctx.client_mac,
                     response_data: servfail,
+                    protocol: ctx._protocol,
                 };
                 ctx.response_queue.lock().unwrap().push_back(response);
             }
@@ -337,6 +340,7 @@ unsafe extern "system" fn dns_query_raw_callback(
             gateway_mac: context.gateway_mac,
             client_mac: context.client_mac,
             response_data,
+            protocol: context._protocol,
         };
         context.response_queue.lock().unwrap().push_back(response);
 
@@ -364,6 +368,7 @@ unsafe extern "system" fn dns_query_raw_callback(
             gateway_mac: context.gateway_mac,
             client_mac: context.client_mac,
             response_data: servfail,
+            protocol: context._protocol,
         };
         context.response_queue.lock().unwrap().push_back(response);
     }
@@ -426,7 +431,7 @@ mod test {
             .map(|s| u8::from_str_radix(s, 16).unwrap())
             .collect::<Vec<u8>>();
 
-        let mut addr = SOCKADDR_IN {
+        let addr = SOCKADDR_IN {
             sin_family: AF_INET as u16,
             sin_port: 56221u16.to_be(), // DNS port in network byte order
             sin_addr: IN_ADDR {

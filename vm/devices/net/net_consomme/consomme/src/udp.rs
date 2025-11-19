@@ -213,16 +213,21 @@ impl<T: Client> Access<'_, T> {
             conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
         });
 
-        // Poll for DNS responses that are ready to be sent
+        // Poll for DNS responses that are ready to be sent (UDP only)
         if self.inner.dns_resolver.is_some() {
             while let Some(response) = self.inner.dns_resolver.as_mut().unwrap().poll_responses() {
+                // Only handle UDP responses here; TCP responses are handled in tcp.rs
+                if response.protocol != IpProtocol::Udp {
+                    continue;
+                }
+
                 tracing::debug!(
                     response_len = response.response_data.len(),
                     src = %response.src_addr,
                     dst = %response.dst_addr,
                     src_port = response.src_port,
                     dst_port = response.dst_port,
-                    "Dequeued DNS response"
+                    "Dequeued UDP DNS response"
                 );
 
                 // Send the DNS response using the existing helper
@@ -235,7 +240,7 @@ impl<T: Client> Access<'_, T> {
                     response.gateway_mac,
                     response.client_mac,
                 ) {
-                    tracing::error!(error = ?e, "Failed to send DNS response");
+                    tracing::error!(error = ?e, "Failed to send UDP DNS response");
                 }
             }
         }
