@@ -1240,14 +1240,18 @@ async fn new_underhill_vm(
     // causing the VM to fail to boot after an OS swap.
     //
     // TODO: remove this (and petri workaround) once host changes are saturated
-    if !isolation.is_isolated()
+    let dps = if !isolation.is_isolated()
         && !dps.general.secure_boot_enabled
         && !dps.general.tpm_enabled
         && !dps.general.default_boot_always_attempt
     {
         tracing::info!("overriding dps to enable default_boot_always_attempt");
+        let mut dps = dps;
         dps.general.default_boot_always_attempt = true;
-    }
+        dps
+    } else {
+        dps
+    };
 
     let driver_source = VmTaskDriverSource::new(ThreadpoolBackend::new(tp.clone()));
 
