@@ -2688,7 +2688,6 @@ impl LoadedVmInner {
                     com_serial,
                     entropy: Some(&entropy),
                 };
-                panic!("{:?}", cmdline);
                 super::vm_loaders::igvm::load_igvm(params)?
             }
             #[allow(unreachable_patterns)]
