@@ -18,6 +18,7 @@ use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::gen_cargo_nextest_run_cmd::CommandShell;
 use flowey_lib_common::gen_cargo_nextest_run_cmd::RunKindDeps;
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use vmm_test_images::KnownTestArtifacts;
 
@@ -1021,14 +1022,13 @@ impl SimpleFlowNode for Node {
 
             let junit_xml = results.map(ctx, |r| r.junit_xml);
             let published_results =
-                ctx.reqv(
-                    |v| flowey_lib_common::publish_test_results::Request::PublishJunitXml {
-                        junit_xml,
-                        test_label,
-                        output_dir: Some(ReadVar::from_static(test_content_dir)),
-                        done: v,
-                    },
-                );
+                ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
+                    junit_xml,
+                    test_label,
+                    attachments: BTreeMap::new(), // the logs are already there
+                    output_dir: Some(ReadVar::from_static(test_content_dir)),
+                    done: v,
+                });
 
             ctx.emit_rust_step("report test results", |ctx| {
                 published_results.claim(ctx);

@@ -62,6 +62,7 @@ use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
+use hvdef::HvPartitionPrivilege;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmPartitionStatus;
@@ -88,6 +89,7 @@ use parking_lot::RwLock;
 use processor::BackingSharedParams;
 use processor::SidecarExitReason;
 use sidecar_client::NewSidecarClientError;
+use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
@@ -434,6 +436,16 @@ pub struct SecureRegisterInterceptState {
     ia32_misc_enable_mask: u64,
 }
 
+/// Information about a redirected interrupt for a specific vector.
+/// Stored per-processor, indexed by the redirected vector number in VTL2.
+#[derive(Clone, Inspect)]
+struct ProxyRedirectVectorInfo {
+    /// Device ID that owns this interrupt
+    device_id: u64,
+    /// Original interrupt vector from the device
+    original_vector: u32,
+}
+
 #[derive(Inspect)]
 /// Partition-wide state for CVMs.
 struct UhCvmPartitionState {
@@ -461,6 +473,7 @@ struct UhCvmPartitionState {
     /// Dma client for private visibility pages.
     private_dma_client: Arc<dyn DmaClient>,
     hide_isolation: bool,
+    proxy_interrupt_redirect: bool,
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -494,6 +507,9 @@ struct UhCvmVpInner {
     /// Start context for StartVp and EnableVpVtl calls.
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
     hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<VpStartEnableVtl>>>, 2>,
+    /// Tracking of proxy redirect interrupts mapped on this VP.
+    #[inspect(with = "|x| inspect::adhoc(|req| inspect::iter_by_key(&*x.lock()).inspect(req))")]
+    proxy_redirect_interrupts: Mutex<HashMap<u32, ProxyRedirectVectorInfo>>,
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -1383,6 +1399,8 @@ pub struct UhPartitionNewParams<'a> {
     pub use_mmio_hypercalls: bool,
     /// Intercept guest debug exceptions to support gdbstub.
     pub intercept_debug_exceptions: bool,
+    /// Disable proxy interrupt redirection.
+    pub disable_proxy_redirect: bool,
 }
 
 /// Parameters to [`UhProtoPartition::build`].
@@ -1529,6 +1547,7 @@ pub struct UhProtoPartition<'a> {
     params: UhPartitionNewParams<'a>,
     hcl: Hcl,
     guest_vsm_available: bool,
+    create_partition_available: bool,
     #[cfg(guest_arch = "x86_64")]
     cpuid: virt::CpuidLeafSet,
 }
@@ -1590,7 +1609,8 @@ impl<'a> UhProtoPartition<'a> {
 
         set_vtl2_vsm_partition_config(&hcl)?;
 
-        let guest_vsm_available = Self::check_guest_vsm_support(&hcl)?;
+        let privs = hcl.get_privileges_and_features_info().map_err(Error::Hcl)?;
+        let guest_vsm_available = Self::check_guest_vsm_support(privs, &hcl)?;
 
         #[cfg(guest_arch = "x86_64")]
         let cpuid = match params.isolation {
@@ -1616,6 +1636,7 @@ impl<'a> UhProtoPartition<'a> {
             hcl,
             params,
             guest_vsm_available,
+            create_partition_available: privs.create_partitions(),
             #[cfg(guest_arch = "x86_64")]
             cpuid,
         })
@@ -1624,6 +1645,12 @@ impl<'a> UhProtoPartition<'a> {
     /// Returns whether VSM support will be available to the guest.
     pub fn guest_vsm_available(&self) -> bool {
         self.guest_vsm_available
+    }
+
+    /// Returns whether this partition has the create partitions hypercall
+    /// available.
+    pub fn create_partition_available(&self) -> bool {
+        self.create_partition_available
     }
 
     /// Returns a new Underhill partition.
@@ -1635,6 +1662,7 @@ impl<'a> UhProtoPartition<'a> {
             mut hcl,
             params,
             guest_vsm_available,
+            create_partition_available: _,
             #[cfg(guest_arch = "x86_64")]
             cpuid,
         } = self;
@@ -1804,12 +1832,19 @@ impl<'a> UhProtoPartition<'a> {
         }
 
         #[cfg(guest_arch = "x86_64")]
+        let vsm_caps = hcl.get_vsm_capabilities().map_err(Error::Hcl)?;
+        #[cfg(guest_arch = "x86_64")]
+        let proxy_interrupt_redirect_available =
+            vsm_caps.proxy_interrupt_redirect_available() && !params.disable_proxy_redirect;
+
+        #[cfg(guest_arch = "x86_64")]
         let cvm_state = if is_hardware_isolated {
             Some(Self::construct_cvm_state(
                 &params,
                 late_params.cvm_params.unwrap(),
                 &caps,
                 guest_vsm_available,
+                proxy_interrupt_redirect_available,
             )?)
         } else {
             None
@@ -2043,20 +2078,11 @@ impl UhPartition {
 impl UhProtoPartition<'_> {
     /// Whether Guest VSM is available to the guest. If so, for hardware CVMs,
     /// it is safe to expose Guest VSM support via cpuid.
-    fn check_guest_vsm_support(hcl: &Hcl) -> Result<bool, Error> {
-        #[cfg(guest_arch = "x86_64")]
-        let privs = {
-            let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
-            let num = result.eax as u64 | ((result.ebx as u64) << 32);
-            hvdef::HvPartitionPrivilege::from(num)
-        };
-
-        #[cfg(guest_arch = "aarch64")]
-        let privs = hcl.get_privileges_and_features_info().map_err(Error::Hcl)?;
-
+    fn check_guest_vsm_support(privs: HvPartitionPrivilege, hcl: &Hcl) -> Result<bool, Error> {
         if !privs.access_vsm() {
             return Ok(false);
         }
+
         let guest_vsm_config = hcl.get_guest_vsm_partition_config().map_err(Error::Hcl)?;
         Ok(guest_vsm_config.maximum_vtl() >= u8::from(GuestVtl::Vtl1))
     }
@@ -2068,6 +2094,7 @@ impl UhProtoPartition<'_> {
         late_params: CvmLateParams,
         caps: &PartitionCapabilities,
         guest_vsm_available: bool,
+        proxy_interrupt_redirect_available: bool,
     ) -> Result<UhCvmPartitionState, Error> {
         use vmcore::reference_time::ReferenceTimeSource;
 
@@ -2078,6 +2105,7 @@ impl UhProtoPartition<'_> {
                 vtl1_enable_called: Mutex::new(false),
                 started: AtomicBool::new(vp_index == 0),
                 hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
+                proxy_redirect_interrupts: Mutex::new(HashMap::new()),
             })
             .collect();
         let tlb_locked_vps =
@@ -2119,6 +2147,7 @@ impl UhProtoPartition<'_> {
             shared_dma_client: late_params.shared_dma_client,
             private_dma_client: late_params.private_dma_client,
             hide_isolation: params.hide_isolation,
+            proxy_interrupt_redirect: proxy_interrupt_redirect_available,
         })
     }
 }

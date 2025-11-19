@@ -31,6 +31,8 @@ use pal_async::task::Task;
 use parking_lot::RwLock;
 use save_restore::NvmeDriverWorkerSavedState;
 use std::collections::HashMap;
+use std::mem::ManuallyDrop;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use task_control::AsyncRun;
@@ -71,18 +73,28 @@ pub struct NvmeDriver<T: DeviceBacking> {
     #[inspect(skip)]
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
-    rescan_notifiers: Arc<RwLock<HashMap<u32, Vec<mesh::Sender<()>>>>>,
-    /// NVMe namespaces associated with this driver.
+    rescan_notifiers: Arc<RwLock<HashMap<u32, mesh::Sender<()>>>>,
+    /// NVMe namespaces associated with this driver. Mapping nsid to NamespaceHandle.
     #[inspect(skip)]
-    namespaces: Vec<Arc<Namespace>>,
+    namespaces: HashMap<u32, NamespaceHandle>,
     /// Keeps the controller connected (CC.EN==1) while servicing.
     nvme_keepalive: bool,
     bounce_buffer: bool,
 }
 
+struct NamespaceHandle {
+    namespace: Arc<Namespace>,
+    in_use: bool,
+}
+
 #[derive(Inspect)]
 struct DriverWorkerTask<T: DeviceBacking> {
-    device: T,
+    /// The VFIO device backing this driver. For KeepAlive cases, the VFIO handle
+    /// is never dropped, otherwise there is a chance that VFIO will reset the
+    /// device. We don't want that.
+    ///
+    /// Dropped in `NvmeDriver::reset`.
+    device: ManuallyDrop<T>,
     #[inspect(skip)]
     driver: VmTaskDriver,
     registers: Arc<DeviceRegisters<T>>,
@@ -274,7 +286,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         Ok(Self {
             device_id: device.id().to_owned(),
             task: Some(TaskControl::new(DriverWorkerTask {
-                device,
+                device: ManuallyDrop::new(device),
                 driver: driver.clone(),
                 registers,
                 admin: None,
@@ -288,7 +300,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             driver,
             io_issuers,
             rescan_notifiers: Default::default(),
-            namespaces: vec![],
+            namespaces: Default::default(),
             nvme_keepalive: false,
             bounce_buffer,
         })
@@ -317,7 +329,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // Start the admin queue pair.
         let admin = QueuePair::new(
             self.driver.clone(),
-            &worker.device,
+            worker.device.deref(),
             ADMIN_QID,
             admin_sqes,
             admin_cqes,
@@ -506,6 +518,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Shuts the device down.
     pub async fn shutdown(mut self) {
+        tracing::debug!(pci_id = ?self.device_id, "shutting down nvme driver");
+
         // If nvme_keepalive was requested, return early.
         // The memory is still aliased as we don't flush pending IOs.
         if self.nvme_keepalive {
@@ -517,6 +531,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     fn reset(&mut self) -> impl Send + Future<Output = ()> + use<T> {
         let driver = self.driver.clone();
+        let id = self.device_id.clone();
         let mut task = std::mem::take(&mut self.task).unwrap();
         async move {
             task.stop().await;
@@ -534,24 +549,51 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             if let Err(e) = worker.registers.bar0.reset(&driver).await {
                 tracing::info!(csts = e, "device reset failed");
             }
+
+            let _vfio = ManuallyDrop::into_inner(worker.device);
+            tracing::debug!(pci_id = ?id, "dropping vfio handle to device");
         }
     }
 
     /// Gets the namespace with namespace ID `nsid`.
-    pub async fn namespace(&self, nsid: u32) -> Result<Namespace, NamespaceError> {
+    pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
+        if let Some(handle) = self.namespaces.get_mut(&nsid) {
+            // After reboot ns will be present but unused.
+            if !handle.in_use {
+                handle.in_use = true;
+                return Ok(handle.namespace.clone());
+            }
+
+            // Prevent multiple references to the same Namespace.
+            // Allowing this could lead to undefined behavior if multiple components
+            // concurrently read or write to the same namespace. To avoid this,
+            // return an error if the namespace is already requested.
+            return Err(NamespaceError::DuplicateRequest { nsid });
+        }
+
         let (send, recv) = mesh::channel::<()>();
-        let namespace = Namespace::new(
-            &self.driver,
-            self.admin.as_ref().unwrap().clone(),
-            recv,
-            self.identify.clone().unwrap(),
-            &self.io_issuers,
+        let namespace = Arc::new(
+            Namespace::new(
+                &self.driver,
+                self.admin.as_ref().unwrap().clone(),
+                recv,
+                self.identify.clone().unwrap(),
+                &self.io_issuers,
+                nsid,
+            )
+            .await?,
+        );
+        self.namespaces.insert(
             nsid,
-        )
-        .await?;
+            NamespaceHandle {
+                namespace: namespace.clone(),
+                in_use: true,
+            },
+        );
+
         // Append the sender to the list of notifiers for this nsid.
         let mut notifiers = self.rescan_notifiers.write();
-        notifiers.entry(nsid).or_default().push(send);
+        notifiers.insert(nsid, send);
         Ok(namespace)
     }
 
@@ -582,21 +624,22 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .await?
         {
             Ok(s) => {
-                // TODO: The decision is to re-query namespace data after the restore.
-                // Leaving the code in place so it can be restored in future.
-                // The reason is uncertainty about namespace change during servicing.
-                // ------
-                // for ns in &self.namespaces {
-                //     s.namespaces.push(ns.save()?);
-                // }
+                let mut saved_namespaces = vec![];
+                for (nsid, handle) in self.namespaces.iter() {
+                    saved_namespaces.push(handle.namespace.save().with_context(|| {
+                        format!(
+                            "failed to save namespace nsid {} device {}",
+                            nsid, self.device_id
+                        )
+                    })?);
+                }
                 Ok(NvmeDriverSavedState {
                     identify_ctrl: spec::IdentifyController::read_from_bytes(
                         self.identify.as_ref().unwrap().as_bytes(),
                     )
                     .unwrap(),
                     device_id: self.device_id.clone(),
-                    // TODO: See the description above, save the vector once resolved.
-                    namespaces: vec![],
+                    namespaces: saved_namespaces,
                     worker_data: s,
                 })
             }
@@ -621,6 +664,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // It is expected for the device to be alive when restoring.
         let csts = bar0.csts();
         if !csts.rdy() {
+            tracing::error!(
+                csts = u32::from(csts),
+                pci_id = device.id(),
+                "device is not ready during restore"
+            );
             anyhow::bail!(
                 "device is not ready during restore, csts: {:#x}",
                 u32::from(csts)
@@ -638,7 +686,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         let mut this = Self {
             device_id: device.id().to_owned(),
             task: Some(TaskControl::new(DriverWorkerTask {
-                device,
+                device: ManuallyDrop::new(device),
                 driver: driver.clone(),
                 registers: registers.clone(),
                 admin: None, // Updated below.
@@ -655,7 +703,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             driver: driver.clone(),
             io_issuers,
             rescan_notifiers: Default::default(),
-            namespaces: vec![],
+            namespaces: Default::default(),
             nvme_keepalive: true,
             bounce_buffer,
         };
@@ -793,24 +841,22 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         // Restore namespace(s).
         for ns in &saved_state.namespaces {
-            // TODO: Current approach is to re-query namespace data after servicing
-            // and this array will be empty. Once we confirm that we can process
-            // namespace change notification AEN, the restore code will be
-            // re-added.
             let (send, recv) = mesh::channel::<()>();
-            this.namespaces.push(Arc::new(Namespace::restore(
-                &driver,
-                admin.issuer().clone(),
-                recv,
-                this.identify.clone().unwrap(),
-                &this.io_issuers,
-                ns,
-            )?));
-            this.rescan_notifiers
-                .write()
-                .entry(ns.nsid)
-                .or_default()
-                .push(send);
+            this.namespaces.insert(
+                ns.nsid,
+                NamespaceHandle {
+                    namespace: Arc::new(Namespace::restore(
+                        &driver,
+                        admin.issuer().clone(),
+                        recv,
+                        this.identify.clone().unwrap(),
+                        &this.io_issuers,
+                        ns,
+                    )?),
+                    in_use: false,
+                },
+            );
+            this.rescan_notifiers.write().insert(ns.nsid, send);
         }
 
         task.insert(&this.driver, "nvme_worker", state);
@@ -828,7 +874,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
 async fn handle_asynchronous_events(
     admin: &Issuer,
-    rescan_notifiers: Arc<RwLock<HashMap<u32, Vec<mesh::Sender<()>>>>>,
+    rescan_notifiers: Arc<RwLock<HashMap<u32, mesh::Sender<()>>>>,
 ) -> anyhow::Result<()> {
     tracing::info!("starting asynchronous event handler task");
     loop {
@@ -868,14 +914,14 @@ async fn handle_asynchronous_events(
                     // More than 1024 namespaces changed - notify all registered namespaces
                     tracing::info!("more than 1024 namespaces changed, notifying all listeners");
                     for notifiers in notifier_guard.values() {
-                        notifiers.iter().for_each(|n| n.send(()));
+                        notifiers.send(());
                     }
                 } else {
                     // Notify specific namespaces that have changed
                     for nsid in list.iter().filter(|&&nsid| nsid != 0) {
                         tracing::info!(nsid, "notifying listeners of changed namespace");
-                        if let Some(notifiers) = notifier_guard.get(nsid) {
-                            notifiers.iter().for_each(|n| n.send(()));
+                        if let Some(notifier) = notifier_guard.get(nsid) {
+                            notifier.send(());
                         }
                     }
                 }
@@ -894,8 +940,10 @@ async fn handle_asynchronous_events(
 
 impl<T: DeviceBacking> Drop for NvmeDriver<T> {
     fn drop(&mut self) {
+        tracing::trace!(pci_id = ?self.device_id, ka = self.nvme_keepalive, task = self.task.is_some(), "dropping nvme driver");
         if self.task.is_some() {
             // Do not reset NVMe device when nvme_keepalive is requested.
+            tracing::debug!(nvme_keepalive = self.nvme_keepalive, pci_id = ?self.device_id, "dropping nvme driver");
             if !self.nvme_keepalive {
                 // Reset the device asynchronously so that pending IOs are not
                 // dropped while their memory is aliased.
@@ -931,22 +979,25 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
         stop: &mut task_control::StopTask<'_>,
         state: &mut WorkerState,
     ) -> Result<(), task_control::Cancelled> {
-        stop.until_stopped(async {
-            loop {
-                match self.recv.next().await {
-                    Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
-                        rpc.handle(async |cpu| self.create_io_issuer(state, cpu).await)
-                            .await
+        let r = stop
+            .until_stopped(async {
+                loop {
+                    match self.recv.next().await {
+                        Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
+                            rpc.handle(async |cpu| self.create_io_issuer(state, cpu).await)
+                                .await
+                        }
+                        Some(NvmeWorkerRequest::Save(rpc)) => {
+                            rpc.handle(async |span| self.save(state).instrument(span).await)
+                                .await
+                        }
+                        None => break,
                     }
-                    Some(NvmeWorkerRequest::Save(rpc)) => {
-                        rpc.handle(async |span| self.save(state).instrument(span).await)
-                            .await
-                    }
-                    None => break,
                 }
-            }
-        })
-        .await
+            })
+            .await;
+        tracing::debug!("nvme worker task exiting");
+        r
     }
 }
 
@@ -1025,7 +1076,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
 
         let queue = QueuePair::new(
             self.driver.clone(),
-            &self.device,
+            self.device.deref(),
             qid,
             state.qsize,
             state.qsize,

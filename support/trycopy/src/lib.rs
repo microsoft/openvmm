@@ -84,10 +84,8 @@ mod aarch64;
 mod memcpy;
 mod x86_64;
 
-// xtask-fmt allow-target-arch sys-crate
 #[cfg(target_arch = "aarch64")]
 use aarch64::*;
-// xtask-fmt allow-target-arch sys-crate
 #[cfg(target_arch = "x86_64")]
 use x86_64::*;
 
@@ -339,17 +337,45 @@ pub struct MemoryError {
     source: OsAccessError,
 }
 
+#[cfg(windows)]
 #[derive(Debug, Error)]
 enum OsAccessError {
-    #[cfg(windows)]
     #[error("access violation")]
     AccessViolation,
-    #[cfg(unix)]
-    #[error("SIGSEGV (si_code = {0:x})")]
-    Sigsegv(u32),
-    #[cfg(unix)]
-    #[error("SIGBUS (si_code = {0:x})")]
-    Sigbus(u32),
+}
+
+#[cfg(unix)]
+#[derive(Debug, Error)]
+struct OsAccessError {
+    signal: i32,
+    si_code: u32,
+    /// The x86_64 exception number (trapno) of the underlying fault.
+    #[cfg(target_arch = "x86_64")]
+    exception: u8,
+    /// The aarch64 Exception Syndrome Register (ESR) value of the underlying
+    /// fault.
+    #[cfg(target_arch = "aarch64")]
+    esr: Option<u64>,
+}
+
+#[cfg(unix)]
+impl std::fmt::Display for OsAccessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let signal = match self.signal {
+            libc::SIGSEGV => "SIGSEGV",
+            libc::SIGBUS => "SIGBUS",
+            libc::SIGILL => "SIGILL",
+            _ => "unknown signal",
+        };
+        write!(f, "{} (si_code: {:#x})", signal, self.si_code)?;
+        #[cfg(target_arch = "x86_64")]
+        write!(f, " (exception: {})", self.exception)?;
+        #[cfg(target_arch = "aarch64")]
+        if let Some(esr) = self.esr {
+            write!(f, " (ESR: {:#x})", esr)?;
+        }
+        Ok(())
+    }
 }
 
 impl MemoryError {
@@ -382,15 +408,13 @@ impl MemoryError {
         #[cfg(windows)]
         let source = OsAccessError::AccessViolation;
         #[cfg(unix)]
-        let source = match failure.si_signo {
-            libc::SIGSEGV => OsAccessError::Sigsegv(failure.si_code as u32),
-            libc::SIGBUS => OsAccessError::Sigbus(failure.si_code as u32),
-            _ => {
-                panic!(
-                    "unexpected signal: {} src: {:?} dest: {:p} len: {:#x}",
-                    failure.si_signo, src, dest, len
-                );
-            }
+        let source = OsAccessError {
+            signal: failure.si_signo,
+            si_code: failure.si_code,
+            #[cfg(target_arch = "x86_64")]
+            exception: failure.trapno,
+            #[cfg(target_arch = "aarch64")]
+            esr: failure.esr,
         };
         Self {
             offset,
@@ -415,18 +439,32 @@ struct AccessFailure {
     #[cfg(unix)]
     si_signo: i32,
     #[cfg(unix)]
-    si_code: i32,
+    si_code: u32,
+    #[cfg(all(unix, target_arch = "x86_64"))]
+    trapno: u8,
+    #[cfg(all(unix, target_arch = "aarch64"))]
+    esr: Option<u64>,
 }
 
-thread_local! {
-    static LAST_ACCESS_FAILURE: std::cell::Cell<AccessFailure> = const {
-        std::cell::Cell::new(AccessFailure {
+impl AccessFailure {
+    const fn empty() -> Self {
+        Self {
             address: std::ptr::null_mut(),
             #[cfg(unix)]
             si_signo: 0,
             #[cfg(unix)]
             si_code: 0,
-        })
+            #[cfg(all(unix, target_arch = "x86_64"))]
+            trapno: 0,
+            #[cfg(all(unix, target_arch = "aarch64"))]
+            esr: None,
+        }
+    }
+}
+
+thread_local! {
+    static LAST_ACCESS_FAILURE: std::cell::Cell<AccessFailure> = const {
+        std::cell::Cell::new(AccessFailure::empty())
     };
 }
 
@@ -446,19 +484,35 @@ type Context = windows_sys::Win32::System::Diagnostics::Debug::CONTEXT;
 #[cfg(unix)]
 unsafe fn install_signal_handlers() {
     fn handle_signal(sig: i32, info: &libc::siginfo_t, ucontext: &mut libc::ucontext_t) {
-        let failure = AccessFailure {
-            // SAFETY: si_addr is always valid for SIGSEGV and SIGBUS.
-            address: unsafe { info.si_addr().cast() },
-            si_signo: sig,
-            si_code: info.si_code,
-        };
-
         #[cfg(target_os = "linux")]
         let ctx = &mut ucontext.uc_mcontext;
 
         #[cfg(target_os = "macos")]
         // SAFETY: mcontext is always valid.
         let ctx = unsafe { &mut *ucontext.uc_mcontext };
+
+        let address = if sig == libc::SIGSEGV || sig == libc::SIGBUS {
+            // SAFETY: si_addr is always valid to read for SIGSEGV and SIGBUS.
+            unsafe { info.si_addr().cast() }
+        } else {
+            // No address available.
+            std::ptr::null_mut()
+        };
+
+        let failure = AccessFailure {
+            address,
+            si_signo: sig,
+            si_code: info.si_code as u32,
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            trapno: ctx.gregs[libc::REG_TRAPNO as usize] as u8,
+            #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+            esr: {
+                const ESR_MAGIC: u32 = 0x45535201;
+                aarch64_extended_context::<u64>(ctx, ESR_MAGIC).copied()
+            },
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            esr: Some(ctx.__es.__esr.into()),
+        };
 
         let recovered = recover(ctx, failure);
         if !recovered {
@@ -473,10 +527,51 @@ unsafe fn install_signal_handlers() {
             sa_flags: libc::SA_SIGINFO,
             ..core::mem::zeroed()
         };
-        for signal in [libc::SIGSEGV, libc::SIGBUS] {
+        for signal in [
+            libc::SIGSEGV,
+            libc::SIGBUS,
+            // SIGILL is used on Linux/aarch64 to signal certain memory access
+            // faults from a hypervisor.
+            #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+            libc::SIGILL,
+        ] {
             // TODO: chain to previous handler. Doing so safely and correctly
             // might require running this code before `main`, via a constructor.
             libc::sigaction(signal, &act, std::ptr::null_mut());
+        }
+    }
+}
+
+/// Finds extended data in the mcontext for Linux/aarch64.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+fn aarch64_extended_context<T>(ctx: &libc::mcontext_t, magic: u32) -> Option<&T>
+where
+    T: zerocopy::FromBytes + zerocopy::KnownLayout + zerocopy::Immutable,
+{
+    use zerocopy::FromBytes;
+
+    #[derive(FromBytes, Debug)]
+    #[repr(C)]
+    struct Header {
+        magic: u32,
+        size: u32,
+    }
+
+    // SAFETY: This is the `__reserved` field, which should be pub but...
+    // <https://github.com/rust-lang/libc/pull/4823>.
+    let data = unsafe { &*(&raw const ctx.pstate).add(2).cast::<[u8; 4096]>() };
+    let mut data = data.as_ref();
+
+    loop {
+        let (header, _) = Header::read_from_prefix(data).ok()?;
+        if header.size == 0 {
+            break None;
+        }
+        let (head, rest) = data.split_at(header.size as usize);
+        let this_data = &head[size_of::<Header>()..];
+        data = rest;
+        if header.magic == magic {
+            break T::ref_from_bytes(this_data).ok();
         }
     }
 }
@@ -561,13 +656,16 @@ fn recovery_table() -> &'static [RecoveryDescriptor] {
 
     // Ensure the section exists even if there no recovery descriptors get
     // generated.
-    #[cfg_attr(target_os = "linux", unsafe(link_section = "try_copy"))]
-    #[cfg_attr(
-        target_os = "macos",
-        unsafe(link_section = "__TEXT,__try_copy,regular")
-    )]
-    #[used]
-    static ENSURE_EXISTS: [RecoveryDescriptor; 0] = [];
+    //
+    // SAFETY: just a no-op asm block to force the section to be created.
+    unsafe {
+        core::arch::asm!(concat!(
+            ".pushsection ",
+            crate::recovery_section!(),
+            "\n",
+            ".popsection"
+        ))
+    };
 
     // SAFETY: accessing the trycopy section as defined above.
     unsafe {
@@ -798,12 +896,10 @@ mod tests {
         } else {
             src
         };
+        #[cfg_attr(windows, expect(clippy::needless_update))]
         LAST_ACCESS_FAILURE.set(AccessFailure {
             address: nonsense_addr.cast(),
-            #[cfg(unix)]
-            si_signo: 0,
-            #[cfg(unix)]
-            si_code: 0,
+            ..AccessFailure::empty()
         });
 
         let res = unsafe {

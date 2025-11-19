@@ -101,17 +101,9 @@ async fn basic_servicing<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
-    openhcl_servicing_core(
-        config,
-        "",
-        igvm_file,
-        OpenHclServicingFlags {
-            override_version_checks: true,
-            ..Default::default()
-        },
-        DEFAULT_SERVICING_COUNT,
-    )
-    .await
+    let mut flags = config.default_servicing_flags();
+    flags.override_version_checks = true;
+    openhcl_servicing_core(config, "", igvm_file, flags, DEFAULT_SERVICING_COUNT).await
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself
@@ -121,14 +113,12 @@ async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
+    let flags = config.default_servicing_flags();
     openhcl_servicing_core(
         config,
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         igvm_file,
-        OpenHclServicingFlags {
-            enable_nvme_keepalive: true,
-            ..Default::default()
-        },
+        flags,
         DEFAULT_SERVICING_COUNT,
     )
     .await
@@ -141,14 +131,12 @@ async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
+    let flags = config.default_servicing_flags();
     openhcl_servicing_core(
         config.with_vmbus_redirect(true), // Need this to attach the NVMe device
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         igvm_file,
-        OpenHclServicingFlags {
-            enable_nvme_keepalive: true,
-            ..Default::default()
-        },
+        flags,
         1, // Test is slow with NVMe device, so only do one loop to avoid timeout
     )
     .await
@@ -165,6 +153,8 @@ async fn servicing_upgrade<T: PetriVmmBackend>(
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     ),
 ) -> anyhow::Result<()> {
+    let flags = config.default_servicing_flags();
+
     // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
     openhcl_servicing_core(
         config
@@ -172,7 +162,7 @@ async fn servicing_upgrade<T: PetriVmmBackend>(
             .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
         "",
         to_igvm,
-        OpenHclServicingFlags::default(),
+        flags,
         DEFAULT_SERVICING_COUNT,
     )
     .await
@@ -190,13 +180,15 @@ async fn servicing_downgrade<T: PetriVmmBackend>(
     ),
 ) -> anyhow::Result<()> {
     // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = false; // NVMe keepalive not supported in 2505 release
     openhcl_servicing_core(
         config
             .with_custom_openhcl(from_igvm)
             .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
         "",
         to_igvm,
-        OpenHclServicingFlags::default(),
+        flags,
         DEFAULT_SERVICING_COUNT,
     )
     .await
@@ -207,6 +199,7 @@ async fn servicing_shutdown_ic(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
+    let flags = config.default_servicing_flags();
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(move |b| {
@@ -251,8 +244,7 @@ async fn servicing_shutdown_ic(
     cmd!(sh, "ls /dev/sda").run().await?;
 
     let shutdown_ic = vm.backend().wait_for_enlightened_shutdown_ready().await?;
-    vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
-        .await?;
+    vm.restart_openhcl(igvm_file, flags).await?;
     // VTL2 will disconnect and then reconnect the shutdown IC across a servicing event.
     tracing::info!("waiting for shutdown IC to close");
     shutdown_ic.await.unwrap_err();
@@ -276,6 +268,7 @@ async fn servicing_keepalive_with_namespace_update(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
+    let flags = config.default_servicing_flags();
     let mut fault_start_updater = CellUpdater::new(false);
     let (ns_change_send, ns_change_recv) = mesh::channel::<NamespaceChange>();
     let (aer_verify_send, aer_verify_recv) = mesh::oneshot::<()>();
@@ -308,14 +301,7 @@ async fn servicing_keepalive_with_namespace_update(
     cmd!(sh, "ls /dev/sda").run().await?;
 
     fault_start_updater.set(true).await;
-    vm.save_openhcl(
-        igvm_file.clone(),
-        OpenHclServicingFlags {
-            enable_nvme_keepalive: true,
-            ..Default::default()
-        },
-    )
-    .await?;
+    vm.save_openhcl(igvm_file.clone(), flags).await?;
     ns_change_send
         .call(NamespaceChange::ChangeNotification, KEEPALIVE_VTL2_NSID)
         .await?;
@@ -353,6 +339,27 @@ async fn servicing_keepalive_with_nvme_fault(
             AdminQueueFaultConfig::new().with_submission_queue_fault(
                 CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0).build(),
                 AdminQueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
+            ),
+        );
+
+    apply_fault_with_keepalive(config, fault_configuration, fault_start_updater, igvm_file).await
+}
+
+/// Test servicing an OpenHCL VM from the current version to itself
+/// with NVMe keepalive support and a faulty controller that panics when
+/// IDENTIFY commands are received. This verifies namespace save/restore functionality.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_fault_if_identify(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let mut fault_start_updater = CellUpdater::new(false);
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::IDENTIFY.0).match_cdw10(nvme_spec::Cdw10Identify::new().with_cns(nvme_spec::Cns::NAMESPACE.0).into(), nvme_spec::Cdw10Identify::new().with_cns(u8::MAX).into()).build(),
+                AdminQueueFaultBehavior::Panic("Received an IDENTIFY command during servicing with keepalive enabled (And no namespaces were updated). THERE IS A BUG SOMEWHERE.".to_string()),
             ),
         );
 
@@ -418,6 +425,8 @@ async fn apply_fault_with_keepalive(
     mut fault_start_updater: CellUpdater<bool>,
     igvm_file: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
 ) -> Result<(), anyhow::Error> {
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = true;
     let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
 
     agent.ping().await?;
@@ -427,14 +436,7 @@ async fn apply_fault_with_keepalive(
     cmd!(sh, "ls /dev/sda").run().await?;
 
     fault_start_updater.set(true).await;
-    vm.restart_openhcl(
-        igvm_file.clone(),
-        OpenHclServicingFlags {
-            enable_nvme_keepalive: true,
-            ..Default::default()
-        },
-    )
-    .await?;
+    vm.restart_openhcl(igvm_file.clone(), flags).await?;
 
     fault_start_updater.set(false).await;
     agent.ping().await?;
@@ -496,4 +498,85 @@ async fn create_keepalive_test_config(
         })
         .run()
         .await
+}
+
+/// Today this only tests that the nic can get an IP address via consomme's DHCP
+/// implementation.
+///
+/// FUTURE: Test traffic on the nic.
+async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
+    let sh = agent.unix_shell();
+    cmd!(sh, "ifconfig eth0 up").run().await?;
+    cmd!(sh, "udhcpc eth0").run().await?;
+    let output = cmd!(sh, "ifconfig eth0").read().await?;
+    // Validate that we see a mana nic with the expected MAC address and IPs.
+    assert!(output.contains("HWaddr 00:15:5D:12:12:12"));
+    assert!(output.contains("inet addr:10.0.0.2"));
+    assert!(output.contains("inet6 addr: fe80::215:5dff:fe12:1212/64"));
+
+    Ok(())
+}
+
+/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
+/// the MANA emulator), and vmbus relay. Perform servicing and validate that the
+/// nic is still functional.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    let flags = config.default_servicing_flags();
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(|b| b.with_nic())
+        .run()
+        .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    vm.restart_openhcl(igvm_file, flags).await?;
+
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
+/// the MANA emulator), and vmbus relay. Perform servicing and validate that the
+/// nic is still functional.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing_keepalive(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    let default_flags = config.default_servicing_flags();
+
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(|b| b.with_nic())
+        .with_openhcl_command_line(
+            "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_MANA_KEEP_ALIVE=host,privatepool",
+        )
+        .run()
+        .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    vm.restart_openhcl(
+        igvm_file,
+        OpenHclServicingFlags {
+            enable_mana_keepalive: true,
+            ..default_flags
+        },
+    )
+    .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
 }

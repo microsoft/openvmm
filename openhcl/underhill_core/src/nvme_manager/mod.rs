@@ -51,6 +51,7 @@
 
 use async_trait::async_trait;
 use inspect::Inspect;
+use std::sync::Arc;
 use thiserror::Error;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -91,9 +92,9 @@ pub enum NvmeSpawnerError {
 #[async_trait]
 pub trait NvmeDevice: Inspect + Send + Sync {
     async fn namespace(
-        &self,
+        &mut self,
         nsid: u32,
-    ) -> Result<nvme_driver::Namespace, nvme_driver::NamespaceError>;
+    ) -> Result<Arc<nvme_driver::Namespace>, nvme_driver::NamespaceError>;
     async fn save(&mut self) -> anyhow::Result<nvme_driver::NvmeDriverSavedState>;
     async fn shutdown(mut self: Box<Self>);
     fn update_servicing_flags(&mut self, keep_alive: bool);

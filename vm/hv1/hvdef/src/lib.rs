@@ -1055,12 +1055,14 @@ pub mod hypercall {
     pub struct HvInterruptTargetFlags {
         pub multicast: bool,
         pub processor_set: bool,
-        #[bits(30)]
+        pub proxy_redirect: bool,
+        #[bits(29)]
         pub reserved: u32,
     }
 
     pub const HV_DEVICE_INTERRUPT_TARGET_MULTICAST: u32 = 1;
     pub const HV_DEVICE_INTERRUPT_TARGET_PROCESSOR_SET: u32 = 2;
+    pub const HV_DEVICE_INTERRUPT_TARGET_PROXY_REDIRECT: u32 = 4;
 
     pub const HV_GENERIC_SET_SPARSE_4K: u64 = 0;
     pub const HV_GENERIC_SET_ALL: u64 = 1;
@@ -3151,8 +3153,11 @@ pub struct HvRegisterVsmCapabilities {
     pub install_intercept_ex: bool,
     /// Only available in VTL2.
     pub intercept_system_reset_available: bool,
-    #[bits(31)]
-    pub reserved: u64,
+    #[bits(1)]
+    pub reserved1: u8,
+    pub proxy_interrupt_redirect_available: bool,
+    #[bits(29)]
+    pub reserved2: u64,
 }
 
 #[bitfield(u64)]

@@ -221,6 +221,7 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
             name: switch_cli.name.clone(),
             num_downstream_ports: switch_cli.num_downstream_ports,
             parent_port: switch_cli.port_name.clone(),
+            hotplug: switch_cli.hotplug,
         })
         .collect()
 }
@@ -306,7 +307,7 @@ fn vm_config_from_command_line(
                     app.or_else(openvmm_terminal_app).as_deref(),
                     &path,
                     ConsoleLaunchOptions {
-                        window_title: Some(window_title + " [OpenVMM]"),
+                        window_title: Some(window_title),
                     },
                 )
                 .context("failed to launch console")?;
@@ -720,6 +721,7 @@ fn vm_config_from_command_line(
                 .filter(|port_cli| port_cli.root_complex_name == cli.name)
                 .map(|port_cli| PcieRootPortConfig {
                     name: port_cli.name.clone(),
+                    hotplug: port_cli.hotplug,
                 })
                 .collect();
 
@@ -1988,6 +1990,14 @@ enum InteractiveCommand {
         /// configured path.
         #[clap(long, conflicts_with("user_mode_only"))]
         igvm: Option<PathBuf>,
+        /// Enable keepalive when servicing VTL2 devices.
+        /// Default is `true`.
+        #[clap(long, short = 'n', default_missing_value = "true")]
+        nvme_keepalive: bool,
+        /// Enable keepalive when servicing VTL2 devices.
+        /// Default is `false`.
+        #[clap(long)]
+        mana_keepalive: bool,
     },
 
     /// Read guest memory
@@ -2841,6 +2851,8 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             InteractiveCommand::ServiceVtl2 {
                 user_mode_only,
                 igvm,
+                mana_keepalive,
+                nvme_keepalive,
             } => {
                 let paravisor_diag = paravisor_diag.clone();
                 let vm_rpc = vm_rpc.clone();
@@ -2858,7 +2870,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         hvlite_helpers::underhill::save_underhill(
                             &vm_rpc,
                             ged_rpc.as_ref().context("no GED")?,
-                            GuestServicingFlags::default(),
+                            GuestServicingFlags {
+                                nvme_keepalive,
+                                mana_keepalive,
+                            },
                             file.into(),
                         )
                         .await?;

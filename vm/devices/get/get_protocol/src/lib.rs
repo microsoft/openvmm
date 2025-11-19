@@ -1187,8 +1187,13 @@ pub struct SaveGuestVtl2StateFlags {
     /// Explicitly allow nvme_keepalive feature when servicing.
     #[bits(1)]
     pub enable_nvme_keepalive: bool,
+
+    /// Explicitly allow mana_keepalive feature when servicing.
+    #[bits(1)]
+    pub enable_mana_keepalive: bool,
+
     /// Reserved, must be zero.
-    #[bits(63)]
+    #[bits(62)]
     _rsvd1: u64,
 }
 
