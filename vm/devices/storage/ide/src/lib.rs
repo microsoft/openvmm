@@ -8,6 +8,7 @@ mod drive;
 mod protocol;
 
 use crate::drive::save_restore::DriveSaveRestore;
+use crate::PAGE_SIZE64;
 use crate::protocol::BusMasterReg;
 use crate::protocol::DeviceControlReg;
 use crate::protocol::IdeCommand;
@@ -27,6 +28,7 @@ use disk_backend::Disk;
 use drive::DiskDrive;
 use drive::DriveRegister;
 use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use ide_resources::IdePath;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -49,7 +51,7 @@ use thiserror::Error;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::line_interrupt::LineInterrupt;
 use zerocopy::IntoBytes;
-//use guestmem::GuestMemoryErrorKind;
+use guestmem::ranges::PagedRange;
 
 open_enum! {
     pub enum IdeIoPort: u16 {
@@ -697,29 +699,40 @@ impl Channel {
         write.deferred.complete();
     }
 
+    fn gpa_to_gpn(gpa: u64) -> u64 {
+        gpa / PAGE_SIZE64
+    }
+
     fn perform_dma_memory_phase(&mut self) {
+        tracing::trace!("perform_dma_memory_phase");
         let Some(drive) = &mut self.drives[self.state.current_drive_idx] else {
+            tracing::trace!("returning from perform_dma_memory_phase");
             return;
         };
 
         if self.bus_master_state.dma_error {
+            tracing::trace!("DMA error");
             if drive.handle_read_dma_descriptor_error() {
                 self.bus_master_state.dma_error = false;
             }
             return;
         }
 
+        tracing::trace!(dmaState = ?self.bus_master_state.dma_state, dmaType = ?self.bus_master_state.dma_io_type(), "DMA state");
         let (dma_type, mut dma_avail) = match drive.dma_request() {
             Some((dma_type, avail)) if *dma_type == self.bus_master_state.dma_io_type() => {
                 (Some(*dma_type), avail as u32)
             }
             _ => {
                 // No active, appropriate DMA buffer.
+                tracing::trace!("Invalid dma : returning from perform_dma_memory_phase");
                 return;
             }
         };
-        tracing::trace!(dma_type = ?dma_type, "DMA TYPE here");
+
+        tracing::trace!(dmaType = ?dma_type, dmaAvail = ?dma_avail, busMasterState = ?self.bus_master_state.dma_state, "DMA TYPE here");
         let Some(dma) = &mut self.bus_master_state.dma_state else {
+            tracing::trace!("No active DMA state");
             return;
         };
 
@@ -769,30 +782,39 @@ impl Channel {
                     dma.transfer_bytes_left = 0x10000;
                 }
 
-                // Check that the base address is within the guest's physical address space.
+                // Check that the every page starting from the base address is within
+                // the guest's physical address space.
                 // This is a sanity check, the guest should not be able to program the DMA
-                // controller with an invalid address.
+                // controller with an invalid page access.
 
-                if let Some(dma_type) = dma_type {
-                    let end_addr = cur_desc_table_entry
-                        .mem_physical_base
-                        .checked_add(dma.transfer_bytes_left);
-                    let r = match (dma_type, end_addr) {
-                        (DmaType::Read, Some(end)) => {
+                let end_gpa = cur_desc_table_entry
+                    .mem_physical_base
+                    .checked_add(dma.transfer_bytes_left);
+
+                if let Some(end_gpa) = end_gpa {
+                    let start_gpn = Self::gpa_to_gpn(cur_desc_table_entry.mem_physical_base.into());
+                    let end_gpn = Self::gpa_to_gpn(end_gpa.into());
+                    tracing::trace!(startGpa = ?cur_desc_table_entry.mem_physical_base, endGpa = ?end_gpa, "start and end GPAs");
+                    tracing::trace!(startGpn = ?start_gpn, endGpn = ?end_gpn, "start and end GPNs");
+                    let gpns: Vec<u64> = (start_gpn..end_gpn).collect();
+
+                    tracing::trace!(paged_range = ?PagedRange::new(0,  gpns.len() * PAGE_SIZE64 as usize , &gpns), "PagedRange of GPNs");
+                    tracing::trace!(gpns_vector = ?gpns, gpns_len = ?gpns.len(), "PagedRange values");
+                    let paged_range = PagedRange::new(0, gpns.len() * PAGE_SIZE64 as usize, &gpns).unwrap();
+                    let r = match dma_type.unwrap() {
+                        DmaType::Read => {
                             self.guest_memory
-                                .probe_gpa_readable(end.into())
+                                .probe_gpn_readable_range(&paged_range)
                         },
-                        (DmaType::Write, Some(end)) => {
+                        DmaType::Write => {
                             self.guest_memory
-                                .probe_gpa_writable(end.into())
+                                .probe_gpn_writable_range(&paged_range)
                         },
-                        (_, None) => Err(guestmem::GuestMemoryErrorKind::OutOfRange),
                     };
                     if let Err(err) = r {
                         // If there is an error and there is no other IO in parallel,
                         // we need to stop the current DMA transfer and set the error bit
                         // in the Bus Master Status register.
-
                         self.bus_master_state.dma_state = None;
                         if !drive.handle_read_dma_descriptor_error() {
                             self.bus_master_state.dma_error = true;
@@ -803,9 +825,22 @@ impl Channel {
                             "dma base address out-of-range error"
                         );
                         return;
-                    };
+                    }
+                } else {
+                    // If there is an error and there is no other IO in parallel,
+                    // we need to stop the current DMA transfer and set the error bit
+                    // in the Bus Master Status register.
+                    self.bus_master_state.dma_state = None;
+                    if !drive.handle_read_dma_descriptor_error() {
+                        self.bus_master_state.dma_error = true;
+                    }
+
+                    tracelimit::error_ratelimited!(
+                        "dma base address out-of-range error"
+                    );
+                    return;
                 }
-                
+
                 dma.transfer_base_addr = cur_desc_table_entry.mem_physical_base.into();
                 dma.transfer_complete = (cur_desc_table_entry.end_of_table & 0x80) != 0;
 
@@ -821,6 +856,7 @@ impl Channel {
 
             assert!(bytes_to_transfer != 0);
 
+            tracing::trace!(bytes_to_transfer = ?bytes_to_transfer, "bytes to transfer");
             drive.dma_transfer(
                 &self.guest_memory,
                 dma.transfer_base_addr,
