@@ -334,6 +334,7 @@ async fn launch_workers(
         strict_encryption_policy: opt.strict_encryption_policy,
         attempt_ak_cert_callback: opt.attempt_ak_cert_callback,
         enable_vpci_relay: opt.enable_vpci_relay,
+        disable_proxy_redirect: opt.disable_proxy_redirect,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =
