@@ -3,7 +3,7 @@
 
 //! Methods to construct page tables.
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(not(any(feature = "std", test)), no_std)]
 //TODO docs are missing on pub page table functions for aarch64
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
