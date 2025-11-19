@@ -622,6 +622,18 @@ impl LoadedVm {
                     .await
             };
 
+            // Save the persisted topology.
+            let num_nvme_devices = state
+                .init_state
+                .nvme_state
+                .as_ref()
+                .map_or(0, |d| d.nvme_state.nvme_disks.len() as u32);
+            crate::loader::vtl2_config::write_persisted_info(
+                self.runtime_params.parsed_openhcl_boot(),
+                num_nvme_devices,
+            )
+            .context("failed to write persisted info")?;
+
             let (r, (), ()) = (shutdown_pci, shutdown_mana, shutdown_nvme).join().await;
             r?;
 

@@ -378,6 +378,14 @@ struct PartitionTopology {
     memory_allocation_mode: MemoryAllocationMode,
 }
 
+/// State derived while constructing the partition topology
+/// from persisted state.
+#[derive(Debug, PartialEq, Eq)]
+struct PersistedPartitionTopology {
+    topology: PartitionTopology,
+    has_nvme_devices: bool,
+}
+
 // Calculate the default mmio size for VTL2 when not specified by the host.
 //
 // This is half of the high mmio gap size, rounded down, with a minimum of 128
@@ -565,7 +573,7 @@ fn topology_from_persisted_state(
     params: &ShimParams,
     parsed: &ParsedDt,
     address_space: &mut AddressSpaceManager,
-) -> Result<PartitionTopology, DtError> {
+) -> Result<PersistedPartitionTopology, DtError> {
     log!("reading topology from persisted state");
 
     // Verify the header describes a protobuf region within the bootshim
@@ -605,6 +613,7 @@ fn topology_from_persisted_state(
     let loader_defs::shim::save_restore::SavedState {
         partition_memory,
         partition_mmio,
+        nvme_device_count,
     } = parsed_protobuf;
 
     // FUTURE: should memory allocation mode should persist in saved state and
@@ -746,11 +755,14 @@ fn topology_from_persisted_state(
         })
         .collect::<ArrayVec<MemoryRange, 2>>();
 
-    Ok(PartitionTopology {
-        vtl2_ram: OffStackRef::<'_, ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>>::leak(vtl2_ram),
-        vtl0_mmio,
-        vtl2_mmio,
-        memory_allocation_mode,
+    Ok(PersistedPartitionTopology {
+        topology: PartitionTopology {
+            vtl2_ram: OffStackRef::<'_, ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>>::leak(vtl2_ram),
+            vtl0_mmio,
+            vtl2_mmio,
+            memory_allocation_mode,
+        },
+        has_nvme_devices: nvme_device_count > 0,
     })
 }
 
@@ -833,18 +845,22 @@ impl PartitionInfo {
         init_heap(params);
 
         let persisted_state_header = read_persisted_region_header(params);
-        let (topology, is_restoring) = if let Some(header) = persisted_state_header {
-            log!("found persisted state header");
-            (
-                topology_from_persisted_state(header, params, parsed, address_space)?,
-                true,
-            )
-        } else {
-            (
-                topology_from_host_dt(params, parsed, &options, address_space)?,
-                false,
-            )
-        };
+        let (topology, has_devices_that_should_disable_sidecar) =
+            if let Some(header) = persisted_state_header {
+                log!("found persisted state header");
+                let persisted_topology =
+                    topology_from_persisted_state(header, params, parsed, address_space)?;
+
+                (
+                    persisted_topology.topology,
+                    persisted_topology.has_nvme_devices,
+                )
+            } else {
+                (
+                    topology_from_host_dt(params, parsed, &options, address_space)?,
+                    false,
+                )
+            };
 
         let Self {
             vtl2_ram,
@@ -865,14 +881,16 @@ impl PartitionInfo {
             boot_options,
         } = storage;
 
-        if let (SidecarOptions::Enabled { .. }, true) = (&boot_options.sidecar, is_restoring) {
-            if parsed.cpu_count() < 100 {
+        if let (SidecarOptions::Enabled { cpu_threshold, .. }, true) = (
+            &boot_options.sidecar,
+            has_devices_that_should_disable_sidecar,
+        ) {
+            if cpu_threshold.is_none()
+                || parsed.cpu_count() < cpu_threshold.unwrap().try_into().unwrap()
+            {
                 // If we are in the restore path, disable sidecar for small VMs, as the amortization
                 // benefits don't apply when devices are kept alive; the CPUs need to be powered on anyway
                 // to check for interrupts.
-                //
-                // TODO: rather, just do this for _any_ VM that is restoring and has
-                // device persistent state.
                 log!("disabling sidecar, as we are restoring from persisted state");
                 boot_options.sidecar = SidecarOptions::DisabledServicing;
             }

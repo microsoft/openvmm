@@ -83,7 +83,7 @@ pub fn start_sidecar<'a>(
             log!("sidecar: disabled because this is a servicing restore");
             return None;
         }
-        SidecarOptions::Enabled { enable_logging } => {
+        SidecarOptions::Enabled { enable_logging, .. } => {
             sidecar_params.enable_logging = enable_logging;
         }
     }

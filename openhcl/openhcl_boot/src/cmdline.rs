@@ -85,13 +85,28 @@ impl<S: AsRef<str>> From<S> for Vtl2GpaPoolConfig {
 
 #[derive(Debug, PartialEq)]
 pub enum SidecarOptions {
-    /// Sidecar is enabled (either via command line or by default).
-    Enabled { enable_logging: bool },
+    /// Sidecar is enabled (either via command line or by default),
+    /// but should be ignored if this is a restore and the host has
+    /// devices and the number of VPs below the threshold.
+    Enabled {
+        enable_logging: bool,
+        cpu_threshold: Option<u32>,
+    },
     /// Sidecar is disabled because this is a restore from save state (during servicing),
     /// and sidecar will not benefit this specific scenario.
     DisabledServicing,
     /// Sidecar is explicitly disabled via command line.
     DisabledCommandLine,
+}
+
+impl SidecarOptions {
+    pub const DEFAULT_CPU_THRESHOLD: Option<u32> = Some(100);
+    pub const fn default() -> Self {
+        SidecarOptions::Enabled {
+            enable_logging: false,
+            cpu_threshold: Self::DEFAULT_CPU_THRESHOLD,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -107,9 +122,7 @@ impl BootCommandLineOptions {
         BootCommandLineOptions {
             confidential_debug: false,
             enable_vtl2_gpa_pool: Vtl2GpaPoolConfig::Heuristics(Vtl2GpaPoolLookupTable::Release), // use the release config by default
-            sidecar: SidecarOptions::Enabled {
-                enable_logging: false,
-            },
+            sidecar: SidecarOptions::default(),
             disable_nvme_keep_alive: false,
         }
     }
@@ -145,11 +158,13 @@ impl BootCommandLineOptions {
                             "on" => {
                                 self.sidecar = SidecarOptions::Enabled {
                                     enable_logging: false,
+                                    cpu_threshold: SidecarOptions::DEFAULT_CPU_THRESHOLD,
                                 }
                             }
                             "log" => {
                                 self.sidecar = SidecarOptions::Enabled {
                                     enable_logging: true,
+                                    cpu_threshold: SidecarOptions::DEFAULT_CPU_THRESHOLD,
                                 }
                             }
                             _ => {}
@@ -242,6 +257,7 @@ mod tests {
             BootCommandLineOptions {
                 sidecar: SidecarOptions::Enabled {
                     enable_logging: false,
+                    cpu_threshold: SidecarOptions::DEFAULT_CPU_THRESHOLD,
                 },
                 ..BootCommandLineOptions::new()
             }
@@ -264,7 +280,8 @@ mod tests {
             parse_boot_command_line("OPENHCL_SIDECAR=on,log"),
             BootCommandLineOptions {
                 sidecar: SidecarOptions::Enabled {
-                    enable_logging: true
+                    enable_logging: true,
+                    cpu_threshold: SidecarOptions::DEFAULT_CPU_THRESHOLD,
                 },
                 ..BootCommandLineOptions::new()
             }
@@ -273,7 +290,8 @@ mod tests {
             parse_boot_command_line("OPENHCL_SIDECAR=log"),
             BootCommandLineOptions {
                 sidecar: SidecarOptions::Enabled {
-                    enable_logging: true
+                    enable_logging: true,
+                    cpu_threshold: SidecarOptions::DEFAULT_CPU_THRESHOLD,
                 },
                 ..BootCommandLineOptions::new()
             }

@@ -339,5 +339,8 @@ pub mod save_restore {
         /// The mmio entries describing mmio for the whole partition.
         #[mesh(2)]
         pub partition_mmio: Vec<MmioEntry>,
+        /// The number of NVMe devices present at save time.
+        #[mesh(3)]
+        pub nvme_device_count: u32,
     }
 }
