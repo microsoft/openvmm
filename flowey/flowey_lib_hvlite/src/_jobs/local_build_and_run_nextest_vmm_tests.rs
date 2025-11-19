@@ -993,17 +993,14 @@ impl SimpleFlowNode for Node {
                 prep_steps.claim_unused(ctx);
             }
         } else {
+            side_effects.push(ctx.reqv(crate::install_vmm_tests_deps::Request::Install));
             if let Some((prep_steps, _)) = register_prep_steps {
-                prep_steps.claim_unused(ctx);
+                side_effects.push(ctx.reqv(|done| crate::run_prep_steps::Request {
+                    prep_steps,
+                    env: extra_env.clone(),
+                    done,
+                }));
             }
-            // side_effects.push(ctx.reqv(crate::install_vmm_tests_deps::Request::Install));
-            // if let Some((prep_steps, _)) = register_prep_steps {
-            //     side_effects.push(ctx.reqv(|done| crate::run_prep_steps::Request {
-            //         prep_steps,
-            //         env: extra_env.clone(),
-            //         done,
-            //     }));
-            // }
 
             let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
                 nextest_archive_file: ReadVar::from_static(NextestVmmTestsArchive {
