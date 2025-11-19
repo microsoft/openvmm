@@ -308,6 +308,8 @@ pub struct UnderhillEnvCfg {
     pub attempt_ak_cert_callback: Option<bool>,
     /// Enable the VPCI relay
     pub enable_vpci_relay: Option<bool>,
+    /// Disable proxy interrupt redirection
+    pub disable_proxy_redirect: bool,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1762,6 +1764,7 @@ async fn new_underhill_vm(
         use_mmio_hypercalls,
         intercept_debug_exceptions: env_cfg.gdbstub,
         hide_isolation,
+        disable_proxy_redirect: env_cfg.disable_proxy_redirect,
     };
 
     let proto_partition = UhProtoPartition::new(params, |cpu| tp.driver(cpu).clone())
