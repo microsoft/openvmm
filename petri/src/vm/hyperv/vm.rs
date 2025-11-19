@@ -85,7 +85,7 @@ impl HyperVVM {
 
         // Delete the VM if it already exists
         let cleanup = async |vmid: &Guid| -> anyhow::Result<()> {
-            hvc::hvc_ensure_off(vmid).await?;
+            hvc::hvc_ensure_off(vmid, &driver).await?;
             powershell::run_remove_vm(vmid).await
         };
 
@@ -529,7 +529,7 @@ impl HyperVVM {
 
     async fn remove_inner(&mut self) -> anyhow::Result<()> {
         if !self.destroyed {
-            let res_off = hvc::hvc_ensure_off(&self.vmid).await;
+            let res_off = hvc::hvc_ensure_off(&self.vmid, &self.driver).await;
 
             // Flush logs before we remove the VM so we can capture any
             // interesting files before they get deleted.

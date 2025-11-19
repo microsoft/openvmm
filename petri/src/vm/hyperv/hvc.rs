@@ -6,6 +6,8 @@
 use crate::CommandError;
 use anyhow::Context;
 use guid::Guid;
+use pal_async::DefaultDriver;
+use pal_async::timer::PolledTimer;
 
 pub async fn hvc_start(vmid: &Guid) -> Result<(), CommandError> {
     hvc_output(|cmd| cmd.arg("start").arg(vmid.to_string()))
@@ -84,7 +86,8 @@ pub async fn hvc_state(vmid: &Guid) -> anyhow::Result<VmState> {
     )
 }
 
-pub async fn hvc_ensure_off(vmid: &Guid) -> anyhow::Result<()> {
+pub async fn hvc_ensure_off(vmid: &Guid, driver: &DefaultDriver) -> anyhow::Result<()> {
+    let mut timer = PolledTimer::new(driver);
     for _ in 0..5 {
         if matches!(hvc_state(vmid).await?, VmState::Off) {
             return Ok(());
@@ -92,7 +95,7 @@ pub async fn hvc_ensure_off(vmid: &Guid) -> anyhow::Result<()> {
         if let Err(e) = hvc_kill(vmid).await {
             tracing::warn!("hvc_kill attempt failed: {e}")
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        timer.sleep(std::time::Duration::from_secs(1)).await;
     }
 
     anyhow::bail!("Failed to stop VM")
