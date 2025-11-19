@@ -64,6 +64,7 @@ use vmbus_proxy::ProxyAction;
 use vmbus_proxy::VmbusProxy;
 use vmbus_proxy::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use vmcore::interrupt::Interrupt;
+use windows::Win32::Foundation::ERROR_INVALID_FUNCTION;
 use windows::Win32::Foundation::ERROR_NOT_FOUND;
 use windows::Win32::Foundation::ERROR_OPERATION_ABORTED;
 use zerocopy::IntoBytes;
@@ -1143,7 +1144,7 @@ async fn proxy_thread(
     let (send, recv) = mesh::channel();
     let proxy = Arc::new(proxy);
     let numa_node_map = VpToPhysicalNodeMap::new(proxy.get_numa_node_map().unwrap_or_else(|err| {
-        if err.code() == ERROR_NOT_FOUND.into() {
+        if err.code() == ERROR_INVALID_FUNCTION.into() {
             tracing::info!("proxy does not support NUMA node map ioctl");
         } else {
             tracing::warn!(

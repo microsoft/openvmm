@@ -469,14 +469,17 @@ impl VmbusProxy {
                 None,
                 0,
                 Some(output.as_mut_ptr().cast()),
-                (size_of::<proxyioctl::VMBUS_PROXY_GET_NUMA_MAP_OUTPUT>() + output.tail_capacity())
-                    as u32,
+                output.total_byte_capacity() as u32,
                 Some(&mut bytes),
                 None,
             ) {
                 if e.code() == ERROR_MORE_DATA.into() {
                     // The buffer was too small, resize and try again. The proxy returns the required buffer size
                     // in VpCount on overflow, so use that.
+                    assert!(
+                        bytes as usize >= size_of::<proxyioctl::VMBUS_PROXY_GET_NUMA_MAP_OUTPUT>()
+                    );
+
                     let required_len = output.head.VpCount as usize;
                     output.reserve_tail(required_len - output.tail_capacity());
                     DeviceIoControl(
@@ -485,8 +488,7 @@ impl VmbusProxy {
                         None,
                         0,
                         Some(output.as_mut_ptr().cast()),
-                        (size_of::<proxyioctl::VMBUS_PROXY_GET_NUMA_MAP_OUTPUT>()
-                            + output.tail_capacity()) as u32,
+                        output.total_byte_capacity() as u32,
                         Some(&mut bytes),
                         None,
                     )?;
@@ -494,6 +496,12 @@ impl VmbusProxy {
                     return Err(e);
                 }
             }
+
+            assert!(
+                bytes as usize
+                    >= size_of::<proxyioctl::VMBUS_PROXY_GET_NUMA_MAP_OUTPUT>()
+                        + output.head.VpCount as usize
+            );
 
             output.set_tail_len(output.head.VpCount as usize);
             Ok(output.tail.to_vec())
