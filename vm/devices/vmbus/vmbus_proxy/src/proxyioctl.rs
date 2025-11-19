@@ -211,6 +211,5 @@ pub struct VMBUS_PROXY_TL_CONNECT_REQUEST_INPUT {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct VMBUS_PROXY_GET_NUMA_MAP_OUTPUT {
-    pub NodeCount: u32,
-    pub NumaNodes: [u8; 0],
+    pub VpCount: u32,
 }

@@ -241,21 +241,15 @@ impl SavedStatePair {
     }
 }
 
-struct NumaNodeMap {
-    nodes: Vec<u8>,
-}
+struct VpToPhysicalNodeMap(Vec<u8>);
 
-impl NumaNodeMap {
+impl VpToPhysicalNodeMap {
     fn new(nodes: Vec<u8>) -> Self {
-        Self { nodes }
+        Self(nodes)
     }
 
     fn get_numa_node(&self, vp_index: u32) -> u16 {
-        self.nodes
-            .get(vp_index as usize)
-            .copied()
-            .unwrap_or(0)
-            .into()
+        self.0.get(vp_index as usize).copied().unwrap_or(0).into()
     }
 }
 
@@ -268,7 +262,7 @@ struct ProxyTask {
     hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
     vtl2_hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
     saved_states: Arc<AsyncMutex<SavedStatePair>>,
-    numa_node_map: NumaNodeMap,
+    numa_node_map: VpToPhysicalNodeMap,
 }
 
 impl ProxyTask {
@@ -278,7 +272,7 @@ impl ProxyTask {
         hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
         vtl2_hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
         proxy: Arc<VmbusProxy>,
-        numa_node_map: NumaNodeMap,
+        numa_node_map: VpToPhysicalNodeMap,
     ) -> Self {
         Self {
             channels: Arc::new(Mutex::new(HashMap::new())),
@@ -349,8 +343,7 @@ impl ProxyTask {
                     DownstreamRingBufferPageOffset: open_request.open_data.ring_offset,
                     NodeNumber: self
                         .numa_node_map
-                        .get_numa_node(open_request.open_data.target_vp)
-                        .into(),
+                        .get_numa_node(open_request.open_data.target_vp),
                     Padding: 0,
                 },
                 maybe_wrapped.event(),
@@ -1149,8 +1142,15 @@ async fn proxy_thread(
 
     let (send, recv) = mesh::channel();
     let proxy = Arc::new(proxy);
-    let numa_node_map = NumaNodeMap::new(proxy.get_numa_node_map().unwrap_or_else(|_| {
-        tracing::warn!("failed to get NUMA node map from proxy");
+    let numa_node_map = VpToPhysicalNodeMap::new(proxy.get_numa_node_map().unwrap_or_else(|err| {
+        if err.code() == ERROR_NOT_FOUND.into() {
+            tracing::info!("proxy does not support NUMA node map ioctl");
+        } else {
+            tracing::warn!(
+                error = &err as &dyn std::error::Error,
+                "failed to get NUMA node map from proxy"
+            );
+        }
         Vec::new()
     }));
     let task = Arc::new(ProxyTask::new(
