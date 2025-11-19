@@ -254,6 +254,9 @@ pub struct Options {
 
     /// (OPENHCL_ENABLE_VPCI_RELAY=1) Enable the VPCI relay.
     pub enable_vpci_relay: Option<bool>,
+
+    /// (OPENHCL_DISABLE_PROXY_REDIRECT=1) Disable proxy interrupt redirection.
+    pub disable_proxy_redirect: bool,
 }
 
 impl Options {
@@ -411,6 +414,7 @@ impl Options {
         let strict_encryption_policy = parse_env_bool_opt("HCL_STRICT_ENCRYPTION_POLICY");
         let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK");
         let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY");
+        let disable_proxy_redirect = parse_env_bool("OPENHCL_DISABLE_PROXY_REDIRECT");
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -474,6 +478,7 @@ impl Options {
             strict_encryption_policy,
             attempt_ak_cert_callback,
             enable_vpci_relay,
+            disable_proxy_redirect,
         })
     }
 

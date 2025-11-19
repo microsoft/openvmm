@@ -308,6 +308,8 @@ pub struct UnderhillEnvCfg {
     pub attempt_ak_cert_callback: Option<bool>,
     /// Enable the VPCI relay
     pub enable_vpci_relay: Option<bool>,
+    /// Disable proxy interrupt redirection
+    pub disable_proxy_redirect: bool,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1393,6 +1395,56 @@ async fn new_underhill_vm(
         }
     }
 
+    // Read the initial configuration from the IGVM parameters.
+    let (runtime_params, measured_vtl2_info) =
+        crate::loader::vtl2_config::read_vtl2_params().context("failed to read load parameters")?;
+
+    // Log information about VTL2 memory
+    let memory_allocation_mode = runtime_params.parsed_openhcl_boot().memory_allocation_mode;
+    tracing::info!(
+        CVM_ALLOWED,
+        ?memory_allocation_mode,
+        "memory allocation mode"
+    );
+    tracing::info!(
+        CVM_ALLOWED,
+        vtl2_ram = runtime_params
+            .vtl2_memory_map()
+            .iter()
+            .map(|r| r.range.to_string())
+            .collect::<Vec<String>>()
+            .join(", "),
+        "vtl2 ram"
+    );
+
+    let isolation = match runtime_params.parsed_openhcl_boot().isolation {
+        bootloader_fdt_parser::IsolationType::None => virt::IsolationType::None,
+        bootloader_fdt_parser::IsolationType::Vbs => virt::IsolationType::Vbs,
+        bootloader_fdt_parser::IsolationType::Snp => virt::IsolationType::Snp,
+        bootloader_fdt_parser::IsolationType::Tdx => virt::IsolationType::Tdx,
+    };
+
+    let hardware_isolated = isolation.is_hardware_isolated();
+
+    // Temporarily override the host provided default_boot_always_attempt
+    // value for non-Trusted Launch VMs until all hosts in Azure have been
+    // updated to provide the correct value.
+    //
+    // Trusted Launch is roughly equivalent to not having secure boot or
+    // TPM enabled. Default boot is necessary because the VMGS is not swapped
+    // with the OS disk for these VMs in Azure (and in any case on-prem),
+    // causing the VM to fail to boot after an OS swap.
+    //
+    // TODO: remove this (and petri workaround) once host changes are saturated
+    if !isolation.is_isolated()
+        && !dps.general.secure_boot_enabled
+        && !dps.general.tpm_enabled
+        && !dps.general.default_boot_always_attempt
+    {
+        tracing::info!("overriding dps to enable default_boot_always_attempt");
+        dps.general.default_boot_always_attempt = true;
+    }
+
     // override dps values with env_cfg values as necessary
     let dps = {
         if let Some(value) = env_cfg.disable_uefi_frontpage {
@@ -1447,37 +1499,6 @@ async fn new_underhill_vm(
 
         dps
     };
-
-    // Read the initial configuration from the IGVM parameters.
-    let (runtime_params, measured_vtl2_info) =
-        crate::loader::vtl2_config::read_vtl2_params().context("failed to read load parameters")?;
-
-    // Log information about VTL2 memory
-    let memory_allocation_mode = runtime_params.parsed_openhcl_boot().memory_allocation_mode;
-    tracing::info!(
-        CVM_ALLOWED,
-        ?memory_allocation_mode,
-        "memory allocation mode"
-    );
-    tracing::info!(
-        CVM_ALLOWED,
-        vtl2_ram = runtime_params
-            .vtl2_memory_map()
-            .iter()
-            .map(|r| r.range.to_string())
-            .collect::<Vec<String>>()
-            .join(", "),
-        "vtl2 ram"
-    );
-
-    let isolation = match runtime_params.parsed_openhcl_boot().isolation {
-        bootloader_fdt_parser::IsolationType::None => virt::IsolationType::None,
-        bootloader_fdt_parser::IsolationType::Vbs => virt::IsolationType::Vbs,
-        bootloader_fdt_parser::IsolationType::Snp => virt::IsolationType::Snp,
-        bootloader_fdt_parser::IsolationType::Tdx => virt::IsolationType::Tdx,
-    };
-
-    let hardware_isolated = isolation.is_hardware_isolated();
 
     let driver_source = VmTaskDriverSource::new(ThreadpoolBackend::new(tp.clone()));
 
@@ -1762,6 +1783,7 @@ async fn new_underhill_vm(
         use_mmio_hypercalls,
         intercept_debug_exceptions: env_cfg.gdbstub,
         hide_isolation,
+        disable_proxy_redirect: env_cfg.disable_proxy_redirect,
     };
 
     let proto_partition = UhProtoPartition::new(params, |cpu| tp.driver(cpu).clone())
