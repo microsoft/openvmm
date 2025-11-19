@@ -1014,6 +1014,10 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             .await
     }
 
+    pub async fn update_command_line(&mut self, command_line: &str) -> anyhow::Result<()> {
+        self.runtime.update_command_line(command_line).await
+    }
+
     /// Instruct the OpenHCL to save the state of the VTL2 paravisor. Will fail if the VM
     /// is not running OpenHCL. Will also fail if the VM is not running or if this is called twice in succession
     pub async fn save_openhcl(
@@ -1122,6 +1126,7 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     /// Instruct the OpenHCL to restore the state of the VTL2 paravisor. Will fail if the VM
     /// is not running OpenHCL. Will also fail if the VM is running or if this is called without prior save.
     async fn restore_openhcl(&mut self) -> anyhow::Result<()>;
+    async fn update_command_line(&mut self, command_line: &str) -> anyhow::Result<()>;
     /// If the backend supports it, get an inspect interface
     fn inspector(&self) -> Option<Self::VmInspector> {
         None

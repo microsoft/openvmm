@@ -83,6 +83,14 @@ impl Worker {
         hvlite_helpers::underhill::restore_underhill(&self.rpc, send).await
     }
 
+    pub(crate) async fn update_command_line(&self, command_line: &str) -> anyhow::Result<()> {
+        let _ = self
+            .rpc
+            .call(VmRpc::UpdateCliParams, command_line.to_string())
+            .await?;
+        Ok(())
+    }
+
     pub(crate) async fn inspect_all(&self) -> inspect::Node {
         let mut inspection = inspect::inspect("", &self.handle);
         inspection.resolve().await;

@@ -2688,6 +2688,7 @@ impl LoadedVmInner {
                     com_serial,
                     entropy: Some(&entropy),
                 };
+                panic!("{:?}", cmdline);
                 super::vm_loaders::igvm::load_igvm(params)?
             }
             #[allow(unreachable_patterns)]
@@ -2951,6 +2952,17 @@ impl LoadedVm {
                     VmRpc::WriteMemory(rpc) => rpc.handle_failable_sync(|(gpa, bytes)| {
                         self.inner.gm.write_at(gpa, bytes.as_slice())
                     }),
+                    VmRpc::UpdateCliParams(rpc) => {
+                        rpc.handle_failable_sync(|params| match &mut self.inner.load_mode {
+                            LoadMode::Igvm { cmdline, .. } => {
+                                *cmdline = params;
+                                Ok(())
+                            }
+                            _ => anyhow::bail!(
+                                "UpdateCliParams is only supported for Igvm load mode"
+                            ),
+                        })
+                    }
                 },
                 Event::Halt(Err(_)) => break,
                 Event::Halt(Ok(reason)) => {
