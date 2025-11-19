@@ -2443,11 +2443,11 @@ mod node_luts {
             for crate::node::private::FlowNodeMeta {
                 module_path,
                 ctor: _,
-                get_typeid,
+                typeid,
             } in crate::node::private::FLOW_NODES
             {
                 let existing = lookup.insert(
-                    NodeHandle(get_typeid()),
+                    NodeHandle(*typeid),
                     module_path
                         .strip_suffix("::_only_one_call_to_flowey_node_per_module")
                         .unwrap(),
@@ -2472,10 +2472,10 @@ mod node_luts {
             for crate::node::private::FlowNodeMeta {
                 module_path: _,
                 ctor,
-                get_typeid,
+                typeid,
             } in crate::node::private::FLOW_NODES
             {
-                let existing = lookup.insert(NodeHandle(get_typeid()), *ctor);
+                let existing = lookup.insert(NodeHandle(*typeid), *ctor);
                 // if this were to fire for an array where the key is a TypeId...
                 // something has gone _terribly_ wrong
                 assert!(existing.is_none())
@@ -2504,8 +2504,8 @@ mod node_luts {
 
         MODPATH_LOOKUP.get_or_init(|| {
             let mut lookup = HashMap::new();
-            for crate::node::private::FlowNodeMeta { module_path, ctor, get_typeid } in crate::node::private::FLOW_NODES {
-                let existing = lookup.insert(module_path.strip_suffix("::_only_one_call_to_flowey_node_per_module").unwrap(), (NodeHandle(get_typeid()), *ctor));
+            for crate::node::private::FlowNodeMeta { module_path, ctor, typeid } in crate::node::private::FLOW_NODES {
+                let existing = lookup.insert(module_path.strip_suffix("::_only_one_call_to_flowey_node_per_module").unwrap(), (NodeHandle(*typeid), *ctor));
                 if existing.is_some() {
                     panic!("conflicting node registrations at {module_path}! please ensure there is a single node per module!")
                 }
@@ -2522,8 +2522,7 @@ pub mod private {
     pub struct FlowNodeMeta {
         pub module_path: &'static str,
         pub ctor: fn() -> Box<dyn super::FlowNodeBase<Request = Box<[u8]>>>,
-        // FUTURE: there is a RFC to make this const
-        pub get_typeid: fn() -> std::any::TypeId,
+        pub typeid: std::any::TypeId,
     }
 
     #[linkme::distributed_slice]
@@ -2535,7 +2534,7 @@ pub mod private {
     static DUMMY_FLOW_NODE: FlowNodeMeta = FlowNodeMeta {
         module_path: "<dummy>::_only_one_call_to_flowey_node_per_module",
         ctor: || unreachable!(),
-        get_typeid: std::any::TypeId::of::<()>,
+        typeid: std::any::TypeId::of::<()>(),
     };
 }
 
@@ -2561,7 +2560,7 @@ macro_rules! new_flow_node_base {
                     $crate::node::private::FlowNodeMeta {
                         module_path: module_path!(),
                         ctor: new_erased,
-                        get_typeid: std::any::TypeId::of::<super::Node>,
+                        typeid: std::any::TypeId::of::<super::Node>(),
                     };
             };
         }
