@@ -5398,12 +5398,18 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         subchannel_count = request.num_sub_channels;
                         protocol::Status::SUCCESS
                     } else {
-                        tracing::warn!(
-                            "Subchannel request failed: request operation {:?}, requested {} subchannels, the maximum number of supported subchannels is {}",
-                            request.operation,
-                            request.num_sub_channels,
-                            self.adapter.max_queues - 1
-                        );
+                        if request.operation != protocol::SubchannelOperation::ALLOCATE {
+                            tracing::warn!(
+                                "Subchannel request failed: unsupported operation {:?}",
+                                request.operation
+                            );
+                        } else {
+                            tracing::warn!(
+                                "Subchannel request failed: requested {} subchannels, the maximum number of supported subchannels is {}",
+                                request.num_sub_channels,
+                                self.adapter.max_queues - 1
+                            );
+                        }
                         protocol::Status::FAILURE
                     };
 
