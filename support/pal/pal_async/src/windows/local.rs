@@ -53,8 +53,20 @@ pub(crate) struct State {
     entries: SparseVec<HandleEntry>,
     sockets: SparseVec<SocketEntry>,
     files: SparseVec<SendSyncRawHandle>,
-    ios: Vec<usize>,
+    ios: Vec<InFlightIo>,
 }
+
+#[derive(Debug)]
+struct InFlightIo {
+    file_id: FileId,
+    overlapped: OverlappedPtr,
+}
+
+#[derive(Debug)]
+struct OverlappedPtr(*const Overlapped);
+
+// SAFETY: the overlapped structure can be accessed on any thread.
+unsafe impl Send for OverlappedPtr {}
 
 #[derive(Debug, Default)]
 pub(crate) struct WaitState {
@@ -85,7 +97,7 @@ struct HandleId(usize);
 #[derive(Debug, Copy, Clone)]
 struct SocketId(usize);
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct FileId(usize);
 
 // TODO: switch to std::sync::OnceLock once `get_or_try_init` is stable
@@ -251,10 +263,10 @@ impl State {
         // Poll for completed IOs. Do so regardless of which handle was
         // signaled, since in some cases the file handle signal can be lost
         // (e.g. if a new IO is issued while another one is pending).
-        self.ios.retain(|&overlapped| {
+        self.ios.retain(|io| {
             // SAFETY: overlapped is guaranteed to be a valid &Overlapped until
             // overlapped_io_done is called on it.
-            let overlapped = unsafe { &*(overlapped as *const Overlapped) };
+            let overlapped = unsafe { &*io.overlapped.0 };
             if overlapped.io_status().is_some() {
                 unsafe { overlapped_io_done(overlapped.as_ptr(), wakers) };
                 false
@@ -476,7 +488,22 @@ impl IoOverlapped for OverlappedIo {
         // a different driver.
         let mut inner = self.inner.lock_sys_state();
         if !completed {
-            inner.ios.push(overlapped.as_ptr() as usize);
+            inner.ios.push(InFlightIo {
+                file_id: self.id,
+                overlapped: OverlappedPtr(overlapped),
+            });
+        }
+    }
+
+    unsafe fn disassociate(&mut self) {
+        if self
+            .inner
+            .lock_sys_state()
+            .ios
+            .iter()
+            .any(|io| io.file_id == self.id)
+        {
+            panic!("caller bug: no pending IO should be in flight");
         }
     }
 }
