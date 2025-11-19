@@ -20,7 +20,7 @@ inspect.workspace = true
 task_control.workspace = true
 async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true

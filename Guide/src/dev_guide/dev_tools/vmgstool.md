@@ -88,7 +88,7 @@ use `remove-entry`. For example, to remove `Boot0000`:
 If you get an error similar to the one below, it is likely that you are trying
 to read an encrypted VMGS file and haven't provided the correct decryption key.
 
-```
+```text
 ERROR: remove_boot_entries error
 Caused by:
     0: error loading data from Nvram storage

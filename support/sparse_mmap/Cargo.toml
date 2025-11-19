@@ -6,11 +6,9 @@ name = "sparse_mmap"
 edition.workspace = true
 rust-version.workspace = true
 
-[build-dependencies]
-cc.workspace = true
-
 [dependencies]
 pal.workspace = true
+trycopy.workspace = true
 
 thiserror.workspace = true
 zerocopy.workspace = true
@@ -30,13 +28,6 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Memory",
     "Win32_System_Threading",
 ]}
-
-[[bench]]
-name = "perf"
-harness = false
-
-[dev-dependencies]
-criterion.workspace = true
 
 [lints]
 workspace = true

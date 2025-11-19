@@ -49,6 +49,10 @@ impl PciCapability for MsixCapability {
         "msi-x"
     }
 
+    fn capability_id(&self) -> CapabilityId {
+        CapabilityId::MSIX
+    }
+
     fn len(&self) -> usize {
         12
     }

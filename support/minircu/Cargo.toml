@@ -21,5 +21,11 @@ windows-sys = { workspace = true, features = ["Win32_System_Threading"] }
 pal_async.workspace = true
 test_with_tracing.workspace = true
 
+criterion.workspace = true
+
+[[bench]]
+name = "perf"
+harness = false
+
 [lints]
 workspace = true

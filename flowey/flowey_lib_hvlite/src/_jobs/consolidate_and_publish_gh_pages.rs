@@ -83,9 +83,15 @@ impl SimpleFlowNode for Node {
                     consolidated_html.join("rustdoc/linux"),
                 )?;
 
-                // Make petri logview available under `openvmm.dev/test-results/`
+                // Old logviewer. Keeping this around while the new one is stabilized.
                 flowey_lib_common::_util::copy_dir_all(
                     repo.join("petri/logview"),
+                    consolidated_html.join("test-results-old"),
+                )?;
+
+                // New logviewer.
+                flowey_lib_common::_util::copy_dir_all(
+                    repo.join("petri/logview_new/dist"),
                     consolidated_html.join("test-results"),
                 )?;
 

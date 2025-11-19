@@ -12,6 +12,7 @@ uefi_nvram_specvars.workspace = true
 xtask_fuzz.workspace = true
 
 guid.workspace = true
+guestmem.workspace = true
 ucs2.workspace = true
 zerocopy.workspace = true
 arbitrary = { workspace = true, features = ["derive"] }
@@ -29,11 +30,19 @@ ignored = ["libfuzzer-sys"]
 cargo-fuzz = true
 
 [package.metadata.xtask.fuzz.onefuzz-allowlist]
-fuzz_firmware_uefi = ["**/*.rs", "../src/**/*.rs"]
+fuzz_firmware_uefi_nvram = ["fuzz_nvram.rs", "../src/service/nvram/spec_services/auth_var_crypto.rs"]
+fuzz_firmware_uefi_diagnostics = ["fuzz_diagnostics.rs", "../src/service/diagnostics/*.rs"]
 
 [[bin]]
-name = "fuzz_firmware_uefi"
-path = "fuzz_firmware_uefi.rs"
+name = "fuzz_firmware_uefi_nvram"
+path = "fuzz_nvram.rs"
+test = false
+doc = false
+doctest = false
+
+[[bin]]
+name = "fuzz_firmware_uefi_diagnostics"
+path = "fuzz_diagnostics.rs"
 test = false
 doc = false
 doctest = false

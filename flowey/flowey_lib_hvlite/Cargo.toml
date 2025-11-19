@@ -10,14 +10,15 @@ rust-version.workspace = true
 flowey.workspace = true
 flowey_lib_common.workspace = true
 
+powershell_builder.workspace = true
 vmm_test_images = { workspace = true, features = ["serde"] }
 igvmfilegen_config.workspace = true
 
 anyhow.workspace = true
 fs-err.workspace = true
 log.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+serde = { workspace = true, features = ["std"] }
+serde_json = { workspace = true, features = ["std"] }
 target-lexicon = { workspace = true, features = ["serde_support"] }
 which.workspace = true
 xshell.workspace = true

@@ -38,8 +38,5 @@ hvdef.workspace = true
 [features]
 profiler = ["dep:profiler_worker"]
 
-[build-dependencies]
-build_rs_guest_arch.workspace = true
-
 [lints]
 workspace = true

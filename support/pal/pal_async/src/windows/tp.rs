@@ -47,7 +47,6 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 use std::time::Duration;
-use winapi::shared::winerror::ERROR_IO_PENDING;
 use winapi::um::winbase::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
 use winapi::um::winbase::FILE_SKIP_SET_EVENT_ON_HANDLE;
 use winapi::um::winnt::TP_CALLBACK_INSTANCE;
@@ -525,30 +524,19 @@ impl IoOverlapped for OverlappedIo {
         self.tp_io.start_io()
     }
 
-    unsafe fn post_io(
-        &self,
-        result: &io::Result<()>,
-        _overlapped: &pal::windows::Overlapped,
-    ) -> bool {
-        // The IO result will arrive on the thread pool only if the IO returned pending.
-        let sync = result
-            .as_ref()
-            .map(|_| true)
-            .unwrap_or_else(|err| err.raw_os_error() != Some(ERROR_IO_PENDING as i32));
-
-        if sync {
+    unsafe fn post_io(&self, completed: bool, _overlapped: &pal::windows::Overlapped) {
+        if completed {
             // SAFETY: the IO completion will not arrive to the thread pool.
             unsafe { self.tp_io.cancel_io() };
         }
-        sync
     }
-}
 
-impl Drop for OverlappedIo {
-    fn drop(&mut self) {
-        // SAFETY: the caller guarantees handle is still owned.
+    unsafe fn disassociate(&mut self) {
+        // SAFETY: the caller guarantees the handle is still owned and that no
+        // further IO will be issued.
         unsafe {
-            disassociate_completion_port(self.handle.0).unwrap();
+            disassociate_completion_port(self.handle.0)
+                .expect("caller bug: no pending IO should be in flight");
         }
     }
 }

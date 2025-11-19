@@ -199,10 +199,11 @@ pub struct KeyboardChannel<T: RingMem = GpadlRingMem> {
     state: ChannelState,
 }
 
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Debug, Clone, Protobuf, Default)]
 #[mesh(package = "ui.synthkbd")]
 enum ChannelState {
     #[mesh(1)]
+    #[default]
     ReadVersion,
     #[mesh(2)]
     WriteVersion {
@@ -214,12 +215,6 @@ enum ChannelState {
         #[mesh(1)]
         version: u32,
     },
-}
-
-impl Default for ChannelState {
-    fn default() -> Self {
-        Self::ReadVersion
-    }
 }
 
 impl<T: RingMem + Unpin> KeyboardChannel<T> {

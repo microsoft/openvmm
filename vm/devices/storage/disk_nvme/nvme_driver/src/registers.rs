@@ -73,10 +73,13 @@ macro_rules! reg32 {
     ($get:ident, $set:ident, $reg:ident, $ty:ty) => {
         #[allow(dead_code)]
         pub fn $get(&self) -> $ty {
-            <$ty>::from(self.0.read_u32(spec::Register::$reg.0 as usize))
+            let r = <$ty>::from(self.0.read_u32(spec::Register::$reg.0 as usize));
+            tracing::trace!(r = ?r, reg = stringify!($reg), "Read register");
+            r
         }
         #[allow(dead_code)]
         pub fn $set(&self, v: $ty) {
+            tracing::trace!(v = ?v, reg = stringify!($reg), "Writing register");
             self.0.write_u32(spec::Register::$reg.0 as usize, v.into())
         }
     };
@@ -86,10 +89,13 @@ macro_rules! reg64 {
     ($get:ident, $set:ident, $reg:ident, $ty:ty) => {
         #[allow(dead_code)]
         pub fn $get(&self) -> $ty {
-            <$ty>::from(self.0.read_u64(spec::Register::$reg.0 as usize))
+            let r = <$ty>::from(self.0.read_u64(spec::Register::$reg.0 as usize));
+            tracing::trace!(r = ?r, reg = stringify!($reg), "Read register");
+            r
         }
         #[allow(dead_code)]
         pub fn $set(&self, v: $ty) {
+            tracing::trace!(v = ?v, reg = stringify!($reg), "Writing register");
             self.0.write_u64(spec::Register::$reg.0 as usize, v.into())
         }
     };

@@ -8,6 +8,11 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::format::Format;
 use tracing_subscriber::fmt::time::uptime;
 
+#[cfg(windows)]
+const OPENVMM_PROVIDER_GUID: guid::Guid = guid::guid!("22bc55fe-2116-5adc-12fb-3fadfd7e360c");
+#[cfg(windows)]
+const OPENVMM_KEYWORD_TRACE_LEVEL: u64 = 0x1;
+
 /// Reads an environment variable, falling back to a legacy variable (replacing
 /// "OPENVMM_" with "HVLITE_") if the original is not set.
 fn legacy_openvmm_env(name: &str) -> Result<String, std::env::VarError> {
@@ -66,17 +71,16 @@ pub fn enable_tracing() -> anyhow::Result<()> {
     // Enable an ETW layer on Windows.
     // TODO: include the process name and maybe a VM ID?
     #[cfg(windows)]
-    let sub = sub.with(
-        win_etw_tracing::TracelogSubscriber::new(
-            winapi::shared::guiddef::GUID::from(
-                "22bc55fe-2116-5adc-12fb-3fadfd7e360c"
-                    .parse::<guid::Guid>()
-                    .unwrap(),
-            ),
-            "Microsoft.HvLite",
-        )
-        .map_err(|e| anyhow!("failed to start ETW provider: {:?}", e))?,
-    );
+    let sub = {
+        let mut etw =
+            win_etw_tracing::TracelogSubscriber::new(OPENVMM_PROVIDER_GUID, "Microsoft.HvLite")
+                .map_err(|e| anyhow!("failed to start ETW provider: {:?}", e))?;
+
+        // Set a keyword for events at "trace" level to distinguish them from "debug" level events,
+        // since both are logged at the ETW "Verbose" level.
+        etw.set_trace_keyword(OPENVMM_KEYWORD_TRACE_LEVEL);
+        sub.with(etw)
+    };
 
     sub.try_init()
         .map_err(|e| anyhow!(e).context("failed to enable tracing"))?;

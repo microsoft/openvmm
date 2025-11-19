@@ -10,7 +10,6 @@ use guid::Guid;
 use std::io::Cursor;
 use std::io::Seek;
 use std::path::Path;
-use zerocopy::IntoBytes;
 
 const SECTOR_SIZE: usize = 512;
 const EFI_GUID: Guid = guid::guid!("{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}");
@@ -29,29 +28,16 @@ pub fn create_gpt_efi_disk(out_img: &Path, with_files: &[(&Path, &Path)]) -> Res
 
     let efi_partition_range = {
         let mut cur = Cursor::new(&mut disk);
-
-        let mut mbr = mbrman::MBR::new_from(&mut cur, SECTOR_SIZE as u32, [0xff; 4])?;
-        let mut gpt = gptman::GPT::new_from(&mut cur, SECTOR_SIZE as u64, [0xff; 16])?;
+        let mut gpt =
+            gptman::GPT::new_from(&mut cur, SECTOR_SIZE as u64, Guid::new_random().into())?;
 
         // Set up the "Protective" Master Boot Record
-        let first_chs = mbrman::CHS::new(0, 0, 2);
-        let last_chs = mbrman::CHS::empty(); // scuffed and bogus, but UEFI doesn't care
-        mbr[1] = mbrman::MBRPartitionEntry {
-            boot: mbrman::BOOT_INACTIVE,
-            first_chs,
-            sys: 0xEE, // GPT protective
-            last_chs,
-            starting_lba: 1,
-            sectors: gpt.header.last_usable_lba.try_into().unwrap_or(0xFFFFFFFF),
-        };
-        mbr.write_into(&mut cur)?;
-
-        cur.rewind()?;
+        gptman::GPT::write_protective_mbr_into(&mut cur, SECTOR_SIZE as u64)?;
 
         // Set up the GPT Partition Table Header
         gpt[1] = gptman::GPTPartitionEntry {
-            partition_type_guid: EFI_GUID.as_bytes().try_into().unwrap(),
-            unique_partition_guid: [0xff; 16],
+            partition_type_guid: EFI_GUID.into(),
+            unique_partition_guid: Guid::new_random().into(),
             starting_lba: gpt.header.first_usable_lba,
             ending_lba: gpt.header.last_usable_lba,
             attribute_bits: 0,

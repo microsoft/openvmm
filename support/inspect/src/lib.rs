@@ -475,7 +475,9 @@ use core::fmt;
 use core::fmt::Arguments;
 use core::fmt::Debug;
 use core::fmt::Display;
+use core::mem::ManuallyDrop;
 use core::num::Wrapping;
+use core::ops::Deref;
 
 /// An inspection request.
 pub struct Request<'a> {
@@ -2127,6 +2129,11 @@ impl Inspect for Value {
             req
         };
         req.value(self.kind.clone());
+    }
+}
+impl<T: Inspect + ?Sized> Inspect for ManuallyDrop<T> {
+    fn inspect(&self, req: Request<'_>) {
+        self.deref().inspect(req);
     }
 }
 

@@ -24,6 +24,7 @@ use crate::protocol::MSHV_APIC_PAGE_OFFSET;
 use crate::protocol::hcl_intr_offload_flags;
 use crate::protocol::hcl_run;
 use bitvec::vec::BitVec;
+use cfg_if::cfg_if;
 use cvm_tracing::CVM_ALLOWED;
 use deferred::RegisteredDeferredActions;
 use deferred::push_deferred_action;
@@ -1448,10 +1449,7 @@ impl MshvHvcall {
                         | HvX64RegisterName::VsmVpSecureConfigVtl1
                 ));
             }
-            Some(Vtl::Vtl1) => {
-                todo!("TODO: allowed registers for VTL1");
-            }
-            Some(Vtl::Vtl0) => {
+            Some(Vtl::Vtl1) | Some(Vtl::Vtl0) => {
                 // Only VTL-private registers can go through this path.
                 // VTL-shared registers have to go through the kernel (either
                 // via the CPU context page or via the dedicated ioctl), as
@@ -1491,11 +1489,7 @@ impl MshvHvcall {
                         | HvArm64RegisterName::PrivilegesAndFeaturesInfo
                 ));
             }
-            Some(Vtl::Vtl1) => {
-                // TODO: allowed registers for VTL1
-                todo!();
-            }
-            Some(Vtl::Vtl0) => {
+            Some(Vtl::Vtl1) | Some(Vtl::Vtl0) => {
                 // Only VTL-private registers can go through this path.
                 // VTL-shared registers have to go through the kernel (either
                 // via the CPU context page or via the dedicated ioctl), as
@@ -2936,9 +2930,6 @@ impl Hcl {
 
         let caps = match self.isolation {
             IsolationType::None | IsolationType::Vbs => caps,
-            // TODO SNP: Return actions may be useful, but with alternate injection many of these need
-            // cannot actually be processed by the hypervisor without returning to VTL2.
-            // Filter them out for now.
             IsolationType::Snp => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available()),
@@ -2993,16 +2984,26 @@ impl Hcl {
         ))
     }
 
-    #[cfg(guest_arch = "aarch64")]
-    /// Get the [`hvdef::HvPartitionPrivilege`] register
+    /// Get the [`hvdef::HvPartitionPrivilege`] info. On x86_64, this uses
+    /// CPUID. On aarch64, it uses get_vp_register.
     pub fn get_privileges_and_features_info(&self) -> Result<hvdef::HvPartitionPrivilege, Error> {
-        Ok(hvdef::HvPartitionPrivilege::from(
-            self.get_vp_register(
-                HvArm64RegisterName::PrivilegesAndFeaturesInfo,
-                HvInputVtl::CURRENT_VTL,
-            )?
-            .as_u64(),
-        ))
+        cfg_if! {
+            if #[cfg(guest_arch = "x86_64")] {
+                let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
+                let num = result.eax as u64 | ((result.ebx as u64) << 32);
+                Ok(hvdef::HvPartitionPrivilege::from(num))
+            } else if #[cfg(guest_arch = "aarch64")] {
+                Ok(hvdef::HvPartitionPrivilege::from(
+                    self.get_vp_register(
+                        HvArm64RegisterName::PrivilegesAndFeaturesInfo,
+                        HvInputVtl::CURRENT_VTL,
+                    )?
+                    .as_u64(),
+                ))
+            } else {
+                compile_error!("unsupported guest_arch configuration");
+            }
+        }
     }
 
     /// Get the [`hvdef::hypercall::HvGuestOsId`] register for the given VTL.

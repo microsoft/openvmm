@@ -3,6 +3,8 @@
 
 //! Tool for using petri functionality from the command line.
 
+#![forbid(unsafe_code)]
+
 use anyhow::Context as _;
 use clap::Parser;
 use petri::ArtifactResolver;

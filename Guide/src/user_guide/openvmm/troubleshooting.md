@@ -10,7 +10,7 @@ GitHub Issue tracker.
 
 **Error:**
 
-```
+```text
 fatal error: failed to launch vm worker
 
 Caused by:

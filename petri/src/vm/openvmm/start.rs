@@ -41,6 +41,7 @@ impl PetriVmConfigOpenVmm {
 
             openvmm_log_file,
 
+            petri_vtl0_scsi,
             ged,
             framebuffer_view,
         } = self;
@@ -67,7 +68,7 @@ impl PetriVmConfigOpenVmm {
                             path: ScsiPath {
                                 path: 0,
                                 target: 0,
-                                lun: 0,
+                                lun: crate::vm::PETRI_VTL0_SCSI_BOOT_LUN,
                             },
                             device: SimpleScsiDiskHandle {
                                 read_only: true,
@@ -85,6 +86,13 @@ impl PetriVmConfigOpenVmm {
             }
         }
 
+        // Add the Petri SCSI controller to VTL0 now that all the disks are on it.
+        if !petri_vtl0_scsi.devices.is_empty() {
+            config
+                .vmbus_devices
+                .push((DeviceVtl::Vtl0, petri_vtl0_scsi.into_resource()));
+        }
+
         // Add the GED and VTL 2 settings.
         if let Some(mut ged) = ged {
             ged.vtl2_settings = Some(prost::Message::encode_to_vec(
@@ -96,6 +104,8 @@ impl PetriVmConfigOpenVmm {
         }
 
         tracing::debug!(?config, ?firmware, ?arch, "VM config");
+
+        let has_pcie = !config.pcie_root_complexes.is_empty();
 
         let mesh = Mesh::new("petri_mesh".to_string())?;
 
@@ -126,10 +136,12 @@ impl PetriVmConfigOpenVmm {
         // TODO: PCAT needs vga device support
         // TODO: arm64 is broken?
         // TODO: VPCI and NVMe don't support save/restore
+        // TODO: PCIe emulators don't support save/restore yet
         if !firmware.is_openhcl()
             && !matches!(firmware, Firmware::Pcat { .. })
             && !matches!(arch, MachineArch::Aarch64)
             && !matches!(boot_device_type, BootDeviceType::Nvme)
+            && !has_pcie
         {
             tracing::info!("Testing save/restore");
             vm.verify_save_restore().await?;
@@ -143,37 +155,21 @@ impl PetriVmConfigOpenVmm {
     /// included in the config
     pub async fn run(mut self) -> anyhow::Result<PetriVmOpenVmm> {
         let launch_linux_direct_pipette = if let Some(agent_image) = &self.resources.agent_image {
-            const CIDATA_SCSI_INSTANCE: Guid = guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7b");
-
             // Construct the agent disk.
             if let Some(agent_disk) = agent_image.build().context("failed to build agent image")? {
-                // Add a SCSI controller to contain the agent disk. Don't reuse an
-                // existing controller so that we can avoid interfering with
-                // test-specific configuration.
-                self.config.vmbus_devices.push((
-                    DeviceVtl::Vtl0,
-                    ScsiControllerHandle {
-                        instance_id: CIDATA_SCSI_INSTANCE,
-                        max_sub_channel_count: 1,
-                        io_queue_depth: None,
-                        devices: vec![ScsiDeviceAndPath {
-                            path: ScsiPath {
-                                path: 0,
-                                target: 0,
-                                lun: 0,
-                            },
-                            device: SimpleScsiDiskHandle {
-                                read_only: true,
-                                parameters: Default::default(),
-                                disk: FileDiskHandle(agent_disk.into_file()).into_resource(),
-                            }
-                            .into_resource(),
-                        }],
-                        requests: None,
-                        poll_mode_queue_depth: None,
+                self.petri_vtl0_scsi.devices.push(ScsiDeviceAndPath {
+                    path: ScsiPath {
+                        path: 0,
+                        target: 0,
+                        lun: crate::vm::PETRI_VTL0_SCSI_PIPETTE_LUN,
+                    },
+                    device: SimpleScsiDiskHandle {
+                        read_only: true,
+                        parameters: Default::default(),
+                        disk: FileDiskHandle(agent_disk.into_file()).into_resource(),
                     }
                     .into_resource(),
-                ));
+                });
             }
 
             if matches!(self.firmware.os_flavor(), OsFlavor::Windows)

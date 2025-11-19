@@ -29,6 +29,7 @@ mod vmgs_impl;
 pub use error::Error;
 pub use vmgs_format::EncryptionAlgorithm;
 pub use vmgs_format::FileId;
+pub use vmgs_impl::GspType;
 pub use vmgs_impl::Vmgs;
 pub use vmgs_impl::VmgsFileInfo;
 #[cfg(feature = "save_restore")]

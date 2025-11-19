@@ -514,8 +514,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(this)
     }
 
-    #[allow(dead_code)]
-    pub async fn save(mut self) -> anyhow::Result<GdmaDriverSavedState> {
+    pub async fn save(&mut self) -> anyhow::Result<GdmaDriverSavedState> {
         if self.hwc_failure {
             anyhow::bail!("cannot save/restore after HWC failure");
         }
@@ -594,7 +593,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok((bar0_mapping, map))
     }
 
-    #[allow(dead_code)]
     pub async fn restore(
         saved_state: GdmaDriverSavedState,
         mut device: T,
@@ -802,14 +800,12 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let n = self
             .rq
             .push(
-                &(),
+                (),
                 [Sge {
                     address: self.dma_buffer.pfns()[RESPONSE_PAGE] * PAGE_SIZE64,
                     mem_key: self.gpa_mkey,
                     size: PAGE_SIZE as u32,
                 }],
-                None,
-                0,
             )
             .expect("rq is not full");
         assert_eq!(n, RWQE_SIZE);
@@ -871,14 +867,12 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             let sqe_len = self
                 .sq
                 .push(
-                    &oob,
+                    oob,
                     [Sge {
                         address: self.dma_buffer.pfns()[REQUEST_PAGE] * PAGE_SIZE64,
                         mem_key: self.gpa_mkey,
                         size: (size_of_val(&hdr) + size_of_val(&req)) as u32,
                     }],
-                    None,
-                    0,
                 )
                 .expect("send queue should not be full");
 

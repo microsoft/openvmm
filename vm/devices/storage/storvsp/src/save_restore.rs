@@ -18,7 +18,6 @@ use thiserror::Error;
 use vmbus_channel::bus::OpenRequest;
 use vmbus_channel::channel::ChannelRestoreError;
 use vmbus_channel::channel::RestoreControl;
-use vmbus_ring::gparange::GpnList;
 use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -169,15 +168,15 @@ impl From<StorvspRestoreError> for RestoreError {
 }
 
 impl state::RangeSavedState {
-    fn save(v: &MultiPagedRangeBuf<GpnList>) -> Self {
+    fn save(v: &MultiPagedRangeBuf) -> Self {
         Self {
             buf: v.range_buffer().to_vec(),
             count: v.range_count(),
         }
     }
 
-    fn restore(&self) -> Result<MultiPagedRangeBuf<GpnList>, StorvspRestoreError> {
-        MultiPagedRangeBuf::new(self.count, self.buf.iter().copied().collect())
+    fn restore(&self) -> Result<MultiPagedRangeBuf, StorvspRestoreError> {
+        MultiPagedRangeBuf::from_range_buffer(self.count, self.buf.clone())
             .map_err(StorvspRestoreError::GpaRange)
     }
 }
@@ -204,7 +203,7 @@ impl state::ScsiRequestSavedState {
         } = v;
         Self {
             transaction_id,
-            external_data: state::RangeSavedState::save(&request.external_data.buf),
+            external_data: state::RangeSavedState::save(&request.external_data_buf),
             request: request.request.as_bytes()[..request.request_size].to_vec(),
         }
     }
@@ -223,13 +222,15 @@ impl state::ScsiRequestSavedState {
             .ok_or(StorvspRestoreError::RequestTooLarge)?
             .copy_from_slice(request);
 
-        let external_data = Range::new(external_data.restore()?, &protocol_request)
+        let external_data_buf = external_data.restore()?;
+        let external_data = Range::new(&external_data_buf, &protocol_request)
             .ok_or(StorvspRestoreError::RangeConflict)?;
 
         Ok(ScsiRequestState {
             transaction_id: *transaction_id,
             request: Arc::new(ScsiRequestAndRange {
                 external_data,
+                external_data_buf,
                 request: protocol_request,
                 request_size: request.len(),
             }),

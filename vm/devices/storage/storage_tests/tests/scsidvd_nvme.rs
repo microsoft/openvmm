@@ -2,7 +2,8 @@
 // Licensed under the MIT License.
 
 //! Tests using NVMe as the block backend for SimpleScsiDvd.
-#![cfg(target_os = "linux")]
+
+#![cfg(any(windows, target_os = "linux"))]
 
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_backend::Disk;
@@ -79,7 +80,7 @@ impl ScsiDvdNvmeTest {
             .unwrap();
 
         let device = EmulatedDevice::new(nvme, msi_set, dma_client.clone());
-        let nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
+        let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
             .await
             .unwrap();
         let namespace = nvme_driver.namespace(1).await.unwrap();

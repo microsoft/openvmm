@@ -56,7 +56,7 @@ Fuzz logic might then allocate a `BounceBuffer` using `new` and call methods on
 it such as `as_mut_bytes` and `io_vecs`. Then it could access the return result
 of both those calls:
 
-```rust
+```rust,ignore
 use scsi_buffers::BounceBuffer;
 
 #[derive(Arbitrary)]
@@ -98,7 +98,7 @@ fn do_fuzz(fuzz_case: FuzzCase) {
             }
         }
     }
-})
+}
 ```
 
 The fuzzer should work to ensure the safe members of the API cannot be misused
@@ -115,7 +115,7 @@ specific register configuration of a particular device, the in-repo
 `chipset_device_fuzz` crate exports a `FuzzChipset` type that offers a
 "plug-and-play" way to hook a chipset device up to a fuzzer:
 
-```rust
+```rust,ignore
 #[derive(Arbitrary)]
 struct StaticDeviceConfig {
     #[arbitrary(with = |u: &mut Unstructured| u.int_in_range(0..=16))]

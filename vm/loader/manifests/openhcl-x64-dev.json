@@ -7,8 +7,8 @@
             "isolation_type": "none",
             "image": {
                 "openhcl": {
-                    "command_line": "OPENHCL_BOOT_LOG=com3",
-                    "memory_page_count": 126976,
+                    "command_line": "OPENHCL_BOOT_LOG=com3 OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG=debug",
+                    "memory_page_count": 131072,
                     "uefi": true
                 }
             }

@@ -10,6 +10,7 @@
 //! having to duplicate the non-trivial OpenHCL IGVM build chain.
 
 use crate::build_openhcl_initrd::OpenhclInitrdExtraParams;
+use crate::build_openvmm_hcl::MaxTraceLevel;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_openvmm_hcl::OpenvmmHclFeature;
 use crate::download_openhcl_kernel_package::OpenhclKernelPackageArch;
@@ -66,6 +67,7 @@ pub struct OpenhclIgvmRecipeDetails {
     pub with_uefi: bool,
     pub with_interactive: bool,
     pub with_sidecar: bool,
+    pub max_trace_level: MaxTraceLevel,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -119,6 +121,14 @@ impl OpenhclIgvmRecipe {
         // Debug configurations include --interactive by default, for busybox, gdbserver, and perf.
         let with_interactive = !release_cfg;
 
+        // Save memory and cycles in hot paths by limiting the trace level in
+        // release builds.
+        let max_trace_level = if release_cfg {
+            MaxTraceLevel::Debug
+        } else {
+            MaxTraceLevel::Trace
+        };
+
         match self {
             Self::LocalOnlyCustom(details) => details.clone(),
             Self::X64 => OpenhclIgvmRecipeDetails {
@@ -131,6 +141,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: true,
                 with_interactive,
                 with_sidecar: true,
+                max_trace_level,
             },
             Self::X64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -142,6 +153,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: true,
                 with_interactive,
                 with_sidecar: true,
+                max_trace_level,
             },
             Self::X64CvmDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -156,6 +168,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: true,
                 with_interactive,
                 with_sidecar: false,
+                max_trace_level,
             },
             Self::X64TestLinuxDirect => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -170,6 +183,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: false,
                 with_interactive,
                 with_sidecar: true,
+                max_trace_level,
             },
             Self::X64TestLinuxDirectDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -184,6 +198,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: false,
                 with_interactive,
                 with_sidecar: true,
+                max_trace_level,
             },
             Self::X64Cvm => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -198,6 +213,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: true,
                 with_interactive,
                 with_sidecar: false,
+                max_trace_level,
             },
             Self::Aarch64 => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -212,6 +228,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: true,
                 with_interactive: false, // #1234
                 with_sidecar: false,
+                max_trace_level,
             },
             Self::Aarch64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -226,6 +243,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: true,
                 with_interactive: false, // #1234
                 with_sidecar: false,
+                max_trace_level,
             },
         }
     }
@@ -286,6 +304,7 @@ impl SimpleFlowNode for Node {
             with_uefi,
             with_interactive,
             with_sidecar,
+            max_trace_level,
         } = recipe.recipe_details(release_cfg);
 
         let OpenhclIgvmRecipeDetailsLocalOnly {
@@ -449,6 +468,7 @@ impl SimpleFlowNode for Node {
                     features: openvmm_hcl_features,
                     // manually strip later, depending on provided igvm flags
                     no_split_dbg_info: true,
+                    max_trace_level,
                 },
                 openvmm_hcl_output: v,
             }

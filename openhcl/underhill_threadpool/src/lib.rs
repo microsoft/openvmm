@@ -220,7 +220,7 @@ impl ThreadpoolBuilder {
                 CURRENT_THREAD_DRIVER.with(|current| {
                     current.lend(&driver, || {
                         if let Some(notifier) = notifier {
-                            (notifier.0)();
+                            (notifier.0)(true);
                         }
                         pool.run()
                     });
@@ -521,7 +521,7 @@ enum AffinityState {
     Set,
 }
 
-struct AffinityNotifier(Box<dyn FnOnce() + Send>);
+struct AffinityNotifier(Box<dyn FnOnce(bool) + Send>);
 
 impl std::fmt::Debug for AffinityNotifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -598,10 +598,13 @@ impl ThreadpoolDriver {
         .await
     }
 
-    /// Sets a function to be called when the thread gets spawned.
+    /// Sets a function to be called when the thread gets spawned. The function
+    /// accepts a single `bool` parameter that indicates that the notifier
+    /// should cancel any oustanding run or not. When called by the threadpool,
+    /// the function will recieve `true`.
     ///
     /// Return `Err(f)` if the thread is already spawned.
-    pub fn set_spawn_notifier<F: 'static + Send + FnOnce()>(&self, f: F) -> Result<(), F> {
+    pub fn set_spawn_notifier<F: 'static + Send + FnOnce(bool)>(&self, f: F) -> Result<(), F> {
         let mut state = self.inner.state.lock();
         if !state.spawned {
             state.notifier = Some(AffinityNotifier(Box::new(f)));

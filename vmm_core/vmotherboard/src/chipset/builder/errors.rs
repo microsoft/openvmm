@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::chipset::PciConflict;
+use crate::chipset::PcieConflict;
 use crate::chipset::io_ranges::IoRangeConflict;
 use std::fmt::Debug;
 use thiserror::Error;
@@ -21,6 +22,9 @@ pub enum ChipsetBuilderError {
     /// detected static pci address conflict
     #[error("static pci conflict: {0}")]
     PciConflict(PciConflict),
+    /// detected static pcie port conflict
+    #[error("static pcie port conflict: {0}")]
+    PcieConflict(PcieConflict),
 }
 
 #[derive(Debug, Error)]

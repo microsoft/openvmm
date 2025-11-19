@@ -4,6 +4,7 @@
 //! A generic, read-only PCI Capability (backed by an [`IntoBytes`] type).
 
 use super::PciCapability;
+use crate::spec::caps::CapabilityId;
 use inspect::Inspect;
 use std::fmt::Debug;
 use zerocopy::Immutable;
@@ -14,14 +15,29 @@ use zerocopy::KnownLayout;
 #[derive(Debug)]
 pub struct ReadOnlyCapability<T> {
     label: String,
+    capability_id: CapabilityId,
     data: T,
 }
 
 impl<T: IntoBytes + Immutable + KnownLayout> ReadOnlyCapability<T> {
-    /// Create a new [`ReadOnlyCapability`]
+    /// Create a new [`ReadOnlyCapability`] with VENDOR_SPECIFIC capability ID
     pub fn new(label: impl Into<String>, data: T) -> Self {
         Self {
             label: label.into(),
+            capability_id: CapabilityId::VENDOR_SPECIFIC,
+            data,
+        }
+    }
+
+    /// Create a new [`ReadOnlyCapability`] with a specific capability ID
+    pub fn new_with_capability_id(
+        label: impl Into<String>,
+        capability_id: CapabilityId,
+        data: T,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            capability_id,
             data,
         }
     }
@@ -31,16 +47,21 @@ impl<T: Debug> Inspect for ReadOnlyCapability<T> {
     fn inspect(&self, req: inspect::Request<'_>) {
         req.respond()
             .field("label", &self.label)
+            .field("capability_id", format!("0x{:02X}", self.capability_id.0))
             .display_debug("data", &self.data);
     }
 }
 
 impl<T> PciCapability for ReadOnlyCapability<T>
 where
-    T: IntoBytes + Send + Sync + Debug + Immutable + KnownLayout,
+    T: IntoBytes + Send + Sync + Debug + Immutable + KnownLayout + 'static,
 {
     fn label(&self) -> &str {
         &self.label
+    }
+
+    fn capability_id(&self) -> CapabilityId {
+        self.capability_id
     }
 
     fn len(&self) -> usize {

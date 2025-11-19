@@ -1,0 +1,43 @@
+/* Copyright (c) Microsoft Corporation. */
+/* Licensed under the MIT License. */
+
+/* =============== Table Styles =============== */
+.created-date {
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+  color: #000000;
+  align-items: center;
+}
+
+.branch-name {
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+  font-weight: normal;
+  color: #000000;
+  overflow: hidden;
+  /* word-break: break-word; */
+  white-space: pre-wrap;
+  display: block;
+}
+
+.pr-cell {
+  min-width: 10px;
+}
+
+.pr-link {
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+  color: #1976d2;
+  text-decoration: none;
+  display: block;
+  border-radius: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pr-link:hover {
+  text-decoration: underline;
+}
+
+.no-pr {
+  color: #9e9e9e;
+  font-style: italic;
+}

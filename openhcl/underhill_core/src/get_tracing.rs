@@ -22,7 +22,6 @@
 mod json_common;
 mod json_layer;
 mod kmsg_stream;
-mod kmsg_writer;
 
 use anyhow::Context;
 use cvm_tracing::CVM_ALLOWED;
@@ -228,12 +227,28 @@ pub fn init_tracing(spawn: impl Spawn, tracer: RemoteTracer) -> anyhow::Result<(
 
     // Filter events based on the updatable-via-inspect target filter.
     // Make sure this is the outermost layer for performance reasons.
-    let combined = tracer.trace_filter.apply(&spawn, with_cvm_filter)?;
+    let (combined, update_fut) = tracer.trace_filter.apply(with_cvm_filter, |filter| {
+        let targets = filter.parse::<tracing_subscriber::filter::Targets>()?;
+        if targets
+            .default_level()
+            .is_some_and(|lvl| lvl > tracing::level_filters::STATIC_MAX_LEVEL)
+            || targets
+                .iter()
+                .any(|(_, lvl)| lvl > tracing::level_filters::STATIC_MAX_LEVEL)
+        {
+            tracing::warn!("OPENVMM_LOG has levels below the compiled maximum level");
+        }
+        Ok(targets)
+    })?;
 
     tracing_subscriber::registry()
         .with(combined)
         .try_init()
         .context("failed to enable tracing")?;
+
+    // Spawn the filter updater task after initializing tracing to avoid missing
+    // any log messages.
+    spawn.spawn("tracing_filter_updater", update_fut).detach();
 
     Ok(())
 }

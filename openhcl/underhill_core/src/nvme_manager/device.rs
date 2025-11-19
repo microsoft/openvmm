@@ -25,6 +25,7 @@ use tracing::Instrument;
 use tracing::Span;
 use user_driver::vfio::PciDeviceResetMethod;
 use user_driver::vfio::VfioDevice;
+use user_driver::vfio::VfioDmaClients;
 use user_driver::vfio::vfio_set_device_reset_method;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -39,9 +40,9 @@ struct VfioNvmeDevice {
 impl NvmeDevice for VfioNvmeDevice {
     /// Get an instance of the supplied namespace (an nvme `nsid`).
     async fn namespace(
-        &self,
+        &mut self,
         nsid: u32,
-    ) -> Result<nvme_driver::Namespace, nvme_driver::NamespaceError> {
+    ) -> Result<Arc<nvme_driver::Namespace>, nvme_driver::NamespaceError> {
         self.driver.namespace(nsid).await
     }
 
@@ -95,8 +96,19 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
             })
             .map_err(NvmeSpawnerError::DmaClient)?;
 
+        let dma_clients = if save_restore_supported {
+            VfioDmaClients::PersistentOnly(dma_client)
+        } else {
+            VfioDmaClients::EphemeralOnly(dma_client)
+        };
+
         let nvme_driver = if let Some(saved_state) = saved_state {
-            let vfio_device = VfioDevice::restore(driver_source, pci_id, true, dma_client)
+            // On restore, always disable FLR. This isn't necessary for the attach path (setting "keepalive"
+            // is sufficient), but *is* necessary to avoid Vfio issuing a reset to the device on shutdown.
+            tracing::debug!(pci_id = pci_id, "Disabling FLR for NVMe device restore");
+            Self::try_update_reset_method(pci_id, PciDeviceResetMethod::NoReset, "nvme_restore");
+
+            let vfio_device = VfioDevice::restore(driver_source, pci_id, true, dma_clients)
                 .instrument(tracing::info_span!("nvme_vfio_device_restore", pci_id))
                 .await
                 .map_err(NvmeSpawnerError::Vfio)?;
@@ -121,7 +133,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
                 vp_count,
                 self.nvme_always_flr,
                 self.is_isolated,
-                dma_client,
+                dma_clients,
             )
             .await?
         };
@@ -140,22 +152,8 @@ impl VfioNvmeDriverSpawner {
         vp_count: u32,
         nvme_always_flr: bool,
         is_isolated: bool,
-        dma_client: Arc<dyn user_driver::DmaClient>,
+        dma_clients: VfioDmaClients,
     ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, NvmeSpawnerError> {
-        // Disable FLR on vfio attach/detach; this allows faster system
-        // startup/shutdown with the caveat that the device needs to be properly
-        // sent through the shutdown path during servicing operations, as that is
-        // the only cleanup performed. If the device fails to initialize, turn FLR
-        // on and try again, so that the reset is invoked on the next attach.
-        let update_reset = |method: PciDeviceResetMethod| {
-            if let Err(err) = vfio_set_device_reset_method(pci_id, method) {
-                tracing::warn!(
-                    ?method,
-                    err = &err as &dyn std::error::Error,
-                    "failed to update reset_method"
-                );
-            }
-        };
         let mut last_err = None;
         let reset_methods = if nvme_always_flr {
             &[PciDeviceResetMethod::Flr][..]
@@ -167,19 +165,25 @@ impl VfioNvmeDriverSpawner {
             &[PciDeviceResetMethod::NoReset, PciDeviceResetMethod::Flr][..]
         };
         for reset_method in reset_methods {
-            update_reset(*reset_method);
+            Self::try_update_reset_method(pci_id, *reset_method, "nvme_create");
             match Self::try_create_nvme_device(
                 driver_source,
                 pci_id,
                 vp_count,
                 is_isolated,
-                dma_client.clone(),
+                dma_clients.clone(),
             )
             .await
             {
                 Ok(device) => {
                     if !nvme_always_flr && !matches!(reset_method, PciDeviceResetMethod::NoReset) {
-                        update_reset(PciDeviceResetMethod::NoReset);
+                        // For shutdown: set the reset method to NoReset now that the device
+                        // has been successfully created.
+                        Self::try_update_reset_method(
+                            pci_id,
+                            PciDeviceResetMethod::NoReset,
+                            "nvme_create_post",
+                        );
                     }
                     return Ok(device);
                 }
@@ -204,9 +208,9 @@ impl VfioNvmeDriverSpawner {
         pci_id: &str,
         vp_count: u32,
         is_isolated: bool,
-        dma_client: Arc<dyn user_driver::DmaClient>,
+        dma_clients: VfioDmaClients,
     ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, NvmeSpawnerError> {
-        let device = VfioDevice::new(driver_source, pci_id, dma_client)
+        let device = VfioDevice::new(driver_source, pci_id, dma_clients)
             .instrument(tracing::info_span!("nvme_vfio_device_open", pci_id))
             .await
             .map_err(NvmeSpawnerError::Vfio)?;
@@ -218,6 +222,18 @@ impl VfioNvmeDriverSpawner {
             .instrument(tracing::info_span!("nvme_driver_new", pci_id))
             .await
             .map_err(NvmeSpawnerError::DeviceInitFailed)
+    }
+
+    fn try_update_reset_method(pci_id: &str, method: PciDeviceResetMethod, label: &str) {
+        if let Err(err) = vfio_set_device_reset_method(pci_id, method) {
+            tracing::warn!(
+                label,
+                ?pci_id,
+                ?method,
+                err = &err as &dyn std::error::Error,
+                "failed to update reset_method",
+            );
+        }
     }
 }
 
@@ -235,7 +251,7 @@ enum NvmeDriverRequest {
     Inspect(Deferred),
     LoadDriver(Rpc<Span, anyhow::Result<()>>),
     /// Get an instance of the supplied namespace (an nvme `nsid`).
-    GetNamespace(Rpc<(Span, u32), Result<nvme_driver::Namespace, NamespaceError>>),
+    GetNamespace(Rpc<(Span, u32), Result<Arc<nvme_driver::Namespace>, NamespaceError>>),
     Save(Rpc<Span, anyhow::Result<NvmeDriverSavedState>>),
     /// Shutdown the NVMe driver, and the manager of that driver.
     /// Takes the span, and a set of options.
@@ -341,7 +357,7 @@ pub struct NvmeDriverManagerClient {
 }
 
 impl NvmeDriverManagerClient {
-    pub async fn get_namespace(&self, nsid: u32) -> anyhow::Result<nvme_driver::Namespace> {
+    pub async fn get_namespace(&self, nsid: u32) -> anyhow::Result<Arc<nvme_driver::Namespace>> {
         let span = tracing::info_span!(
             "nvme_device_manager_get_namespace",
             pci_id = self.pci_id,
@@ -451,7 +467,7 @@ impl NvmeDriverManagerWorker {
                 NvmeDriverRequest::GetNamespace(rpc) => {
                     rpc.handle(async |(_, nsid)| {
                         self.driver
-                            .as_ref()
+                            .as_mut()
                             .unwrap()
                             .namespace(nsid)
                             .await

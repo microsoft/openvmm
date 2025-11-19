@@ -46,3 +46,6 @@ __pycache__
 
 flowey-out
 flowey-persist
+
+# Node.js dependencies and artifacts
+node_modules/

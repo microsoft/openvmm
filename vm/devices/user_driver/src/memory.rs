@@ -156,6 +156,20 @@ impl MemoryBlock {
         self.mem.pfn_bias()
     }
 
+    /// Returns true if the PFNs are contiguous.
+    ///
+    /// TODO: Fallback allocations are here for now, but we should eventually
+    /// allow the caller to require these. See `DmaClient::allocate_dma_buffer`.
+    pub fn contiguous_pfns(&self) -> bool {
+        for (curr, next) in self.pfns().iter().zip(self.pfns().iter().skip(1)) {
+            if *curr + 1 != *next {
+                return false;
+            }
+        }
+
+        true
+    }
+
     /// Gets the buffer as an atomic slice.
     pub fn as_slice(&self) -> &[AtomicU8] {
         // SAFETY: the underlying memory is valid for the lifetime of `mem`.

@@ -1,0 +1,15 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "tpm_protocol"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bitfield-struct.workspace = true
+thiserror.workspace = true
+zerocopy.workspace = true
+
+[lints]
+workspace = true

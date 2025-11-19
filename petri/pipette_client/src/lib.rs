@@ -21,6 +21,7 @@ use futures::FutureExt as _;
 use futures::StreamExt;
 use futures::io::BufReader;
 use futures_concurrency::future::TryJoin;
+use mesh::error::RemoteError;
 use mesh::payload::Timestamp;
 use mesh::rpc::RpcError;
 use mesh_remote::PointToPointMesh;
@@ -117,6 +118,7 @@ impl PipetteClient {
     }
 
     async fn shutdown(&self, shutdown_type: pipette_protocol::ShutdownType) -> anyhow::Result<()> {
+        tracing::debug!(?shutdown_type, "sending shutdown request to guest");
         let r = self.send.call(
             PipetteRequest::Shutdown,
             pipette_protocol::ShutdownRequest { shutdown_type },
@@ -208,6 +210,32 @@ impl PipetteClient {
             .call(PipetteRequest::GetTime, ())
             .await
             .context("failed to get time")
+    }
+
+    /// Tell the agent to crash itself.
+    pub async fn crash(&self) -> Result<(), RemoteError> {
+        Self::handle_crash_result(self.send.call_failable(PipetteRequest::Crash, ()).await)
+    }
+
+    /// Tell the agent to crash the kernel.
+    pub async fn kernel_crash(&self) -> Result<(), RemoteError> {
+        Self::handle_crash_result(
+            self.send
+                .call_failable(PipetteRequest::KernelCrash, ())
+                .await,
+        )
+    }
+
+    fn handle_crash_result(r: Result<(), RpcError<RemoteError>>) -> Result<(), RemoteError> {
+        match r {
+            Ok(()) => unreachable!(),
+            Err(RpcError::Call(err)) => Err(err),
+            Err(RpcError::Channel(_)) => {
+                // Presumably this is an expected error due to the agent exiting
+                // or the guest crashing.
+                Ok(())
+            }
+        }
     }
 }
 

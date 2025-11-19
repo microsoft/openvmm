@@ -17,7 +17,7 @@ vmm_test_images = { workspace = true, features = ["serde", "clap"] }
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 log.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["std"] }
 target-lexicon = { workspace = true, features = ["serde_support"] }
 
 [lints]

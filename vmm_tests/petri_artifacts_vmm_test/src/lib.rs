@@ -42,6 +42,18 @@ pub mod artifacts {
         OPENVMM_MACOS_AARCH64,
     }
 
+    /// Guest-side tools used by the VMM tests.
+    pub mod guest_tools {
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// Windows x86_64 build of the `tpm_guest_tests` utility.
+            TPM_GUEST_TESTS_WINDOWS_X64,
+            /// Linux x86_64 build of the `tpm_guest_tests` utility.
+            TPM_GUEST_TESTS_LINUX_X64,
+        }
+    }
+
     /// Loadable artifacts
     pub mod loadable {
         use petri_artifacts_common::tags::IsLoadable;

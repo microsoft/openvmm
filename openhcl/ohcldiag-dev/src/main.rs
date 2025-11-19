@@ -5,6 +5,7 @@
 //! guarantees.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod completions;
 
@@ -399,7 +400,7 @@ async fn run(
     stderr_thread
         .join()
         .unwrap()
-        .context("failed stdout copy")?;
+        .context("failed stderr thread")?;
 
     let status = process.wait().await?;
     std::process::exit(status.exit_code());
