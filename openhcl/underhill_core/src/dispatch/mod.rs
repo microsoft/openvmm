@@ -622,15 +622,18 @@ impl LoadedVm {
                     .await
             };
 
-            // Save the persisted topology.
-            let num_nvme_devices = state
+            // Save the persisted state used by the next openhcl_boot.
+            let cpus_with_mapped_interrupts = match state
                 .init_state
                 .nvme_state
-                .as_ref()
-                .map_or(0, |d| d.nvme_state.nvme_disks.len() as u32);
+                .as_ref() {
+                    Some(nvme_state) => crate::nvme_manager::save_restore::cpus_with_interrupts(&nvme_state.nvme_state),
+                    None => vec![],
+                };
+
             crate::loader::vtl2_config::write_persisted_info(
                 self.runtime_params.parsed_openhcl_boot(),
-                num_nvme_devices,
+                cpus_with_mapped_interrupts,
             )
             .context("failed to write persisted info")?;
 
