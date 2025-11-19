@@ -753,6 +753,29 @@ impl PetriVmConfigSetupCore<'_> {
                     _ => false,
                 };
 
+                // For certain configurations, we need to override the override
+                // in new_underhill_vm.
+                //
+                // TODO: this should also check for TPM to match the OpenHCL
+                // override once generic petri TPM support is added.
+                //
+                // TODO: remove this (and OpenHCL override) once host changes
+                // are saturated.
+                if let Firmware::OpenhclUefi {
+                    uefi_config:
+                        UefiConfig {
+                            default_boot_always_attempt,
+                            secure_boot_enabled,
+                            ..
+                        },
+                    ..
+                } = self.firmware
+                {
+                    if !isolated && !*secure_boot_enabled && !*default_boot_always_attempt {
+                        append_cmdline(&mut cmdline, "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=0");
+                    }
+                }
+
                 let vtl2_base_address = vtl2_base_address_type.unwrap_or_else(|| {
                     if isolated {
                         // Isolated VMs must load at the location specified by
