@@ -193,6 +193,9 @@ fn build_kernel_command_line(
         "hv_storvsc.storvsc_ringbuffer_size=0x8000",
         // Disable eager mimalloc commit to prevent core dumps from being overly large
         "MIMALLOC_ARENA_EAGER_COMMIT=0",
+        // Disable acpi runtime support. Unused in underhill, but some support
+        // is compiled in for the kernel (ie TDX mailbox protocol).
+        "acpi=off",
     ];
 
     const X86_KERNEL_PARAMETERS: &[&str] = &[
