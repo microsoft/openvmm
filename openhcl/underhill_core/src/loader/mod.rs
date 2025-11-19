@@ -653,6 +653,24 @@ pub fn write_uefi_config(
         // OpenHCL pre-sets the MTRRs; tell the firmware
         flags.set_mtrrs_initialized_at_load(true);
 
+        // Temporarily override the host provided default_boot_always_attempt
+        // value for non-Trusted Launch VMs until all hosts in Azure have been
+        // updated to provide the correct value.
+        //
+        // Trusted Launch is roughly equivalent to having secure boot and TPM
+        // enabled. For VMs that are not Trusted Launch, default boot is necessary
+        // because the VMGS is not swapped with the OS disk in Azure (and in any
+        // case on-prem), causing the VM to fail to boot after an OS swap.
+        //
+        // TODO: remove this (and petri workaround) once host changes are saturated
+        if isolated
+            && !platform_config.general.secure_boot_enabled
+            && !platform_config.general.tpm_enabled
+        {
+            tracing::info!("enabling default_boot_always_attempt");
+            flags.set_default_boot_always_attempt(true);
+        }
+
         flags
     });
 
