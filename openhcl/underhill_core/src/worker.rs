@@ -1433,8 +1433,8 @@ async fn new_underhill_vm(
     // with the OS disk for these VMs in Azure (and in any case on-prem),
     // causing the VM to fail to boot after an OS swap.
     //
-    // TODO: remove this once host changes are saturated
-    if !hardware_isolated
+    // TODO: remove this (and petri workaround) once host changes are saturated
+    if !isolation.is_isolated()
         && !dps.general.secure_boot_enabled
         && !dps.general.tpm_enabled
         && !dps.general.default_boot_always_attempt
