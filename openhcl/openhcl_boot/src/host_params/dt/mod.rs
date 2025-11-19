@@ -886,7 +886,9 @@ impl PartitionInfo {
             has_devices_that_should_disable_sidecar,
         ) {
             if cpu_threshold.is_none()
-                || parsed.cpu_count() < cpu_threshold.unwrap().try_into().unwrap()
+                || cpu_threshold
+                    .and_then(|threshold| threshold.try_into().ok())
+                    .map_or(false, |threshold| parsed.cpu_count() < threshold)
             {
                 // If we are in the restore path, disable sidecar for small VMs, as the amortization
                 // benefits don't apply when devices are kept alive; the CPUs need to be powered on anyway
