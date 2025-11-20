@@ -101,8 +101,16 @@ struct DriverWorkerTask<T: DeviceBacking> {
     admin: Option<QueuePair<AdminAerHandler>>,
     #[inspect(iter_by_index)]
     io: Vec<IoQueue>,
+    /// Prototype IO queues for restoring from saved state. These are queues
+    /// that were created on the device at some point, but had no pending
+    /// IOs at save/restore time. These will be promoted to full IO queues
+    /// on demand.
+    ///
+    /// cpu => queue info
     #[inspect(skip)]
-    proto_io: HashMap<u32, ProtoIoQueue>, // keyed by cpu
+    proto_io: HashMap<u32, ProtoIoQueue>,
+    /// The next qid to use when creating an IO queue for a new issuer.
+    next_ioq_id: u16,
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
     recv: mesh::Receiver<NvmeWorkerRequest>,
@@ -299,6 +307,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 admin: None,
                 io: Vec::new(),
                 proto_io: HashMap::new(),
+                next_ioq_id: 1,
                 io_issuers: io_issuers.clone(),
                 recv,
                 bounce_buffer,
@@ -701,6 +710,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 admin: None, // Updated below.
                 io: Vec::new(),
                 proto_io: HashMap::new(),
+                next_ioq_id: 1,
                 io_issuers: io_issuers.clone(),
                 recv,
                 bounce_buffer,
@@ -809,6 +819,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // Restore I/O queues.
         // (1) Restore qid1 and any queues that have pending commands.
         // Interrupt vector 0 is shared between Admin queue and I/O queue #1.
+        let mut max_seen_qid = 1;
         worker.io = saved_state
             .worker_data
             .io
@@ -820,6 +831,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 let qid = q.queue_data.qid;
                 let cpu = q.cpu;
                 tracing::info!(qid, cpu, ?pci_id, "restoring queue");
+                max_seen_qid = max_seen_qid.max(qid);
                 let interrupt = worker.device.map_interrupt(q.iv, q.cpu).with_context(|| {
                     format!(
                         "failed to map interrupt for {}, cpu {}, iv {}",
@@ -870,6 +882,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     ?pci_id,
                     "creating prototype io queue entry",
                 );
+                max_seen_qid = max_seen_qid.max(q.queue_data.qid);
                 let mem_block = restored_memory
                     .iter()
                     .find(|mem| {
@@ -886,6 +899,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 )
             })
             .collect();
+
+        // Update next_ioq_id to avoid reusing qids.
+        worker.next_ioq_id = max_seen_qid + 1;
 
         tracing::info!(
             namespaces = saved_state
@@ -1070,7 +1086,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             qid,
             cpu,
             ?pci_id,
-            "restoring queue from prototype: restore IoQueue"
+            "restoring queue from prototype: mapping interrupt"
         );
         let interrupt = self
             .device
@@ -1203,7 +1219,8 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             return Err(DeviceError::NoMoreIoQueues(state.max_io_queues));
         }
 
-        let qid = self.io.len() as u16 + 1;
+        let qid = self.next_ioq_id;
+        self.next_ioq_id += 1;
 
         tracing::debug!(cpu, qid, "creating io queue");
 
