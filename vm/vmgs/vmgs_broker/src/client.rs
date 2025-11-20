@@ -6,39 +6,50 @@
 
 use crate::broker::VmgsBrokerRpc;
 use inspect::Inspect;
-use mesh_channel::rpc::RpcError;
-use mesh_channel::rpc::RpcSend;
+use mesh::MeshPayload;
+use mesh::error::RemoteError;
+use mesh::rpc::RpcError;
+use mesh::rpc::RpcSend;
 use thiserror::Error;
 use tracing::instrument;
 use vmgs::VmgsFileInfo;
 use vmgs_format::FileId;
 
 /// VMGS broker errors.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, MeshPayload)]
 #[non_exhaustive]
 pub enum VmgsClientError {
     /// VMGS broker is offline
     #[error("broker is offline")]
-    BrokerOffline(#[from] RpcError),
+    BrokerOffline(#[source] RemoteError),
     /// VMGS error
     #[error("vmgs error")]
-    Vmgs(#[from] vmgs::Error),
+    Vmgs(#[source] RemoteError),
 }
 
-impl From<RpcError<vmgs::Error>> for VmgsClientError {
-    fn from(value: RpcError<vmgs::Error>) -> Self {
+impl From<RpcError<RemoteError>> for VmgsClientError {
+    fn from(value: RpcError<RemoteError>) -> Self {
         match value {
             RpcError::Call(e) => VmgsClientError::Vmgs(e),
-            RpcError::Channel(e) => VmgsClientError::BrokerOffline(RpcError::Channel(e)),
+            RpcError::Channel(e) => VmgsClientError::BrokerOffline(RemoteError::new(e)),
+        }
+    }
+}
+
+impl From<RpcError> for VmgsClientError {
+    fn from(value: RpcError) -> Self {
+        match value {
+            RpcError::Call(_) => unreachable!(),
+            RpcError::Channel(e) => VmgsClientError::BrokerOffline(RemoteError::new(e)),
         }
     }
 }
 
 /// Client to interact with a backend-agnostic VMGS instance.
-#[derive(Clone, Inspect)]
+#[derive(Clone, Inspect, MeshPayload)]
 pub struct VmgsClient {
     #[inspect(flatten, send = "VmgsBrokerRpc::Inspect")]
-    pub(crate) control: mesh_channel::Sender<VmgsBrokerRpc>,
+    pub(crate) control: mesh::Sender<VmgsBrokerRpc>,
 }
 
 impl VmgsClient {

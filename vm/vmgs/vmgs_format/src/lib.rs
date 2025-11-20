@@ -32,6 +32,7 @@ open_enum! {
     /// VMGS fixed file IDs
     #[cfg_attr(feature = "inspect", derive(Inspect))]
     #[cfg_attr(feature = "inspect", inspect(debug))]
+    #[cfg_attr(feature = "mesh", derive(mesh::MeshPayload))]
     pub enum FileId: u32 {
         FILE_TABLE     = 0,
         BIOS_NVRAM     = 1,

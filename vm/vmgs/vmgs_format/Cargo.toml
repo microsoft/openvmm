@@ -6,9 +6,13 @@ name = "vmgs_format"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+mesh = ["dep:mesh"]
+
 [dependencies]
-open_enum.workspace = true
 inspect = { workspace = true, optional = true }
+mesh = { workspace = true, optional = true }
+open_enum.workspace = true
 
 bitfield-struct.workspace = true
 static_assertions.workspace = true

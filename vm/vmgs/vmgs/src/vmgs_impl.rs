@@ -47,6 +47,7 @@ enum LogOpType {
 
 /// Info about a specific VMGS file.
 #[derive(Debug)]
+#[cfg_attr(feature = "mesh", derive(mesh::MeshPayload))]
 pub struct VmgsFileInfo {
     /// Number of bytes allocated in the file.
     pub allocated_bytes: u64,

@@ -9228,6 +9228,7 @@ dependencies = [
  "guestmem",
  "inspect",
  "inspect_counters",
+ "mesh",
  "mesh_protobuf",
  "openssl",
  "pal_async",
@@ -9246,7 +9247,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "inspect",
- "mesh_channel",
+ "mesh",
  "pal_async",
  "thiserror 2.0.16",
  "tracing",
@@ -9263,6 +9264,7 @@ version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
  "inspect",
+ "mesh",
  "open_enum",
  "static_assertions",
  "zerocopy 0.8.27",
