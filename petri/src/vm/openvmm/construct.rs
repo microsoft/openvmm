@@ -67,6 +67,7 @@ use hvlite_pcat_locator::RomFileLocation;
 use hyperv_ic_resources::shutdown::ShutdownIcHandle;
 use ide_resources::GuestMedia;
 use ide_resources::IdeDeviceConfig;
+use mesh_process::Mesh;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use pal_async::DefaultDriver;
@@ -109,7 +110,7 @@ use vtl2_settings_proto::Vtl2Settings;
 
 impl PetriVmConfigOpenVmm {
     /// Create a new VM configuration.
-    pub fn new(
+    pub async fn new(
         openvmm_path: &ResolvedArtifact,
         petri_vm_config: PetriVmConfig,
         resources: &PetriVmResources,
@@ -130,6 +131,8 @@ impl PetriVmConfigOpenVmm {
 
         let PetriVmResources { driver, log_source } = resources;
 
+        let mesh = Mesh::new("petri_mesh".to_string())?;
+
         let setup = PetriVmConfigSetupCore {
             arch,
             firmware: &firmware,
@@ -138,6 +141,8 @@ impl PetriVmConfigOpenVmm {
             vmgs: &vmgs,
             boot_device_type,
             tpm_config: tpm_config.as_ref(),
+            mesh: &mesh,
+            openvmm_path,
         };
 
         let mut chipset = VmManifestBuilder::new(
@@ -431,7 +436,7 @@ impl PetriVmConfigOpenVmm {
         } = chipset;
 
         // Add the TPM
-        if let Some(tpm) = setup.config_tpm() {
+        if let Some(tpm) = setup.config_tpm().await? {
             chipset_devices.push(tpm);
         }
 
@@ -531,6 +536,7 @@ impl PetriVmConfigOpenVmm {
             arch,
             config,
             boot_device_type,
+            mesh,
 
             resources: PetriVmResourcesOpenVmm {
                 log_stream_tasks,
@@ -568,6 +574,8 @@ struct PetriVmConfigSetupCore<'a> {
     vmgs: &'a PetriVmgsResource,
     boot_device_type: BootDeviceType,
     tpm_config: Option<&'a TpmConfig>,
+    mesh: &'a Mesh,
+    openvmm_path: &'a ResolvedArtifact,
 }
 
 struct SerialData {
@@ -1115,7 +1123,7 @@ impl PetriVmConfigSetupCore<'_> {
         })
     }
 
-    fn config_tpm(&self) -> Option<ChipsetDeviceHandle> {
+    async fn config_tpm(&self) -> anyhow::Result<Option<ChipsetDeviceHandle>> {
         if !self.firmware.is_openhcl()
             && let Some(TpmConfig {
                 no_persistent_secrets,
@@ -1138,25 +1146,40 @@ impl PetriVmConfigSetupCore<'_> {
                 )
             };
 
-            Some(ChipsetDeviceHandle {
+            Ok(Some(ChipsetDeviceHandle {
                 name: "tpm".to_string(),
-                resource: TpmDeviceHandle {
-                    ppi_store,
-                    nvram_store,
-                    refresh_tpm_seeds: false,
-                    ak_cert_type: tpm_resources::TpmAkCertTypeResource::None,
-                    register_layout,
-                    guest_secret_key: None,
-                    logger: None,
-                    is_confidential_vm: self.firmware.isolation().is_some(),
-                    // TODO: generate an actual BIOS GUID and put it here
-                    bios_guid: Guid::ZERO,
+                resource: chipset_device_worker_resources::RemoteChipsetDeviceHandle {
+                    device: TpmDeviceHandle {
+                        ppi_store,
+                        nvram_store,
+                        refresh_tpm_seeds: false,
+                        ak_cert_type: tpm_resources::TpmAkCertTypeResource::None,
+                        register_layout,
+                        guest_secret_key: None,
+                        logger: None,
+                        is_confidential_vm: self.firmware.isolation().is_some(),
+                        // TODO: generate an actual BIOS GUID and put it here
+                        bios_guid: Guid::ZERO,
+                    }
+                    .into_resource(),
+                    worker_host: self.make_device_worker("tpm").await?,
                 }
                 .into_resource(),
-            })
+            }))
         } else {
-            None
+            Ok(None)
         }
+    }
+
+    async fn make_device_worker(&self, name: &str) -> anyhow::Result<mesh_worker::WorkerHost> {
+        let (host, runner) = mesh_worker::worker_host();
+        self.mesh
+            .launch_host(
+                mesh_process::ProcessConfig::new(name).process_name(self.openvmm_path),
+                hvlite_defs::entrypoint::MeshHostParams { runner },
+            )
+            .await?;
+        Ok(host)
     }
 }
 

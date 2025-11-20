@@ -447,6 +447,7 @@ enum ControlState {
 #[derive(MeshPayload)]
 pub enum ControlRequest {
     FlushLogs(Rpc<CancelContext, Result<(), CancelReason>>),
+    MakeWorker(Rpc<String, Result<WorkerHost, RemoteError>>),
 }
 
 async fn run_control(
@@ -750,6 +751,12 @@ async fn run_control(
                         tracing::info!(CVM_ALLOWED, "flushing logs");
                         ctx.until_cancelled(tracing.flush()).await?;
                         Ok(())
+                    })
+                    .await
+                }
+                ControlRequest::MakeWorker(rpc) => {
+                    rpc.handle_failable(async |name| {
+                        launch_mesh_host(mesh, &name, Some(tracing.tracer())).await
                     })
                     .await
                 }

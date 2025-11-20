@@ -37,6 +37,8 @@ impl PetriVmConfigOpenVmm {
             mut config,
             boot_device_type,
 
+            mesh,
+
             mut resources,
 
             openvmm_log_file,
@@ -106,8 +108,6 @@ impl PetriVmConfigOpenVmm {
         tracing::debug!(?config, ?firmware, ?arch, "VM config");
 
         let has_pcie = !config.pcie_root_complexes.is_empty();
-
-        let mesh = Mesh::new("petri_mesh".to_string())?;
 
         let host = Self::openvmm_host(&mut resources, &mesh, openvmm_log_file)
             .await

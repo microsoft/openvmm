@@ -582,6 +582,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "chipset_device_worker"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chipset_device",
+ "chipset_device_resources",
+ "chipset_device_worker_resources",
+ "guest_emulation_transport",
+ "guestmem",
+ "inspect",
+ "mesh",
+ "mesh_worker",
+ "pal_async",
+ "parking_lot",
+ "slab",
+ "thiserror 2.0.16",
+ "vm_resource",
+ "vmcore",
+ "vmgs_broker",
+]
+
+[[package]]
+name = "chipset_device_worker_resources"
+version = "0.0.0"
+dependencies = [
+ "mesh",
+ "mesh_worker",
+ "vm_resource",
+]
+
+[[package]]
 name = "chipset_legacy"
 version = "0.0.0"
 dependencies = [
@@ -5147,6 +5179,7 @@ dependencies = [
  "anyhow",
  "awaitgroup",
  "build_rs_guest_arch",
+ "chipset_device_worker_resources",
  "chipset_resources",
  "clap",
  "clap_dyn_complete",
@@ -5247,6 +5280,7 @@ version = "0.0.0"
 dependencies = [
  "build_rs_guest_arch",
  "chipset",
+ "chipset_device_worker",
  "debug_worker",
  "disk_striped",
  "hyperv_ic",
@@ -5274,6 +5308,7 @@ version = "0.0.0"
 dependencies = [
  "build_rs_guest_arch",
  "chipset",
+ "chipset_device_worker",
  "debug_worker",
  "disk_blob",
  "disk_crypt",
@@ -5630,6 +5665,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "blocking",
+ "chipset_device_worker_resources",
  "chipset_resources",
  "clap",
  "diag_client",
@@ -7920,6 +7956,7 @@ dependencies = [
  "chipset",
  "chipset_device",
  "chipset_device_resources",
+ "chipset_device_worker_resources",
  "chipset_legacy",
  "closeable_mutex",
  "cvm_tracing",
