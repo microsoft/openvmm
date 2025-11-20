@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 use mesh::payload::Protobuf;
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use vmcore::save_restore::SavedStateRoot;
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -24,7 +24,7 @@ pub struct NvmeSavedDiskConfig {
 }
 
 pub fn cpus_with_interrupts(state: &NvmeManagerSavedState) -> Vec<u32> {
-    let mut cpus_with_interrupts = HashSet::new();
+    let mut cpus_with_interrupts = BTreeSet::new();
     for disk in &state.nvme_disks {
         cpus_with_interrupts.extend(disk.driver_state.worker_data.io.iter().map(|q| q.cpu));
     }
