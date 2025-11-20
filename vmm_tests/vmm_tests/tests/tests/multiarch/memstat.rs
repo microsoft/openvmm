@@ -461,8 +461,7 @@ async fn memory_validation_release_small<T: PetriVmmBackend>(
         WaitPeriodSec::ShortWait,
         driver,
         "release",
-        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
-        false,
+        true,
     )
     .await
 }
@@ -488,8 +487,7 @@ async fn memory_validation_debug_small<T: PetriVmmBackend>(
         WaitPeriodSec::ShortWait,
         driver,
         "debug",
-        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
-        false,
+        true,
     )
     .await
 }
@@ -511,8 +509,7 @@ async fn memory_validation_release_very_heavy<T: PetriVmmBackend>(
         WaitPeriodSec::LongWait,
         driver,
         "release",
-        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
-        false,
+        true,
     )
     .await
 }
@@ -538,8 +535,7 @@ async fn memory_validation_debug_very_heavy<T: PetriVmmBackend>(
         WaitPeriodSec::LongWait,
         driver,
         "debug",
-        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
-        false,
+        true,
     )
     .await
 }
