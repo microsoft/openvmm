@@ -3,6 +3,8 @@
 
 //! Parse partition info using the IGVM device tree parameter.
 
+extern crate alloc;
+
 use super::PartitionInfo;
 use super::shim_params::ShimParams;
 use crate::boot_logger::log;
@@ -23,6 +25,7 @@ use crate::memory::AllocationPolicy;
 use crate::memory::AllocationType;
 use crate::single_threaded::OffStackRef;
 use crate::single_threaded::off_stack;
+use alloc::vec::Vec;
 use arrayvec::ArrayVec;
 use bump_alloc::ALLOCATOR;
 use core::cmp::max;
