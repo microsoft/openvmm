@@ -9,7 +9,6 @@
 
 use bitfield_struct::bitfield;
 use guid::Guid;
-use mesh_protobuf::Protobuf;
 use open_enum::open_enum;
 use static_assertions::const_assert;
 use static_assertions::const_assert_eq;
@@ -50,7 +49,7 @@ const fn make_version(major: u16, minor: u16) -> u32 {
 }
 
 open_enum! {
-    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, Protobuf)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum ProtocolVersion: u32 {
         INVALID = 0,
         RS5 = make_version(1, 0),

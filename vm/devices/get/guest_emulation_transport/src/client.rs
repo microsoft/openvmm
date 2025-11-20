@@ -37,6 +37,7 @@ pub struct GuestEmulationTransportClient {
     #[inspect(flatten)]
     control: ProcessLoopControl,
     #[inspect(debug)]
+    #[mesh(encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
     version: get_protocol::ProtocolVersion,
 }
 
