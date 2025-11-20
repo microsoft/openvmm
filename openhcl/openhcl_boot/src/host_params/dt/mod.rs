@@ -890,6 +890,7 @@ impl PartitionInfo {
                 // to check for interrupts.
                 log!("disabling sidecar, as we are restoring from persisted state");
                 boot_options.sidecar = SidecarOptions::DisabledServicing;
+                options.sidecar = SidecarOptions::DisabledServicing;
             }
         }
 
