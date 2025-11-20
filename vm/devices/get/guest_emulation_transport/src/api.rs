@@ -20,6 +20,7 @@ pub use get_protocol::VmgsIoStatus;
 
 use guid::Guid;
 use mesh::MeshPayload;
+use std::time::Duration;
 use zerocopy::FromZeros;
 
 /// Device platform settings.
@@ -253,7 +254,7 @@ pub struct GuestSaveRequest {
     /// GUID associated with the request.
     pub correlation_id: Guid,
     /// When to complete the request.
-    pub timeout_hint_secs: u16,
+    pub timeout_hint: Duration,
     /// Flags bitfield.
     pub capabilities_flags: SaveGuestVtl2StateFlags,
 }

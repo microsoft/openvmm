@@ -399,14 +399,13 @@ impl LoadedVm {
                     // Explicitly destructure the message for easier tracking of its changes.
                     let GuestSaveRequest {
                         correlation_id,
-                        timeout_hint_secs,
+                        timeout_hint,
                         capabilities_flags,
                     } = message;
                     match self
                         .handle_servicing_request(
                             correlation_id,
-                            std::time::Instant::now()
-                                + Duration::from_secs(timeout_hint_secs.into()),
+                            std::time::Instant::now() + timeout_hint,
                             capabilities_flags,
                         )
                         .await
