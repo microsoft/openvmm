@@ -102,7 +102,7 @@ struct DriverWorkerTask<T: DeviceBacking> {
     #[inspect(iter_by_index)]
     io: Vec<IoQueue>,
     #[inspect(skip)]
-    proto_io: HashMap<u32, ProtoIoQueue>, // queued by cpu
+    proto_io: HashMap<u32, ProtoIoQueue>, // keyed by cpu
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
     recv: mesh::Receiver<NvmeWorkerRequest>,
@@ -145,7 +145,6 @@ pub enum DeviceError {
 struct ProtoIoQueue {
     save_state: IoQueueSavedState,
     mem: MemoryBlock,
-    cpu: u32,
 }
 
 #[derive(Inspect)]
@@ -664,6 +663,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         saved_state: &NvmeDriverSavedState,
         bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
+        let pci_id = device.id().to_owned();
         let driver = driver_source.simple();
         let bar0_mapping = device
             .map_bar(0)
@@ -675,7 +675,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         if !csts.rdy() {
             tracing::error!(
                 csts = u32::from(csts),
-                pci_id = device.id(),
+                ?pci_id,
                 "device is not ready during restore"
             );
             anyhow::bail!(
@@ -725,12 +725,12 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         let interrupt0 = worker
             .device
             .map_interrupt(0, 0)
-            .context("failed to map interrupt 0")?;
+            .with_context(|| format!("failed to map interrupt 0 for {}", pci_id))?;
 
         let dma_client = worker.device.dma_client();
         let restored_memory = dma_client
             .attach_pending_buffers()
-            .context("failed to restore allocations")?;
+            .with_context(|| format!("failed to restore allocations for {}", pci_id))?;
 
         // Restore the admin queue pair.
         let admin = saved_state
@@ -741,6 +741,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 tracing::info!(
                     id = a.qid,
                     pending_commands_count = a.handler_data.pending_cmds.commands.len(),
+                    ?pci_id,
                     "restoring admin queue",
                 );
                 // Restore memory block for admin queue pair.
@@ -801,6 +802,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 ))
                 .collect::<Vec<_>>()
                 .join(", "),
+            ?pci_id,
             "restoring io queues",
         );
 
@@ -817,12 +819,14 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .flat_map(|q| -> Result<IoQueue, anyhow::Error> {
                 let qid = q.queue_data.qid;
                 let cpu = q.cpu;
-                tracing::info!(qid, cpu, "restoring queue");
-                let interrupt = worker
-                    .device
-                    .map_interrupt(q.iv, q.cpu)
-                    .context("failed to map interrupt")?;
-                tracing::info!(qid, cpu, "restoring queue: search for mem block");
+                tracing::info!(qid, cpu, ?pci_id, "restoring queue");
+                let interrupt = worker.device.map_interrupt(q.iv, q.cpu).with_context(|| {
+                    format!(
+                        "failed to map interrupt for {}, cpu {}, iv {}",
+                        pci_id, q.cpu, q.iv
+                    )
+                })?;
+                tracing::info!(qid, cpu, ?pci_id, "restoring queue: search for mem block");
                 let mem_block = restored_memory
                     .iter()
                     .find(|mem| {
@@ -830,7 +834,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     })
                     .expect("unable to find restored mem block")
                     .to_owned();
-                tracing::info!(qid, cpu, "restoring queue: restore IoQueue");
+                tracing::info!(qid, cpu, ?pci_id, "restoring queue: restore IoQueue");
                 let q = IoQueue::restore(
                     driver.clone(),
                     interrupt,
@@ -839,7 +843,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     q,
                     bounce_buffer,
                 )?;
-                tracing::info!(qid, cpu, "restoring queue: create issuer");
+                tracing::info!(qid, cpu, ?pci_id, "restoring queue: create issuer");
                 let issuer = IoIssuer {
                     issuer: q.queue.issuer().clone(),
                     cpu: q.cpu,
@@ -849,7 +853,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             })
             .collect();
 
-        // (2) Create prototype entries for any queues that don't currenly have outstanding commands.
+        // (2) Create prototype entries for any queues that don't currently have outstanding commands.
         // They will be restored on demand later.
         worker.proto_io = saved_state
             .worker_data
@@ -860,6 +864,12 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             })
             .map(|q| {
                 // Create a prototype IO queue entry.
+                tracing::info!(
+                    qid = q.queue_data.qid,
+                    cpu = q.cpu,
+                    ?pci_id,
+                    "creating prototype io queue entry",
+                );
                 let mem_block = restored_memory
                     .iter()
                     .find(|mem| {
@@ -872,7 +882,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     ProtoIoQueue {
                         save_state: q.clone(),
                         mem: mem_block,
-                        cpu: q.cpu,
                     },
                 )
             })
@@ -885,6 +894,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 .map(|ns| format!("{{nsid={}, size={}}}", ns.nsid, ns.identify_ns.nsze))
                 .collect::<Vec<_>>()
                 .join(", "),
+            ?pci_id,
             "restoring namespaces",
         );
 
@@ -1005,7 +1015,6 @@ impl<T: DeviceBacking> Drop for NvmeDriver<T> {
 
 impl IoIssuers {
     pub async fn get(&self, cpu: u32) -> Result<&Issuer, RequestError> {
-        // todo mattkur: create an issuer here if there is a proto issuer.
         if let Some(v) = self.per_cpu[cpu as usize].get() {
             return Ok(&v.issuer);
         }
@@ -1053,13 +1062,32 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
 
 impl<T: DeviceBacking> DriverWorkerTask<T> {
     fn restore_io_issuer(&mut self, proto: ProtoIoQueue) -> anyhow::Result<()> {
-        tracing::debug!(cpu = proto.cpu, "restoring io issuer from prototype");
+        let pci_id = self.device.id().to_owned();
+        let qid = proto.save_state.queue_data.qid;
+        let cpu = proto.save_state.cpu;
 
+        tracing::info!(
+            qid,
+            cpu,
+            ?pci_id,
+            "restoring queue from prototype: restore IoQueue"
+        );
         let interrupt = self
             .device
-            .map_interrupt(proto.save_state.iv, proto.cpu)
-            .context("failed to map interrupt")?;
+            .map_interrupt(proto.save_state.iv, proto.save_state.cpu)
+            .with_context(|| {
+                format!(
+                    "failed to map interrupt for {}, cpu {}, iv {}",
+                    pci_id, proto.save_state.cpu, proto.save_state.iv
+                )
+            })?;
 
+        tracing::info!(
+            qid,
+            cpu,
+            ?pci_id,
+            "restoring queue from prototype: restore IoQueue"
+        );
         let queue = IoQueue::restore(
             self.driver.clone(),
             interrupt,
@@ -1068,17 +1096,25 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             &proto.save_state,
             self.bounce_buffer,
         )
-        .context("failed to restore io queue")?;
+        .with_context(|| format!("failed to restore io queue for {}, cpu {}", pci_id, cpu))?;
+
+        tracing::info!(
+            qid,
+            cpu,
+            ?pci_id,
+            "restoring queue from prototype: restore complete"
+        );
 
         let issuer = IoIssuer {
             issuer: queue.queue.issuer().clone(),
-            cpu: proto.cpu,
+            cpu,
         };
 
-        self.io_issuers.per_cpu[proto.cpu as usize]
+        self.io_issuers.per_cpu[cpu as usize]
             .set(issuer)
             .ok()
             .unwrap();
+        self.io.push(queue);
 
         Ok(())
     }
