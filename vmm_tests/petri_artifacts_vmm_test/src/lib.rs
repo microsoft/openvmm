@@ -150,7 +150,7 @@ pub mod artifacts {
         declare_artifacts! {
             /// OpenHCL IGVM (standard)
             LATEST_STANDARD_X64,
-            /// OpenHCL IGVM 2505 release (standard)
+            /// OpenHCL IGVM last release (standard)
             LATEST_RELEASE_STANDARD_X64,
             /// OpenHCL IGVM (standard, with VTL2 dev kernel)
             LATEST_STANDARD_DEV_KERNEL_X64,
