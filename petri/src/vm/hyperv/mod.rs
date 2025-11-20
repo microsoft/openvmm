@@ -27,6 +27,7 @@ use crate::ShutdownKind;
 use crate::UefiConfig;
 use crate::VmmQuirks;
 use crate::disk_image::AgentImage;
+use crate::hyperv::hvc::VmState;
 use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::kmsg_log_task;
 use crate::openhcl_diag::OpenHclDiagHandler;
@@ -785,9 +786,16 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                 .context("failed to connect")
                 .map(|()| socket)
         };
+
+        let mut timer = PolledTimer::new(&self.driver);
         loop {
-            let mut timer = PolledTimer::new(&self.driver);
             tracing::debug!(set_high_vtl, "attempting to connect to pipette server");
+            // Even if the VM is rebooting or otherwise transitioning power states
+            // it should never be considered fully "off". If it is, something has
+            // gone wrong.
+            if let Err(_) | Ok(VmState::Off) = self.vm.state().await {
+                anyhow::bail!("VM is no longer running, cannot connect to pipette");
+            }
             match client_core().await {
                 Ok(socket) => {
                     tracing::info!(set_high_vtl, "handshaking with pipette");
@@ -798,7 +806,10 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                     return c;
                 }
                 Err(err) => {
-                    tracing::debug!("failed to connect to pipette server, retrying: {:?}", err);
+                    tracing::debug!(
+                        err = err.as_ref() as &dyn std::error::Error,
+                        "failed to connect to pipette server, retrying",
+                    );
                     timer.sleep(Duration::from_secs(1)).await;
                 }
             }

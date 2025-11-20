@@ -389,7 +389,14 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                  driver: &DefaultDriver,
                  inspect: std::pin::Pin<Box<dyn Future<Output = _> + Send>>| {
                     driver.spawn(format!("petri-watchdog-inspect-{name}"), async move {
-                        save_inspect(name, inspect, &log_source).await;
+                        if CancelContext::new()
+                            .with_timeout(Duration::from_secs(10))
+                            .until_cancelled(save_inspect(name, inspect, &log_source))
+                            .await
+                            .is_err()
+                        {
+                            tracing::warn!(name, "Failed to collect inspect data within timeout");
+                        }
                     })
                 };
 
