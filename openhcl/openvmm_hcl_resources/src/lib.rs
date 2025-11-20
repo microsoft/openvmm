@@ -17,6 +17,7 @@ vm_resource::register_static_resolvers! {
     missing_dev::resolver::MissingDevResolver,
     #[cfg(feature = "tpm")]
     tpm_device::resolver::TpmDeviceResolver,
+    chipset_device_worker::resolver::RemoteChipsetDeviceResolver,
     #[cfg(guest_arch = "x86_64")]
     serial_16550::resolver::Serial16550Resolver,
     #[cfg(guest_arch = "aarch64")]
@@ -57,4 +58,5 @@ mesh_worker::register_workers! {
     vnc_worker::VncWorker<vmsocket::VmListener>,
     #[cfg(feature = "debug_worker")]
     debug_worker::DebuggerWorker<vmsocket::VmListener>,
+    chipset_device_worker::worker::RemoteChipsetDeviceWorker,
 }

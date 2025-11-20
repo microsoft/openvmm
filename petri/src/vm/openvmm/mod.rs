@@ -148,7 +148,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         modify_vmm_config: Option<impl FnOnce(PetriVmConfigOpenVmm) -> PetriVmConfigOpenVmm + Send>,
         resources: &PetriVmResources,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
-        let mut config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources)?;
+        let mut config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources).await?;
 
         if let Some(f) = modify_vmm_config {
             config = f(config);
@@ -166,6 +166,9 @@ pub struct PetriVmConfigOpenVmm {
     host_log_levels: Option<OpenvmmLogConfig>,
     config: Config,
     boot_device_type: BootDeviceType,
+
+    // Mesh host
+    mesh: mesh_process::Mesh,
 
     // Runtime resources
     resources: PetriVmResourcesOpenVmm,

@@ -48,6 +48,7 @@ disklayer_sqlite = { workspace = true, optional = true }
 
 # Chipset devices
 chipset.workspace = true
+chipset_device_worker.workspace = true
 missing_dev.workspace = true
 serial_16550.workspace = true
 serial_debugcon.workspace = true

@@ -42,6 +42,8 @@ impl PetriVmConfigOpenVmm {
             mut config,
             boot_device_type,
 
+            mesh,
+
             mut resources,
 
             openvmm_log_file,

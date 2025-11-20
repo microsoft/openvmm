@@ -60,6 +60,7 @@ use crate::wrapped_partition::WrappedPartition;
 use anyhow::Context;
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
+use chipset_device_worker_defs::RemoteChipsetDeviceHandle;
 use closeable_mutex::CloseableMutex;
 use cvm_tracing::CVM_ALLOWED;
 use debug_ptr::DebugPtr;
@@ -2861,18 +2862,24 @@ async fn new_underhill_vm(
 
         chipset_devices.push(ChipsetDeviceHandle {
             name: "tpm".to_owned(),
-            resource: TpmDeviceHandle {
-                ppi_store,
-                nvram_store,
-                refresh_tpm_seeds: platform_attestation_data
-                    .host_attestation_settings
-                    .refresh_tpm_seeds,
-                ak_cert_type,
-                register_layout,
-                guest_secret_key: platform_attestation_data.guest_secret_key,
-                logger: Some(GetTpmLoggerHandle.into_resource()),
-                is_confidential_vm: isolation.is_isolated(),
-                bios_guid: dps.general.bios_guid,
+            resource: RemoteChipsetDeviceHandle {
+                device: TpmDeviceHandle {
+                    ppi_store,
+                    nvram_store,
+                    refresh_tpm_seeds: platform_attestation_data
+                        .host_attestation_settings
+                        .refresh_tpm_seeds,
+                    ak_cert_type,
+                    register_layout,
+                    guest_secret_key: platform_attestation_data.guest_secret_key,
+                    logger: Some(GetTpmLoggerHandle.into_resource()),
+                    is_confidential_vm: isolation.is_isolated(),
+                    bios_guid: dps.general.bios_guid,
+                }
+                .into_resource(),
+                worker_host: control_send
+                    .call_failable(ControlRequest::MakeWorker, "tpm".into())
+                    .await?,
             }
             .into_resource(),
         });

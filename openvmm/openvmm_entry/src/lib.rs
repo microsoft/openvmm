@@ -224,8 +224,9 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
         .collect()
 }
 
-fn vm_config_from_command_line(
+async fn vm_config_from_command_line(
     spawner: impl Spawn,
+    mesh: &VmmMesh,
     opt: &Options,
 ) -> anyhow::Result<(Config, VmResources)> {
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
@@ -1087,16 +1088,20 @@ fn vm_config_from_command_line(
 
         chipset_devices.push(ChipsetDeviceHandle {
             name: "tpm".to_string(),
-            resource: TpmDeviceHandle {
-                ppi_store,
-                nvram_store,
-                refresh_tpm_seeds: false,
-                ak_cert_type: tpm_resources::TpmAkCertTypeResource::None,
-                register_layout,
-                guest_secret_key: None,
-                logger: None,
-                is_confidential_vm: false,
-                bios_guid,
+            resource: chipset_device_worker_defs::RemoteChipsetDeviceHandle {
+                device: TpmDeviceHandle {
+                    ppi_store,
+                    nvram_store,
+                    refresh_tpm_seeds: false,
+                    ak_cert_type: tpm_resources::TpmAkCertTypeResource::None,
+                    register_layout,
+                    guest_secret_key: None,
+                    logger: None,
+                    is_confidential_vm: false,
+                    bios_guid,
+                }
+                .into_resource(),
+                worker_host: mesh.make_host("tpm", None).await?,
             }
             .into_resource(),
         });
@@ -2068,7 +2073,7 @@ fn new_hvsock_service_id(port: u32) -> Guid {
 }
 
 async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> anyhow::Result<()> {
-    let (mut vm_config, mut resources) = vm_config_from_command_line(driver, &opt)?;
+    let (mut vm_config, mut resources) = vm_config_from_command_line(driver, mesh, &opt).await?;
 
     let mut vnc_worker = None;
     if opt.gfx || opt.vnc {
