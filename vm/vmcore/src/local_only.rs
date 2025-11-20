@@ -24,6 +24,12 @@ impl<T> mesh::payload::DefaultEncoding for LocalOnly<T> {
     type Encoding = LocalOnlyField;
 }
 
+impl<T> From<T> for LocalOnly<T> {
+    fn from(value: T) -> Self {
+        LocalOnly(value)
+    }
+}
+
 /// A field encoder for fields that should be ignored on write and fail on read.
 ///
 /// This is useful for enum variants that can't be sent across processes.
@@ -58,11 +64,5 @@ impl<T, R> FieldDecode<'_, T, R> for LocalOnlyField {
 
     fn default_field(_item: &mut InplaceOption<'_, T>) -> Result<(), Error> {
         Err(Error::new(LocalOnlyError))
-    }
-}
-
-impl<T> From<T> for LocalOnly<T> {
-    fn from(value: T) -> Self {
-        LocalOnly(value)
     }
 }
