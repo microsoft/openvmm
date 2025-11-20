@@ -3,7 +3,6 @@
 
 use mesh::MeshPayload;
 use mesh::Receiver;
-#[cfg(with_encryption)]
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
 use vmgs::Vmgs;
