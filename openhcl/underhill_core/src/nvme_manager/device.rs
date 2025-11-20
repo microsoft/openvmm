@@ -102,7 +102,9 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
             VfioDmaClients::EphemeralOnly(dma_client)
         };
 
-        let nvme_driver = if let Some(saved_state) = saved_state {
+        let nvme_driver = if let Some(saved_state) = saved_state
+            && save_restore_supported
+        {
             // On restore, always disable FLR. This isn't necessary for the attach path (setting "keepalive"
             // is sufficient), but *is* necessary to avoid Vfio issuing a reset to the device on shutdown.
             tracing::debug!(pci_id = pci_id, "Disabling FLR for NVMe device restore");
