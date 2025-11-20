@@ -807,14 +807,14 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         );
 
         // Restore I/O queues.
-        // (1) Restore qid0 and any queues that have pending commands.
+        // (1) Restore qid1 and any queues that have pending commands.
         // Interrupt vector 0 is shared between Admin queue and I/O queue #1.
         worker.io = saved_state
             .worker_data
             .io
             .iter()
             .filter(|q| {
-                q.queue_data.qid == 0 || !q.queue_data.handler_data.pending_cmds.commands.is_empty()
+                q.queue_data.qid == 1 || !q.queue_data.handler_data.pending_cmds.commands.is_empty()
             })
             .flat_map(|q| -> Result<IoQueue, anyhow::Error> {
                 let qid = q.queue_data.qid;
@@ -860,7 +860,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .io
             .iter()
             .filter(|q| {
-                q.queue_data.qid != 0 && q.queue_data.handler_data.pending_cmds.commands.is_empty()
+                q.queue_data.qid != 1 && q.queue_data.handler_data.pending_cmds.commands.is_empty()
             })
             .map(|q| {
                 // Create a prototype IO queue entry.
