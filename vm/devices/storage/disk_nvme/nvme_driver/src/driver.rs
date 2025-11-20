@@ -98,9 +98,9 @@ struct DriverWorkerTask<T: DeviceBacking> {
     #[inspect(skip)]
     driver: VmTaskDriver,
     registers: Arc<DeviceRegisters<T>>,
-    admin: Option<QueuePair<AdminAerHandler>>,
+    admin: Option<QueuePair<AdminAerHandler, T>>,
     #[inspect(iter_by_index)]
-    io: Vec<IoQueue>,
+    io: Vec<IoQueue<T>>,
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
     recv: mesh::Receiver<NvmeWorkerRequest>,
@@ -140,13 +140,13 @@ pub enum DeviceError {
 }
 
 #[derive(Inspect)]
-struct IoQueue {
-    queue: QueuePair<NoOpAerHandler>,
+struct IoQueue<T: DeviceBacking> {
+    queue: QueuePair<NoOpAerHandler, T>,
     iv: u16,
     cpu: u32,
 }
 
-impl IoQueue {
+impl<T: DeviceBacking> IoQueue<T> {
     pub async fn save(&self) -> anyhow::Result<IoQueueSavedState> {
         Ok(IoQueueSavedState {
             cpu: self.cpu,
@@ -158,7 +158,7 @@ impl IoQueue {
     pub fn restore(
         spawner: VmTaskDriver,
         interrupt: DeviceInterrupt,
-        registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        registers: Arc<DeviceRegisters<T>>,
         mem_block: MemoryBlock,
         saved_state: &IoQueueSavedState,
         bounce_buffer: bool,
@@ -800,7 +800,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .worker_data
             .io
             .iter()
-            .flat_map(|q| -> Result<IoQueue, anyhow::Error> {
+            .flat_map(|q| -> Result<IoQueue<T>, anyhow::Error> {
                 let interrupt = worker
                     .device
                     .map_interrupt(q.iv, q.cpu)
