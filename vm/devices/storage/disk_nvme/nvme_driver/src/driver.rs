@@ -1137,6 +1137,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     // the "right" protocol thing to do, though.
 
                     tracing::error!(
+                        pci_id = ?self.device.id(),
                         cpu,
                         error = ?err,
                         "failed to restore io queue from prototype, creating new queue"
@@ -1165,6 +1166,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                 match err {
                     DeviceError::NoMoreIoQueues(_) => {
                         tracing::info!(
+                            pci_id = ?self.device.id(),
                             cpu,
                             fallback_cpu,
                             error = &err as &dyn std::error::Error,
@@ -1173,6 +1175,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     }
                     _ => {
                         tracing::error!(
+                            pci_id = ?self.device.id(),
                             cpu,
                             fallback_cpu,
                             error = &err as &dyn std::error::Error,
@@ -1287,6 +1290,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     .await
                 {
                     tracing::error!(
+                        pci_id = ?self.device.id(),
                         error = &err as &dyn std::error::Error,
                         "failed to delete completion queue in teardown path"
                     );
@@ -1317,20 +1321,29 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             .await
             .into_iter()
             .flatten()
+            // Don't forget to include any queues that were saved from a _previous_ save, but were never restored
+            // because they didn't see any IO.
+            .chain(
+                self.proto_io
+                    .drain()
+                    .map(|(_cpu, proto_queue)| proto_queue.save_state),
+            )
             .collect();
 
-        // Log admin queue details
-        if let Some(ref admin_state) = admin {
-            tracing::info!(
+        match admin {
+            None => tracing::warn!(pci_id = ?self.device.id(), "no admin queue saved"),
+            Some(ref admin_state) => tracing::info!(
+                pci_id = ?self.device.id(),
                 id = admin_state.qid,
                 pending_commands_count = admin_state.handler_data.pending_cmds.commands.len(),
                 "saved admin queue",
-            );
+            ),
         }
 
-        // Log IO queues summary
-        if !io.is_empty() {
-            tracing::info!(
+        match io.is_empty() {
+            true => tracing::warn!(pci_id = ?self.device.id(), "no io queues saved"),
+            false => tracing::info!(
+                pci_id = ?self.device.id(),
                 state = io
                     .iter()
                     .map(|io_state| format!(
@@ -1341,7 +1354,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     .collect::<Vec<_>>()
                     .join(", "),
                 "saved io queues",
-            );
+            ),
         }
 
         Ok(NvmeDriverWorkerSavedState {
