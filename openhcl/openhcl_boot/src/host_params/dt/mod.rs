@@ -375,7 +375,7 @@ struct PartitionTopology {
 #[derive(Debug, PartialEq, Eq)]
 struct PersistedPartitionTopology {
     topology: PartitionTopology,
-    has_nvme_devices: bool,
+    cpus_with_mapped_interrupts: Vec<u32>,
 }
 
 // Calculate the default mmio size for VTL2 when not specified by the host.
@@ -605,7 +605,7 @@ fn topology_from_persisted_state(
     let loader_defs::shim::save_restore::SavedState {
         partition_memory,
         partition_mmio,
-        nvme_device_count,
+        cpus_with_mapped_interrupts,
     } = parsed_protobuf;
 
     // FUTURE: should memory allocation mode should persist in saved state and
@@ -754,7 +754,7 @@ fn topology_from_persisted_state(
             vtl2_mmio,
             memory_allocation_mode,
         },
-        has_nvme_devices: nvme_device_count > 0,
+        cpus_with_mapped_interrupts,
     })
 }
 
@@ -845,7 +845,7 @@ impl PartitionInfo {
 
                 (
                     persisted_topology.topology,
-                    persisted_topology.has_nvme_devices,
+                    !persisted_topology.cpus_with_mapped_interrupts.is_empty(),
                 )
             } else {
                 (
@@ -880,7 +880,7 @@ impl PartitionInfo {
             if cpu_threshold.is_none()
                 || cpu_threshold
                     .and_then(|threshold| threshold.try_into().ok())
-                    .map_or(false, |threshold| parsed.cpu_count() < threshold)
+                    .is_some_and(|threshold| parsed.cpu_count() < threshold)
             {
                 // If we are in the restore path, disable sidecar for small VMs, as the amortization
                 // benefits don't apply when devices are kept alive; the CPUs need to be powered on anyway
