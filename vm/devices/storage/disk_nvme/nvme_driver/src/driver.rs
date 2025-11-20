@@ -1130,6 +1130,11 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                 Ok(()) => return,
                 Err(err) => {
                     // The memory block will be dropped as `proto` goes out of scope.
+                    //
+                    // TODO: in future work, consider trying to issue the NVMe command to delete
+                    // the prior IO queue pair. Given that restore failed, and crucially, why
+                    // restore failed, that may or may not be the right thing to do. It is probably
+                    // the "right" protocol thing to do, though.
 
                     tracing::error!(
                         cpu,
