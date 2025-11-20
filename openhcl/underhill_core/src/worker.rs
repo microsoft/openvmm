@@ -1430,10 +1430,10 @@ async fn new_underhill_vm(
     // value for non-Trusted Launch VMs until all hosts in Azure have been
     // updated to provide the correct value.
     //
-    // Trusted Launch is roughly equivalent to not having secure boot or
-    // TPM enabled. Default boot is necessary because the VMGS is not swapped
-    // with the OS disk for these VMs in Azure (and in any case on-prem),
-    // causing the VM to fail to boot after an OS swap.
+    // Trusted Launch is roughly equivalent to having secure boot and TPM
+    // enabled. For VMs that are not Trusted Launch, default boot is necessary
+    // because the VMGS is not swapped with the OS disk in Azure (and in any
+    // case on-prem), causing the VM to fail to boot after an OS swap.
     //
     // TODO: remove this (and petri workaround) once host changes are saturated
     if !isolation.is_isolated()

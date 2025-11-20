@@ -338,7 +338,7 @@ impl HyperVVM {
         powershell::run_set_initial_machine_configuration(&self.vmid, &self.ps_mod, imc_hive).await
     }
 
-    async fn state(&self) -> anyhow::Result<VmState> {
+    pub(crate) async fn state(&self) -> anyhow::Result<VmState> {
         hvc::hvc_state(&self.vmid).await
     }
 
