@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 guid.workspace = true
+mesh.workspace = true
 open_enum.workspace = true
 serde_helpers.workspace = true
 

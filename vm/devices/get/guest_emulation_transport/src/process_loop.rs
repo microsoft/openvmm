@@ -158,19 +158,21 @@ pub(crate) mod msg {
     use crate::client::ModifyVtl2SettingsRequest;
     use chipset_resources::battery::HostBatteryUpdate;
     use guid::Guid;
+    use mesh::MeshPayload;
     use mesh::rpc::Rpc;
     use std::sync::Arc;
     use user_driver::DmaClient;
+    use vmcore::local_only::LocalOnly;
     use vpci::bus_control::VpciBusEvent;
 
-    #[derive(Debug)]
+    #[derive(Debug, MeshPayload)]
     pub struct VpciListenerRegistrationInput {
         pub bus_instance_id: Guid,
         pub sender: mesh::Sender<VpciBusEvent>,
     }
 
     /// Necessary data passed via the client to create the `IGVM_ATTEST` request.
-    #[derive(Debug)]
+    #[derive(Debug, MeshPayload)]
     pub(crate) struct IgvmAttestRequestData {
         pub(crate) agent_data: Vec<u8>,
         pub(crate) report: Vec<u8>,
@@ -178,6 +180,7 @@ pub(crate) mod msg {
     }
 
     /// A list specifying control messages to send to the process loop.
+    #[derive(MeshPayload)]
     pub(crate) enum Msg {
         // GET infrastructure - not part of the GET protocol itself.
         // No direct interaction with the host.
@@ -190,9 +193,11 @@ pub(crate) mod msg {
         /// Inspect the state of the process loop.
         Inspect(inspect::Deferred),
         /// Store the gpa allocator to be used for attestation.
-        SetGpaAllocator(Arc<dyn DmaClient>),
+        // TODO: Consider a strategy that avoids LocalOnly here.
+        SetGpaAllocator(LocalOnly<Arc<dyn DmaClient>>),
         /// Store the callback to trigger the debug interrupt.
-        SetDebugInterruptCallback(Box<dyn Fn(u8) + Send + Sync>),
+        // TODO: Consider a strategy that avoids LocalOnly here.
+        SetDebugInterruptCallback(LocalOnly<Box<dyn Fn(u8) + Send + Sync>>),
 
         // Late bound receivers for Guest Notifications
         /// Take the late-bound GuestRequest receiver for Generation Id updates.
@@ -312,46 +317,46 @@ pub(crate) mod msg {
         VtlCrashNotification(get_protocol::VtlCrashNotification),
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, MeshPayload)]
     pub enum PowerState {
         PowerOff,
         Reset,
         Hibernate,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, MeshPayload)]
     pub struct VmgsReadInput {
         pub sector_offset: u64,
         pub sector_count: u32,
         pub sector_size: u32,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, MeshPayload)]
     pub struct VmgsWriteInput {
         pub sector_offset: u64,
         pub buf: Vec<u8>,
         pub sector_size: u32,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, MeshPayload)]
     pub struct VpciDeviceControlInput {
         pub code: get_protocol::VpciDeviceControlCode,
         pub bus_instance_id: Guid,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, MeshPayload)]
     pub struct VpciDeviceBindingChangeInput {
         pub bus_instance_id: Guid,
         pub binding_state: bool,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, MeshPayload)]
     pub struct VgaProxyPciWriteInput {
         pub offset: u16,
         pub value: u32,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, MeshPayload)]
     pub struct CreateRamGpaRangeInput {
         pub slot: u32,
         pub gpa_start: u64,
@@ -1032,10 +1037,10 @@ impl<T: RingMem> ProcessLoop<T> {
                 req.inspect(self);
             }
             Msg::SetGpaAllocator(gpa_allocator) => {
-                self.gpa_allocator = Some(gpa_allocator);
+                self.gpa_allocator = Some(gpa_allocator.0);
             }
             Msg::SetDebugInterruptCallback(callback) => {
-                self.set_debug_interrupt = Some(callback);
+                self.set_debug_interrupt = Some(callback.0);
             }
 
             // Late bound receivers for Guest Notifications
@@ -1359,8 +1364,7 @@ impl<T: RingMem> ProcessLoop<T> {
             .save_request
             .send(GuestSaveRequest {
                 correlation_id: notification_header.correlation_id,
-                deadline: std::time::Instant::now()
-                    + std::time::Duration::from_secs(notification_header.timeout_hint_secs as u64),
+                timeout_hint_secs: notification_header.timeout_hint_secs,
                 capabilities_flags: notification_header.capabilities_flags,
             })
             .map_err(|_| {

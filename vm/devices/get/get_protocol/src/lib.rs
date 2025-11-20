@@ -49,7 +49,7 @@ const fn make_version(major: u16, minor: u16) -> u32 {
 }
 
 open_enum! {
-    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
     pub enum ProtocolVersion: u32 {
         INVALID = 0,
         RS5 = make_version(1, 0),
@@ -59,7 +59,7 @@ open_enum! {
 }
 
 open_enum! {
-    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
     pub enum MessageVersions: u8 {
         INVALID          = 0,
         HEADER_VERSION_1 = 1,
@@ -67,7 +67,7 @@ open_enum! {
 }
 
 open_enum! {
-    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
     pub enum MessageTypes: u8 {
         INVALID            = 0,
         HOST_NOTIFICATION  = 1,
@@ -82,7 +82,7 @@ open_enum! {
     ///
     /// These are intended to be "fire-and-forget" messages sent from the Host
     /// to the Guest, without requiring a response.
-    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
     pub enum GuestNotifications: u16 {
         INVALID              = 0,
         UPDATE_GENERATION_ID = 1,
@@ -103,7 +103,7 @@ open_enum! {
     ///
     /// These are intended to be "fire-and-forget" messages sent from the Guest
     /// to the Host, without requiring a response.
-    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
     pub enum HostNotifications: u16 {
         INVALID   = 0,
         POWER_OFF = 1,
@@ -121,7 +121,7 @@ open_enum! {
 
 open_enum! {
     /// Header ids (Each request has a response of the same ID).
-    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
     pub enum HostRequests: u16 {
         INVALID                      = 0,
         VERSION                      = 1,
@@ -165,6 +165,7 @@ open_enum! {
 }
 
 pub use header::*;
+use mesh::MeshPayload;
 pub mod header {
     use super::MessageTypes;
     use super::MessageVersions;
@@ -177,6 +178,7 @@ pub mod header {
     use super::GuestNotifications;
     use super::HostNotifications;
     use super::HostRequests;
+    use mesh::MeshPayload;
 
     /// The raw header pulled off the wire.
     #[repr(C)]
@@ -192,7 +194,7 @@ pub mod header {
     // the `MessageId` associated type.
     pub trait HeaderMeta: private::Sealed {
         const MESSAGE_TYPE: MessageTypes;
-        type MessageId: Copy + IntoBytes + FromBytes + Immutable + KnownLayout + Sized;
+        type MessageId: Copy + IntoBytes + FromBytes + Immutable + KnownLayout + Sized + MeshPayload;
     }
 
     macro_rules! defn_header_meta {
@@ -254,7 +256,10 @@ pub mod header {
     // padding bytes because of the asserts inside `defn_header_meta!`, and
     // HeaderMeta is sealed, but zerocopy can't see all of that yet.
     #[repr(C, packed)]
-    #[derive(Copy, Clone, Debug, FromBytes, Immutable, KnownLayout, PartialEq, IntoBytes)]
+    #[derive(
+        Copy, Clone, Debug, FromBytes, Immutable, KnownLayout, PartialEq, IntoBytes, MeshPayload,
+    )]
+    #[mesh(bound = "Meta::MessageId: MeshPayload")]
     pub struct HeaderGeneric<Meta: HeaderMeta> {
         pub message_version: MessageVersions,
         pub message_type: MessageTypes,
@@ -327,7 +332,7 @@ impl ResetNotification {
 }
 
 open_enum! {
-    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
     pub enum EventLogId: u32 {
         INVALID_ID = 0,
         BOOT_SUCCESS = 1,
@@ -423,7 +428,7 @@ pub const VTL_CRASH_PARAMETERS: usize = 5;
 
 /// The transport level VTL crash data to send to the host.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct VtlCrashNotification {
     pub message_header: HeaderHostNotification,
     pub vp_index: u32,
@@ -550,7 +555,7 @@ impl TimeRequest {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct TimeResponse {
     pub message_header: HeaderHostResponse,
     pub _pad: u32,
@@ -688,7 +693,7 @@ impl VmgsGetDeviceInfoRequest {
 const_assert_eq!(4, size_of::<VmgsGetDeviceInfoRequest>());
 
 open_enum! {
-    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
     pub enum VmgsIoStatus: u32 {
         SUCCESS         = 0,
         INVALID_COMMAND = 1,
@@ -713,7 +718,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct VmgsGetDeviceInfoResponse {
     pub message_header: HeaderHostResponse,
     pub status: VmgsIoStatus,
@@ -771,7 +776,7 @@ impl VmgsWriteRequest {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct VmgsWriteResponse {
     pub message_header: HeaderHostResponse,
     pub status: VmgsIoStatus,
@@ -813,7 +818,7 @@ impl VmgsReadRequest {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct VmgsReadResponse {
     pub message_header: HeaderHostResponse,
     pub status: VmgsIoStatus,
@@ -848,7 +853,7 @@ impl VmgsFlushRequest {
 const_assert_eq!(4, size_of::<VmgsFlushRequest>());
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct VmgsFlushResponse {
     pub message_header: HeaderHostResponse,
     pub status: VmgsIoStatus,
@@ -1029,7 +1034,7 @@ const_assert_eq!(4, size_of::<DevicePlatformSettingsRequestV2>());
 /// This represents a boolean value sent over the protocol as a u8. The only
 /// valid values are 0 or 1.
 #[repr(transparent)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct ProtocolBool(pub u8);
 
 impl From<bool> for ProtocolBool {
@@ -1063,7 +1068,7 @@ pub const GSP_CIPHERTEXT_MAX: u32 = 512;
 pub const NUMBER_GSP: u32 = 2;
 
 #[bitfield(u32)]
-#[derive(IntoBytes, FromBytes, Immutable, KnownLayout, PartialEq, Eq)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout, PartialEq, Eq, MeshPayload)]
 pub struct GspExtendedStatusFlags {
     pub state_refresh_request: bool,
     pub no_registry_file: bool,
@@ -1076,7 +1081,7 @@ pub struct GspExtendedStatusFlags {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct GspCleartextContent {
     pub length: u32,
     pub buffer: [u8; GSP_CLEARTEXT_MAX as usize * 2],
@@ -1085,7 +1090,7 @@ pub struct GspCleartextContent {
 const_assert_eq!(68, size_of::<GspCleartextContent>());
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct GspCiphertextContent {
     pub length: u32,
     pub buffer: [u8; GSP_CIPHERTEXT_MAX as usize],
@@ -1111,7 +1116,7 @@ impl GuestStateProtectionByIdRequest {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct GuestStateProtectionByIdResponse {
     pub message_header: HeaderHostResponse,
     pub seed: GspCleartextContent,
@@ -1121,7 +1126,7 @@ pub struct GuestStateProtectionByIdResponse {
 const_assert_eq!(76, size_of::<GuestStateProtectionByIdResponse>());
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct GuestStateProtectionRequest {
     pub message_header: HeaderHostRequest,
     pub new_gsp: GspCleartextContent,
@@ -1150,7 +1155,7 @@ impl GuestStateProtectionRequest {
 }
 
 #[repr(C)]
-#[derive(Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct GuestStateProtectionResponse {
     pub message_header: HeaderHostResponse,
     pub encrypted_gsp: GspCiphertextContent,
@@ -1182,7 +1187,7 @@ impl UpdateGenerationId {
 
 /// Bitfield describing SaveGuestVtl2StateNotification::capabilities_flags
 #[bitfield(u64)]
-#[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct SaveGuestVtl2StateFlags {
     /// Explicitly allow nvme_keepalive feature when servicing.
     #[bits(1)]
@@ -1305,7 +1310,7 @@ impl RestoreGuestVtl2StateResponse {
 }
 
 open_enum! {
-    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
     pub enum VpciDeviceControlCode: u32 {
         UNDEFINED = 0,
         OFFER = 1,
@@ -1315,7 +1320,7 @@ open_enum! {
 }
 
 open_enum! {
-    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
     pub enum VpciDeviceControlStatus: u32 {
         SUCCESS = 0,
         INVALID_REQUEST = 1,
@@ -1346,7 +1351,7 @@ impl VpciDeviceControlRequest {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct VpciDeviceControlResponse {
     pub message_header: HeaderHostResponse,
     pub status: VpciDeviceControlStatus,
@@ -1405,7 +1410,7 @@ impl VpciDeviceBindingChangeRequest {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct VpciDeviceBindingChangeResponse {
     pub message_header: HeaderHostResponse,
     pub bus_instance_id: Guid,
@@ -1443,7 +1448,7 @@ impl VgaProxyPciReadRequest {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct VgaProxyPciReadResponse {
     pub message_header: HeaderHostResponse,
     pub value: u32,
@@ -1481,7 +1486,7 @@ impl VgaProxyPciWriteRequest {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct VgaProxyPciWriteResponse {
     pub message_header: HeaderHostResponse,
 }
@@ -1627,7 +1632,7 @@ impl MapFramebufferRequest {
 }
 
 open_enum! {
-    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
     pub enum MapFramebufferStatus : u32 {
         SUCCESS = 0,
         FAILURE = 1,
@@ -1636,7 +1641,7 @@ open_enum! {
 
 /// MAP_FRAMEBUFFER_RESPONSE
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct MapFramebufferResponse {
     pub message_header: HeaderHostResponse,
     pub status: MapFramebufferStatus,
@@ -1671,7 +1676,7 @@ impl UnmapFramebufferRequest {
 }
 
 open_enum! {
-    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
     pub enum UnmapFramebufferStatus : u32 {
         SUCCESS = 0,
         FAILURE = 1,
@@ -1680,7 +1685,7 @@ open_enum! {
 
 /// UNMAP_FRAMEBUFFER_RESPONSE
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct UnmapFramebufferResponse {
     pub message_header: HeaderHostResponse,
     pub status: UnmapFramebufferStatus,
@@ -1776,7 +1781,7 @@ pub struct InjectDebugInterruptNotification {
 const_assert_eq!(6, size_of::<InjectDebugInterruptNotification>());
 
 #[bitfield(u64)]
-#[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct CreateRamGpaRangeFlags {
     _reserved1: bool,
 
@@ -1820,7 +1825,7 @@ impl CreateRamGpaRangeRequest {
 }
 
 open_enum! {
-    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
     pub enum CreateRamGpaRangeStatus : u32 {
         SUCCESS = 0,
         /// slot index out of bounds
@@ -1837,7 +1842,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct CreateRamGpaRangeResponse {
     pub message_header: HeaderHostResponse,
     pub status: CreateRamGpaRangeStatus,
@@ -1873,7 +1878,7 @@ impl ResetRamGpaRangeRequest {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout, MeshPayload)]
 pub struct ResetRamGpaRangeResponse {
     pub message_header: HeaderHostResponse,
 }

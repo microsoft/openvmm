@@ -11,6 +11,7 @@ use get_protocol::RegisterState;
 use get_protocol::TripleFaultType;
 use guid::Guid;
 use inspect::Inspect;
+use mesh::MeshPayload;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use std::sync::Arc;
@@ -31,15 +32,15 @@ enum LogOpType {
 /// which initializes the GET worker and returns an instance of the client,
 /// which can then be cloned to any objects / devices that need to communicate
 /// over the GET.
-#[derive(Inspect, Debug, Clone)]
+#[derive(Inspect, Debug, Clone, MeshPayload)]
 pub struct GuestEmulationTransportClient {
     #[inspect(flatten)]
-    control: Arc<ProcessLoopControl>,
+    control: ProcessLoopControl,
     #[inspect(debug)]
     version: get_protocol::ProtocolVersion,
 }
 
-#[derive(Debug, Inspect)]
+#[derive(Debug, Inspect, Clone, MeshPayload)]
 struct ProcessLoopControl(#[inspect(flatten, send = "msg::Msg::Inspect")] mesh::Sender<msg::Msg>);
 
 impl ProcessLoopControl {
@@ -70,6 +71,7 @@ impl ProcessLoopControl {
     }
 }
 
+#[derive(MeshPayload)]
 pub struct ModifyVtl2SettingsRequest(
     pub Rpc<Vec<u8>, Result<(), Vec<underhill_config::Vtl2SettingsErrorInfo>>>,
 );
@@ -80,7 +82,7 @@ impl GuestEmulationTransportClient {
         version: get_protocol::ProtocolVersion,
     ) -> GuestEmulationTransportClient {
         GuestEmulationTransportClient {
-            control: Arc::new(ProcessLoopControl(control)),
+            control: ProcessLoopControl(control),
             version,
         }
     }
@@ -398,13 +400,13 @@ impl GuestEmulationTransportClient {
     /// future once a central DMA API is made.
     pub fn set_gpa_allocator(&mut self, gpa_allocator: Arc<dyn DmaClient>) {
         self.control
-            .notify(msg::Msg::SetGpaAllocator(gpa_allocator));
+            .notify(msg::Msg::SetGpaAllocator(gpa_allocator.into()));
     }
 
     /// Set the the callback to trigger the debug interrupt.
     pub fn set_debug_interrupt_callback(&mut self, callback: Box<dyn Fn(u8) + Send + Sync>) {
         self.control
-            .notify(msg::Msg::SetDebugInterruptCallback(callback));
+            .notify(msg::Msg::SetDebugInterruptCallback(callback.into()));
     }
 
     /// Send the attestation request to the IGVM agent on the host.

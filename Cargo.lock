@@ -2483,6 +2483,7 @@ version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
  "guid",
+ "mesh",
  "open_enum",
  "serde",
  "serde_helpers",
@@ -2714,6 +2715,7 @@ dependencies = [
  "vmbus_async",
  "vmbus_ring",
  "vmbus_user_channel",
+ "vmcore",
  "vpci",
  "zerocopy 0.8.27",
 ]

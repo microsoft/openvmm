@@ -60,3 +60,9 @@ impl<T, R> FieldDecode<'_, T, R> for LocalOnlyField {
         Err(Error::new(LocalOnlyError))
     }
 }
+
+impl<T> From<T> for LocalOnly<T> {
+    fn from(value: T) -> Self {
+        LocalOnly(value)
+    }
+}
