@@ -28,6 +28,7 @@
 //! }
 //! ```
 
+use mesh::MeshPayload;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::Context;
@@ -38,7 +39,7 @@ use std::task::ready;
 /// IOs.
 ///
 /// Create with [`defer_read`] or [`defer_write`].
-#[derive(Debug)]
+#[derive(Debug, MeshPayload)]
 pub struct DeferredToken {
     is_read: bool,
     recv: mesh::OneshotReceiver<(u64, usize)>,

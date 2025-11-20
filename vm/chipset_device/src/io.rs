@@ -3,12 +3,14 @@
 
 //! Memory mapped IO (MMIO) and port IO support.
 
+use mesh::MeshPayload;
+
 pub mod deferred;
 
 /// An error related to the suitability of the IO request for the device. A
 /// device should handle device-specific errors internally, and should return
 /// `IoResult::Ok` in these conditions.
-#[derive(Debug)]
+#[derive(Debug, MeshPayload)]
 pub enum IoError {
     /// The requested device register is not present.
     InvalidRegister,
@@ -23,7 +25,7 @@ pub enum IoError {
 /// Space) operation, as in methods of [`MmioIntercept`](crate::mmio::MmioIntercept),
 /// [`PortIoIntercept`](crate::pio::PortIoIntercept), or
 /// [`PciConfigSpace`](crate::pci::PciConfigSpace).
-#[derive(Debug)]
+#[derive(Debug, MeshPayload)]
 #[must_use]
 pub enum IoResult {
     /// The IO operation succeeded.
