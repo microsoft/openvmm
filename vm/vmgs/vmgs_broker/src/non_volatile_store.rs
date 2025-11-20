@@ -5,8 +5,9 @@
 
 use crate::VmgsClient;
 use crate::VmgsClientError;
+use crate::broker::VmgsBrokerError;
 use async_trait::async_trait;
-use std::error::Error;
+use thiserror::Error;
 use vmcore::non_volatile_store::NonVolatileStore;
 use vmcore::non_volatile_store::NonVolatileStoreError;
 
@@ -19,7 +20,7 @@ pub struct VmgsNonVolatileStore {
 
 /// Error returned when a VMGS file is requested to be opened in encrypted mode,
 /// but the VMGS broker was not compiled with encryption support.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Error)]
 #[error("the vmgs_broker crate was not compiled with encryption support")]
 pub struct EncryptionNotSupported;
 
@@ -67,18 +68,7 @@ impl NonVolatileStore for VmgsNonVolatileStore {
     async fn restore(&mut self) -> Result<Option<Vec<u8>>, NonVolatileStoreError> {
         match self.vmgs.read_file(self.file_id).await {
             Ok(buf) => Ok(Some(buf)),
-            Err(VmgsClientError::Vmgs(e))
-                if e.source()
-                    .map(|ve| {
-                        matches!(
-                            ve.downcast_ref::<vmgs::Error>(),
-                            Some(vmgs::Error::FileInfoNotAllocated)
-                        )
-                    })
-                    .unwrap_or(false) =>
-            {
-                Ok(None)
-            }
+            Err(VmgsClientError::Vmgs(VmgsBrokerError::FileInfoNotAllocated)) => Ok(None),
             Err(e) => Err(NonVolatileStoreError::new(e)),
         }
     }

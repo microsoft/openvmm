@@ -4,10 +4,10 @@
 //! The Vmgs worker will send messages to the Vmgs dispatch, allowing
 //! tasks to queue for the dispatcher to handle synchronously
 
+use crate::broker::VmgsBrokerError;
 use crate::broker::VmgsBrokerRpc;
 use inspect::Inspect;
 use mesh::MeshPayload;
-use mesh::error::RemoteError;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use thiserror::Error;
@@ -16,31 +16,31 @@ use vmgs::VmgsFileInfo;
 use vmgs_format::FileId;
 
 /// VMGS broker errors.
-#[derive(Debug, Error, MeshPayload)]
+#[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum VmgsClientError {
     /// VMGS broker is offline
     #[error("broker is offline")]
-    BrokerOffline(#[source] RemoteError),
+    BrokerOffline(#[source] RpcError),
     /// VMGS error
     #[error("vmgs error")]
-    Vmgs(#[source] RemoteError),
-}
-
-impl From<RpcError<RemoteError>> for VmgsClientError {
-    fn from(value: RpcError<RemoteError>) -> Self {
-        match value {
-            RpcError::Call(e) => VmgsClientError::Vmgs(e),
-            RpcError::Channel(e) => VmgsClientError::BrokerOffline(RemoteError::new(e)),
-        }
-    }
+    Vmgs(#[source] VmgsBrokerError),
 }
 
 impl From<RpcError> for VmgsClientError {
     fn from(value: RpcError) -> Self {
         match value {
             RpcError::Call(_) => unreachable!(),
-            RpcError::Channel(e) => VmgsClientError::BrokerOffline(RemoteError::new(e)),
+            RpcError::Channel(e) => VmgsClientError::BrokerOffline(RpcError::Channel(e)),
+        }
+    }
+}
+
+impl From<RpcError<VmgsBrokerError>> for VmgsClientError {
+    fn from(value: RpcError<VmgsBrokerError>) -> Self {
+        match value {
+            RpcError::Call(e) => VmgsClientError::Vmgs(e),
+            RpcError::Channel(e) => VmgsClientError::BrokerOffline(RpcError::Channel(e)),
         }
     }
 }

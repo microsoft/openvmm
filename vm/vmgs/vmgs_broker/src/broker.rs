@@ -4,19 +4,35 @@
 use mesh::MeshPayload;
 use mesh::Receiver;
 use mesh::error::RemoteError;
+use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
+use thiserror::Error;
 use vmgs::Vmgs;
 use vmgs::VmgsFileInfo;
 use vmgs_format::FileId;
 
+#[derive(Protobuf, Error, Debug)]
+pub enum VmgsBrokerError {
+    #[error("no allocated bytes for file id being read")]
+    FileInfoNotAllocated,
+    #[error("{0}")]
+    Other(#[source] RemoteError),
+}
+
+impl From<vmgs::Error> for VmgsBrokerError {
+    fn from(value: vmgs::Error) -> Self {
+        VmgsBrokerError::Other(RemoteError::new(value))
+    }
+}
+
 #[derive(MeshPayload)]
 pub enum VmgsBrokerRpc {
     Inspect(inspect::Deferred),
-    GetFileInfo(Rpc<FileId, Result<VmgsFileInfo, RemoteError>>),
-    ReadFile(Rpc<FileId, Result<Vec<u8>, RemoteError>>),
-    WriteFile(Rpc<(FileId, Vec<u8>), Result<(), RemoteError>>),
+    GetFileInfo(Rpc<FileId, Result<VmgsFileInfo, VmgsBrokerError>>),
+    ReadFile(Rpc<FileId, Result<Vec<u8>, VmgsBrokerError>>),
+    WriteFile(Rpc<(FileId, Vec<u8>), Result<(), VmgsBrokerError>>),
     #[cfg(with_encryption)]
-    WriteFileEncrypted(Rpc<(FileId, Vec<u8>), Result<(), RemoteError>>),
+    WriteFileEncrypted(Rpc<(FileId, Vec<u8>), Result<(), VmgsBrokerError>>),
     Save(Rpc<(), vmgs::save_restore::state::SavedVmgsState>),
 }
 
@@ -44,20 +60,19 @@ impl VmgsBrokerTask {
             VmgsBrokerRpc::Inspect(req) => {
                 req.inspect(&self.vmgs);
             }
-            VmgsBrokerRpc::GetFileInfo(rpc) => rpc
-                .handle_sync(|file_id| self.vmgs.get_file_info(file_id).map_err(RemoteError::new)),
+            VmgsBrokerRpc::GetFileInfo(rpc) => {
+                rpc.handle_sync(|file_id| self.vmgs.get_file_info(file_id).map_err(Into::into))
+            }
             VmgsBrokerRpc::ReadFile(rpc) => {
-                rpc.handle(async |file_id| {
-                    self.vmgs.read_file(file_id).await.map_err(RemoteError::new)
-                })
-                .await
+                rpc.handle(async |file_id| self.vmgs.read_file(file_id).await.map_err(Into::into))
+                    .await
             }
             VmgsBrokerRpc::WriteFile(rpc) => {
                 rpc.handle(async |(file_id, buf)| {
                     self.vmgs
                         .write_file(file_id, &buf)
                         .await
-                        .map_err(RemoteError::new)
+                        .map_err(Into::into)
                 })
                 .await
             }
@@ -67,7 +82,7 @@ impl VmgsBrokerTask {
                     self.vmgs
                         .write_file_encrypted(file_id, &buf)
                         .await
-                        .map_err(RemoteError::new)
+                        .map_err(Into::into)
                 })
                 .await
             }
