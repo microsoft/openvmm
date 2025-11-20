@@ -256,5 +256,6 @@ pub struct GuestSaveRequest {
     /// When to complete the request.
     pub timeout_hint: Duration,
     /// Flags bitfield.
+    #[mesh(encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
     pub capabilities_flags: SaveGuestVtl2StateFlags,
 }

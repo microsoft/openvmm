@@ -8,11 +8,11 @@ rust-version.workspace = true
 
 [dependencies]
 guid.workspace = true
-mesh.workspace = true
 open_enum.workspace = true
 serde_helpers.workspace = true
 
 bitfield-struct.workspace = true
+mesh_protobuf.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["std"] }
 static_assertions.workspace = true

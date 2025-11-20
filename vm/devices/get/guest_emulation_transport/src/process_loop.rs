@@ -165,6 +165,10 @@ pub(crate) mod msg {
     use user_driver::DmaClient;
     use vmcore::local_only::LocalOnly;
     use vpci::bus_control::VpciBusEvent;
+    use zerocopy::FromBytes;
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
     #[derive(Debug, MeshPayload)]
     pub struct VpciListenerRegistrationInput {
@@ -178,6 +182,22 @@ pub(crate) mod msg {
         pub(crate) agent_data: Vec<u8>,
         pub(crate) report: Vec<u8>,
         pub(crate) response_buffer_len: usize,
+    }
+
+    #[derive(Debug, mesh::payload::Protobuf, IntoBytes, FromBytes, Immutable, KnownLayout)]
+    #[mesh(bound = "")]
+    #[repr(transparent)]
+    pub(crate) struct Protocol<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
+        #[mesh(encoding = "mesh::payload::encoding::ZeroCopyEncoding")] pub T,
+    );
+
+    impl<T> From<T> for Protocol<T>
+    where
+        T: IntoBytes + FromBytes + Immutable + KnownLayout,
+    {
+        fn from(value: T) -> Self {
+            Protocol(value)
+        }
     }
 
     /// A list specifying control messages to send to the process loop.
@@ -245,7 +265,9 @@ pub(crate) mod msg {
         /// Invoke `IVmGuestMemoryAccess::CreateRamGpaRange` on the host.
         ///
         /// See comments in underhill_core/src/emuplat/i440bx_host_pci_bridge.rs for more information.
-        CreateRamGpaRange(Rpc<CreateRamGpaRangeInput, get_protocol::CreateRamGpaRangeResponse>),
+        CreateRamGpaRange(
+            Rpc<CreateRamGpaRangeInput, Protocol<get_protocol::CreateRamGpaRangeResponse>>,
+        ),
         /// Get the device platform settings from the host.
         ///
         /// CVM NOTE: The returned data must be validated and/or attested to.
@@ -258,56 +280,63 @@ pub(crate) mod msg {
         /// Get Guest State Protection information.
         GuestStateProtection(
             Rpc<
-                Box<get_protocol::GuestStateProtectionRequest>,
-                get_protocol::GuestStateProtectionResponse,
+                Box<Protocol<get_protocol::GuestStateProtectionRequest>>,
+                Protocol<get_protocol::GuestStateProtectionResponse>,
             >,
         ),
         /// Get Guest State Protection information, alternate protocol.
-        GuestStateProtectionById(Rpc<(), get_protocol::GuestStateProtectionByIdResponse>),
+        GuestStateProtectionById(Rpc<(), Protocol<get_protocol::GuestStateProtectionByIdResponse>>),
         /// Retrieve the current time.
         ///
         /// CVM NOTE: The returned value should not be relied on for security purposes.
         /// It is expected that the guest will use NTP (or some other time source) after boot.
-        HostTime(Rpc<(), get_protocol::TimeResponse>),
+        HostTime(Rpc<(), Protocol<get_protocol::TimeResponse>>),
         /// Send an attestation request.
         IgvmAttest(Rpc<Box<IgvmAttestRequestData>, Result<Vec<u8>, crate::error::IgvmAttestError>>),
         /// Tell the host the location of the framebuffer.
-        MapFramebuffer(Rpc<u64, get_protocol::MapFramebufferResponse>),
+        MapFramebuffer(Rpc<u64, Protocol<get_protocol::MapFramebufferResponse>>),
         /// Reset and unmap a memory range previously created by CreateRamGpaRange.
-        ResetRamGpaRange(Rpc<u32, get_protocol::ResetRamGpaRangeResponse>),
+        ResetRamGpaRange(Rpc<u32, Protocol<get_protocol::ResetRamGpaRangeResponse>>),
         /// Send saved state (or an error message) to the host so it can be used to start
         /// a new VM after servicing.
         SendServicingState(Rpc<Result<Vec<u8>, String>, Result<(), ()>>),
         /// Tell the host to unmap the framebuffer.
-        UnmapFramebuffer(Rpc<(), get_protocol::UnmapFramebufferResponse>),
+        UnmapFramebuffer(Rpc<(), Protocol<get_protocol::UnmapFramebufferResponse>>),
         /// Read a PCI config space value from the proxied VGA device.
-        VgaProxyPciRead(Rpc<u16, get_protocol::VgaProxyPciReadResponse>),
+        VgaProxyPciRead(Rpc<u16, Protocol<get_protocol::VgaProxyPciReadResponse>>),
         /// Write a PCI config space value to the proxied VGA device.
-        VgaProxyPciWrite(Rpc<VgaProxyPciWriteInput, get_protocol::VgaProxyPciWriteResponse>),
+        VgaProxyPciWrite(
+            Rpc<VgaProxyPciWriteInput, Protocol<get_protocol::VgaProxyPciWriteResponse>>,
+        ),
         /// Flush any pending writes to the VMGS.
-        VmgsFlush(Rpc<(), get_protocol::VmgsFlushResponse>),
+        VmgsFlush(Rpc<(), Protocol<get_protocol::VmgsFlushResponse>>),
         /// Get basic metadata about the VMGS.
-        VmgsGetDeviceInfo(Rpc<(), get_protocol::VmgsGetDeviceInfoResponse>),
+        VmgsGetDeviceInfo(Rpc<(), Protocol<get_protocol::VmgsGetDeviceInfoResponse>>),
         /// Read from the VMGS.
         ///
         /// CVM NOTE: CVMs encrypt their VMGS and this data transfer is done at a raw block level.
         /// The host will only ever see encrypted data.
-        VmgsRead(Rpc<VmgsReadInput, Result<Vec<u8>, get_protocol::VmgsReadResponse>>),
+        VmgsRead(Rpc<VmgsReadInput, Result<Vec<u8>, Protocol<get_protocol::VmgsReadResponse>>>),
         /// Write to the VMGS.
         ///
         /// CVM NOTE: CVMs encrypt their VMGS and this data transfer is done at a raw block level.
         /// The host will only ever see encrypted data.
-        VmgsWrite(Rpc<VmgsWriteInput, Result<(), get_protocol::VmgsWriteResponse>>),
+        VmgsWrite(Rpc<VmgsWriteInput, Result<(), Protocol<get_protocol::VmgsWriteResponse>>>),
         // CVM TODO
         VpciDeviceBindingChange(
-            Rpc<VpciDeviceBindingChangeInput, get_protocol::VpciDeviceBindingChangeResponse>,
+            Rpc<
+                VpciDeviceBindingChangeInput,
+                Protocol<get_protocol::VpciDeviceBindingChangeResponse>,
+            >,
         ),
         // CVM TODO
-        VpciDeviceControl(Rpc<VpciDeviceControlInput, get_protocol::VpciDeviceControlResponse>),
+        VpciDeviceControl(
+            Rpc<VpciDeviceControlInput, Protocol<get_protocol::VpciDeviceControlResponse>>,
+        ),
 
         // Host Notifications (don't require a response)
         /// Report an event to the host.
-        EventLog(get_protocol::EventLogId),
+        EventLog(Protocol<get_protocol::EventLogId>),
         /// Report a power state change to the host.
         PowerState(PowerState),
         /// Report the result of a restore operation to the host.
@@ -315,7 +344,7 @@ pub(crate) mod msg {
         /// Report a VP triple fault to the host.
         TripleFaultNotification(Vec<u8>),
         /// Report a guest crash to the host.
-        VtlCrashNotification(get_protocol::VtlCrashNotification),
+        VtlCrashNotification(Protocol<get_protocol::VtlCrashNotification>),
     }
 
     #[derive(Debug, MeshPayload)]
@@ -341,7 +370,7 @@ pub(crate) mod msg {
 
     #[derive(Debug, MeshPayload)]
     pub struct VpciDeviceControlInput {
-        pub code: get_protocol::VpciDeviceControlCode,
+        pub code: Protocol<get_protocol::VpciDeviceControlCode>,
         pub bus_instance_id: Guid,
     }
 
@@ -363,7 +392,7 @@ pub(crate) mod msg {
         pub gpa_start: u64,
         pub gpa_count: u64,
         pub gpa_offset: u64,
-        pub flags: crate::api::CreateRamGpaRangeFlags,
+        pub flags: Protocol<crate::api::CreateRamGpaRangeFlags>,
     }
 }
 
@@ -1135,18 +1164,28 @@ impl<T: RingMem> ProcessLoop<T> {
             }
             Msg::VmgsRead(req) => {
                 self.push_primary_host_request_handler(|access| {
-                    req.handle_must_succeed(async |input| request_vmgs_read(access, input).await)
+                    req.handle_must_succeed(async |input| {
+                        request_vmgs_read(access, input)
+                            .await
+                            .map(|x| x.map_err(Into::into))
+                    })
                 });
             }
             Msg::VmgsWrite(req) => {
                 self.push_primary_host_request_handler(|access| {
-                    req.handle_must_succeed(async |input| request_vmgs_write(access, input).await)
+                    req.handle_must_succeed(async |input| {
+                        request_vmgs_write(access, input)
+                            .await
+                            .map(|x| x.map_err(Into::into))
+                    })
                 });
             }
             Msg::VpciDeviceControl(req) => {
                 self.push_secondary_host_request_handler(|access| {
                     req.handle_must_succeed(async |input| {
-                        request_vpci_device_control(access, input).await
+                        request_vpci_device_control(access, input)
+                            .await
+                            .map(Into::into)
                     })
                 });
             }
@@ -1185,7 +1224,7 @@ impl<T: RingMem> ProcessLoop<T> {
                         input.gpa_start,
                         input.gpa_count,
                         input.gpa_offset,
-                        input.flags,
+                        input.flags.0,
                     )
                 });
             }
@@ -1229,7 +1268,7 @@ impl<T: RingMem> ProcessLoop<T> {
                 // Send the event log right away, jumping the line in front of
                 // any pending requests.
                 self.send_message(
-                    get_protocol::EventLogNotification::new(event_log_id)
+                    get_protocol::EventLogNotification::new(event_log_id.0)
                         .as_bytes()
                         .to_vec(),
                 );
@@ -1240,7 +1279,7 @@ impl<T: RingMem> ProcessLoop<T> {
                 // any pending requests.
                 // There is no versioning used for this notification. If the host does not
                 // support this notification, the host drop it to no ill-effects.
-                self.send_message(crash_notification.as_bytes().to_vec());
+                self.send_message(crash_notification.0.as_bytes().to_vec());
             }
             Msg::TripleFaultNotification(triple_fault_notification) => {
                 self.send_message(triple_fault_notification);
@@ -1881,7 +1920,7 @@ async fn request_vpci_device_control(
 ) -> Result<get_protocol::VpciDeviceControlResponse, FatalError> {
     let response: get_protocol::VpciDeviceControlResponse = access
         .send_request_fixed_size(&get_protocol::VpciDeviceControlRequest::new(
-            input.code,
+            input.code.0,
             input.bus_instance_id,
         ))
         .await?;
