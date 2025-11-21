@@ -50,6 +50,7 @@ impl SimpleFlowNode for Node {
                 features: recipe.openvmm_hcl_features,
                 no_split_dbg_info: false,
                 max_trace_level: recipe.max_trace_level,
+                include_debug_build_info: false,
             },
             openvmm_hcl_output: v,
         });
