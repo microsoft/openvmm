@@ -105,6 +105,32 @@ impl KeepAliveConfig {
     }
 }
 
+#[derive(Clone, Debug, MeshPayload, Inspect)]
+pub enum NvmeKeepaliveConfig {
+    EnabledHostAndPrivatePoolPresent,
+    DisabledHostAndPrivatePoolPresent,
+    Disabled,
+}
+
+impl FromStr for NvmeKeepaliveConfig {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<NvmeKeepaliveConfig, anyhow::Error> {
+        match s.to_lowercase().as_str() {
+            "host,privatepool" => Ok(NvmeKeepaliveConfig::EnabledHostAndPrivatePoolPresent),
+            "nohost,privatepool" => Ok(NvmeKeepaliveConfig::DisabledHostAndPrivatePoolPresent),
+            "nohost,noprivatepool" => Ok(NvmeKeepaliveConfig::Disabled),
+            _ => Err(anyhow::anyhow!("Invalid keepalive config: {}", s)),
+        }
+    }
+}
+
+impl NvmeKeepaliveConfig {
+    pub fn is_enabled(&self) -> bool {
+        matches!(self, NvmeKeepaliveConfig::EnabledHostAndPrivatePoolPresent)
+    }
+}
+
 // We've made our own parser here instead of using something like clap in order
 // to save on compiled file size. We don't need all the features a crate can provide.
 /// underhill core command-line and environment variable options.
@@ -208,7 +234,7 @@ pub struct Options {
     pub no_sidecar_hotplug: bool,
 
     /// (OPENHCL_NVME_KEEP_ALIVE=1) Enable nvme keep alive when servicing.
-    pub nvme_keep_alive: bool,
+    pub nvme_keep_alive: NvmeKeepaliveConfig,
 
     /// (OPENHCL_MANA_KEEP_ALIVE=\<KeepAliveConfig\>)
     /// Configure MANA keep alive behavior when servicing.
