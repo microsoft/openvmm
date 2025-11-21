@@ -31,6 +31,8 @@ pub enum VmRpc {
     CompleteReloadIgvm(FailableRpc<bool, ()>),
     ReadMemory(FailableRpc<(u64, usize), Vec<u8>>),
     WriteMemory(FailableRpc<(u64, Vec<u8>), ()>),
+    /// Updates the command line parameters that will be passed to the boot shim
+    /// on the *next* VM load. This will replace the existing command line parameters.
     UpdateCliParams(FailableRpc<String, ()>),
 }
 
