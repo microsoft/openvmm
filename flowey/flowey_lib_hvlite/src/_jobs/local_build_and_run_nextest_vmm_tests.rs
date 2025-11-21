@@ -456,7 +456,6 @@ impl SimpleFlowNode for Node {
                             custom_kernel: custom_kernel_abs.clone(),
                             custom_sidecar: None,
                             custom_extra_rootfs: vec![],
-                            include_debug_build_info: true,
                         });
                         OpenhclIgvmRecipe::LocalOnlyCustom(details)
                     } else {
