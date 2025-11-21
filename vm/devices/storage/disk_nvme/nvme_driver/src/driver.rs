@@ -441,6 +441,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             tracing::warn!(
                 max_interrupt_count,
                 requested_io_queue_count,
+                pci_id = ?worker.device.id(),
                 "queue count constrained by msi count"
             );
             max_interrupt_count as u16
@@ -473,6 +474,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 sq_count,
                 cq_count,
                 requested_io_queue_count,
+                pci_id = ?worker.device.id(),
                 "queue count constrained by hardware queue count"
             );
         }
@@ -491,6 +493,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 io_cqsize,
                 io_sqsize,
                 hw_size = worker.registers.cap.mqes_z(),
+                pci_id = ?worker.device.id(),
                 "io queue sizes"
             );
 
@@ -1128,15 +1131,14 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
 
         self.io_issuers.per_cpu[cpu as usize]
             .set(issuer)
-            .ok()
-            .unwrap();
+            .expect("issuer already set for this cpu");
         self.io.push(queue);
 
         Ok(())
     }
 
     async fn create_io_issuer(&mut self, state: &mut WorkerState, cpu: u32) {
-        tracing::debug!(cpu, "issuer request");
+        tracing::debug!(cpu, pci_id = ?self.device.id(), "issuer request");
         if self.io_issuers.per_cpu[cpu as usize].get().is_some() {
             return;
         }
@@ -1219,13 +1221,14 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             return Err(DeviceError::NoMoreIoQueues(state.max_io_queues));
         }
 
+        // qid is 1-based, iv is 0-based.
+        // And, IO queue 1 shares interrupt vector 0 with the admin queue.
         let qid = self.next_ioq_id;
+        let iv = qid - 1;
         self.next_ioq_id += 1;
 
-        tracing::debug!(cpu, qid, "creating io queue");
+        tracing::debug!(cpu, qid, iv, pci_id = ?self.device.id(), "creating io queue");
 
-        // Share IO queue 1's interrupt with the admin queue.
-        let iv = self.io.len() as u16;
         let interrupt = self
             .device
             .map_interrupt(iv.into(), cpu)
