@@ -91,8 +91,15 @@ impl SimpleFlowNode for Node {
 
                 // New logviewer.
                 flowey_lib_common::_util::copy_dir_all(
-                    repo.join("petri/logview_new/dist"),
+                    repo.join("petri/logview_new/dist_manual"),
                     consolidated_html.join("test-results"),
+                )?;
+
+                // Testing CI changes to minimize disruptions to petri site
+                // availability. Will remove this once CI build changes are in.
+                flowey_lib_common::_util::copy_dir_all(
+                    repo.join("petri/logview_new/dist"),
+                    consolidated_html.join("test-results-ci"),
                 )?;
 
                 // as we do not currently have any form of "landing page",
