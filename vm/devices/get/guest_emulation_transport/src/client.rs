@@ -72,7 +72,6 @@ impl ProcessLoopControl {
     }
 }
 
-#[derive(MeshPayload)]
 pub struct ModifyVtl2SettingsRequest(
     pub Rpc<Vec<u8>, Result<(), Vec<underhill_config::Vtl2SettingsErrorInfo>>>,
 );
@@ -674,6 +673,7 @@ impl GuestEmulationTransportClient {
         self.control
             .call(msg::Msg::TakeVtl2SettingsReceiver, ())
             .await
+            .0
     }
 
     /// Take the generation id recv channel. Returns `None` if the channel has already been taken.

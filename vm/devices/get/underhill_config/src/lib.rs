@@ -278,7 +278,7 @@ error_codes! {
 ///
 /// In any case, the Rust-assigned discriminant values are not used in error
 /// messages and do not need to be stable.
-#[derive(Clone, Copy, Debug, PartialEq, MeshPayload)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Vtl2SettingsErrorCode {
     /// Underhill internal failure
     InternalFailure => (Underhill, Underhill),
@@ -365,11 +365,11 @@ impl Serialize for Vtl2SettingsErrorCode {
     }
 }
 
-#[derive(Debug, Serialize, MeshPayload)]
+#[derive(Debug, Serialize)]
 pub struct Vtl2SettingsErrorInfo {
     error_id: Vtl2SettingsErrorCode,
     message: String,
-    file_name: String,
+    file_name: &'static str,
     line: u32,
 }
 
@@ -380,7 +380,7 @@ impl Vtl2SettingsErrorInfo {
         Vtl2SettingsErrorInfo {
             error_id: code,
             message,
-            file_name: caller.file().into(),
+            file_name: caller.file(),
             line: caller.line(),
         }
     }

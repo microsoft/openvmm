@@ -248,7 +248,11 @@ pub(crate) mod msg {
         /// or add unexpected devices. None of these are a confidentiality concern.
         /// Underhill and the guest must always be careful of how they talk to devices,
         /// regardless of the host's actions.
-        TakeVtl2SettingsReceiver(Rpc<(), Option<mesh::Receiver<ModifyVtl2SettingsRequest>>>),
+        ///
+        // TODO: Consider a strategy that avoids LocalOnly here.
+        TakeVtl2SettingsReceiver(
+            Rpc<(), LocalOnly<Option<mesh::Receiver<ModifyVtl2SettingsRequest>>>>,
+        ),
         /// Take the late-bound receiver for battery status updates.
         TakeBatteryStatusReceiver(Rpc<(), Option<mesh::Receiver<HostBatteryUpdate>>>),
         /// Register a new VPCI bus event listener with the process loop.
@@ -1075,12 +1079,14 @@ impl<T: RingMem> ProcessLoop<T> {
 
             // Late bound receivers for Guest Notifications
             Msg::TakeVtl2SettingsReceiver(req) => req.handle_sync(|()| {
-                self.guest_notification_listeners
-                    .vtl2_settings
-                    .init_receiver()
-                    .map(log_buffered_guest_notifications(
-                        get_protocol::GuestNotifications::MODIFY_VTL2_SETTINGS,
-                    ))
+                vmcore::local_only::LocalOnly(
+                    self.guest_notification_listeners
+                        .vtl2_settings
+                        .init_receiver()
+                        .map(log_buffered_guest_notifications(
+                            get_protocol::GuestNotifications::MODIFY_VTL2_SETTINGS,
+                        )),
+                )
             }),
             Msg::TakeGenIdReceiver(req) => req.handle_sync(|()| {
                 self.guest_notification_listeners
