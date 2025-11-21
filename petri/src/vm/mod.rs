@@ -1014,6 +1014,8 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             .await
     }
 
+    /// Update the command line parameter of the running VM that will apply on next boot.
+    /// Will fail if the VM is not using IGVM load mode.
     pub async fn update_command_line(&mut self, command_line: &str) -> anyhow::Result<()> {
         self.runtime.update_command_line(command_line).await
     }
