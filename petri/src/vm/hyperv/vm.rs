@@ -602,7 +602,7 @@ impl Drop for HyperVVM {
             .ok()
             .is_none_or(|v| v.is_empty() || v == "0")
         {
-            let _ = futures::executor::block_on(self.remove_inner());
+            let _ = pal_async::local::block_on(self.remove_inner());
         }
     }
 }
