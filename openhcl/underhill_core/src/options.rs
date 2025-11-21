@@ -94,7 +94,7 @@ impl FromStr for KeepaliveConfig {
             "host,privatepool" => Ok(KeepaliveConfig::EnabledHostAndPrivatePoolPresent),
             "nohost,privatepool" => Ok(KeepaliveConfig::DisabledHostAndPrivatePoolPresent),
             "nohost,noprivatepool" => Ok(KeepaliveConfig::Disabled),
-            x if x.starts_with("disabled") => Ok(KeepaliveConfig::Disabled),
+            x if x.starts_with("disabled,") => Ok(KeepaliveConfig::Disabled),
             _ => Err(anyhow::anyhow!("Invalid keepalive config: {}", s)),
         }
     }
@@ -103,32 +103,6 @@ impl FromStr for KeepaliveConfig {
 impl KeepaliveConfig {
     pub fn is_enabled(&self) -> bool {
         matches!(self, KeepaliveConfig::EnabledHostAndPrivatePoolPresent)
-    }
-}
-
-#[derive(Clone, Debug, MeshPayload, Inspect)]
-pub enum NvmeKeepaliveConfig {
-    EnabledHostAndPrivatePoolPresent,
-    DisabledHostAndPrivatePoolPresent,
-    Disabled,
-}
-
-impl FromStr for NvmeKeepaliveConfig {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<NvmeKeepaliveConfig, anyhow::Error> {
-        match s.to_lowercase().as_str() {
-            "host,privatepool" => Ok(NvmeKeepaliveConfig::EnabledHostAndPrivatePoolPresent),
-            "nohost,privatepool" => Ok(NvmeKeepaliveConfig::DisabledHostAndPrivatePoolPresent),
-            "nohost,noprivatepool" => Ok(NvmeKeepaliveConfig::Disabled),
-            _ => Err(anyhow::anyhow!("Invalid keepalive config: {}", s)),
-        }
-    }
-}
-
-impl NvmeKeepaliveConfig {
-    pub fn is_enabled(&self) -> bool {
-        matches!(self, NvmeKeepaliveConfig::EnabledHostAndPrivatePoolPresent)
     }
 }
 

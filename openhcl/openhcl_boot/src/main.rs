@@ -289,27 +289,26 @@ fn build_kernel_command_line(
         )?;
     }
 
-    // Generate the NVMe keep alive command line.
+    // Generate the NVMe keep alive command line which should look something
+    // like: OPENHCL_NVME_KEEP_ALIVE=disabled,host,privatepool
     // TODO: Move from command line to device tree when stabilized.
-    let mut nvme_cmdline = String::new();
+    write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=")?;
 
-    if !partition_info.boot_options.disable_nvme_keep_alive {
-        nvme_cmdline.push_str("disabled");
+    if partition_info.boot_options.disable_nvme_keep_alive {
+        write!(cmdline, "disabled,")?;
     }
 
     if partition_info.nvme_keepalive {
-        nvme_cmdline.push_str(",host");
+        write!(cmdline, "host,")?;
     } else {
-        nvme_cmdline.push_str(",nohost");
+        write!(cmdline, "nohost,")?;
     }
 
     if vtl2_pool_supported {
-        nvme_cmdline.push_str(",privatepool");
+        write!(cmdline, "privatepool ")?;
     } else {
-        nvme_cmdline.push_str(",noprivatepool");
+        write!(cmdline, "noprivatepool ")?;
     }
-
-    write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE={} ", nvme_cmdline)?;
 
     if let Some(sidecar) = sidecar {
         write!(cmdline, "{} ", sidecar.kernel_command_line())?;
