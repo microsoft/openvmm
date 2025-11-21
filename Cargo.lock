@@ -2717,6 +2717,7 @@ dependencies = [
  "vmbus_async",
  "vmbus_ring",
  "vmbus_user_channel",
+ "vmcore",
  "vpci",
  "zerocopy 0.8.27",
 ]
@@ -9260,7 +9261,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "inspect",
- "mesh_channel",
+ "mesh",
  "pal_async",
  "thiserror 2.0.16",
  "tracing",
