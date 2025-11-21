@@ -596,17 +596,6 @@ impl HyperVVM {
     }
 }
 
-impl Drop for HyperVVM {
-    fn drop(&mut self) {
-        if std::env::var("PETRI_PRESERVE_VM")
-            .ok()
-            .is_none_or(|v| v.is_empty() || v == "0")
-        {
-            let _ = pal_async::local::block_on(self.remove_inner());
-        }
-    }
-}
-
 /// Interface to the Hyper-V framebuffer for taking screenshots
 pub struct HyperVFramebufferAccess {
     vmid: Guid,
