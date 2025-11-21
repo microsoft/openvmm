@@ -84,11 +84,36 @@ impl<S: AsRef<str>> From<S> for Vtl2GpaPoolConfig {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum SidecarOptions {
+    /// Sidecar is enabled (either via command line or by default),
+    /// but should be ignored if this is a restore and the host has
+    /// devices and the number of VPs below the threshold.
+    Enabled {
+        enable_logging: bool,
+        cpu_threshold: Option<u32>,
+    },
+    /// Sidecar is disabled because this is a restore from save state (during servicing),
+    /// and sidecar will not benefit this specific scenario.
+    DisabledServicing,
+    /// Sidecar is explicitly disabled via command line.
+    DisabledCommandLine,
+}
+
+impl SidecarOptions {
+    pub const DEFAULT_CPU_THRESHOLD: Option<u32> = Some(100);
+    pub const fn default() -> Self {
+        SidecarOptions::Enabled {
+            enable_logging: false,
+            cpu_threshold: Self::DEFAULT_CPU_THRESHOLD,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub struct BootCommandLineOptions {
     pub confidential_debug: bool,
     pub enable_vtl2_gpa_pool: Vtl2GpaPoolConfig,
-    pub sidecar: bool,
-    pub sidecar_logging: bool,
+    pub sidecar: SidecarOptions,
     pub disable_nvme_keep_alive: bool,
 }
 
@@ -97,8 +122,7 @@ impl BootCommandLineOptions {
         BootCommandLineOptions {
             confidential_debug: false,
             enable_vtl2_gpa_pool: Vtl2GpaPoolConfig::Heuristics(Vtl2GpaPoolLookupTable::Release), // use the release config by default
-            sidecar: true, // sidecar is enabled by default
-            sidecar_logging: false,
+            sidecar: SidecarOptions::default(),
             disable_nvme_keep_alive: false,
         }
     }
@@ -130,9 +154,19 @@ impl BootCommandLineOptions {
                 if let Some((_, arg)) = arg.split_once('=') {
                     for arg in arg.split(',') {
                         match arg {
-                            "off" => self.sidecar = false,
-                            "on" => self.sidecar = true,
-                            "log" => self.sidecar_logging = true,
+                            "off" => self.sidecar = SidecarOptions::DisabledCommandLine,
+                            "on" => {
+                                self.sidecar = SidecarOptions::Enabled {
+                                    enable_logging: false,
+                                    cpu_threshold: SidecarOptions::DEFAULT_CPU_THRESHOLD,
+                                }
+                            }
+                            "log" => {
+                                self.sidecar = SidecarOptions::Enabled {
+                                    enable_logging: true,
+                                    cpu_threshold: SidecarOptions::DEFAULT_CPU_THRESHOLD,
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -221,37 +255,44 @@ mod tests {
         assert_eq!(
             parse_boot_command_line("OPENHCL_SIDECAR=on"),
             BootCommandLineOptions {
-                sidecar: true,
+                sidecar: SidecarOptions::Enabled {
+                    enable_logging: false,
+                    cpu_threshold: SidecarOptions::DEFAULT_CPU_THRESHOLD,
+                },
                 ..BootCommandLineOptions::new()
             }
         );
         assert_eq!(
             parse_boot_command_line("OPENHCL_SIDECAR=off"),
             BootCommandLineOptions {
-                sidecar: false,
+                sidecar: SidecarOptions::DisabledCommandLine,
                 ..BootCommandLineOptions::new()
             }
         );
         assert_eq!(
             parse_boot_command_line("OPENHCL_SIDECAR=on,off"),
             BootCommandLineOptions {
-                sidecar: false,
+                sidecar: SidecarOptions::DisabledCommandLine,
                 ..BootCommandLineOptions::new()
             }
         );
         assert_eq!(
             parse_boot_command_line("OPENHCL_SIDECAR=on,log"),
             BootCommandLineOptions {
-                sidecar: true,
-                sidecar_logging: true,
+                sidecar: SidecarOptions::Enabled {
+                    enable_logging: true,
+                    cpu_threshold: SidecarOptions::DEFAULT_CPU_THRESHOLD,
+                },
                 ..BootCommandLineOptions::new()
             }
         );
         assert_eq!(
             parse_boot_command_line("OPENHCL_SIDECAR=log"),
             BootCommandLineOptions {
-                sidecar: true,
-                sidecar_logging: true,
+                sidecar: SidecarOptions::Enabled {
+                    enable_logging: true,
+                    cpu_threshold: SidecarOptions::DEFAULT_CPU_THRESHOLD,
+                },
                 ..BootCommandLineOptions::new()
             }
         );

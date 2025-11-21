@@ -166,7 +166,6 @@ impl SimpleFlowNode for Node {
                     .into_iter()
                     .map(|p| p.absolute())
                     .collect::<Result<_, _>>()?,
-                include_debug_build_info: true,
             });
 
             if let Some(p) = override_manifest {
