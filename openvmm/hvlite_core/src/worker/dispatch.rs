@@ -2958,7 +2958,7 @@ impl LoadedVm {
                                 Ok(())
                             }
                             _ => anyhow::bail!(
-                                "UpdateCliParams is only supported for Igvm load mode"
+                                "Updating command line parameters is only supported for Igvm load mode"
                             ),
                         })
                     }

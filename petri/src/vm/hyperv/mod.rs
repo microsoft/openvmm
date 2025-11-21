@@ -863,7 +863,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         anyhow::bail!("restoring OpenHCL firmware separately is not yet supported on Hyper-V");
     }
 
-    async fn update_command_line(&mut self, command_line: &str) -> anyhow::Result<()> {
+    async fn update_command_line(&mut self, _command_line: &str) -> anyhow::Result<()> {
         anyhow::bail!("updating command line is not yet supported on Hyper-V");
     }
 

@@ -84,9 +84,8 @@ impl Worker {
     }
 
     pub(crate) async fn update_command_line(&self, command_line: &str) -> anyhow::Result<()> {
-        let _ = self
-            .rpc
-            .call(VmRpc::UpdateCliParams, command_line.to_string())
+        self.rpc
+            .call_failable(VmRpc::UpdateCliParams, command_line.to_string())
             .await?;
         Ok(())
     }
