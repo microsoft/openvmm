@@ -11,7 +11,7 @@ use crate::ControlRequest;
 use crate::emuplat::EmuplatServicing;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::nvme_manager::manager::NvmeManager;
-use crate::options::KeepAliveConfig;
+use crate::options::ManaKeepAliveConfig;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -116,7 +116,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
-        keepalive_mode: KeepAliveConfig,
+        keepalive_mode: ManaKeepAliveConfig,
         mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState>;
 
@@ -194,7 +194,7 @@ pub(crate) struct LoadedVm {
     pub _periodic_telemetry_task: Task<()>,
 
     pub nvme_keep_alive: bool,
-    pub mana_keep_alive: KeepAliveConfig,
+    pub mana_keep_alive: ManaKeepAliveConfig,
     pub test_configuration: Option<TestScenarioConfig>,
     pub dma_manager: OpenhclDmaManager,
 }
@@ -306,7 +306,7 @@ impl LoadedVm {
                     WorkerRpc::Restart(rpc) => {
                         let state = async {
                             let running = self.stop().await;
-                            match self.save(None, false, KeepAliveConfig::Disabled).await {
+                            match self.save(None, false, ManaKeepAliveConfig::Disabled).await {
                                 Ok(servicing_state) => Some((rpc, servicing_state)),
                                 Err(err) => {
                                     if running {
@@ -372,7 +372,7 @@ impl LoadedVm {
                     UhVmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| {
                             let running = self.stop().await;
-                            let r = self.save(None, false, KeepAliveConfig::Disabled).await;
+                            let r = self.save(None, false, ManaKeepAliveConfig::Disabled).await;
                             if running {
                                 self.start(None).await;
                             }
@@ -575,7 +575,7 @@ impl LoadedVm {
         // experimental.
         let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
         if !capabilities_flags.enable_mana_keepalive() {
-            self.mana_keep_alive = KeepAliveConfig::Disabled
+            self.mana_keep_alive = ManaKeepAliveConfig::Disabled
         };
 
         // Do everything before the log flush under a span.
@@ -754,7 +754,7 @@ impl LoadedVm {
         &mut self,
         _deadline: Option<std::time::Instant>,
         nvme_keepalive_flag: bool,
-        mana_keepalive_mode: KeepAliveConfig,
+        mana_keepalive_mode: ManaKeepAliveConfig,
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 

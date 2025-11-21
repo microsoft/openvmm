@@ -80,28 +80,30 @@ impl FromStr for GuestStateEncryptionPolicyCli {
 }
 
 #[derive(Clone, Debug, MeshPayload, Inspect)]
-pub enum KeepAliveConfig {
+pub enum KeepaliveConfig {
     EnabledHostAndPrivatePoolPresent,
     DisabledHostAndPrivatePoolPresent,
+    DisabledManualOverride,
     Disabled,
 }
 
-impl FromStr for KeepAliveConfig {
+impl FromStr for KeepaliveConfig {
     type Err = anyhow::Error;
 
-    fn from_str(s: &str) -> Result<KeepAliveConfig, anyhow::Error> {
+    fn from_str(s: &str) -> Result<KeepaliveConfig, anyhow::Error> {
         match s.to_lowercase().as_str() {
-            "host,privatepool" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolPresent),
-            "nohost,privatepool" => Ok(KeepAliveConfig::DisabledHostAndPrivatePoolPresent),
-            "nohost,noprivatepool" => Ok(KeepAliveConfig::Disabled),
+            "host,privatepool" => Ok(KeepaliveConfig::EnabledHostAndPrivatePoolPresent),
+            "nohost,privatepool" => Ok(KeepaliveConfig::DisabledHostAndPrivatePoolPresent),
+            "nohost,noprivatepool" => Ok(KeepaliveConfig::Disabled),
+            x if x.ends_with("disabledmanually") => Ok(KeepaliveConfig::DisabledManualOverride),
             _ => Err(anyhow::anyhow!("Invalid keepalive config: {}", s)),
         }
     }
 }
 
-impl KeepAliveConfig {
+impl KeepaliveConfig {
     pub fn is_enabled(&self) -> bool {
-        matches!(self, KeepAliveConfig::EnabledHostAndPrivatePoolPresent)
+        matches!(self, KeepaliveConfig::EnabledHostAndPrivatePoolPresent)
     }
 }
 
@@ -233,8 +235,15 @@ pub struct Options {
     /// hit exits.
     pub no_sidecar_hotplug: bool,
 
-    /// (OPENHCL_NVME_KEEP_ALIVE=1) Enable nvme keep alive when servicing.
-    pub nvme_keep_alive: NvmeKeepaliveConfig,
+    /// (OPENHCL_NVME_KEEP_ALIVE=\<KeepaliveConfig\>)
+    /// Configure NVMe keep alive behavior when servicing.
+    /// Options are:
+    ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
+    ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
+    ///  - "nohost,noprivatepool" - Keepalive is disabled.
+    ///  - "<x>,<x>,disabledmanually" - Keepalive is disabled due to manual
+    ///    override. first two options are ignored.
+    pub nvme_keep_alive: KeepaliveConfig,
 
     /// (OPENHCL_MANA_KEEP_ALIVE=\<KeepAliveConfig\>)
     /// Configure MANA keep alive behavior when servicing.
@@ -242,7 +251,9 @@ pub struct Options {
     ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
     ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
     ///  - "nohost,noprivatepool" - Keepalive is disabled.
-    pub mana_keep_alive: KeepAliveConfig,
+    ///  - "<x>,<x>,disabledmanually" - Keepalive is disabled due to manual
+    ///    override. first two options are ignored.
+    pub mana_keep_alive: KeepaliveConfig,
 
     /// (OPENHCL_NVME_ALWAYS_FLR=1)
     /// Always use the FLR (Function Level Reset) path for NVMe devices,
@@ -392,21 +403,34 @@ impl Options {
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
         let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
         let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
-        let nvme_keep_alive = parse_env_bool("OPENHCL_NVME_KEEP_ALIVE");
+        let nvme_keep_alive = read_env("OPENHCL_NVME_KEEP_ALIVE")
+                    .map(|x| {
+                        let s = x.to_string_lossy();
+                        match s.parse::<NvmeKeepaliveConfig>() {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "failed to parse OPENHCL_NVME_KEEP_ALIVE ('{s}'): {e}. keepalive will be disabled."
+                                );
+                                NvmeKeepaliveConfig::Disabled
+                            }
+                        }
+                    })
+                    .unwrap_or(NvmeKeepaliveConfig::Disabled);
         let mana_keep_alive = read_env("OPENHCL_MANA_KEEP_ALIVE")
                     .map(|x| {
                         let s = x.to_string_lossy();
-                        match s.parse::<KeepAliveConfig>() {
+                        match s.parse::<ManaKeepAliveConfig>() {
                             Ok(v) => v,
                             Err(e) => {
                                 tracing::warn!(
                                     "failed to parse OPENHCL_MANA_KEEP_ALIVE ('{s}'): {e}. keepalive will be disabled."
                                 );
-                                KeepAliveConfig::Disabled
+                                ManaKeepAliveConfig::Disabled
                             }
                         }
                     })
-                    .unwrap_or(KeepAliveConfig::Disabled);
+                    .unwrap_or(ManaKeepAliveConfig::Disabled);
         let nvme_always_flr = parse_env_bool("OPENHCL_NVME_ALWAYS_FLR");
         let test_configuration = read_env("OPENHCL_TEST_CONFIG").and_then(|x| {
             x.to_string_lossy()

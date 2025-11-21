@@ -142,8 +142,6 @@ impl BootCommandLineOptions {
                 if arg.is_some_and(|a| a != "0") {
                     self.disable_nvme_keep_alive = true;
                 }
-            } else if arg.starts_with("CAPABILITY_OVERRIDES") {
-                // Maybe it would make more sense to have overrides like this?
             }
         }
 
