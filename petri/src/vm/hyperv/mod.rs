@@ -881,6 +881,10 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         anyhow::bail!("restoring OpenHCL firmware separately is not yet supported on Hyper-V");
     }
 
+    async fn update_command_line(&mut self, _command_line: &str) -> anyhow::Result<()> {
+        anyhow::bail!("updating command line is not yet supported on Hyper-V");
+    }
+
     fn take_framebuffer_access(&mut self) -> Option<vm::HyperVFramebufferAccess> {
         (!self.is_isolated).then(|| self.vm.get_framebuffer_access())
     }

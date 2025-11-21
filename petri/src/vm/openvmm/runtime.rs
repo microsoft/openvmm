@@ -144,6 +144,10 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         Self::restore_openhcl(self).await
     }
 
+    async fn update_command_line(&mut self, command_line: &str) -> anyhow::Result<()> {
+        Self::update_command_line(self, command_line).await
+    }
+
     fn inspector(&self) -> Option<OpenVmmInspector> {
         Some(OpenVmmInspector {
             worker: self.inner.worker.clone(),
@@ -238,6 +242,13 @@ impl PetriVmOpenVmm {
         /// Restores OpenHCL from a previously saved state.
         pub async fn restore_openhcl(
             &mut self
+        ) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Updates the command line parameters of the running VM.
+        pub async fn update_command_line(
+            &mut self,
+            command_line: &str
         ) -> anyhow::Result<()>
     );
     petri_vm_fn!(
@@ -405,6 +416,10 @@ impl PetriVmInner {
         self.worker
             .save_openhcl(ged_send, flags, igvm_file.into())
             .await
+    }
+
+    async fn update_command_line(&mut self, command_line: &str) -> anyhow::Result<()> {
+        self.worker.update_command_line(command_line).await
     }
 
     async fn restore_openhcl(&self) -> anyhow::Result<()> {
