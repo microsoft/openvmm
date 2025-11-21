@@ -11,7 +11,7 @@ default = []
 
 inspect = ["vmgs_format/inspect", "dep:inspect", "dep:inspect_counters"]
 save_restore = ["dep:mesh_protobuf"]
-mesh = ["dep:mesh"]
+mesh = ["dep:mesh_protobuf"]
 
 # Use native windows crypto APIs
 encryption_win = ["dep:windows"]
@@ -29,7 +29,6 @@ vmgs_format.workspace = true
 inspect = { workspace = true, optional = true }
 inspect_counters = { workspace = true, optional = true }
 mesh_protobuf = { workspace = true, optional = true }
-mesh = { workspace = true, optional = true }
 
 anyhow.workspace = true
 async-trait.workspace = true

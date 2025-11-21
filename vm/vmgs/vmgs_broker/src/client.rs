@@ -30,7 +30,6 @@ pub enum VmgsClientError {
 impl From<RpcError> for VmgsClientError {
     fn from(value: RpcError) -> Self {
         match value {
-            RpcError::Call(_) => unreachable!(),
             RpcError::Channel(e) => VmgsClientError::BrokerOffline(RpcError::Channel(e)),
         }
     }
@@ -58,7 +57,7 @@ impl VmgsClient {
     pub async fn get_file_info(&self, file_id: FileId) -> Result<VmgsFileInfo, VmgsClientError> {
         let res = self
             .control
-            .call_failable(VmgsBrokerRpc::GetFileInfo, file_id)
+            .call_failable(VmgsBrokerRpc::GetFileInfo, file_id.into())
             .await?;
 
         Ok(res)
@@ -69,7 +68,7 @@ impl VmgsClient {
     pub async fn read_file(&self, file_id: FileId) -> Result<Vec<u8>, VmgsClientError> {
         let res = self
             .control
-            .call_failable(VmgsBrokerRpc::ReadFile, file_id)
+            .call_failable(VmgsBrokerRpc::ReadFile, file_id.into())
             .await?;
 
         Ok(res)
@@ -82,7 +81,7 @@ impl VmgsClient {
     #[instrument(skip_all, fields(file_id))]
     pub async fn write_file(&self, file_id: FileId, buf: Vec<u8>) -> Result<(), VmgsClientError> {
         self.control
-            .call_failable(VmgsBrokerRpc::WriteFile, (file_id, buf))
+            .call_failable(VmgsBrokerRpc::WriteFile, (file_id.into(), buf))
             .await?;
 
         Ok(())
@@ -99,7 +98,7 @@ impl VmgsClient {
         buf: Vec<u8>,
     ) -> Result<(), VmgsClientError> {
         self.control
-            .call_failable(VmgsBrokerRpc::WriteFileEncrypted, (file_id, buf))
+            .call_failable(VmgsBrokerRpc::WriteFileEncrypted, (file_id.into(), buf))
             .await?;
 
         Ok(())

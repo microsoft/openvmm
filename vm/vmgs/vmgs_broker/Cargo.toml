@@ -15,7 +15,7 @@ encryption_win = ["vmgs/encryption_win"]
 encryption_ossl = ["vmgs/encryption_ossl"]
 
 [dependencies]
-vmgs_format = { workspace = true, features = ["mesh"] }
+vmgs_format.workspace = true
 vmgs_resources.workspace = true
 vmgs = { workspace = true, features = ["inspect", "save_restore", "mesh"] }
 vm_resource.workspace = true
