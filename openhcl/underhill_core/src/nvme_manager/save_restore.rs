@@ -23,6 +23,10 @@ pub struct NvmeSavedDiskConfig {
     pub driver_state: nvme_driver::NvmeDriverSavedState,
 }
 
+/// Returns a sorted list of CPU IDs that have mapped device interrupts in the saved NVMe state.
+///
+/// This information is used to make heuristic decisions during restore, such as whether to
+/// disable sidecar for VMs with active device interrupts.
 pub fn cpus_with_interrupts(state: &NvmeManagerSavedState) -> Vec<u32> {
     let mut cpus_with_interrupts = BTreeSet::new();
     for disk in &state.nvme_disks {

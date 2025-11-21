@@ -339,7 +339,7 @@ pub mod save_restore {
         /// While this list is today used as a semaphore (either there are device
         /// interrupts mapped or not), in the future it may be used to provide more
         /// granular restore hints. E.g., only start the CPUs with active
-        /// interruts right away and defer other CPU startup until later.
+        /// interrupts right away and defer other CPU startup until later.
         ///
         /// DEFAULT: For save state from prior versions, this will be empty.
         /// This is fine: the restore heuristics might be less optimal, but will
