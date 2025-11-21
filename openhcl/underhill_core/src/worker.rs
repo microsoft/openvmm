@@ -47,7 +47,7 @@ use crate::nvme_manager::manager::NvmeDiskResolver;
 use crate::nvme_manager::manager::NvmeManager;
 use crate::options::GuestStateEncryptionPolicyCli;
 use crate::options::GuestStateLifetimeCli;
-use crate::options::ManaKeepAliveConfig;
+use crate::options::KeepaliveConfig;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -287,9 +287,9 @@ pub struct UnderhillEnvCfg {
     /// Hide the isolation mode from the guest.
     pub hide_isolation: bool,
     /// Enable nvme keep alive.
-    pub nvme_keep_alive: bool,
+    pub nvme_keep_alive: KeepaliveConfig,
     /// Enable mana keep alive.
-    pub mana_keep_alive: ManaKeepAliveConfig,
+    pub mana_keep_alive: KeepaliveConfig,
     /// Don't skip FLR for NVMe devices.
     pub nvme_always_flr: bool,
     /// test configuration
@@ -783,7 +783,7 @@ impl UhVmNetworkSettings {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
-        keepalive_mode: ManaKeepAliveConfig,
+        keepalive_mode: KeepaliveConfig,
         saved_mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState> {
         let instance_id = nic_config.instance_id;
@@ -968,7 +968,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
-        save_restore_supported: ManaKeepAliveConfig,
+        save_restore_supported: KeepaliveConfig,
         mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState> {
         if self.vf_managers.contains_key(&instance_id) {
@@ -2170,8 +2170,10 @@ async fn new_underhill_vm(
     let nvme_manager = if env_cfg.nvme_vfio {
         // TODO: reevaluate enablement of nvme save restore when private pool
         // save restore to bootshim is available.
+        // TODO: Is this private pool check even necessary now that the env_cfg
+        // is an enum?
         let private_pool_available = !runtime_params.private_pool_ranges().is_empty();
-        let save_restore_supported = env_cfg.nvme_keep_alive && private_pool_available;
+        let save_restore_supported = env_cfg.nvme_keep_alive.is_enabled() && private_pool_available;
 
         let manager = NvmeManager::new(
             &driver_source,

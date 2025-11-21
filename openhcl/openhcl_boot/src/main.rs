@@ -289,24 +289,24 @@ fn build_kernel_command_line(
         )?;
     }
 
-    // Only when explicitly supported by Host.
+    // Generate the NVMe keep alive command line.
     // TODO: Move from command line to device tree when stabilized.
     let mut nvme_cmdline = String::new();
 
+    if !partition_info.boot_options.disable_nvme_keep_alive {
+        nvme_cmdline.push_str("disabled");
+    }
+
     if partition_info.nvme_keepalive {
-        nvme_cmdline.push_str("host");
+        nvme_cmdline.push_str(",host");
     } else {
-        nvme_cmdline.push_str("nohost");
+        nvme_cmdline.push_str(",nohost");
     }
 
     if vtl2_pool_supported {
         nvme_cmdline.push_str(",privatepool");
     } else {
         nvme_cmdline.push_str(",noprivatepool");
-    }
-
-    if !partition_info.boot_options.disable_nvme_keep_alive {
-        nvme_cmdline.push_str(",manuallydisabled");
     }
 
     write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE={} ", nvme_cmdline)?;

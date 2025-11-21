@@ -83,7 +83,6 @@ impl FromStr for GuestStateEncryptionPolicyCli {
 pub enum KeepaliveConfig {
     EnabledHostAndPrivatePoolPresent,
     DisabledHostAndPrivatePoolPresent,
-    DisabledManualOverride,
     Disabled,
 }
 
@@ -95,7 +94,7 @@ impl FromStr for KeepaliveConfig {
             "host,privatepool" => Ok(KeepaliveConfig::EnabledHostAndPrivatePoolPresent),
             "nohost,privatepool" => Ok(KeepaliveConfig::DisabledHostAndPrivatePoolPresent),
             "nohost,noprivatepool" => Ok(KeepaliveConfig::Disabled),
-            x if x.ends_with("disabledmanually") => Ok(KeepaliveConfig::DisabledManualOverride),
+            x if x.starts_with("disabled") => Ok(KeepaliveConfig::Disabled),
             _ => Err(anyhow::anyhow!("Invalid keepalive config: {}", s)),
         }
     }
@@ -406,31 +405,31 @@ impl Options {
         let nvme_keep_alive = read_env("OPENHCL_NVME_KEEP_ALIVE")
                     .map(|x| {
                         let s = x.to_string_lossy();
-                        match s.parse::<NvmeKeepaliveConfig>() {
+                        match s.parse::<KeepaliveConfig>() {
                             Ok(v) => v,
                             Err(e) => {
                                 tracing::warn!(
                                     "failed to parse OPENHCL_NVME_KEEP_ALIVE ('{s}'): {e}. keepalive will be disabled."
                                 );
-                                NvmeKeepaliveConfig::Disabled
+                                KeepaliveConfig::Disabled
                             }
                         }
                     })
-                    .unwrap_or(NvmeKeepaliveConfig::Disabled);
+                    .unwrap_or(KeepaliveConfig::Disabled);
         let mana_keep_alive = read_env("OPENHCL_MANA_KEEP_ALIVE")
                     .map(|x| {
                         let s = x.to_string_lossy();
-                        match s.parse::<ManaKeepAliveConfig>() {
+                        match s.parse::<KeepaliveConfig>() {
                             Ok(v) => v,
                             Err(e) => {
                                 tracing::warn!(
                                     "failed to parse OPENHCL_MANA_KEEP_ALIVE ('{s}'): {e}. keepalive will be disabled."
                                 );
-                                ManaKeepAliveConfig::Disabled
+                                KeepaliveConfig::Disabled
                             }
                         }
                     })
-                    .unwrap_or(ManaKeepAliveConfig::Disabled);
+                    .unwrap_or(KeepaliveConfig::Disabled);
         let nvme_always_flr = parse_env_bool("OPENHCL_NVME_ALWAYS_FLR");
         let test_configuration = read_env("OPENHCL_TEST_CONFIG").and_then(|x| {
             x.to_string_lossy()
