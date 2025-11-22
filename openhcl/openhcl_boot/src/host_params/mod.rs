@@ -94,7 +94,7 @@ impl PartitionInfo {
             cpus: ArrayVec::new_const(),
             sidecar_cpu_overrides: sidecar_defs::PerCpuState {
                 per_cpu_state_specified: false,
-                sidecar_starts_cpu: [false; sidecar_defs::NUM_CPUS_SUPPORTED_FOR_PER_CPU_STATE],
+                sidecar_starts_cpu: [true; sidecar_defs::NUM_CPUS_SUPPORTED_FOR_PER_CPU_STATE],
             },
             vmbus_vtl2: VmbusInfo {
                 mmio: ArrayVec::new_const(),

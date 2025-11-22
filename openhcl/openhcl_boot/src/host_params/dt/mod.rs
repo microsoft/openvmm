@@ -880,11 +880,11 @@ impl PartitionInfo {
             &boot_options.sidecar,
             !cpus_with_mapped_interrupts.is_empty(),
         ) {
-            if *cpus_with_mapped_interrupts
+            if (*cpus_with_mapped_interrupts
                 .iter()
                 .max()
-                .expect("non-empty vector") as usize
-                <= sidecar_cpu_overrides.sidecar_starts_cpu.len()
+                .expect("non-empty vector") as usize)
+                < sidecar_cpu_overrides.sidecar_starts_cpu.len()
             {
                 sidecar_cpu_overrides.per_cpu_state_specified = true;
                 cpus_with_mapped_interrupts.iter().for_each(|&cpu_id| {

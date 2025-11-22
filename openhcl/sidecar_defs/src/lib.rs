@@ -30,8 +30,8 @@ pub struct PerCpuState {
     /// is less than the maximum number of CPUs supported by OpenHCL and also by sidecar.
     pub per_cpu_state_specified: bool,
 
-    /// Whether the CPU should be started in the sidecar kernel. If false,
-    /// the CPU will remain in the main kernel.
+    /// Whether the CPU should be started by the sidecar kernel. If false,
+    /// the CPU will be started by (or remain with) the main kernel instead.
     pub sidecar_starts_cpu: [bool; NUM_CPUS_SUPPORTED_FOR_PER_CPU_STATE],
 }
 

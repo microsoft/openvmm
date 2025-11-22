@@ -27,6 +27,7 @@ const _: () = assert!(
 );
 
 pub struct SidecarConfig<'a> {
+    pub num_cpus: usize,
     pub node_params: &'a [SidecarNodeParams],
     pub per_cpu_state: &'a sidecar_defs::PerCpuState,
     pub nodes: &'a [SidecarNodeOutput],
@@ -52,8 +53,15 @@ impl core::fmt::Display for SidecarKernelCommandLine<'_> {
         f.write_str("boot_cpus=")?;
         if self.0.per_cpu_state.per_cpu_state_specified {
             let mut comma = "";
-            for (cpu_index, &starts) in self.0.per_cpu_state.sidecar_starts_cpu.iter().enumerate() {
-                if starts {
+            for (cpu_index, &sidecar_starts) in self
+                .0
+                .per_cpu_state
+                .sidecar_starts_cpu
+                .iter()
+                .take(self.0.num_cpus)
+                .enumerate()
+            {
+                if !sidecar_starts {
                     write!(f, "{}{}", comma, cpu_index)?;
                     comma = ",";
                 }
@@ -204,6 +212,8 @@ pub fn start_sidecar<'a>(
             if initial_state.per_cpu_state_specified {
                 // If per-CPU state is specified, make sure to explicitly state that
                 // sidecar should not start the base vp of this node.
+                // The code that set per_cpu_state_specified should have already ensured that
+                // the array is large enough for any `base_vp` we might have here.
                 initial_state.sidecar_starts_cpu[base_vp as usize] = false;
             }
             base_vp += cpus.len() as u32;
@@ -234,6 +244,7 @@ pub fn start_sidecar<'a>(
 
     let SidecarOutput { nodes, error: _ } = sidecar_output;
     Some(SidecarConfig {
+        num_cpus: partition_info.cpus.len(),
         start_reftime: boot_start_reftime,
         end_reftime: boot_end_reftime,
         node_params: &sidecar_params.nodes[..node_count],

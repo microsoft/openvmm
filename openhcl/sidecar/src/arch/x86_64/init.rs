@@ -335,9 +335,13 @@ fn init(
                     .enumerate()
                     .take(vp_count as usize)
                 {
-                    if !should_start {
-                        cpu_status[i] = CpuStatus::REMOVED.0.into();
-                    }
+                    // Pragmatically, any CPU that has `RUN` should already match
+                    // the default above, but set it anyway for clarity.
+                    cpu_status[i] = if should_start {
+                        CpuStatus::RUN.0.into()
+                    } else {
+                        CpuStatus::REMOVED.0.into()
+                    };
                 }
             }
         }
