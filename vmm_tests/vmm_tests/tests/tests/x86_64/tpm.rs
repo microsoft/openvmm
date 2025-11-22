@@ -168,11 +168,20 @@ impl<'a> TpmGuestTests<'a> {
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))
 )]
 async fn boot_with_tpm<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config
-        .with_tpm()
+        .with_tpm(true)
+        .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .run()
         .await?;
@@ -194,7 +203,7 @@ async fn tpm_ak_cert_persisted<T>(
     let os_flavor = config.os_flavor();
     let (mut vm, mut agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-        .with_tpm()
+        .with_tpm(true)
         .with_tpm_state_persistence(true)
         .modify_backend(|b| {
             b.with_igvm_attest_test_config(
@@ -256,7 +265,7 @@ async fn tpm_ak_cert_retry<T>(
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-        .with_tpm()
+        .with_tpm(true)
         .with_tpm_state_persistence(true)
         .modify_backend(|b| {
             b.with_igvm_attest_test_config(
@@ -319,7 +328,7 @@ async fn vbs_boot_with_attestation(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
     let mut vm = config
-        .with_tpm()
+        .with_tpm(true)
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .run_without_agent()
@@ -338,7 +347,7 @@ async fn tpm_test_platform_hierarchy_disabled(
 ) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-        .with_tpm()
+        .with_tpm(true)
         .run()
         .await?;
 

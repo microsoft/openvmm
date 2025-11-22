@@ -750,11 +750,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     /// Enable the TPM for the VM.
-    pub fn with_tpm(mut self) -> Self {
-        if self.config.tpm.is_some() {
-            panic!("tpm already exists")
+    pub fn with_tpm(mut self, enable: bool) -> Self {
+        if enable {
+            self.config.tpm.get_or_insert_default();
+        } else {
+            self.config.tpm = None;
         }
-        self.config.tpm = Some(TpmConfig::default());
         self
     }
 

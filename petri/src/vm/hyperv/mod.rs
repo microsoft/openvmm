@@ -302,7 +302,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     Some(IsolationType::Vbs) => powershell::HyperVGuestStateIsolationType::Vbs,
                     Some(IsolationType::Snp) => powershell::HyperVGuestStateIsolationType::Snp,
                     Some(IsolationType::Tdx) => powershell::HyperVGuestStateIsolationType::Tdx,
-                    None => powershell::HyperVGuestStateIsolationType::OpenHCL,
+                    // Older hosts don't support OpenHCL isolation, so use Trusted Launch
+                    None => powershell::HyperVGuestStateIsolationType::TrustedLaunch,
                 },
                 powershell::HyperVGeneration::Two,
                 guest.artifact(),
@@ -678,7 +679,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 no_persistent_secrets,
             }) = tpm
             {
-                // TPM is disabled by default when the isolation type is OpenHCL
                 vm.enable_tpm().await?;
 
                 // Hyper-V uses a persistent TPM by default
@@ -688,6 +688,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     )
                     .await?;
                 }
+            } else {
+                vm.disable_tpm().await?;
             }
         } else if tpm.is_some() {
             anyhow::bail!(
