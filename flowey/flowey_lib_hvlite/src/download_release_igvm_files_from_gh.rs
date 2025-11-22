@@ -17,6 +17,7 @@ impl Artifact for ReleaseOutput {}
 pub enum OpenhclReleaseVersion {
     Release2411,
     Release2505,
+    Release2511,
 }
 
 impl OpenhclReleaseVersion {
@@ -24,12 +25,14 @@ impl OpenhclReleaseVersion {
         match self {
             OpenhclReleaseVersion::Release2411 => "release/2411".to_string(),
             OpenhclReleaseVersion::Release2505 => "release/2505".to_string(),
+            OpenhclReleaseVersion::Release2511 => "release/1.7.2511".to_string(),
         }
     }
 
-    pub const ALL: [OpenhclReleaseVersion; 2] = [
+    pub const ALL: [OpenhclReleaseVersion; 3] = [
         OpenhclReleaseVersion::Release2411,
         OpenhclReleaseVersion::Release2505,
+        OpenhclReleaseVersion::Release2511,
     ];
 
     pub fn latest() -> Self {
@@ -42,6 +45,7 @@ impl std::fmt::Display for OpenhclReleaseVersion {
         let s = match self {
             OpenhclReleaseVersion::Release2411 => "release-2411",
             OpenhclReleaseVersion::Release2505 => "release-2505",
+            OpenhclReleaseVersion::Release2511 => "release-2511",
         };
         f.write_str(s)
     }
