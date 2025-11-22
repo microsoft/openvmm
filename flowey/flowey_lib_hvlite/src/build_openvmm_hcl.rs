@@ -67,6 +67,7 @@ pub struct OpenvmmHclBuildParams {
     pub features: BTreeSet<OpenvmmHclFeature>,
     pub no_split_dbg_info: bool,
     pub max_trace_level: MaxTraceLevel,
+    pub include_debug_build_info: bool,
 }
 
 flowey_request! {
@@ -108,6 +109,7 @@ impl FlowNode for Node {
                 features,
                 no_split_dbg_info,
                 max_trace_level,
+                include_debug_build_info,
             },
             outvars,
         ) in requests
@@ -143,6 +145,15 @@ impl FlowNode for Node {
 
             features.extend(max_trace_level.features());
 
+            let extra_env = if include_debug_build_info {
+                Some(ReadVar::from_static(BTreeMap::from([(
+                    "INCLUDE_DEBUG_BUILD_INFO".into(),
+                    "1".into(),
+                )])))
+            } else {
+                None
+            };
+
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "openvmm_hcl".into(),
                 out_name: "openvmm_hcl".into(),
@@ -159,7 +170,7 @@ impl FlowNode for Node {
                 features: CargoFeatureSet::Specific(features),
                 target,
                 no_split_dbg_info,
-                extra_env: None,
+                extra_env,
                 pre_build_deps,
                 output: v,
             });
