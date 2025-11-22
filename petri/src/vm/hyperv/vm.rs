@@ -85,7 +85,7 @@ impl HyperVVM {
 
         // Delete the VM if it already exists
         let cleanup = async |vmid: &Guid| -> anyhow::Result<()> {
-            hvc::hvc_ensure_off(vmid).await?;
+            hvc::hvc_ensure_off(vmid, &driver).await?;
             powershell::run_remove_vm(vmid).await
         };
 
@@ -529,7 +529,7 @@ impl HyperVVM {
 
     async fn remove_inner(&mut self) -> anyhow::Result<()> {
         if !self.destroyed {
-            let res_off = hvc::hvc_ensure_off(&self.vmid).await;
+            let res_off = hvc::hvc_ensure_off(&self.vmid, &self.driver).await;
 
             // Flush logs before we remove the VM so we can capture any
             // interesting files before they get deleted.
@@ -593,17 +593,6 @@ impl HyperVVM {
         mode: powershell::HyperVGuestStateIsolationMode,
     ) -> anyhow::Result<()> {
         powershell::run_set_guest_state_isolation_mode(&self.vmid, &self.ps_mod, mode).await
-    }
-}
-
-impl Drop for HyperVVM {
-    fn drop(&mut self) {
-        if std::env::var("PETRI_PRESERVE_VM")
-            .ok()
-            .is_none_or(|v| v.is_empty() || v == "0")
-        {
-            let _ = futures::executor::block_on(self.remove_inner());
-        }
     }
 }
 
