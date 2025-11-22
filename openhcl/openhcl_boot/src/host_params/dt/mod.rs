@@ -852,7 +852,7 @@ impl PartitionInfo {
         } else {
             (
                 topology_from_host_dt(params, parsed, &options, address_space)?,
-                vec![],
+                Vec::new(),
             )
         };
 
