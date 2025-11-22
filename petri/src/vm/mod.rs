@@ -133,8 +133,8 @@ pub struct PetriVmConfig {
     pub vmgs: PetriVmgsResource,
     /// The boot device type for the VM
     pub boot_device_type: BootDeviceType,
-    /// Configure TPM state persistence
-    pub tpm_state_persistence: bool,
+    /// TPM configuration
+    pub tpm: Option<TpmConfig>,
 }
 
 /// Resources used by a Petri VM during contruction and runtime
@@ -285,7 +285,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 agent_image: artifacts.agent_image,
                 openhcl_agent_image: artifacts.openhcl_agent_image,
                 vmgs: PetriVmgsResource::Ephemeral,
-                tpm_state_persistence: true,
+                tpm: None,
                 guest_crash_disk,
             },
             modify_vmm_config: None,
@@ -354,22 +354,35 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     fn expect_reset(&self) -> bool {
-        // TODO: use presence of TPM here once with_tpm() backend-agnostic.
         self.override_expect_reset
             || matches!(
                 (
                     self.guest_quirks.initial_reboot,
                     self.expected_boot_event,
                     &self.config.firmware,
+                    &self.config.tpm,
                 ),
                 (
                     Some(InitialRebootCondition::Always),
                     Some(FirmwareEvent::BootSuccess | FirmwareEvent::BootAttempt),
                     _,
+                    _,
                 ) | (
-                    Some(InitialRebootCondition::WithOpenHclUefi),
+                    Some(
+                        InitialRebootCondition::WithOpenHclUefi
+                            | InitialRebootCondition::WithOpenHclUefiOrTpm
+                    ),
                     Some(FirmwareEvent::BootSuccess | FirmwareEvent::BootAttempt),
                     Firmware::OpenhclUefi { .. },
+                    _,
+                ) | (
+                    Some(
+                        InitialRebootCondition::WithTpm
+                            | InitialRebootCondition::WithOpenHclUefiOrTpm
+                    ),
+                    Some(FirmwareEvent::BootSuccess | FirmwareEvent::BootAttempt),
+                    _,
+                    Some(_),
                 )
             )
     }
@@ -747,9 +760,22 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Enable the TPM for the VM.
+    pub fn with_tpm(mut self) -> Self {
+        if self.config.tpm.is_some() {
+            panic!("tpm already exists")
+        }
+        self.config.tpm = Some(TpmConfig::default());
+        self
+    }
+
     /// Enable or disable the TPM state persistence for the VM.
     pub fn with_tpm_state_persistence(mut self, tpm_state_persistence: bool) -> Self {
-        self.config.tpm_state_persistence = tpm_state_persistence;
+        self.config
+            .tpm
+            .as_mut()
+            .expect("TPM persistence requires a TPM")
+            .no_persistent_secrets = !tpm_state_persistence;
         self
     }
 
@@ -1355,6 +1381,21 @@ impl Default for OpenHclConfig {
             command_line: None,
             log_levels: OpenHclLogConfig::TestDefault,
             vtl2_base_address_type: None,
+        }
+    }
+}
+
+/// TPM configuration
+#[derive(Debug)]
+pub struct TpmConfig {
+    /// Use ephemeral TPM state (do not persist to VMGS)
+    pub no_persistent_secrets: bool,
+}
+
+impl Default for TpmConfig {
+    fn default() -> Self {
+        Self {
+            no_persistent_secrets: true,
         }
     }
 }

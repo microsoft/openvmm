@@ -356,7 +356,8 @@ pub mod artifacts {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
                     ..Default::default()
                 });
-                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
+                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefiOrTpm);
+                quirks.openvmm.initial_reboot = Some(InitialRebootCondition::WithTpm);
                 quirks
             }
         }
@@ -379,7 +380,8 @@ pub mod artifacts {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
                     ..Default::default()
                 });
-                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
+                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefiOrTpm);
+                quirks.openvmm.initial_reboot = Some(InitialRebootCondition::WithTpm);
                 quirks
             }
         }
@@ -402,7 +404,8 @@ pub mod artifacts {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
                     ..Default::default()
                 });
-                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
+                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefiOrTpm);
+                quirks.openvmm.initial_reboot = Some(InitialRebootCondition::WithTpm);
                 quirks
             }
         }

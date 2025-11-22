@@ -24,6 +24,7 @@ use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::SecureBootTemplate;
 use crate::ShutdownKind;
+use crate::TpmConfig;
 use crate::UefiConfig;
 use crate::VmmQuirks;
 use crate::disk_image::AgentImage;
@@ -237,7 +238,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             openhcl_agent_image,
             boot_device_type,
             vmgs,
-            tpm_state_persistence,
+            tpm,
             guest_crash_disk,
         } = config;
 
@@ -301,7 +302,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     Some(IsolationType::Vbs) => powershell::HyperVGuestStateIsolationType::Vbs,
                     Some(IsolationType::Snp) => powershell::HyperVGuestStateIsolationType::Snp,
                     Some(IsolationType::Tdx) => powershell::HyperVGuestStateIsolationType::Tdx,
-                    None => powershell::HyperVGuestStateIsolationType::TrustedLaunch,
+                    None => powershell::HyperVGuestStateIsolationType::OpenHCL,
                 },
                 powershell::HyperVGeneration::Two,
                 guest.artifact(),
@@ -649,16 +650,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
         let mut added_controllers = Vec::new();
         let mut vtl2_settings = None;
 
-        if tpm_state_persistence {
-            vm.set_guest_state_isolation_mode(powershell::HyperVGuestStateIsolationMode::Default)
-                .await?;
-        } else {
-            vm.set_guest_state_isolation_mode(
-                powershell::HyperVGuestStateIsolationMode::NoPersistentSecrets,
-            )
-            .await?;
-        }
-
         // TODO: If OpenHCL is being used, then translate storage through it.
         // (requires changes above where VHDs are added)
         if let Some(modify_vmm_config) = modify_vmm_config {
@@ -680,6 +671,28 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 vm.set_base_vtl2_settings(settings).await?;
                 vtl2_settings = Some(settings.clone());
             }
+        }
+
+        if matches!(&firmware, Firmware::OpenhclUefi { .. }) {
+            if let Some(TpmConfig {
+                no_persistent_secrets,
+            }) = tpm
+            {
+                // TPM is disabled by default when the isolation type is OpenHCL
+                vm.enable_tpm().await?;
+
+                // Hyper-V uses a persistent TPM by default
+                if no_persistent_secrets {
+                    vm.set_guest_state_isolation_mode(
+                        powershell::HyperVGuestStateIsolationMode::NoPersistentSecrets,
+                    )
+                    .await?;
+                }
+            }
+        } else if tpm.is_some() {
+            anyhow::bail!(
+                "The Hyper-V petri backend currently only supports TPM with OpenHCL UEFI"
+            );
         }
 
         vm.start().await?;

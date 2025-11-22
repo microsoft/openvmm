@@ -20,10 +20,7 @@ use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
-use tpm_resources::TpmDeviceHandle;
-use tpm_resources::TpmRegisterLayout;
 use vm_resource::IntoResource;
-use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
 use vmotherboard::ChipsetDeviceHandle;
 use vtl2_settings_proto::Vtl2Settings;
 
@@ -37,35 +34,6 @@ impl PetriVmConfigOpenVmm {
             .as_mut()
             .expect("Not an openhcl config.")
             .vtl0_alias_map = true;
-        self
-    }
-
-    /// Enable the TPM with ephemeral storage.
-    pub fn with_tpm(mut self) -> Self {
-        if self.firmware.is_openhcl() {
-            self.ged.as_mut().unwrap().enable_tpm = true;
-        } else {
-            self.config.chipset_devices.push(ChipsetDeviceHandle {
-                name: "tpm".to_string(),
-                resource: TpmDeviceHandle {
-                    ppi_store: EphemeralNonVolatileStoreHandle.into_resource(),
-                    nvram_store: EphemeralNonVolatileStoreHandle.into_resource(),
-                    refresh_tpm_seeds: false,
-                    ak_cert_type: tpm_resources::TpmAkCertTypeResource::None,
-                    register_layout: TpmRegisterLayout::IoPort,
-                    guest_secret_key: None,
-                    logger: None,
-                    is_confidential_vm: self.firmware.isolation().is_some(),
-                    // TODO: generate an actual BIOS GUID and put it here
-                    bios_guid: guid::guid!("00000000-0000-0000-0000-000000000000"),
-                }
-                .into_resource(),
-            });
-            if let LoadMode::Uefi { enable_tpm, .. } = &mut self.config.load_mode {
-                *enable_tpm = true;
-            }
-        }
-
         self
     }
 
@@ -89,21 +57,6 @@ impl PetriVmConfigOpenVmm {
                 *enable_battery = true;
             }
         }
-        self
-    }
-
-    /// Enable TPM state persistence
-    pub fn with_tpm_state_persistence(mut self, tpm_state_persistence: bool) -> Self {
-        if !self.firmware.is_openhcl() {
-            panic!("TPM state persistence is only supported for OpenHCL.")
-        };
-
-        let ged = self.ged.as_mut().expect("No GED to configure TPM");
-
-        // Disable no_persistent_secrets implies preserving TPM states
-        // across boots
-        ged.no_persistent_secrets = !tpm_state_persistence;
-
         self
     }
 
