@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use crate::dispatch::vtl2_settings_worker::wait_for_pci_path;
-use crate::options::KeepAliveConfig;
 use crate::vpci::HclVpciBusControl;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -40,6 +39,7 @@ use std::task::ready;
 use tracing::Instrument;
 use uevent::UeventListener;
 
+use crate::options::KeepAliveConfig;
 use user_driver::vfio::PciDeviceResetMethod;
 use user_driver::vfio::VfioDevice;
 use user_driver::vfio::VfioDmaClients;
