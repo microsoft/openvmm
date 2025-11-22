@@ -1197,3 +1197,35 @@ pub async fn run_set_guest_state_isolation_mode(
     .map(|_| ())
     .context("set_guest_state_isolation_mode")
 }
+
+/// Runs Enable-VMTPM
+pub async fn run_enable_vmtpm(vmid: &Guid) -> anyhow::Result<()> {
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Enable-VMTPM")
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("run_enable_vmtpm")
+}
+
+/// Runs Disable-VMTPM
+pub async fn run_disable_vmtpm(vmid: &Guid) -> anyhow::Result<()> {
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Disable-VMTPM")
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("run_disable_vmtpm")
+}

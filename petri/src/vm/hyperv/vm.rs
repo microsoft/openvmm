@@ -594,6 +594,16 @@ impl HyperVVM {
     ) -> anyhow::Result<()> {
         powershell::run_set_guest_state_isolation_mode(&self.vmid, &self.ps_mod, mode).await
     }
+
+    /// Enable the TPM
+    pub async fn enable_tpm(&self) -> anyhow::Result<()> {
+        powershell::run_enable_vmtpm(&self.vmid).await
+    }
+
+    /// Disable the TPM
+    pub async fn disable_tpm(&self) -> anyhow::Result<()> {
+        powershell::run_disable_vmtpm(&self.vmid).await
+    }
 }
 
 impl Drop for HyperVVM {
