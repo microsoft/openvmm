@@ -200,8 +200,11 @@ impl Drop for Vtl2ParamsMap<'_> {
     }
 }
 
-// Write persisted info into the bootshim described persisted region.
-fn write_persisted_info(parsed: &ParsedBootDtInfo) -> anyhow::Result<()> {
+/// Write persisted info into the bootshim described persisted region.
+pub fn write_persisted_info(
+    parsed: &ParsedBootDtInfo,
+    cpus_with_mapped_interrupts: Vec<u32>,
+) -> anyhow::Result<()> {
     use loader_defs::shim::PersistedStateHeader;
     use loader_defs::shim::save_restore::MemoryEntry;
     use loader_defs::shim::save_restore::MmioEntry;
@@ -245,6 +248,7 @@ fn write_persisted_info(parsed: &ParsedBootDtInfo) -> anyhow::Result<()> {
                 bootloader_fdt_parser::AddressRange::Memory(_) => None,
             })
             .collect(),
+        cpus_with_mapped_interrupts,
     };
 
     let protobuf = mesh_protobuf::encode(state);
@@ -415,13 +419,6 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
     } else {
         Some(measured_config.vtom_offset_bit)
     };
-
-    // For now, save the persisted info after we read the bootshim provided data
-    // as all information we're persisting is currently known. In the future, if
-    // we plan on putting more usermode specific data such as the full openvmm
-    // saved state, we should probably move this to a servicing specific call.
-    write_persisted_info(&parsed_openhcl_boot)
-        .context("unable to write persisted info for next servicing boot")?;
 
     let runtime_params = RuntimeParameters {
         parsed_openhcl_boot,

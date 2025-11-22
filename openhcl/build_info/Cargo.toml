@@ -10,10 +10,7 @@ rust-version.workspace = true
 inspect.workspace = true
 
 [build-dependencies]
-hostname.workspace = true
-time.workspace = true
 vergen = { workspace = true, features = ["git", "gitcl"] }
-xshell.workspace = true
 
 [lints]
 workspace = true

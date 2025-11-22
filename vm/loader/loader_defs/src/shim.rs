@@ -335,5 +335,16 @@ pub mod save_restore {
         /// The mmio entries describing mmio for the whole partition.
         #[mesh(2)]
         pub partition_mmio: Vec<MmioEntry>,
+        /// The list of CPUs with mapped device interrupts present at save time.
+        /// While this list is today used as a semaphore (either there are device
+        /// interrupts mapped or not), in the future it may be used to provide more
+        /// granular restore hints. E.g., only start the CPUs with active
+        /// interrupts right away and defer other CPU startup until later.
+        ///
+        /// DEFAULT: For save state from prior versions, this will be empty.
+        /// This is fine: the restore heuristics might be less optimal, but will
+        /// still be functionally correct.
+        #[mesh(3)]
+        pub cpus_with_mapped_interrupts: Vec<u32>,
     }
 }
