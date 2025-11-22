@@ -68,6 +68,12 @@ impl NvmeManager {
         saved_state: Option<NvmeSavedState>,
         nvme_driver_spawner: Arc<dyn CreateNvmeDriver>,
     ) -> Self {
+        tracing::info!(
+            vp_count,
+            save_restore_supported,
+            saved_state = saved_state.is_some(),
+            "starting nvme manager"
+        );
         let (send, recv) = mesh::channel();
         let driver = driver_source.simple();
         let mut worker = NvmeManagerWorker {
@@ -94,6 +100,8 @@ impl NvmeManager {
                     );
                 }
             };
+
+            tracing::debug!("nvme manager entering main loop");
             worker.run(recv).await
         });
         Self {

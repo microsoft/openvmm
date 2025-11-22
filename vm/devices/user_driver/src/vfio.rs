@@ -130,13 +130,14 @@ impl VfioDevice {
             anyhow::bail!("group is not viable");
         }
 
+        let driver = driver_source.simple();
         container.set_iommu(IommuType::NoIommu)?;
         if keepalive {
             // Prevent physical hardware interaction when restoring.
-            group.set_keep_alive(pci_id)?;
+            group.set_keep_alive(pci_id, &driver).await?;
         }
         tracing::debug!(pci_id, "about to open device");
-        let device = group.open_device(pci_id)?;
+        let device = group.open_device(pci_id, &driver).await?;
         let msix_info = device.irq_info(vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX)?;
         if msix_info.flags.noresize() {
             anyhow::bail!("unsupported: kernel does not support dynamic msix allocation");

@@ -2188,6 +2188,12 @@ async fn new_underhill_vm(
             }),
         );
 
+        tracing::debug!(
+            CVM_ALLOWED,
+            nvme_vfio = true,
+            save_restore_supported,
+            "NVMe VFIO manager initialized, setting up resolver"
+        );
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(
             manager.client().clone(),
         ));
