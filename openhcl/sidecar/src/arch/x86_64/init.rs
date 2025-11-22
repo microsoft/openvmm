@@ -185,6 +185,7 @@ fn init(
         enable_logging,
         node_count,
         ref nodes,
+        ref initial_state,
     } = params;
 
     ENABLE_LOG.store(enable_logging, Relaxed);
@@ -318,9 +319,27 @@ fn init(
             *response_vector = 0.into();
             *needs_attention = 0.into();
             reserved.fill(0);
+
+            // Default: the base VP is REMOVED (meaning the kernel will start it), the
+            // next `vp_count - 1` VPs are RUN, and any remaining VPs are REMOVED.
             cpu_status[0] = CpuStatus::REMOVED.0.into();
             cpu_status[1..vp_count as usize].fill_with(|| CpuStatus::RUN.0.into());
             cpu_status[vp_count as usize..].fill_with(|| CpuStatus::REMOVED.0.into());
+
+            // Override with the initial state from openhcl_boot.
+            if initial_state.per_cpu_state_specified {
+                for (i, &should_start) in initial_state
+                    .sidecar_starts_cpu
+                    .iter()
+                    .skip(base_vp as usize)
+                    .enumerate()
+                    .take(vp_count as usize)
+                {
+                    if !should_start {
+                        cpu_status[i] = CpuStatus::REMOVED.0.into();
+                    }
+                }
+            }
         }
 
         node_init.push(NodeInit {

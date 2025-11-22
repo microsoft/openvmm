@@ -840,22 +840,21 @@ impl PartitionInfo {
         init_heap(params);
 
         let persisted_state_header = read_persisted_region_header(params);
-        let (topology, has_devices_that_should_disable_sidecar) =
-            if let Some(header) = persisted_state_header {
-                log!("found persisted state header");
-                let persisted_topology =
-                    topology_from_persisted_state(header, params, parsed, address_space)?;
+        let (topology, cpus_with_mapped_interrupts) = if let Some(header) = persisted_state_header {
+            log!("found persisted state header");
+            let persisted_topology =
+                topology_from_persisted_state(header, params, parsed, address_space)?;
 
-                (
-                    persisted_topology.topology,
-                    !persisted_topology.cpus_with_mapped_interrupts.is_empty(),
-                )
-            } else {
-                (
-                    topology_from_host_dt(params, parsed, &options, address_space)?,
-                    false,
-                )
-            };
+            (
+                persisted_topology.topology,
+                persisted_topology.cpus_with_mapped_interrupts,
+            )
+        } else {
+            (
+                topology_from_host_dt(params, parsed, &options, address_space)?,
+                vec![],
+            )
+        };
 
         let Self {
             vtl2_ram,
@@ -863,6 +862,7 @@ impl PartitionInfo {
             isolation,
             bsp_reg,
             cpus,
+            sidecar_cpu_overrides,
             vmbus_vtl0,
             vmbus_vtl2,
             cmdline: _,
@@ -876,20 +876,31 @@ impl PartitionInfo {
             boot_options,
         } = storage;
 
-        if let (SidecarOptions::Enabled { cpu_threshold, .. }, true) = (
+        if let (SidecarOptions::Enabled { .. }, true) = (
             &boot_options.sidecar,
-            has_devices_that_should_disable_sidecar,
+            !cpus_with_mapped_interrupts.is_empty(),
         ) {
-            if cpu_threshold.is_none()
-                || cpu_threshold
-                    .and_then(|threshold| threshold.try_into().ok())
-                    .is_some_and(|threshold| parsed.cpu_count() < threshold)
+            if *cpus_with_mapped_interrupts
+                .iter()
+                .max()
+                .expect("non-empty vector") as usize
+                <= sidecar_cpu_overrides.sidecar_starts_cpu.len()
             {
-                // If we are in the restore path, disable sidecar for small VMs, as the amortization
-                // benefits don't apply when devices are kept alive; the CPUs need to be powered on anyway
-                // to check for interrupts.
-                log!("disabling sidecar, as we are restoring from persisted state");
-                boot_options.sidecar = SidecarOptions::DisabledServicing;
+                sidecar_cpu_overrides.per_cpu_state_specified = true;
+                cpus_with_mapped_interrupts.iter().for_each(|&cpu_id| {
+                    sidecar_cpu_overrides.sidecar_starts_cpu[cpu_id as usize] = false;
+                });
+                log!(
+                    "disabling sidecar servicing on CPUs {:?} due to mapped interrupts",
+                    cpus_with_mapped_interrupts
+                );
+            } else {
+                // Degenerate case, and we'll need those VPs started by the time OpenHCL usermode restores anyways, so just
+                // disable sidecar.
+                log!(
+                    "too many CPUs with mapped interrupts ({}), disabling sidecar",
+                    cpus_with_mapped_interrupts.len()
+                );
                 options.sidecar = SidecarOptions::DisabledServicing;
             }
         }
