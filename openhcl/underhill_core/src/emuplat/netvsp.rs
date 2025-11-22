@@ -39,7 +39,7 @@ use std::task::ready;
 use tracing::Instrument;
 use uevent::UeventListener;
 
-use crate::options::KeepaliveConfig;
+use crate::options::KeepAliveConfig;
 use user_driver::vfio::PciDeviceResetMethod;
 use user_driver::vfio::VfioDevice;
 use user_driver::vfio::VfioDmaClients;
@@ -77,7 +77,7 @@ async fn create_mana_device(
     pci_id: &str,
     vp_count: u32,
     max_sub_channels: u16,
-    keepalive_mode: KeepaliveConfig,
+    keepalive_mode: KeepAliveConfig,
     dma_clients: VfioDmaClients,
     mut mana_state: Option<&ManaSavedState>,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
@@ -785,7 +785,7 @@ impl HclNetworkVFManagerWorker {
                         &self.vtl2_pci_id,
                         self.vp_count,
                         self.max_sub_channels,
-                        KeepaliveConfig::Disabled,
+                        KeepAliveConfig::Disabled,
                         self.dma_clients.clone(),
                         None, // No saved state on new device arrival
                     )
@@ -960,7 +960,7 @@ impl HclNetworkVFManager {
         max_sub_channels: u16,
         netvsp_state: &Option<Vec<SavedState>>,
         dma_mode: GuestDmaMode,
-        keepalive_mode: KeepaliveConfig,
+        keepalive_mode: KeepAliveConfig,
         dma_clients: VfioDmaClients,
         mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<(

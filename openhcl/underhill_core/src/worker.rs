@@ -47,7 +47,7 @@ use crate::nvme_manager::manager::NvmeDiskResolver;
 use crate::nvme_manager::manager::NvmeManager;
 use crate::options::GuestStateEncryptionPolicyCli;
 use crate::options::GuestStateLifetimeCli;
-use crate::options::KeepaliveConfig;
+use crate::options::KeepAliveConfig;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -287,9 +287,9 @@ pub struct UnderhillEnvCfg {
     /// Hide the isolation mode from the guest.
     pub hide_isolation: bool,
     /// Enable nvme keep alive.
-    pub nvme_keep_alive: KeepaliveConfig,
+    pub nvme_keep_alive: KeepAliveConfig,
     /// Enable mana keep alive.
-    pub mana_keep_alive: KeepaliveConfig,
+    pub mana_keep_alive: KeepAliveConfig,
     /// Don't skip FLR for NVMe devices.
     pub nvme_always_flr: bool,
     /// test configuration
@@ -783,7 +783,7 @@ impl UhVmNetworkSettings {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
-        keepalive_mode: KeepaliveConfig,
+        keepalive_mode: KeepAliveConfig,
         saved_mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState> {
         let instance_id = nic_config.instance_id;
@@ -968,7 +968,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
-        save_restore_supported: KeepaliveConfig,
+        save_restore_supported: KeepAliveConfig,
         mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState> {
         if self.vf_managers.contains_key(&instance_id) {
