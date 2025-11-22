@@ -368,18 +368,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                     _,
                     _,
                 ) | (
-                    Some(
-                        InitialRebootCondition::WithOpenHclUefi
-                            | InitialRebootCondition::WithOpenHclUefiOrTpm
-                    ),
-                    Some(FirmwareEvent::BootSuccess | FirmwareEvent::BootAttempt),
-                    Firmware::OpenhclUefi { .. },
-                    _,
-                ) | (
-                    Some(
-                        InitialRebootCondition::WithTpm
-                            | InitialRebootCondition::WithOpenHclUefiOrTpm
-                    ),
+                    Some(InitialRebootCondition::WithTpm),
                     Some(FirmwareEvent::BootSuccess | FirmwareEvent::BootAttempt),
                     _,
                     Some(_),

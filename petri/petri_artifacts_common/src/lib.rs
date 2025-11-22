@@ -81,12 +81,8 @@ pub mod tags {
     pub enum InitialRebootCondition {
         /// This guest always reboots on this VMM.
         Always,
-        /// This guest only reboot when using OpenHCL and UEFI on this VMM.
-        WithOpenHclUefi,
         /// This guest only reboots when the TPM is enabled.
         WithTpm,
-        /// This guest reboots when using OpenHCL and UEFI or the TPM.
-        WithOpenHclUefiOrTpm,
     }
 
     /// Quirks needed to boot a guest, allowing for differences based on backend

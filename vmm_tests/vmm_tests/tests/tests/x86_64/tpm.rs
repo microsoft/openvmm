@@ -5,7 +5,6 @@ use anyhow::Context;
 use anyhow::ensure;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
-#[cfg(windows)]
 use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
 use petri::ShutdownKind;
@@ -17,7 +16,6 @@ use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X6
 use pipette_client::PipetteClient;
 use std::path::Path;
 use vmm_test_macros::openvmm_test;
-#[cfg(windows)]
 use vmm_test_macros::vmm_test;
 
 const AK_CERT_NONZERO_BYTES: usize = 2500;
