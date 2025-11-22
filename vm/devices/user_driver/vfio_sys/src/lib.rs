@@ -203,7 +203,7 @@ impl Group {
         unsafe {
             let id = CString::new(device_id.to_owned())?;
             ioctl::vfio_group_set_keep_alive(self.file.as_raw_fd(), id.as_ptr())
-                .context("failed to set keep-alive")?;
+                .with_context(|| format!("failed to set keep-alive for device {device_id}"))?;
         }
         Ok(())
     }
