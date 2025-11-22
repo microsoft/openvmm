@@ -209,6 +209,7 @@ pub fn start_sidecar<'a>(
                 base_vp,
                 vp_count: cpus.len() as u32,
             };
+            *initial_state = partition_info.sidecar_cpu_overrides.clone();
             if initial_state.per_cpu_state_specified {
                 // If per-CPU state is specified, make sure to explicitly state that
                 // sidecar should not start the base vp of this node.

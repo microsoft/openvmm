@@ -397,6 +397,9 @@ fn start_aps(node_init: &[NodeInit], mapper: &mut temporary_map::Mapper) {
             if node_cpu_index >= node.node.vp_count {
                 break;
             }
+            // TODO (mattkur): skip CPUs if they are REMOVED in the control page.
+            // Otherwise the kernel may have started the CPU, and sidecar
+            // will interfere (and panic).
             match node.node.start(mapper, node_cpu_index) {
                 Ok(()) => {}
                 Err(err) => {

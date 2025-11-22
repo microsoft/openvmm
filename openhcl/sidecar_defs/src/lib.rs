@@ -24,7 +24,7 @@ use zerocopy::KnownLayout;
 /// in the event that we know we're about to spawn tasks on those
 /// CPUs right away to handle device interrupts).
 #[repr(C)]
-#[derive(FromZeros, Immutable, KnownLayout, Debug)]
+#[derive(FromZeros, Immutable, KnownLayout, Debug, Clone)]
 pub struct PerCpuState {
     /// Whether the per-CPU state is specified, since `NUM_CPUS_SUPPORTED_FOR_PER_CPU_STATE`
     /// is less than the maximum number of CPUs supported by OpenHCL and also by sidecar.

@@ -880,19 +880,20 @@ impl PartitionInfo {
             &boot_options.sidecar,
             !cpus_with_mapped_interrupts.is_empty(),
         ) {
-            if (*cpus_with_mapped_interrupts
+            let max_cpu_id = *cpus_with_mapped_interrupts
                 .iter()
                 .max()
-                .expect("non-empty vector") as usize)
-                < sidecar_cpu_overrides.sidecar_starts_cpu.len()
-            {
+                .expect("non-empty vector") as usize;
+            if max_cpu_id < sidecar_cpu_overrides.sidecar_starts_cpu.len() {
                 sidecar_cpu_overrides.per_cpu_state_specified = true;
                 cpus_with_mapped_interrupts.iter().for_each(|&cpu_id| {
                     sidecar_cpu_overrides.sidecar_starts_cpu[cpu_id as usize] = false;
                 });
                 log!(
-                    "disabling sidecar servicing on CPUs {:?} due to mapped interrupts",
-                    cpus_with_mapped_interrupts
+                    "disabling sidecar for CPUs {:?} due to mapped interrupts, per_cpu_state_specified={}, per_cpu_state={:?}",
+                    cpus_with_mapped_interrupts,
+                    sidecar_cpu_overrides.per_cpu_state_specified,
+                    &sidecar_cpu_overrides.sidecar_starts_cpu[..max_cpu_id + 1],
                 );
             } else {
                 // Degenerate case, and we'll need those VPs started by the time OpenHCL usermode restores anyways, so just
