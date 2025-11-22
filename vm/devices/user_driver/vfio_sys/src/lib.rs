@@ -213,7 +213,7 @@ impl Group {
     ) -> anyhow::Result<()> {
         // SAFETY: The file descriptor is valid and a correctly constructed struct is being passed.
         unsafe {
-            let id = CString::new(device_id.to_owned())?;
+            let id = CString::new(device_id)?;
             let r = ioctl::vfio_group_set_keep_alive(self.file.as_raw_fd(), id.as_ptr());
             match r {
                 Ok(_) => Ok(()),
@@ -231,12 +231,12 @@ impl Group {
                         .await;
                     ioctl::vfio_group_set_keep_alive(self.file.as_raw_fd(), id.as_ptr())
                         .with_context(|| {
-                            format!("failed to set keepalive after delay for {device_id}")
+                            format!("failed to set keep-alive after delay for {device_id}")
                         })
                         .map(|_| ())
                 }
                 Err(_) => r
-                    .with_context(|| format!("failed to set keepalive for {device_id}"))
+                    .with_context(|| format!("failed to set keep-alive for {device_id}"))
                     .map(|_| ()),
             }
         }
