@@ -214,8 +214,8 @@ pub struct Options {
     ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
     ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
     ///  - "nohost,noprivatepool" - Keepalive is disabled.
-    ///  - "<x>,<x>,disabledmanually" - Keepalive is disabled due to manual
-    ///    override. first two options are ignored.
+    ///  - "disabled,<x>,<x>" - Keepalive is disabled due to manual
+    ///    override. Host and private pool options are ignored.
     pub nvme_keep_alive: KeepAliveConfig,
 
     /// (OPENHCL_MANA_KEEP_ALIVE=\<KeepAliveConfig\>)
@@ -224,8 +224,7 @@ pub struct Options {
     ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
     ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
     ///  - "nohost,noprivatepool" - Keepalive is disabled.
-    ///  - "<x>,<x>,disabledmanually" - Keepalive is disabled due to manual
-    ///    override. first two options are ignored.
+    ///  - "disabled, <x>,<x>" - TODO: This needs to be implemented for mana.
     pub mana_keep_alive: KeepAliveConfig,
 
     /// (OPENHCL_NVME_ALWAYS_FLR=1)
@@ -383,7 +382,7 @@ impl Options {
                             Ok(v) => v,
                             Err(e) => {
                                 tracing::warn!(
-                                    "failed to parse OPENHCL_NVME_KEEP_ALIVE ('{s}'): {e}. keepalive will be disabled."
+                                    "failed to parse OPENHCL_NVME_KEEP_ALIVE ('{s}'): {e}. Nvme keepalive will be disabled."
                                 );
                                 KeepAliveConfig::Disabled
                             }
@@ -397,7 +396,7 @@ impl Options {
                             Ok(v) => v,
                             Err(e) => {
                                 tracing::warn!(
-                                    "failed to parse OPENHCL_MANA_KEEP_ALIVE ('{s}'): {e}. keepalive will be disabled."
+                                    "failed to parse OPENHCL_MANA_KEEP_ALIVE ('{s}'): {e}. Mana keepalive will be disabled."
                                 );
                                 KeepAliveConfig::Disabled
                             }
