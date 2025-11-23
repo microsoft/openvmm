@@ -120,7 +120,7 @@ impl VfioDevice {
         // Ignore any errors and always attempt to open.
         let _ = ctx.until_cancelled(wait_for_vfio_device).await;
 
-        tracing::trace!(pci_id, keepalive, "device arrived");
+        tracing::info!(pci_id, keepalive, "device arrived");
 
         let container = vfio_sys::Container::new()?;
         let group_id = vfio_sys::Group::find_group_for_device(&path)?;
@@ -135,7 +135,7 @@ impl VfioDevice {
             // Prevent physical hardware interaction when restoring.
             group.set_keep_alive(pci_id)?;
         }
-        tracing::trace!(pci_id, "about to open device");
+        tracing::debug!(pci_id, "about to open device");
         let device = group.open_device(pci_id)?;
         let msix_info = device.irq_info(vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX)?;
         if msix_info.flags.noresize() {
@@ -155,10 +155,11 @@ impl VfioDevice {
             dma_clients,
         };
 
-        tracing::trace!(pci_id, "enabling device...");
+        tracing::debug!(pci_id, "enabling device...");
         // Ensure bus master enable and memory space enable are set, and that
         // INTx is disabled.
-        this.enable_device().context("failed to enable device")?;
+        this.enable_device()
+            .with_context(|| format!("failed to enable device {pci_id}"))?;
         Ok(this)
     }
 
