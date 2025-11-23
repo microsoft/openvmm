@@ -627,6 +627,7 @@ impl LoadedVm {
             };
 
             // Save the persisted state used by the next openhcl_boot.
+            // todo: remove any cpus that are for queues with 0 pending IOs.
             let cpus_with_mapped_interrupts = match state
                 .init_state
                 .nvme_state
