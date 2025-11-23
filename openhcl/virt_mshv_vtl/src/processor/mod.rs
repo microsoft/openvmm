@@ -482,6 +482,12 @@ pub(crate) trait HardwareIsolatedBacking: Backing {
     );
 
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
+
+    /// Updates the timer deadline.
+    fn update_deadline(this: &mut UhProcessor<'_, Self>, ref_time_now: u64, next_ref_time: u64);
+
+    /// Clears any pending timer deadline.
+    fn clear_deadline(this: &mut UhProcessor<'_, Self>);
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]

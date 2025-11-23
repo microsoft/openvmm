@@ -389,6 +389,16 @@ impl HardwareIsolatedBacking for SnpBacked {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
+
+    fn update_deadline(this: &mut UhProcessor<'_, Self>, ref_time_now: u64, next_ref_time: u64) {
+        this.shared
+            .guest_timer
+            .update_deadline(this, ref_time_now, next_ref_time);
+    }
+
+    fn clear_deadline(this: &mut UhProcessor<'_, Self>) {
+        this.shared.guest_timer.clear_deadline(this);
+    }
 }
 
 /// Partition-wide shared data for SNP VPs.
@@ -400,6 +410,9 @@ pub struct SnpBackedShared {
     tsc_aux_virtualized: bool,
     #[inspect(debug)]
     sev_status: SevStatusMsr,
+    /// Accessor for managing lower VTL timer deadlines.
+    #[inspect(skip)]
+    guest_timer: Box<dyn hardware_cvm::HardwareIsolatedGuestTimer<SnpBacked>>,
 }
 
 impl SnpBackedShared {
@@ -428,11 +441,16 @@ impl SnpBackedShared {
             SevStatusMsr::from(msr.read_msr(x86defs::X86X_AMD_MSR_SEV).expect("read msr"));
         tracing::info!(CVM_ALLOWED, ?sev_status, "SEV status");
 
+        // Configure timer interface for lower VTLs.
+        let guest_timer: Box<dyn hardware_cvm::HardwareIsolatedGuestTimer<SnpBacked>> =
+            Box::new(hardware_cvm::VmTimeGuestTimer);
+
         Ok(Self {
             sev_status,
             invlpgb_count_max,
             tsc_aux_virtualized,
             cvm,
+            guest_timer,
         })
     }
 }
