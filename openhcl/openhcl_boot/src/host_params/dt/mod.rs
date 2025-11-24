@@ -526,11 +526,17 @@ fn topology_from_host_dt(
             // ranges to figure out which VTL2 memory is free to allocate from.
             let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;
 
+            // NOTE: For now, allocate all the private pool on NUMA node 0 to
+            // match previous behavior. Allocate from high memory downward to
+            // avoid overlapping any used ranges in low memory when openhcl's
+            // usage gets bigger, as otherwise the used_range by the bootshim
+            // could overlap the pool range chosen, when servicing to a new
+            // image.
             match address_space.allocate(
-                None,
+                Some(0),
                 pool_size_bytes,
                 AllocationType::GpaPool,
-                AllocationPolicy::LowMemory,
+                AllocationPolicy::HighMemory,
             ) {
                 Some(pool) => {
                     log!("allocated VTL2 pool at {:#x?}", pool.range);
