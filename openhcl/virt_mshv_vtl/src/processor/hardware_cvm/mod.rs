@@ -2948,6 +2948,8 @@ pub(super) trait HardwareIsolatedGuestTimer<T: HardwareIsolatedBacking>:
 }
 
 /// Interface for managing lower VTL timer deadlines via `VmTime`.
+/// This is the default interface used when a hardware-isolated backing doesn't support
+/// timer virtualization.
 pub(super) struct VmTimeGuestTimer;
 
 impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTimer {

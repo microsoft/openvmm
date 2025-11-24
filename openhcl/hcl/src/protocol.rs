@@ -263,7 +263,10 @@ pub struct tdx_vp_state {
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct tdx_l2_tsc_deadline_state {
+    /// Timer deadline value in absolute virtual TSC units for this processor.
     pub deadline: u64,
+    /// Indicates if the `mshv_vtl` driver should issue a `TDG.VP.WR` call to update the
+    ///  TSC deadline.
     pub update_deadline: u8,
     pub pad: [u8; 7],
 }

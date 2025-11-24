@@ -389,10 +389,18 @@ impl VirtualRegister {
 /// The actual `TDG.VP.WR` call to set the deadline is made by the `mshv_vtl` driver
 ///  before entering the lower VTL.
 struct TdxTscDeadlineService {
+    // Fixed-point scale factor to convert 100ns to TSC units.
     tsc_scale_100ns: u128,
 }
 
 impl TdxTscDeadlineService {
+    /// Convert hypervisor reference time (in 100ns) to TSC units.
+    fn ref_time_to_tsc(&self, ref_time: u64) -> u64 {
+        // Use fixed-point multiplication to calculate:
+        // tsc_ticks = (time_100ns /  10_000_000) * tsc_frequency
+        ((ref_time as u128 * self.tsc_scale_100ns) >> 64) as u64
+    }
+
     /// Returns true if `ref_time` is before `ref_time_last`.
     ///
     /// Note that this is a relative comparison in the 64-bit space and is not
@@ -402,16 +410,12 @@ impl TdxTscDeadlineService {
         let delta = ref_time_last.wrapping_sub(ref_time);
         (delta as i64) < 0
     }
-
-    /// Convert hypervisor reference time (in 100ns) to TSC units.
-    fn ref_time_to_tsc(&self, ref_time: u64) -> u64 {
-        // Use fixed-point multiplication to calculate:
-        // tsc_ticks = time_100ns * (tsc_frequency / 10_000_000)
-        ((ref_time as u128 * self.tsc_scale_100ns) >> 64) as u64
-    }
 }
 
 impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineService {
+    /// Update the virtual timer deadline in the processor's context shared with kernel.
+    /// This deadline will be set by `mshv_vtl` using 
+    /// `TDG.VP.WR(TDVPS.TSC_DEADLINE[L2-VM Index])` before entering into lower VTL.
     fn update_deadline(
         &self,
         vp: &mut UhProcessor<'_, TdxBacked>,
@@ -449,6 +453,7 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
         }
     }
 
+    /// Clears the virtual timer deadline in the processor context.
     fn clear_deadline(&self, vp: &mut UhProcessor<'_, TdxBacked>) {
         let vp_state = vp
             .backing
@@ -456,6 +461,8 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
             .as_mut()
             .expect("TdxTscDeadlineService requires timer_vp_state");
 
+        let state = vp.runner.tdx_l2_tsc_deadline_state_mut();
+        state.update_deadline = 0;
         vp_state.deadline_100ns = None;
     }
 }
