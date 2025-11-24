@@ -770,7 +770,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
             // system.
             //
             // TODO: Until #2470 is fixed, extend the timeout even longer to 10
-            // seconds workaround a Windows vmbus bug.
+            // seconds to workaround a Windows vmbus bug.
             socket
                 .set_connect_timeout(Duration::from_secs(10))
                 .context("failed to set connect timeout")?;
