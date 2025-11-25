@@ -224,7 +224,7 @@ pub struct Options {
     ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
     ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
     ///  - "nohost,noprivatepool" - Keepalive is disabled.
-    ///  - "disabled, <x>,<x>" - TODO: This needs to be implemented for mana.
+    ///  - "disabled,<x>,<x>" - TODO: This needs to be implemented for mana.
     pub mana_keep_alive: KeepAliveConfig,
 
     /// (OPENHCL_NVME_ALWAYS_FLR=1)
