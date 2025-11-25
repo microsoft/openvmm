@@ -1430,10 +1430,10 @@ async fn new_underhill_vm(
     // value for non-Trusted Launch VMs until all hosts in Azure have been
     // updated to provide the correct value.
     //
-    // Trusted Launch is roughly equivalent to not having secure boot or
-    // TPM enabled. Default boot is necessary because the VMGS is not swapped
-    // with the OS disk for these VMs in Azure (and in any case on-prem),
-    // causing the VM to fail to boot after an OS swap.
+    // Trusted Launch is roughly equivalent to having secure boot and TPM
+    // enabled. For VMs that are not Trusted Launch, default boot is necessary
+    // because the VMGS is not swapped with the OS disk in Azure (and in any
+    // case on-prem), causing the VM to fail to boot after an OS swap.
     //
     // TODO: remove this (and petri workaround) once host changes are saturated
     if !isolation.is_isolated()
@@ -1492,6 +1492,9 @@ async fn new_underhill_vm(
 
         if let Some(value) = env_cfg.attempt_ak_cert_callback {
             tracing::info!("using HCL_ATTEMPT_AK_CERT_CALLBACK={value} from cmdline");
+            dps.general
+                .management_vtl_features
+                .set_control_ak_cert_provisioning(true);
             dps.general
                 .management_vtl_features
                 .set_attempt_ak_cert_callback(value);
@@ -2185,6 +2188,12 @@ async fn new_underhill_vm(
             }),
         );
 
+        tracing::debug!(
+            CVM_ALLOWED,
+            nvme_vfio = true,
+            save_restore_supported,
+            "NVMe VFIO manager initialized, setting up resolver"
+        );
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(
             manager.client().clone(),
         ));
@@ -2829,15 +2838,17 @@ async fn new_underhill_vm(
                     TpmAkCertTypeResource::HwAttested(request_ak_cert)
                 }
                 AttestationType::Vbs => TpmAkCertTypeResource::SwAttested(request_ak_cert),
-                AttestationType::Host
-                    if dps
-                        .general
+                AttestationType::Host => TpmAkCertTypeResource::Trusted(
+                    request_ak_cert,
+                    dps.general
                         .management_vtl_features
-                        .attempt_ak_cert_callback() =>
-                {
-                    TpmAkCertTypeResource::Trusted(request_ak_cert)
-                }
-                AttestationType::Host => TpmAkCertTypeResource::TrustedPreProvisionedOnly,
+                        .control_ak_cert_provisioning()
+                        .then(|| {
+                            dps.general
+                                .management_vtl_features
+                                .attempt_ak_cert_callback()
+                        }),
+                ),
             }
         };
 

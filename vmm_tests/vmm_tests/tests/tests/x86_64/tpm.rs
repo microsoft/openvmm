@@ -198,7 +198,6 @@ async fn tpm_ak_cert_persisted<T>(
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let config = config
-        .with_openhcl_command_line("HCL_ATTEMPT_AK_CERT_CALLBACK=1")
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .modify_backend(|b| {
             b.with_tpm()
@@ -263,7 +262,6 @@ async fn tpm_ak_cert_retry<T>(
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let config = config
-        .with_openhcl_command_line("HCL_ATTEMPT_AK_CERT_CALLBACK=1")
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .modify_backend(|b| {
             b.with_tpm()

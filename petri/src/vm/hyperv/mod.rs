@@ -27,6 +27,7 @@ use crate::ShutdownKind;
 use crate::UefiConfig;
 use crate::VmmQuirks;
 use crate::disk_image::AgentImage;
+use crate::hyperv::hvc::VmState;
 use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::kmsg_log_task;
 use crate::openhcl_diag::OpenHclDiagHandler;
@@ -764,10 +765,14 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
         let client_core = async || {
             let socket = VmSocket::new().context("failed to create AF_HYPERV socket")?;
-            // Extend the default timeout of 2 seconds, as tests are often run in
-            // parallel on a host, causing very heavy load on the overall system.
+            // Extend the default timeout of 2 seconds, as tests are often run
+            // in parallel on a host, causing very heavy load on the overall
+            // system.
+            //
+            // TODO: Until #2470 is fixed, extend the timeout even longer to 10
+            // seconds to workaround a Windows vmbus bug.
             socket
-                .set_connect_timeout(Duration::from_secs(5))
+                .set_connect_timeout(Duration::from_secs(10))
                 .context("failed to set connect timeout")?;
             socket
                 .set_high_vtl(set_high_vtl)
@@ -785,9 +790,16 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                 .context("failed to connect")
                 .map(|()| socket)
         };
+
+        let mut timer = PolledTimer::new(&self.driver);
         loop {
-            let mut timer = PolledTimer::new(&self.driver);
             tracing::debug!(set_high_vtl, "attempting to connect to pipette server");
+            // Even if the VM is rebooting or otherwise transitioning power states
+            // it should never be considered fully "off". If it is, something has
+            // gone wrong.
+            if let Err(_) | Ok(VmState::Off) = self.vm.state().await {
+                anyhow::bail!("VM is no longer running, cannot connect to pipette");
+            }
             match client_core().await {
                 Ok(socket) => {
                     tracing::info!(set_high_vtl, "handshaking with pipette");
@@ -798,7 +810,10 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                     return c;
                 }
                 Err(err) => {
-                    tracing::debug!("failed to connect to pipette server, retrying: {:?}", err);
+                    tracing::debug!(
+                        err = err.as_ref() as &dyn std::error::Error,
+                        "failed to connect to pipette server, retrying",
+                    );
                     timer.sleep(Duration::from_secs(1)).await;
                 }
             }
@@ -850,6 +865,10 @@ impl PetriVmRuntime for HyperVPetriRuntime {
 
     async fn restore_openhcl(&mut self) -> anyhow::Result<()> {
         anyhow::bail!("restoring OpenHCL firmware separately is not yet supported on Hyper-V");
+    }
+
+    async fn update_command_line(&mut self, _command_line: &str) -> anyhow::Result<()> {
+        anyhow::bail!("updating command line is not yet supported on Hyper-V");
     }
 
     fn take_framebuffer_access(&mut self) -> Option<vm::HyperVFramebufferAccess> {
