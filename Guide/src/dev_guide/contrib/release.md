@@ -62,20 +62,7 @@ When creating a backport PR to a `release/YYMM` branch:
   resolution or additional modifications), clearly indicate this in the PR
   description. This signals to the reviewer that extra care is needed during
   the review process.
-
-#### Updating Servicing Tests
-
-After a release branch is created and produces at least one release candidate 
-(i.e., a successful CI run from the release branch), the servicing upgrade and 
-downgrade tests in the `main` branch should be updated to use the new OpenHCL 
-binaries from that release. These tests verify that future changes in `main` 
-maintain backward and forward compatibility with released versions. They 
-ensure that the servicing functionality (upgrading from older releases or 
-downgrading to them) continues to work correctly as the codebase evolves.
-Once the release branch has a successful CI build that produces OpenHCL 
-binaries. See [PR #2460](https://github.com/microsoft/openvmm/pull/2460) for 
-a reference implementation of this update.
-
+  
 ## Existing Release Branches
 
 | Release | Phase | Notes |
