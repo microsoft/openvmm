@@ -1,0 +1,30 @@
+[package]
+name = "test_igvm_agent_rpc_server"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+test_igvm_agent_lib.workspace = true
+
+guid.workspace = true
+
+cfg-if.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_Rpc",
+    "Win32_System_Console",
+    "Win32_System_Com",
+] }
+
+[build-dependencies]
+cc = "1"
+serde_json = "1"
+
+[lints]
+workspace = true

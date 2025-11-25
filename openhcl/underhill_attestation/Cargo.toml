@@ -41,7 +41,7 @@ disk_backend.workspace = true
 vmgs = { workspace = true, features = ["encryption_ossl", "test_helpers"] }
 vmgs_format.workspace = true
 guest_emulation_transport = { workspace = true, features = ["test_utilities"] }
-guest_emulation_device = { workspace = true, features = ["test_igvm_agent"] }
+guest_emulation_device.workspace = true
 test_with_tracing.workspace = true
 user_driver_emulated_mock.workspace = true
 

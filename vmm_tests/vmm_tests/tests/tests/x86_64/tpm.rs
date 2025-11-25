@@ -14,8 +14,11 @@ use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64;
+use petri_artifacts_vmm_test::artifacts::host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64;
 use pipette_client::PipetteClient;
 use std::path::Path;
+#[cfg(windows)]
+use pal;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
 #[cfg(windows)]
@@ -464,19 +467,55 @@ async fn tpm_test_platform_hierarchy_disabled(
 /// CVM with guest tpm tests on Hyper-V.
 #[cfg(windows)]
 #[vmm_test(
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 )]
-async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
+async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
-    extra_deps: (ResolvedArtifact<T>,),
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
+    use std::process::Stdio;
+    use std::io::Read;
+
     let os_flavor = config.os_flavor();
-    // TODO: Add test IGVMAgent RPC server to support the boot-time attestation.
+    let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
+
+    // Spawn the test IGVM agent RPC server on the host before creating the VM
+    tracing::info!("launching test_igvm_agent_rpc_server");
+    let rpc_server_path = rpc_server_artifact.get();
+    let (stderr_read, stderr_write) = pal::pipe_pair()?;
+    let mut rpc_server_child = std::process::Command::new(rpc_server_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(stderr_write)
+        .spawn()
+        .context("failed to spawn test_igvm_agent_rpc_server")?;
+
+    // Wait for stdout to close to ensure the server is ready
+    let mut stdout = rpc_server_child
+        .stdout
+        .take()
+        .context("failed to take stdout from RPC server")?;
+    let mut b = [0];
+    stdout
+        .read(&mut b)
+        .context("failed to read from RPC server stdout")?;
+
+    // Create a guard to ensure the RPC server is killed when this function exits
+    struct RpcServerGuard(std::process::Child);
+    impl Drop for RpcServerGuard {
+        fn drop(&mut self) {
+            tracing::info!("terminating test_igvm_agent_rpc_server");
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _rpc_server_guard = RpcServerGuard(rpc_server_child);
+
     let config = config
         .with_tpm_state_persistence(false)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
@@ -488,20 +527,21 @@ async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
         OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
         _ => unreachable!(),
     };
-    let (artifact,) = extra_deps;
-    let host_binary_path = artifact.get();
+    let host_binary_path = tpm_guest_tests_artifact.get();
     let tpm_guest_tests =
         TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
             .await?;
 
-    // TODO: Add test IGVMAgent RPC server to support AK Cert
-    // let expected_hex = expected_ak_cert_hex();
-    // let ak_cert_output = tpm_guest_tests.read_ak_cert_with_expected_hex(expected_hex.as_str()).await?;
+    // Verify AK cert with the test IGVM agent RPC server
+    let expected_hex = expected_ak_cert_hex();
+    let ak_cert_output = tpm_guest_tests
+        .read_ak_cert_with_expected_hex(expected_hex.as_str())
+        .await?;
 
-    // ensure!(
-    //     ak_cert_output.contains("AK certificate matches expected value"),
-    //     format!("{ak_cert_output}")
-    // );
+    ensure!(
+        ak_cert_output.contains("AK certificate matches expected value"),
+        format!("{ak_cert_output}")
+    );
 
     let report_output = tpm_guest_tests
         .read_report()

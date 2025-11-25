@@ -44,6 +44,7 @@ members = [
   # tools
   "petri/make_imc_hive",
   "petri/petri-tool",
+  "vm/devices/get/test_igvm_agent_rpc_server",
   "vm/devices/tpm/tpm_guest_tests",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
@@ -222,6 +223,8 @@ get_protocol = { path = "vm/devices/get/get_protocol" }
 get_resources = { path = "vm/devices/get/get_resources" }
 guest_crash_device = { path = "vm/devices/get/guest_crash_device" }
 guest_emulation_device = { path = "vm/devices/get/guest_emulation_device" }
+test_igvm_agent_lib = { path = "vm/devices/get/test_igvm_agent_lib" }
+test_igvm_agent_rpc_server = { path = "vm/devices/get/test_igvm_agent_rpc_server" }
 guest_emulation_log = { path = "vm/devices/get/guest_emulation_log" }
 guest_emulation_transport = { path = "vm/devices/get/guest_emulation_transport" }
 vtl2_settings_proto = { path = "vm/devices/get/vtl2_settings_proto" }

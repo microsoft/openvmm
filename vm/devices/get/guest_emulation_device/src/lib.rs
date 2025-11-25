@@ -16,15 +16,10 @@ pub mod resolver;
 #[cfg(feature = "test_utilities")]
 pub mod test_utilities;
 
-#[cfg(feature = "test_igvm_agent")]
-mod test_igvm_agent;
-
-#[cfg(feature = "test_igvm_agent")]
-mod test_crypto;
-
-#[cfg(feature = "test_igvm_agent")]
-use crate::test_igvm_agent::TestIgvmAgent;
-
+pub use test_igvm_agent_lib::IgvmAgentAction;
+pub use test_igvm_agent_lib::IgvmAgentTestPlan;
+pub use test_igvm_agent_lib::IgvmAgentTestSetting;
+use test_igvm_agent_lib::TestIgvmAgent;
 use async_trait::async_trait;
 use core::mem::size_of;
 use disk_backend::Disk;
@@ -52,7 +47,6 @@ use get_protocol::dps_json::PcatBootDevice;
 use get_resources::ged::FirmwareEvent;
 use get_resources::ged::GuestEmulationRequest;
 use get_resources::ged::GuestServicingFlags;
-use get_resources::ged::IgvmAttestTestConfig;
 use get_resources::ged::ModifyVtl2SettingsError;
 use get_resources::ged::SaveRestoreError;
 use get_resources::ged::Vtl0StartError;
@@ -66,12 +60,9 @@ use jiff::civil::date;
 use jiff::tz::TimeZone;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
-use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
-use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::io::IoSlice;
 use task_control::StopTask;
 use thiserror::Error;
@@ -117,9 +108,8 @@ enum Error {
     LargeDpsV2Unimplemented,
     #[error("invalid IGVM_ATTEST request")]
     InvalidIgvmAttestRequest,
-    #[cfg(feature = "test_igvm_agent")]
     #[error("test IGVM agent error")]
-    TestIgvmAgent(#[source] test_igvm_agent::Error),
+    TestIgvmAgent(#[source] test_igvm_agent_lib::Error),
     #[error("failed to write to shared memory")]
     SharedMemoryWriteFailed(#[source] guestmem::GuestMemoryError),
 }
@@ -207,43 +197,6 @@ pub enum GuestEvent {
     BootAttempt,
 }
 
-/// Possible actions for the IGVM agent to take in response to a request.
-#[derive(Debug, Clone)]
-pub enum IgvmAgentAction {
-    RespondSuccess,
-    RespondFailure,
-    NoResponse,
-}
-
-/// IGVM Agent test plan that specifies the list of action for a given request type.
-pub type IgvmAgentTestPlan = HashMap<IgvmAttestRequestType, VecDeque<IgvmAgentAction>>;
-
-/// IGVM Agent test setting. Custom Inspect impl avoids requiring HashMap to implement Inspect.
-#[derive(Debug)]
-pub enum IgvmAgentTestSetting {
-    /// Use test config that will be mapped to a plan. Used when creating GED via `GuestEmulationDeviceHandle`
-    /// (VMM tests).
-    TestConfig(IgvmAttestTestConfig),
-    /// Use test plan. Used when creating GED via test_utilities (unit tests).
-    TestPlan(IgvmAgentTestPlan),
-}
-
-impl Inspect for IgvmAgentTestSetting {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        let mut resp = req.respond();
-        match self {
-            Self::TestConfig(cfg) => {
-                resp.field("TestConfig", cfg);
-            }
-            Self::TestPlan(plan) => {
-                // Only expose summary to avoid needing Inspect on HashMap.
-                let len = plan.len();
-                resp.field("TestPlan len", len);
-            }
-        }
-    }
-}
-
 /// VMBUS device that implements the host side of the Guest Emulation Transport protocol.
 #[derive(InspectMut)]
 pub struct GuestEmulationDevice {
@@ -268,7 +221,6 @@ pub struct GuestEmulationDevice {
 
     igvm_agent_setting: Option<IgvmAgentTestSetting>,
 
-    #[cfg(feature = "test_igvm_agent")]
     /// Test agent implementation for `handle_igvm_attest`
     #[inspect(skip)]
     igvm_agent: TestIgvmAgent,
@@ -310,7 +262,6 @@ impl GuestEmulationDevice {
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
             igvm_agent_setting,
-            #[cfg(feature = "test_igvm_agent")]
             igvm_agent: TestIgvmAgent::new(),
             test_gsp_by_id,
         }
@@ -934,22 +885,14 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         }
 
         let (response_payload, length) = {
-            #[cfg(feature = "test_igvm_agent")]
-            {
-                if let Some(setting) = &state.igvm_agent_setting {
-                    state.igvm_agent.install_plan_from_setting(setting);
-                }
+            if let Some(setting) = &state.igvm_agent_setting {
+                state.igvm_agent.install_plan_from_setting(setting);
+            }
 
-                state
-                    .igvm_agent
-                    .handle_request(&request.report[..request.report_length as usize])
-                    .map_err(Error::TestIgvmAgent)?
-            }
-            #[cfg(not(feature = "test_igvm_agent"))]
-            {
-                tracing::warn!("Test IGVM agent feature not enabled, returning empty response");
-                (&[][..], 0)
-            }
+            state
+                .igvm_agent
+                .handle_request(&request.report[..request.report_length as usize])
+                .map_err(Error::TestIgvmAgent)?
         };
 
         // Write the response payload to the guest's shared memory
