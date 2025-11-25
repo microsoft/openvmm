@@ -3,16 +3,20 @@
 
 //! Parse partition info using the IGVM device tree parameter.
 
+extern crate alloc;
+
 use super::PartitionInfo;
 use super::shim_params::ShimParams;
 use crate::boot_logger::log;
 use crate::cmdline::BootCommandLineOptions;
+use crate::cmdline::SidecarOptions;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
 use crate::host_params::MAX_VTL2_RAM_RANGES;
+use crate::host_params::dt::dma_hint::pick_private_pool_size;
 use crate::host_params::mmio::select_vtl2_mmio_range;
 use crate::host_params::shim_params::IsolationType;
 use crate::memory::AddressSpaceManager;
@@ -21,6 +25,7 @@ use crate::memory::AllocationPolicy;
 use crate::memory::AllocationType;
 use crate::single_threaded::OffStackRef;
 use crate::single_threaded::off_stack;
+use alloc::vec::Vec;
 use arrayvec::ArrayVec;
 use bump_alloc::ALLOCATOR;
 use core::cmp::max;
@@ -41,6 +46,7 @@ use thiserror::Error;
 use zerocopy::FromBytes;
 
 mod bump_alloc;
+mod dma_hint;
 
 /// Errors when reading the host device tree.
 #[derive(Debug, Error)]
@@ -356,14 +362,6 @@ fn add_common_ranges<'a, I: Iterator<Item = MemoryRange>>(
         ));
     }
 
-    // Only specify pagetables as a reserved region on TDX, as they are used
-    // for AP startup via the mailbox protocol. On other platforms, the
-    // memory is free to be reclaimed.
-    if params.isolation_type == IsolationType::Tdx {
-        assert!(params.page_tables.is_some());
-        builder = builder.with_page_tables(params.page_tables.expect("always present on tdx"));
-    }
-
     builder
 }
 
@@ -373,6 +371,25 @@ struct PartitionTopology {
     vtl0_mmio: ArrayVec<MemoryRange, 2>,
     vtl2_mmio: ArrayVec<MemoryRange, 2>,
     memory_allocation_mode: MemoryAllocationMode,
+}
+
+/// State derived while constructing the partition topology
+/// from persisted state.
+#[derive(Debug, PartialEq, Eq)]
+struct PersistedPartitionTopology {
+    topology: PartitionTopology,
+    cpus_with_mapped_interrupts: Vec<u32>,
+}
+
+// Calculate the default mmio size for VTL2 when not specified by the host.
+//
+// This is half of the high mmio gap size, rounded down, with a minimum of 128
+// MB and a maximum of 1 GB.
+fn calculate_default_mmio_size(parsed: &ParsedDt) -> Result<u64, DtError> {
+    const MINIMUM_MMIO_SIZE: u64 = 128 * (1 << 20);
+    const MAXIMUM_MMIO_SIZE: u64 = 1 << 30;
+    let half_high_gap = parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?.mmio[1].len() / 2;
+    Ok(half_high_gap.clamp(MINIMUM_MMIO_SIZE, MAXIMUM_MMIO_SIZE))
 }
 
 /// Read topology from the host provided device tree.
@@ -418,16 +435,16 @@ fn topology_from_host_dt(
             parsed.memory_allocation_mode,
             MemoryAllocationMode::Vtl2 { .. }
         ) {
-        // Decide the amount of mmio VTL2 should allocate. Enforce a minimum
-        // of 128 MB mmio for VTL2.
-        const MINIMUM_MMIO_SIZE: u64 = 128 * (1 << 20);
+        // Decide the amount of mmio VTL2 should allocate.
         let mmio_size = max(
             match parsed.memory_allocation_mode {
                 MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
                 _ => 0,
             },
-            MINIMUM_MMIO_SIZE,
+            calculate_default_mmio_size(parsed)?,
         );
+
+        log!("allocating vtl2 mmio size {mmio_size:#x} bytes");
 
         // Decide what mmio vtl2 should use.
         let mmio = &parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?.mmio;
@@ -510,31 +527,37 @@ fn topology_from_host_dt(
         .init()
         .expect("failed to initialize address space manager");
 
-    // Decide if we will reserve memory for a VTL2 private pool. Parse this
-    // from the final command line, or the host provided device tree value.
-    let vtl2_gpa_pool_size = {
-        let dt_page_count = parsed.device_dma_page_count;
-        let cmdline_page_count = options.enable_vtl2_gpa_pool;
-        max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0))
-    };
-    if vtl2_gpa_pool_size != 0 {
-        // Reserve the specified number of pages for the pool. Use the used
-        // ranges to figure out which VTL2 memory is free to allocate from.
-        let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;
-
-        match address_space.allocate(
-            None,
-            pool_size_bytes,
-            AllocationType::GpaPool,
-            AllocationPolicy::LowMemory,
+    if params.isolation_type == IsolationType::None {
+        if let Some(vtl2_gpa_pool_size) = pick_private_pool_size(
+            options.enable_vtl2_gpa_pool,
+            parsed.device_dma_page_count,
+            parsed.cpu_count(),
+            vtl2_ram.iter().map(|e| e.range.len()).sum(),
         ) {
-            Some(pool) => {
-                log!("allocated VTL2 pool at {:#x?}", pool.range);
-            }
-            None => {
-                panic!("failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes");
-            }
-        };
+            // Reserve the specified number of pages for the pool. Use the used
+            // ranges to figure out which VTL2 memory is free to allocate from.
+            let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;
+
+            // NOTE: For now, allocate all the private pool on NUMA node 0 to
+            // match previous behavior. Allocate from high memory downward to
+            // avoid overlapping any used ranges in low memory when openhcl's
+            // usage gets bigger, as otherwise the used_range by the bootshim
+            // could overlap the pool range chosen, when servicing to a new
+            // image.
+            match address_space.allocate(
+                Some(0),
+                pool_size_bytes,
+                AllocationType::GpaPool,
+                AllocationPolicy::HighMemory,
+            ) {
+                Some(pool) => {
+                    log!("allocated VTL2 pool at {:#x?}", pool.range);
+                }
+                None => {
+                    panic!("failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes");
+                }
+            };
+        }
     }
 
     Ok(PartitionTopology {
@@ -551,7 +574,7 @@ fn topology_from_persisted_state(
     params: &ShimParams,
     parsed: &ParsedDt,
     address_space: &mut AddressSpaceManager,
-) -> Result<PartitionTopology, DtError> {
+) -> Result<PersistedPartitionTopology, DtError> {
     log!("reading topology from persisted state");
 
     // Verify the header describes a protobuf region within the bootshim
@@ -591,6 +614,7 @@ fn topology_from_persisted_state(
     let loader_defs::shim::save_restore::SavedState {
         partition_memory,
         partition_mmio,
+        cpus_with_mapped_interrupts,
     } = parsed_protobuf;
 
     // FUTURE: should memory allocation mode should persist in saved state and
@@ -732,11 +756,14 @@ fn topology_from_persisted_state(
         })
         .collect::<ArrayVec<MemoryRange, 2>>();
 
-    Ok(PartitionTopology {
-        vtl2_ram: OffStackRef::<'_, ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>>::leak(vtl2_ram),
-        vtl0_mmio,
-        vtl2_mmio,
-        memory_allocation_mode,
+    Ok(PersistedPartitionTopology {
+        topology: PartitionTopology {
+            vtl2_ram: OffStackRef::<'_, ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>>::leak(vtl2_ram),
+            vtl0_mmio,
+            vtl2_mmio,
+            memory_allocation_mode,
+        },
+        cpus_with_mapped_interrupts,
     })
 }
 
@@ -819,12 +846,22 @@ impl PartitionInfo {
         init_heap(params);
 
         let persisted_state_header = read_persisted_region_header(params);
-        let topology = if let Some(header) = persisted_state_header {
-            log!("found persisted state header");
-            topology_from_persisted_state(header, params, parsed, address_space)?
-        } else {
-            topology_from_host_dt(params, parsed, &options, address_space)?
-        };
+        let (topology, has_devices_that_should_disable_sidecar) =
+            if let Some(header) = persisted_state_header {
+                log!("found persisted state header");
+                let persisted_topology =
+                    topology_from_persisted_state(header, params, parsed, address_space)?;
+
+                (
+                    persisted_topology.topology,
+                    !persisted_topology.cpus_with_mapped_interrupts.is_empty(),
+                )
+            } else {
+                (
+                    topology_from_host_dt(params, parsed, &options, address_space)?,
+                    false,
+                )
+            };
 
         let Self {
             vtl2_ram,
@@ -844,6 +881,24 @@ impl PartitionInfo {
             nvme_keepalive,
             boot_options,
         } = storage;
+
+        if let (SidecarOptions::Enabled { cpu_threshold, .. }, true) = (
+            &boot_options.sidecar,
+            has_devices_that_should_disable_sidecar,
+        ) {
+            if cpu_threshold.is_none()
+                || cpu_threshold
+                    .and_then(|threshold| threshold.try_into().ok())
+                    .is_some_and(|threshold| parsed.cpu_count() < threshold)
+            {
+                // If we are in the restore path, disable sidecar for small VMs, as the amortization
+                // benefits don't apply when devices are kept alive; the CPUs need to be powered on anyway
+                // to check for interrupts.
+                log!("disabling sidecar, as we are restoring from persisted state");
+                boot_options.sidecar = SidecarOptions::DisabledServicing;
+                options.sidecar = SidecarOptions::DisabledServicing;
+            }
+        }
 
         // Set ram and memory alloction mode.
         vtl2_ram.clear();

@@ -280,7 +280,7 @@ mod device_range {
                 }
 
                 fn map(&mut self, addr: $addr) {
-                    tracing::debug!(region_name = ?self.region_name, ?addr, len = ?self.len, "map");
+                    tracing::trace!(region_name = ?self.region_name, ?addr, len = ?self.len, "map");
                     self.unmap();
                     match self.ranges.register(
                         addr,
@@ -305,7 +305,7 @@ mod device_range {
                 }
 
                 fn unmap(&mut self) {
-                    tracing::debug!(region_name = ?self.region_name, addr = ?self.addr, len = ?self.len, "unmap");
+                    tracing::trace!(region_name = ?self.region_name, addr = ?self.addr, len = ?self.len, "unmap");
                     if let Some(addr) = self.addr.take() {
                         self.ranges.revoke(addr)
                     }

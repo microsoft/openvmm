@@ -461,8 +461,7 @@ async fn memory_validation_release_small<T: PetriVmmBackend>(
         WaitPeriodSec::ShortWait,
         driver,
         "release",
-        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
-        false,
+        true,
     )
     .await
 }
@@ -488,8 +487,7 @@ async fn memory_validation_debug_small<T: PetriVmmBackend>(
         WaitPeriodSec::ShortWait,
         driver,
         "debug",
-        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
-        false,
+        true,
     )
     .await
 }
@@ -500,7 +498,7 @@ async fn memory_validation_debug_small<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_release_heavy<T: PetriVmmBackend>(
+async fn memory_validation_release_very_heavy<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     _: (),
     driver: DefaultDriver,
@@ -511,8 +509,7 @@ async fn memory_validation_release_heavy<T: PetriVmmBackend>(
         WaitPeriodSec::LongWait,
         driver,
         "release",
-        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
-        false,
+        true,
     )
     .await
 }
@@ -527,7 +524,7 @@ async fn memory_validation_release_heavy<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_debug_heavy<T: PetriVmmBackend>(
+async fn memory_validation_debug_very_heavy<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     _: (),
     driver: DefaultDriver,
@@ -538,8 +535,7 @@ async fn memory_validation_debug_heavy<T: PetriVmmBackend>(
         WaitPeriodSec::LongWait,
         driver,
         "debug",
-        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
-        false,
+        true,
     )
     .await
 }

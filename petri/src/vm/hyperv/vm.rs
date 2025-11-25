@@ -10,6 +10,7 @@ use crate::CommandError;
 use crate::OpenHclServicingFlags;
 use crate::PetriHaltReason;
 use crate::PetriLogFile;
+use crate::PetriLogSource;
 use crate::PetriVmFramebufferAccess;
 use crate::VmScreenshotMeta;
 use anyhow::Context;
@@ -41,6 +42,7 @@ pub struct HyperVVM {
     ps_mod: PathBuf,
     // TODO: use a trait interface here
     log_file: PetriLogFile,
+    logger: PetriLogSource,
     driver: DefaultDriver,
 
     // state
@@ -57,9 +59,10 @@ impl HyperVVM {
         guest_state_isolation_type: powershell::HyperVGuestStateIsolationType,
         memory: u64,
         vmgs_path: Option<&Path>,
-        log_file: PetriLogFile,
+        logger: PetriLogSource,
         driver: DefaultDriver,
     ) -> anyhow::Result<Self> {
+        let log_file = logger.log_file("hyperv")?;
         let create_time = Timestamp::now();
         let name = name.to_owned();
         let temp_dir = tempfile::tempdir()?;
@@ -124,6 +127,7 @@ impl HyperVVM {
             temp_dir: Arc::new(temp_dir),
             ps_mod,
             log_file,
+            logger,
             driver,
             destroyed: false,
             last_start_time: None,
@@ -201,6 +205,29 @@ impl HyperVVM {
                 event.time_created, event.provider_name, event.level, event.id, event.message,
             ),
         );
+
+        const HYPERV_CRASHDUMP_PROVIDER: &str = "Microsoft-Windows-Hyper-V-CrashDump";
+        const CRASH_DUMP_WRITTEN_EVENT_ID: u32 = 40001;
+
+        // If we see an event indicating a crash dump was written, parse the message
+        // to find the dump file path and attach it.
+        if event.provider_name == HYPERV_CRASHDUMP_PROVIDER
+            && event.id == CRASH_DUMP_WRITTEN_EVENT_ID
+        {
+            let Some(path_start) = event.message.find("C:\\") else {
+                tracing::warn!("could not find crash dump path in crash event message");
+                return;
+            };
+            // Messages end with a period, exclude it
+            let path = Path::new(&event.message[path_start..event.message.len() - 1]);
+            let filename = path.file_name().and_then(|x| x.to_str()).unwrap();
+            if let Err(e) = self.logger.copy_attachment(filename, path) {
+                tracing::warn!(
+                    error = e.as_ref() as &dyn std::error::Error,
+                    "failed to copy hyper-v crash dump file"
+                );
+            }
+        }
     }
 
     /// Waits for an event emitted by the firmware about its boot status, and
@@ -293,7 +320,7 @@ impl HyperVVM {
         &mut self,
         path: &Path,
         controller_type: powershell::ControllerType,
-        controller_location: Option<u32>,
+        controller_location: Option<u8>,
         controller_number: Option<u32>,
     ) -> anyhow::Result<()> {
         powershell::run_add_vm_hard_disk_drive(powershell::HyperVAddVMHardDiskDriveArgs {
@@ -311,7 +338,7 @@ impl HyperVVM {
         powershell::run_set_initial_machine_configuration(&self.vmid, &self.ps_mod, imc_hive).await
     }
 
-    async fn state(&self) -> anyhow::Result<VmState> {
+    pub(crate) async fn state(&self) -> anyhow::Result<VmState> {
         hvc::hvc_state(&self.vmid).await
     }
 
@@ -376,18 +403,7 @@ impl HyperVVM {
     }
 
     /// Wait for the VM to stop
-    pub async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
-        // If we aren't expecting a restart, tell the VM to turn off if the
-        // guest unexpectedly restarts. This command may fail if the VM is
-        // transitioning between states. In that case, the VM will be shut off
-        // and destroyed later if necessary.
-        if let Err(e) =
-            powershell::run_set_turn_off_on_guest_restart(&self.vmid, &self.ps_mod, !allow_reset)
-                .await
-        {
-            tracing::warn!("failed to set turn off on guest restart: {e:#}");
-        }
-
+    pub async fn wait_for_halt(&mut self, _allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
         let (halt_reason, timestamp) = self.wait_for_some(Self::halt_event).await?;
         if halt_reason == PetriHaltReason::Reset {
             // add 1ms to avoid getting the same event again
@@ -514,13 +530,16 @@ impl HyperVVM {
     async fn remove_inner(&mut self) -> anyhow::Result<()> {
         if !self.destroyed {
             let res_off = hvc::hvc_ensure_off(&self.vmid).await;
-            let res_remove = powershell::run_remove_vm(&self.vmid).await;
 
-            self.flush_logs().await?;
+            // Flush logs before we remove the VM so we can capture any
+            // interesting files before they get deleted.
+            let res_flush = self.flush_logs().await;
+            let res_remove = powershell::run_remove_vm(&self.vmid).await;
 
             res_off?;
             res_remove?;
             self.destroyed = true;
+            res_flush?;
         }
 
         Ok(())

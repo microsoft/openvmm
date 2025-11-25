@@ -48,6 +48,7 @@ impl HvcallPage {
 pub struct HvCall {
     pub(crate) input_page: HvcallPage,
     pub(crate) output_page: HvcallPage,
+    initialized: bool,
 }
 
 static HV_PAGE_INIT_STATUS: AtomicU16 = AtomicU16::new(0);
@@ -194,6 +195,7 @@ impl HvCall {
         crate::arch::hypercall::initialize(guest_os_id.into());
 
         HV_PAGE_INIT_STATUS.fetch_add(1, Ordering::SeqCst);
+        self.initialized = true;
     }
 
     /// Returns a mutable reference to the hypercall input page.
@@ -206,6 +208,7 @@ impl HvCall {
         HvCall {
             input_page: HvcallPage::new(),
             output_page: HvcallPage::new(),
+            initialized: false,
         }
     }
 
@@ -264,9 +267,11 @@ impl HvCall {
 
 impl Drop for HvCall {
     fn drop(&mut self) {
-        let seq = HV_PAGE_INIT_STATUS.fetch_sub(1, Ordering::SeqCst);
-        if seq == 0 {
-            self.uninitialize();
+        if self.initialized {
+            let seq = HV_PAGE_INIT_STATUS.fetch_sub(1, Ordering::SeqCst);
+            if seq == 1 {
+                self.uninitialize();
+            }
         }
     }
 }

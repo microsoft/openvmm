@@ -14,9 +14,17 @@ inspect.workspace = true
 pal_event.workspace = true
 sparse_mmap.workspace = true
 minircu = { workspace = true, optional = true }
+trycopy.workspace = true
 
 thiserror.workspace = true
 zerocopy.workspace = true
+
+[[bench]]
+name = "perf"
+harness = false
+
+[dev-dependencies]
+criterion.workspace = true
 
 [lints]
 workspace = true

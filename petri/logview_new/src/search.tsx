@@ -9,6 +9,20 @@ interface SearchInputProps {
   value: string;
   onChange: (value: string) => void;
   inputRef?: React.RefObject<HTMLInputElement | null>;
+  /**
+   * When true (default), the component installs global key handlers for:
+   *  - Ctrl/Cmd+F to focus/select the input
+   *  - Escape to clear (or blur when empty)
+   * When false, these handlers are disabled entirely.
+   *
+   * This allows parent components (e.g. the log viewer) to temporarily
+   * suspend search keyboard behavior while an overlay (like Inspect) is open.
+   */
+  active?: boolean;
+  /**
+   * When true (default), the component syncs its value to the `?search=` URL param
+   * and initializes from it on mount. Set false for ephemeral searches (e.g. Inspect overlay).
+   */
   usePersistentSearching?: boolean;
 }
 
@@ -16,6 +30,7 @@ export function SearchInput({
   value,
   onChange,
   inputRef,
+  active = true,
   usePersistentSearching = true,
 }: SearchInputProps): React.JSX.Element {
   const location = useLocation();
@@ -68,8 +83,10 @@ export function SearchInput({
     usePersistentSearching,
   ]);
 
-  // Handle Ctrl/Cmd+F keyboard shortcut and Escape to clear
+  // Handle Ctrl/Cmd+F keyboard shortcut and Escape to clear/blur (only if active)
   useEffect(() => {
+    if (!active) return; // Skip installing handlers when inactive
+
     const handleKeyDown = (e: KeyboardEvent) => {
       const isMac = navigator.platform.toUpperCase().includes("MAC");
       const isFind =
@@ -82,14 +99,20 @@ export function SearchInput({
         actualRef.current?.select();
       }
 
-      if (e.key === "Escape" && value) {
-        onChange("");
+      if (e.key === "Escape") {
+        if (value) {
+          // If there's text, clear it
+          onChange("");
+        } else if (document.activeElement === actualRef.current) {
+          // If empty and search bar is focused, remove focus from it
+          actualRef.current?.blur();
+        }
       }
     };
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [value, onChange]);
+  }, [value, onChange, active]);
 
   return (
     <div style={{ display: "inline-block" }}>
@@ -99,6 +122,8 @@ export function SearchInput({
         onChange={(e) => onChange(e.target.value)}
         placeholder="Filter ..."
         className="common-search-input"
+        // aria-disabled hints to assistive tech that shortcuts are not active
+        aria-disabled={!active}
       />
       {value && (
         <button

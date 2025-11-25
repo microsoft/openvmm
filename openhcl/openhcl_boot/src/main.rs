@@ -34,6 +34,7 @@ use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_memory_init;
 use crate::boot_logger::boot_logger_runtime_init;
+use crate::boot_logger::boot_logger_write_memory_log_to_runtime;
 use crate::boot_logger::log;
 use crate::hypercall::hvcall;
 use crate::memory::AddressSpaceManager;
@@ -82,7 +83,6 @@ struct BuildKernelCommandLineParams<'a> {
     is_confidential_debug: bool,
     sidecar: Option<&'a SidecarConfig<'a>>,
     vtl2_pool_supported: bool,
-    disable_keep_alive: bool,
 }
 
 /// Read and setup the underhill kernel command line into the specified buffer.
@@ -97,7 +97,6 @@ fn build_kernel_command_line(
         is_confidential_debug,
         sidecar,
         vtl2_pool_supported,
-        disable_keep_alive,
     } = fn_params;
 
     // For reference:
@@ -192,6 +191,9 @@ fn build_kernel_command_line(
         "hv_storvsc.storvsc_ringbuffer_size=0x8000",
         // Disable eager mimalloc commit to prevent core dumps from being overly large
         "MIMALLOC_ARENA_EAGER_COMMIT=0",
+        // Disable acpi runtime support. Unused in underhill, but some support
+        // is compiled in for the kernel (ie TDX mailbox protocol).
+        "acpi=off",
     ];
 
     const X86_KERNEL_PARAMETERS: &[&str] = &[
@@ -289,7 +291,10 @@ fn build_kernel_command_line(
 
     // Only when explicitly supported by Host.
     // TODO: Move from command line to device tree when stabilized.
-    if partition_info.nvme_keepalive && vtl2_pool_supported && !disable_keep_alive {
+    if partition_info.nvme_keepalive
+        && vtl2_pool_supported
+        && !partition_info.boot_options.disable_nvme_keep_alive
+    {
         write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=1 ")?;
     }
 
@@ -584,6 +589,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // any access to secrets in the boot shim.
     boot_logger_runtime_init(p.isolation_type, partition_info.com3_serial_available);
     log!("openhcl_boot: logging enabled");
+    boot_logger_write_memory_log_to_runtime();
 
     // Confidential debug will show up in boot_options only if included in the
     // static command line, or if can_trust_host is true (so the dynamic command
@@ -630,7 +636,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     validate_vp_hw_ids(partition_info);
 
-    setup_vtl2_memory(&p, partition_info);
+    setup_vtl2_memory(&p, partition_info, address_space);
     setup_vtl2_vp(partition_info);
 
     verify_imported_regions_hash(&p);
@@ -657,7 +663,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         is_confidential_debug,
         sidecar: sidecar.as_ref(),
         vtl2_pool_supported: address_space.has_vtl2_pool(),
-        disable_keep_alive: partition_info.boot_options.disable_nvme_keep_alive,
     })
     .unwrap();
 

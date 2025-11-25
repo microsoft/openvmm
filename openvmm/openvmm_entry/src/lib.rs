@@ -29,6 +29,7 @@ use clap::CommandFactory;
 use clap::FromArgMatches;
 use clap::Parser;
 use cli_args::DiskCliKind;
+use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
 use cli_args::NicConfigCli;
 use cli_args::ProvisionVmgs;
@@ -66,12 +67,14 @@ use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use hvlite_defs::config::DeviceVtl;
+use hvlite_defs::config::EfiDiagnosticsLogLevelType;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LateMapVtl0MemoryPolicy;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
 use hvlite_defs::config::PcieRootComplexConfig;
 use hvlite_defs::config::PcieRootPortConfig;
+use hvlite_defs::config::PcieSwitchConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialInformation;
 use hvlite_defs::config::VirtioBus;
@@ -207,6 +210,22 @@ struct ConsoleState<'a> {
     input: Box<dyn AsyncWrite + Unpin + Send>,
 }
 
+/// Build a flat list of switches with their parent port assignments.
+///
+/// This function converts hierarchical CLI switch definitions into a flat list
+/// where each switch specifies its parent port directly.
+fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<PcieSwitchConfig> {
+    all_switches
+        .iter()
+        .map(|switch_cli| PcieSwitchConfig {
+            name: switch_cli.name.clone(),
+            num_downstream_ports: switch_cli.num_downstream_ports,
+            parent_port: switch_cli.port_name.clone(),
+            hotplug: switch_cli.hotplug,
+        })
+        .collect()
+}
+
 fn vm_config_from_command_line(
     spawner: impl Spawn,
     opt: &Options,
@@ -288,7 +307,7 @@ fn vm_config_from_command_line(
                     app.or_else(openvmm_terminal_app).as_deref(),
                     &path,
                     ConsoleLaunchOptions {
-                        window_title: Some(window_title + " [OpenVMM]"),
+                        window_title: Some(window_title),
                     },
                 )
                 .context("failed to launch console")?;
@@ -689,6 +708,8 @@ fn vm_config_from_command_line(
         })
     }));
 
+    let pcie_switches = build_switch_list(&opt.pcie_switch);
+
     let pcie_root_complexes = opt
         .pcie_root_complex
         .iter()
@@ -700,6 +721,7 @@ fn vm_config_from_command_line(
                 .filter(|port_cli| port_cli.root_complex_name == cli.name)
                 .map(|port_cli| PcieRootPortConfig {
                     name: port_cli.name.clone(),
+                    hotplug: port_cli.hotplug,
                 })
                 .collect();
 
@@ -1033,6 +1055,13 @@ fn vm_config_from_command_line(
                     no_persistent_secrets: true,
                     igvm_attest_test_config: None,
                     test_gsp_by_id: opt.test_gsp_by_id,
+                    efi_diagnostics_log_level: {
+                        match opt.efi_diagnostics_log_level.unwrap_or_default() {
+                            EfiDiagnosticsLogLevelCli::Default => get_resources::ged::EfiDiagnosticsLogLevelType::Default,
+                            EfiDiagnosticsLogLevelCli::Info => get_resources::ged::EfiDiagnosticsLogLevelType::Info,
+                            EfiDiagnosticsLogLevelCli::Full => get_resources::ged::EfiDiagnosticsLogLevelType::Full,
+                        }
+                    },
                 }
                 .into_resource(),
             ),
@@ -1358,6 +1387,7 @@ fn vm_config_from_command_line(
         floppy_disks,
         pcie_root_complexes,
         pcie_devices: Vec::new(),
+        pcie_switches,
         vpci_devices,
         ide_disks: Vec::new(),
         memory: MemoryConfig {
@@ -1427,6 +1457,13 @@ fn vm_config_from_command_line(
         generation_id_recv: None,
         rtc_delta_milliseconds: 0,
         automatic_guest_reset: !opt.halt_on_reset,
+        efi_diagnostics_log_level: {
+            match opt.efi_diagnostics_log_level.unwrap_or_default() {
+                EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::Default,
+                EfiDiagnosticsLogLevelCli::Info => EfiDiagnosticsLogLevelType::Info,
+                EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::Full,
+            }
+        },
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
@@ -1953,6 +1990,14 @@ enum InteractiveCommand {
         /// configured path.
         #[clap(long, conflicts_with("user_mode_only"))]
         igvm: Option<PathBuf>,
+        /// Enable keepalive when servicing VTL2 devices.
+        /// Default is `true`.
+        #[clap(long, short = 'n', default_missing_value = "true")]
+        nvme_keepalive: bool,
+        /// Enable keepalive when servicing VTL2 devices.
+        /// Default is `false`.
+        #[clap(long)]
+        mana_keepalive: bool,
     },
 
     /// Read guest memory
@@ -2806,6 +2851,8 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             InteractiveCommand::ServiceVtl2 {
                 user_mode_only,
                 igvm,
+                mana_keepalive,
+                nvme_keepalive,
             } => {
                 let paravisor_diag = paravisor_diag.clone();
                 let vm_rpc = vm_rpc.clone();
@@ -2823,7 +2870,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         hvlite_helpers::underhill::save_underhill(
                             &vm_rpc,
                             ged_rpc.as_ref().context("no GED")?,
-                            GuestServicingFlags::default(),
+                            GuestServicingFlags {
+                                nvme_keepalive,
+                                mana_keepalive,
+                            },
                             file.into(),
                         )
                         .await?;

@@ -9,6 +9,8 @@
 #[cfg(any(target_os = "linux", windows))]
 mod agent;
 #[cfg(any(target_os = "linux", windows))]
+mod crash;
+#[cfg(any(target_os = "linux", windows))]
 mod execute;
 #[cfg(any(target_os = "linux", windows))]
 mod shutdown;
@@ -20,6 +22,12 @@ mod winsvc;
 #[cfg(any(target_os = "linux", windows))]
 fn main() -> anyhow::Result<()> {
     eprintln!("Pipette starting up");
+
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        eprintln!("Pipette panicked: {}", info);
+        hook(info);
+    }));
 
     #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("--service") {

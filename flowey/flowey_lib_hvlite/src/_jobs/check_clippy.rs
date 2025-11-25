@@ -95,7 +95,7 @@ impl SimpleFlowNode for Node {
 
         pre_build_deps.push(
             ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
-                package_names: vec!["libssl-dev".into()],
+                package_names: vec!["libssl-dev".into(), "build-essential".into()],
                 done: v,
             }),
         );
@@ -187,15 +187,6 @@ impl SimpleFlowNode for Node {
             }
         });
 
-        let extra_env = if matches!(
-            target.operating_system,
-            target_lexicon::OperatingSystem::Darwin(_)
-        ) {
-            Some(vec![("SPARSE_MMAP_NO_BUILD".into(), "1".into())])
-        } else {
-            None
-        };
-
         // HACK: the following behavior has been cargo-culted from our old
         // CI, and at some point, we should actually improve the testing
         // story on windows, so that we can run with FeatureSet::All in CI.
@@ -217,7 +208,7 @@ impl SimpleFlowNode for Node {
             profile: profile.clone(),
             features: features.clone(),
             target,
-            extra_env,
+            extra_env: None,
             exclude,
             keep_going: true,
             all_targets: true,

@@ -20,7 +20,6 @@ use std::path::Path;
 #[cfg(windows)]
 use pal;
 use vmm_test_macros::openvmm_test;
-use vmm_test_macros::openvmm_test_no_agent;
 #[cfg(windows)]
 use vmm_test_macros::vmm_test;
 
@@ -202,7 +201,6 @@ async fn tpm_ak_cert_persisted<T>(
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let config = config
-        .with_openhcl_command_line("HCL_ATTEMPT_AK_CERT_CALLBACK=1")
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .modify_backend(|b| {
             b.with_tpm()
@@ -267,7 +265,6 @@ async fn tpm_ak_cert_retry<T>(
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let config = config
-        .with_openhcl_command_line("HCL_ATTEMPT_AK_CERT_CALLBACK=1")
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .modify_backend(|b| {
             b.with_tpm()
@@ -328,8 +325,8 @@ async fn tpm_ak_cert_retry<T>(
 }
 
 /// VBS boot test with attestation enabled
-#[openvmm_test_no_agent(
-    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
+#[openvmm_test(
+    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))
 )]
 async fn vbs_boot_with_attestation(
