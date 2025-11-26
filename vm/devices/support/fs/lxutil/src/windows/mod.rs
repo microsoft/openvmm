@@ -75,7 +75,7 @@ impl VolumeState {
         util::get_attributes(&self.fs_context, self, root_handle, path, existing_handle)
     }
 
-    pub fn read_reparse_link(&self, handle: &OwnedHandle) -> lx::Result<Option<String>> {
+    pub fn read_reparse_link(&self, handle: &OwnedHandle) -> lx::Result<Option<lx::LxString>> {
         fs::read_reparse_link(handle, self)
     }
 }

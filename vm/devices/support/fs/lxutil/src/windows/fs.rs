@@ -830,7 +830,7 @@ pub fn read_link_length(file_handle: &OwnedHandle, state: &VolumeState) -> lx::R
 pub fn read_reparse_link(
     file_handle: &OwnedHandle,
     state: &VolumeState,
-) -> lx::Result<Option<String>> {
+) -> lx::Result<Option<lx::LxString>> {
     let (iosb, reparse_buffer) = query_reparse_data(file_handle)?;
 
     // SAFETY: Accessing union field of type returned from Win32 API
@@ -864,15 +864,14 @@ pub fn read_reparse_link(
                         } else {
                             // SAFETY: The section of memory used to construct the string is guaranteed to
                             // be valid by the Win32 API due to the previous checks
-                            let str = std::str::from_utf8(unsafe {
+                            let target_slice = unsafe {
                                 std::slice::from_raw_parts(
                                     reparse_buffer.head.data.symlink.target.as_ptr(),
                                     path_length as usize,
                                 )
-                            })
-                            .map_err(|_| lx::Error::EIO)?;
+                            };
 
-                            Ok(Some(str.to_string()))
+                            Ok(Some(lx::LxString::from_vec(target_slice.to_vec())))
                         }
                     }
                 }

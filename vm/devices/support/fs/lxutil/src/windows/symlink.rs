@@ -66,7 +66,7 @@ unsafe fn get_substitute_name(
 fn translate_absolute_target(
     substitute_name: &[u16],
     state: &super::VolumeState,
-) -> lx::Result<String> {
+) -> lx::Result<lx::LxString> {
     if state.options.sandbox || state.options.symlink_root.is_empty() {
         // EPERM is the default return value if no callback is provided
         return Err(lx::Error::EPERM);
@@ -112,7 +112,7 @@ fn translate_absolute_target(
     let name = name.replace('\\', "/");
     let target = format!("{}{}{}", &state.options.symlink_root, drive_letter, name);
 
-    Ok(target)
+    Ok(target.into())
 }
 
 /// Determine the target of an NT symlink. Only relative links are supported.
@@ -120,7 +120,7 @@ fn translate_absolute_target(
 pub unsafe fn read_nt_symlink(
     reparse: &FileSystem::REPARSE_DATA_BUFFER,
     state: &super::VolumeState,
-) -> lx::Result<String> {
+) -> lx::Result<lx::LxString> {
     let (substitute_name, flags) = unsafe { get_substitute_name(reparse)? };
 
     if flags & FileSystem::SYMLINK_FLAG_RELATIVE == 0 {
@@ -143,7 +143,7 @@ pub unsafe fn read_nt_symlink_length(
     Ok(unsafe { read_nt_symlink(reparse, state) }?.len() as _)
 }
 
-pub fn read(link_file: &OwnedHandle) -> lx::Result<String> {
+pub fn read(link_file: &OwnedHandle) -> lx::Result<lx::LxString> {
     let standard_info: FileSystem::FILE_STANDARD_INFORMATION =
         util::query_information_file(link_file)?;
 
@@ -171,9 +171,11 @@ pub fn read(link_file: &OwnedHandle) -> lx::Result<String> {
         )
     };
 
-    if status != Foundation::STATUS_SUCCESS {
-        return Err(util::nt_status_to_lx(status));
+    if status == Foundation::STATUS_INSUFFICIENT_RESOURCES {
+        return Err(lx::Error::ENOMEM);
+    } else if status != Foundation::STATUS_SUCCESS {
+        return Err(lx::Error::EIO);
     }
 
-    String::from_utf8(lx_target).map_err(|_| lx::Error::EIO)
+    Ok(lx::LxString::from_vec(lx_target))
 }
