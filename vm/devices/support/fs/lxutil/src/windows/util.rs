@@ -122,7 +122,7 @@ pub fn open_relative_file(
             file_attributes,
             W32Fs::FILE_SHARE_READ | W32Fs::FILE_SHARE_WRITE | W32Fs::FILE_SHARE_DELETE,
             creation_disposition,
-            create_options | FileSystem::FILE_SYNCHRONOUS_IO_ALERT,
+            create_options | FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
             ea_ptr,
             ea_len,
         );
