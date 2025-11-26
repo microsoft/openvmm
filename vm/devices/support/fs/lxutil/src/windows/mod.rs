@@ -893,10 +893,6 @@ impl LxVolume {
                 || disposition == FileSystem::FILE_CREATE
         );
 
-        // TODO: Async support.
-        let create_options = create_options | FileSystem::FILE_SYNCHRONOUS_IO_ALERT;
-        let desired_access = desired_access | W32Fs::SYNCHRONIZE;
-
         let mut ea_buffer = [0u8; fs::LX_UTIL_FS_METADATA_EA_BUFFER_SIZE];
         let mut ea = None;
         if disposition != FileSystem::FILE_OPEN {
@@ -1224,7 +1220,7 @@ impl LxFile {
         let enumerator = self.enumerator.as_mut().unwrap();
         let mut local_offset = offset;
 
-        // Write the . and .. entries, since lxutil doesn't return them.
+        // Write the . and .. entries, since `read_dir` doesn't return them.
         if !Self::process_dot_entries(&mut local_offset, &mut callback)? {
             return Ok(());
         }

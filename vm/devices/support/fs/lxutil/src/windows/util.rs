@@ -114,14 +114,14 @@ pub fn open_relative_file(
     unsafe {
         let status = FileSystem::NtCreateFile(
             &mut handle,
-            desired_access,
+            desired_access | W32Fs::SYNCHRONIZE,
             oa.as_ptr().cast(),
             &mut iosb,
             None,
             file_attributes,
             W32Fs::FILE_SHARE_READ | W32Fs::FILE_SHARE_WRITE | W32Fs::FILE_SHARE_DELETE,
             creation_disposition,
-            create_options,
+            create_options | FileSystem::FILE_SYNCHRONOUS_IO_ALERT,
             ea_ptr,
             ea_len,
         );
@@ -141,10 +141,10 @@ pub fn reopen_file(
     let (handle, _) = open_relative_file(
         Some(file),
         "".as_ref(),
-        desired_access | W32Fs::SYNCHRONIZE,
+        desired_access,
         FileSystem::FILE_OPEN,
         Default::default(),
-        FileSystem::FILE_SYNCHRONOUS_IO_ALERT | FileSystem::FILE_OPEN_REPARSE_POINT,
+        FileSystem::FILE_OPEN_REPARSE_POINT,
         None,
     )?;
 

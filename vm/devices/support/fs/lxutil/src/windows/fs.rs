@@ -307,6 +307,7 @@ pub fn delete_read_only_file(fs_context: &FsContext, file_handle: &OwnedHandle) 
     if info.FileAttributes & W32Fs::FILE_ATTRIBUTE_READONLY.0 == 0 {
         Err(lx::Error::from_lx(lx::EIO))
     } else {
+        util::set_readonly_attribute(file_handle, info.FileAttributes, false)?;
         delete_file_core(fs_context, file_handle)
     }
 }
