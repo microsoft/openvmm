@@ -166,7 +166,18 @@ export function VirtualizedTable<TData extends object>({
         style={{
           height: `calc(100vh - 3.2rem - ${headerHeight}px)`,
         }}
-      >
+      >        
+        <table className="virtualized-table">
+          {/* No thead here if you already rendered a fixed header above */}
+          <tbody
+            // Make tbody the positioning context for absolute rows
+            style={{
+              position: 'relative',
+              display: 'block',                // allow custom height/scroll
+              height: `${rowVirtualizer.getTotalSize()}px`,
+              width: '100%',
+            }}
+          >
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
             const row = rows[virtualRow.index] as Row<TData>;
             return (
@@ -184,32 +195,30 @@ export function VirtualizedTable<TData extends object>({
                   onRowClick ? (event) => onRowClick(row, event) : undefined
                 }
               >
-                <table className="virtualized-table">
-                  <tbody>
-                    <tr>
-                      {row.getVisibleCells().map((cell) => {
-                        return (
-                          <td
-                            key={cell.id}
-                            style={{
-                              boxSizing: "border-box",
-                              width: columnWidthMap[cell.column.id],
-                            }}
-                          >
-                            {flexRender(
-                              cell.column.columnDef.cell,
-                              cell.getContext()
-                            )}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  </tbody>
-                </table>
+                <tr style={{ display: "table", width: "100%" }}>
+                  {row.getVisibleCells().map((cell) => {
+                    return (
+                      <td
+                        key={cell.id}
+                        style={{
+                          boxSizing: "border-box",
+                          width: columnWidthMap[cell.column.id],
+                        }}
+                      >
+                        {flexRender(
+                          cell.column.columnDef.cell,
+                          cell.getContext()
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
               </div>
             );
           })}
-        </div>
+          </tbody>
+        </table>
       </div>
+    </div>
   );
 }
