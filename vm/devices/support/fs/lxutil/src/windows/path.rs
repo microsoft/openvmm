@@ -97,8 +97,7 @@ pub fn unescape_path(path: &[u16]) -> lx::Result<lx::LxString> {
         }
     }))
     .map(|c| c.map_err(|_| lx::Error::EIO))
-    .collect::<Result<String, _>>()
-    .map(|s| s.into())
+    .collect()
 }
 
 // Unescape a path in place.

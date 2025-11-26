@@ -144,6 +144,18 @@ impl fmt::Debug for LxString {
     }
 }
 
+impl FromIterator<char> for LxString {
+    fn from_iter<T: IntoIterator<Item = char>>(iter: T) -> Self {
+        let mut bytes = Vec::new();
+        for c in iter {
+            let mut buf = [0u8; 4];
+            let s = c.encode_utf8(&mut buf);
+            bytes.extend_from_slice(s.as_bytes());
+        }
+        LxString::from_vec(bytes)
+    }
+}
+
 /// A borrowed reference to a string that may or may not be valid utf-8.
 ///
 /// This is analogous to `OsStr` on Linux, but behaves the same on all platforms.
