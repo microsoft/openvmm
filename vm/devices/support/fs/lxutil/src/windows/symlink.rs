@@ -175,5 +175,5 @@ pub fn read(link_file: &OwnedHandle) -> lx::Result<String> {
         return Err(util::nt_status_to_lx(status));
     }
 
-    Ok(String::from_utf8(lx_target).map_err(|_| lx::Error::EIO)?)
+    String::from_utf8(lx_target).map_err(|_| lx::Error::EIO)
 }
