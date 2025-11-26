@@ -226,6 +226,7 @@ export function LogViewer(): React.JSX.Element {
                         const severityClass = `severity-${row.original.severity}`;
                         return `${severityClass} ${isSelected ? 'selected' : ''}`;
                     }}
+                    overscan={100}
                     onRowClick={(row, event) => {
                         const logId = `log-${row.original.index}`;
                         handleRowClick(
