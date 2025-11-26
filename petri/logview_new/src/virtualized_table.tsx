@@ -167,11 +167,6 @@ export function VirtualizedTable<TData extends object>({
           height: `calc(100vh - 3.2rem - ${headerHeight}px)`,
         }}
       >
-        <div
-          style={{
-            height: `${rowVirtualizer.getTotalSize()}px`,
-          }}
-        >
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
             const row = rows[virtualRow.index] as Row<TData>;
             return (
@@ -216,6 +211,5 @@ export function VirtualizedTable<TData extends object>({
           })}
         </div>
       </div>
-    </div>
   );
 }
