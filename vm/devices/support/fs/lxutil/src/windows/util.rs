@@ -87,6 +87,7 @@ file_information_classes!(
 
 // Open a file using NtCreateFile.
 // Returns the create result from the IO_STATUS_BLOCK along with the handle.
+// N.B. The handle will always be opened synchronously.
 pub fn open_relative_file(
     root: Option<&OwnedHandle>,
     path: &Path,
@@ -132,8 +133,6 @@ pub fn open_relative_file(
 }
 
 // Reopen an existing file handle with different permissions.
-// N.B. The reopened handle will always be opened synchronously, which
-//      matches the behavior in `LxFile::open`.
 pub fn reopen_file(
     file: &OwnedHandle,
     desired_access: W32Fs::FILE_ACCESS_RIGHTS,
