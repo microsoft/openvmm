@@ -195,7 +195,7 @@ export function VirtualizedTable<TData extends object>({
                   onRowClick ? (event) => onRowClick(row, event) : undefined
                 }
               >
-                <tr style={{ display: "table", width: "100%", tableLayout: "fixed" }}>
+                <tr style={{ display: "table", width: "100%", tableLayout: "fixed", boxSizing: "border-box" }}>
                   {row.getVisibleCells().map((cell) => {
                     return (
                       <td
