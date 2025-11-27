@@ -1618,7 +1618,7 @@ async fn new_underhill_vm(
     let (vtl0_mmio, vpci_relay_mmio) = if enable_vpci_relay {
         // Carve out enough VTL0 MMIO space for 64 devices.
         let required_len = 64 * vpci_relay::VPCI_RELAY_MMIO_PER_DEVICE;
-        vtl0_mmio = boot_info.vtl0_mmio.to_vec();
+        vtl0_mmio = boot_info.vtl0_mmio.clone();
         if vtl0_mmio.last().is_none_or(|r| r.len() < required_len) {
             anyhow::bail!("too little VTL0 MMIO space to take for the VPCI relay");
         }
