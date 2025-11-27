@@ -55,8 +55,13 @@ export interface LogEntry {
   relative: string;
   severity: string;
   source: string;
-  message: string; // message with attachment links
+  logMessage: LogMessage; // message with attachment links
   screenshot: string | null;
+}
+
+export interface LogMessage {
+  message: string;
+  links: string[];
 }
 
 // Concurrency settings when fetching test results

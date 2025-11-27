@@ -197,7 +197,10 @@ export async function fetchProcessedLog(
       relative: start ? formatRelative(start, timestamp) : "0m 0.000s",
       severity,
       source,
-      message,
+      logMessage: {
+        message: message,
+        links: [],
+      },
       screenshot,
     });
   }
