@@ -1,6 +1,6 @@
 name: "Unsafe Check"
 on:
-- pull_request_target
+- pull_request
 
 permissions:
   contents: read
@@ -21,6 +21,9 @@ jobs:
         with:
           script: |
             const fs = require('fs');
+            const path = require('path');
+            
+            const workspacePath = path.resolve(process.cwd());
 
             // Get the list of changed files
             // TODO: pagination if more than 100 files
@@ -47,10 +50,27 @@ jobs:
 
               try {
                 const filePath = file.filename;
+                
+                // Prevent path traversal attacks
+                const resolvedPath = path.resolve(filePath);
+                if (!resolvedPath.startsWith(workspacePath + path.sep)) {
+                  core.setFailed(`Error: ${filePath} attempts to access files outside the repository.`);
+                  throw new Error(`Path traversal detected: ${filePath}`);
+                }
+                
+                // Ensure the file is a regular file (not symlink, directory, etc.)
+                const stats = fs.lstatSync(filePath);
+                if (!stats.isFile()) {
+                  core.setFailed(`Error: ${filePath} is not a regular file. Only plain files are allowed.`);
+                  throw new Error(`Non-regular file detected: ${filePath}`);
+                }
+                
                 const content = fs.readFileSync(filePath, 'utf8');
 
                 // Look for "unsafe ", the space ensures we don't catch words like the "unsafe_code" lint
-                const unsafeRegex = /unsafe /;
+                // Also look for "unsafe(" to catch unsafe attributes
+                // The separate rustfmt check will ensure all code matches these formatting standards
+                const unsafeRegex = /unsafe[( ]/;
                 if (unsafeRegex.test(content)) {
                   console.log(`Found unsafe code in: ${filePath}`);
                   unsafeFound = true;
