@@ -58,6 +58,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 pub mod device;
 pub mod manager;
 pub mod save_restore;
+pub mod save_restore_helpers;
 
 #[derive(Debug, Error)]
 #[error("nvme device {pci_id} error")]

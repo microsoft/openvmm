@@ -204,6 +204,7 @@ impl Drop for Vtl2ParamsMap<'_> {
 pub fn write_persisted_info(
     parsed: &ParsedBootDtInfo,
     cpus_with_mapped_interrupts: Vec<u32>,
+    cpus_with_outstanding_io: Vec<u32>,
 ) -> anyhow::Result<()> {
     use loader_defs::shim::PersistedStateHeader;
     use loader_defs::shim::save_restore::MemoryEntry;
@@ -249,6 +250,7 @@ pub fn write_persisted_info(
             })
             .collect(),
         cpus_with_mapped_interrupts,
+        cpus_with_outstanding_io,
     };
 
     let protobuf = mesh_protobuf::encode(state);

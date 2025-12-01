@@ -379,6 +379,7 @@ struct PartitionTopology {
 struct PersistedPartitionTopology {
     topology: PartitionTopology,
     cpus_with_mapped_interrupts: Vec<u32>,
+    cpus_with_outstanding_io: Vec<u32>,
 }
 
 // Calculate the default mmio size for VTL2 when not specified by the host.
@@ -615,6 +616,7 @@ fn topology_from_persisted_state(
         partition_memory,
         partition_mmio,
         cpus_with_mapped_interrupts,
+        cpus_with_outstanding_io,
     } = parsed_protobuf;
 
     // FUTURE: should memory allocation mode should persist in saved state and
@@ -764,6 +766,7 @@ fn topology_from_persisted_state(
             memory_allocation_mode,
         },
         cpus_with_mapped_interrupts,
+        cpus_with_outstanding_io,
     })
 }
 
