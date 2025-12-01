@@ -455,6 +455,7 @@ async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
     let os_flavor = config.os_flavor();
     // TODO: Add test IGVMAgent RPC server to support the boot-time attestation.
     let config = config
+        .with_tpm(true)
         .with_tpm_state_persistence(false)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
 

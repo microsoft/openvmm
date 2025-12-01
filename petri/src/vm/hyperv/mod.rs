@@ -443,14 +443,15 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 };
             }
 
-            if *default_boot_always_attempt {
-                if let Some((_, config)) = openhcl_config.as_mut() {
-                    append_cmdline(
-                        &mut config.command_line,
-                        "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=1",
-                    );
-                };
-            }
+            if let Some((_, config)) = openhcl_config.as_mut() {
+                append_cmdline(
+                    &mut config.command_line,
+                    format!(
+                        "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT={}",
+                        if *default_boot_always_attempt { 1 } else { 0 }
+                    ),
+                );
+            };
         }
 
         // Share a single scsi controller for all petri-added drives.

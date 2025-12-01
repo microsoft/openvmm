@@ -774,22 +774,27 @@ impl PetriVmConfigSetupCore<'_> {
                 // For certain configurations, we need to override the override
                 // in new_underhill_vm.
                 //
-                // TODO: this should also check for TPM to match the OpenHCL
-                // override once generic petri TPM support is added.
-                //
                 // TODO: remove this (and OpenHCL override) once host changes
                 // are saturated.
-                if let Firmware::OpenhclUefi {
-                    uefi_config:
-                        UefiConfig {
-                            default_boot_always_attempt,
-                            secure_boot_enabled,
-                            ..
-                        },
-                    ..
-                } = self.firmware
                 {
-                    if !isolated && !*secure_boot_enabled && !*default_boot_always_attempt {
+                    let (default_boot_always_attempt, secure_boot_enabled) = match self.firmware {
+                        Firmware::OpenhclUefi {
+                            uefi_config:
+                                UefiConfig {
+                                    default_boot_always_attempt,
+                                    secure_boot_enabled,
+                                    ..
+                                },
+                            ..
+                        } => (*default_boot_always_attempt, *secure_boot_enabled),
+                        _ => (false, false),
+                    };
+
+                    if !isolated
+                        && !secure_boot_enabled
+                        && !self.tpm_config.is_none()
+                        && !default_boot_always_attempt
+                    {
                         append_cmdline(&mut cmdline, "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=0");
                     }
                 }
@@ -1149,7 +1154,7 @@ impl PetriVmConfigSetupCore<'_> {
                     logger: None,
                     is_confidential_vm: self.firmware.isolation().is_some(),
                     // TODO: generate an actual BIOS GUID and put it here
-                    bios_guid: guid::guid!("00000000-0000-0000-0000-000000000000"),
+                    bios_guid: Guid::ZERO,
                 }
                 .into_resource(),
             })

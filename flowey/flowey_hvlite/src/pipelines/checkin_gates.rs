@@ -352,10 +352,13 @@ impl IntoPipeline for CheckinGatesCli {
                             // FIXME: this relies on openvmm default features
                             // Our ARM test runners need the latest WHP changes
                             features: if matches!(arch, CommonArch::Aarch64) {
-                                [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::UnstableWhp]
-                                    .into()
+                                [
+                                    flowey_lib_hvlite::build_openvmm::OpenvmmFeature::UnstableWhp,
+                                    flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm,
+                                ]
+                                .into()
                             } else {
-                                [].into()
+                                [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm].into()
                             },
                         },
                         openvmm: ctx.publish_typed_artifact(pub_openvmm),
