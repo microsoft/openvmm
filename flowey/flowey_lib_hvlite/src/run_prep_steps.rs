@@ -78,7 +78,7 @@ impl SimpleFlowNode for Node {
                     PrepStepsOutput::WindowsBin { exe, .. } => exe,
                     PrepStepsOutput::LinuxBin { bin, .. } => bin,
                 };
-                xshell::cmd!(sh, "{binary_path}").envs(env).run()?;
+                // xshell::cmd!(sh, "{binary_path}").envs(env).run()?;
 
                 Ok(())
             }

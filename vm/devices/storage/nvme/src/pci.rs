@@ -432,6 +432,8 @@ impl ChangeDeviceState for NvmeController {
         cfg_space.reset();
         *registers = RegState::new();
         *qe_sizes.lock() = Default::default();
+
+        panic!("RESET SEEN");
     }
 }
 
