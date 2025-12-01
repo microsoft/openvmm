@@ -323,7 +323,7 @@ impl LxVolume {
             symlink::read(&handle)?
         };
 
-        Ok(target.into())
+        Ok(target)
     }
 
     pub fn unlink(&self, path: &Path, flags: i32) -> lx::Result<()> {
