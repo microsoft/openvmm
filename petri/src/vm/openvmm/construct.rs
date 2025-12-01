@@ -792,7 +792,7 @@ impl PetriVmConfigSetupCore<'_> {
 
                     if !isolated
                         && !secure_boot_enabled
-                        && !self.tpm_config.is_none()
+                        && self.tpm_config.is_none()
                         && !default_boot_always_attempt
                     {
                         append_cmdline(&mut cmdline, "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=0");
