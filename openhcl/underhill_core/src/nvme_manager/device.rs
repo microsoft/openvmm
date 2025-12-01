@@ -23,6 +23,7 @@ use pal_async::task::Task;
 use std::sync::Arc;
 use tracing::Instrument;
 use tracing::Span;
+use user_driver::DmaClient;
 use user_driver::vfio::PciDeviceResetMethod;
 use user_driver::vfio::VfioDevice;
 use user_driver::vfio::VfioDmaClients;
@@ -80,8 +81,38 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
         pci_id: &str,
         vp_count: u32,
         save_restore_supported: bool,
-        saved_state: Option<&NvmeDriverSavedState>,
+        mut saved_state: Option<&NvmeDriverSavedState>,
     ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError> {
+        // Gracefully tear down old state & reset device if a saved state is
+        // present but the host doesn't support keepalive.
+        if saved_state.is_some() && !save_restore_supported {
+            let persistent_dma_client = self
+                .dma_client_spawner
+                .new_client(DmaClientParameters {
+                    device_name: format!("nvme_{}_persistent", pci_id),
+                    lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                    allocation_visibility: if self.is_isolated {
+                        AllocationVisibility::Shared
+                    } else {
+                        AllocationVisibility::Private
+                    },
+                    persistent_allocations: true,
+                })
+                .map_err(NvmeSpawnerError::DmaClient)?;
+            let _ = persistent_dma_client.attach_pending_buffers();
+            let _ = saved_state.take();
+
+            let _ = VfioDevice::restore(
+                driver_source,
+                pci_id,
+                true,
+                VfioDmaClients::PersistentOnly(persistent_dma_client),
+            )
+            .instrument(tracing::info_span!("nvme_vfio_device_restore", pci_id))
+            .await
+            .map_err(NvmeSpawnerError::Vfio)?;
+        }
+
         let dma_client = self
             .dma_client_spawner
             .new_client(DmaClientParameters {
