@@ -8,8 +8,7 @@ name: "Unsafe Check"
 # This eliminates filesystem-based attacks (symlinks, large files, race conditions)
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened]
+  pull_request_target
 
 permissions:
   contents: read
