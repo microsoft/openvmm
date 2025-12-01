@@ -36,13 +36,13 @@ use petri::vtl2_settings::Vtl2StorageControllerBuilder;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 #[allow(unused_imports)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_LINUX_DIRECT_X64;
+#[allow(unused_imports)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_STANDARD_AARCH64;
+#[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
-#[allow(unused_imports)]
-use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_LINUX_DIRECT_X64;
-#[allow(unused_imports)]
-use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_STANDARD_AARCH64;
 use pipette_client::PipetteClient;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::time::Duration;
@@ -143,8 +143,8 @@ async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
 }
 
 #[vmm_test(
-    openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, RELEASE_25_05_LINUX_DIRECT_X64],
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[RELEASE_25_05_STANDARD_AARCH64, LATEST_STANDARD_AARCH64]
+    openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, LATEST_RELEASE_LINUX_DIRECT_X64],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_RELEASE_STANDARD_AARCH64, LATEST_STANDARD_AARCH64]
 )]
 async fn servicing_upgrade<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -169,8 +169,8 @@ async fn servicing_upgrade<T: PetriVmmBackend>(
 }
 
 #[vmm_test(
-    openvmm_openhcl_linux_direct_x64 [RELEASE_25_05_LINUX_DIRECT_X64, LATEST_LINUX_DIRECT_TEST_X64],
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[RELEASE_25_05_STANDARD_AARCH64, LATEST_STANDARD_AARCH64]
+    openvmm_openhcl_linux_direct_x64 [LATEST_RELEASE_LINUX_DIRECT_X64, LATEST_LINUX_DIRECT_TEST_X64],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_RELEASE_STANDARD_AARCH64, LATEST_STANDARD_AARCH64]
 )]
 async fn servicing_downgrade<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
