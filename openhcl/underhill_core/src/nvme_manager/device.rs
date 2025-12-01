@@ -84,7 +84,8 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
         mut saved_state: Option<&NvmeDriverSavedState>,
     ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError> {
         // Gracefully tear down old state & reset device if a saved state is
-        // present but the host doesn't support keepalive.
+        // present but the host doesn't support keepalive. The device should be
+        // reset automatically when the Vfio device handle is dropped.
         if saved_state.is_some() && !save_restore_supported {
             let persistent_dma_client = self
                 .dma_client_spawner
@@ -100,7 +101,6 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
                 })
                 .map_err(NvmeSpawnerError::DmaClient)?;
             let _ = persistent_dma_client.attach_pending_buffers();
-            // let _ = saved_state.take();
 
             Self::try_update_reset_method(
                 pci_id,
@@ -108,7 +108,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
                 "nvme_restore_no_keepalive",
             );
 
-            let vfio_device = VfioDevice::restore(
+            let _ = VfioDevice::restore(
                 driver_source,
                 pci_id,
                 true,
@@ -117,20 +117,6 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
             .instrument(tracing::info_span!("nvme_vfio_device_restore", pci_id))
             .await
             .map_err(NvmeSpawnerError::Vfio)?;
-
-            // TODO: For now, any isolation means use bounce buffering. This
-            // needs to change when we have nvme devices that support DMA to
-            // confidential memory.
-            let driver = nvme_driver::NvmeDriver::restore(
-                driver_source,
-                vp_count,
-                vfio_device,
-                saved_state.unwrap(),
-                self.is_isolated,
-            )
-            .instrument(tracing::info_span!("nvme_driver_restore"))
-            .await
-            .map_err(NvmeSpawnerError::DeviceInitFailed)?;
 
             let _ = saved_state.take();
         }
