@@ -648,8 +648,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 tracing::info!(
                     namespaces = self
                         .namespaces
-                        .iter()
-                        .map(|(nsid, _)| nsid.to_string())
+                        .keys()
+                        .map(|nsid| nsid.to_string())
                         .collect::<Vec<_>>()
                         .join(", "),
                     "saving namespaces",
