@@ -90,7 +90,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
             let persistent_dma_client = self
                 .dma_client_spawner
                 .new_client(DmaClientParameters {
-                    device_name: format!("nvme_{}_persistent", pci_id),
+                    device_name: format!("nvme_{}", pci_id),
                     lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                     allocation_visibility: if self.is_isolated {
                         AllocationVisibility::Shared
@@ -100,15 +100,9 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
                     persistent_allocations: true,
                 })
                 .map_err(NvmeSpawnerError::DmaClient)?;
-            let _ = persistent_dma_client.attach_pending_buffers();
+            let _ = persistent_dma_client.attach_pending_buffers().unwrap();
 
-            Self::try_update_reset_method(
-                pci_id,
-                PciDeviceResetMethod::Flr,
-                "nvme_restore_no_keepalive",
-            );
-
-            let _ = VfioDevice::restore(
+            let vfio_device = VfioDevice::restore(
                 driver_source,
                 pci_id,
                 true,
@@ -118,6 +112,9 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
             .await
             .map_err(NvmeSpawnerError::Vfio)?;
 
+            let _ = nvme_driver::NvmeDriver::clear(driver_source, vfio_device)
+                .await
+                .context("nvme driver clear failed");
             let _ = saved_state.take();
         }
 
@@ -161,6 +158,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
                 vfio_device,
                 saved_state,
                 self.is_isolated,
+                save_restore_supported,
             )
             .instrument(tracing::info_span!("nvme_driver_restore"))
             .await

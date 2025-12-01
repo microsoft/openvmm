@@ -538,7 +538,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Shuts the device down.
     pub async fn shutdown(mut self) {
-        tracing::debug!(pci_id = ?self.device_id, "shutting down nvme driver");
+        tracing::info!(pci_id = ?self.device_id, "shutting down nvme driver");
 
         // If nvme_keepalive was requested, return early.
         // The memory is still aliased as we don't flush pending IOs.
@@ -668,12 +668,26 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     }
 
     /// Restores NVMe driver state after servicing.
+    pub async fn clear(driver_source: &VmTaskDriverSource, mut device: T) -> anyhow::Result<()> {
+        let driver = driver_source.simple();
+        let bar0_mapping = device
+            .map_bar(0)
+            .context("failed to map device registers")?;
+        let bar0 = Bar0(bar0_mapping);
+        bar0.reset(&driver)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to reset device during clear: {:#x}", e))?;
+        Ok(())
+    }
+
+    /// Restores NVMe driver state after servicing.
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
         cpu_count: u32,
         mut device: T,
         saved_state: &NvmeDriverSavedState,
         bounce_buffer: bool,
+        keepalive_enabled: bool,
     ) -> anyhow::Result<Self> {
         let pci_id = device.id().to_owned();
         let driver = driver_source.simple();
@@ -727,7 +741,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             io_issuers,
             rescan_notifiers: Default::default(),
             namespaces: Default::default(),
-            nvme_keepalive: true,
+            nvme_keepalive: keepalive_enabled,
             bounce_buffer,
         };
 
