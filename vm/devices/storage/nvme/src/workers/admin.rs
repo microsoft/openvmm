@@ -189,21 +189,6 @@ impl AdminState {
         }
     }
 
-    fn number_of_namespaces(&self) -> u32 {
-        self.namespaces
-            .last_key_value()
-            .map(|(k, _)| *k)
-            .unwrap_or(0)
-    }
-
-    fn is_valid_namespace(&self, nsid: u32) -> bool {
-        0 < nsid && nsid <= self.number_of_namespaces()
-    }
-
-    fn _is_active_namespace(&self, nsid: u32) -> bool {
-        self.namespaces.contains_key(&nsid)
-    }
-
     /// Caller must ensure that no queues are active.
     fn set_max_queues(&mut self, handler: &AdminHandler, num_sqs: u16, num_cqs: u16) {
         self.io_sqs.truncate(num_sqs.into());
@@ -394,6 +379,21 @@ impl AdminHandler {
         }
 
         true
+    }
+
+    fn number_of_namespaces(&self) -> u32 {
+        self.namespaces
+            .last_key_value()
+            .map(|(k, _)| *k)
+            .unwrap_or(0)
+    }
+
+    fn is_valid_namespace(&self, nsid: u32) -> bool {
+        0 < nsid && nsid <= self.number_of_namespaces()
+    }
+
+    fn _is_active_namespace(&self, nsid: u32) -> bool {
+        self.namespaces.contains_key(&nsid)
     }
 
     async fn next_event(&mut self, state: &mut AdminState) -> Result<Event, QueueError> {
@@ -595,7 +595,7 @@ impl AdminHandler {
                 } else if self.is_valid_namespace(command.nsid) {
                     tracelimit::warn_ratelimited!(nsid = command.nsid, "inactive namespace id");
                     return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
-                else {
+                } else {
                     tracelimit::warn_ratelimited!(nsid = command.nsid, "invalid namespace id");
                     return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
                 }
@@ -624,7 +624,7 @@ impl AdminHandler {
                 .with_min(IOCQES)
                 .with_max(IOCQES),
             frmw: spec::FirmwareUpdates::new().with_ffsro(true).with_nofs(1),
-            nn: self.number_of_namespaces(),//.keys().copied().max().unwrap_or(0),
+            nn: self.number_of_namespaces(),
             ieee: [0x74, 0xe2, 0x8c], // Microsoft
             fr: (*b"v1.00000").into(),
             mn: (*b"MSFT NVMe Accelerator v1.0              ").into(),
