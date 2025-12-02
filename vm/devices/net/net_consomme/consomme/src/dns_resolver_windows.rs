@@ -58,7 +58,7 @@ pub struct DnsResponse {
 // DNS query context for active requests
 struct DnsQueryContext {
     id: u64,
-    _protocol: IpProtocol,
+    protocol: IpProtocol,
     cancel_handle: DNS_QUERY_RAW_CANCEL,
     src_addr: Ipv4Address,
     dst_addr: Ipv4Address,
@@ -122,7 +122,7 @@ impl DnsResolver {
         // Create the context
         let mut context = Box::new(DnsQueryContext {
             id: request_id,
-            _protocol: protocol,
+            protocol: protocol,
             cancel_handle: DNS_QUERY_RAW_CANCEL::default(),
             src_addr,
             dst_addr,
@@ -217,7 +217,7 @@ impl DnsResolver {
                     gateway_mac: ctx.gateway_mac,
                     client_mac: ctx.client_mac,
                     response_data: servfail,
-                    protocol: ctx._protocol,
+                    protocol: ctx.protocol,
                 };
                 ctx.response_queue.lock().unwrap().push_back(response);
             }
@@ -315,14 +315,6 @@ unsafe extern "system" fn dns_query_raw_callback(
             "DNS query completed"
         );
 
-        if results.queryStatus != 0 {
-            tracing::warn!(
-                request_id = context.id,
-                status = results.queryStatus,
-                "DNS query failed with status"
-            );
-        }
-
         if results.queryRawResponse.is_null() || results.queryRawResponseSize == 0 {
             None
         } else {
@@ -354,7 +346,7 @@ unsafe extern "system" fn dns_query_raw_callback(
             gateway_mac: context.gateway_mac,
             client_mac: context.client_mac,
             response_data,
-            protocol: context._protocol,
+            protocol: context.protocol,
         };
         context.response_queue.lock().unwrap().push_back(response);
 
@@ -366,14 +358,7 @@ unsafe extern "system" fn dns_query_raw_callback(
         );
         // Queue a SERVFAIL response if we got no data
         // Note: We don't have the original query here, so we create a minimal SERVFAIL
-        let servfail = vec![
-            0, 0, // Transaction ID (will be wrong, but better than nothing)
-            0x81, 0x82, // Flags: Response, SERVFAIL
-            0, 0, // Questions: 0
-            0, 0, // Answers: 0
-            0, 0, // Authority: 0
-            0, 0, // Additional: 0
-        ];
+        let servfail = create_servfail_response(&[]);
         let response = DnsResponse {
             src_addr: context.src_addr,
             dst_addr: context.dst_addr,
@@ -382,141 +367,8 @@ unsafe extern "system" fn dns_query_raw_callback(
             gateway_mac: context.gateway_mac,
             client_mac: context.client_mac,
             response_data: servfail,
-            protocol: context._protocol,
+            protocol: context.protocol,
         };
         context.response_queue.lock().unwrap().push_back(response);
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use std::sync::atomic::AtomicBool;
-
-    use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_COMPLETION_ROUTINE;
-    use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST_0;
-    use windows_sys::Win32::Networking::WinSock::{AF_INET, IN_ADDR, IN_ADDR_0, SOCKADDR_IN};
-
-    struct CallbackContext {
-        completed: Arc<AtomicBool>,
-    }
-
-    // Example callback function for DNS_QUERY_RAW_COMPLETION_ROUTINE
-    unsafe extern "system" fn dns_query_completion_callback(
-        query_context: *const core::ffi::c_void,
-        query_results: *const DNS_QUERY_RAW_RESULT,
-    ) {
-        // Safety: This callback is called by Windows DNS API
-        // You should validate the pointers before dereferencing
-        if query_results.is_null() {
-            eprintln!("DNS query callback received null results");
-            if !query_context.is_null() {
-                let context = unsafe { &*(query_context as *const CallbackContext) };
-                context.completed.store(true, Ordering::Release);
-            }
-            return;
-        }
-
-        let results = unsafe { &*query_results };
-
-        println!("DNS Query completed with status: {}", results.queryStatus);
-        println!("Response size: {} bytes", results.queryRawResponseSize);
-
-        // Process the query results here
-        // Access results.queryRawResponse for the raw DNS response data
-        // Access results.queryRecords for parsed DNS records
-
-        // Signal completion
-        if !query_context.is_null() {
-            let context = unsafe { &*(query_context as *const CallbackContext) };
-            context.completed.store(true, Ordering::Release);
-        }
-    }
-
-    #[allow(unused_imports)]
-    use super::*;
-    #[test]
-    fn test_dns_resolver_compile() {
-        use std::time::Duration;
-
-        let dns_query_raw = "83 7d 01 00 00 01 00 00 00 00 00 00 06 67 6c 6f 62 61 6c 0f 6c 69 76 65 64 69 61 67 6e 6f 73 74 69 63 73 07 6d 6f 6e 69 74 6f 72 05 61 7a 75 72 65 03 63 6f 6d 00 00 1c 00 01";
-        //Convert the hex string to a byte vector
-        let mut dns_query_raw = dns_query_raw
-            .split(' ')
-            .map(|s| u8::from_str_radix(s, 16).unwrap())
-            .collect::<Vec<u8>>();
-
-        let addr = SOCKADDR_IN {
-            sin_family: AF_INET as u16,
-            sin_port: 56221u16.to_be(), // DNS port in network byte order
-            sin_addr: IN_ADDR {
-                S_un: IN_ADDR_0 {
-                    S_addr: u32::from_be_bytes([10, 137, 184, 83]),
-                },
-            }, // Google DNS
-            sin_zero: [0; 8],
-        };
-
-        let mut anonymous = DNS_QUERY_RAW_REQUEST_0::default();
-        unsafe {
-            // Copy the exact bytes of SOCKADDR_IN into the buffer
-            std::ptr::copy_nonoverlapping(
-                &addr as *const SOCKADDR_IN as *const u8,
-                anonymous.maxSa.as_mut_ptr() as *mut u8,
-                size_of::<SOCKADDR_IN>(),
-            );
-        }
-
-        // Create synchronization context
-        let completed = Arc::new(AtomicBool::new(false));
-        let context = Box::new(CallbackContext {
-            completed: completed.clone(),
-        });
-        let context_ptr = Box::into_raw(context);
-
-        // Create a callback variable of type DNS_QUERY_RAW_COMPLETION_ROUTINE
-        let callback: DNS_QUERY_RAW_COMPLETION_ROUTINE = Some(dns_query_completion_callback);
-
-        let request = DNS_QUERY_RAW_REQUEST {
-            version: DNS_QUERY_RAW_REQUEST_VERSION1,
-            resultsVersion: DNS_QUERY_RAW_RESULTS_VERSION1,
-            dnsQueryRawSize: dns_query_raw.len() as u32,
-            dnsQueryRaw: dns_query_raw.as_mut_ptr(),
-            dnsQueryName: std::ptr::null_mut(),
-            dnsQueryType: 0,
-            queryOptions: 0,
-            interfaceIndex: 0,
-            queryCompletionCallback: callback,
-            queryContext: context_ptr as *mut core::ffi::c_void,
-            queryRawOptions: 0,
-            customServersSize: 0,
-            customServers: std::ptr::null_mut(),
-            protocol: DNS_PROTOCOL_UDP,
-            Anonymous: anonymous,
-        };
-
-        let mut cancel_handle = DNS_QUERY_RAW_CANCEL::default();
-
-        unsafe {
-            DnsQueryRaw(&request, &mut cancel_handle);
-        }
-
-        // Wait for callback to complete (with timeout)
-        let start = std::time::Instant::now();
-        let timeout = Duration::from_secs(5);
-
-        while !completed.load(Ordering::Acquire) {
-            if start.elapsed() > timeout {
-                println!("DNS query timed out after 5 seconds");
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-
-        // Clean up the context
-        unsafe {
-            let _ = Box::from_raw(context_ptr);
-        }
-
-        println!("Test completed");
     }
 }

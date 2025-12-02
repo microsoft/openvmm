@@ -222,7 +222,7 @@ impl<T: Client> Access<'_, T> {
                 .unwrap()
                 .poll_responses(IpProtocol::Udp)
             {
-                if let Err(e) = self.send_udp_dns_response(&response) {
+                if let Err(e) = self.send_dns_response(&response) {
                     tracing::error!(error = ?e, "Failed to send UDP DNS response");
                 }
             }
@@ -336,12 +336,12 @@ impl<T: Client> Access<'_, T> {
                 Ok(true)
             }
             DNS_PORT => {
-                if let Some(_dns_resolver) = &mut self.inner.dns_resolver {
+                if let Some(_) = &mut self.inner.dns_resolver {
                     let udp_repr = UdpRepr {
                         src_port: udp.src_port(),
                         dst_port: udp.dst_port(),
                     };
-                    self.handle_dns_udp(frame, addresses, &udp_repr, payload)?;
+                    self.handle_dns(frame, addresses, &udp_repr, payload)?;
                     Ok(true)
                 } else {
                     Ok(false)
@@ -378,22 +378,13 @@ impl<T: Client> Access<'_, T> {
         }
     }
 
-    fn handle_dns_udp(
+    fn handle_dns(
         &mut self,
         frame: &EthernetRepr,
         addresses: &Ipv4Addresses,
         udp: &UdpRepr,
         dns_query: &[u8],
     ) -> Result<(), DropReason> {
-        tracing::debug!(
-            src = %addresses.src_addr,
-            dst = %addresses.dst_addr,
-            src_port = udp.src_port,
-            dst_port = udp.dst_port,
-            query_len = dns_query.len(),
-            "Intercepting UDP DNS query"
-        );
-
         // Store necessary data for crafting the response
         let src_addr = addresses.src_addr;
         let dst_addr = addresses.dst_addr;
@@ -423,11 +414,10 @@ impl<T: Client> Access<'_, T> {
                 DropReason::Packet(smoltcp::Error::Dropped)
             })?;
 
-        tracing::debug!("DNS query submitted, response will be sent asynchronously");
         Ok(())
     }
 
-    fn send_udp_dns_response(
+    fn send_dns_response(
         &mut self,
         response: &crate::dns_resolver::DnsResponse,
     ) -> Result<(), DropReason> {

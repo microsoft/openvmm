@@ -199,102 +199,91 @@ impl TcpState {
 }
 
 impl<T: Client> Access<'_, T> {
-    pub(crate) fn poll_tcp(&mut self, cx: &mut Context<'_>) {
-        // Poll for TCP DNS responses that are ready to be sent
-        if self.inner.dns_resolver.is_some() {
-            while let Some(response) = self
-                .inner
-                .dns_resolver
-                .as_mut()
-                .unwrap()
-                .poll_responses(IpProtocol::Tcp)
-            {
-                tracing::debug!(
-                    response_len = response.response_data.len(),
+    /// Handles TCP DNS responses by writing them to the appropriate connection buffers.
+    fn handle_tcp_dns_responses(&mut self) {
+        if self.inner.dns_resolver.is_none() {
+            return;
+        }
+
+        while let Some(response) = self
+            .inner
+            .dns_resolver
+            .as_mut()
+            .unwrap()
+            .poll_responses(IpProtocol::Tcp)
+        {
+            // For TCP DNS, prepend the 2-byte length field
+            let mut tcp_response = Vec::with_capacity(2 + response.response_data.len());
+            tcp_response
+                .extend_from_slice(&(response.response_data.len() as u16).to_be_bytes());
+            tcp_response.extend_from_slice(&response.response_data);
+
+            // Find the existing TCP connection for this DNS response
+            // The response goes FROM gateway:53 TO client:src_port
+            let ft = FourTuple {
+                src: SocketAddress {
+                    ip: response.src_addr,
+                    port: response.src_port,
+                },
+                dst: SocketAddress {
+                    ip: response.dst_addr,
+                    port: response.dst_port,
+                },
+            };
+
+            if let Some(conn) = self.inner.tcp.connections.get_mut(&ft) {
+                // Check if there's enough space in the transmit buffer
+                let available_space = conn.tx_buffer.capacity() - conn.tx_buffer.len();
+                if available_space >= tcp_response.len() {
+                    // Write the DNS response to the connection's tx buffer
+                    let (first_slice, second_slice) = conn.tx_buffer.unwritten_slices_mut();
+                    let mut bytes_written = 0;
+
+                    // Copy to first slice
+                    let bytes_to_first_slice = tcp_response.len().min(first_slice.len());
+                    first_slice[..bytes_to_first_slice]
+                        .copy_from_slice(&tcp_response[..bytes_to_first_slice]);
+                    bytes_written += bytes_to_first_slice;
+
+                    // Copy remaining to second slice if needed
+                    if bytes_written < tcp_response.len() {
+                        let bytes_to_second_slice = tcp_response.len() - bytes_written;
+                        second_slice[..bytes_to_second_slice]
+                            .copy_from_slice(&tcp_response[bytes_written..]);
+                        bytes_written += bytes_to_second_slice;
+                    }
+
+                    conn.tx_buffer.extend_by(bytes_written);
+
+                    // Trigger sending the data
+                    let mut sender = Sender {
+                        ft: &ft,
+                        state: &mut self.inner.state,
+                        client: self.client,
+                    };
+                    conn.send_next(&mut sender);
+                } else {
+                    tracing::warn!(
+                        response_len = tcp_response.len(),
+                        available_space,
+                        "TCP DNS response dropped: insufficient buffer space"
+                    );
+                }
+            } else {
+                tracing::warn!(
                     src = %response.src_addr,
                     dst = %response.dst_addr,
                     src_port = response.src_port,
                     dst_port = response.dst_port,
-                    "Dequeued TCP DNS response"
+                    "TCP DNS response dropped: connection not found"
                 );
-
-                // For TCP DNS, prepend the 2-byte length field
-                let mut tcp_response = Vec::with_capacity(2 + response.response_data.len());
-                tcp_response
-                    .extend_from_slice(&(response.response_data.len() as u16).to_be_bytes());
-                tcp_response.extend_from_slice(&response.response_data);
-
-                // Find the existing TCP connection for this DNS response
-                // The response goes FROM gateway:53 TO client:src_port
-                let ft = FourTuple {
-                    src: SocketAddress {
-                        ip: response.src_addr,
-                        port: response.src_port,
-                    },
-                    dst: SocketAddress {
-                        ip: response.dst_addr,
-                        port: response.dst_port,
-                    },
-                };
-
-                if let Some(conn) = self.inner.tcp.connections.get_mut(&ft) {
-                    // Check if there's enough space in the transmit buffer
-                    let available_space = conn.tx_buffer.capacity() - conn.tx_buffer.len();
-                    if available_space >= tcp_response.len() {
-                        // Write the DNS response to the connection's tx buffer
-                        let (first_slice, second_slice) = conn.tx_buffer.unwritten_slices_mut();
-                        let mut bytes_written = 0;
-
-                        // Copy to first slice
-                        let bytes_to_first_slice = tcp_response.len().min(first_slice.len());
-                        first_slice[..bytes_to_first_slice]
-                            .copy_from_slice(&tcp_response[..bytes_to_first_slice]);
-                        bytes_written += bytes_to_first_slice;
-
-                        // Copy remaining to second slice if needed
-                        if bytes_written < tcp_response.len() {
-                            let bytes_to_second_slice = tcp_response.len() - bytes_written;
-                            second_slice[..bytes_to_second_slice]
-                                .copy_from_slice(&tcp_response[bytes_written..]);
-                            bytes_written += bytes_to_second_slice;
-                        }
-
-                        conn.tx_buffer.extend_by(bytes_written);
-
-                        tracing::debug!(
-                            response_len = tcp_response.len(),
-                            src = %response.src_addr,
-                            dst = %response.dst_addr,
-                            src_port = response.src_port,
-                            dst_port = response.dst_port,
-                            "TCP DNS response written to connection buffer"
-                        );
-
-                        // Trigger sending the data
-                        let mut sender = Sender {
-                            ft: &ft,
-                            state: &mut self.inner.state,
-                            client: self.client,
-                        };
-                        conn.send_next(&mut sender);
-                    } else {
-                        tracing::warn!(
-                            response_len = tcp_response.len(),
-                            available_space,
-                            "TCP DNS response dropped: insufficient buffer space"
-                        );
-                    }
-                } else {
-                    tracing::warn!(
-                        src = %response.src_addr,
-                        dst = %response.dst_addr,
-                        src_port = response.src_port,
-                        dst_port = response.dst_port,
-                        "TCP DNS response dropped: connection not found"
-                    );
-                }
             }
         }
+    }
+
+    pub(crate) fn poll_tcp(&mut self, cx: &mut Context<'_>) {
+        // Poll for TCP DNS responses that are ready to be sent
+        self.handle_tcp_dns_responses();
 
         // Check for any new incoming connections
         self.inner
@@ -609,6 +598,58 @@ impl Default for TcpConnection {
 }
 
 impl TcpConnection {
+    /// Processes DNS queries from the rx_buffer for DNS over TCP connections.
+    /// Returns true if DNS queries were processed.
+    fn process_dns_queries(
+        &mut self,
+        resolver: &mut crate::dns_resolver::DnsResolver,
+        sender: &Sender<'_, impl Client>,
+    ) {
+        // Try to process DNS queries from the buffer
+        while self.rx_buffer.len() >= 2 {
+            // TCP DNS has a 2-byte length prefix
+            let len_bytes: [u8; 2] = [self.rx_buffer[0], self.rx_buffer[1]];
+            let dns_len = u16::from_be_bytes(len_bytes) as usize;
+
+            // Check if we have the complete DNS query
+            if self.rx_buffer.len() < 2 + dns_len {
+                // Not enough data yet, wait for more
+                break;
+            }
+
+            // Extract the DNS query (skip the 2-byte length prefix)
+            let dns_query: Vec<u8> = self
+                .rx_buffer
+                .iter()
+                .skip(2)
+                .take(dns_len)
+                .copied()
+                .collect();
+
+            tracing::debug!(
+                query_len = dns_query.len(),
+                "Processing DNS over TCP query from buffer"
+            );
+
+            // Submit the DNS query
+            if let Err(e) = resolver.handle_dns(
+                &dns_query,
+                IpProtocol::Tcp,
+                sender.ft.dst.ip,   // Gateway IP (src of response)
+                sender.ft.src.ip,   // Client IP (dst of response)
+                sender.ft.dst.port, // Gateway port 53 (src of response)
+                sender.ft.src.port, // Client port (dst of response)
+                sender.state.params.gateway_mac,
+                sender.state.params.client_mac,
+            ) {
+                tracing::error!(error = ?e, "Failed to process DNS over TCP query");
+            }
+
+            // Remove the processed query from the buffer
+            self.rx_buffer.drain(..2 + dns_len);
+        }
+    }
+
     fn new(sender: &mut Sender<'_, impl Client>, tcp: &TcpRepr<'_>) -> Result<Self, DropReason> {
         let mut this = Self::default();
         this.initialize_from_first_client_packet(tcp)?;
@@ -1217,50 +1258,8 @@ impl TcpConnection {
                     if let Some(resolver) = dns_resolver {
                         // Accumulate data in rx_buffer for DNS parsing
                         self.rx_buffer.extend(payload);
-
-                        // Try to process DNS queries from the buffer
-                        while self.rx_buffer.len() >= 2 {
-                            // TCP DNS has a 2-byte length prefix
-                            let len_bytes: [u8; 2] = [self.rx_buffer[0], self.rx_buffer[1]];
-                            let dns_len = u16::from_be_bytes(len_bytes) as usize;
-
-                            // Check if we have the complete DNS query
-                            if self.rx_buffer.len() < 2 + dns_len {
-                                // Not enough data yet, wait for more
-                                break;
-                            }
-
-                            // Extract the DNS query (skip the 2-byte length prefix)
-                            let dns_query: Vec<u8> = self
-                                .rx_buffer
-                                .iter()
-                                .skip(2)
-                                .take(dns_len)
-                                .copied()
-                                .collect();
-
-                            tracing::debug!(
-                                query_len = dns_query.len(),
-                                "Processing DNS over TCP query from buffer"
-                            );
-
-                            // Submit the DNS query
-                            if let Err(e) = resolver.handle_dns(
-                                &dns_query,
-                                IpProtocol::Tcp,
-                                sender.ft.dst.ip,   // Gateway IP (src of response)
-                                sender.ft.src.ip,   // Client IP (dst of response)
-                                sender.ft.dst.port, // Gateway port 53 (src of response)
-                                sender.ft.src.port, // Client port (dst of response)
-                                sender.state.params.gateway_mac,
-                                sender.state.params.client_mac,
-                            ) {
-                                tracing::error!(error = ?e, "Failed to process DNS over TCP query");
-                            }
-
-                            // Remove the processed query from the buffer
-                            self.rx_buffer.drain(..2 + dns_len);
-                        }
+                        // Process any complete DNS queries in the buffer
+                        self.process_dns_queries(resolver, sender);
                     }
 
                     self.rx_seq = segment_end;
