@@ -11,11 +11,11 @@ use std::collections::btree_map::Entry;
 /// disable sidecar for VMs with active device interrupts.
 pub struct VPInterruptState {
     /// List of vCPUs with any mapped device interrupts, sorted by CPU ID.
-    pub vps_with_mapped_interrupts: Vec<u32>,
+    /// This excludes vCPUs that also had outstanding I/O at the time of save,
+    /// which are counted in `vps_with_outstanding_io`.
+    pub vps_with_mapped_interrupts_no_io: Vec<u32>,
 
     /// List of vCPUs with outstanding I/O at the time of save, sorted by CPU ID.
-    /// It is expected that this is a subset of `vps_with_mapped_interrupts`, since
-    /// only some queues will have in-flight I/O.
     pub vps_with_outstanding_io: Vec<u32>,
 }
 
@@ -23,7 +23,7 @@ pub struct VPInterruptState {
 /// and which had outstanding I/O at the time of save.
 ///
 /// See [`VPInterruptState`] for more details.
-pub fn cpus_with_interrupts(state: Option<&NvmeManagerSavedState>) -> VPInterruptState {
+pub fn nvme_interrupt_state(state: Option<&NvmeManagerSavedState>) -> VPInterruptState {
     let mut vp_state = BTreeMap::new();
 
     if let Some(state) = state {
@@ -41,15 +41,19 @@ pub fn cpus_with_interrupts(state: Option<&NvmeManagerSavedState>) -> VPInterrup
         }
     }
 
+    let (vps_with_outstanding_io, vps_with_mapped_interrupts_no_io): (Vec<_>, Vec<_>) = vp_state
+        .iter()
+        .map(|(&vp, &has_outstanding_io)| (vp, has_outstanding_io))
+        .partition(|&(_, has_outstanding_io)| has_outstanding_io);
+
     VPInterruptState {
-        vps_with_mapped_interrupts: vp_state.keys().cloned().collect(),
-        vps_with_outstanding_io: vp_state
-            .iter()
-            .filter_map(
-                |(&vp, &has_outstanding_io)| {
-                    if has_outstanding_io { Some(vp) } else { None }
-                },
-            )
+        vps_with_mapped_interrupts_no_io: vps_with_mapped_interrupts_no_io
+            .into_iter()
+            .map(|(vp, _)| vp)
+            .collect(),
+        vps_with_outstanding_io: vps_with_outstanding_io
+            .into_iter()
+            .map(|(vp, _)| vp)
             .collect(),
     }
 }
@@ -69,8 +73,8 @@ mod tests {
 
     #[test]
     fn returns_empty_when_state_absent() {
-        let result = cpus_with_interrupts(None);
-        assert!(result.vps_with_mapped_interrupts.is_empty());
+        let result = nvme_interrupt_state(None);
+        assert!(result.vps_with_mapped_interrupts_no_io.is_empty());
         assert!(result.vps_with_outstanding_io.is_empty());
     }
 
@@ -79,11 +83,12 @@ mod tests {
         let state = build_state(vec![
             vec![QueueSpec::new(2, false), QueueSpec::new(1, true)],
             vec![QueueSpec::new(1, false), QueueSpec::new(3, true)],
+            vec![QueueSpec::new(5, false), QueueSpec::new(2, false)],
         ]);
 
-        let result = cpus_with_interrupts(Some(&state));
+        let result = nvme_interrupt_state(Some(&state));
 
-        assert_eq!(result.vps_with_mapped_interrupts, vec![1, 2, 3]);
+        assert_eq!(result.vps_with_mapped_interrupts_no_io, vec![2, 5]);
         assert_eq!(result.vps_with_outstanding_io, vec![1, 3]);
     }
 
@@ -94,9 +99,12 @@ mod tests {
             QueueSpec::new(4, true),
         ]]);
 
-        let result = cpus_with_interrupts(Some(&state));
+        let result = nvme_interrupt_state(Some(&state));
 
-        assert_eq!(result.vps_with_mapped_interrupts, vec![4]);
+        assert_eq!(
+            result.vps_with_mapped_interrupts_no_io,
+            Vec::<u32>::from_iter([])
+        );
         assert_eq!(result.vps_with_outstanding_io, vec![4]);
     }
 
@@ -107,9 +115,9 @@ mod tests {
             nvme_disks: Vec::new(),
         };
 
-        let result = cpus_with_interrupts(Some(&state));
+        let result = nvme_interrupt_state(Some(&state));
 
-        assert!(result.vps_with_mapped_interrupts.is_empty());
+        assert!(result.vps_with_mapped_interrupts_no_io.is_empty());
         assert!(result.vps_with_outstanding_io.is_empty());
     }
 

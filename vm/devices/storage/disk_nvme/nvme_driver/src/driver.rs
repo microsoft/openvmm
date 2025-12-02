@@ -1393,7 +1393,7 @@ impl<T: DeviceBacking> InspectTask<WorkerState> for DriverWorkerTask<T> {
 }
 
 /// Save/restore data structures exposed by the NVMe driver.
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub mod save_restore {
     use super::*;
 

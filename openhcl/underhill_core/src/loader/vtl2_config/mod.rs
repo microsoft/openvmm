@@ -203,8 +203,7 @@ impl Drop for Vtl2ParamsMap<'_> {
 /// Write persisted info into the bootshim described persisted region.
 pub fn write_persisted_info(
     parsed: &ParsedBootDtInfo,
-    cpus_with_mapped_interrupts: Vec<u32>,
-    cpus_with_outstanding_io: Vec<u32>,
+    interrupt_state: crate::nvme_manager::save_restore_helpers::VPInterruptState,
 ) -> anyhow::Result<()> {
     use loader_defs::shim::PersistedStateHeader;
     use loader_defs::shim::save_restore::MemoryEntry;
@@ -249,8 +248,8 @@ pub fn write_persisted_info(
                 bootloader_fdt_parser::AddressRange::Memory(_) => None,
             })
             .collect(),
-        cpus_with_mapped_interrupts,
-        cpus_with_outstanding_io,
+        cpus_with_mapped_interrupts_no_io: interrupt_state.vps_with_mapped_interrupts_no_io,
+        cpus_with_outstanding_io: interrupt_state.vps_with_outstanding_io,
     };
 
     let protobuf = mesh_protobuf::encode(state);

@@ -378,7 +378,7 @@ struct PartitionTopology {
 #[derive(Debug, PartialEq, Eq)]
 struct PersistedPartitionTopology {
     topology: PartitionTopology,
-    cpus_with_mapped_interrupts: Vec<u32>,
+    cpus_with_mapped_interrupts_no_io: Vec<u32>,
     cpus_with_outstanding_io: Vec<u32>,
 }
 
@@ -615,7 +615,7 @@ fn topology_from_persisted_state(
     let loader_defs::shim::save_restore::SavedState {
         partition_memory,
         partition_mmio,
-        cpus_with_mapped_interrupts,
+        cpus_with_mapped_interrupts_no_io,
         cpus_with_outstanding_io,
     } = parsed_protobuf;
 
@@ -765,7 +765,7 @@ fn topology_from_persisted_state(
             vtl2_mmio,
             memory_allocation_mode,
         },
-        cpus_with_mapped_interrupts,
+        cpus_with_mapped_interrupts_no_io,
         cpus_with_outstanding_io,
     })
 }
@@ -857,7 +857,10 @@ impl PartitionInfo {
 
                 (
                     persisted_topology.topology,
-                    !persisted_topology.cpus_with_mapped_interrupts.is_empty(),
+                    !(persisted_topology
+                        .cpus_with_mapped_interrupts_no_io
+                        .is_empty()
+                        && persisted_topology.cpus_with_outstanding_io.is_empty()),
                 )
             } else {
                 (
