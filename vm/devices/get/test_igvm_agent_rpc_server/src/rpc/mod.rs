@@ -4,5 +4,5 @@
 pub use server::run_server;
 
 mod handlers;
-mod igvm_agent;
+pub mod igvm_agent;
 mod server;

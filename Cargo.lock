@@ -7227,7 +7227,7 @@ dependencies = [
  "sha2",
  "thiserror 2.0.16",
  "tracing",
- "zerocopy 0.8.25",
+ "zerocopy 0.8.27",
 ]
 
 [[package]]
@@ -7236,12 +7236,15 @@ version = "0.0.0"
 dependencies = [
  "cc",
  "cfg-if",
+ "clap",
+ "get_resources",
  "guid",
  "parking_lot",
  "serde_json",
  "test_igvm_agent_lib",
  "tracing",
  "tracing-subscriber",
+ "winapi",
  "windows-sys 0.59.0",
 ]
 

@@ -58,7 +58,7 @@ fn main() {
         (true, Some(cfg)) => {
             if let Some(cl_path) = locate_cl_exe(cfg) {
                 if let Some(bin_dir) = cl_path.parent() {
-                    let mut path_value = env::var_os("PATH").unwrap_or_else(OsString::new);
+                    let mut path_value = env::var_os("PATH").unwrap_or_default();
                     if !path_value.is_empty() {
                         path_value.push(":");
                     }
@@ -79,9 +79,7 @@ fn main() {
                     );
                 }
             } else {
-                panic!(
-                    "Unable to locate cl.exe in cross-compilation configuration"
-                );
+                panic!("Unable to locate cl.exe in cross-compilation configuration");
             }
         }
         (false, Some(cfg)) => {
@@ -104,16 +102,11 @@ fn main() {
     cmd.arg("/out");
     cmd.arg(&out_dir_arg);
 
-    let idl_canon = idl_path
-        .canonicalize()
-        .expect("failed to canonicalize IDL path");
-    let idl_arg = path_for_midl(&idl_canon, host_is_windows);
+    let idl_arg = path_for_midl(idl_path, host_is_windows);
     cmd.arg(&idl_arg);
 
     let status = cmd.status().unwrap_or_else(|err| {
-        panic!(
-            "Failed to execute MIDL `{midl}`: {err}. Install the Windows MIDL compiler."
-        )
+        panic!("Failed to execute MIDL `{midl}`: {err}. Install the Windows MIDL compiler.")
     });
     if !status.success() {
         panic!("midl failed: status {status}");

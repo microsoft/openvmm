@@ -3,11 +3,11 @@
 
 //! Shared façade that exposes the test IGVM agent through a singleton instance.
 
+use parking_lot::Mutex;
+use std::sync::OnceLock;
 use test_igvm_agent_lib::Error;
 use test_igvm_agent_lib::IgvmAgentTestSetting;
 use test_igvm_agent_lib::TestIgvmAgent;
-use parking_lot::Mutex;
-use std::sync::OnceLock;
 
 /// Errors surfaced by the test IGVM agent façade.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,8 +28,7 @@ fn global_agent() -> &'static Mutex<TestIgvmAgent> {
 }
 
 fn guard_agent() -> parking_lot::MutexGuard<'static, TestIgvmAgent> {
-    global_agent()
-        .lock()
+    global_agent().lock()
 }
 
 /// Install a scripted test plan for the shared test agent instance.
@@ -49,9 +48,4 @@ pub fn process_igvm_attest(report: &[u8]) -> TestAgentResult<Vec<u8>> {
         return Err(TestAgentFacadeError::InvalidRequest);
     }
     Ok(payload)
-}
-
-/// Process a VM GSP request payload by echoing it back to the caller.
-pub fn process_vm_gsp_request(request: &[u8]) -> Vec<u8> {
-    request.to_vec()
 }
