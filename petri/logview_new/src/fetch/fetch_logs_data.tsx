@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { LogEntry } from "../data_defs";
+import { LogEntry, LogLink } from "../data_defs";
 
 /**
  * Fetch the raw petri.jsonl log content for a given run / architecture / test path.
@@ -161,6 +161,7 @@ export async function fetchProcessedLog(
     const sevExtract = extractSeverity(message, severity);
     message = sevExtract.message;
     severity = sevExtract.severity;
+    let logLinks: LogLink[] = [];
 
     let screenshot: string | null = null;
     if (rec.attachment) {
@@ -180,14 +181,27 @@ export async function fetchProcessedLog(
         // Add two links:
         //  1. data-inspect => parsed / tree view
         //  2. data-inspect-raw => raw text view inside the same overlay (no parsing)
-        // The click handler in log_viewer.tsx intercepts both and opens the overlay accordingly.
-        message +=
-          (message ? " " : "") +
-          `<a href="${attachmentUrl}" class="attachment" target="_blank" data-inspect="true">${escapeHtml(rec.attachment)}</a> <a href="${attachmentUrl}" class="attachment" target="_blank" data-inspect-raw="true">[raw]</a>`;
+        //     The click handler in log_viewer.tsx intercepts both and opens the
+        //     overlay accordingly.
+        logLinks.push({
+          text: rec.attachment,
+          url: attachmentUrl,
+        });
+        logLinks.push({
+          text: "[raw]",
+          url: attachmentUrl,
+        });
+        // message +=
+        //   (message ? " " : "") +
+        //   `<a href="${attachmentUrl}" class="attachment" target="_blank" rel="noopener noreferrer" data-inspect="true">${escapeHtml(rec.attachment)}</a> <a href="${attachmentUrl}" class="attachment" target="_blank" rel="noopener noreferrer" data-inspect-raw="true">[raw]</a>`;
       } else {
-        message +=
-          (message ? " " : "") +
-          `<a href="${attachmentUrl}" class="attachment" target="_blank">${escapeHtml(rec.attachment)}</a>`;
+        logLinks.push({
+          text: rec.attachment,
+          url: attachmentUrl,
+        });
+        // message +=
+        //   (message ? " " : "") +
+        //   `<a href="${attachmentUrl}" class="attachment" rel="noopener noreferrer" target="_blank">${escapeHtml(rec.attachment)}</a>`;
       }
     }
 
@@ -199,7 +213,7 @@ export async function fetchProcessedLog(
       source,
       logMessage: {
         message: message,
-        links: [],
+        links: logLinks,
       },
       screenshot,
     });

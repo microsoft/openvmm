@@ -61,7 +61,12 @@ export interface LogEntry {
 
 export interface LogMessage {
   message: string;
-  links: string[];
+  links: LogLink[];
+}
+
+export interface LogLink {
+  text: string;
+  url: string;
 }
 
 // Concurrency settings when fetching test results

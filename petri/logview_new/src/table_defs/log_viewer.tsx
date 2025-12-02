@@ -49,7 +49,22 @@ export function createColumns(
                 // This message data is NOT user controlled and comes from the
                 // logs. We need to add a link to the inspect attachment so we need to
                 // treat this as html.
-                <div>{info.row.original.logMessage.message}</div>
+                <>
+                    <div>{info.row.original.logMessage.message}</div>
+                    {info.row.original.logMessage.links?.map((link, idx) => (
+                        <a
+                            key={idx}
+                            href={link.url}
+                            className="attachment"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            data-inspect="true"
+                            style={{ marginLeft: 8 }}
+                        >
+                            {link.text}
+                        </a>
+                    ))}
+                </>
             ),
             enableSorting: false, // Disable sorting for complex HTML content
         },
