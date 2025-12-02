@@ -47,10 +47,10 @@ _start:
     // NOTE: the stack space is allocated in BSS, and one can't use function calls yet
     // as the return address will be wiped out.
 
-    adrp    x0,  __bss_start__
-    add     x0, x0, :lo12:__bss_start__ // X0 contains the BSS start
-    adrp    x1, __bss_end__
-    add     x1, x1, :lo12:__bss_end__
+    adrp    x0,  __bss_start
+    add     x0, x0, :lo12:__bss_start // X0 contains the BSS start
+    adrp    x1, _end
+    add     x1, x1, :lo12:_end
     sub     x1, x1, x0                  // X2 contains the BSS length
 1:
     cbz     x1, 2f
