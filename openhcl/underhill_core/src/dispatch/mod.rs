@@ -133,7 +133,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
     ) -> anyhow::Result<PacketCaptureParams<Socket>>;
 
     /// Save the network state for restoration after servicing.
-    async fn save(&mut self) -> Vec<ManaSavedState>;
+    async fn save(&mut self) -> Option<Vec<ManaSavedState>>;
 }
 
 /// A VM that has been loaded and can be run.
@@ -815,7 +815,7 @@ impl LoadedVm {
         let mana_state = if let Some(network_settings) = &mut self.network_settings
             && mana_keepalive_mode.is_enabled()
         {
-            Some(network_settings.save().await)
+            network_settings.save().await
         } else {
             None
         };

@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import React, { useState, useEffect, useRef, useLayoutEffect } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from "react";
+import { useVirtualizer, type Range } from "@tanstack/react-virtual";
 import {
   flexRender,
   type Row,
@@ -166,16 +166,22 @@ export function VirtualizedTable<TData extends object>({
         style={{
           height: `calc(100vh - 3.2rem - ${headerHeight}px)`,
         }}
-      >
-        <div
-          style={{
-            height: `${rowVirtualizer.getTotalSize()}px`,
-          }}
-        >
+      >        
+        <table className="virtualized-table">
+          {/* No thead here if you already rendered a fixed header above */}
+          <tbody
+            // Make tbody the positioning context for absolute rows
+            style={{
+              position: 'relative',
+              display: 'block',                // allow custom height/scroll
+              height: `${rowVirtualizer.getTotalSize()}px`,
+              width: '100%',
+            }}
+          >
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
             const row = rows[virtualRow.index] as Row<TData>;
             return (
-              <div
+              <tr
                 key={row.id}
                 data-index={virtualRow.index}
                 ref={rowVirtualizer.measureElement}
@@ -184,37 +190,35 @@ export function VirtualizedTable<TData extends object>({
                   position: "absolute",
                   width: "100%",
                   transform: `translateY(${virtualRow.start}px)`,
+                  display: "table",
+                  tableLayout: "fixed",
+                  boxSizing: "border-box",
                 }}
                 onClick={
                   onRowClick ? (event) => onRowClick(row, event) : undefined
                 }
               >
-                <table className="virtualized-table">
-                  <tbody>
-                    <tr>
-                      {row.getVisibleCells().map((cell) => {
-                        return (
-                          <td
-                            key={cell.id}
-                            style={{
-                              boxSizing: "border-box",
-                              width: columnWidthMap[cell.column.id],
-                            }}
-                          >
-                            {flexRender(
-                              cell.column.columnDef.cell,
-                              cell.getContext()
-                            )}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+                {row.getVisibleCells().map((cell) => {
+                  return (
+                    <td
+                      key={cell.id}
+                      style={{
+                        boxSizing: "border-box",
+                        width: columnWidthMap[cell.column.id],
+                      }}
+                    >
+                      {flexRender(
+                        cell.column.columnDef.cell,
+                        cell.getContext()
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
             );
           })}
-        </div>
+          </tbody>
+        </table>
       </div>
     </div>
   );

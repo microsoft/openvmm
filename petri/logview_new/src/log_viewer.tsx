@@ -90,7 +90,7 @@ export function LogViewer(): React.JSX.Element {
     const fullTestName = `${architecture}/${testName}`;
 
     // Fetch the relevant data
-    const { data: logEntries, isSuccess } = useQuery({
+    const { data: logEntries } = useQuery({
         queryKey: ["petriLog", runId, architecture, testName],
         queryFn: () => fetchProcessedLog(runId, architecture, testName),
         staleTime: Infinity, // never goes stale
@@ -213,39 +213,34 @@ export function LogViewer(): React.JSX.Element {
             </div>
 
             <div ref={logContainerRef} style={{ fontFamily: 'monospace', fontSize: '14px', position: 'relative' }}>
-                {filteredLogs.length === 0 && isSuccess ? (
-                    <div className="common-no-data">
-                        No log entries found
-                    </div>
-                ) : (
-                    <VirtualizedTable<LogEntry>
-                        data={filteredLogs}
-                        columns={columns}
-                        sorting={sorting}
-                        onSortingChange={setSorting}
-                        columnWidthMap={columnWidthMap}
-                        estimatedRowHeight={50}
-                        getRowClassName={(row) => {
-                            const logId = `log-${row.original.index}`;
-                            const isSelected = selectedRow === logId;
-                            const severityClass = `severity-${row.original.severity}`;
-                            return `${severityClass} ${isSelected ? 'selected' : ''}`;
-                        }}
-                        onRowClick={(row, event) => {
-                            const logId = `log-${row.original.index}`;
-                            handleRowClick(
-                                row.original.index,
-                                logId,
-                                event,
-                                selectedRow,
-                                setSelectedRow,
-                                location,
-                                navigate
-                            );
-                        }}
-                        scrollToIndex={pendingScrollIndex}
-                    />
-                )}
+                <VirtualizedTable<LogEntry>
+                    data={filteredLogs}
+                    columns={columns}
+                    sorting={sorting}
+                    onSortingChange={setSorting}
+                    columnWidthMap={columnWidthMap}
+                    estimatedRowHeight={50}
+                    getRowClassName={(row) => {
+                        const logId = `log-${row.original.index}`;
+                        const isSelected = selectedRow === logId;
+                        const severityClass = `severity-${row.original.severity}`;
+                        return `${severityClass} ${isSelected ? 'selected' : ''}`;
+                    }}
+                    overscan={300}
+                    onRowClick={(row, event) => {
+                        const logId = `log-${row.original.index}`;
+                        handleRowClick(
+                            row.original.index,
+                            logId,
+                            event,
+                            selectedRow,
+                            setSelectedRow,
+                            location,
+                            navigate
+                        );
+                    }}
+                    scrollToIndex={pendingScrollIndex}
+                />
             </div>
 
             {/* Image Content */}
