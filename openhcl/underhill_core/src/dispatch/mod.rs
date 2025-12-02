@@ -634,7 +634,7 @@ impl LoadedVm {
             crate::loader::vtl2_config::write_persisted_info(
                 self.runtime_params.parsed_openhcl_boot(),
                 nvme_vp_interrupt_state.vps_with_mapped_interrupts,
-                nvme_vp_interrupt_state.vps_with_outstanding_io
+                nvme_vp_interrupt_state.vps_with_outstanding_io,
             )
             .context("failed to write persisted info")?;
 

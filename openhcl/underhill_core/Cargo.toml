@@ -179,6 +179,7 @@ firmware_pcat.workspace = true
 [dev-dependencies]
 guest_emulation_transport = { workspace = true, features = ["test_utilities"] }
 test_with_tracing.workspace = true
+nvme_spec.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

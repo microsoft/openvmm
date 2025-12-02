@@ -34,9 +34,7 @@ pub fn cpus_with_interrupts(state: Option<&NvmeManagerSavedState>) -> VPInterrup
                         e.insert(!q.queue_data.handler_data.pending_cmds.commands.is_empty());
                     }
                     Entry::Occupied(mut e) => {
-                        e.insert(
-                            e.get() | !q.queue_data.handler_data.pending_cmds.commands.is_empty(),
-                        );
+                        *e.get_mut() |= !q.queue_data.handler_data.pending_cmds.commands.is_empty();
                     }
                 }
             }
@@ -53,5 +51,162 @@ pub fn cpus_with_interrupts(state: Option<&NvmeManagerSavedState>) -> VPInterrup
                 },
             )
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nvme_manager::save_restore::{NvmeManagerSavedState, NvmeSavedDiskConfig};
+    use nvme_driver::NvmeDriverSavedState;
+    use nvme_driver::save_restore::{
+        CompletionQueueSavedState, IoQueueSavedState, NvmeDriverWorkerSavedState,
+        PendingCommandSavedState, PendingCommandsSavedState, QueueHandlerSavedState,
+        QueuePairSavedState, SubmissionQueueSavedState,
+    };
+    use nvme_spec as spec;
+    use zerocopy::FromZeros;
+
+    #[test]
+    fn returns_empty_when_state_absent() {
+        let result = cpus_with_interrupts(None);
+        assert!(result.vps_with_mapped_interrupts.is_empty());
+        assert!(result.vps_with_outstanding_io.is_empty());
+    }
+
+    #[test]
+    fn collects_unique_sorted_vps_and_outstanding_subset() {
+        let state = build_state(vec![
+            vec![QueueSpec::new(2, false), QueueSpec::new(1, true)],
+            vec![QueueSpec::new(1, false), QueueSpec::new(3, true)],
+        ]);
+
+        let result = cpus_with_interrupts(Some(&state));
+
+        assert_eq!(result.vps_with_mapped_interrupts, vec![1, 2, 3]);
+        assert_eq!(result.vps_with_outstanding_io, vec![1, 3]);
+    }
+
+    #[test]
+    fn reports_outstanding_if_any_queue_pending_for_vp() {
+        let state = build_state(vec![vec![
+            QueueSpec::new(4, false),
+            QueueSpec::new(4, true),
+        ]]);
+
+        let result = cpus_with_interrupts(Some(&state));
+
+        assert_eq!(result.vps_with_mapped_interrupts, vec![4]);
+        assert_eq!(result.vps_with_outstanding_io, vec![4]);
+    }
+
+    #[test]
+    fn handles_state_with_no_disks() {
+        let state = NvmeManagerSavedState {
+            cpu_count: 0,
+            nvme_disks: Vec::new(),
+        };
+
+        let result = cpus_with_interrupts(Some(&state));
+
+        assert!(result.vps_with_mapped_interrupts.is_empty());
+        assert!(result.vps_with_outstanding_io.is_empty());
+    }
+
+    struct QueueSpec {
+        cpu: u32,
+        has_outstanding_io: bool,
+    }
+
+    impl QueueSpec {
+        const fn new(cpu: u32, has_outstanding_io: bool) -> Self {
+            Self {
+                cpu,
+                has_outstanding_io,
+            }
+        }
+    }
+
+    // Helper to fabricate NVMe manager save-state snapshots with specific CPU/IO mappings.
+    fn build_state(disk_queue_specs: Vec<Vec<QueueSpec>>) -> NvmeManagerSavedState {
+        NvmeManagerSavedState {
+            cpu_count: 0, // Not relevant for these tests.
+            nvme_disks: disk_queue_specs
+                .into_iter()
+                .enumerate()
+                .map(|(disk_index, queues)| NvmeSavedDiskConfig {
+                    pci_id: format!("0000:{disk_index:02x}.0"),
+                    driver_state: NvmeDriverSavedState {
+                        identify_ctrl: spec::IdentifyController::new_zeroed(),
+                        device_id: format!("disk{disk_index}"),
+                        namespaces: Vec::new(),
+                        worker_data: NvmeDriverWorkerSavedState {
+                            admin: None,
+                            io: queues
+                                .into_iter()
+                                .enumerate()
+                                .map(|(queue_index, spec)| {
+                                    // Tests only care about per-disk affinity, so queue IDs can
+                                    // restart from zero for each disk without losing coverage.
+                                    build_io_queue(
+                                        queue_index as u16,
+                                        spec.cpu,
+                                        spec.has_outstanding_io,
+                                    )
+                                })
+                                .collect(),
+                            qsize: 0,
+                            max_io_queues: 0,
+                        },
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    fn build_io_queue(qid: u16, cpu: u32, outstanding: bool) -> IoQueueSavedState {
+        IoQueueSavedState {
+            cpu,
+            iv: qid as u32,
+            queue_data: QueuePairSavedState {
+                mem_len: 0,
+                base_pfn: 0,
+                qid,
+                sq_entries: 1,
+                cq_entries: 1,
+                handler_data: QueueHandlerSavedState {
+                    sq_state: SubmissionQueueSavedState {
+                        sqid: qid,
+                        head: 0,
+                        tail: 0,
+                        committed_tail: 0,
+                        len: 1,
+                    },
+                    cq_state: CompletionQueueSavedState {
+                        cqid: qid,
+                        head: 0,
+                        committed_head: 0,
+                        len: 1,
+                        phase: false,
+                    },
+                    pending_cmds: build_pending_cmds(outstanding),
+                    aer_handler: None,
+                },
+            },
+        }
+    }
+
+    fn build_pending_cmds(outstanding: bool) -> PendingCommandsSavedState {
+        PendingCommandsSavedState {
+            commands: if outstanding {
+                vec![PendingCommandSavedState {
+                    command: spec::Command::new_zeroed(),
+                }]
+            } else {
+                Vec::new()
+            },
+            next_cid_high_bits: 0,
+            cid_key_bits: 0,
+        }
     }
 }
