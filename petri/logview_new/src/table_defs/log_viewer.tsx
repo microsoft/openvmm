@@ -44,11 +44,6 @@ export function createColumns(
             accessorFn: (row) => row.logMessage, // Use text for sorting/filtering
             header: 'Message',
             cell: (info) => (
-                // NOTE: React normally escapes HTML to prevent XSS attacks.
-                // Using dangerouslySetInnerHTML bypasses that protection.
-                // This message data is NOT user controlled and comes from the
-                // logs. We need to add a link to the inspect attachment so we need to
-                // treat this as html.
                 <>
                     <div>{info.row.original.logMessage.message}</div>
                     {info.row.original.logMessage.links?.map((link, idx) => (

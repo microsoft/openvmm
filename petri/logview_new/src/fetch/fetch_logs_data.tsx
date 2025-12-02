@@ -191,17 +191,11 @@ export async function fetchProcessedLog(
           text: "[raw]",
           url: attachmentUrl,
         });
-        // message +=
-        //   (message ? " " : "") +
-        //   `<a href="${attachmentUrl}" class="attachment" target="_blank" rel="noopener noreferrer" data-inspect="true">${escapeHtml(rec.attachment)}</a> <a href="${attachmentUrl}" class="attachment" target="_blank" rel="noopener noreferrer" data-inspect-raw="true">[raw]</a>`;
       } else {
         logLinks.push({
           text: rec.attachment,
           url: attachmentUrl,
         });
-        // message +=
-        //   (message ? " " : "") +
-        //   `<a href="${attachmentUrl}" class="attachment" rel="noopener noreferrer" target="_blank">${escapeHtml(rec.attachment)}</a>`;
       }
     }
 
