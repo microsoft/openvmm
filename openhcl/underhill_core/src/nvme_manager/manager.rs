@@ -68,6 +68,12 @@ impl NvmeManager {
         saved_state: Option<NvmeSavedState>,
         nvme_driver_spawner: Arc<dyn CreateNvmeDriver>,
     ) -> Self {
+        tracing::info!(
+            vp_count,
+            save_restore_supported,
+            saved_state = saved_state.is_some(),
+            "starting nvme manager"
+        );
         let (send, recv) = mesh::channel();
         let driver = driver_source.simple();
         let mut worker = NvmeManagerWorker {
@@ -94,6 +100,8 @@ impl NvmeManager {
                     );
                 }
             };
+
+            tracing::debug!("nvme manager entering main loop");
             worker.run(recv).await
         });
         Self {
@@ -343,7 +351,7 @@ impl NvmeManagerWorker {
                 );
             } else {
                 // We're first! Create a new driver manager and place it in the map.
-                match guard.entry(pci_id.to_owned()) {
+                match guard.entry(pci_id.clone()) {
                     hash_map::Entry::Occupied(_) => unreachable!(), // We checked above that this entry does not exist.
                     hash_map::Entry::Vacant(entry) => {
                         let driver = NvmeDriverManager::new(
@@ -385,7 +393,7 @@ impl NvmeManagerWorker {
 
         if client.is_none() {
             // No driver loaded yet, so load it.
-            Self::load_driver(pci_id.to_owned(), context.clone()).await?;
+            Self::load_driver(pci_id.clone(), context.clone()).await?;
 
             // This time, if there is no entry, then we know that the driver failed to load OR a shutdown came in
             // since we loaded the driver (so we should fail).

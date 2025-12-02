@@ -532,7 +532,7 @@ fn make_onefuzz_entry(
         },
         job_dependencies: vec![name.clone()],
         one_fuzz_jobs: vec![onefuzz_schema::OneFuzzJob {
-            project_name: use_cfg.project_name.to_owned(),
+            project_name: use_cfg.project_name.clone(),
             target_name: name.clone(),
             target_options,
         }],
