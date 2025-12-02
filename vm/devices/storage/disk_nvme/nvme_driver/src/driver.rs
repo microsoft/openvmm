@@ -620,10 +620,20 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .io_issuers
             .send
             .call(NvmeWorkerRequest::Save, span.clone())
-            .instrument(span)
+            .instrument(span.clone())
             .await?
         {
             Ok(s) => {
+                let _e = span.entered();
+                tracing::info!(
+                    namespaces = self
+                        .namespaces
+                        .keys()
+                        .map(|nsid| nsid.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    "saving namespaces",
+                );
                 let mut saved_namespaces = vec![];
                 for (nsid, handle) in self.namespaces.iter() {
                     saved_namespaces.push(handle.namespace.save().with_context(|| {
@@ -988,15 +998,22 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
                                 .await
                         }
                         Some(NvmeWorkerRequest::Save(rpc)) => {
-                            rpc.handle(async |span| self.save(state).instrument(span).await)
-                                .await
+                            rpc.handle(async |span| {
+                                let child_span = tracing::info_span!(
+                                    parent: &span,
+                                    "nvme_worker_save",
+                                    pci_id = %self.device.id()
+                                );
+                                self.save(state).instrument(child_span).await
+                            })
+                            .await
                         }
                         None => break,
                     }
                 }
             })
             .await;
-        tracing::debug!("nvme worker task exiting");
+        tracing::info!(pci_id = %self.device.id(), "nvme worker task exiting");
         r
     }
 }
