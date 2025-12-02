@@ -69,9 +69,12 @@ impl FlowNode for Node {
                 target,
                 no_split_dbg_info: false,
                 extra_env: Some(ReadVar::from_static(
-                    [("RUSTC_BOOTSTRAP".to_string(), "1".to_string())]
-                        .into_iter()
-                        .collect(),
+                    [
+                        ("RUSTC_BOOTSTRAP".to_string(), "1".to_string()),
+                        ("MINIMAL_RT_BUILD".to_string(), "1".to_string()),
+                    ]
+                    .into_iter()
+                    .collect(),
                 )),
                 pre_build_deps: Vec::new(),
                 output: v,
