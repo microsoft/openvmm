@@ -24,6 +24,7 @@ use crate::PetriVmgsResource;
 use crate::ProcessorTopology;
 use crate::SIZE_1_GB;
 use crate::SecureBootTemplate;
+use crate::TpmConfig;
 use crate::UefiConfig;
 use crate::UefiGuest;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
@@ -85,10 +86,13 @@ use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
 use tempfile::TempPath;
+use tpm_resources::TpmDeviceHandle;
+use tpm_resources::TpmRegisterLayout;
 use uidevices_resources::SynthVideoHandle;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
 use video_core::SharedFramebufferHandle;
+use vm_manifest_builder::VmChipsetResult;
 use vm_manifest_builder::VmManifestBuilder;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
@@ -97,7 +101,10 @@ use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_serial_resources::VmbusSerialDeviceHandle;
 use vmbus_serial_resources::VmbusSerialPort;
+use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
 use vmgs_resources::GuestStateEncryptionPolicy;
+use vmgs_resources::VmgsFileHandle;
+use vmotherboard::ChipsetDeviceHandle;
 use vtl2_settings_proto::Vtl2Settings;
 
 impl PetriVmConfigOpenVmm {
@@ -117,7 +124,7 @@ impl PetriVmConfigOpenVmm {
             openhcl_agent_image,
             vmgs,
             boot_device_type,
-            tpm_state_persistence,
+            tpm: tpm_config,
             guest_crash_disk,
         } = petri_vm_config;
 
@@ -130,6 +137,7 @@ impl PetriVmConfigOpenVmm {
             logger: log_source,
             vmgs: &vmgs,
             boot_device_type,
+            tpm_config: tpm_config.as_ref(),
         };
 
         let mut chipset = VmManifestBuilder::new(
@@ -186,7 +194,6 @@ impl PetriVmConfigOpenVmm {
                     &mut vmbus_devices,
                     &firmware_event_send,
                     framebuffer.is_some(),
-                    tpm_state_persistence,
                 )?;
 
                 let late_map_vtl0_memory = match load_mode {
@@ -418,6 +425,16 @@ impl PetriVmConfigOpenVmm {
             Some(memdiff_vmgs(&vmgs)?)
         };
 
+        let VmChipsetResult {
+            chipset,
+            mut chipset_devices,
+        } = chipset;
+
+        // Add the TPM
+        if let Some(tpm) = setup.config_tpm() {
+            chipset_devices.push(tpm);
+        }
+
         let config = Config {
             // Firmware
             load_mode,
@@ -428,8 +445,8 @@ impl PetriVmConfigOpenVmm {
             processor_topology,
 
             // Base chipset
-            chipset: chipset.chipset,
-            chipset_devices: chipset.chipset_devices,
+            chipset,
+            chipset_devices,
 
             // Basic virtualization device support
             hypervisor: HypervisorConfig {
@@ -550,6 +567,7 @@ struct PetriVmConfigSetupCore<'a> {
     logger: &'a PetriLogSource,
     vmgs: &'a PetriVmgsResource,
     boot_device_type: BootDeviceType,
+    tpm_config: Option<&'a TpmConfig>,
 }
 
 struct SerialData {
@@ -703,7 +721,7 @@ impl PetriVmConfigSetupCore<'_> {
                     enable_debugging: false,
                     enable_memory_protections: false,
                     disable_frontpage: *disable_frontpage,
-                    enable_tpm: false,
+                    enable_tpm: self.tpm_config.is_some(),
                     enable_battery: false,
                     enable_serial: true,
                     enable_vpci_boot: matches!(self.boot_device_type, BootDeviceType::Nvme),
@@ -756,9 +774,6 @@ impl PetriVmConfigSetupCore<'_> {
                 // For certain configurations, we need to override the override
                 // in new_underhill_vm.
                 //
-                // TODO: this should also check for TPM to match the OpenHCL
-                // override once generic petri TPM support is added.
-                //
                 // TODO: remove this (and OpenHCL override) once host changes
                 // are saturated.
                 if let Firmware::OpenhclUefi {
@@ -771,7 +786,11 @@ impl PetriVmConfigSetupCore<'_> {
                     ..
                 } = self.firmware
                 {
-                    if !isolated && !*secure_boot_enabled && !*default_boot_always_attempt {
+                    if !isolated
+                        && !secure_boot_enabled
+                        && self.tpm_config.is_none()
+                        && !default_boot_always_attempt
+                    {
                         append_cmdline(&mut cmdline, "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=0");
                     }
                 }
@@ -971,7 +990,6 @@ impl PetriVmConfigSetupCore<'_> {
         devices: &mut impl Extend<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
         firmware_event_send: &mesh::Sender<FirmwareEvent>,
         framebuffer: bool,
-        tpm_state_persistence: bool,
     ) -> anyhow::Result<(
         get_resources::ged::GuestEmulationDeviceHandle,
         mesh::Sender<get_resources::ged::GuestEmulationRequest>,
@@ -1041,7 +1059,7 @@ impl PetriVmConfigSetupCore<'_> {
             vmgs: memdiff_vmgs(self.vmgs)?,
             framebuffer: framebuffer.then(|| SharedFramebufferHandle.into_resource()),
             guest_request_recv,
-            enable_tpm: false,
+            enable_tpm: self.tpm_config.is_some(),
             firmware_event_send: Some(firmware_event_send.clone()),
             secure_boot_enabled: *secure_boot_enabled,
             secure_boot_template: match secure_boot_template {
@@ -1054,7 +1072,7 @@ impl PetriVmConfigSetupCore<'_> {
                 None => get_resources::ged::GuestSecureBootTemplateType::None,
             },
             enable_battery: false,
-            no_persistent_secrets: !tpm_state_persistence,
+            no_persistent_secrets: self.tpm_config.as_ref().is_some_and(|c| c.no_persistent_secrets),
             igvm_attest_test_config: None,
             test_gsp_by_id,
             efi_diagnostics_log_level: Default::default(), // TODO: make configurable
@@ -1095,6 +1113,50 @@ impl PetriVmConfigSetupCore<'_> {
         } else {
             None
         })
+    }
+
+    fn config_tpm(&self) -> Option<ChipsetDeviceHandle> {
+        if !self.firmware.is_openhcl()
+            && let Some(TpmConfig {
+                no_persistent_secrets,
+            }) = self.tpm_config
+        {
+            let register_layout = match self.arch {
+                MachineArch::X86_64 => TpmRegisterLayout::IoPort,
+                MachineArch::Aarch64 => TpmRegisterLayout::Mmio,
+            };
+
+            let (ppi_store, nvram_store) = if self.vmgs.disk().is_none() || *no_persistent_secrets {
+                (
+                    EphemeralNonVolatileStoreHandle.into_resource(),
+                    EphemeralNonVolatileStoreHandle.into_resource(),
+                )
+            } else {
+                (
+                    VmgsFileHandle::new(vmgs_format::FileId::TPM_PPI, true).into_resource(),
+                    VmgsFileHandle::new(vmgs_format::FileId::TPM_NVRAM, true).into_resource(),
+                )
+            };
+
+            Some(ChipsetDeviceHandle {
+                name: "tpm".to_string(),
+                resource: TpmDeviceHandle {
+                    ppi_store,
+                    nvram_store,
+                    refresh_tpm_seeds: false,
+                    ak_cert_type: tpm_resources::TpmAkCertTypeResource::None,
+                    register_layout,
+                    guest_secret_key: None,
+                    logger: None,
+                    is_confidential_vm: self.firmware.isolation().is_some(),
+                    // TODO: generate an actual BIOS GUID and put it here
+                    bios_guid: Guid::ZERO,
+                }
+                .into_resource(),
+            })
+        } else {
+            None
+        }
     }
 }
 

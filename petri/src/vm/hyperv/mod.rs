@@ -24,6 +24,7 @@ use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::SecureBootTemplate;
 use crate::ShutdownKind;
+use crate::TpmConfig;
 use crate::UefiConfig;
 use crate::VmmQuirks;
 use crate::disk_image::AgentImage;
@@ -237,7 +238,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             openhcl_agent_image,
             boot_device_type,
             vmgs,
-            tpm_state_persistence,
+            tpm,
             guest_crash_disk,
         } = config;
 
@@ -301,6 +302,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     Some(IsolationType::Vbs) => powershell::HyperVGuestStateIsolationType::Vbs,
                     Some(IsolationType::Snp) => powershell::HyperVGuestStateIsolationType::Snp,
                     Some(IsolationType::Tdx) => powershell::HyperVGuestStateIsolationType::Tdx,
+                    // Older hosts don't support OpenHCL isolation, so use Trusted Launch
                     None => powershell::HyperVGuestStateIsolationType::TrustedLaunch,
                 },
                 powershell::HyperVGeneration::Two,
@@ -441,14 +443,15 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 };
             }
 
-            if *default_boot_always_attempt {
-                if let Some((_, config)) = openhcl_config.as_mut() {
-                    append_cmdline(
-                        &mut config.command_line,
-                        "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=1",
-                    );
-                };
-            }
+            if let Some((_, config)) = openhcl_config.as_mut() {
+                append_cmdline(
+                    &mut config.command_line,
+                    format!(
+                        "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT={}",
+                        if *default_boot_always_attempt { 1 } else { 0 }
+                    ),
+                );
+            };
         }
 
         // Share a single scsi controller for all petri-added drives.
@@ -649,16 +652,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
         let mut added_controllers = Vec::new();
         let mut vtl2_settings = None;
 
-        if tpm_state_persistence {
-            vm.set_guest_state_isolation_mode(powershell::HyperVGuestStateIsolationMode::Default)
-                .await?;
-        } else {
-            vm.set_guest_state_isolation_mode(
-                powershell::HyperVGuestStateIsolationMode::NoPersistentSecrets,
-            )
-            .await?;
-        }
-
         // TODO: If OpenHCL is being used, then translate storage through it.
         // (requires changes above where VHDs are added)
         if let Some(modify_vmm_config) = modify_vmm_config {
@@ -680,6 +673,30 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 vm.set_base_vtl2_settings(settings).await?;
                 vtl2_settings = Some(settings.clone());
             }
+        }
+
+        // Configure the TPM
+        if let Some(TpmConfig {
+            no_persistent_secrets,
+        }) = tpm
+        {
+            if firmware.is_pcat() {
+                anyhow::bail!("hyper-v gen 1 VMs do not support a TPM");
+            }
+            vm.enable_tpm().await?;
+
+            if firmware.is_openhcl() {
+                vm.set_guest_state_isolation_mode(if no_persistent_secrets {
+                    powershell::HyperVGuestStateIsolationMode::NoPersistentSecrets
+                } else {
+                    powershell::HyperVGuestStateIsolationMode::Default
+                })
+                .await?;
+            } else if no_persistent_secrets {
+                anyhow::bail!("no persistent secrets requires an hcl");
+            }
+        } else {
+            vm.disable_tpm().await?;
         }
 
         vm.start().await?;

@@ -362,12 +362,10 @@ pub mod artifacts {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::X86_64;
             fn quirks() -> GuestQuirks {
-                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                    ..Default::default()
-                });
-                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
-                quirks
+                    initial_reboot: Some(InitialRebootCondition::WithTpm),
+                })
             }
         }
 
@@ -385,12 +383,10 @@ pub mod artifacts {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::X86_64;
             fn quirks() -> GuestQuirks {
-                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                    ..Default::default()
-                });
-                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
-                quirks
+                    initial_reboot: Some(InitialRebootCondition::WithTpm),
+                })
             }
         }
 
@@ -408,12 +404,10 @@ pub mod artifacts {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::Aarch64;
             fn quirks() -> GuestQuirks {
-                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                    ..Default::default()
-                });
-                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
-                quirks
+                    initial_reboot: Some(InitialRebootCondition::WithTpm),
+                })
             }
         }
 
