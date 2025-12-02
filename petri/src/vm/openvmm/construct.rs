@@ -776,20 +776,16 @@ impl PetriVmConfigSetupCore<'_> {
                 //
                 // TODO: remove this (and OpenHCL override) once host changes
                 // are saturated.
-                {
-                    let (default_boot_always_attempt, secure_boot_enabled) = match self.firmware {
-                        Firmware::OpenhclUefi {
-                            uefi_config:
-                                UefiConfig {
-                                    default_boot_always_attempt,
-                                    secure_boot_enabled,
-                                    ..
-                                },
+                if let Firmware::OpenhclUefi {
+                    uefi_config:
+                        UefiConfig {
+                            default_boot_always_attempt,
+                            secure_boot_enabled,
                             ..
-                        } => (*default_boot_always_attempt, *secure_boot_enabled),
-                        _ => (false, false),
-                    };
-
+                        },
+                    ..
+                } = self.firmware
+                {
                     if !isolated
                         && !secure_boot_enabled
                         && self.tpm_config.is_none()

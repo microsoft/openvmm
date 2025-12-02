@@ -675,27 +675,28 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
         }
 
-        if matches!(&firmware, Firmware::OpenhclUefi { .. }) {
-            if let Some(TpmConfig {
-                no_persistent_secrets,
-            }) = tpm
-            {
-                vm.enable_tpm().await?;
-
-                // Hyper-V uses a persistent TPM by default
-                if no_persistent_secrets {
-                    vm.set_guest_state_isolation_mode(
-                        powershell::HyperVGuestStateIsolationMode::NoPersistentSecrets,
-                    )
-                    .await?;
-                }
-            } else {
-                vm.disable_tpm().await?;
+        // Configure the TPM
+        if let Some(TpmConfig {
+            no_persistent_secrets,
+        }) = tpm
+        {
+            if firmware.is_pcat() {
+                anyhow::bail!("hyper-v gen 1 VMs do not support a TPM");
             }
-        } else if tpm.is_some() {
-            anyhow::bail!(
-                "The Hyper-V petri backend currently only supports TPM with OpenHCL UEFI"
-            );
+            vm.enable_tpm().await?;
+
+            if firmware.is_openhcl() {
+                vm.set_guest_state_isolation_mode(if no_persistent_secrets {
+                    powershell::HyperVGuestStateIsolationMode::NoPersistentSecrets
+                } else {
+                    powershell::HyperVGuestStateIsolationMode::Default
+                })
+                .await?;
+            } else if no_persistent_secrets {
+                anyhow::bail!("no persistent secrets requires an hcl");
+            }
+        } else {
+            vm.disable_tpm().await?;
         }
 
         vm.start().await?;
