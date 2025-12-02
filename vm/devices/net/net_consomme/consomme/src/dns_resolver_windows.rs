@@ -122,7 +122,7 @@ impl DnsResolver {
         // Create the context
         let mut context = Box::new(DnsQueryContext {
             id: request_id,
-            protocol: protocol,
+            protocol,
             cancel_handle: DNS_QUERY_RAW_CANCEL::default(),
             src_addr,
             dst_addr,

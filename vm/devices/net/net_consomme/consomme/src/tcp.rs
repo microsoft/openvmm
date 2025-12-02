@@ -214,8 +214,7 @@ impl<T: Client> Access<'_, T> {
         {
             // For TCP DNS, prepend the 2-byte length field
             let mut tcp_response = Vec::with_capacity(2 + response.response_data.len());
-            tcp_response
-                .extend_from_slice(&(response.response_data.len() as u16).to_be_bytes());
+            tcp_response.extend_from_slice(&(response.response_data.len() as u16).to_be_bytes());
             tcp_response.extend_from_slice(&response.response_data);
 
             // Find the existing TCP connection for this DNS response
