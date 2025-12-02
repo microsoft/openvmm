@@ -51,8 +51,8 @@ impl Udp {
     pub fn new(timeout: Duration) -> Self {
         Self {
             connections: HashMap::new(),
-            // Per RFC 4787, UDP NAT bindings should timeout after 5 minutes.
-            // This value should be configurable.
+            // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes.
+            // However, this value should also be configurable.
             timeout,
         }
     }
@@ -215,31 +215,14 @@ impl<T: Client> Access<'_, T> {
 
         // Poll for DNS responses that are ready to be sent (UDP only)
         if self.inner.dns_resolver.is_some() {
-            while let Some(response) = self.inner.dns_resolver.as_mut().unwrap().poll_responses() {
-                // Only handle UDP responses here; TCP responses are handled in tcp.rs
-                if response.protocol != IpProtocol::Udp {
-                    continue;
-                }
-
-                tracing::debug!(
-                    response_len = response.response_data.len(),
-                    src = %response.src_addr,
-                    dst = %response.dst_addr,
-                    src_port = response.src_port,
-                    dst_port = response.dst_port,
-                    "Dequeued UDP DNS response"
-                );
-
-                // Send the DNS response using the existing helper
-                if let Err(e) = self.send_udp_dns_response(
-                    &response.response_data,
-                    response.src_addr,
-                    response.dst_addr,
-                    response.src_port,
-                    response.dst_port,
-                    response.gateway_mac,
-                    response.client_mac,
-                ) {
+            while let Some(response) = self
+                .inner
+                .dns_resolver
+                .as_mut()
+                .unwrap()
+                .poll_responses(IpProtocol::Udp)
+            {
+                if let Err(e) = self.send_udp_dns_response(&response) {
                     tracing::error!(error = ?e, "Failed to send UDP DNS response");
                 }
             }
@@ -446,20 +429,14 @@ impl<T: Client> Access<'_, T> {
 
     fn send_udp_dns_response(
         &mut self,
-        dns_response: &[u8],
-        src_addr: smoltcp::wire::Ipv4Address,
-        dst_addr: smoltcp::wire::Ipv4Address,
-        src_port: u16,
-        dst_port: u16,
-        gateway_mac: EthernetAddress,
-        client_mac: EthernetAddress,
+        response: &crate::dns_resolver::DnsResponse,
     ) -> Result<(), DropReason> {
         tracing::debug!(
-            response_len = dns_response.len(),
-            src = %src_addr,
-            dst = %dst_addr,
-            src_port,
-            dst_port,
+            response_len = response.response_data.len(),
+            src = %response.src_addr,
+            dst = %response.dst_addr,
+            src_port = response.src_port,
+            dst_port = response.dst_port,
             "Sending UDP DNS response"
         );
 
@@ -467,19 +444,20 @@ impl<T: Client> Access<'_, T> {
 
         // Copy DNS response into the UDP payload area
         let payload_offset = ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN;
-        buffer[payload_offset..payload_offset + dns_response.len()].copy_from_slice(dns_response);
+        buffer[payload_offset..payload_offset + response.response_data.len()]
+            .copy_from_slice(&response.response_data);
 
         // Build the complete UDP packet using the helper function
         let mut eth_frame = EthernetFrame::new_unchecked(&mut buffer[..]);
         let frame_len = build_udp_packet(
             &mut eth_frame,
-            dst_addr, // Gateway is the source
-            src_addr, // Client is the destination
-            dst_port, // DNS port (53)
-            src_port, // Client's source port
-            dns_response.len(),
-            gateway_mac,
-            client_mac,
+            response.dst_addr, // Gateway is the source
+            response.src_addr, // Client is the destination
+            response.dst_port, // DNS port (53)
+            response.src_port, // Client's source port
+            response.response_data.len(),
+            response.gateway_mac,
+            response.client_mac,
         );
 
         // Send the frame to the client

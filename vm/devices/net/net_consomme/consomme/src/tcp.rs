@@ -202,12 +202,13 @@ impl<T: Client> Access<'_, T> {
     pub(crate) fn poll_tcp(&mut self, cx: &mut Context<'_>) {
         // Poll for TCP DNS responses that are ready to be sent
         if self.inner.dns_resolver.is_some() {
-            while let Some(response) = self.inner.dns_resolver.as_mut().unwrap().poll_responses() {
-                // Only handle TCP responses here; UDP responses are handled in udp.rs
-                if response.protocol != IpProtocol::Tcp {
-                    continue;
-                }
-
+            while let Some(response) = self
+                .inner
+                .dns_resolver
+                .as_mut()
+                .unwrap()
+                .poll_responses(IpProtocol::Tcp)
+            {
                 tracing::debug!(
                     response_len = response.response_data.len(),
                     src = %response.src_addr,
@@ -241,9 +242,24 @@ impl<T: Client> Access<'_, T> {
                     let available_space = conn.tx_buffer.capacity() - conn.tx_buffer.len();
                     if available_space >= tcp_response.len() {
                         // Write the DNS response to the connection's tx buffer
-                        for &byte in &tcp_response {
-                            conn.tx_buffer.push(byte);
+                        let (first_slice, second_slice) = conn.tx_buffer.unwritten_slices_mut();
+                        let mut bytes_written = 0;
+
+                        // Copy to first slice
+                        let bytes_to_first_slice = tcp_response.len().min(first_slice.len());
+                        first_slice[..bytes_to_first_slice]
+                            .copy_from_slice(&tcp_response[..bytes_to_first_slice]);
+                        bytes_written += bytes_to_first_slice;
+
+                        // Copy remaining to second slice if needed
+                        if bytes_written < tcp_response.len() {
+                            let bytes_to_second_slice = tcp_response.len() - bytes_written;
+                            second_slice[..bytes_to_second_slice]
+                                .copy_from_slice(&tcp_response[bytes_written..]);
+                            bytes_written += bytes_to_second_slice;
                         }
+
+                        conn.tx_buffer.extend_by(bytes_written);
 
                         tracing::debug!(
                             response_len = tcp_response.len(),
@@ -415,13 +431,7 @@ impl<T: Client> Access<'_, T> {
         match self.inner.tcp.connections.entry(ft) {
             hash_map::Entry::Occupied(mut e) => {
                 let conn = e.get_mut();
-                if !conn.handle_packet(
-                    &mut sender,
-                    &tcp,
-                    tcp_packet.payload(),
-                    is_dns,
-                    &mut self.inner.dns_resolver,
-                )? {
+                if !conn.handle_packet(&mut sender, &tcp, &mut self.inner.dns_resolver)? {
                     e.remove();
                 }
             }
@@ -1064,8 +1074,6 @@ impl TcpConnection {
         &mut self,
         sender: &mut Sender<'_, impl Client>,
         tcp: &TcpRepr<'_>,
-        tcp_payload: &[u8],
-        is_dns: bool,
         dns_resolver: &mut Option<crate::dns_resolver::DnsResolver>,
     ) -> Result<bool, DropReason> {
         if self.state == TcpState::Connecting {

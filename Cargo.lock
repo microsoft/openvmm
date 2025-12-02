@@ -772,7 +772,6 @@ dependencies = [
  "inspect_counters",
  "libc",
  "pal_async",
- "resolv-conf",
  "smoltcp",
  "socket2",
  "thiserror 2.0.16",
@@ -6205,12 +6204,6 @@ name = "regex-syntax"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caf4aa5b0f434c91fe5c7f1ecb6a5ece2130b02ad2a590589dda5146df959001"
-
-[[package]]
-name = "resolv-conf"
-version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95325155c684b1c89f7765e30bc1c42e4a6da51ca513615660cb8a62ef9a88e3"
 
 [[package]]
 name = "rlimit"

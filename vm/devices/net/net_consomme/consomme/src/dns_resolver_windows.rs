@@ -237,8 +237,22 @@ impl DnsResolver {
 
     /// Poll for completed DNS responses.
     /// Returns the next available response, if any.
-    pub fn poll_responses(&mut self) -> Option<DnsResponse> {
-        self.response_queue.lock().unwrap().pop_front()
+    pub fn poll_responses(&mut self, protocol: IpProtocol) -> Option<DnsResponse> {
+        assert!(
+            protocol == IpProtocol::Udp || protocol == IpProtocol::Tcp,
+            "protocol must be UDP or TCP"
+        );
+        self.response_queue
+            .lock()
+            .unwrap()
+            .front()
+            .and_then(|resp| {
+                if resp.protocol == protocol {
+                    self.response_queue.lock().unwrap().pop_front()
+                } else {
+                    None
+                }
+            })
     }
 }
 

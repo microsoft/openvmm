@@ -16,10 +16,6 @@
 
 mod arp;
 mod dhcp;
-#[cfg_attr(unix, path = "dns_unix.rs")]
-#[cfg_attr(windows, path = "dns_windows.rs")]
-mod dns;
-
 #[cfg_attr(windows, path = "dns_resolver_windows.rs")]
 #[cfg_attr(unix, path = "dns_resolver_unix.rs")]
 pub mod dns_resolver;
@@ -102,10 +98,9 @@ impl ConsommeParams {
     ///     IP address: 10.0.0.2 / 24
     ///     gateway: 10.0.0.1 with MAC address 52-55-10-0-0-1
     ///     no DNS resolvers
-    pub fn new() -> Result<Self, Error> {
-        // let nameservers = dns::nameservers()?;
+    pub fn new() -> Self {
         let nameservers = vec![Ipv4Address::new(10, 0, 0, 1)];
-        Ok(Self {
+        Self {
             gateway_ip: Ipv4Address::new(10, 0, 0, 1),
             gateway_mac: EthernetAddress([0x52, 0x55, 10, 0, 0, 1]),
             client_ip: Ipv4Address::new(10, 0, 0, 2),
@@ -113,7 +108,7 @@ impl ConsommeParams {
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
             udp_timeout: std::time::Duration::from_secs(300),
-        })
+        }
     }
 
     /// Sets the cidr for the network.
@@ -290,14 +285,6 @@ pub enum DropReason {
     /// Specified port is not bound.
     #[error("port is not bound")]
     PortNotBound,
-}
-
-/// An error to create a consomme instance.
-#[derive(Debug, Error)]
-pub enum Error {
-    /// Could not get DNS nameserver information.
-    #[error("failed to initialize nameservers")]
-    Dns(#[from] dns::Error),
 }
 
 #[derive(Debug)]
