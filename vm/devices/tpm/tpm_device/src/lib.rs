@@ -664,7 +664,7 @@ impl Tpm {
                 op_type = ?LogOpType::VtpmKeysProvision,
                 key_type = ?KeyType::AkPub,
                 bios_guid = %self.bios_guid,
-                akpub_hash = self.ak_pub_str(),
+                ak_pub_hash = self.ak_pub_str(),
                 success = true,
                 latency = std::time::SystemTime::now()
                     .duration_since(start_time)
@@ -1094,7 +1094,7 @@ impl Tpm {
             CVM_ALLOWED,
             op_type = ?LogOpType::BeginAkCertProvision,
             is_renew,
-            akpub_hash = self.ak_pub_str(),
+            ak_pub_hash = self.ak_pub_str(),
             bios_guid = %self.bios_guid,
             "Request AK cert renewal"
         );
@@ -1157,7 +1157,7 @@ impl Tpm {
                             CVM_ALLOWED,
                             op_type = ?LogOpType::AkCertProvision,
                             bios_guid = %self.bios_guid,
-                            akpub_hash = self.ak_pub_str(),
+                            ak_pub_hash = self.ak_pub_str(),
                             is_renew,
                             got_cert = 0,
                             latency = latency.map_or(0, |d| d.as_millis()),
@@ -1178,7 +1178,7 @@ impl Tpm {
                             CVM_ALLOWED,
                             op_type = ?LogOpType::AkCertProvision,
                             bios_guid = %self.bios_guid,
-                            akpub_hash = self.ak_pub_str(),
+                            ak_pub_hash = self.ak_pub_str(),
                             is_renew,
                             got_cert = 0,
                             latency = latency.map_or(0, |d| d.as_millis()),
@@ -1214,7 +1214,7 @@ impl Tpm {
                     CVM_ALLOWED,
                     op_type = ?LogOpType::AkCertProvision,
                     bios_guid = %self.bios_guid,
-                    akpub_hash = self.ak_pub_str(),
+                    ak_pub_hash = self.ak_pub_str(),
                     is_renew,
                     got_cert = 1,
                     size = response.len(),
