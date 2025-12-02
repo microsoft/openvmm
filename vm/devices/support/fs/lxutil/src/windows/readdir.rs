@@ -566,14 +566,14 @@ impl DirectoryEnumerator {
         callback: &mut F,
         offset: &mut lx::off_t,
         file_id: i64,
-        name: &String,
+        name: &lx::LxString,
         entry_type: u8,
     ) -> lx::Result<bool>
     where
         F: FnMut(lx::DirEntry) -> lx::Result<bool>,
     {
         let entry = lx::DirEntry {
-            name: name.into(),
+            name: name.clone(),
             inode_nr: file_id as _,
             offset: *offset + 1 + super::DOT_ENTRY_COUNT, // Pass the offset of the next entry plus the number of dot entries processed.
             file_type: entry_type,

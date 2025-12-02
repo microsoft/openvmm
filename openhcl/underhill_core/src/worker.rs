@@ -1061,9 +1061,15 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         Ok(params)
     }
 
-    async fn save(&mut self) -> Vec<ManaSavedState> {
+    async fn save(&mut self) -> Option<Vec<ManaSavedState>> {
         let mut vf_managers: Vec<(Guid, Arc<HclNetworkVFManager>)> =
             self.vf_managers.drain().collect();
+
+        // Nothing to save
+        if vf_managers.is_empty() {
+            return None;
+        }
+
         let (vf_managers, mut nic_channels) = self.begin_vf_teardown(&mut vf_managers, false);
 
         let mut endpoints: Vec<_> =
@@ -1097,7 +1103,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         let state = (run_endpoints, save_vf_managers).race().await;
 
         // Discard any vf_managers that failed to return valid save state.
-        state.into_iter().flatten().collect()
+        Some(state.into_iter().flatten().collect())
     }
 }
 
@@ -1618,7 +1624,7 @@ async fn new_underhill_vm(
     let (vtl0_mmio, vpci_relay_mmio) = if enable_vpci_relay {
         // Carve out enough VTL0 MMIO space for 64 devices.
         let required_len = 64 * vpci_relay::VPCI_RELAY_MMIO_PER_DEVICE;
-        vtl0_mmio = boot_info.vtl0_mmio.to_vec();
+        vtl0_mmio = boot_info.vtl0_mmio.clone();
         if vtl0_mmio.last().is_none_or(|r| r.len() < required_len) {
             anyhow::bail!("too little VTL0 MMIO space to take for the VPCI relay");
         }
