@@ -86,7 +86,7 @@ fn char_needs_unescape(c: u16) -> bool {
 }
 
 // Unescape a path.
-pub fn unescape_path(path: &[u16]) -> lx::Result<String> {
+pub fn unescape_path(path: &[u16]) -> lx::Result<lx::LxString> {
     char::decode_utf16(path.iter().map(|c| {
         if char_needs_unescape(*c) {
             *c - PATH_ESCAPE_MIN
@@ -98,6 +98,17 @@ pub fn unescape_path(path: &[u16]) -> lx::Result<String> {
     }))
     .map(|c| c.map_err(|_| lx::Error::EIO))
     .collect()
+}
+
+// Unescape a path in place.
+pub fn unescape_path_in_place(path: &mut [u16]) {
+    for c in path {
+        if char_needs_unescape(*c) {
+            *c -= PATH_ESCAPE_MIN;
+        } else if (*c) == '\\' as u16 {
+            *c = '/' as u16;
+        }
+    }
 }
 
 // List indicating which characters are legal in NTFS. This was adapted from

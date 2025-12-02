@@ -40,7 +40,7 @@ cargo xtask fuzz list
 
 The output will be a list of available "fuzz targets":
 
-```
+```bash
 $ cargo xtask fuzz list
 fuzz_chipset_battery
 fuzz_ide

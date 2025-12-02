@@ -5,8 +5,9 @@ on:
     types:
       - completed
     workflows:
-      - '\[flowey\] OpenVMM CI'
-      - '\[flowey\] OpenVMM PR'
+      - 'OpenVMM CI'
+      - 'OpenVMM PR'
+      - '\[Optional\] OpenVMM Release PR'
 
 permissions:
   id-token: write
@@ -21,6 +22,12 @@ jobs:
       BASE_URL: https://openvmmghtestresults.blob.core.windows.net/results
 
     steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          # Azure CLI is considered a large package
+          large-packages: false
+
       - name: Authenticate to Azure
         uses: azure/login@v1
         with:
@@ -93,7 +100,7 @@ jobs:
             -R "$repo" \
             "$SOURCE_PR" \
             -F - <<EOF
-          [At least one Petri test failed.](https://openvmm.dev/test-results/?run=$run_id)
+          [At least one Petri test failed.](https://openvmm.dev/test-results/#/runs/$run_id)
           EOF
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -22,11 +22,12 @@ use vmm_test_macros::vmm_test_no_agent;
 
 /// Tests for Hyper-V integration components.
 mod ic;
-/// Servicing tests.
-mod openhcl_servicing;
-
 // Memory Validation tests.
 mod memstat;
+/// Servicing tests.
+mod openhcl_servicing;
+/// PCIe emulation tests.
+mod pcie;
 /// Tests of vmbus relay functionality.
 mod vmbus_relay;
 /// Tests involving VMGS functionality
@@ -66,6 +67,7 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
@@ -84,8 +86,7 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
 /// Basic boot test without agent
 #[vmm_test_no_agent(
     openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
-    openvmm_pcat_x64(iso(freebsd_13_2_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
+    openvmm_pcat_x64(iso(freebsd_13_2_x64))
 )]
 async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
@@ -110,6 +111,7 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
@@ -139,26 +141,9 @@ async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
     Ok(())
 }
 
-// Basic vp "heavy" boot test without agent with 16 VPs and 2 NUMA nodes.
-#[vmm_test_no_agent(
-    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-)]
-async fn boot_no_agent_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    let mut vm = config
-        .with_processor_topology(ProcessorTopology {
-            vp_count: 16,
-            vps_per_socket: Some(8),
-            ..Default::default()
-        })
-        .run_without_agent()
-        .await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
-    vm.wait_for_clean_teardown().await?;
-    Ok(())
-}
-
 /// Basic boot test with a single VP.
 #[vmm_test(
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
@@ -167,7 +152,6 @@ async fn boot_no_agent_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> a
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))
 )]
-#[cfg_attr(not(windows), expect(dead_code))]
 async fn boot_single_proc<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_processor_topology(ProcessorTopology {
@@ -177,25 +161,6 @@ async fn boot_single_proc<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyh
         .run()
         .await?;
     agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-    Ok(())
-}
-
-/// Basic boot test without agent and with a single VP.
-#[vmm_test_no_agent(
-    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-)]
-async fn boot_no_agent_single_proc<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-) -> anyhow::Result<()> {
-    let mut vm = config
-        .with_processor_topology(ProcessorTopology {
-            vp_count: 1,
-            ..Default::default()
-        })
-        .run_without_agent()
-        .await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
@@ -258,6 +223,7 @@ async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> 
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64)),
@@ -274,25 +240,11 @@ async fn reboot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), any
     Ok(())
 }
 
-/// Basic reboot test without agent
-#[vmm_test_no_agent(
-    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-)]
-async fn reboot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    let mut vm = config.run_without_agent().await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Reboot).await?;
-    vm.wait_for_reset_no_agent().await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
-    vm.wait_for_clean_teardown().await?;
-    Ok(())
-}
-
 /// Configure Guest VSM and reboot the VM to verify it works.
-// TODO: Enable TDX once our runner has support for it.
 #[vmm_test(
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
-    //hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
@@ -300,6 +252,11 @@ async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
 ) -> Result<(), anyhow::Error> {
     let (mut vm, agent) = config.run().await?;
     let shell = agent.windows_shell();
+
+    // VBS should be off by default
+    let output = cmd!(shell, "systeminfo").output().await?;
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    assert!(!output_str.contains("Virtualization-based security: Status: Running"));
 
     // Enable VBS
     cmd!(shell, "reg")
@@ -473,86 +430,4 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
         MachineArch::Aarch64 => assert!(matches!(halt_reason, PetriHaltReason::Reset)),
     }
     Ok(())
-}
-
-#[vmm_test(
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
-)]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_gp_small<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-    _: (),
-    driver: pal_async::DefaultDriver,
-) -> anyhow::Result<()> {
-    memstat::idle_test(
-        config,
-        memstat::TestVPCount::SmallVPCount,
-        memstat::WaitPeriodSec::ShortWait,
-        driver,
-    )
-    .await
-}
-
-// We can't get a VTL 2 pipette with release build CVM debugging restrictions,
-// so only run these tests in debug builds.
-#[cfg(debug_assertions)]
-#[vmm_test(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
-)]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_cvm_small<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-    _: (),
-    driver: pal_async::DefaultDriver,
-) -> anyhow::Result<()> {
-    memstat::idle_test(
-        config,
-        memstat::TestVPCount::SmallVPCount,
-        memstat::WaitPeriodSec::ShortWait,
-        driver,
-    )
-    .await
-}
-
-#[vmm_test(
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
-)]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_gp_heavy<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-    _: (),
-    driver: pal_async::DefaultDriver,
-) -> anyhow::Result<()> {
-    memstat::idle_test(
-        config,
-        memstat::TestVPCount::LargeVPCount,
-        memstat::WaitPeriodSec::LongWait,
-        driver,
-    )
-    .await
-}
-
-// We can't get a VTL 2 pipette with release build CVM debugging restrictions,
-// so only run these tests in debug builds.
-#[cfg(debug_assertions)]
-#[vmm_test(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
-)]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_cvm_heavy<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-    _: (),
-    driver: pal_async::DefaultDriver,
-) -> anyhow::Result<()> {
-    memstat::idle_test(
-        config,
-        memstat::TestVPCount::LargeVPCount,
-        memstat::WaitPeriodSec::LongWait,
-        driver,
-    )
-    .await
 }

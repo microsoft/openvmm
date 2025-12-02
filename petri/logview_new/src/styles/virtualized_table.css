@@ -1,0 +1,97 @@
+/* Copyright (c) Microsoft Corporation. */
+/* Licensed under the MIT License. */
+
+.sort-indicator {
+  margin-left: 0.5rem;
+  font-weight: normal;
+  color: #6c757d;
+  font-size: 0.74rem;
+  opacity: 0.7;
+  flex: 0 0 auto;
+}
+
+.virtualized-table-header-container {
+  position: sticky;
+  top: 3rem;
+  z-index: 999;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.1);
+}
+
+.virtualized-table {
+  border-collapse: collapse;
+  min-width: 56rem;
+  position: sticky;
+  top: 0;
+  width: 100%;
+  table-layout: fixed;
+}
+
+/* Default hover for virtualized table rows - can be overridden by more specific selectors */
+.virtualized-table-row:hover td {
+  background-color: #f3f4f6;
+}
+
+.virtualized-table th {
+  color: #000000;
+  text-align: left;
+  border-bottom: 1px solid #dee2e6;
+  background: white;
+  box-sizing: border-box;
+  text-transform: uppercase;
+  padding: 0 8px 4px 8px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.virtualized-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  z-index: 1;
+  position: sticky;
+  top: 3rem;
+}
+
+.virtualized-table th.sortable:hover {
+  background-color: #e9ecef;
+  position: sticky;
+  top: 3rem;
+}
+
+.virtualized-table-header-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  white-space: nowrap;
+  min-width: 0;
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+  position: sticky;
+  top: 3rem;
+}
+
+/* Virtualized table styles */
+.virtualized-table-body {
+  background: white;
+  overflow: auto;
+  position: relative;
+  width: 100%;
+  min-width: 56rem;
+}
+
+/* Simplified row styling: always white, no hover/background color variations */
+.virtualized-table-row {
+  background: white !important;
+  border-bottom: 1px solid #e0e0e0;
+  box-sizing: border-box;
+}
+
+/* Ensure proper column alignment in virtualized rows */
+.virtualized-table-row table {
+  border-collapse: collapse;
+}
+
+.virtualized-table-row td {
+  padding: 0.45rem 0.4rem;
+  vertical-align: middle;
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+  font-size: 1.1rem;
+}

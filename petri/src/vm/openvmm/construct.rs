@@ -35,6 +35,7 @@ use crate::vtl2_settings::Vtl2LunBuilder;
 use crate::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
 use crate::vtl2_settings::Vtl2StorageControllerBuilder;
 use anyhow::Context;
+use disk_backend_resources::FileDiskHandle;
 use framebuffer::FRAMEBUFFER_SIZE;
 use framebuffer::Framebuffer;
 use framebuffer::FramebufferAccess;
@@ -42,6 +43,7 @@ use fs_err::File;
 use futures::StreamExt;
 use get_resources::crash::GuestCrashDeviceHandle;
 use get_resources::ged::FirmwareEvent;
+use guid::Guid;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
@@ -115,6 +117,8 @@ impl PetriVmConfigOpenVmm {
             openhcl_agent_image,
             vmgs,
             boot_device_type,
+            tpm_state_persistence,
+            guest_crash_disk,
         } = petri_vm_config;
 
         let PetriVmResources { driver, log_source } = resources;
@@ -163,7 +167,9 @@ impl PetriVmConfigOpenVmm {
             None => (None, None, None),
         };
 
-        let mut devices = Vec::new();
+        let mut ide_disks = Vec::new();
+        let mut vpci_devices = Vec::new();
+        let mut vmbus_devices = Vec::new();
 
         let (firmware_event_send, firmware_event_recv) = mesh::mpsc_channel();
 
@@ -177,15 +183,28 @@ impl PetriVmConfigOpenVmm {
             if firmware.is_openhcl() {
                 let (ged, ged_send) = setup.config_openhcl_vmbus_devices(
                     &mut emulated_serial_config,
-                    &mut devices,
+                    &mut vmbus_devices,
                     &firmware_event_send,
                     framebuffer.is_some(),
+                    tpm_state_persistence,
                 )?;
+
+                let late_map_vtl0_memory = match load_mode {
+                    LoadMode::Igvm {
+                        vtl2_base_address: Vtl2BaseAddressType::Vtl2Allocate { .. },
+                        ..
+                    } => {
+                        // Late Map VTL0 memory not supported when test supplies Vtl2Allocate
+                        None
+                    }
+                    _ => Some(LateMapVtl0MemoryPolicy::InjectException),
+                };
+
                 let (vtl2_vsock_listener, vtl2_vsock_path) = make_vsock_listener()?;
                 (
                     Some(Vtl2Config {
                         vtl0_alias_map: false, // TODO: enable when OpenVMM supports it for DMA
-                        late_map_vtl0_memory: Some(LateMapVtl0MemoryPolicy::InjectException),
+                        late_map_vtl0_memory,
                     }),
                     Some(VmbusConfig {
                         vsock_listener: Some(vtl2_vsock_listener),
@@ -210,7 +229,45 @@ impl PetriVmConfigOpenVmm {
                 (None, None, None, None, None, None)
             };
 
-        setup.load_boot_disk(&mut devices, vtl2_settings.as_mut())?;
+        let mut petri_vtl0_scsi = ScsiControllerHandle {
+            instance_id: SCSI_INSTANCE,
+            max_sub_channel_count: 1,
+            io_queue_depth: None,
+            devices: vec![],
+            requests: None,
+            poll_mode_queue_depth: None,
+        };
+
+        let boot_disk = setup.load_boot_disk(vtl2_settings.as_mut())?;
+        match boot_disk {
+            Some(BootDisk::Ide(c)) => {
+                ide_disks.push(c);
+            }
+            Some(BootDisk::Vpci(c)) => {
+                vpci_devices.push(c);
+            }
+            Some(BootDisk::Scsi(d)) => {
+                petri_vtl0_scsi.devices.push(d);
+            }
+            None => {}
+        }
+
+        if let Some(guest_crash_disk) = guest_crash_disk.as_ref() {
+            petri_vtl0_scsi.devices.push(ScsiDeviceAndPath {
+                path: ScsiPath {
+                    path: 0,
+                    target: 0,
+                    lun: crate::vm::PETRI_VTL0_SCSI_CRASH_LUN,
+                },
+                device: SimpleScsiDiskHandle {
+                    read_only: false,
+                    parameters: Default::default(),
+                    disk: FileDiskHandle(File::open(guest_crash_disk.as_ref())?.into())
+                        .into_resource(),
+                }
+                .into_resource(),
+            });
+        }
 
         // Configure the serial ports now that they have been updated by the
         // OpenHCL configuration.
@@ -220,19 +277,6 @@ impl PetriVmConfigOpenVmm {
         // on the floor during boot.
         if matches!(firmware, Firmware::LinuxDirect { .. }) {
             chipset = chipset.with_serial_wait_for_rts();
-        }
-
-        // Partition the devices by type.
-        let mut vmbus_devices = Vec::new();
-        let mut ide_disks = Vec::new();
-        let floppy_disks = Vec::new();
-        let mut vpci_devices = Vec::new();
-        for d in devices {
-            match d {
-                Device::Vmbus(vtl, resource) => vmbus_devices.push((vtl, resource)),
-                Device::Vpci(c) => vpci_devices.push(c),
-                Device::Ide(c) => ide_disks.push(c),
-            }
         }
 
         // Extract video configuration
@@ -410,9 +454,11 @@ impl PetriVmConfigOpenVmm {
             vtl2_vmbus,
 
             // Devices
-            floppy_disks,
+            floppy_disks: vec![],
             ide_disks,
             pcie_root_complexes: vec![],
+            pcie_devices: vec![],
+            pcie_switches: vec![],
             vpci_devices,
             vmbus_devices,
 
@@ -440,6 +486,7 @@ impl PetriVmConfigOpenVmm {
             debugger_rpc: None,
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
+            efi_diagnostics_log_level: Default::default(), // TODO: Add config for tests
         };
 
         // Make the pipette connection listener.
@@ -489,6 +536,7 @@ impl PetriVmConfigOpenVmm {
 
             openvmm_log_file: log_source.log_file("openvmm")?,
 
+            petri_vtl0_scsi,
             ged,
             framebuffer_view,
         })
@@ -510,8 +558,8 @@ struct SerialData {
     linux_direct_serial_agent: Option<LinuxDirectSerialAgent>,
 }
 
-enum Device {
-    Vmbus(DeviceVtl, Resource<VmbusDeviceHandleKind>),
+enum BootDisk {
+    Scsi(ScsiDeviceAndPath),
     Vpci(VpciDeviceConfig),
     Ide(IdeDeviceConfig),
 }
@@ -643,6 +691,7 @@ impl PetriVmConfigSetupCore<'_> {
                             secure_boot_enabled: _,  // new
                             secure_boot_template: _, // new
                             disable_frontpage,
+                            default_boot_always_attempt,
                         },
                 },
             ) => {
@@ -659,7 +708,8 @@ impl PetriVmConfigSetupCore<'_> {
                     enable_serial: true,
                     enable_vpci_boot: matches!(self.boot_device_type, BootDeviceType::Nvme),
                     uefi_console_mode: Some(hvlite_defs::config::UefiConsoleMode::Com1),
-                    default_boot_always_attempt: false,
+                    default_boot_always_attempt: *default_boot_always_attempt,
+                    bios_guid: Guid::new_random(),
                 }
             }
             (
@@ -681,6 +731,7 @@ impl PetriVmConfigSetupCore<'_> {
                     vmbus_redirect: _, // config_openhcl_vmbus_devices
                     command_line: _,
                     log_levels: _,
+                    vtl2_base_address_type,
                 } = openhcl_config;
 
                 let mut cmdline = Some(openhcl_config.command_line());
@@ -701,23 +752,51 @@ impl PetriVmConfigSetupCore<'_> {
                     Firmware::OpenhclUefi { isolation, .. } if isolation.is_some() => true,
                     _ => false,
                 };
+
+                // For certain configurations, we need to override the override
+                // in new_underhill_vm.
+                //
+                // TODO: this should also check for TPM to match the OpenHCL
+                // override once generic petri TPM support is added.
+                //
+                // TODO: remove this (and OpenHCL override) once host changes
+                // are saturated.
+                if let Firmware::OpenhclUefi {
+                    uefi_config:
+                        UefiConfig {
+                            default_boot_always_attempt,
+                            secure_boot_enabled,
+                            ..
+                        },
+                    ..
+                } = self.firmware
+                {
+                    if !isolated && !*secure_boot_enabled && !*default_boot_always_attempt {
+                        append_cmdline(&mut cmdline, "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=0");
+                    }
+                }
+
+                let vtl2_base_address = vtl2_base_address_type.unwrap_or_else(|| {
+                    if isolated {
+                        // Isolated VMs must load at the location specified by
+                        // the file, as they do not support relocation.
+                        Vtl2BaseAddressType::File
+                    } else {
+                        // By default, utilize IGVM relocation and tell OpenVMM
+                        // to place VTL2 at 2GB. This tests both relocation
+                        // support in OpenVMM, and relocation support within
+                        // OpenHCL.
+                        Vtl2BaseAddressType::Absolute(2 * SIZE_1_GB)
+                    }
+                });
+
                 let file = File::open(igvm_path.clone())
                     .context("failed to open openhcl firmware file")?
                     .into();
                 LoadMode::Igvm {
                     file,
                     cmdline: cmdline.unwrap_or_default(),
-                    vtl2_base_address: if isolated {
-                        // Isolated VMs must load at the location specified by
-                        // the file, as they do not support relocation.
-                        Vtl2BaseAddressType::File
-                    } else {
-                        // By default, utilize IGVM relocation and tell hvlite
-                        // to place VTL2 at 2GB. This tests both relocation
-                        // support in hvlite, and relocation support within
-                        // underhill.
-                        Vtl2BaseAddressType::Absolute(2 * SIZE_1_GB)
-                    },
+                    vtl2_base_address,
                     com_serial: Some(SerialInformation {
                         io_port: ComPort::Com3.io_port(),
                         irq: ComPort::Com3.irq().into(),
@@ -730,9 +809,8 @@ impl PetriVmConfigSetupCore<'_> {
 
     fn load_boot_disk(
         &self,
-        devices: &mut impl Extend<Device>,
         vtl2_settings: Option<&mut Vtl2Settings>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<BootDisk>> {
         let emulate_storage_in_openhcl = matches!(
             self.firmware,
             Firmware::OpenhclUefi {
@@ -757,7 +835,7 @@ impl PetriVmConfigSetupCore<'_> {
             | Firmware::OpenhclUefi {
                 guest: UefiGuest::None,
                 ..
-            } => return Ok(()),
+            } => return Ok(None),
             Firmware::Pcat { guest, .. } | Firmware::OpenhclPcat { guest, .. } => {
                 let disk_path = guest.artifact();
                 match guest {
@@ -774,26 +852,6 @@ impl PetriVmConfigSetupCore<'_> {
         };
 
         if emulate_storage_in_openhcl {
-            match media {
-                Media::Dvd(_) => todo!("support DVD to VTL2"),
-                Media::Disk(disk) => {
-                    devices.extend([Device::Vpci(VpciDeviceConfig {
-                        vtl: DeviceVtl::Vtl2,
-                        instance_id: PARAVISOR_BOOT_NVME_INSTANCE,
-                        resource: NvmeControllerHandle {
-                            subsystem_id: PARAVISOR_BOOT_NVME_INSTANCE,
-                            max_io_queues: 64,
-                            msix_count: 64,
-                            namespaces: vec![NamespaceDefinition {
-                                nsid: BOOT_NVME_NSID,
-                                disk,
-                                read_only: false,
-                            }],
-                        }
-                        .into_resource(),
-                    })]);
-                }
-            }
             match self.boot_device_type {
                 BootDeviceType::None => {}
                 BootDeviceType::Ide => todo!("support IDE emulation testing"),
@@ -806,7 +864,7 @@ impl PetriVmConfigSetupCore<'_> {
                     .storage_controllers
                     .push(
                         Vtl2StorageControllerBuilder::scsi()
-                            .with_instance_id(SCSI_INSTANCE)
+                            .with_instance_id(PARAVISOR_BOOT_NVME_INSTANCE)
                             .add_lun(
                                 Vtl2LunBuilder::disk()
                                     .with_location(BOOT_NVME_LUN)
@@ -819,9 +877,27 @@ impl PetriVmConfigSetupCore<'_> {
                             .build(),
                     ),
             }
+            match media {
+                Media::Dvd(_) => todo!("support DVD to VTL2"),
+                Media::Disk(disk) => Ok(Some(BootDisk::Vpci(VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl2,
+                    instance_id: PARAVISOR_BOOT_NVME_INSTANCE,
+                    resource: NvmeControllerHandle {
+                        subsystem_id: PARAVISOR_BOOT_NVME_INSTANCE,
+                        max_io_queues: 64,
+                        msix_count: 64,
+                        namespaces: vec![NamespaceDefinition {
+                            nsid: BOOT_NVME_NSID,
+                            disk,
+                            read_only: false,
+                        }],
+                    }
+                    .into_resource(),
+                }))),
+            }
         } else {
             match self.boot_device_type {
-                BootDeviceType::None => {}
+                BootDeviceType::None => Ok(None),
                 BootDeviceType::Ide => {
                     let guest_media = match media {
                         Media::Disk(disk_type) => GuestMedia::Disk {
@@ -837,50 +913,39 @@ impl PetriVmConfigSetupCore<'_> {
                             .into_resource(),
                         ),
                     };
-                    devices.extend([Device::Ide(IdeDeviceConfig {
+                    Ok(Some(BootDisk::Ide(IdeDeviceConfig {
                         path: ide_resources::IdePath {
                             channel: 0,
                             drive: 0,
                         },
                         guest_media,
-                    })]);
+                    })))
                 }
                 BootDeviceType::Scsi => {
                     let disk = match media {
                         Media::Disk(disk) => disk,
                         Media::Dvd(_) => todo!("support SCSI DVD boot disks"),
                     };
-                    devices.extend([Device::Vmbus(
-                        DeviceVtl::Vtl0,
-                        ScsiControllerHandle {
-                            instance_id: SCSI_INSTANCE,
-                            max_sub_channel_count: 1,
-                            io_queue_depth: None,
-                            devices: vec![ScsiDeviceAndPath {
-                                path: ScsiPath {
-                                    path: 0,
-                                    target: 0,
-                                    lun: 0,
-                                },
-                                device: SimpleScsiDiskHandle {
-                                    read_only: false,
-                                    parameters: Default::default(),
-                                    disk,
-                                }
-                                .into_resource(),
-                            }],
-                            requests: None,
-                            poll_mode_queue_depth: None,
+                    Ok(Some(BootDisk::Scsi(ScsiDeviceAndPath {
+                        path: ScsiPath {
+                            path: 0,
+                            target: 0,
+                            lun: 0,
+                        },
+                        device: SimpleScsiDiskHandle {
+                            read_only: false,
+                            parameters: Default::default(),
+                            disk,
                         }
                         .into_resource(),
-                    )]);
+                    })))
                 }
                 BootDeviceType::Nvme => {
                     let disk = match media {
                         Media::Disk(disk) => disk,
                         Media::Dvd(_) => anyhow::bail!("dvd not supported on nvme"),
                     };
-                    devices.extend([Device::Vpci(VpciDeviceConfig {
+                    Ok(Some(BootDisk::Vpci(VpciDeviceConfig {
                         vtl: DeviceVtl::Vtl0,
                         instance_id: BOOT_NVME_INSTANCE,
                         resource: NvmeControllerHandle {
@@ -894,26 +959,25 @@ impl PetriVmConfigSetupCore<'_> {
                             }],
                         }
                         .into_resource(),
-                    })]);
+                    })))
                 }
             }
         }
-
-        Ok(())
     }
 
     fn config_openhcl_vmbus_devices(
         &self,
         serial: &mut [Option<Resource<SerialBackendHandle>>],
-        devices: &mut impl Extend<Device>,
+        devices: &mut impl Extend<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
         firmware_event_send: &mesh::Sender<FirmwareEvent>,
         framebuffer: bool,
+        tpm_state_persistence: bool,
     ) -> anyhow::Result<(
         get_resources::ged::GuestEmulationDeviceHandle,
         mesh::Sender<get_resources::ged::GuestEmulationRequest>,
     )> {
         let serial0 = serial[0].take();
-        devices.extend([Device::Vmbus(
+        devices.extend([(
             DeviceVtl::Vtl2,
             VmbusSerialDeviceHandle {
                 port: VmbusSerialPort::Com1,
@@ -922,7 +986,7 @@ impl PetriVmConfigSetupCore<'_> {
             .into_resource(),
         )]);
         let serial1 = serial[1].take();
-        devices.extend([Device::Vmbus(
+        devices.extend([(
             DeviceVtl::Vtl2,
             VmbusSerialDeviceHandle {
                 port: VmbusSerialPort::Com2,
@@ -931,14 +995,8 @@ impl PetriVmConfigSetupCore<'_> {
             .into_resource(),
         )]);
 
-        let gel = get_resources::gel::GuestEmulationLogHandle.into_resource();
-
         let crash = spawn_dump_handler(self.driver, self.logger).into_resource();
-
-        devices.extend([
-            Device::Vmbus(DeviceVtl::Vtl2, crash),
-            Device::Vmbus(DeviceVtl::Vtl2, gel),
-        ]);
+        devices.extend([(DeviceVtl::Vtl2, crash)]);
 
         let (guest_request_send, guest_request_recv) = mesh::channel();
 
@@ -947,6 +1005,7 @@ impl PetriVmConfigSetupCore<'_> {
                 secure_boot_enabled,
                 secure_boot_template,
                 disable_frontpage,
+                default_boot_always_attempt,
             },
             OpenHclConfig { vmbus_redirect, .. },
         ) = match self.firmware {
@@ -973,7 +1032,7 @@ impl PetriVmConfigSetupCore<'_> {
                 disable_frontpage: *disable_frontpage,
                 enable_vpci_boot: matches!(self.boot_device_type, BootDeviceType::Nvme),
                 console_mode: get_resources::ged::UefiConsoleMode::COM1,
-                default_boot_always_attempt: false,
+                default_boot_always_attempt: *default_boot_always_attempt,
             },
             com1: true,
             com2: true,
@@ -995,9 +1054,10 @@ impl PetriVmConfigSetupCore<'_> {
                 None => get_resources::ged::GuestSecureBootTemplateType::None,
             },
             enable_battery: false,
-            no_persistent_secrets: !test_gsp_by_id,
+            no_persistent_secrets: !tpm_state_persistence,
             igvm_attest_test_config: None,
             test_gsp_by_id,
+            efi_diagnostics_log_level: Default::default(), // TODO: make configurable
         };
 
         Ok((ged, guest_request_send))

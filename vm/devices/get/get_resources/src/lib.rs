@@ -91,6 +91,8 @@ pub mod ged {
         pub igvm_attest_test_config: Option<IgvmAttestTestConfig>,
         /// Send the test seed for GspById requests
         pub test_gsp_by_id: bool,
+        /// EFI diagnostics log level
+        pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
     }
 
     /// The firmware and chipset configuration for the guest.
@@ -140,6 +142,18 @@ pub mod ged {
         MicrosoftUefiCertificateAuthority,
     }
 
+    /// The guest's EFI diagnostics log level type to use.
+    #[derive(MeshPayload, Clone, Debug, Copy, Default)]
+    pub enum EfiDiagnosticsLogLevelType {
+        /// Default log level
+        #[default]
+        Default,
+        /// Include INFO logs
+        Info,
+        /// All logs
+        Full,
+    }
+
     /// The boot devices for a PC/AT BIOS.
     #[derive(MeshPayload, Debug, Clone, Copy, PartialEq)]
     pub enum PcatBootDevice {
@@ -160,8 +174,10 @@ pub mod ged {
     /// Define servicing behavior.
     #[derive(MeshPayload, Default)]
     pub struct GuestServicingFlags {
-        /// Retain memory for DMA-attached devices.
+        /// Retain memory for NVMe devices.
         pub nvme_keepalive: bool,
+        /// Retain memory for MANA devices.
+        pub mana_keepalive: bool,
     }
 
     /// Actions a client can request that the Guest Emulation

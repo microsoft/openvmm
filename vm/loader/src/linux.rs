@@ -21,9 +21,12 @@ use bitfield_struct::bitfield;
 use hvdef::HV_PAGE_SIZE;
 use loader_defs::linux as defs;
 use page_table::IdentityMapSize;
+use page_table::x64::IdentityMapBuilder;
+use page_table::x64::PAGE_TABLE_MAX_BYTES;
+use page_table::x64::PAGE_TABLE_MAX_COUNT;
+use page_table::x64::PageTable;
 use page_table::x64::align_up_to_large_page_size;
 use page_table::x64::align_up_to_page_size;
-use page_table::x64::build_page_tables_64;
 use std::ffi::CString;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
@@ -126,6 +129,8 @@ pub enum Error {
     UnalignedAddress(u64),
     #[error("importer error")]
     Importer(#[source] anyhow::Error),
+    #[error("PageTableBuilder: {0}")]
+    PageTableBuilder(#[from] page_table::Error),
 }
 
 pub struct AcpiConfig<'a> {
@@ -331,12 +336,16 @@ pub fn load_config(
     check_address_alignment(registers.gdt_address)?;
     import_default_gdt(importer, registers.gdt_address / HV_PAGE_SIZE).map_err(Error::Importer)?;
     check_address_alignment(registers.page_table_address)?;
-    let page_table = build_page_tables_64(
+    let mut page_table_work_buffer: Vec<PageTable> =
+        vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
+    let mut page_table: Vec<u8> = vec![0; PAGE_TABLE_MAX_BYTES];
+    let page_table_builder = IdentityMapBuilder::new(
         registers.page_table_address,
-        0,
         IdentityMapSize::Size4Gb,
-        None,
-    );
+        page_table_work_buffer.as_mut_slice(),
+        page_table.as_mut_slice(),
+    )?;
+    let page_table = page_table_builder.build();
     assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     importer
         .import_pages(
@@ -344,7 +353,7 @@ pub fn load_config(
             page_table.len() as u64 / HV_PAGE_SIZE,
             "linux-pagetables",
             BootPageAcceptance::Exclusive,
-            &page_table,
+            page_table,
         )
         .map_err(Error::Importer)?;
 

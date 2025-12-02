@@ -8,6 +8,37 @@ The OpenVMM PR and CI pipelines will run the full test suite on all supported
 platforms; you'd typically run only the tests relevant to the changes you're
 working on.
 
+## Writing VMM Tests
+
+To streamline the process of booting and interacting with VMs during VMM tests, the
+OpenVMM project uses an in-house test framework/library called `petri`.
+
+The library does not yet have a stable API, so at this time, the best way to
+learn how to write new VMM tests is by reading through the existing corpus of
+tests (start with vmm_tests/vmm_tests/tests/tests/multiarch.rs),
+as well as reading through `petri`'s rustdoc-generated API docs.
+
+The tests are currently generated using a macro (`#[vmm_test]`) that allows
+the same test body to be run in a variety of scenarios, with different guest
+operating systems, firmwares, and VMMs (including Hyper-V, which is useful
+for testing certain OpenHCL features that aren't supported when using
+OpenVMM as the host VMM).
+
+### "heavy" tests
+
+The global [nextest.toml](https://github.com/microsoft/openvmm/blob/main/.config/nextest.toml)
+configures how tests run in our test environments. The `default` and `ci` profiles
+control things like timeouts, and how many resources we allocate to a given test. The number
+of required threads is a fuzzy requirement relative to the number of VPs consumed by the VM under
+test, the amount of memory your test needs, the host test framework (petri itself), and so on.
+
+We have some pre-defined overrides that perform filterset matching on test name. These overrides
+are curated to balance individual trial (test case) performance against overall concurrency on
+engineers' local machines and in CI. Put these special words in your test to opt in to that override:
+
+- `heavy` - if your test is heavier than the typical vmm_test. E.g., your test explicitly requests 16 virtual processors.
+- `very_heavy` if your test is heavier than a `heavy` test. E.g., your test explicitly requests 32 virtual processors.
+
 ## Running VMM Tests (Flowey)
 
 The easiest way to run the VMM tests locally is using the
@@ -147,19 +178,3 @@ cargo nextest run -p vmm_tests multiarch::openvmm_uefi_x64_windows_datacenter_co
 In order to see the OpenVMM logs while running a VMM test, do the following:
 1. Add the `--no-capture` flag to your `cargo nextest` command.
 2. Set `OPENVMM_LOG=trace`, replacing `trace` with the log level you want to view.
-
-## Writing VMM Tests
-
-To streamline the process of booting and interacting VMs during VMM tests, the
-OpenVMM project uses a in-house test framework/library called `petri`.
-
-The library does not yet have a stable API, so at this time, the best way to
-learn how to write new VMM tests is by reading through the existing corpus of
-tests (start with vmm_tests/vmm_tests/tests/tests/multiarch.rs),
-as well as reading through `petri`'s rustdoc-generated API docs.
-
-The tests are currently generated using a macro (`#[vmm_test]`) that allows
-the same test body to be run in a variety of scenarios, with different guest
-operating systems, firmwares, and VMMs (including Hyper-V, which is useful
-for testing certain OpenHCL features that aren't supported when using 
-OpenVMM as the host VMM).

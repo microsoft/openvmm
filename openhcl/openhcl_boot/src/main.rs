@@ -27,8 +27,6 @@ mod rt;
 mod sidecar;
 mod single_threaded;
 
-extern crate alloc;
-
 use crate::arch::setup_vtl2_memory;
 use crate::arch::setup_vtl2_vp;
 #[cfg(target_arch = "x86_64")]
@@ -36,6 +34,7 @@ use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_memory_init;
 use crate::boot_logger::boot_logger_runtime_init;
+use crate::boot_logger::boot_logger_write_memory_log_to_runtime;
 use crate::boot_logger::log;
 use crate::hypercall::hvcall;
 use crate::memory::AddressSpaceManager;
@@ -84,7 +83,6 @@ struct BuildKernelCommandLineParams<'a> {
     is_confidential_debug: bool,
     sidecar: Option<&'a SidecarConfig<'a>>,
     vtl2_pool_supported: bool,
-    disable_keep_alive: bool,
 }
 
 /// Read and setup the underhill kernel command line into the specified buffer.
@@ -99,7 +97,6 @@ fn build_kernel_command_line(
         is_confidential_debug,
         sidecar,
         vtl2_pool_supported,
-        disable_keep_alive,
     } = fn_params;
 
     // For reference:
@@ -194,6 +191,9 @@ fn build_kernel_command_line(
         "hv_storvsc.storvsc_ringbuffer_size=0x8000",
         // Disable eager mimalloc commit to prevent core dumps from being overly large
         "MIMALLOC_ARENA_EAGER_COMMIT=0",
+        // Disable acpi runtime support. Unused in underhill, but some support
+        // is compiled in for the kernel (ie TDX mailbox protocol).
+        "acpi=off",
     ];
 
     const X86_KERNEL_PARAMETERS: &[&str] = &[
@@ -291,7 +291,10 @@ fn build_kernel_command_line(
 
     // Only when explicitly supported by Host.
     // TODO: Move from command line to device tree when stabilized.
-    if partition_info.nvme_keepalive && vtl2_pool_supported && !disable_keep_alive {
+    if partition_info.nvme_keepalive
+        && vtl2_pool_supported
+        && !partition_info.boot_options.disable_nvme_keep_alive
+    {
         write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=1 ")?;
     }
 
@@ -426,7 +429,9 @@ mod x86_boot {
                 | MemoryVtlType::VTL2_RESERVED
                 | MemoryVtlType::VTL2_GPA_POOL
                 | MemoryVtlType::VTL2_TDX_PAGE_TABLES
-                | MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER => {
+                | MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER
+                | MemoryVtlType::VTL2_PERSISTED_STATE_HEADER
+                | MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF => {
                     add_e820_entry(entries.next(), range, E820_RESERVED)?;
                     n += 1;
                 }
@@ -584,6 +589,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // any access to secrets in the boot shim.
     boot_logger_runtime_init(p.isolation_type, partition_info.com3_serial_available);
     log!("openhcl_boot: logging enabled");
+    boot_logger_write_memory_log_to_runtime();
 
     // Confidential debug will show up in boot_options only if included in the
     // static command line, or if can_trust_host is true (so the dynamic command
@@ -630,7 +636,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     validate_vp_hw_ids(partition_info);
 
-    setup_vtl2_memory(&p, partition_info);
+    setup_vtl2_memory(&p, partition_info, address_space);
     setup_vtl2_vp(partition_info);
 
     verify_imported_regions_hash(&p);
@@ -657,7 +663,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         is_confidential_debug,
         sidecar: sidecar.as_ref(),
         vtl2_pool_supported: address_space.has_vtl2_pool(),
-        disable_keep_alive: partition_info.boot_options.disable_nvme_keep_alive,
     })
     .unwrap();
 
@@ -1058,6 +1063,7 @@ mod test {
     fn new_address_space_manager(
         ram: &[MemoryRange],
         bootshim_used: MemoryRange,
+        persisted_range: MemoryRange,
         parameter_range: MemoryRange,
         reclaim: Option<MemoryRange>,
     ) -> AddressSpaceManager {
@@ -1075,6 +1081,7 @@ mod test {
             &mut address_space,
             &ram,
             bootshim_used,
+            persisted_range,
             subtract_ranges([parameter_range], reclaim),
         )
         .init()
@@ -1103,6 +1110,7 @@ mod test {
         }
     }
 
+    const PAGE_SIZE: u64 = 0x1000;
     const ONE_MB: u64 = 0x10_0000;
 
     #[test]
@@ -1111,10 +1119,14 @@ mod test {
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
         let bootshim_used = MemoryRange::try_new(ONE_MB..3 * ONE_MB).unwrap();
+        let persisted_header_end = ONE_MB + PAGE_SIZE;
+        let persisted_end = ONE_MB + 4 * PAGE_SIZE;
+        let persisted_state = MemoryRange::try_new(ONE_MB..persisted_end).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..3 * ONE_MB).unwrap();
         let address_space = new_address_space_manager(
             &[MemoryRange::new(ONE_MB..4 * ONE_MB)],
             bootshim_used,
+            persisted_state,
             parameter_range,
             None,
         );
@@ -1125,7 +1137,9 @@ mod test {
             &boot_params,
             &ext,
             &[
-                (ONE_MB..2 * ONE_MB, E820_RAM),
+                (ONE_MB..(persisted_header_end), E820_RESERVED),
+                (persisted_header_end..persisted_end, E820_RESERVED),
+                (persisted_end..2 * ONE_MB, E820_RAM),
                 (2 * ONE_MB..3 * ONE_MB, E820_RESERVED),
                 (3 * ONE_MB..4 * ONE_MB, E820_RAM),
             ],
@@ -1135,11 +1149,15 @@ mod test {
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
         let bootshim_used = MemoryRange::try_new(ONE_MB..5 * ONE_MB).unwrap();
+        let persisted_header_end = ONE_MB + PAGE_SIZE;
+        let persisted_end = ONE_MB + 4 * PAGE_SIZE;
+        let persisted_state = MemoryRange::try_new(ONE_MB..persisted_end).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
         let reclaim = MemoryRange::try_new(3 * ONE_MB..4 * ONE_MB).unwrap();
         let address_space = new_address_space_manager(
             &[MemoryRange::new(ONE_MB..6 * ONE_MB)],
             bootshim_used,
+            persisted_state,
             parameter_range,
             Some(reclaim),
         );
@@ -1150,7 +1168,9 @@ mod test {
             &boot_params,
             &ext,
             &[
-                (ONE_MB..2 * ONE_MB, E820_RAM),
+                (ONE_MB..(persisted_header_end), E820_RESERVED),
+                (persisted_header_end..persisted_end, E820_RESERVED),
+                (persisted_end..2 * ONE_MB, E820_RAM),
                 (2 * ONE_MB..3 * ONE_MB, E820_RESERVED),
                 (3 * ONE_MB..4 * ONE_MB, E820_RAM),
                 (4 * ONE_MB..5 * ONE_MB, E820_RESERVED),
@@ -1162,6 +1182,9 @@ mod test {
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
         let bootshim_used = MemoryRange::try_new(ONE_MB..5 * ONE_MB).unwrap();
+        let persisted_header_end = ONE_MB + PAGE_SIZE;
+        let persisted_end = ONE_MB + 4 * PAGE_SIZE;
+        let persisted_state = MemoryRange::try_new(ONE_MB..persisted_end).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
         let reclaim = MemoryRange::try_new(3 * ONE_MB..4 * ONE_MB).unwrap();
         let address_space = new_address_space_manager(
@@ -1170,6 +1193,7 @@ mod test {
                 MemoryRange::new(4 * ONE_MB..10 * ONE_MB),
             ],
             bootshim_used,
+            persisted_state,
             parameter_range,
             Some(reclaim),
         );
@@ -1180,7 +1204,9 @@ mod test {
             &boot_params,
             &ext,
             &[
-                (ONE_MB..2 * ONE_MB, E820_RAM),
+                (ONE_MB..(persisted_header_end), E820_RESERVED),
+                (persisted_header_end..persisted_end, E820_RESERVED),
+                (persisted_end..2 * ONE_MB, E820_RAM),
                 (2 * ONE_MB..3 * ONE_MB, E820_RESERVED),
                 (3 * ONE_MB..4 * ONE_MB, E820_RAM),
                 (4 * ONE_MB..5 * ONE_MB, E820_RESERVED),
@@ -1192,6 +1218,9 @@ mod test {
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
         let bootshim_used = MemoryRange::try_new(ONE_MB..5 * ONE_MB).unwrap();
+        let persisted_header_end = ONE_MB + PAGE_SIZE;
+        let persisted_end = ONE_MB + 4 * PAGE_SIZE;
+        let persisted_state = MemoryRange::try_new(ONE_MB..persisted_end).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
         let reclaim = MemoryRange::try_new(3 * ONE_MB..4 * ONE_MB).unwrap();
         let address_space = new_address_space_manager(
@@ -1205,6 +1234,7 @@ mod test {
                 MemoryRange::new(7 * ONE_MB..8 * ONE_MB),
             ],
             bootshim_used,
+            persisted_state,
             parameter_range,
             Some(reclaim),
         );
@@ -1215,7 +1245,9 @@ mod test {
             &boot_params,
             &ext,
             &[
-                (ONE_MB..2 * ONE_MB, E820_RAM),
+                (ONE_MB..(persisted_header_end), E820_RESERVED),
+                (persisted_header_end..persisted_end, E820_RESERVED),
+                (persisted_end..2 * ONE_MB, E820_RAM),
                 (2 * ONE_MB..3 * ONE_MB, E820_RESERVED),
                 (3 * ONE_MB..4 * ONE_MB, E820_RAM),
                 (4 * ONE_MB..5 * ONE_MB, E820_RESERVED),
@@ -1244,8 +1276,9 @@ mod test {
             ranges.push(MemoryRange::new(start..end));
         }
 
-        let bootshim_used = MemoryRange::try_new(0..ONE_MB).unwrap();
-        let parameter_range = MemoryRange::try_new(0..ONE_MB).unwrap();
+        let bootshim_used = MemoryRange::try_new(0..ONE_MB * 2).unwrap();
+        let persisted_range = MemoryRange::try_new(0..ONE_MB).unwrap();
+        let parameter_range = MemoryRange::try_new(ONE_MB..2 * ONE_MB).unwrap();
 
         let mut address_space = {
             let ram = ranges
@@ -1262,6 +1295,7 @@ mod test {
                 &mut address_space,
                 &ram,
                 bootshim_used,
+                persisted_range,
                 core::iter::once(parameter_range),
             )
             .init()

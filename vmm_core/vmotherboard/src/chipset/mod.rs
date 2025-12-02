@@ -323,3 +323,44 @@ impl std::fmt::Display for PciConflict {
         }
     }
 }
+
+#[derive(Debug)]
+pub enum PcieConflictReason {
+    ExistingDev(Arc<str>),
+    MissingDownstreamPort,
+    MissingEnumerator,
+}
+
+#[derive(Debug)]
+pub struct PcieConflict {
+    pub conflict_dev: Arc<str>,
+    pub reason: PcieConflictReason,
+}
+
+impl std::fmt::Display for PcieConflict {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.reason {
+            PcieConflictReason::ExistingDev(existing_dev) => {
+                write!(
+                    fmt,
+                    "cannot attach {}, port already occupied by {}",
+                    self.conflict_dev, existing_dev
+                )
+            }
+            PcieConflictReason::MissingDownstreamPort => {
+                write!(
+                    fmt,
+                    "cannot attach {}, no valid pcie downstream port",
+                    self.conflict_dev
+                )
+            }
+            PcieConflictReason::MissingEnumerator => {
+                write!(
+                    fmt,
+                    "cannot attach {}, no valid pcie enumerator",
+                    self.conflict_dev
+                )
+            }
+        }
+    }
+}

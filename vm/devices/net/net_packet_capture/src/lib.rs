@@ -536,12 +536,10 @@ impl Queue for PacketCaptureQueue {
                     continue;
                 }
 
-                if !self.pcap.write_packet(
-                    &buf[..len],
-                    metadata.len as u32,
-                    snaplen as u32,
-                    &timestamp,
-                ) {
+                if !self
+                    .pcap
+                    .write_packet(&buf[..len], metadata.len, snaplen as u32, &timestamp)
+                {
                     break;
                 }
             }

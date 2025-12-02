@@ -221,26 +221,22 @@ pub struct Secret {
 pub enum RunnerOsLabel {
     #[serde(rename = "ubuntu-latest")]
     UbuntuLatest,
+    #[serde(rename = "ubuntu-24.04")]
+    Ubuntu2404,
     #[serde(rename = "ubuntu-22.04")]
     Ubuntu2204,
-    #[serde(rename = "ubuntu-20.04")]
-    Ubuntu2004,
     #[serde(rename = "windows-latest")]
     WindowsLatest,
+    #[serde(rename = "windows-2025")]
+    Windows2025,
     #[serde(rename = "windows-2022")]
     Windows2022,
-    #[serde(rename = "windows-2019")]
-    Windows2019,
-    #[serde(rename = "macos-latest")]
-    MacOsLatest,
-    #[serde(rename = "macos-14")]
-    MacOs14,
-    #[serde(rename = "macos-13")]
-    MacOs13,
-    #[serde(rename = "macos-12")]
-    MacOs12,
-    #[serde(rename = "macos-11")]
-    MacOs11,
+    #[serde(rename = "ubuntu-24.04-arm")]
+    Ubuntu2404Arm,
+    #[serde(rename = "ubuntu-22.04-arm")]
+    Ubuntu2204Arm,
+    #[serde(rename = "windows-11-arm")]
+    Windows11Arm,
     #[serde(untagged)]
     Custom(String),
 }
@@ -261,6 +257,8 @@ pub enum Runner {
 #[serde(rename_all = "kebab-case")]
 pub struct Job {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_minutes: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runs_on: Option<Runner>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]

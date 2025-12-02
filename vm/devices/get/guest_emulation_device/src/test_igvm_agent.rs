@@ -114,7 +114,7 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
                 VecDeque::from([
-                    IgvmAgentAction::NoResponse,
+                    IgvmAgentAction::RespondFailure,
                     IgvmAgentAction::RespondFailure,
                     IgvmAgentAction::RespondSuccess,
                 ]),
@@ -449,7 +449,7 @@ impl TestIgvmAgent {
             .map_err(WrappedKeyError::RsaEncryptionError)?;
 
         let aes_info = cps::AesInfo {
-            ciphertext: encrypted_des.to_vec(),
+            ciphertext: encrypted_des.clone(),
         };
 
         let key_reference = serde_json::json!({

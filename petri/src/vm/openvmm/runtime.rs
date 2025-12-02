@@ -27,7 +27,6 @@ use mesh::RecvError;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh_process::Mesh;
-use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
@@ -35,7 +34,6 @@ use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use unix_socket::UnixListener;
 use vmm_core_defs::HaltReason;
 use vtl2_settings_proto::Vtl2Settings;
 
@@ -146,6 +144,10 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         Self::restore_openhcl(self).await
     }
 
+    async fn update_command_line(&mut self, command_line: &str) -> anyhow::Result<()> {
+        Self::update_command_line(self, command_line).await
+    }
+
     fn inspector(&self) -> Option<OpenVmmInspector> {
         Some(OpenVmmInspector {
             worker: self.inner.worker.clone(),
@@ -240,6 +242,13 @@ impl PetriVmOpenVmm {
         /// Restores OpenHCL from a previously saved state.
         pub async fn restore_openhcl(
             &mut self
+        ) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Updates the command line parameters of the running VM.
+        pub async fn update_command_line(
+            &mut self,
+            command_line: &str
         ) -> anyhow::Result<()>
     );
     petri_vm_fn!(
@@ -409,6 +418,10 @@ impl PetriVmInner {
             .await
     }
 
+    async fn update_command_line(&mut self, command_line: &str) -> anyhow::Result<()> {
+        self.worker.update_command_line(command_line).await
+    }
+
     async fn restore_openhcl(&self) -> anyhow::Result<()> {
         let ged_send = self
             .resources
@@ -461,39 +474,29 @@ impl PetriVmInner {
     }
 
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
-        Self::wait_for_agent_core(
-            &self.resources.driver,
-            if set_high_vtl {
-                self.resources
-                    .vtl2_pipette_listener
-                    .as_mut()
-                    .context("VM is not configured with VTL 2")?
-            } else {
-                &mut self.resources.pipette_listener
-            },
-            &self.resources.output_dir,
-        )
-        .await
-    }
+        let listener = if set_high_vtl {
+            self.resources
+                .vtl2_pipette_listener
+                .as_mut()
+                .context("VM is not configured with VTL 2")?
+        } else {
+            &mut self.resources.pipette_listener
+        };
 
-    async fn wait_for_agent_core(
-        driver: &DefaultDriver,
-        listener: &mut PolledSocket<UnixListener>,
-        output_dir: &Path,
-    ) -> anyhow::Result<PipetteClient> {
-        // Wait for the pipette connection.
-        tracing::info!("listening for pipette connection");
+        tracing::info!(set_high_vtl, "listening for pipette connection");
         let (conn, _) = listener
             .accept()
             .await
             .context("failed to accept pipette connection")?;
-
-        tracing::info!("handshaking with pipette");
-        let client = PipetteClient::new(&driver, PolledSocket::new(driver, conn)?, output_dir)
-            .await
-            .context("failed to connect to pipette");
-
-        tracing::info!("completed pipette handshake");
+        tracing::info!(set_high_vtl, "handshaking with pipette");
+        let client = PipetteClient::new(
+            &self.resources.driver,
+            PolledSocket::new(&self.resources.driver, conn)?,
+            &self.resources.output_dir,
+        )
+        .await
+        .context("failed to connect to pipette");
+        tracing::info!(set_high_vtl, "completed pipette handshake");
         client
     }
 

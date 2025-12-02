@@ -74,7 +74,7 @@ impl IntoPipeline for CheckinGatesCli {
                             branches,
                             ..Default::default()
                         })
-                        .gh_set_name("[flowey] OpenVMM CI");
+                        .gh_set_name("OpenVMM CI");
                 }
                 PipelineConfig::Pr => {
                     pipeline
@@ -82,7 +82,7 @@ impl IntoPipeline for CheckinGatesCli {
                             branches,
                             ..GhPrTriggers::new_draftable()
                         })
-                        .gh_set_name("[flowey] OpenVMM PR");
+                        .gh_set_name("OpenVMM PR");
                 }
                 PipelineConfig::PrRelease => {
                     // This workflow is triggered when a specific label is present on a PR.
@@ -91,7 +91,7 @@ impl IntoPipeline for CheckinGatesCli {
                     triggers.types.push("labeled".into());
                     pipeline
                         .gh_set_pr_triggers(triggers)
-                        .gh_set_name("[flowey] OpenVMM Release PR");
+                        .gh_set_name("[Optional] OpenVMM Release PR");
                 }
             }
         }
@@ -195,9 +195,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "xtask fmt (windows)",
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
-                    FlowPlatform::Windows,
-                ))
+                .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_windows())
                 .dep_on(|ctx| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
                     target: CommonTriple::X86_64_WINDOWS_MSVC,
                     done: ctx.new_done_handle(),
@@ -210,9 +208,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "xtask fmt (linux)",
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
+                .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
                 .dep_on(|ctx| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
                     target: CommonTriple::X86_64_LINUX_GNU,
                     done: ctx.new_done_handle(),
@@ -256,6 +252,9 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_vmgstool, use_vmgstool) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgstool"));
 
+            let (pub_tpm_guest_tests, use_tpm_guest_tests_windows) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-tpm_guest_tests"));
+
             // filter off interesting artifacts required by the VMM tests job
             match arch {
                 CommonArch::X86_64 => {
@@ -267,6 +266,8 @@ impl IntoPipeline for CheckinGatesCli {
                     vmm_tests_artifacts_windows_x86.use_tmk_vmm = Some(use_tmk_vmm.clone());
                     vmm_tests_artifacts_windows_x86.use_prep_steps = Some(use_prep_steps.clone());
                     vmm_tests_artifacts_windows_x86.use_vmgstool = Some(use_vmgstool.clone());
+                    vmm_tests_artifacts_windows_x86.use_tpm_guest_tests_windows =
+                        Some(use_tpm_guest_tests_windows.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_windows_aarch64.use_openvmm = Some(use_openvmm.clone());
@@ -294,9 +295,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build artifacts (not for VMM tests) [{arch_tag}-windows]"),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                    FlowPlatform::Windows,
-                ))
+                .gh_set_pool(crate::pipelines_shared::gh_pools::windows_amd_self_hosted_largedisk())
                 .dep_on(|ctx| flowey_lib_hvlite::build_hypestv::Request {
                     target: CommonTriple::Common {
                         arch,
@@ -341,9 +340,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build artifacts (for VMM tests) [{arch_tag}-windows]"),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
-                    FlowPlatform::Windows,
-                ))
+                .gh_set_pool(crate::pipelines_shared::gh_pools::windows_amd_self_hosted_largedisk())
                 .dep_on(|ctx| {
                     flowey_lib_hvlite::build_openvmm::Request {
                         params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
@@ -398,6 +395,14 @@ impl IntoPipeline for CheckinGatesCli {
                     with_crypto: true,
                     with_test_helpers: true,
                     vmgstool: ctx.publish_typed_artifact(pub_vmgstool),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_tpm_guest_tests::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    tpm_guest_tests: ctx.publish_typed_artifact(pub_tpm_guest_tests),
                 });
 
             // Hang building the windows VMM tests off this big windows job.
@@ -448,6 +453,8 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_ohcldiag_dev, _) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-ohcldiag-dev"));
             let (pub_tmks, use_tmks) = pipeline.new_typed_artifact(format!("{arch_tag}-tmks"));
+            let (pub_tpm_guest_tests, use_tpm_guest_tests) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-tpm_guest_tests"));
 
             // NOTE: the choice to build it as part of this linux job was pretty
             // arbitrary. It could just as well hang off the windows job.
@@ -468,6 +475,8 @@ impl IntoPipeline for CheckinGatesCli {
                         Some(use_guest_test_uefi.clone());
                     vmm_tests_artifacts_windows_x86.use_tmks = Some(use_tmks.clone());
                     vmm_tests_artifacts_linux_x86.use_tmks = Some(use_tmks.clone());
+                    vmm_tests_artifacts_windows_x86.use_tpm_guest_tests_linux =
+                        Some(use_tpm_guest_tests.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_windows_aarch64.use_guest_test_uefi =
@@ -482,9 +491,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     format!("build artifacts [{arch_tag}-linux]"),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
+                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk())
                 .dep_on(|ctx| {
                     flowey_lib_hvlite::build_openvmm::Request {
                         params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
@@ -545,6 +552,14 @@ impl IntoPipeline for CheckinGatesCli {
                     arch,
                     profile: CommonProfile::from_release(release),
                     tmks: ctx.publish_typed_artifact(pub_tmks),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_tpm_guest_tests::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::LinuxGnu,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    tpm_guest_tests: ctx.publish_typed_artifact(pub_tpm_guest_tests),
                 });
 
             // Hang building the linux VMM tests off this big linux job.
@@ -639,15 +654,14 @@ impl IntoPipeline for CheckinGatesCli {
                 }
             };
 
+            let build_openhcl_job_tag = |arch_tag| format!("build openhcl [{arch_tag}-linux]");
             let job = pipeline
                 .new_job(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                     FlowArch::X86_64,
-                    format!("build openhcl [{arch_tag}-linux]"),
+                    build_openhcl_job_tag(arch_tag),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
+                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk())
                 .dep_on(|ctx| {
                     let publish_baseline_artifact = pub_openhcl_baseline
                         .map(|baseline_artifact| ctx.publish_artifact(baseline_artifact));
@@ -691,16 +705,14 @@ impl IntoPipeline for CheckinGatesCli {
 
             all_jobs.push(job.finish());
 
-            if arch == CommonArch::X86_64 && matches!(config, PipelineConfig::Pr) {
+            if matches!(config, PipelineConfig::Pr) {
                 let job = pipeline
                     .new_job(
                         FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                         FlowArch::X86_64,
                         format!("verify openhcl binary size [{}]", arch_tag),
                     )
-                    .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                    ))
+                    .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
                     .dep_on(
                         |ctx| flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::Request {
                             target: CommonTriple::Common {
@@ -709,6 +721,7 @@ impl IntoPipeline for CheckinGatesCli {
                             },
                             done: ctx.new_done_handle(),
                             pipeline_name: "openvmm-ci.yaml".into(),
+                            job_name: build_openhcl_job_tag(arch_tag),
                         },
                     )
                     .finish();
@@ -738,13 +751,14 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::windows_amd_self_hosted(),
+                gh_pool: if release {
+                    crate::pipelines_shared::gh_pools::windows_amd_self_hosted_largedisk()
+                } else {
+                    crate::pipelines_shared::gh_pools::gh_hosted_x64_windows()
+                },
                 clippy_targets: Some((
-                    "windows",
-                    &[
-                        (target_lexicon::triple!("x86_64-pc-windows-msvc"), false),
-                        (target_lexicon::triple!("aarch64-pc-windows-msvc"), false),
-                    ],
+                    "x64-windows",
+                    &[(target_lexicon::triple!("x86_64-pc-windows-msvc"), false)],
                 )),
                 unit_test_target: Some((
                     "x64-windows",
@@ -754,12 +768,13 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted(),
+                // This job fails on github runners for an unknown reason, so
+                // use self-hosted runners for now.
+                gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk(),
                 clippy_targets: Some((
-                    "linux, macos",
+                    "x64-linux, macos",
                     &[
                         (target_lexicon::triple!("x86_64-unknown-linux-gnu"), false),
-                        (target_lexicon::triple!("aarch64-unknown-linux-gnu"), false),
                         (target_lexicon::triple!("aarch64-apple-darwin"), false),
                     ],
                 )),
@@ -771,24 +786,64 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted(),
+                // This job fails on github runners due to disk space exhaustion, so
+                // use self-hosted runners for now.
+                gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk(),
                 clippy_targets: Some((
-                    "linux-musl, misc nostd",
-                    &[
-                        (openhcl_musl_target(CommonArch::X86_64), true),
-                        (openhcl_musl_target(CommonArch::Aarch64), true),
-                    ],
+                    "x64-linux-musl, misc nostd",
+                    &[(openhcl_musl_target(CommonArch::X86_64), true)],
                 )),
                 unit_test_target: Some(("x64-linux-musl", openhcl_musl_target(CommonArch::X86_64))),
             },
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::Aarch64,
-                gh_pool: crate::pipelines_shared::gh_pools::windows_arm_self_hosted_baremetal(),
-                clippy_targets: None,
+                gh_pool: if release {
+                    crate::pipelines_shared::gh_pools::windows_arm_self_hosted()
+                } else {
+                    crate::pipelines_shared::gh_pools::gh_hosted_arm_windows()
+                },
+                clippy_targets: Some((
+                    "aarch64-windows",
+                    &[(target_lexicon::triple!("aarch64-pc-windows-msvc"), false)],
+                )),
                 unit_test_target: Some((
                     "aarch64-windows",
                     target_lexicon::triple!("aarch64-pc-windows-msvc"),
+                )),
+            },
+            ClippyUnitTestJobParams {
+                platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                arch: FlowArch::Aarch64,
+                gh_pool: if release {
+                    crate::pipelines_shared::gh_pools::linux_arm_self_hosted()
+                } else {
+                    crate::pipelines_shared::gh_pools::gh_hosted_arm_linux()
+                },
+                clippy_targets: Some((
+                    "aarch64-linux",
+                    &[(target_lexicon::triple!("aarch64-unknown-linux-gnu"), false)],
+                )),
+                unit_test_target: Some((
+                    "aarch64-linux",
+                    target_lexicon::triple!("aarch64-unknown-linux-gnu"),
+                )),
+            },
+            ClippyUnitTestJobParams {
+                platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                arch: FlowArch::Aarch64,
+                gh_pool: if release {
+                    crate::pipelines_shared::gh_pools::linux_arm_self_hosted()
+                } else {
+                    crate::pipelines_shared::gh_pools::gh_hosted_arm_linux()
+                },
+                clippy_targets: Some((
+                    "aarch64-linux-musl, misc nostd",
+                    &[(openhcl_musl_target(CommonArch::Aarch64), true)],
+                )),
+                unit_test_target: Some((
+                    "aarch64-linux-musl",
+                    openhcl_musl_target(CommonArch::Aarch64),
                 )),
             },
         ] {
@@ -902,10 +957,19 @@ impl IntoPipeline for CheckinGatesCli {
             needs_prep_run: bool,
         }
 
-        // standard VM-based CI machines should be able to run all tests except
+        // Standard VM-based CI machines should be able to run all tests except
         // those that require special hardware features (tdx/snp) or need to be
-        // run on a baremetal host (hyper-v vbs doesn't seem to work nested)
-        let standard_filter = "all()".to_string();
+        // run on a baremetal host (hyper-v vbs doesn't seem to work nested).
+        //
+        // Run "very_heavy" tests that require lots of VPs on the self-hosted
+        // CVM runners that have more cores.
+        //
+        // Even though OpenVMM + VBS + Windows tests can run on standard CI
+        // machines, we exclude them here to avoid needing to run prep_steps
+        // on non-self-hosted runners. This saves several minutes of CI time
+        // that would be used for very few tests. We need to run prep_steps
+        // on CVM runners anyways, so we might as well run those tests there.
+        let standard_filter = "all() & !test(very_heavy) & !test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)".to_string();
         let standard_x64_test_artifacts = vec![
             KnownTestArtifacts::FreeBsd13_2X64Vhd,
             KnownTestArtifacts::FreeBsd13_2X64Iso,
@@ -917,7 +981,11 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::VmgsWithBootEntry,
         ];
 
-        let cvm_filter = |arch| format!("test({arch}) + (test(vbs) & test(hyperv))");
+        let cvm_filter = |arch| {
+            format!(
+                "test({arch}) + (test(vbs) & test(hyperv)) + test(very_heavy) + test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)"
+            )
+        };
         let cvm_x64_test_artifacts = vec![
             KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
@@ -982,7 +1050,7 @@ impl IntoPipeline for CheckinGatesCli {
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted(),
+                gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk(),
                 label: "x64-linux",
                 target: CommonTriple::X86_64_LINUX_GNU,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
@@ -1050,12 +1118,7 @@ impl IntoPipeline for CheckinGatesCli {
                 })
             }
 
-            // ARM VMM tests currently are hitting a UEFI bug that causes them to randomly fail.
-            // For now to unblock other devs don't require them to pass in PRs.
-            // TODO: Remove this if
-            if arch != FlowArch::Aarch64 {
-                all_jobs.push(vmm_tests_run_job.finish());
-            }
+            all_jobs.push(vmm_tests_run_job.finish());
         }
 
         // test the flowey local backend by running cargo xflowey build-igvm on x64
@@ -1066,9 +1129,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "test flowey local backend",
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
+                .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
                 .dep_on(
                     |ctx| flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm::Request {
                         base_recipe: OpenhclIgvmRecipe::X64,
@@ -1095,9 +1156,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "openvmm checkin gates",
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
+                .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
                 // always run this job, regardless whether or not any previous jobs failed
                 .gh_dangerous_override_if("always() && github.event.pull_request.draft == false")
                 .gh_dangerous_global_env_var("ANY_JOBS_FAILED", "${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}")
@@ -1130,6 +1189,7 @@ mod vmm_tests_artifact_builders {
     use flowey_lib_hvlite::build_prep_steps::PrepStepsOutput;
     use flowey_lib_hvlite::build_tmk_vmm::TmkVmmOutput;
     use flowey_lib_hvlite::build_tmks::TmksOutput;
+    use flowey_lib_hvlite::build_tpm_guest_tests::TpmGuestTestsOutput;
     use flowey_lib_hvlite::build_vmgstool::VmgstoolOutput;
 
     pub type ResolveVmmTestsDepArtifacts =
@@ -1178,6 +1238,8 @@ mod vmm_tests_artifact_builders {
                 tmk_vmm_linux_musl: None,
                 prep_steps: None,
                 vmgstool: None,
+                tpm_guest_tests_windows: None,
+                tpm_guest_tests_linux: None,
             }))
         }
     }
@@ -1190,6 +1252,8 @@ mod vmm_tests_artifact_builders {
         pub use_tmk_vmm: Option<UseTypedArtifact<TmkVmmOutput>>,
         pub use_prep_steps: Option<UseTypedArtifact<PrepStepsOutput>>,
         pub use_vmgstool: Option<UseTypedArtifact<VmgstoolOutput>>,
+        pub use_tpm_guest_tests_windows: Option<UseTypedArtifact<TpmGuestTestsOutput>>,
+        pub use_tpm_guest_tests_linux: Option<UseTypedArtifact<TpmGuestTestsOutput>>,
         // linux build machine
         pub use_openhcl_igvm_files: Option<UseArtifact>,
         pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
@@ -1212,6 +1276,8 @@ mod vmm_tests_artifact_builders {
                 use_tmks,
                 use_prep_steps,
                 use_vmgstool,
+                use_tpm_guest_tests_windows,
+                use_tpm_guest_tests_linux,
             } = self;
 
             let use_openvmm = use_openvmm.ok_or("openvmm")?;
@@ -1224,6 +1290,10 @@ mod vmm_tests_artifact_builders {
             let use_tmks = use_tmks.ok_or("tmks")?;
             let use_prep_steps = use_prep_steps.ok_or("prep_steps")?;
             let use_vmgstool = use_vmgstool.ok_or("vmgstool")?;
+            let use_tpm_guest_tests_windows =
+                use_tpm_guest_tests_windows.ok_or("tpm_guest_tests_windows")?;
+            let use_tpm_guest_tests_linux =
+                use_tpm_guest_tests_linux.ok_or("tpm_guest_tests_linux")?;
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
                 openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
@@ -1236,6 +1306,8 @@ mod vmm_tests_artifact_builders {
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),
                 prep_steps: Some(ctx.use_typed_artifact(&use_prep_steps)),
                 vmgstool: Some(ctx.use_typed_artifact(&use_vmgstool)),
+                tpm_guest_tests_windows: Some(ctx.use_typed_artifact(&use_tpm_guest_tests_windows)),
+                tpm_guest_tests_linux: Some(ctx.use_typed_artifact(&use_tpm_guest_tests_linux)),
             }))
         }
     }
@@ -1291,6 +1363,8 @@ mod vmm_tests_artifact_builders {
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),
                 prep_steps: None,
                 vmgstool: Some(ctx.use_typed_artifact(&use_vmgstool)),
+                tpm_guest_tests_windows: None,
+                tpm_guest_tests_linux: None,
             }))
         }
     }

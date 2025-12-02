@@ -3,6 +3,8 @@
 
 //! Interactive CLI for Hyper-V VMs.
 
+#![forbid(unsafe_code)]
+
 mod windows;
 
 #[cfg(windows)]

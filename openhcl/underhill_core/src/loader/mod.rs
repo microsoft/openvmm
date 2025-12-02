@@ -95,8 +95,6 @@ pub struct Config {
     /// A string to append to the current VTL0 command line. Currently only used
     /// when booting linux directly.
     pub cmdline_append: CString,
-    /// Disable the UEFI frontpage or not, if loading UEFI.
-    pub disable_uefi_frontpage: bool,
 }
 
 /// Load VTL0 based on measured config. Returns any VP state that should be set.
@@ -133,7 +131,6 @@ pub fn load(
                 platform_config,
                 caps,
                 isolated,
-                config.disable_uefi_frontpage,
             )?;
             uefi_info.vp_context.clone()
         }
@@ -415,7 +412,6 @@ pub fn write_uefi_config(
     platform_config: &DevicePlatformSettings,
     caps: &virt::PartitionCapabilities,
     isolated: bool,
-    disable_frontpage: bool,
 ) -> Result<(), Error> {
     use guest_emulation_transport::api::platform_settings::UefiConsoleMode;
 
@@ -626,7 +622,7 @@ pub fn write_uefi_config(
 
         // Frontpage is disabled if either the host requests it, or the openhcl
         // cmdline specifies it.
-        flags.set_disable_frontpage(disable_frontpage || platform_config.general.disable_frontpage);
+        flags.set_disable_frontpage(platform_config.general.disable_frontpage);
 
         flags.set_console(match platform_config.general.console_mode {
             UefiConsoleMode::Default => config::ConsolePort::Default,

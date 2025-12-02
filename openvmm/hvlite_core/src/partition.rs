@@ -90,6 +90,9 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
         minimum_vtl: Vtl,
     ) -> Option<Arc<dyn DoorbellRegistration>>;
 
+    /// Gets the [`MsiInterruptTarget`] interface for a particular VTL.
+    fn into_msi_target(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn MsiInterruptTarget>>;
+
     /// Returns whether virtual devices are supported.
     fn supports_virtual_devices(&self) -> bool;
 
@@ -167,7 +170,7 @@ where
 {
     #[cfg(guest_arch = "x86_64")]
     fn into_lint_target(self: Arc<Self>, vtl: Vtl) -> Arc<dyn LineSetTarget> {
-        Arc::new(virt::irqcon::ApicLintLineTarget::new(self, vtl))
+        Arc::new(vmm_core::emuplat::apic::ApicLintLineTarget::new(self, vtl))
     }
 
     fn caps(&self) -> &PartitionCapabilities {
@@ -202,6 +205,10 @@ where
         minimum_vtl: Vtl,
     ) -> Option<Arc<dyn DoorbellRegistration>> {
         self.doorbell_registration(minimum_vtl)
+    }
+
+    fn into_msi_target(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn MsiInterruptTarget>> {
+        self.msi_interrupt_target(minimum_vtl)
     }
 
     fn supports_virtual_devices(&self) -> bool {

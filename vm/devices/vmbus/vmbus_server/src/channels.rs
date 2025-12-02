@@ -6,7 +6,6 @@ pub mod saved_state;
 mod tests;
 
 use crate::Guid;
-use crate::SINT;
 use crate::SynicMessage;
 use crate::monitor::AssignedMonitors;
 use crate::protocol::Version;
@@ -37,6 +36,7 @@ use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
 use vmbus_core::MaxVersionInfo;
 use vmbus_core::OutgoingMessage;
+use vmbus_core::VMBUS_SINT;
 use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
@@ -867,7 +867,7 @@ impl Channel {
 
         let channel_id = entry.id();
         entry.insert(offer_id);
-        let connection_id = ConnectionId::new(channel_id.0, assigned_channels.vtl, SINT);
+        let connection_id = ConnectionId::new(channel_id.0, assigned_channels.vtl, VMBUS_SINT);
 
         // Allocate a monitor ID if the channel uses MNF.
         // N.B. If the synic doesn't support MNF or MNF is disabled by the server, use_mnf should
@@ -1217,7 +1217,7 @@ impl Gpadl {
             buf.resize(buf.len() + data.len() / 8, 0);
             buf[start..].as_mut_bytes().copy_from_slice(data);
             Ok(if buf.len() == buf.capacity() {
-                gparange::MultiPagedRangeBuf::<Vec<u64>>::validate(self.count as usize, buf)
+                gparange::validate_gpa_ranges(self.count as usize, buf)
                     .map_err(ChannelError::InvalidGpaRange)?;
                 self.state = GpadlState::Offered;
                 true
@@ -2051,6 +2051,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         offer_id,
                         channel,
                         &mut self.inner.gpadls,
+                        &mut self.inner.incomplete_gpadls,
                         &mut self.inner.assigned_channels,
                         &mut self.inner.assigned_monitors,
                         None,
@@ -2111,7 +2112,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         {
             target_info.sint()
         } else {
-            SINT
+            VMBUS_SINT
         };
 
         let target_vtl = if message.multiclient
@@ -2205,7 +2206,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             return;
         }
 
-        if request.target_sint != SINT {
+        if request.target_sint != VMBUS_SINT {
             tracelimit::warn_ratelimited!(
                 target_vtl = request.target_vtl,
                 target_sint = request.target_sint,
@@ -2535,6 +2536,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     offer_id,
                     channel,
                     gpadls,
+                    &mut self.inner.incomplete_gpadls,
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
                     None,
@@ -2755,14 +2757,26 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         };
 
         // If we're not done, track the offer ID for GPADL body requests
-        if !done
-            && self
-                .inner
-                .incomplete_gpadls
-                .insert(input.gpadl_id, offer_id)
-                .is_some()
-        {
-            unreachable!("gpadl ID validated above");
+        // N.B. The above only checks if the combination of (gpadl_id, offer_id) is unique, which
+        //      allows for a guest to reuse a gpadl ID in use by a reserved channel (which it may
+        //      not know about). But for in-progress GPADLs we need to ensure the gpadl ID itself
+        //      is unique, since the body message doesn't include a channel ID.
+        if !done {
+            match self.inner.incomplete_gpadls.entry(input.gpadl_id) {
+                Entry::Vacant(entry) => {
+                    entry.insert(offer_id);
+                }
+                Entry::Occupied(_) => {
+                    self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
+                    tracelimit::error_ratelimited!(
+                        channel_id = ?input.channel_id,
+                        key = %channel.offer.key(),
+                        gpadl_id = ?input.gpadl_id,
+                        "duplicate in-progress gpadl ID",
+                    );
+                    return Err(ChannelError::DuplicateGpadlId);
+                }
+            }
         }
 
         if done
@@ -3176,6 +3190,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         offer_id: OfferId,
         channel: &mut Channel,
         gpadls: &mut GpadlMap,
+        incomplete_gpadls: &mut IncompleteGpadlMap,
         assigned_channels: &mut AssignedChannels,
         assigned_monitors: &mut AssignedMonitors,
         info: Option<&ConnectionInfo>,
@@ -3187,7 +3202,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 return true;
             }
             match gpadl.state {
-                GpadlState::InProgress => false,
+                GpadlState::InProgress => {
+                    incomplete_gpadls.remove(&gpadl_id);
+                    false
+                }
                 GpadlState::Offered => {
                     gpadl.state = GpadlState::OfferedTearingDown;
                     true
@@ -3280,6 +3298,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     offer_id,
                     channel,
                     &mut self.inner.gpadls,
+                    &mut self.inner.incomplete_gpadls,
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
                     self.inner.state.get_connected_info(),

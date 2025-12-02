@@ -16,6 +16,7 @@ use powershell_builder::PowerShellBuilder;
 use serde::Deserialize;
 use serde::Serialize;
 use std::ffi::OsStr;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -281,7 +282,7 @@ pub struct HyperVAddVMHardDiskDriveArgs<'a> {
     /// hard disk drive is to be added. If not specified, the first available
     /// location in the controller specified with the ControllerNumber parameter
     /// is used.
-    pub controller_location: Option<u32>,
+    pub controller_location: Option<u8>,
     /// Specifies the number of the controller to which the hard disk drive is
     /// to be added. If not specified, this parameter assumes the value of the
     /// first available controller at the location specified in the
@@ -372,24 +373,39 @@ pub async fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::
 
 /// Runs Add-VMScsiController with the given arguments.
 ///
-/// Returns the controller number.
-pub async fn run_add_vm_scsi_controller(vmid: &Guid) -> anyhow::Result<u32> {
+/// Returns the controller number and controller instance guid.
+pub async fn run_add_vm_scsi_controller(ps_mod: &Path, vmid: &Guid) -> anyhow::Result<(u32, Guid)> {
     let output = run_host_cmd(
         PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
             .pipeline()
             .cmdlet("Add-VMScsiController")
             .flag("Passthru")
             .pipeline()
-            .cmdlet("Select-Object")
-            .arg("ExpandProperty", "ControllerNumber")
+            .cmdlet("Get-VmScsiControllerProperties")
             .finish()
             .build(),
     )
     .await
     .context("add_vm_scsi_controller")?;
-    Ok(output.trim().parse::<u32>()?)
+
+    let mut out = output.trim().split(',');
+    let controller_number = out
+        .next()
+        .context("no output")?
+        .parse::<u32>()
+        .context("invalid controller number")?;
+    let vsid = out
+        .next()
+        .context("no vsid")?
+        .parse::<Guid>()
+        .context("vsid not a guid")?;
+
+    Ok((controller_number, vsid))
 }
 
 /// Sets the target VTL for a SCSI controller.
@@ -722,14 +738,14 @@ const HYPERV_VMMS_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Admin";
 
 /// Get Hyper-V event logs for a VM
 pub async fn hyperv_event_logs(
-    vmid: &Guid,
+    vmid: Option<&Guid>,
     start_time: &Timestamp,
 ) -> anyhow::Result<Vec<WinEvent>> {
-    let vmid = vmid.to_string();
+    let vmid = vmid.map(|id| id.to_string());
     run_get_winevent(
         &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
         Some(start_time),
-        Some(&vmid),
+        vmid.as_deref(),
         &[],
     )
     .await
@@ -801,8 +817,10 @@ pub const MSVM_TRIPLE_FAULT_INVALID_VP_REGISTER_ERROR: u32 = 18550;
 pub const MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR: u32 = 18560;
 /// The vm was hibernated successfully.
 pub const MSVM_GUEST_HIBERNATE_SUCCESS: u32 = 18608;
+/// The vm has quit unexpectedly (the worker process terminated).
+pub const MSVM_VMMS_VM_TERMINATE_ERROR: u32 = 14070;
 
-const HALT_EVENT_IDS: [u32; 12] = [
+const HALT_EVENT_IDS: [u32; 13] = [
     MSVM_HOST_STOP_SUCCESS,
     MSVM_HOST_SHUTDOWN_SUCCESS,
     MSVM_GUEST_SHUTDOWN_SUCCESS,
@@ -815,6 +833,7 @@ const HALT_EVENT_IDS: [u32; 12] = [
     MSVM_TRIPLE_FAULT_INVALID_VP_REGISTER_ERROR,
     MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR,
     MSVM_GUEST_HIBERNATE_SUCCESS,
+    MSVM_VMMS_VM_TERMINATE_ERROR,
 ];
 
 /// Get Hyper-V halt event logs for a VM
@@ -824,7 +843,7 @@ pub async fn hyperv_halt_events(
 ) -> anyhow::Result<Vec<WinEvent>> {
     let vmid = vmid.to_string();
     run_get_winevent(
-        &[HYPERV_WORKER_TABLE],
+        &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
         Some(start_time),
         Some(&vmid),
         &HALT_EVENT_IDS,
@@ -1091,4 +1110,90 @@ pub async fn run_get_guest_state_file(vmid: &Guid, ps_mod: &Path) -> anyhow::Res
     .context("get_guest_state_file")?;
 
     Ok(PathBuf::from(output))
+}
+
+/// Sets the VTL2 settings (in the `Base` namespace) for a VM.
+///
+/// This should include the fixed VTL2 settings, as well as any storage
+/// settings.
+///
+/// TODO FUTURE: Detect if the settings should be in `json` or `protobuf` format
+/// based on what is already there (or let the caller specify explicitly so that
+/// we can test the handling of both deserializers).
+pub async fn run_set_base_vtl2_settings(
+    vmid: &Guid,
+    ps_mod: &Path,
+    vtl2_settings: &vtl2_settings_proto::Vtl2Settings,
+) -> anyhow::Result<()> {
+    // Pass the settings via a file to avoid challenges escaping the string across
+    // the command line.
+    let mut tempfile = tempfile::NamedTempFile::new().context("creating tempfile")?;
+    tempfile
+        .write_all(serde_json::to_string(vtl2_settings)?.as_bytes())
+        .context("writing settings to tempfile")?;
+
+    tracing::trace!(?tempfile, ?vtl2_settings, ?vmid, "set base vtl2 settings");
+
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Set-Vtl2Settings")
+            .arg("VmId", vmid)
+            .arg("SettingsFile", tempfile.path())
+            .arg("Namespace", "Base")
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("set_base_vtl2_settings")
+}
+
+/// Guest state isolation modes for Hyper-V VMs.
+#[derive(Debug)]
+pub enum HyperVGuestStateIsolationMode {
+    /// Default isolation mode.
+    Default = 0,
+    /// No persistent secrets isolation mode.
+    NoPersistentSecrets = 1,
+    /// No management VTL isolation mode.
+    NoManagementVtl = 2,
+}
+
+impl ps::AsVal for HyperVGuestStateIsolationMode {
+    fn as_val(&self) -> impl '_ + AsRef<OsStr> {
+        match self {
+            HyperVGuestStateIsolationMode::Default => "0",
+            HyperVGuestStateIsolationMode::NoPersistentSecrets => "1",
+            HyperVGuestStateIsolationMode::NoManagementVtl => "2",
+        }
+    }
+}
+
+/// Sets the guest state isolation mode for a VM.
+pub async fn run_set_guest_state_isolation_mode(
+    vmid: &Guid,
+    ps_mod: &Path,
+    mode: HyperVGuestStateIsolationMode,
+) -> anyhow::Result<()> {
+    tracing::trace!(?mode, ?vmid, "set guest state isolation mode");
+
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-GuestStateIsolationMode")
+            .arg("Mode", mode)
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("set_guest_state_isolation_mode")
 }

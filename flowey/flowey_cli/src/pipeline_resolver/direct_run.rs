@@ -93,6 +93,7 @@ fn direct_run_do_work(
             platform,
             arch,
             cond_param_idx,
+            timeout_minutes: _,
             ado_pool: _,
             ado_variables: _,
             gh_override_if: _,
@@ -228,6 +229,11 @@ fn direct_run_do_work(
             pipeline_param_idx,
         } in parameters_used
         {
+            log::trace!(
+                "resolving parameter idx {}, flowey_var {:?}",
+                pipeline_param_idx,
+                flowey_var
+            );
             let (desc, value) = match &parameters[*pipeline_param_idx] {
                 Parameter::Bool {
                     name: _,
@@ -308,35 +314,33 @@ fn direct_run_do_work(
         }
         fs_err::create_dir_all(out_dir.join(".work"))?;
 
-        let mut runtime_services = flowey_core::node::steps::rust::new_rust_runtime_services(
-            &mut in_mem_var_db,
-            FlowBackend::Local,
-            platform,
-            flow_arch,
-        );
-
         if let Some(cond_param_idx) = cond_param_idx {
             let Parameter::Bool {
-                name: _,
+                name,
                 description: _,
                 kind: _,
-                default,
+                default: _,
             } = &parameters[cond_param_idx]
             else {
                 panic!("cond param is guaranteed to be bool by type system")
             };
 
-            let Some(should_run) = default else {
-                anyhow::bail!(
-                    "when running locally, job condition parameter must include a default value"
-                )
-            };
+            // Vars should have had their default already applied, so this should never fail.
+            let (data, _secret) = in_mem_var_db.get_var(name);
+            let should_run: bool = serde_json::from_slice(&data).unwrap();
 
             if !should_run {
                 log::warn!("job condition was false - skipping job...");
                 continue;
             }
         }
+
+        let mut runtime_services = flowey_core::node::steps::rust::new_rust_runtime_services(
+            &mut in_mem_var_db,
+            FlowBackend::Local,
+            platform,
+            flow_arch,
+        );
 
         for ResolvedRunnableStep {
             node_handle,

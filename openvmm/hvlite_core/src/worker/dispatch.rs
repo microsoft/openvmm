@@ -13,6 +13,7 @@ use chipset_device_resources::IRQ_LINE_SET;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
+use firmware_uefi::LogLevel;
 use firmware_uefi::UefiCommandSet;
 use floppy_resources::FloppyDiskConfig;
 use futures::FutureExt;
@@ -28,12 +29,15 @@ use hvlite_defs::config::Aarch64TopologyConfig;
 use hvlite_defs::config::ArchTopologyConfig;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
+use hvlite_defs::config::EfiDiagnosticsLogLevelType;
 use hvlite_defs::config::GicConfig;
 use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
+use hvlite_defs::config::PcieDeviceConfig;
 use hvlite_defs::config::PcieRootComplexConfig;
+use hvlite_defs::config::PcieSwitchConfig;
 use hvlite_defs::config::PmuGsivConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialPipes;
@@ -77,6 +81,7 @@ use pci_core::PciInterruptPin;
 use pci_core::msi::MsiInterruptSet;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
+use pcie::switch::GenericPcieSwitch;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::SimpleScsiDisk;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
@@ -170,6 +175,8 @@ impl Manifest {
             floppy_disks: config.floppy_disks,
             ide_disks: config.ide_disks,
             pcie_root_complexes: config.pcie_root_complexes,
+            pcie_devices: config.pcie_devices,
+            pcie_switches: config.pcie_switches,
             vpci_devices: config.vpci_devices,
             hypervisor: config.hypervisor,
             memory: config.memory,
@@ -198,6 +205,11 @@ impl Manifest {
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
+            efi_diagnostics_log_level: match config.efi_diagnostics_log_level {
+                EfiDiagnosticsLogLevelType::Default => LogLevel::make_default(),
+                EfiDiagnosticsLogLevelType::Info => LogLevel::make_info(),
+                EfiDiagnosticsLogLevelType::Full => LogLevel::make_full(),
+            },
         }
     }
 }
@@ -212,6 +224,8 @@ pub struct Manifest {
     floppy_disks: Vec<FloppyDiskConfig>,
     ide_disks: Vec<IdeDeviceConfig>,
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
+    pcie_devices: Vec<PcieDeviceConfig>,
+    pcie_switches: Vec<PcieSwitchConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
     memory: MemoryConfig,
     processor_topology: ProcessorTopologyConfig,
@@ -240,6 +254,7 @@ pub struct Manifest {
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
+    efi_diagnostics_log_level: LogLevel,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -1063,7 +1078,7 @@ impl InitializedVm {
                 .context("failed to open vmgs file")?,
             ),
             Some(VmgsResource::Reprovision(disk)) => Some(
-                vmgs::Vmgs::format_new(
+                vmgs::Vmgs::request_format(
                     open_simple_disk(&resolver, disk.disk, false, &driver_source).await?,
                     None,
                 )
@@ -1139,6 +1154,7 @@ impl InitializedVm {
                         } else {
                             UefiCommandSet::Aarch64
                         },
+                        diagnostics_log_level: cfg.efi_diagnostics_log_level,
                     },
                     logger,
                     nvram_storage: {
@@ -1770,6 +1786,7 @@ impl InitializedVm {
                                 .into_iter()
                                 .map(|rp_cfg| GenericPcieRootPortDefinition {
                                     name: rp_cfg.name.into(),
+                                    hotplug: rp_cfg.hotplug,
                                 })
                                 .collect();
 
@@ -1796,10 +1813,47 @@ impl InitializedVm {
                     ),
                 });
 
+                let bus_id = vmotherboard::BusId::new(&rc.name);
+                chipset_builder.register_weak_mutex_pcie_enumerator(bus_id, Box::new(root_complex));
+
                 ecam_address += ecam_size;
                 low_mmio_address -= low_mmio_size;
                 high_mmio_address += rc.high_mmio_size;
             }
+
+            for switch in cfg.pcie_switches {
+                let device_name = format!("pcie-switch:{}", switch.name);
+                let switch_device = chipset_builder
+                    .arc_mutex_device(device_name)
+                    .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
+                    .add(|_services| {
+                        let definition = pcie::switch::GenericPcieSwitchDefinition {
+                            name: switch.name.clone().into(),
+                            downstream_port_count: switch.num_downstream_ports,
+                            hotplug: switch.hotplug,
+                        };
+                        GenericPcieSwitch::new(definition)
+                    })?;
+
+                let bus_id = vmotherboard::BusId::new(&switch.name);
+                chipset_builder
+                    .register_weak_mutex_pcie_enumerator(bus_id, Box::new(switch_device));
+            }
+        }
+
+        for dev_cfg in cfg.pcie_devices {
+            vmm_core::device_builder::build_pcie_device(
+                &mut chipset_builder,
+                dev_cfg.port_name.into(),
+                &driver_source,
+                &resolver,
+                &gm,
+                dev_cfg.resource,
+                partition.clone().into_doorbell_registration(Vtl::Vtl0),
+                Some(&mapper),
+                partition.clone().into_msi_target(Vtl::Vtl0),
+            )
+            .await?;
         }
 
         if let Some(vmbus_cfg) = cfg.vmbus {
@@ -1870,19 +1924,21 @@ impl InitializedVm {
             // Start the vmbus kernel proxy if it's in use.
             #[cfg(windows)]
             if let Some(proxy_handle) = vmbus_cfg.vmbusproxy_handle {
-                vmbus_proxy = Some(
-                    vmbus_server::ProxyIntegration::start(
-                        &vmbus_driver,
-                        proxy_handle,
-                        vmbus_server::ProxyServerInfo::new(vmbus.control(), None, None),
-                        vtl2_vmbus.as_ref().map(|server| {
-                            vmbus_server::ProxyServerInfo::new(server.control().clone(), None, None)
-                        }),
-                        Some(&gm),
+                vmbus_proxy =
+                    Some(
+                        vmbus_server::ProxyIntegration::builder(
+                            &vmbus_driver,
+                            proxy_handle,
+                            vmbus_server::ProxyServerInfo::new(vmbus.control()),
+                        )
+                        .vtl2_server(vtl2_vmbus.as_ref().map(|server| {
+                            vmbus_server::ProxyServerInfo::new(server.control().clone())
+                        }))
+                        .memory(Some(&gm))
+                        .build()
+                        .await
+                        .context("failed to start the vmbus proxy")?,
                     )
-                    .await
-                    .context("failed to start the vmbus proxy")?,
-                )
             }
 
             let vmbus = VmbusServerHandle::new(&vmbus_driver, state_units.add("vmbus"), vmbus)
@@ -1958,6 +2014,7 @@ impl InitializedVm {
                         &mut mmio,
                         vmbus.control().as_ref(),
                         interrupt_mapper,
+                        None,
                     )
                     .await?;
 
@@ -2072,6 +2129,7 @@ impl InitializedVm {
                                 hv_device.clone().interrupt_mapper(),
                             ))
                         },
+                        None,
                     )
                     .await?;
                 }
@@ -2116,6 +2174,7 @@ impl InitializedVm {
                                 &mut services.register_mmio(),
                                 vmbus,
                                 crate::partition::VpciDevice::interrupt_mapper(hv_device),
+                                None,
                             )
                             .await
                         })
@@ -2558,6 +2617,7 @@ impl LoadedVmInner {
                 enable_vpci_boot,
                 uefi_console_mode,
                 default_boot_always_attempt,
+                bios_guid,
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
@@ -2574,6 +2634,7 @@ impl LoadedVmInner {
                     serial: enable_serial,
                     uefi_console_mode,
                     default_boot_always_attempt,
+                    bios_guid,
                 };
                 let regs = super::vm_loaders::uefi::load_uefi(
                     firmware,
@@ -2890,6 +2951,17 @@ impl LoadedVm {
                     VmRpc::WriteMemory(rpc) => rpc.handle_failable_sync(|(gpa, bytes)| {
                         self.inner.gm.write_at(gpa, bytes.as_slice())
                     }),
+                    VmRpc::UpdateCliParams(rpc) => {
+                        rpc.handle_failable_sync(|params| match &mut self.inner.load_mode {
+                            LoadMode::Igvm { cmdline, .. } => {
+                                *cmdline = params;
+                                Ok(())
+                            }
+                            _ => anyhow::bail!(
+                                "Updating command line parameters is only supported for Igvm load mode"
+                            ),
+                        })
+                    }
                 },
                 Event::Halt(Err(_)) => break,
                 Event::Halt(Ok(reason)) => {
@@ -3029,6 +3101,8 @@ impl LoadedVm {
             floppy_disks: vec![],        // TODO
             ide_disks: vec![],           // TODO
             pcie_root_complexes: vec![], // TODO
+            pcie_devices: vec![],        // TODO
+            pcie_switches: vec![],       // TODO
             vpci_devices: vec![],        // TODO
             memory: self.inner.memory_cfg,
             processor_topology: self.inner.processor_topology.to_config(),
@@ -3057,6 +3131,7 @@ impl LoadedVm {
             generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
+            efi_diagnostics_log_level: Default::default(),
         };
         RestartState {
             hypervisor: self.inner.hypervisor,

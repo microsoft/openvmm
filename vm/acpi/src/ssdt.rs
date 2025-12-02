@@ -37,6 +37,7 @@ fn encode_pcie_name(mut pcie_index: u32) -> Vec<u8> {
 pub struct Ssdt {
     description_header: DescriptionHeader,
     objects: Vec<u8>,
+    pcie_ecam_ranges: Vec<MemoryRange>,
 }
 
 impl Ssdt {
@@ -54,6 +55,7 @@ impl Ssdt {
                 creator_rev: 0x01000000,
             },
             objects: vec![],
+            pcie_ecam_ranges: vec![],
         }
     }
 
@@ -61,6 +63,23 @@ impl Ssdt {
         let mut byte_stream = Vec::new();
         byte_stream.extend_from_slice(self.description_header.as_bytes());
         byte_stream.extend_from_slice(&self.objects);
+
+        // N.B. Certain guest OSes will only probe ECAM ranges if they are
+        // reserved in the resources of an ACPI motherboard device.
+        if !self.pcie_ecam_ranges.is_empty() {
+            let mut vmod = Device::new(b"VMOD");
+            vmod.add_object(&NamedObject::new(b"_HID", &EisaId(*b"PNP0C02")));
+
+            let mut crs = CurrentResourceSettings::new();
+            for ecam_range in &self.pcie_ecam_ranges {
+                crs.add_resource(&QwordMemory::new(
+                    ecam_range.start(),
+                    ecam_range.end() - ecam_range.start(),
+                ));
+            }
+            vmod.add_object(&crs);
+            vmod.append_to_vec(&mut byte_stream);
+        }
 
         let length = byte_stream.len();
         byte_stream[4..8].copy_from_slice(&u32::try_from(length).unwrap().to_le_bytes());
@@ -100,6 +119,7 @@ impl Ssdt {
         segment: u16,
         start_bus: u8,
         end_bus: u8,
+        ecam_range: MemoryRange,
         low_mmio: MemoryRange,
         high_mmio: MemoryRange,
     ) {
@@ -129,6 +149,7 @@ impl Ssdt {
         pcie.add_object(&crs);
 
         self.add_object(&pcie);
+        self.pcie_ecam_ranges.push(ecam_range);
     }
 }
 

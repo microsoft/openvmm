@@ -19,6 +19,7 @@ user_driver.workspace = true
 vmbus_async.workspace = true
 vmbus_ring.workspace = true
 vm_resource.workspace = true
+vmcore.workspace = true
 vpci.workspace = true
 
 chipset_resources.workspace = true
@@ -36,9 +37,10 @@ futures.workspace = true
 futures-concurrency.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
 tracing.workspace = true
+cvm_tracing.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
 vmbus_user_channel.workspace = true

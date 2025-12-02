@@ -46,6 +46,9 @@ open_enum! {
         GUEST_WATCHDOG = 10,
         HW_KEY_PROTECTOR = 11,
         GUEST_SECRET_KEY = 13,
+        HIBERNATION_FIRMWARE = 14,
+        PLATFORM_SEED = 15,
+        PROVENANCE_DOC = 16,
 
         EXTENDED_FILE_TABLE = 63,
     }
@@ -159,7 +162,7 @@ pub struct VmgsHeader {
 
     // V3 fields
     pub encryption_algorithm: EncryptionAlgorithm,
-    pub reserved: u16,
+    pub markers: VmgsMarkers,
     pub metadata_keys: [VmgsEncryptionKey; 2],
     pub reserved_1: u32,
 }
@@ -210,4 +213,14 @@ open_enum! {
         /// AES 256 GCM encryption
         AES_GCM = 1,
     }
+}
+
+/// Markers used internally to indicate how the VMGS should be treated
+#[cfg_attr(feature = "inspect", derive(Inspect))]
+#[bitfield(u16)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
+pub struct VmgsMarkers {
+    pub reprovisioned: bool,
+    #[bits(15)]
+    _reserved: u16,
 }
