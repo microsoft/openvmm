@@ -16,10 +16,6 @@ pub mod resolver;
 #[cfg(feature = "test_utilities")]
 pub mod test_utilities;
 
-pub use test_igvm_agent_lib::IgvmAgentAction;
-pub use test_igvm_agent_lib::IgvmAgentTestPlan;
-pub use test_igvm_agent_lib::IgvmAgentTestSetting;
-use test_igvm_agent_lib::TestIgvmAgent;
 use async_trait::async_trait;
 use core::mem::size_of;
 use disk_backend::Disk;
@@ -66,6 +62,10 @@ use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
 use std::io::IoSlice;
 use task_control::StopTask;
+pub use test_igvm_agent_lib::IgvmAgentAction;
+pub use test_igvm_agent_lib::IgvmAgentTestPlan;
+pub use test_igvm_agent_lib::IgvmAgentTestSetting;
+use test_igvm_agent_lib::TestIgvmAgent;
 use thiserror::Error;
 use video_core::FramebufferControl;
 use vmbus_async::async_dgram::AsyncRecvExt;

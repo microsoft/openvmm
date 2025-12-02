@@ -31,13 +31,16 @@ pub const ENDPOINT: &str = "IGVM_AGENT_RPC_SERVER";
 
 pub type RpcInterfaceHandle = *mut c_void;
 
+// SAFETY: FFI handle
 unsafe extern "C" {
-    pub static IGVmAgentRpcApi_v1_0_s_ifspec: RpcInterfaceHandle;
+    pub static IgvmAgentRpcApi: RpcInterfaceHandle;
 }
+
 fn to_wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain([0]).collect()
 }
 
+// SAFETY: FFI
 unsafe extern "system" fn rpc_bind_callback(
     _context: *const c_void,
     _uuid: *const c_void,
@@ -48,6 +51,7 @@ unsafe extern "system" fn rpc_bind_callback(
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+// SAFETY: FFI
 unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
     match ctrl_type {
         CTRL_C_EVENT | CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT | CTRL_SHUTDOWN_EVENT => {
@@ -60,7 +64,7 @@ unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
             }
             TRUE
         }
-        _ => 0,
+        _ => FALSE,
     }
 }
 
@@ -68,6 +72,7 @@ struct ConsoleHandlerGuard;
 
 impl ConsoleHandlerGuard {
     fn register() -> Result<Self, String> {
+        // SAFETY: Make an FFI call.
         unsafe {
             if SetConsoleCtrlHandler(Some(console_ctrl_handler), TRUE) == 0 {
                 return Err("SetConsoleCtrlHandler failed".to_owned());
@@ -81,6 +86,7 @@ impl ConsoleHandlerGuard {
 
 impl Drop for ConsoleHandlerGuard {
     fn drop(&mut self) {
+        // SAFETY: Make an FFI call.
         unsafe {
             SetConsoleCtrlHandler(Some(console_ctrl_handler), FALSE);
         }
@@ -106,7 +112,7 @@ fn register_protocol_and_interface() -> Result<(), String> {
         tracing::info!("RPC protocol bound successfully");
 
         let status = RpcServerRegisterIf3(
-            IGVmAgentRpcApi_v1_0_s_ifspec,
+            IgvmAgentRpcApi,
             ptr::null_mut(),
             ptr::null_mut(),
             0,
@@ -126,8 +132,9 @@ fn register_protocol_and_interface() -> Result<(), String> {
 }
 
 fn unregister_interface() {
+    // SAFETY: Make an FFI call.
     unsafe {
-        RpcServerUnregisterIf(IGVmAgentRpcApi_v1_0_s_ifspec, ptr::null_mut(), 0);
+        RpcServerUnregisterIf(IgvmAgentRpcApi, ptr::null_mut(), 0);
     }
     tracing::info!("RPC interface unregistered");
 }

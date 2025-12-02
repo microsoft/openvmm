@@ -5,8 +5,8 @@
 //! require to run.
 
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
-use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
 use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
+use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
 use crate::download_openvmm_deps::OpenvmmDepsArch;
 use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
@@ -335,7 +335,8 @@ impl SimpleFlowNode for Node {
                 }
 
                 if let Some(test_igvm_agent_rpc_server) = test_igvm_agent_rpc_server {
-                    let TestIgvmAgentRpcServerOutput { exe, .. } = rt.read(test_igvm_agent_rpc_server);
+                    let TestIgvmAgentRpcServerOutput { exe, .. } =
+                        rt.read(test_igvm_agent_rpc_server);
                     fs_err::copy(exe, test_content_dir.join("test_igvm_agent_rpc_server.exe"))?;
                 }
 

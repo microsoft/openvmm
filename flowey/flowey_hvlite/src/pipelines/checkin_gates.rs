@@ -255,8 +255,8 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_tpm_guest_tests, use_tpm_guest_tests_windows) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-tpm_guest_tests"));
 
-            let (pub_test_igvm_agent_rpc_server, use_test_igvm_agent_rpc_server) =
-                pipeline.new_typed_artifact(format!("{arch_tag}-windows-test_igvm_agent_rpc_server"));
+            let (pub_test_igvm_agent_rpc_server, use_test_igvm_agent_rpc_server) = pipeline
+                .new_typed_artifact(format!("{arch_tag}-windows-test_igvm_agent_rpc_server"));
 
             // filter off interesting artifacts required by the VMM tests job
             match arch {
@@ -409,14 +409,17 @@ impl IntoPipeline for CheckinGatesCli {
                     profile: CommonProfile::from_release(release),
                     tpm_guest_tests: ctx.publish_typed_artifact(pub_tpm_guest_tests),
                 })
-                .dep_on(|ctx| flowey_lib_hvlite::build_test_igvm_agent_rpc_server::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::WindowsMsvc,
+                .dep_on(
+                    |ctx| flowey_lib_hvlite::build_test_igvm_agent_rpc_server::Request {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::WindowsMsvc,
+                        },
+                        profile: CommonProfile::from_release(release),
+                        test_igvm_agent_rpc_server: ctx
+                            .publish_typed_artifact(pub_test_igvm_agent_rpc_server),
                     },
-                    profile: CommonProfile::from_release(release),
-                    test_igvm_agent_rpc_server: ctx.publish_typed_artifact(pub_test_igvm_agent_rpc_server),
-                });
+                );
 
             // Hang building the windows VMM tests off this big windows job.
             match arch {
@@ -1327,7 +1330,9 @@ mod vmm_tests_artifact_builders {
                 vmgstool: Some(ctx.use_typed_artifact(&use_vmgstool)),
                 tpm_guest_tests_windows: Some(ctx.use_typed_artifact(&use_tpm_guest_tests_windows)),
                 tpm_guest_tests_linux: Some(ctx.use_typed_artifact(&use_tpm_guest_tests_linux)),
-                test_igvm_agent_rpc_server: Some(ctx.use_typed_artifact(&use_test_igvm_agent_rpc_server)),
+                test_igvm_agent_rpc_server: Some(
+                    ctx.use_typed_artifact(&use_test_igvm_agent_rpc_server),
+                ),
             }))
         }
     }

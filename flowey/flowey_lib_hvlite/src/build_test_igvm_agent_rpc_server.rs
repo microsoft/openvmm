@@ -44,7 +44,7 @@ impl SimpleFlowNode for Node {
         } = request;
 
         let target_triple = target.as_triple();
-        
+
         // Only Windows MSVC is supported for test_igvm_agent_rpc_server
         if target_triple.operating_system != target_lexicon::OperatingSystem::Windows
             || target_triple.environment != target_lexicon::Environment::Msvc
@@ -88,7 +88,9 @@ impl SimpleFlowNode for Node {
                     crate::run_cargo_build::CargoBuildOutput::WindowsBin { exe, pdb } => {
                         TestIgvmAgentRpcServerOutput { exe, pdb }
                     }
-                    _ => unreachable!("unsupported build output variant for test_igvm_agent_rpc_server"),
+                    _ => unreachable!(
+                        "unsupported build output variant for test_igvm_agent_rpc_server"
+                    ),
                 };
 
                 rt.write(test_igvm_agent_rpc_server, &output);

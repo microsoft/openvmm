@@ -18,6 +18,7 @@ use windows_sys::Win32::System::Rpc::RpcRaiseException;
 
 #[unsafe(no_mangle)]
 /// Allocator shim invoked by the generated MIDL stubs.
+// SAFETY: FFI
 pub unsafe extern "C" fn MIDL_user_allocate(size: usize) -> *mut c_void {
     use windows_sys::Win32::System::Com::CoTaskMemAlloc;
     unsafe { CoTaskMemAlloc(size) }
@@ -25,6 +26,7 @@ pub unsafe extern "C" fn MIDL_user_allocate(size: usize) -> *mut c_void {
 
 #[unsafe(no_mangle)]
 /// Deallocator shim invoked by the generated MIDL stubs.
+// SAFETY: FFI
 pub unsafe extern "C" fn MIDL_user_free(ptr: *mut c_void) {
     use windows_sys::Win32::System::Com::CoTaskMemFree;
     if !ptr.is_null() {
@@ -83,6 +85,7 @@ fn write_response_size(ptr: *mut u32, value: u32) -> Result<(), HRESULT> {
     if ptr.is_null() {
         Err(E_POINTER)
     } else {
+        // SAFETY: memory access
         unsafe {
             *ptr = value;
         }
@@ -117,25 +120,38 @@ fn read_utf16(ptr: *const u16) -> Option<String> {
         return None;
     }
 
-    unsafe {
+    // SAFETY: memory access
+    std::panic::catch_unwind(|| unsafe {
         let mut len = 0usize;
+
+        // Scan for null terminator with bounds checking
         while len < MAX_LEN {
-            if *ptr.add(len) == 0 {
+            // Use read_volatile to prevent compiler optimizations that might
+            // assume the pointer is valid, and to ensure we actually read
+            // the memory (which will fault if invalid)
+            let char_val = ptr::read_volatile(ptr.add(len));
+            if char_val == 0 {
                 break;
             }
             len += 1;
         }
 
+        // If we hit MAX_LEN without finding a null terminator,
+        // the string is too long or the pointer is invalid
         if len == MAX_LEN {
             return None;
         }
 
+        // Now that we know the length, create a slice and convert to String
         let slice = slice::from_raw_parts(ptr, len);
         String::from_utf16(slice).ok()
-    }
+    })
+    .ok()
+    .flatten()
 }
 
 /// Entry point that services `RpcIGVmAttest` requests for the test agent.
+// SAFETY: FFI
 #[unsafe(export_name = "RpcIGVmAttest")]
 pub extern "system" fn rpc_igvm_attest(
     _binding_handle: *mut c_void,
@@ -172,6 +188,7 @@ pub extern "system" fn rpc_igvm_attest(
         return err;
     }
 
+    // SAFETY: memory access
     let report_slice = unsafe {
         if report_size == 0 {
             &[][..]
@@ -231,6 +248,7 @@ pub extern "system" fn rpc_igvm_attest(
 /// Entry point that services `RpcVmGspRequest` calls for the test agent.
 ///
 /// This function is currently disabled and will raise RPC_S_SERVER_UNAVAILABLE.
+// SAFETY: FFI
 #[unsafe(export_name = "RpcVmGspRequest")]
 pub extern "system" fn rpc_vm_gsp_request(
     _binding_handle: *mut c_void,
@@ -245,6 +263,7 @@ pub extern "system" fn rpc_vm_gsp_request(
 
     // Now we can safely dereference the structures since they match the IDL definitions
     let (new_gsp_len, encrypted_gsp_count, supported_flags) = if !request_data.is_null() {
+        // SAFETY: memory access
         let request = unsafe { &*request_data };
         let encrypted_count = request
             .encrypted_gsp
@@ -262,6 +281,7 @@ pub extern "system" fn rpc_vm_gsp_request(
 
     let (response_encrypted_len, response_decrypted_count, response_flags) =
         if !response_data.is_null() {
+            // SAFETY: memory access
             let response = unsafe { &*response_data };
             let decrypted_count = response
                 .decrypted_gsp
@@ -290,11 +310,11 @@ pub extern "system" fn rpc_vm_gsp_request(
     );
 
     // Raise RPC_S_SERVER_UNAVAILABLE exception
+    // SAFETY: Make an FFI call
     unsafe {
         RpcRaiseException(RPC_S_SERVER_UNAVAILABLE);
     }
 
-    // This line is never reached due to RpcRaiseException, but kept for clarity
-    #[allow(unreachable_code)]
-    E_FAIL
+    // This line is never reached due to RpcRaiseException
+    unreachable!();
 }

@@ -3,6 +3,8 @@
 
 use anyhow::Context;
 use anyhow::ensure;
+#[cfg(windows)]
+use pal;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
@@ -16,8 +18,6 @@ use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X6
 use petri_artifacts_vmm_test::artifacts::host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64;
 use pipette_client::PipetteClient;
 use std::path::Path;
-#[cfg(windows)]
-use pal;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 
@@ -456,8 +456,10 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
-    use std::process::Stdio;
+    use std::io::BufRead;
+    use std::io::BufReader;
     use std::io::Read;
+    use std::process::Stdio;
 
     let os_flavor = config.os_flavor();
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
@@ -483,20 +485,42 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
         .read(&mut b)
         .context("failed to read from RPC server stdout")?;
 
+    // Spawn a task to read and log stderr from the RPC server
+    let stderr_task = std::thread::spawn(move || {
+        let reader = BufReader::new(stderr_read);
+        for line in reader.lines() {
+            match line {
+                Ok(line) => tracing::info!(target: "test_igvm_agent_rpc_server", "{}", line),
+                Err(e) => {
+                    tracing::warn!("failed to read RPC server stderr: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
     // Create a guard to ensure the RPC server is killed when this function exits
-    struct RpcServerGuard(std::process::Child);
+    struct RpcServerGuard {
+        child: std::process::Child,
+        stderr_task: std::thread::JoinHandle<()>,
+    }
     impl Drop for RpcServerGuard {
         fn drop(&mut self) {
             tracing::info!("terminating test_igvm_agent_rpc_server");
-            let _ = self.0.kill();
-            let _ = self.0.wait();
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            // Give the stderr logging thread a moment to finish
+            let _ = self.stderr_task.join();
         }
     }
-    let _rpc_server_guard = RpcServerGuard(rpc_server_child);
+    let _rpc_server_guard = RpcServerGuard {
+        child: rpc_server_child,
+        stderr_task,
+    };
 
     let config = config
         .with_tpm(true)
-        .with_tpm_state_persistence(false)
+        .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
 
     let (vm, agent) = config.run().await?;
