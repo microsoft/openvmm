@@ -135,7 +135,7 @@ impl IntoPipeline for VmmTestsCli {
                 FlowArch::host(backend_hint),
                 "build vmm test dependencies",
             )
-            .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request {})
+            .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Download)
             .dep_on(
                 |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
                     hvlite_repo_source: openvmm_repo.clone(),

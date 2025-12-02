@@ -14,6 +14,8 @@ pub enum OpenvmmDepsArch {
 
 flowey_request! {
     pub enum Request {
+        /// Use a locally downloaded openvmm-deps for a specific architecture
+        LocalPath(OpenvmmDepsArch, PathBuf),
         /// Specify version of the github release to pull from
         Version(String),
         GetLinuxTestKernel(OpenvmmDepsArch, WriteVar<PathBuf>),
@@ -36,6 +38,7 @@ impl FlowNode for Node {
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let mut version = None;
+        let mut local_paths: BTreeMap<OpenvmmDepsArch, PathBuf> = BTreeMap::new();
         let mut linux_test_kernel: BTreeMap<_, Vec<_>> = BTreeMap::new();
         let mut linux_test_initrd: BTreeMap<_, Vec<_>> = BTreeMap::new();
         let mut openhcl_cpio_dbgrd: BTreeMap<_, Vec<_>> = BTreeMap::new();
@@ -45,7 +48,20 @@ impl FlowNode for Node {
         for req in requests {
             match req {
                 Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
-
+                Request::LocalPath(arch, path) => {
+                    if let Some(existing) = local_paths.get(&arch) {
+                        if existing != &path {
+                            anyhow::bail!(
+                                "Conflicting LocalPath requests for {:?}: {:?} vs {:?}",
+                                arch,
+                                existing,
+                                path
+                            );
+                        }
+                    } else {
+                        local_paths.insert(arch, path);
+                    }
+                }
                 Request::GetLinuxTestKernel(arch, var) => {
                     linux_test_kernel.entry(arch).or_default().push(var)
                 }
@@ -64,7 +80,13 @@ impl FlowNode for Node {
             }
         }
 
-        let version = version.ok_or(anyhow::anyhow!("Missing essential request: Version"))?;
+        if version.is_some() && !local_paths.is_empty() {
+            anyhow::bail!("Cannot specify both Version and LocalPath requests");
+        }
+
+        if version.is_none() && local_paths.is_empty() {
+            anyhow::bail!("Must specify a Version or LocalPath request");
+        }
 
         // -- end of req processing -- //
 
@@ -77,6 +99,63 @@ impl FlowNode for Node {
             return Ok(());
         }
 
+        if !local_paths.is_empty() {
+            ctx.emit_rust_step("use local openvmm-deps", |ctx| {
+                let linux_test_kernel = linux_test_kernel.claim(ctx);
+                let linux_test_initrd = linux_test_initrd.claim(ctx);
+                let openhcl_cpio_dbgrd = openhcl_cpio_dbgrd.claim(ctx);
+                let openhcl_cpio_shell = openhcl_cpio_shell.claim(ctx);
+                let openhcl_sysroot = openhcl_sysroot.claim(ctx);
+                let local_paths = local_paths.clone();
+                move |rt| {
+                    let get_base_dir = |arch: OpenvmmDepsArch| {
+                        local_paths.get(&arch).ok_or_else(|| {
+                            anyhow::anyhow!("No local path specified for architecture {:?}", arch)
+                        })
+                    };
+
+                    let kernel_file_name = |arch| match arch {
+                        OpenvmmDepsArch::X86_64 => "vmlinux",
+                        OpenvmmDepsArch::Aarch64 => "Image",
+                    };
+
+                    for (arch, vars) in linux_test_kernel {
+                        let base_dir = get_base_dir(arch)?;
+                        let path = base_dir.join(kernel_file_name(arch));
+                        rt.write_all(vars, &path)
+                    }
+
+                    for (arch, vars) in linux_test_initrd {
+                        let base_dir = get_base_dir(arch)?;
+                        let path = base_dir.join("initrd");
+                        rt.write_all(vars, &path)
+                    }
+
+                    for (arch, vars) in openhcl_cpio_dbgrd {
+                        let base_dir = get_base_dir(arch)?;
+                        let path = base_dir.join("dbgrd.cpio.gz");
+                        rt.write_all(vars, &path)
+                    }
+
+                    for (arch, vars) in openhcl_cpio_shell {
+                        let base_dir = get_base_dir(arch)?;
+                        let path = base_dir.join("shell.cpio.gz");
+                        rt.write_all(vars, &path)
+                    }
+
+                    for (arch, vars) in openhcl_sysroot {
+                        let base_dir = get_base_dir(arch)?;
+                        let path = base_dir.join("sysroot.tar.gz");
+                        rt.write_all(vars, &path)
+                    }
+
+                    Ok(())
+                }
+            });
+
+            return Ok(());
+        }
+
         let extract_tar_bz2_deps =
             flowey_lib_common::_util::extract::extract_tar_bz2_if_new_deps(ctx);
 
@@ -86,6 +165,7 @@ impl FlowNode for Node {
             || openhcl_cpio_shell.contains_key(&OpenvmmDepsArch::X86_64)
             || openhcl_sysroot.contains_key(&OpenvmmDepsArch::X86_64)
         {
+            let version = version.clone().expect("local requests handled above");
             Some(
                 ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
                     repo_owner: "microsoft".into(),
@@ -107,6 +187,7 @@ impl FlowNode for Node {
             || openhcl_cpio_shell.contains_key(&OpenvmmDepsArch::Aarch64)
             || openhcl_sysroot.contains_key(&OpenvmmDepsArch::Aarch64)
         {
+            let version = version.clone().expect("local requests handled above");
             Some(
                 ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
                     repo_owner: "microsoft".into(),
@@ -131,6 +212,7 @@ impl FlowNode for Node {
             let openhcl_cpio_dbgrd = openhcl_cpio_dbgrd.claim(ctx);
             let openhcl_cpio_shell = openhcl_cpio_shell.claim(ctx);
             let openhcl_sysroot = openhcl_sysroot.claim(ctx);
+            let version = version.clone().expect("local requests handled above");
             move |rt| {
                 let extract_dir_x64 = openvmm_deps_tar_bz2_x64
                     .map(|file| {

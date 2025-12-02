@@ -33,8 +33,17 @@ pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.12.52.2";
 pub const OPENVMM_DEPS: &str = "0.1.0-20250403.3";
 pub const PROTOC: &str = "27.1";
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LocalDependencyRequest {
+    pub openvmm_deps_x64: Option<PathBuf>,
+    pub openvmm_deps_aarch64: Option<PathBuf>,
+}
+
 flowey_request! {
-    pub struct Request {}
+    pub enum Request {
+        Download,
+        Local(LocalDependencyRequest),
+    }
 }
 
 new_flow_node!(struct Node);
@@ -45,7 +54,7 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
         ctx.import::<flowey_lib_common::download_cargo_fuzz::Node>();
@@ -61,12 +70,55 @@ impl FlowNode for Node {
     }
 
     #[rustfmt::skip]
-    fn emit(_requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+        let mut has_download_requests = false;
+        let mut has_local_requests = false;
+        let mut local_openvmm_deps_x64: Option<PathBuf> = None;
+        let mut local_openvmm_deps_aarch64: Option<PathBuf> = None;
+
+        for req in requests {
+            match req {
+                Request::Download => {
+                    has_download_requests = true;
+                }
+                Request::Local(local_req) => {
+                    has_local_requests = true;
+                    if let Some(x64_path) = local_req.openvmm_deps_x64 {
+                        same_across_all_reqs("OpenvmmDepsPathX64", &mut local_openvmm_deps_x64, x64_path)?;
+                    }
+                    if let Some(aarch64_path) = local_req.openvmm_deps_aarch64 {
+                        same_across_all_reqs("OpenvmmDepsPathAarch64", &mut local_openvmm_deps_aarch64, aarch64_path)?;
+                    }
+                }
+            }
+        }
+
+        if has_download_requests && has_local_requests {
+            anyhow::bail!("cannot mix Download and Local requests");
+        }
+
+        if has_local_requests {
+            if let Some(openvmm_deps_path_x64) = local_openvmm_deps_x64 {
+                ctx.req(crate::resolve_openvmm_deps::Request::LocalPath(
+                    crate::resolve_openvmm_deps::OpenvmmDepsArch::X86_64,
+                    openvmm_deps_path_x64,
+                ));
+            }
+            if let Some(openvmm_deps_path_aarch64) = local_openvmm_deps_aarch64 {
+                ctx.req(crate::resolve_openvmm_deps::Request::LocalPath(
+                    crate::resolve_openvmm_deps::OpenvmmDepsArch::Aarch64,
+                    openvmm_deps_path_aarch64,
+                ));
+            }
+
+            anyhow::bail!("using local dependencies not yet fully implemented");
+        }
+
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::CvmDev, OPENHCL_KERNEL_DEV_VERSION.into()));
-        ctx.req(crate::download_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
+        ctx.req(crate::resolve_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
         ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
         ctx.req(flowey_lib_common::download_azcopy::Request::Version(AZCOPY.into()));
         ctx.req(flowey_lib_common::download_cargo_fuzz::Request::Version(FUZZ.into()));
