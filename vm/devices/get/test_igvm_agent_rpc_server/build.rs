@@ -101,7 +101,14 @@ fn main() {
                 panic!("Failed to configure cross-compilation environment: {err}");
             }
         }
-        _ => {}
+        _ => {
+            // When building on native Windows, set up the MSVC environment for MIDL
+            if host_is_windows {
+                if let Err(err) = setup_msvc_env_for_midl(&mut cmd, &target) {
+                    panic!("Failed to set up MSVC environment for MIDL: {err}");
+                }
+            }
+        }
     }
 
     let pointer_width =
@@ -216,6 +223,39 @@ fn find_windows_sdk_midl() -> Option<String> {
     }
 
     None
+}
+
+#[cfg(windows)]
+fn setup_msvc_env_for_midl(cmd: &mut Command, target: &str) -> Result<(), String> {
+    // Use the cc crate to get the MSVC compiler tool, which will give us
+    // access to the properly configured environment including cl.exe path
+    let tool = cc::Build::new().target(target).host(target).get_compiler();
+
+    // Get the path to cl.exe
+    let cl_path = tool.path();
+    if let Some(bin_dir) = cl_path.parent() {
+        // Add the MSVC bin directory to PATH so MIDL can find cl.exe
+        let mut path_value = env::var_os("PATH").unwrap_or_default();
+        if !path_value.is_empty() {
+            path_value.push(";");
+        }
+        path_value.push(bin_dir.as_os_str());
+        cmd.env("PATH", &path_value);
+
+        // Also set up INCLUDE and LIB environment variables that MIDL/cl.exe need
+        for (key, value) in tool.env() {
+            cmd.env(key, value);
+        }
+    } else {
+        return Err("Failed to find parent directory of cl.exe".to_string());
+    }
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn setup_msvc_env_for_midl(_cmd: &mut Command, _target: &str) -> Result<(), String> {
+    Ok(())
 }
 
 fn configure_cross_env(cmd: &mut Command, cfg: &CrossConfig) -> Result<(), String> {

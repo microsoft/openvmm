@@ -3,8 +3,6 @@
 
 use anyhow::Context;
 use anyhow::ensure;
-#[cfg(windows)]
-use pal;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
@@ -509,7 +507,7 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
     // Create a guard to ensure the RPC server is killed when this function exits
     struct RpcServerGuard {
         child: std::process::Child,
-        stderr_task: std::thread::JoinHandle<()>,
+        stderr_task: Option<std::thread::JoinHandle<()>>,
     }
     impl Drop for RpcServerGuard {
         fn drop(&mut self) {
@@ -517,12 +515,14 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
             let _ = self.child.kill();
             let _ = self.child.wait();
             // Give the stderr logging thread a moment to finish
-            let _ = self.stderr_task.join();
+            if let Some(task) = self.stderr_task.take() {
+                let _ = task.join();
+            }
         }
     }
     let _rpc_server_guard = RpcServerGuard {
         child: rpc_server_child,
-        stderr_task,
+        stderr_task: Some(stderr_task),
     };
 
     let config = config
