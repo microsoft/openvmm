@@ -29,7 +29,7 @@ impl SimpleFlowNode for Node {
         let npm_installed = ctx.reqv(flowey_lib_common::install_nodejs::Request::EnsureInstalled);
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
-        ctx.emit_rust_step(format!("build test-results website"), |ctx| {
+        ctx.emit_rust_step("build test-results website", |ctx| {
             npm_installed.claim(ctx);
             done.claim(ctx);
             let openvmm_repo_path = openvmm_repo_path.claim(ctx);
