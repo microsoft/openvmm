@@ -111,7 +111,7 @@ impl FlowNode for Node {
                 ));
             }
 
-            anyhow::bail!("using local dependencies not yet fully implemented");
+            return Ok(());
         }
 
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
