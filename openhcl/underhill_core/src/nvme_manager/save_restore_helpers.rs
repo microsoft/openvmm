@@ -41,20 +41,19 @@ pub fn nvme_interrupt_state(state: Option<&NvmeManagerSavedState>) -> VPInterrup
         }
     }
 
-    let (vps_with_outstanding_io, vps_with_mapped_interrupts_no_io): (Vec<_>, Vec<_>) = vp_state
+    let (vps_with_outstanding_io, vps_with_mapped_interrupts_no_io): (
+        BTreeMap<u32, bool>,
+        BTreeMap<u32, bool>,
+    ) = vp_state
         .iter()
-        .map(|(&vp, &has_outstanding_io)| (vp, has_outstanding_io))
-        .partition(|&(_, has_outstanding_io)| has_outstanding_io);
+        .partition(|&(_, has_outstanding_io)| *has_outstanding_io);
 
     VPInterruptState {
         vps_with_mapped_interrupts_no_io: vps_with_mapped_interrupts_no_io
-            .into_iter()
-            .map(|(vp, _)| vp)
+            .keys()
+            .cloned()
             .collect(),
-        vps_with_outstanding_io: vps_with_outstanding_io
-            .into_iter()
-            .map(|(vp, _)| vp)
-            .collect(),
+        vps_with_outstanding_io: vps_with_outstanding_io.keys().cloned().collect(),
     }
 }
 
@@ -62,11 +61,10 @@ pub fn nvme_interrupt_state(state: Option<&NvmeManagerSavedState>) -> VPInterrup
 mod tests {
     use super::*;
     use crate::nvme_manager::save_restore::{NvmeManagerSavedState, NvmeSavedDiskConfig};
-    use nvme_driver::NvmeDriverSavedState;
     use nvme_driver::save_restore::{
-        CompletionQueueSavedState, IoQueueSavedState, NvmeDriverWorkerSavedState,
-        PendingCommandSavedState, PendingCommandsSavedState, QueueHandlerSavedState,
-        QueuePairSavedState, SubmissionQueueSavedState,
+        CompletionQueueSavedState, IoQueueSavedState, NvmeDriverSavedState,
+        NvmeDriverWorkerSavedState, PendingCommandSavedState, PendingCommandsSavedState,
+        QueueHandlerSavedState, QueuePairSavedState, SubmissionQueueSavedState,
     };
     use nvme_spec as spec;
     use zerocopy::FromZeros;
