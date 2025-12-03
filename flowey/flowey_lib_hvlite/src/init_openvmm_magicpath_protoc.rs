@@ -45,9 +45,14 @@ impl FlowNode for Node {
 
                 let protoc_pkg = rt.read(protoc_pkg);
 
+                let include_dst = openvmm_magicpath.join("Google.Protobuf.Tools/tools/include");
+                // Remove existing include directory to avoid permission issues
+                // (e.g., from previous runs or nix store)
+                let _ = fs_err::remove_dir_all(&include_dst);
+
                 flowey_lib_common::_util::copy_dir_all(
                     protoc_pkg.include_dir,
-                    openvmm_magicpath.join("Google.Protobuf.Tools/tools/include"),
+                    &include_dst,
                 )?;
 
                 let src = protoc_pkg.protoc_bin;
@@ -56,7 +61,11 @@ impl FlowNode for Node {
                 let _ = fs_err::remove_file(&dst);
 
                 if !dst.exists() {
-                    fs_err::hard_link(src.clone(), &dst)?;
+                    // Try hardlinking first (faster), but fall back to copying if it fails
+                    // (e.g., when source is in nix store or across filesystems)
+                    if fs_err::hard_link(&src, &dst).is_err() {
+                        fs_err::copy(&src, &dst)?;
+                    }
                     dst.make_executable()?;
                 }
 
