@@ -809,26 +809,29 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         let driver = self.driver.clone();
         let output_dir = self.output_dir.clone();
         self.vm
-            .wait_for_off_or_internal(async move |vm: &HyperVVM| {
-                tracing::debug!(set_high_vtl, "attempting to connect to pipette server");
-                match client_core(vm).await {
-                    Ok(socket) => {
-                        tracing::info!(set_high_vtl, "handshaking with pipette");
-                        let c = PipetteClient::new(&driver, socket, &output_dir)
-                            .await
-                            .context("failed to handshake with pipette");
-                        tracing::info!(set_high_vtl, "completed pipette handshake");
-                        Ok(Some(c?))
+            .wait_for_off_or_internal(
+                async move |vm: &HyperVVM| {
+                    tracing::debug!(set_high_vtl, "attempting to connect to pipette server");
+                    match client_core(vm).await {
+                        Ok(socket) => {
+                            tracing::info!(set_high_vtl, "handshaking with pipette");
+                            let c = PipetteClient::new(&driver, socket, &output_dir)
+                                .await
+                                .context("failed to handshake with pipette");
+                            tracing::info!(set_high_vtl, "completed pipette handshake");
+                            Ok(Some(c?))
+                        }
+                        Err(err) => {
+                            tracing::debug!(
+                                err = err.as_ref() as &dyn std::error::Error,
+                                "failed to connect to pipette server, retrying",
+                            );
+                            Ok(None)
+                        }
                     }
-                    Err(err) => {
-                        tracing::debug!(
-                            err = err.as_ref() as &dyn std::error::Error,
-                            "failed to connect to pipette server, retrying",
-                        );
-                        Ok(None)
-                    }
-                }
-            })
+                },
+                Default::default(),
+            )
             .await
     }
 
