@@ -431,7 +431,7 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
         // Update needed only if no deadline is set or the new time is earlier.
         if vp_state
             .deadline_100ns
-            .map_or(true, |last| Self::is_before(last, ref_time_next))
+            .is_none_or(|last| Self::is_before(last, ref_time_next))
         {
             // Record the new reference time.
             vp_state.deadline_100ns = Some(ref_time_next);
@@ -439,7 +439,7 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
             let state = vp.runner.tdx_l2_tsc_deadline_state_mut();
             if vp_state
                 .last_deadline_100ns
-                .map_or(true, |last| last != ref_time_next)
+                .is_none_or(|last| last != ref_time_next)
             {
                 let ref_time_from_now = ref_time_next.saturating_sub(ref_time_now);
                 let tsc_delta = self.ref_time_to_tsc(ref_time_from_now);
@@ -1169,7 +1169,7 @@ impl BackingPrivate for TdxBacked {
             timer_vp_state: shared
                 .cvm
                 .lower_vtl_timer_virt
-                .then(|| TdxTscDeadline::default()),
+                .then(TdxTscDeadline::default),
         })
     }
 
