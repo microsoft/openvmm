@@ -64,6 +64,7 @@ impl FlowNode for Node {
             FlowPlatform::Linux(linux_distribution) => match linux_distribution {
                 FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::Ubuntu => "python3",
                 FlowPlatformLinuxDistro::Arch => "python",
+                FlowPlatformLinuxDistro::Nix => "python3",
                 FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
             },
             _ => anyhow::bail!("Unsupported platform"),

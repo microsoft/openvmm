@@ -60,37 +60,39 @@ impl FlowNode for Node {
                         let (gcc_pkg, bin) = match target.architecture {
                             Architecture::X86_64 => match platform {
                                 FlowPlatform::Linux(linux_distribution) => {
-                                    let pkg = match linux_distribution {
-                                        FlowPlatformLinuxDistro::Fedora => "gcc-x86_64-linux-gnu",
-                                        FlowPlatformLinuxDistro::Ubuntu => "gcc-x86-64-linux-gnu",
+                                    let (pkg, bin) = match linux_distribution {
+                                        FlowPlatformLinuxDistro::Fedora => ("gcc-x86_64-linux-gnu", "x86_64-linux-gnu-gcc"),
+                                        FlowPlatformLinuxDistro::Ubuntu => ("gcc-x86-64-linux-gnu", "x86_64-linux-gnu-gcc"),
                                         FlowPlatformLinuxDistro::Arch => {
-                                            match_arch!(host_arch, FlowArch::X86_64, "gcc")
+                                            match_arch!(host_arch, FlowArch::X86_64, ("gcc", "gcc"))
                                         }
+                                        FlowPlatformLinuxDistro::Nix => ("gcc", "gcc"),
                                         FlowPlatformLinuxDistro::Unknown => {
                                             anyhow::bail!("Unknown Linux distribution")
                                         }
                                     };
-                                    (pkg.to_string(), "x86_64-linux-gnu-gcc".to_string())
+                                    (pkg.to_string(), bin.to_string())
                                 }
                                 _ => anyhow::bail!("Unsupported platform"),
                             },
                             Architecture::Aarch64(_) => match platform {
                                 FlowPlatform::Linux(linux_distribution) => {
-                                    let pkg = match linux_distribution {
+                                    let (pkg, bin) = match linux_distribution {
                                         FlowPlatformLinuxDistro::Fedora
                                         | FlowPlatformLinuxDistro::Ubuntu => {
-                                            "gcc-aarch64-linux-gnu"
+                                            ("gcc-aarch64-linux-gnu", "aarch64-linux-gnu-gcc")
                                         }
                                         FlowPlatformLinuxDistro::Arch => match_arch!(
                                             host_arch,
                                             FlowArch::X86_64,
-                                            "aarch64-linux-gnu-gcc"
+                                            ("aarch64-linux-gnu-gcc", "aarch64-linux-gnu-gcc")
                                         ),
+                                        FlowPlatformLinuxDistro::Nix => ("gcc", "gcc"),
                                         FlowPlatformLinuxDistro::Unknown => {
                                             anyhow::bail!("Unknown Linux distribution")
                                         }
                                     };
-                                    (pkg.to_string(), "aarch64-linux-gnu-gcc".to_string())
+                                    (pkg.to_string(), bin.to_string())
                                 }
                                 _ => anyhow::bail!("Unsupported platform"),
                             },
