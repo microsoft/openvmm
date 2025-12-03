@@ -43,7 +43,7 @@ pub struct HyperVVM {
     // TODO: use a trait interface here
     log_file: PetriLogFile,
     logger: PetriLogSource,
-    pub(crate) driver: DefaultDriver,
+    driver: DefaultDriver,
 
     // state
     destroyed: bool,
@@ -503,7 +503,7 @@ impl HyperVVM {
             let off = self.state().await? == VmState::Off;
             if last_off && off {
                 anyhow::bail!(
-                    "The VM is no longer running, but a halt event was either not recieved or not expected."
+                    "The VM is no longer running, but a halt event was either not received or not expected."
                 );
             }
             last_off = off;

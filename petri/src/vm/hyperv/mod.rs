@@ -781,6 +781,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     }
 
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
+        let driver = self.driver.clone();
         let client_core = async move |vm: &HyperVVM| {
             let socket = VmSocket::new().context("failed to create AF_HYPERV socket")?;
             // Extend the default timeout of 2 seconds, as tests are often run
@@ -796,7 +797,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                 .set_high_vtl(set_high_vtl)
                 .context("failed to set socket for VTL0")?;
 
-            let mut socket = PolledSocket::new(&vm.driver, socket)
+            let mut socket = PolledSocket::new(&driver, socket)
                 .context("failed to create polled client socket")?
                 .convert();
             socket
@@ -808,6 +809,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                 .map(|()| socket)
         };
 
+        let driver = self.driver.clone();
         let output_dir = self.output_dir.clone();
         self.vm
             .wait_for_off_or_internal(async move |vm: &HyperVVM| {
@@ -815,7 +817,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                 match client_core(vm).await {
                     Ok(socket) => {
                         tracing::info!(set_high_vtl, "handshaking with pipette");
-                        let c = PipetteClient::new(&vm.driver, socket, &output_dir)
+                        let c = PipetteClient::new(&driver, socket, &output_dir)
                             .await
                             .context("failed to handshake with pipette");
                         tracing::info!(set_high_vtl, "completed pipette handshake");
