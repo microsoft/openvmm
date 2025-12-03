@@ -158,7 +158,6 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
                 vfio_device,
                 saved_state,
                 self.is_isolated,
-                save_restore_supported,
             )
             .instrument(tracing::info_span!("nvme_driver_restore"))
             .await

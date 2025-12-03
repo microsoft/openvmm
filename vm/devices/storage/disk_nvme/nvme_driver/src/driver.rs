@@ -697,7 +697,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         mut device: T,
         saved_state: &NvmeDriverSavedState,
         bounce_buffer: bool,
-        keepalive_enabled: bool,
     ) -> anyhow::Result<Self> {
         let pci_id = device.id().to_owned();
         let driver = driver_source.simple();
@@ -751,7 +750,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             io_issuers,
             rescan_notifiers: Default::default(),
             namespaces: Default::default(),
-            nvme_keepalive: keepalive_enabled,
+            nvme_keepalive: true,
             bounce_buffer,
         };
 
