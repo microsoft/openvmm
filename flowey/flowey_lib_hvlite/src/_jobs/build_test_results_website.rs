@@ -49,7 +49,8 @@ impl SimpleFlowNode for Node {
                 xshell::cmd!(sh, "npm install").run()?;
                 xshell::cmd!(sh, "npm run build:ci").run()?;
 
-                if !dist_path.join("dist-ci").exists() {
+                dist_path.push("dist-ci");
+                if !dist_path.exists() {
                     anyhow::bail!(
                         "logview_new build failed. Expected 'dist-ci' directory at {:?} but it was not found.",
                         dist_path
