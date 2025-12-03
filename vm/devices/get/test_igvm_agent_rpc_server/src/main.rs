@@ -57,10 +57,14 @@ fn main() -> ExitCode {
 
             let _ = fmt()
                 .with_env_filter(filter)
-                .with_writer(std::io::stdout)
+                .with_writer(std::io::stderr)
                 .try_init();
 
             tracing::info!("launching IGVM agent RPC server binary");
+
+            // Close stdout to signal that the server is ready to accept connections.
+            // The test harness waits for stdout EOF before proceeding.
+            drop(std::io::stdout());
 
             // Install test plan if a configuration was provided
             if let Some(test_config) = args.test_config {
