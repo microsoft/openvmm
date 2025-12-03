@@ -198,8 +198,10 @@ impl TcpState {
     }
 }
 
+const DNS_TCP_LENGTH_FIELD_SIZE: usize = 2;
+
 impl<T: Client> Access<'_, T> {
-    /// Handles TCP DNS responses by writing them to the appropriate connection buffers.
+    /// Handles resolved DNS replies by sending them to the appropriate TCP connections.
     fn send_dns_responses(&mut self) {
         if self.inner.dns_resolver.is_none() {
             return;
@@ -212,8 +214,9 @@ impl<T: Client> Access<'_, T> {
             .unwrap()
             .poll_responses(IpProtocol::Tcp)
         {
-            // For TCP DNS, prepend the 2-byte length field
-            let mut tcp_response = Vec::with_capacity(2 + response.response_data.len());
+            // For DNS over TCP,
+            let mut tcp_response =
+                Vec::with_capacity(DNS_TCP_LENGTH_FIELD_SIZE + response.response_data.len());
             tcp_response.extend_from_slice(&(response.response_data.len() as u16).to_be_bytes());
             tcp_response.extend_from_slice(&response.response_data);
 
@@ -432,7 +435,7 @@ impl<T: Client> Access<'_, T> {
                 } else if tcp.control == TcpControl::Syn {
                     // For DNS over TCP to the gateway, handle as a server-side connection
                     // rather than trying to establish an outbound connection
-                    let conn = if is_dns {
+                    let conn = if is_dns && self.inner.dns_resolver.is_some() {
                         tracing::info!(
                             src_ip = %addresses.src_addr,
                             src_port = tcp.src_port,
@@ -606,26 +609,30 @@ impl Default for TcpConnection {
 
 impl TcpConnection {
     /// Processes DNS queries from the rx_buffer for DNS over TCP connections.
-    /// Returns true if DNS queries were processed.
     fn process_dns_queries(
         &mut self,
         resolver: &mut crate::dns_resolver::DnsResolver,
         sender: &Sender<'_, impl Client>,
     ) {
         // Try to process DNS queries from the buffer
-        while self.rx_buffer.len() >= 2 {
-            // TCP DNS has a 2-byte length prefix
-            let len_bytes: [u8; 2] = [self.rx_buffer[0], self.rx_buffer[1]];
+        while self.rx_buffer.len() >= DNS_TCP_LENGTH_FIELD_SIZE {
+            // DNS over TCP has a 2-byte length prefix
+            let len_bytes: [u8; DNS_TCP_LENGTH_FIELD_SIZE] = [self.rx_buffer[0], self.rx_buffer[1]];
             let dns_len = u16::from_be_bytes(len_bytes) as usize;
 
             // Check if we have the complete DNS query
-            if self.rx_buffer.len() < 2 + dns_len {
+            if self.rx_buffer.len() < DNS_TCP_LENGTH_FIELD_SIZE + dns_len {
                 // Not enough data yet, wait for more
                 break;
             }
 
             // Extract the DNS query (including the 2-byte length prefix)
-            let dns_query: Vec<u8> = self.rx_buffer.iter().take(2 + dns_len).copied().collect();
+            let dns_query: Vec<u8> = self
+                .rx_buffer
+                .iter()
+                .take(DNS_TCP_LENGTH_FIELD_SIZE + dns_len)
+                .copied()
+                .collect();
 
             if let Err(e) = resolver.handle_dns(
                 &dns_query,
@@ -641,7 +648,7 @@ impl TcpConnection {
             }
 
             // Remove the processed query from the buffer
-            self.rx_buffer.drain(..2 + dns_len);
+            self.rx_buffer.drain(..DNS_TCP_LENGTH_FIELD_SIZE + dns_len);
         }
     }
 
@@ -823,15 +830,6 @@ impl TcpConnection {
             return true;
         }
 
-        // DNS connections don't have sockets - they are handled via the DNS resolver.
-        // Keep them alive to allow async DNS responses to be delivered.
-        if self.is_dns_connection && self.socket.is_none() {
-            // Send any queued data (DNS responses)
-            self.send_next(sender);
-            // Keep the connection alive
-            return true;
-        }
-
         // Handle the tx path.
         if self.socket.is_some() {
             if self.state.tx_fin() {
@@ -930,6 +928,16 @@ impl TcpConnection {
                 }
                 self.is_shutdown = true;
             }
+        }
+
+        // Handle DNS path.
+        // DNS connections don't have sockets - they are handled via the DNS resolver.
+        // Keep them alive to allow async DNS responses to be delivered.
+        if self.is_dns_connection && self.socket.is_none() {
+            // Send any queued data (DNS responses)
+            self.send_next(sender);
+            // Keep the connection alive
+            return true;
         }
 
         // Send whatever needs to be sent.

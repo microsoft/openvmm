@@ -432,25 +432,22 @@ impl<T: Client> Access<'_, T> {
 
         let buffer = &mut self.inner.state.buffer;
 
-        // Copy DNS response into the UDP payload area
         let payload_offset = ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN;
         buffer[payload_offset..payload_offset + response.response_data.len()]
             .copy_from_slice(&response.response_data);
 
-        // Build the complete UDP packet using the helper function
         let mut eth_frame = EthernetFrame::new_unchecked(&mut buffer[..]);
         let frame_len = build_udp_packet(
             &mut eth_frame,
-            response.dst_addr, // Gateway is the source
-            response.src_addr, // Client is the destination
-            response.dst_port, // DNS port (53)
-            response.src_port, // Client's source port
+            response.dst_addr,
+            response.src_addr,
+            response.dst_port,
+            response.src_port,
             response.response_data.len(),
             response.gateway_mac,
             response.client_mac,
         );
 
-        // Send the frame to the client
         self.client.recv(&buffer[..frame_len], &ChecksumState::UDP4);
 
         Ok(())

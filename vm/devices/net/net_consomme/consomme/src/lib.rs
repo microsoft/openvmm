@@ -297,6 +297,8 @@ pub enum DropReason {
     /// Specified port is not bound.
     #[error("port is not bound")]
     PortNotBound,
+    #[error("dns error {0:?}")]
+    DnsError(i32),
 }
 
 /// An error to create a consomme instance.

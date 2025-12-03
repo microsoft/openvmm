@@ -31,6 +31,9 @@ use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST_VERSION1;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULT;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULTS_VERSION1;
 
+use crate::DropReason;
+use crate::dns;
+
 /// Delay-load bindings for Windows DNS Raw APIs
 pal::delayload! {"dnsapi.dll" {
     pub fn DnsQueryRaw(
@@ -89,22 +92,11 @@ pub struct DnsResolver {
     response_queue: Arc<Mutex<VecDeque<DnsResponse>>>,
 }
 
-/// DNS resolver errors.
-#[derive(Debug)]
-pub enum DnsError {
-    /// DNS query failed with the given error code.
-    QueryFailed(i32),
-    /// A query with this ID already exists.
-    AlreadyExists,
-    /// The DNS Raw APIs are not supported on this platform.
-    UnsupportedPlatform(i32),
-}
-
 impl DnsResolver {
     /// Creates a new DNS resolver instance.
-    pub fn new() -> Result<Self, DnsError> {
+    pub fn new() -> Result<Self, std::io::Error> {
         // Ensure the DNS Raw APIs are available on this platform
-        get_module().map_err(|e| DnsError::UnsupportedPlatform(e as i32))?;
+        get_module().map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
 
         Ok(Self {
             next_request_id: AtomicU64::new(0),
@@ -124,8 +116,13 @@ impl DnsResolver {
         dst_port: u16,
         gateway_mac: EthernetAddress,
         client_mac: EthernetAddress,
-    ) -> Result<(), DnsError> {
+    ) -> Result<(), DropReason> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+
+        if dns_query.len() < 12 {
+            tracing::error!(request_id, "DNS query too short");
+            return Err(DropReason::Packet(smoltcp::Error::Dropped));
+        }
 
         // Create a mutable copy of the DNS query
         let mut dns_query_vec = dns_query.to_vec();
@@ -150,7 +147,7 @@ impl DnsResolver {
         let dns_protocol = match protocol {
             IpProtocol::Tcp => DNS_PROTOCOL_TCP,
             IpProtocol::Udp => DNS_PROTOCOL_UDP,
-            _ => return Err(DnsError::QueryFailed(0)),
+            _ => return Err(DropReason::Packet(smoltcp::Error::Dropped)),
         };
 
         let request = DNS_QUERY_RAW_REQUEST {
@@ -175,9 +172,7 @@ impl DnsResolver {
         // Store the context before making the call
         {
             let mut requests = self.active_requests.lock().unwrap();
-            if requests.contains_key(&request_id) {
-                return Err(DnsError::AlreadyExists);
-            }
+            assert!(!requests.contains_key(&request_id), "Request ID collision");
             requests.insert(request_id, context);
         }
 
@@ -194,26 +189,9 @@ impl DnsResolver {
 
             // Remove the context on failure
             let mut requests = self.active_requests.lock().unwrap();
-            let context = requests.remove(&request_id);
+            requests.remove(&request_id);
             drop(requests);
-
-            if let Some(ctx) = context {
-                // Queue a SERVFAIL response
-                let servfail = create_servfail_response(dns_query);
-                let response = DnsResponse {
-                    src_addr: ctx.src_addr,
-                    dst_addr: ctx.dst_addr,
-                    src_port: ctx.src_port,
-                    dst_port: ctx.dst_port,
-                    gateway_mac: ctx.gateway_mac,
-                    client_mac: ctx.client_mac,
-                    response_data: servfail,
-                    protocol: ctx.protocol,
-                };
-                ctx.response_queue.lock().unwrap().push_back(response);
-            }
-
-            return Err(DnsError::QueryFailed(result));
+            return Err(DropReason::DnsError(result));
         }
 
         tracing::debug!(request_id, "DNS query submitted successfully");
@@ -243,37 +221,6 @@ impl DnsResolver {
             _ => None,
         }
     }
-}
-
-/// Create a DNS SERVFAIL response for a given query
-fn create_servfail_response(query: &[u8]) -> Vec<u8> {
-    if query.len() < 12 {
-        // Invalid DNS query, return minimal SERVFAIL
-        return vec![
-            0, 0, // Transaction ID
-            0x81, 0x82, // Flags: Response, SERVFAIL
-            0, 0, // Questions: 0
-            0, 0, // Answers: 0
-            0, 0, // Authority: 0
-            0, 0, // Additional: 0
-        ];
-    }
-
-    // Copy transaction ID from query
-    let transaction_id = [query[0], query[1]];
-
-    // Build SERVFAIL response with same transaction ID
-    let mut response = Vec::with_capacity(12 + (query.len() - 12).min(512));
-    response.extend_from_slice(&transaction_id);
-    response.extend_from_slice(&[
-        0x81, 0x82, // Flags: Response, SERVFAIL (RCODE=2)
-        0, 0, // Questions: 0
-        0, 0, // Answers: 0
-        0, 0, // Authority: 0
-        0, 0, // Additional: 0
-    ]);
-
-    response
 }
 
 /// DNS query completion callback
@@ -335,27 +282,6 @@ unsafe extern "system" fn dns_query_raw_callback(
             gateway_mac: context.gateway_mac,
             client_mac: context.client_mac,
             response_data,
-            protocol: context.protocol,
-        };
-        context.response_queue.lock().unwrap().push_back(response);
-
-        tracing::debug!(request_id = context.id, "DNS response queued successfully");
-    } else {
-        tracing::warn!(
-            request_id = context.id,
-            "DNS query completed but no response data, queueing SERVFAIL"
-        );
-        // Queue a SERVFAIL response if we got no data
-        // Note: We don't have the original query here, so we create a minimal SERVFAIL
-        let servfail = create_servfail_response(&[]);
-        let response = DnsResponse {
-            src_addr: context.src_addr,
-            dst_addr: context.dst_addr,
-            src_port: context.src_port,
-            dst_port: context.dst_port,
-            gateway_mac: context.gateway_mac,
-            client_mac: context.client_mac,
-            response_data: servfail,
             protocol: context.protocol,
         };
         context.response_queue.lock().unwrap().push_back(response);
