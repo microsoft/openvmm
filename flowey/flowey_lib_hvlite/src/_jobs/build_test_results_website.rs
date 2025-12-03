@@ -6,15 +6,15 @@
 use flowey::node::prelude::*;
 
 flowey_request! {
-    pub struct Params {
-        pub done: WriteVar<SideEffect>,
+    pub struct Request {
+        done: WriteVar<SideEffect>,
     }
 }
 
 new_simple_flow_node!(struct Node);
 
 impl SimpleFlowNode for Node {
-    type Request = Params;
+    type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
@@ -23,7 +23,7 @@ impl SimpleFlowNode for Node {
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let Params { done } = request;
+        let Request { done } = request;
 
         // Make sure that npm is installed
         let npm_installed = ctx.reqv(flowey_lib_common::install_nodejs::Request::EnsureInstalled);
@@ -33,6 +33,7 @@ impl SimpleFlowNode for Node {
             npm_installed.claim(ctx);
             done.claim(ctx);
             let openvmm_repo_path = openvmm_repo_path.claim(ctx);
+
             move |rt| {
                 let sh = xshell::Shell::new()?;
                 let mut path = rt.read(openvmm_repo_path);
