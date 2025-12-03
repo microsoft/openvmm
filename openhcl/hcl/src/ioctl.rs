@@ -2346,8 +2346,7 @@ impl Hcl {
         let supports_vtl_ret_action = mshv_fd.check_extension(HCL_CAP_VTL_RETURN_ACTION)?;
         let supports_register_page = mshv_fd.check_extension(HCL_CAP_REGISTER_PAGE)?;
         let dr6_shared = mshv_fd.check_extension(HCL_CAP_DR6_SHARED)?;
-        let supports_lower_vtl_timer_virt = matches!(isolation, IsolationType::Tdx)
-            && mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
+        let supports_lower_vtl_timer_virt = mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
         tracing::debug!(
             supports_vtl_ret_action,
             supports_register_page,

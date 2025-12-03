@@ -265,8 +265,10 @@ pub struct tdx_vp_state {
 pub struct tdx_l2_tsc_deadline_state {
     /// Timer deadline value in absolute virtual TSC units for this processor.
     pub deadline: u64,
-    /// Indicates if the `mshv_vtl` driver should issue a `TDG.VP.WR` call to update the
-    ///  TSC deadline.
+    /// Controls whether the TSC deadline should be updated.
+    ///
+    /// When set to 1, the `mshv_vtl` driver will issue a `TDG.VP.WR` call to
+    /// update the TSC deadline during the next entry into lower VTL.
     pub update_deadline: u8,
     pub pad: [u8; 7],
 }

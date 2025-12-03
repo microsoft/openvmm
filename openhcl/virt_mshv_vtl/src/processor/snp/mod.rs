@@ -11,6 +11,7 @@ use super::InterceptMessageOptionalState;
 use super::InterceptMessageState;
 use super::UhEmulationState;
 use super::hardware_cvm;
+use super::hardware_cvm::HardwareIsolatedGuestTimer;
 use super::vp_state;
 use super::vp_state::UhVpStateAccess;
 use crate::BackingShared;
@@ -412,7 +413,7 @@ pub struct SnpBackedShared {
     sev_status: SevStatusMsr,
     /// Accessor for managing lower VTL timer deadlines.
     #[inspect(skip)]
-    guest_timer: Box<dyn hardware_cvm::HardwareIsolatedGuestTimer<SnpBacked>>,
+    guest_timer: hardware_cvm::VmTimeGuestTimer,
 }
 
 impl SnpBackedShared {
@@ -442,8 +443,7 @@ impl SnpBackedShared {
         tracing::info!(CVM_ALLOWED, ?sev_status, "SEV status");
 
         // Configure timer interface for lower VTLs.
-        let guest_timer: Box<dyn hardware_cvm::HardwareIsolatedGuestTimer<SnpBacked>> =
-            Box::new(hardware_cvm::VmTimeGuestTimer);
+        let guest_timer = hardware_cvm::VmTimeGuestTimer;
 
         Ok(Self {
             sev_status,

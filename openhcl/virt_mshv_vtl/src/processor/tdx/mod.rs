@@ -403,9 +403,9 @@ impl TdxTscDeadlineService {
 
     /// Returns true if `ref_time` is before `ref_time_last`.
     ///
-    /// Note that this is a relative comparison in the 64-bit space and is not
-    /// transitive: if `a` is before `b`, and `b` is before `c`, `a` still may
-    /// be after `c`.
+    /// This uses wrapping arithmetic to handle 64-bit timestamp wraparound.
+    /// Note that this is not transitive: if `a` is before `b`, and `b` is before `c`,
+    /// `a` may still appear after `c` if they are too far apart in the circular space.
     fn is_before(ref_time_last: u64, ref_time: u64) -> bool {
         let delta = ref_time_last.wrapping_sub(ref_time);
         (delta as i64) < 0
@@ -480,8 +480,11 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
 /// Per-VP state for TDX L2-VM TSC deadline timer.
 #[derive(Inspect, Default)]
 struct TdxTscDeadline {
+    /// Next deadline to be armed (in 100ns units).
     #[inspect(hex)]
     deadline_100ns: Option<u64>,
+    /// Deadline (in 100ns units) armed by `mshv_vtl` driver during previous entry
+    /// into lower VTL.
     #[inspect(hex)]
     last_deadline_100ns: Option<u64>,
 }
