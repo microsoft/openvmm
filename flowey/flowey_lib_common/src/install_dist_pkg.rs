@@ -51,6 +51,23 @@ impl PackageManager {
     fn query_cmd(&self, packages_to_check: &BTreeSet<String>) -> anyhow::Result<BTreeSet<String>> {
         let Self { distro, sh } = self;
 
+        // For Nix, check if commands exist on PATH
+        if matches!(distro, FlowPlatformLinuxDistro::Nix) {
+            let mut available = BTreeSet::new();
+            for pkg in packages_to_check {
+                // Assume package name == binary name (works for python3, git, etc.)
+                if xshell::cmd!(sh, "command -v {pkg}")
+                    .ignore_status()
+                    .quiet()
+                    .run()
+                    .is_ok()
+                {
+                    available.insert(pkg.clone());
+                }
+            }
+            return Ok(available);
+        }
+
         let output = match distro {
             FlowPlatformLinuxDistro::Ubuntu => {
                 let fmt = "${binary:Package}\n";
@@ -63,6 +80,7 @@ impl PackageManager {
             FlowPlatformLinuxDistro::Arch => {
                 xshell::cmd!(sh, "pacman -Qq {packages_to_check...}")
             }
+            FlowPlatformLinuxDistro::Nix => unreachable!("handled above"),
             FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
         }
         .ignore_status()
@@ -90,6 +108,8 @@ impl PackageManager {
             FlowPlatformLinuxDistro::Fedora => xshell::cmd!(sh, "sudo dnf update").run()?,
             // Running `pacman -Sy` without a full system update can break everything; do nothing
             FlowPlatformLinuxDistro::Arch => (),
+            // Nix doesn't need updates - packages are provided by shell.nix
+            FlowPlatformLinuxDistro::Nix => (),
             FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
         }
 
@@ -117,6 +137,13 @@ impl PackageManager {
             FlowPlatformLinuxDistro::Arch => {
                 let auto_accept = (!interactive).then_some("--noconfirm");
                 xshell::cmd!(sh, "sudo pacman -S {auto_accept...} {packages...}").run()?;
+            }
+            FlowPlatformLinuxDistro::Nix => {
+                log::warn!("===============================================================================");
+                log::warn!("Missing packages in Nix environment: {:?}", packages);
+                log::warn!("Please add these to your shell.nix buildInputs");
+                log::warn!("Continuing anyway - build may fail if these are actually needed");
+                log::warn!("===============================================================================");
             }
             FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
         }

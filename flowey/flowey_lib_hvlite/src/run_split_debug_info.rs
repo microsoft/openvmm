@@ -46,6 +46,7 @@ impl SimpleFlowNode for Node {
                     FlowPlatformLinuxDistro::Arch => {
                         match_arch!(host_arch, FlowArch::X86_64, ("binutils", "objcopy"))
                     }
+                    FlowPlatformLinuxDistro::Nix => ("binutils", "objcopy"),
                     FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
                 },
                 _ => anyhow::bail!("Unsupported platform"),
@@ -59,6 +60,7 @@ impl SimpleFlowNode for Node {
                         FlowPlatformLinuxDistro::Arch => {
                             match_arch!(host_arch, FlowArch::X86_64, "aarch64-linux-gnu-binutils")
                         }
+                        FlowPlatformLinuxDistro::Nix => "binutils",
                         FlowPlatformLinuxDistro::Unknown => {
                             anyhow::bail!("Unknown Linux distribution")
                         }

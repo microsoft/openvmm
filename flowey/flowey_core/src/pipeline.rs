@@ -61,6 +61,11 @@ pub mod user_facing {
 }
 
 fn linux_distro() -> FlowPlatformLinuxDistro {
+    // Check for Nix environment first
+    if std::env::var("USING_NIX").map(|v| v == "1").unwrap_or(false) {
+        return FlowPlatformLinuxDistro::Nix;
+    }
+
     if let Ok(etc_os_release) = fs_err::read_to_string("/etc/os-release") {
         if etc_os_release.contains("ID=ubuntu") {
             FlowPlatformLinuxDistro::Ubuntu

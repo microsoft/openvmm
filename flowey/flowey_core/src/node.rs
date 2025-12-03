@@ -953,6 +953,8 @@ pub enum FlowPlatformLinuxDistro {
     Ubuntu,
     /// Arch Linux (including WSL2)
     Arch,
+    /// Nix (when USING_NIX=1 is set)
+    Nix,
     /// An unknown distribution
     Unknown,
 }
