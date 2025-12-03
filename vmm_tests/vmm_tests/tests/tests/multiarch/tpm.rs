@@ -3,6 +3,7 @@
 
 use anyhow::Context;
 use anyhow::ensure;
+#[cfg(windows)]
 use parking_lot::Mutex;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
