@@ -33,14 +33,15 @@ pub type RpcInterfaceHandle = *mut c_void;
 
 // SAFETY: FFI handle
 unsafe extern "C" {
-    pub static IgvmAgentRpcApi: RpcInterfaceHandle;
+    pub static IGVmAgentRpcApi_v1_0_s_ifspec: RpcInterfaceHandle;
 }
 
 fn to_wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain([0]).collect()
 }
 
-// SAFETY: FFI
+/// # SAFETY
+/// The callback for the passing through FFI
 unsafe extern "system" fn rpc_bind_callback(
     _context: *const c_void,
     _uuid: *const c_void,
@@ -51,12 +52,14 @@ unsafe extern "system" fn rpc_bind_callback(
 
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-// SAFETY: FFI
+/// # SAFETY
+/// Used by RPC handler registration.
 unsafe extern "system" fn console_ctrl_handler(ctrl_type: u32) -> BOOL {
     match ctrl_type {
         CTRL_C_EVENT | CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT | CTRL_SHUTDOWN_EVENT => {
             if !STOP_REQUESTED.swap(true, Ordering::SeqCst) {
                 tracing::info!("console control signal {ctrl_type} received; requesting shutdown");
+                // SAFETY: Make an FFI call.
                 let status = unsafe { RpcMgmtStopServerListening(ptr::null_mut()) };
                 if status != RPC_S_OK && status != RPC_S_NOT_LISTENING {
                     tracing::error!("RpcMgmtStopServerListening failed: {status}");
@@ -94,25 +97,29 @@ impl Drop for ConsoleHandlerGuard {
 }
 
 fn register_protocol_and_interface() -> Result<(), String> {
-    unsafe {
-        tracing::info!(protocol = %PROTOCOL_SEQUENCE, endpoint = %ENDPOINT, "registering RPC protocol");
-        let mut protocol_seq = to_wide(PROTOCOL_SEQUENCE);
-        let mut endpoint = to_wide(ENDPOINT);
+    tracing::info!(protocol = %PROTOCOL_SEQUENCE, endpoint = %ENDPOINT, "registering RPC protocol");
+    let mut protocol_seq = to_wide(PROTOCOL_SEQUENCE);
+    let mut endpoint = to_wide(ENDPOINT);
 
-        let status = RpcServerUseProtseqEpW(
+    // SAFETY: Make an FFI call.
+    let status = unsafe {
+        RpcServerUseProtseqEpW(
             protocol_seq.as_mut_ptr(),
             RPC_C_PROTSEQ_MAX_REQS_DEFAULT,
             endpoint.as_mut_ptr(),
             ptr::null_mut(),
-        );
-        if status != RPC_S_OK {
-            tracing::error!(status = status, "RpcServerUseProtseqEpW failed");
-            return Err(format!("RpcServerUseProtseqEpW failed: {status}"));
-        }
-        tracing::info!("RPC protocol bound successfully");
+        )
+    };
+    if status != RPC_S_OK {
+        tracing::error!(status = status, "RpcServerUseProtseqEpW failed");
+        return Err(format!("RpcServerUseProtseqEpW failed: {status}"));
+    }
+    tracing::info!("RPC protocol bound successfully");
 
-        let status = RpcServerRegisterIf3(
-            IgvmAgentRpcApi,
+    // SAFETY: Make an FFI call.
+    let status = unsafe {
+        RpcServerRegisterIf3(
+            IGVmAgentRpcApi_v1_0_s_ifspec,
             ptr::null_mut(),
             ptr::null_mut(),
             0,
@@ -120,11 +127,11 @@ fn register_protocol_and_interface() -> Result<(), String> {
             0,
             Some(rpc_bind_callback),
             ptr::null_mut(),
-        );
-        if status != RPC_S_OK {
-            tracing::error!(status = status, "RpcServerRegisterIf3 failed");
-            return Err(format!("RpcServerRegisterIf3 failed: {status}"));
-        }
+        )
+    };
+    if status != RPC_S_OK {
+        tracing::error!(status = status, "RpcServerRegisterIf3 failed");
+        return Err(format!("RpcServerRegisterIf3 failed: {status}"));
     }
 
     tracing::info!("RPC interface registered");
@@ -134,7 +141,7 @@ fn register_protocol_and_interface() -> Result<(), String> {
 fn unregister_interface() {
     // SAFETY: Make an FFI call.
     unsafe {
-        RpcServerUnregisterIf(IgvmAgentRpcApi, ptr::null_mut(), 0);
+        RpcServerUnregisterIf(IGVmAgentRpcApi_v1_0_s_ifspec, ptr::null_mut(), 0);
     }
     tracing::info!("RPC interface unregistered");
 }
@@ -145,6 +152,7 @@ pub fn run_server() -> Result<(), String> {
     register_protocol_and_interface()?;
     let _handler = ConsoleHandlerGuard::register()?;
 
+    // SAFETY: Make an FFI call.
     let listen_status = unsafe { RpcServerListen(1, RPC_C_LISTEN_MAX_CALLS_DEFAULT, 0) };
 
     unregister_interface();

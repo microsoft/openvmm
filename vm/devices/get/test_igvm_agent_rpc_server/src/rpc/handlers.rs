@@ -18,18 +18,22 @@ use windows_sys::Win32::System::Rpc::RpcRaiseException;
 
 #[unsafe(no_mangle)]
 /// Allocator shim invoked by the generated MIDL stubs.
-// SAFETY: FFI
+/// # SAFETY
+/// Define FFI to fullfil the linker requirement
 pub unsafe extern "C" fn MIDL_user_allocate(size: usize) -> *mut c_void {
     use windows_sys::Win32::System::Com::CoTaskMemAlloc;
+    // SAFETY: make an FFI call
     unsafe { CoTaskMemAlloc(size) }
 }
 
 #[unsafe(no_mangle)]
 /// Deallocator shim invoked by the generated MIDL stubs.
-// SAFETY: FFI
+/// # SAFETY
+/// Define FFI to fullfil the linker requirement
 pub unsafe extern "C" fn MIDL_user_free(ptr: *mut c_void) {
     use windows_sys::Win32::System::Com::CoTaskMemFree;
     if !ptr.is_null() {
+        // SAFETY: make an FFI call
         unsafe {
             CoTaskMemFree(ptr);
         }
@@ -95,6 +99,7 @@ fn write_response_size(ptr: *mut u32, value: u32) -> Result<(), HRESULT> {
 
 fn copy_to_buffer(buffer: &[u8], dest: *mut u8) {
     if !buffer.is_empty() {
+        // SAFETY: memory access
         unsafe {
             ptr::copy_nonoverlapping(buffer.as_ptr(), dest, buffer.len());
         }
@@ -109,6 +114,7 @@ fn read_guid(ptr: *const Guid) -> Option<Guid> {
     if ptr.is_null() {
         None
     } else {
+        // SAFETY: memory access
         Some(unsafe { *ptr })
     }
 }

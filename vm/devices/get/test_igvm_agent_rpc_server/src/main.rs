@@ -3,9 +3,6 @@
 
 //! Standalone executable that hosts the IGVM agent Windows RPC façade.
 
-// UNSAFETY: Windows FFI
-#![cfg_attr(windows, expect(unsafe_code))]
-
 #[cfg(target_os = "windows")]
 mod rpc;
 
