@@ -9,6 +9,7 @@
 
 // UNSAFETY: This module uses unsafe code to interface with Windows APIs and for FFI bindings.
 #![expect(unsafe_code)]
+#![allow(unused_doc_comments, missing_docs)]
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Address;
@@ -22,17 +23,28 @@ use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_TCP;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_UDP;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_NO_MULTICAST;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_CANCEL;
+use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_OPTION_BEST_EFFORT_PARSE;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST_0;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST_VERSION1;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULT;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULTS_VERSION1;
-use windows_sys::Win32::NetworkManagement::Dns::DnsQueryRaw;
-use windows_sys::Win32::NetworkManagement::Dns::DnsQueryRawResultFree;
-use windows_sys::Win32::Networking::WinSock::AF_INET;
-use windows_sys::Win32::Networking::WinSock::IN_ADDR;
-use windows_sys::Win32::Networking::WinSock::IN_ADDR_0;
-use windows_sys::Win32::Networking::WinSock::SOCKADDR_IN;
+
+/// Delay-load bindings for Windows DNS Raw APIs
+pal::delayload! {"windns.dll" {
+    pub fn DnsQueryRaw(
+        request: *const DNS_QUERY_RAW_REQUEST,
+        cancel: *mut DNS_QUERY_RAW_CANCEL
+    ) -> i32;
+
+    pub fn DnsCancelQueryRaw(
+        cancel: *const DNS_QUERY_RAW_CANCEL
+    ) -> i32;
+
+    pub fn DnsQueryRawResultFree(
+        result: *mut DNS_QUERY_RAW_RESULT
+    ) -> ();
+}}
 
 /// A queued DNS response ready to be sent to the guest.
 #[derive(Debug, Clone)]
@@ -83,11 +95,16 @@ pub enum DnsError {
     QueryFailed(i32),
     /// A query with this ID already exists.
     AlreadyExists,
+    /// The DNS Raw APIs are not supported on this platform.
+    UnsupportedPlatform(i32),
 }
 
 impl DnsResolver {
     /// Creates a new DNS resolver instance.
     pub fn new() -> Result<Self, DnsError> {
+        // Ensure the DNS Raw APIs are available on this platform
+        get_module().map_err(|e| DnsError::UnsupportedPlatform(e as i32))?;
+
         Ok(Self {
             next_request_id: AtomicU64::new(0),
             active_requests: Arc::new(Mutex::new(HashMap::new())),
@@ -107,14 +124,7 @@ impl DnsResolver {
         gateway_mac: EthernetAddress,
         client_mac: EthernetAddress,
     ) -> Result<(), DnsError> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
-
-        tracing::debug!(
-            request_id,
-            protocol = ?protocol,
-            query_size = dns_query.len(),
-            "Starting DNS query"
-        );
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
 
         // Create a mutable copy of the DNS query
         let mut dns_query_vec = dns_query.to_vec();
@@ -142,27 +152,6 @@ impl DnsResolver {
             _ => return Err(DnsError::QueryFailed(0)),
         };
 
-        let addr = SOCKADDR_IN {
-            sin_family: AF_INET as u16,
-            sin_port: 56221u16.to_be(), // DNS port in network byte order
-            sin_addr: IN_ADDR {
-                S_un: IN_ADDR_0 {
-                    S_addr: u32::from_be_bytes([10, 137, 184, 83]),
-                },
-            }, // Google DNS
-            sin_zero: [0; 8],
-        };
-
-        let mut anonymous = DNS_QUERY_RAW_REQUEST_0::default();
-        unsafe {
-            // Copy the exact bytes of SOCKADDR_IN into the buffer
-            std::ptr::copy_nonoverlapping(
-                &addr as *const SOCKADDR_IN as *const u8,
-                anonymous.maxSa.as_mut_ptr() as *mut u8,
-                size_of::<SOCKADDR_IN>(),
-            );
-        };
-
         let request = DNS_QUERY_RAW_REQUEST {
             version: DNS_QUERY_RAW_REQUEST_VERSION1,
             resultsVersion: DNS_QUERY_RAW_RESULTS_VERSION1,
@@ -170,7 +159,8 @@ impl DnsResolver {
             dnsQueryRaw: dns_query_vec.as_mut_ptr(),
             dnsQueryName: std::ptr::null_mut(),
             dnsQueryType: 0,
-            queryOptions: DNS_QUERY_NO_MULTICAST as u64,
+            queryOptions: DNS_QUERY_NO_MULTICAST as u64
+                | DNS_QUERY_RAW_OPTION_BEST_EFFORT_PARSE as u64,
             interfaceIndex: 0,
             queryCompletionCallback: Some(dns_query_raw_callback),
             queryContext: context_ptr,
@@ -178,7 +168,7 @@ impl DnsResolver {
             customServersSize: 0,
             customServers: std::ptr::null_mut(),
             protocol: dns_protocol,
-            Anonymous: anonymous,
+            Anonymous: DNS_QUERY_RAW_REQUEST_0::default(),
         };
 
         // Store the context before making the call
@@ -232,6 +222,9 @@ impl DnsResolver {
     /// Cancel all active DNS queries
     pub fn cancel_all(&mut self) {
         let mut requests = self.active_requests.lock().unwrap();
+        requests.iter().for_each(|(_, ctx)| unsafe {
+            DnsCancelQueryRaw(&ctx.cancel_handle);
+        });
         requests.clear();
     }
 
@@ -242,22 +235,17 @@ impl DnsResolver {
             protocol == IpProtocol::Udp || protocol == IpProtocol::Tcp,
             "protocol must be UDP or TCP"
         );
-        self.response_queue
-            .lock()
-            .unwrap()
-            .front()
-            .and_then(|resp| {
-                if resp.protocol == protocol {
-                    self.response_queue.lock().unwrap().pop_front()
-                } else {
-                    None
-                }
-            })
+
+        let mut queue = self.response_queue.lock().unwrap();
+        match queue.front() {
+            Some(resp) if resp.protocol == protocol => queue.pop_front(),
+            _ => None,
+        }
     }
 }
 
 /// Create a DNS SERVFAIL response for a given query
-pub fn create_servfail_response(query: &[u8]) -> Vec<u8> {
+fn create_servfail_response(query: &[u8]) -> Vec<u8> {
     if query.len() < 12 {
         // Invalid DNS query, return minimal SERVFAIL
         return vec![

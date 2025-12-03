@@ -200,7 +200,7 @@ impl TcpState {
 
 impl<T: Client> Access<'_, T> {
     /// Handles TCP DNS responses by writing them to the appropriate connection buffers.
-    fn handle_tcp_dns_responses(&mut self) {
+    fn send_dns_responses(&mut self) {
         if self.inner.dns_resolver.is_none() {
             return;
         }
@@ -282,7 +282,7 @@ impl<T: Client> Access<'_, T> {
 
     pub(crate) fn poll_tcp(&mut self, cx: &mut Context<'_>) {
         // Poll for TCP DNS responses that are ready to be sent
-        self.handle_tcp_dns_responses();
+        self.send_dns_responses();
 
         // Check for any new incoming connections
         self.inner
@@ -430,12 +430,20 @@ impl<T: Client> Access<'_, T> {
                     // This is for an old connection. Send reset.
                     sender.rst(ack, None);
                 } else if tcp.control == TcpControl::Syn {
-                    let mut conn = TcpConnection::new(&mut sender, &tcp)?;
-                    // Mark as DNS connection if destined for gateway:53
-                    if is_dns {
-                        conn.is_dns_connection = true;
-                        tracing::debug!("Created DNS over TCP connection");
-                    }
+                    // For DNS over TCP to the gateway, handle as a server-side connection
+                    // rather than trying to establish an outbound connection
+                    let conn = if is_dns {
+                        tracing::info!(
+                            src_ip = %addresses.src_addr,
+                            src_port = tcp.src_port,
+                            dst_ip = %addresses.dst_addr,
+                            dst_port = tcp.dst_port,
+                            "Received SYN for DNS over TCP connection"
+                        );
+                        TcpConnection::new_for_dns(&mut sender, &tcp)?
+                    } else {
+                        TcpConnection::new(&mut sender, &tcp)?
+                    };
                     e.insert(conn);
                 } else {
                     // Ignore the packet.
@@ -616,28 +624,16 @@ impl TcpConnection {
                 break;
             }
 
-            // Extract the DNS query (skip the 2-byte length prefix)
-            let dns_query: Vec<u8> = self
-                .rx_buffer
-                .iter()
-                .skip(2)
-                .take(dns_len)
-                .copied()
-                .collect();
+            // Extract the DNS query (including the 2-byte length prefix)
+            let dns_query: Vec<u8> = self.rx_buffer.iter().take(2 + dns_len).copied().collect();
 
-            tracing::debug!(
-                query_len = dns_query.len(),
-                "Processing DNS over TCP query from buffer"
-            );
-
-            // Submit the DNS query
             if let Err(e) = resolver.handle_dns(
                 &dns_query,
                 IpProtocol::Tcp,
-                sender.ft.dst.ip,   // Gateway IP (src of response)
-                sender.ft.src.ip,   // Client IP (dst of response)
-                sender.ft.dst.port, // Gateway port 53 (src of response)
-                sender.ft.src.port, // Client port (dst of response)
+                sender.ft.src.ip,
+                sender.ft.dst.ip,
+                sender.ft.src.port,
+                sender.ft.dst.port,
                 sender.state.params.gateway_mac,
                 sender.state.params.client_mac,
             ) {
@@ -708,6 +704,26 @@ impl TcpConnection {
             ..Default::default()
         };
         this.send_syn(sender, None);
+        Ok(this)
+    }
+
+    fn new_for_dns(
+        sender: &mut Sender<'_, impl Client>,
+        tcp: &TcpRepr<'_>,
+    ) -> Result<Self, DropReason> {
+        let mut this = Self::default();
+        this.initialize_from_first_client_packet(tcp)?;
+
+        // Mark this as a DNS connection
+        this.is_dns_connection = true;
+
+        // Transition directly to SynReceived state (server-side)
+        this.state = TcpState::SynReceived;
+        this.rx_window_cap = this.rx_buffer.capacity();
+
+        // Send SYN-ACK immediately
+        this.send_syn(sender, Some(this.rx_seq));
+
         Ok(this)
     }
 
@@ -804,6 +820,15 @@ impl TcpConnection {
             }
         } else if self.state == TcpState::SynSent {
             // Need to establish connection with client before sending data.
+            return true;
+        }
+
+        // DNS connections don't have sockets - they are handled via the DNS resolver.
+        // Keep them alive to allow async DNS responses to be delivered.
+        if self.is_dns_connection && self.socket.is_none() {
+            // Send any queued data (DNS responses)
+            self.send_next(sender);
+            // Keep the connection alive
             return true;
         }
 

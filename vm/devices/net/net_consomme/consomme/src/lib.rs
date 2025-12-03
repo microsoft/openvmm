@@ -16,10 +16,12 @@
 
 mod arp;
 mod dhcp;
+#[cfg_attr(unix, path = "dns_unix.rs")]
+#[cfg_attr(windows, path = "dns_windows.rs")]
+mod dns;
 #[cfg_attr(windows, path = "dns_resolver_windows.rs")]
 #[cfg_attr(unix, path = "dns_resolver_unix.rs")]
 pub mod dns_resolver;
-
 mod icmp;
 mod tcp;
 mod udp;
@@ -97,10 +99,18 @@ impl ConsommeParams {
     /// Create default dynamic network state. The default state is
     ///     IP address: 10.0.0.2 / 24
     ///     gateway: 10.0.0.1 with MAC address 52-55-10-0-0-1
-    ///     no DNS resolvers
-    pub fn new() -> Self {
-        let nameservers = vec![Ipv4Address::new(10, 0, 0, 1)];
-        Self {
+    ///     DNS resolvers: either 10.0.0.1 (if DNS Raw APIs available) or system nameservers
+    pub fn new() -> Result<Self, dns::Error> {
+        // Try to use DNS resolver, fall back to system nameservers if not available
+        let nameservers = if dns_resolver::DnsResolver::new().is_ok() {
+            // DNS Raw APIs are available, use the NAT gateway as nameserver
+            vec![Ipv4Address::new(10, 0, 0, 1)]
+        } else {
+            // DNS Raw APIs not available, use system nameservers
+            dns::nameservers()?
+        };
+
+        Ok(Self {
             gateway_ip: Ipv4Address::new(10, 0, 0, 1),
             gateway_mac: EthernetAddress([0x52, 0x55, 10, 0, 0, 1]),
             client_ip: Ipv4Address::new(10, 0, 0, 2),
@@ -108,7 +118,7 @@ impl ConsommeParams {
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
             udp_timeout: std::time::Duration::from_secs(300),
-        }
+        })
     }
 
     /// Sets the cidr for the network.

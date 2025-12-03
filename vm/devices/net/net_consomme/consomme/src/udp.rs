@@ -453,7 +453,6 @@ impl<T: Client> Access<'_, T> {
         // Send the frame to the client
         self.client.recv(&buffer[..frame_len], &ChecksumState::UDP4);
 
-        tracing::debug!(frame_len, "DNS response sent successfully");
         Ok(())
     }
 }
