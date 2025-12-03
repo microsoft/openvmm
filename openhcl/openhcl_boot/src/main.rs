@@ -289,13 +289,25 @@ fn build_kernel_command_line(
         )?;
     }
 
-    // Only when explicitly supported by Host.
+    // Generate the NVMe keep alive command line which should look something
+    // like: OPENHCL_NVME_KEEP_ALIVE=disabled,host,privatepool
     // TODO: Move from command line to device tree when stabilized.
-    if partition_info.nvme_keepalive
-        && vtl2_pool_supported
-        && !partition_info.boot_options.disable_nvme_keep_alive
-    {
-        write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=1 ")?;
+    write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=")?;
+
+    if partition_info.boot_options.disable_nvme_keep_alive {
+        write!(cmdline, "disabled,")?;
+    }
+
+    if partition_info.nvme_keepalive {
+        write!(cmdline, "host,")?;
+    } else {
+        write!(cmdline, "nohost,")?;
+    }
+
+    if vtl2_pool_supported {
+        write!(cmdline, "privatepool ")?;
+    } else {
+        write!(cmdline, "noprivatepool ")?;
     }
 
     if let Some(sidecar) = sidecar {

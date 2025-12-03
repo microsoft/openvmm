@@ -193,7 +193,7 @@ pub(crate) struct LoadedVm {
 
     pub _periodic_telemetry_task: Task<()>,
 
-    pub nvme_keep_alive: bool,
+    pub nvme_keep_alive: KeepAliveConfig,
     pub mana_keep_alive: KeepAliveConfig,
     pub test_configuration: Option<TestScenarioConfig>,
     pub dma_manager: OpenhclDmaManager,
@@ -306,7 +306,10 @@ impl LoadedVm {
                     WorkerRpc::Restart(rpc) => {
                         let state = async {
                             let running = self.stop().await;
-                            match self.save(None, false, KeepAliveConfig::Disabled).await {
+                            match self
+                                .save(None, KeepAliveConfig::Disabled, KeepAliveConfig::Disabled)
+                                .await
+                            {
                                 Ok(servicing_state) => Some((rpc, servicing_state)),
                                 Err(err) => {
                                     if running {
@@ -372,7 +375,9 @@ impl LoadedVm {
                     UhVmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| {
                             let running = self.stop().await;
-                            let r = self.save(None, false, KeepAliveConfig::Disabled).await;
+                            let r = self
+                                .save(None, KeepAliveConfig::Disabled, KeepAliveConfig::Disabled)
+                                .await;
                             if running {
                                 self.start(None).await;
                             }
@@ -573,7 +578,10 @@ impl LoadedVm {
 
         // NOTE: This is set via the corresponding env arg, as this feature is
         // experimental.
-        let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
+        if !capabilities_flags.enable_nvme_keepalive() {
+            self.nvme_keep_alive = KeepAliveConfig::Disabled
+        };
+
         if !capabilities_flags.enable_mana_keepalive() {
             self.mana_keep_alive = KeepAliveConfig::Disabled
         };
@@ -591,7 +599,13 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
-            let mut state = self.save(Some(deadline), nvme_keepalive, self.mana_keep_alive.clone()).await?;
+            let mut state = self
+                .save(
+                    Some(deadline),
+                    self.nvme_keep_alive.clone(),
+                    self.mana_keep_alive.clone(),
+                )
+                .await?;
             state.init_state.correlation_id = Some(correlation_id);
 
             // Unload any network devices.
@@ -599,7 +613,9 @@ impl LoadedVm {
                 if let Some(network_settings) = self.network_settings.as_mut() {
                     network_settings
                         .unload_for_servicing()
-                        .instrument(tracing::info_span!("shutdown_mana", CVM_ALLOWED, %correlation_id))
+                        .instrument(
+                            tracing::info_span!("shutdown_mana", CVM_ALLOWED, %correlation_id),
+                        )
                         .await;
                 }
             };
@@ -608,8 +624,13 @@ impl LoadedVm {
             let shutdown_nvme = async {
                 if let Some(nvme_manager) = self.nvme_manager.take() {
                     nvme_manager
-                        .shutdown(nvme_keepalive)
-                        .instrument(tracing::info_span!("shutdown_nvme_vfio", CVM_ALLOWED, %correlation_id, %nvme_keepalive))
+                        .shutdown(self.nvme_keep_alive.is_enabled())
+                        .instrument(tracing::info_span!(
+                            "shutdown_nvme_vfio",
+                            CVM_ALLOWED,
+                            correlation_id = %correlation_id,
+                            nvme_keep_alive_enabled = self.nvme_keep_alive.is_enabled()
+                        ))
                         .await;
                 }
             };
@@ -618,18 +639,19 @@ impl LoadedVm {
             // restart.
             let shutdown_pci = async {
                 pci_shutdown::shutdown_pci_devices()
-                    .instrument(tracing::info_span!("shutdown_pci_devices", CVM_ALLOWED, %correlation_id))
+                    .instrument(
+                        tracing::info_span!("shutdown_pci_devices", CVM_ALLOWED, %correlation_id),
+                    )
                     .await
             };
 
             // Save the persisted state used by the next openhcl_boot.
-            let cpus_with_mapped_interrupts = match state
-                .init_state
-                .nvme_state
-                .as_ref() {
-                    Some(nvme_state) => crate::nvme_manager::save_restore::cpus_with_interrupts(&nvme_state.nvme_state),
-                    None => vec![],
-                };
+            let cpus_with_mapped_interrupts = match state.init_state.nvme_state.as_ref() {
+                Some(nvme_state) => {
+                    crate::nvme_manager::save_restore::cpus_with_interrupts(&nvme_state.nvme_state)
+                }
+                None => vec![],
+            };
 
             crate::loader::vtl2_config::write_persisted_info(
                 self.runtime_params.parsed_openhcl_boot(),
@@ -768,7 +790,7 @@ impl LoadedVm {
     async fn save(
         &mut self,
         _deadline: Option<std::time::Instant>,
-        nvme_keepalive_flag: bool,
+        nvme_keepalive_mode: KeepAliveConfig,
         mana_keepalive_mode: KeepAliveConfig,
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
@@ -781,12 +803,13 @@ impl LoadedVm {
         //
         // This has to happen before saving the network state, otherwise its allocations
         // are marked as Free and are unable to be restored.
-        let dma_manager_state = if nvme_keepalive_flag || mana_keepalive_mode.is_enabled() {
-            use vmcore::save_restore::SaveRestore;
-            Some(self.dma_manager.save().context("dma_manager save failed")?)
-        } else {
-            None
-        };
+        let dma_manager_state =
+            if nvme_keepalive_mode.is_enabled() || mana_keepalive_mode.is_enabled() {
+                use vmcore::save_restore::SaveRestore;
+                Some(self.dma_manager.save().context("dma_manager save failed")?)
+            } else {
+                None
+            };
 
         // Only save NVMe state when there are NVMe controllers and keep alive
         // was enabled.
@@ -794,10 +817,10 @@ impl LoadedVm {
             // DEVNOTE: A subtlety here is that the act of saving the NVMe state also causes the driver
             // to enter a state where subsequent teardown operations will noop. There is a STRONG
             // correlation between save/restore and keepalive.
-            n.save(nvme_keepalive_flag)
+            n.save(nvme_keepalive_mode.is_enabled())
                 .instrument(tracing::info_span!(
                     "nvme_manager_save",
-                    nvme_keepalive_flag,
+                    nvme_keepalive_mode = %nvme_keepalive_mode.is_enabled(),
                     CVM_ALLOWED
                 ))
                 .await
