@@ -18,7 +18,6 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
-        ctx.import::<crate::install_openvmm_rust_build_essential::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
     }
 
