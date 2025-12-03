@@ -287,7 +287,7 @@ pub struct UnderhillEnvCfg {
     /// Hide the isolation mode from the guest.
     pub hide_isolation: bool,
     /// Enable nvme keep alive.
-    pub nvme_keep_alive: bool,
+    pub nvme_keep_alive: KeepAliveConfig,
     /// Enable mana keep alive.
     pub mana_keep_alive: KeepAliveConfig,
     /// Don't skip FLR for NVMe devices.
@@ -1061,9 +1061,15 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         Ok(params)
     }
 
-    async fn save(&mut self) -> Vec<ManaSavedState> {
+    async fn save(&mut self) -> Option<Vec<ManaSavedState>> {
         let mut vf_managers: Vec<(Guid, Arc<HclNetworkVFManager>)> =
             self.vf_managers.drain().collect();
+
+        // Nothing to save
+        if vf_managers.is_empty() {
+            return None;
+        }
+
         let (vf_managers, mut nic_channels) = self.begin_vf_teardown(&mut vf_managers, false);
 
         let mut endpoints: Vec<_> =
@@ -1097,7 +1103,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         let state = (run_endpoints, save_vf_managers).race().await;
 
         // Discard any vf_managers that failed to return valid save state.
-        state.into_iter().flatten().collect()
+        Some(state.into_iter().flatten().collect())
     }
 }
 
@@ -2174,7 +2180,7 @@ async fn new_underhill_vm(
         // TODO: reevaluate enablement of nvme save restore when private pool
         // save restore to bootshim is available.
         let private_pool_available = !runtime_params.private_pool_ranges().is_empty();
-        let save_restore_supported = env_cfg.nvme_keep_alive && private_pool_available;
+        let save_restore_supported = env_cfg.nvme_keep_alive.is_enabled() && private_pool_available;
 
         let manager = NvmeManager::new(
             &driver_source,
