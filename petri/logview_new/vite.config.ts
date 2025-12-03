@@ -39,7 +39,7 @@ const copyrightPlugin = () => ({
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  base: "/test-results/",
+  base: "/test-results-ci/",
   plugins: [react(), copyrightPlugin()],
   server: {
     port: 3000,
