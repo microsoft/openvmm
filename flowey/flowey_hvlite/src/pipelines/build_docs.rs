@@ -89,7 +89,7 @@ impl IntoPipeline for BuildDocsCli {
 
         pipeline.inject_all_jobs_with(move |job| {
             job.dep_on(&cfg_common_params)
-                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Download)
+                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
                 .dep_on(
                     |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
                         hvlite_repo_source: openvmm_repo_source.clone(),

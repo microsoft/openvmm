@@ -154,7 +154,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey.exe e 0 flowey_lib_common::download_protoc 0
+        flowey.exe e 0 flowey_lib_common::resolve_protoc 0
         flowey.exe e 0 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -316,7 +316,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey e 1 flowey_lib_common::download_protoc 0
+        flowey e 1 flowey_lib_common::resolve_protoc 0
         flowey e 1 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -480,7 +480,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey.exe e 10 flowey_lib_common::download_protoc 0
+        flowey.exe e 10 flowey_lib_common::resolve_protoc 0
         flowey.exe e 10 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -726,7 +726,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey e 11 flowey_lib_common::download_protoc 0
+        flowey e 11 flowey_lib_common::resolve_protoc 0
         flowey e 11 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -1008,7 +1008,7 @@ jobs:
       run: flowey e 12 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
       shell: bash
     - name: unpack protoc
-      run: flowey e 12 flowey_lib_common::download_protoc 0
+      run: flowey e 12 flowey_lib_common::resolve_protoc 0
       shell: bash
     - name: symlink protoc
       run: |-
@@ -1263,7 +1263,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey.exe e 13 flowey_lib_common::download_protoc 0
+        flowey.exe e 13 flowey_lib_common::resolve_protoc 0
         flowey.exe e 13 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -1509,7 +1509,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey e 14 flowey_lib_common::download_protoc 0
+        flowey e 14 flowey_lib_common::resolve_protoc 0
         flowey e 14 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -1771,7 +1771,7 @@ jobs:
       run: flowey e 15 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
       shell: bash
     - name: unpack protoc
-      run: flowey e 15 flowey_lib_common::download_protoc 0
+      run: flowey e 15 flowey_lib_common::resolve_protoc 0
       shell: bash
     - name: symlink protoc
       run: |-
@@ -3060,7 +3060,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey.exe e 2 flowey_lib_common::download_protoc 0
+        flowey.exe e 2 flowey_lib_common::resolve_protoc 0
         flowey.exe e 2 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -3937,7 +3937,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey.exe e 3 flowey_lib_common::download_protoc 0
+        flowey.exe e 3 flowey_lib_common::resolve_protoc 0
         flowey.exe e 3 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -4230,7 +4230,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey.exe e 4 flowey_lib_common::download_protoc 0
+        flowey.exe e 4 flowey_lib_common::resolve_protoc 0
         flowey.exe e 4 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -4454,7 +4454,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey.exe e 5 flowey_lib_common::download_protoc 0
+        flowey.exe e 5 flowey_lib_common::resolve_protoc 0
         flowey.exe e 5 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -4769,7 +4769,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey e 6 flowey_lib_common::download_protoc 0
+        flowey e 6 flowey_lib_common::resolve_protoc 0
         flowey e 6 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -5090,7 +5090,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey e 7 flowey_lib_common::download_protoc 0
+        flowey e 7 flowey_lib_common::resolve_protoc 0
         flowey e 7 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -5460,7 +5460,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey e 8 flowey_lib_common::download_protoc 0
+        flowey e 8 flowey_lib_common::resolve_protoc 0
         flowey e 8 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -5809,7 +5809,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey e 9 flowey_lib_common::download_protoc 0
+        flowey e 9 flowey_lib_common::resolve_protoc 0
         flowey e 9 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc

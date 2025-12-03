@@ -155,7 +155,7 @@ jobs:
     displayName: extract X64 sysroot.tar.gz
   - bash: $(FLOWEY_BIN) e 12 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
     displayName: set '-Dwarnings' in .cargo/config.toml
-  - bash: $(FLOWEY_BIN) e 12 flowey_lib_common::download_protoc 0
+  - bash: $(FLOWEY_BIN) e 12 flowey_lib_common::resolve_protoc 0
     displayName: unpack protoc
   - bash: |-
       set -e
@@ -397,7 +397,7 @@ jobs:
     displayName: installing packages
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 11 flowey_lib_common::download_protoc 0
+      $(FLOWEY_BIN) e 11 flowey_lib_common::resolve_protoc 0
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::cfg_openvmm_magicpath 0
     displayName: unpack protoc
   - bash: |-
@@ -652,7 +652,7 @@ jobs:
     displayName: download artifacts from github releases
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 10 flowey_lib_common::download_protoc 0
+      $(FLOWEY_BIN) e 10 flowey_lib_common::resolve_protoc 0
       $(FLOWEY_BIN) e 10 flowey_lib_hvlite::cfg_openvmm_magicpath 0
     displayName: unpack protoc
   - bash: |-
@@ -891,7 +891,7 @@ jobs:
     displayName: set '-Dwarnings' in .cargo/config.toml
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 9 flowey_lib_common::download_protoc 0
+      $(FLOWEY_BIN) e 9 flowey_lib_common::resolve_protoc 0
       $(FLOWEY_BIN) e 9 flowey_lib_hvlite::cfg_openvmm_magicpath 0
     displayName: unpack protoc
   - bash: |-
@@ -1291,7 +1291,7 @@ jobs:
     displayName: set '-Dwarnings' in .cargo/config.toml
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 8 flowey_lib_common::download_protoc 0
+      $(FLOWEY_BIN) e 8 flowey_lib_common::resolve_protoc 0
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::cfg_openvmm_magicpath 0
     displayName: unpack protoc
   - bash: |-
@@ -1598,7 +1598,7 @@ jobs:
     displayName: download artifacts from github releases
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 7 flowey_lib_common::download_protoc 0
+      $(FLOWEY_BIN) e 7 flowey_lib_common::resolve_protoc 0
       $(FLOWEY_BIN) e 7 flowey_lib_hvlite::cfg_openvmm_magicpath 0
     displayName: unpack protoc
   - bash: |-
@@ -1932,7 +1932,7 @@ jobs:
     displayName: download artifacts from github releases
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 6 flowey_lib_common::download_protoc 0
+      $(FLOWEY_BIN) e 6 flowey_lib_common::resolve_protoc 0
       $(FLOWEY_BIN) e 6 flowey_lib_hvlite::cfg_openvmm_magicpath 0
     displayName: unpack protoc
   - bash: |-
@@ -2210,7 +2210,7 @@ jobs:
     displayName: download artifacts from github releases
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 5 flowey_lib_common::download_protoc 0
+      $(FLOWEY_BIN) e 5 flowey_lib_common::resolve_protoc 0
       $(FLOWEY_BIN) e 5 flowey_lib_hvlite::cfg_openvmm_magicpath 0
     displayName: unpack protoc
   - bash: |-
@@ -3197,7 +3197,7 @@ jobs:
     displayName: download artifacts from github releases
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 4 flowey_lib_common::download_protoc 0
+      $(FLOWEY_BIN) e 4 flowey_lib_common::resolve_protoc 0
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::cfg_openvmm_magicpath 0
     displayName: unpack protoc
   - bash: |-
@@ -3400,7 +3400,7 @@ jobs:
     displayName: download artifacts from github releases
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 3 flowey_lib_common::download_protoc 0
+      $(FLOWEY_BIN) e 3 flowey_lib_common::resolve_protoc 0
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::cfg_openvmm_magicpath 0
     displayName: unpack protoc
   - bash: |-
@@ -3662,7 +3662,7 @@ jobs:
     displayName: download artifacts from github releases
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 2 flowey_lib_common::download_protoc 0
+      $(FLOWEY_BIN) e 2 flowey_lib_common::resolve_protoc 0
       $(FLOWEY_BIN) e 2 flowey_lib_hvlite::cfg_openvmm_magicpath 0
     displayName: unpack protoc
   - bash: |-
@@ -3851,7 +3851,7 @@ jobs:
     displayName: installing packages
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 1 flowey_lib_common::download_protoc 0
+      $(FLOWEY_BIN) e 1 flowey_lib_common::resolve_protoc 0
       $(FLOWEY_BIN) e 1 flowey_lib_hvlite::cfg_openvmm_magicpath 0
     displayName: unpack protoc
   - bash: |-
@@ -4006,7 +4006,7 @@ jobs:
     displayName: download artifacts from github releases
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 0 flowey_lib_common::download_protoc 0
+      $(FLOWEY_BIN) e 0 flowey_lib_common::resolve_protoc 0
       $(FLOWEY_BIN) e 0 flowey_lib_hvlite::cfg_openvmm_magicpath 0
     displayName: unpack protoc
   - bash: |-
