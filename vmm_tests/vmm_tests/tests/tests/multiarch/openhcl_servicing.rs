@@ -335,12 +335,12 @@ async fn servicing_keepalive_with_nvme_fault(
     let mut fault_start_updater = CellUpdater::new(false);
 
     let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
-    .with_admin_queue_fault(
-        AdminQueueFaultConfig::new().with_submission_queue_fault(
-            CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0).build(),
-            AdminQueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
-        ),
-    );
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0).build(),
+                AdminQueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
+            ),
+        );
 
     apply_fault_with_keepalive(config, fault_configuration, fault_start_updater, igvm_file).await
 }

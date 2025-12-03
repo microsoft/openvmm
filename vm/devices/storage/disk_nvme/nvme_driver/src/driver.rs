@@ -538,7 +538,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Shuts the device down.
     pub async fn shutdown(mut self) {
-        tracing::info!(pci_id = ?self.device_id, "shutting down nvme driver");
+        tracing::debug!(pci_id = ?self.device_id, "shutting down nvme driver");
 
         // If nvme_keepalive was requested, return early.
         // The memory is still aliased as we don't flush pending IOs.

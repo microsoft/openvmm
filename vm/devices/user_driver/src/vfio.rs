@@ -82,7 +82,6 @@ struct InterruptState {
 impl Drop for VfioDevice {
     fn drop(&mut self) {
         // Just for tracing ...
-        tracing::info!(pci_id = ?self.pci_id, "dropping vfio device");
         tracing::trace!(pci_id = ?self.pci_id, "dropping vfio device");
     }
 }
