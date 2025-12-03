@@ -33,10 +33,21 @@ fn main() {
     let host_is_windows = host.contains("windows");
     let midl_info = locate_midl(&target_env);
 
-    if !host_is_windows && midl_info.is_none() {
-        panic!(
-            "MIDL compiler is required to build for Windows targets. Install the Windows SDK with MIDL compiler, or set MIDL environment variable to point to a cross-compilation MIDL tool."
-        );
+    if midl_info.is_none() {
+        if host_is_windows {
+            panic!(
+                "MIDL compiler not found. Please install the Windows SDK which includes MIDL, \
+                or set the MIDL environment variable to point to midl.exe. \
+                You can download the Windows SDK from: \
+                https://developer.microsoft.com/en-us/windows/downloads/windows-sdk/"
+            );
+        } else {
+            panic!(
+                "MIDL compiler is required to build for Windows targets from non-Windows hosts. \
+                Set MIDL or MIDLRT_{} environment variable to point to a cross-compilation MIDL tool.",
+                target_env
+            );
+        }
     }
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
@@ -130,6 +141,7 @@ fn main() {
 }
 
 fn locate_midl(target_env: &str) -> Option<(String, bool)> {
+    // Check for cross-compilation MIDL tool first
     let key = format!("MIDLRT_{}", target_env);
     if let Ok(path) = env::var(&key) {
         if !path.is_empty() {
@@ -141,6 +153,66 @@ fn locate_midl(target_env: &str) -> Option<(String, bool)> {
         if !path.is_empty() {
             return Some((path, false));
         }
+    }
+
+    // On Windows, try to find MIDL from the Windows SDK
+    #[cfg(windows)]
+    {
+        if let Some(midl_path) = find_windows_sdk_midl() {
+            return Some((midl_path, false));
+        }
+    }
+
+    None
+}
+
+#[cfg(windows)]
+fn find_windows_sdk_midl() -> Option<String> {
+    use std::process::Command;
+
+    // Try common Windows SDK paths directly
+    // The SDK can be installed standalone without Visual Studio
+    let sdk_dirs = [
+        "C:\\Program Files (x86)\\Windows Kits\\10\\bin",
+        "C:\\Program Files\\Windows Kits\\10\\bin",
+    ];
+
+    for sdk_dir in &sdk_dirs {
+        // Try to find the latest SDK version
+        if let Ok(entries) = std::fs::read_dir(sdk_dir) {
+            let mut versions: Vec<_> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                .filter_map(|e| {
+                    let name = e.file_name();
+                    let name_str = name.to_string_lossy();
+                    // Check if it looks like a version number (starts with digit)
+                    if name_str.chars().next()?.is_ascii_digit() {
+                        Some((name_str.to_string(), e.path()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Sort versions in reverse order to get the latest
+            versions.sort_by(|a, b| b.0.cmp(&a.0));
+
+            for (_, version_path) in versions {
+                // Check both x64 and x86 subdirectories
+                for arch_subdir in &["x64", "x86"] {
+                    let midl_path = version_path.join(arch_subdir).join("midl.exe");
+                    if midl_path.exists() {
+                        return Some(midl_path.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: check if "midl" is in PATH
+    if Command::new("midl").arg("/?").output().is_ok() {
+        return Some("midl".to_string());
     }
 
     None
