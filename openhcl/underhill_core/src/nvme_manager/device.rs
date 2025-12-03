@@ -112,9 +112,10 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
             .await
             .map_err(NvmeSpawnerError::Vfio)?;
 
-            let _ = nvme_driver::NvmeDriver::clear(driver_source, vfio_device)
+            let _ = nvme_driver::NvmeDriver::clear_existing_state(driver_source, vfio_device)
                 .await
                 .context("nvme driver clear failed");
+
             let _ = saved_state.take();
         }
 
