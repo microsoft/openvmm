@@ -31,7 +31,7 @@ use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULT;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULTS_VERSION1;
 
 /// Delay-load bindings for Windows DNS Raw APIs
-pal::delayload! {"windns.dll" {
+pal::delayload! {"dnsapi.dll" {
     pub fn DnsQueryRaw(
         request: *const DNS_QUERY_RAW_REQUEST,
         cancel: *mut DNS_QUERY_RAW_CANCEL

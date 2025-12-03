@@ -99,14 +99,16 @@ impl ConsommeParams {
     /// Create default dynamic network state. The default state is
     ///     IP address: 10.0.0.2 / 24
     ///     gateway: 10.0.0.1 with MAC address 52-55-10-0-0-1
-    ///     DNS resolvers: either 10.0.0.1 (if DNS Raw APIs available) or system nameservers
-    pub fn new() -> Result<Self, dns::Error> {
-        // Try to use DNS resolver, fall back to system nameservers if not available
+    ///     DNS resolvers: either 10.0.0.1 (if DNS Raw APIs available) or host nameservers
+    pub fn new() -> Result<Self, Error> {
+        // Try to use DNS resolver, fallback to host nameservers if not available
         let nameservers = if dns_resolver::DnsResolver::new().is_ok() {
             // DNS Raw APIs are available, use the NAT gateway as nameserver
+            tracing::info!("DNS Raw APIs available, using gateway as nameserver");
             vec![Ipv4Address::new(10, 0, 0, 1)]
         } else {
-            // DNS Raw APIs not available, use system nameservers
+            // DNS Raw APIs not available, use host nameservers
+            tracing::info!("DNS Raw APIs not available, using host nameservers");
             dns::nameservers()?
         };
 
@@ -295,6 +297,14 @@ pub enum DropReason {
     /// Specified port is not bound.
     #[error("port is not bound")]
     PortNotBound,
+}
+
+/// An error to create a consomme instance.
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Could not get DNS nameserver information.
+    #[error("failed to initialize nameservers")]
+    Dns(#[from] dns::Error),
 }
 
 #[derive(Debug)]
