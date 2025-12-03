@@ -28,7 +28,6 @@ use crate::TpmConfig;
 use crate::UefiConfig;
 use crate::VmmQuirks;
 use crate::disk_image::AgentImage;
-use crate::hyperv::hvc::VmState;
 use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::kmsg_log_task;
 use crate::openhcl_diag::OpenHclDiagHandler;
@@ -83,7 +82,8 @@ pub struct HyperVScsiController {
 pub struct HyperVPetriRuntime {
     vm: HyperVVM,
     log_tasks: Vec<Task<anyhow::Result<()>>>,
-    temp_dir: tempfile::TempDir,
+    _temp_dir: tempfile::TempDir,
+    output_dir: PathBuf,
     driver: DefaultDriver,
 
     is_openhcl: bool,
@@ -704,7 +704,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
         Ok(HyperVPetriRuntime {
             vm,
             log_tasks,
-            temp_dir,
+            _temp_dir: temp_dir,
+            output_dir: log_source.output_dir().to_owned(),
             driver: driver.clone(),
             is_openhcl: openhcl_config.is_some(),
             is_isolated: firmware.isolation().is_some(),
@@ -780,7 +781,8 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     }
 
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
-        let client_core = async || {
+        let driver = self.driver.clone();
+        let client_core = async move |vm: &HyperVVM| {
             let socket = VmSocket::new().context("failed to create AF_HYPERV socket")?;
             // Extend the default timeout of 2 seconds, as tests are often run
             // in parallel on a host, causing very heavy load on the overall
@@ -795,46 +797,42 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                 .set_high_vtl(set_high_vtl)
                 .context("failed to set socket for VTL0")?;
 
-            let mut socket = PolledSocket::new(&self.driver, socket)
+            let mut socket = PolledSocket::new(&driver, socket)
                 .context("failed to create polled client socket")?
                 .convert();
             socket
                 .connect(
-                    &VmAddress::hyperv_vsock(*self.vm.vmid(), pipette_client::PIPETTE_VSOCK_PORT)
-                        .into(),
+                    &VmAddress::hyperv_vsock(*vm.vmid(), pipette_client::PIPETTE_VSOCK_PORT).into(),
                 )
                 .await
                 .context("failed to connect")
                 .map(|()| socket)
         };
 
-        let mut timer = PolledTimer::new(&self.driver);
-        loop {
-            tracing::debug!(set_high_vtl, "attempting to connect to pipette server");
-            // Even if the VM is rebooting or otherwise transitioning power states
-            // it should never be considered fully "off". If it is, something has
-            // gone wrong.
-            if let Err(_) | Ok(VmState::Off) = self.vm.state().await {
-                anyhow::bail!("VM is no longer running, cannot connect to pipette");
-            }
-            match client_core().await {
-                Ok(socket) => {
-                    tracing::info!(set_high_vtl, "handshaking with pipette");
-                    let c = PipetteClient::new(&self.driver, socket, self.temp_dir.path())
-                        .await
-                        .context("failed to handshake with pipette");
-                    tracing::info!(set_high_vtl, "completed pipette handshake");
-                    return c;
+        let driver = self.driver.clone();
+        let output_dir = self.output_dir.clone();
+        self.vm
+            .wait_for_off_or_internal(async move |vm: &HyperVVM| {
+                tracing::debug!(set_high_vtl, "attempting to connect to pipette server");
+                match client_core(vm).await {
+                    Ok(socket) => {
+                        tracing::info!(set_high_vtl, "handshaking with pipette");
+                        let c = PipetteClient::new(&driver, socket, &output_dir)
+                            .await
+                            .context("failed to handshake with pipette");
+                        tracing::info!(set_high_vtl, "completed pipette handshake");
+                        Ok(Some(c?))
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            err = err.as_ref() as &dyn std::error::Error,
+                            "failed to connect to pipette server, retrying",
+                        );
+                        Ok(None)
+                    }
                 }
-                Err(err) => {
-                    tracing::debug!(
-                        err = err.as_ref() as &dyn std::error::Error,
-                        "failed to connect to pipette server, retrying",
-                    );
-                    timer.sleep(Duration::from_secs(1)).await;
-                }
-            }
-        }
+            })
+            .await
     }
 
     fn openhcl_diag(&self) -> Option<OpenHclDiagHandler> {
