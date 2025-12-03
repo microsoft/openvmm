@@ -47,7 +47,7 @@ enum IoType<'a> {
     Write(&'a [u8]),
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 enum IoKind {
     Pio,
     Mmio,
@@ -88,44 +88,29 @@ impl Chipset {
             IoResult::Defer(mut token) => match &mut io_type {
                 IoType::Read(bytes) => {
                     let r = poll_fn(|cx| token.poll_read(cx, bytes)).await;
-                    if r.is_err() {
-                        bytes.fill(!0);
+                    match r {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => {
+                            self.handle_io_error(err, &lookup, kind, address, len, &mut io_type);
+                        }
+                        Err(_) => bytes.fill(!0),
                     }
-                    r
+                    r.map(|_| ())
                 }
-                IoType::Write(_) => poll_fn(|cx| token.poll_write(cx)).await,
+                IoType::Write(_) => {
+                    let r = poll_fn(|cx| token.poll_write(cx)).await;
+                    match r {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => {
+                            self.handle_io_error(err, &lookup, kind, address, len, &mut io_type);
+                        }
+                        Err(_) => {}
+                    }
+                    r.map(|_| ())
+                }
             },
             IoResult::Err(err) => {
-                let error = match err {
-                    IoError::InvalidRegister => "register not present",
-                    IoError::InvalidAccessSize => "invalid access size",
-                    IoError::UnalignedAccess => "unaligned access",
-                };
-                match &mut io_type {
-                    IoType::Read(bytes) => {
-                        // Fill data with !0 to indicate an error to the guest.
-                        bytes.fill(!0);
-                        tracelimit::warn_ratelimited!(
-                            CVM_CONFIDENTIAL,
-                            device = &*lookup.dev_name,
-                            address,
-                            len,
-                            ?kind,
-                            error,
-                            "device io read error"
-                        );
-                    }
-                    IoType::Write(bytes) => tracelimit::warn_ratelimited!(
-                        CVM_CONFIDENTIAL,
-                        device = &*lookup.dev_name,
-                        address,
-                        len,
-                        ?kind,
-                        error,
-                        ?bytes,
-                        "device io write error"
-                    ),
-                }
+                self.handle_io_error(err, &lookup, kind, address, len, &mut io_type);
                 Ok(())
             }
         };
@@ -165,6 +150,47 @@ impl Chipset {
                     "deferred io failed"
                 );
             }
+        }
+    }
+
+    fn handle_io_error(
+        &self,
+        err: IoError,
+        lookup: &LookupResult,
+        kind: IoKind,
+        address: u64,
+        len: usize,
+        io_type: &mut IoType<'_>,
+    ) {
+        let error = match err {
+            IoError::InvalidRegister => "register not present",
+            IoError::InvalidAccessSize => "invalid access size",
+            IoError::UnalignedAccess => "unaligned access",
+        };
+        match io_type {
+            IoType::Read(bytes) => {
+                // Fill data with !0 to indicate an error to the guest.
+                bytes.fill(!0);
+                tracelimit::warn_ratelimited!(
+                    CVM_CONFIDENTIAL,
+                    device = &*lookup.dev_name,
+                    address,
+                    len,
+                    ?kind,
+                    error,
+                    "device io read error"
+                );
+            }
+            IoType::Write(bytes) => tracelimit::warn_ratelimited!(
+                CVM_CONFIDENTIAL,
+                device = &*lookup.dev_name,
+                address,
+                len,
+                ?kind,
+                error,
+                ?bytes,
+                "device io write error"
+            ),
         }
     }
 

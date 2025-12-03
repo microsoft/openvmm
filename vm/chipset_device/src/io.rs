@@ -8,7 +8,7 @@ pub mod deferred;
 /// An error related to the suitability of the IO request for the device. A
 /// device should handle device-specific errors internally, and should return
 /// `IoResult::Ok` in these conditions.
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, mesh::MeshPayload)]
 pub enum IoError {
     /// The requested device register is not present.
     InvalidRegister,
