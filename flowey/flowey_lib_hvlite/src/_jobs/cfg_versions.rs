@@ -37,7 +37,7 @@ pub const PROTOC: &str = "27.1";
 flowey_request! {
     pub enum Request {
         Download,
-        Local(CommonArch, PathBuf),
+        Local(CommonArch, PathBuf, PathBuf),
     }
 }
 
@@ -71,13 +71,14 @@ impl FlowNode for Node {
         let mut has_download_requests = false;
         let mut has_local_requests = false;
         let mut local_openvmm_deps: BTreeMap<CommonArch, PathBuf> = BTreeMap::new();
+        let mut local_protoc: Option<PathBuf> = None;
 
         for req in requests {
             match req {
                 Request::Download => {
                     has_download_requests = true;
                 }
-                Request::Local(arch, path) => {
+                Request::Local(arch, path, protoc_path) => {
                     has_local_requests = true;
 
                     // Check that for every arch that shows up, the path is always the same
@@ -91,6 +92,8 @@ impl FlowNode for Node {
                     } else {
                         local_openvmm_deps.insert(arch, path);
                     }
+
+                    same_across_all_reqs("ProtocPath", &mut local_protoc, protoc_path)?;
                 }
             }
         }
@@ -99,27 +102,44 @@ impl FlowNode for Node {
             anyhow::bail!("cannot mix Download and Local requests");
         }
 
-        if has_local_requests {
-            for (arch, path) in local_openvmm_deps {
-                let openvmm_deps_arch = match arch {
-                    CommonArch::X86_64 => crate::resolve_openvmm_deps::OpenvmmDepsArch::X86_64,
-                    CommonArch::Aarch64 => crate::resolve_openvmm_deps::OpenvmmDepsArch::Aarch64,
-                };
+        // Track whether we have local paths for openvmm_deps and protoc
+        let has_local_openvmm_deps = !local_openvmm_deps.is_empty();
+        let has_local_protoc = local_protoc.is_some();
 
-                ctx.req(crate::resolve_openvmm_deps::Request::LocalPath(
-                    openvmm_deps_arch,
-                    path,
-                ));
-            }
-
-            return Ok(());
+        // If we have local requests, protoc must be provided
+        if has_local_requests && local_protoc.is_none() {
+            anyhow::bail!("Local mode requires protoc path to be specified");
         }
 
+        // Set up local paths for openvmm_deps if provided
+        for (arch, path) in local_openvmm_deps {
+            let openvmm_deps_arch = match arch {
+                CommonArch::X86_64 => crate::resolve_openvmm_deps::OpenvmmDepsArch::X86_64,
+                CommonArch::Aarch64 => crate::resolve_openvmm_deps::OpenvmmDepsArch::Aarch64,
+            };
+
+            ctx.req(crate::resolve_openvmm_deps::Request::LocalPath(
+                openvmm_deps_arch,
+                path,
+            ));
+        }
+
+        // Set up local path for protoc if provided
+        if let Some(protoc_path) = local_protoc {
+            ctx.req(flowey_lib_common::download_protoc::Request::LocalPath(
+                protoc_path,
+            ));
+        }
+
+        // Set up version requests for everything
+        // Note: openvmm_deps and protoc will only use these if local paths weren't provided
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::CvmDev, OPENHCL_KERNEL_DEV_VERSION.into()));
-        ctx.req(crate::resolve_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
+        if !has_local_openvmm_deps {
+            ctx.req(crate::resolve_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
+        }
         ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
         ctx.req(flowey_lib_common::download_azcopy::Request::Version(AZCOPY.into()));
         ctx.req(flowey_lib_common::download_cargo_fuzz::Request::Version(FUZZ.into()));
@@ -128,7 +148,9 @@ impl FlowNode for Node {
         ctx.req(flowey_lib_common::download_mdbook::Request::Version(MDBOOK.into()));
         ctx.req(flowey_lib_common::download_mdbook_admonish::Request::Version(MDBOOK_ADMONISH.into()));
         ctx.req(flowey_lib_common::download_mdbook_mermaid::Request::Version(MDBOOK_MERMAID.into()));
-        ctx.req(flowey_lib_common::download_protoc::Request::Version(PROTOC.into()));
+        if !has_local_protoc {
+            ctx.req(flowey_lib_common::download_protoc::Request::Version(PROTOC.into()));
+        }
         ctx.req(flowey_lib_common::install_azure_cli::Request::Version(AZURE_CLI.into()));
         ctx.req(flowey_lib_common::install_nodejs::Request::Version(NODEJS.into()));
         if !matches!(ctx.backend(), FlowBackend::Ado) {

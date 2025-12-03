@@ -178,12 +178,16 @@ pub struct BuildIgvmCliCustomizations {
 
     /// (experimental) Only use local dependencies to build. Keeps flowey from
     /// downloading any dependencies from the internet.
-    #[clap(long, requires_all = ["custom_openvmm_deps"])]
+    #[clap(long, requires_all = ["custom_openvmm_deps", "custom_protoc"])]
     pub use_local_deps: bool,
 
     /// Use a custom openvmm_deps directory.
     #[clap(long)]
     pub custom_openvmm_deps: Option<PathBuf>,
+
+    /// Use a custom protoc directory.
+    #[clap(long)]
+    pub custom_protoc: Option<PathBuf>,
 }
 
 #[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
@@ -304,6 +308,7 @@ impl IntoPipeline for BuildIgvmCli {
                     mut custom_extra_rootfs,
                     max_trace_level,
                     custom_openvmm_deps,
+                    custom_protoc,
                     use_local_deps,
                 },
         } = self;
@@ -335,10 +340,12 @@ impl IntoPipeline for BuildIgvmCli {
 
         job = if use_local_deps {
             let openvmm_deps_path = custom_openvmm_deps.unwrap();
+            let protoc_path = custom_protoc.unwrap();
             job.dep_on(move |_| {
                 flowey_lib_hvlite::_jobs::cfg_versions::Request::Local(
                     recipe_arch,
                     openvmm_deps_path,
+                    protoc_path,
                 )
             })
         } else {

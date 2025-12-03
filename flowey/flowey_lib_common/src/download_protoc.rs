@@ -13,6 +13,8 @@ pub struct ProtocPackage {
 
 flowey_request! {
     pub enum Request {
+        /// Use a locally downloaded protoc
+        LocalPath(PathBuf),
         /// What version to download (e.g: 27.1)
         Version(String),
         /// Return paths to items in the protoc package
@@ -33,22 +35,66 @@ impl FlowNode for Node {
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let mut version = None;
+        let mut local_path = None;
         let mut get_reqs = Vec::new();
 
         for req in requests {
             match req {
+                Request::LocalPath(path) => {
+                    same_across_all_reqs("LocalPath", &mut local_path, path)?
+                }
                 Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
                 Request::Get(v) => get_reqs.push(v),
             }
         }
 
-        let version = version.ok_or(anyhow::anyhow!("Missing essential request: Version"))?;
+        if version.is_some() && local_path.is_some() {
+            anyhow::bail!("Cannot specify both Version and LocalPath requests");
+        }
+
+        if version.is_none() && local_path.is_none() {
+            anyhow::bail!("Must specify a Version or LocalPath request");
+        }
 
         // -- end of req processing -- //
 
         if get_reqs.is_empty() {
             return Ok(());
         }
+
+        if let Some(local_path) = local_path {
+            ctx.emit_rust_step("use local protoc", |ctx| {
+                let get_reqs = get_reqs.claim(ctx);
+                let local_path = local_path.clone();
+                move |rt| {
+                    let protoc_bin = local_path
+                        .join("bin")
+                        .join(rt.platform().binary("protoc"))
+                        .absolute()?;
+
+                    assert!(protoc_bin.exists());
+
+                    // Don't try to make executable - local paths (especially from nix store)
+                    // should already be executable and may be read-only
+
+                    let protoc_includes = local_path.join("include").absolute()?;
+                    assert!(protoc_includes.exists());
+
+                    let pkg = ProtocPackage {
+                        protoc_bin,
+                        include_dir: protoc_includes,
+                    };
+
+                    rt.write_all(get_reqs, &pkg);
+
+                    Ok(())
+                }
+            });
+
+            return Ok(());
+        }
+
+        let version = version.expect("local requests handled above");
 
         let tag = format!("v{version}");
         let file_name = format!(
