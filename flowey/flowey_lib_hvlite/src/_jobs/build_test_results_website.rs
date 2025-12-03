@@ -7,7 +7,7 @@ use flowey::node::prelude::*;
 
 flowey_request! {
     pub struct Request {
-        done: WriteVar<SideEffect>,
+        pub done: WriteVar<SideEffect>,
     }
 }
 
