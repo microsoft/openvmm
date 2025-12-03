@@ -111,13 +111,15 @@ fn main() {
         }
     }
 
-    let pointer_width =
-        env::var("CARGO_CFG_TARGET_POINTER_WIDTH").unwrap_or_else(|_| "64".to_owned());
-    if pointer_width == "32" {
-        cmd.args(["/env", "win32"]);
-    } else {
-        cmd.args(["/env", "x64"]);
-    }
+    // Determine the MIDL target environment based on the Cargo target.
+    // xtask-fmt allow-target-arch dependency
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "x86_64".to_owned());
+    let midl_env = match arch.as_str() {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        unsupported => panic!("Unsupported architecture for MIDL: {}", unsupported),
+    };
+    cmd.args(["/env", midl_env]);
 
     let out_dir_arg = path_for_midl(&out_dir, host_is_windows);
     cmd.arg("/out");

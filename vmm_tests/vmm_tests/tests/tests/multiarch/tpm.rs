@@ -3,6 +3,7 @@
 
 use anyhow::Context;
 use anyhow::ensure;
+use parking_lot::Mutex;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
@@ -25,6 +26,11 @@ const AK_CERT_TOTAL_BYTES: usize = 4096;
 
 const TPM_GUEST_TESTS_LINUX_GUEST_PATH: &str = "/tmp/tpm_guest_tests";
 const TPM_GUEST_TESTS_WINDOWS_GUEST_PATH: &str = "C:\\tpm_guest_tests.exe";
+
+// Global mutex to serialize access to the RPC server endpoint.
+// Only one test can run the RPC server at a time since it binds to a fixed endpoint.
+#[cfg(windows)]
+static RPC_SERVER_LOCK: Mutex<()> = Mutex::new(());
 
 fn expected_ak_cert_hex() -> String {
     use std::fmt::Write as _;
@@ -462,6 +468,11 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 
     let os_flavor = config.os_flavor();
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
+
+    // Acquire the RPC server lock to ensure only one test runs the server at a time.
+    // The RPC server binds to a fixed endpoint, so parallel tests would conflict.
+    let _rpc_lock = RPC_SERVER_LOCK.lock();
+    tracing::info!("acquired RPC server lock");
 
     // Spawn the test IGVM agent RPC server on the host before creating the VM
     tracing::info!("launching test_igvm_agent_rpc_server");
