@@ -51,4 +51,4 @@ flowey-persist
 node_modules/
 
 # Build output directories for logview_new
-**/logview_new/dist-ci*
+**/logview_new/dist*
