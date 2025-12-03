@@ -334,13 +334,13 @@ async fn servicing_keepalive_with_nvme_fault(
 ) -> Result<(), anyhow::Error> {
     let mut fault_start_updater = CellUpdater::new(false);
 
-    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell());
-    // .with_admin_queue_fault(
-    //     AdminQueueFaultConfig::new().with_submission_queue_fault(
-    //         CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0).build(),
-    //         AdminQueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
-    //     ),
-    // );
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+    .with_admin_queue_fault(
+        AdminQueueFaultConfig::new().with_submission_queue_fault(
+            CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0).build(),
+            AdminQueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
+        ),
+    );
 
     apply_fault_with_keepalive(config, fault_configuration, fault_start_updater, igvm_file).await
 }
@@ -436,8 +436,6 @@ async fn apply_fault_with_keepalive(
     cmd!(sh, "ls /dev/sda").run().await?;
 
     fault_start_updater.set(true).await;
-    vm.update_command_line("OPENHCL_DISABLE_NVME_KEEP_ALIVE=1 OPENHCL_ENABLE_VTL2_GPA_POOL=512")
-        .await?;
     vm.restart_openhcl(igvm_file.clone(), flags).await?;
 
     fault_start_updater.set(false).await;
