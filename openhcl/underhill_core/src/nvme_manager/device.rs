@@ -100,7 +100,9 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
                     persistent_allocations: true,
                 })
                 .map_err(NvmeSpawnerError::DmaClient)?;
-            let _ = persistent_dma_client.attach_pending_buffers().unwrap();
+            let _ = persistent_dma_client
+                .attach_pending_buffers()
+                .map_err(NvmeSpawnerError::AttachingPendingBuffersFailed)?;
 
             let vfio_device = VfioDevice::restore(
                 driver_source,
