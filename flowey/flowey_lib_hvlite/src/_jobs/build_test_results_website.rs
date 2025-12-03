@@ -7,7 +7,7 @@ use flowey::node::prelude::*;
 
 flowey_request! {
     pub struct Request {
-        pub done: WriteVar<SideEffect>,
+        pub path: WriteVar<PathBuf>,
     }
 }
 
@@ -22,7 +22,7 @@ impl SimpleFlowNode for Node {
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let Request { done } = request;
+        let Request { path } = request;
 
         // Make sure that npm is installed
         let npm_installed = ctx.reqv(flowey_lib_common::install_nodejs::Request::EnsureInstalled);
@@ -30,24 +30,33 @@ impl SimpleFlowNode for Node {
 
         ctx.emit_rust_step("build test-results website", |ctx| {
             npm_installed.claim(ctx);
-            done.claim(ctx);
+            let path = path.claim(ctx);
             let openvmm_repo_path = openvmm_repo_path.claim(ctx);
 
             move |rt| {
                 let sh = xshell::Shell::new()?;
-                let mut path = rt.read(openvmm_repo_path);
+                let mut dist_path = rt.read(openvmm_repo_path);
 
                 // Navigate to the petri/logview_new directory within the
                 // OpenVMM repo
-                path.push("petri");
-                path.push("logview_new");
+                dist_path.push("petri");
+                dist_path.push("logview_new");
 
-                sh.change_dir(&path);
+                sh.change_dir(&dist_path);
 
                 // Because the project is using vite, the output will go
-                // directly to the 'dist' folder
+                // directly to the 'dist-ci' folder
                 xshell::cmd!(sh, "npm install").run()?;
-                xshell::cmd!(sh, "npm run build").run()?;
+                xshell::cmd!(sh, "npm run build:ci").run()?;
+
+                if !dist_path.join("dist-ci").exists() {
+                    anyhow::bail!(
+                        "logview_new build failed. Expected 'dist-ci' directory at {:?} but it was not found.",
+                        dist_path
+                    );
+                }
+
+                rt.write(path, &dist_path);
 
                 Ok(())
             }

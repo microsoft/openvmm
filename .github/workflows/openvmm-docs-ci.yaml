@@ -569,11 +569,19 @@ jobs:
         flowey e 3 flowey_lib_common::git_checkout 3
         flowey e 3 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
+    - id: flowey_lib_common__install_nodejs__0
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18.x
+      name: Install nodejs
+    - name: build test-results website
+      run: flowey e 3 flowey_lib_hvlite::_jobs::build_test_results_website 0
+      shell: bash
     - name: generate consolidated gh pages html
       run: |-
         flowey e 3 flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages 0
         flowey e 3 flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages 1
-        flowey v 3 'flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages:2:flowey_lib_hvlite/src/_jobs/consolidate_and_publish_gh_pages.rs:119:39' --is-raw-string write-to-env github floweyvar1
+        flowey v 3 'flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages:3:flowey_lib_hvlite/src/_jobs/consolidate_and_publish_gh_pages.rs:122:39' --is-raw-string write-to-env github floweyvar1
       shell: bash
     - id: flowey_lib_hvlite___jobs__consolidate_and_publish_gh_pages__2
       uses: actions/upload-pages-artifact@v3
