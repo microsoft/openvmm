@@ -9,7 +9,7 @@
 
 // UNSAFETY: This module uses unsafe code to interface with Windows APIs and for FFI bindings.
 #![expect(unsafe_code)]
-#![allow(unused_doc_comments, missing_docs)]
+#![allow(unused_doc_comments, missing_docs, unused_imports)]
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Address;
@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use winapi;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_TCP;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_UDP;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_NO_MULTICAST;
