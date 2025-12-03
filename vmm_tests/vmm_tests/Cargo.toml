@@ -48,7 +48,6 @@ vmgs_resources.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 jiff.workspace = true
-parking_lot.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 static_assertions.workspace = true

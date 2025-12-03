@@ -4,7 +4,7 @@
 use anyhow::Context;
 use anyhow::ensure;
 #[cfg(windows)]
-use parking_lot::Mutex;
+use futures::lock::Mutex;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
@@ -472,7 +472,7 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 
     // Acquire the RPC server lock to ensure only one test runs the server at a time.
     // The RPC server binds to a fixed endpoint, so parallel tests would conflict.
-    let _rpc_lock = RPC_SERVER_LOCK.lock();
+    let _rpc_lock = RPC_SERVER_LOCK.lock().await;
     tracing::info!("acquired RPC server lock");
 
     // Spawn the test IGVM agent RPC server on the host before creating the VM
