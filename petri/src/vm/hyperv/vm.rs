@@ -493,22 +493,20 @@ impl HyperVVM {
         // are waiting for the VM to turn off, and we haven't detected the halt
         // event yet. To avoid this race condition, allow for one more attempt
         // a second after the VM turns off.
-        let mut off = false;
+        let mut last_off = false;
 
         loop {
             if let Some(output) = f(self).await? {
                 return Ok(output);
             }
 
-            if off {
+            let off = self.state().await? == VmState::Off;
+            if last_off && off {
                 anyhow::bail!(
                     "The VM is no longer running, but a halt event was either not recieved or not expected."
                 );
             }
-
-            if self.state().await? == VmState::Off {
-                off = true;
-            }
+            last_off = off;
 
             PolledTimer::new(&self.driver)
                 .sleep(Duration::from_secs(1))
