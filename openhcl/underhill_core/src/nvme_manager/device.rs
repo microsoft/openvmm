@@ -116,7 +116,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
 
             let _ = nvme_driver::NvmeDriver::clear_existing_state(driver_source, vfio_device)
                 .await
-                .context("nvme driver clear failed");
+                .map_err(NvmeSpawnerError::DeviceClearFailed)?;
 
             // Discard existing state to prevent restore (because keepalive is
             // not supported)
