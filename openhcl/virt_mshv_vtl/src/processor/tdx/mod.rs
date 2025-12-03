@@ -414,7 +414,7 @@ impl TdxTscDeadlineService {
 
 impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineService {
     /// Update the virtual timer deadline in the processor's context shared with kernel.
-    /// This deadline will be set by `mshv_vtl` using 
+    /// This deadline will be set by `mshv_vtl` using
     /// `TDG.VP.WR(TDVPS.TSC_DEADLINE[L2-VM Index])` before entering into lower VTL.
     fn update_deadline(
         &self,
@@ -433,23 +433,30 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
             .deadline_100ns
             .map_or(true, |last| Self::is_before(last, ref_time_next))
         {
-            let ref_time_from_now = ref_time_next.saturating_sub(ref_time_now);
-            let tsc_delta = self.ref_time_to_tsc(ref_time_from_now);
-            let deadline = safe_intrinsics::rdtsc().wrapping_add(tsc_delta);
-
-            tracing::trace!(
-                ref_time_from_now,
-                tsc_delta,
-                deadline,
-                "updating deadline for TDX L2-VM TSC deadline timer"
-            );
+            // Record the new reference time.
+            vp_state.deadline_100ns = Some(ref_time_next);
 
             let state = vp.runner.tdx_l2_tsc_deadline_state_mut();
-            state.deadline = deadline;
-            state.update_deadline = 1;
+            if vp_state
+                .last_deadline_100ns
+                .map_or(true, |last| last != ref_time_next)
+            {
+                let ref_time_from_now = ref_time_next.saturating_sub(ref_time_now);
+                let tsc_delta = self.ref_time_to_tsc(ref_time_from_now);
+                let deadline = safe_intrinsics::rdtsc().wrapping_add(tsc_delta);
 
-            // Record the new deadline in reference time units.
-            vp_state.deadline_100ns = Some(ref_time_next);
+                state.deadline = deadline;
+                state.update_deadline = 1;
+
+                tracing::trace!(
+                    ref_time_from_now,
+                    tsc_delta,
+                    deadline,
+                    "updating deadline for TDX L2-VM TSC deadline timer"
+                );
+            } else {
+                state.update_deadline = 0;
+            }
         }
     }
 
@@ -463,7 +470,10 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
 
         let state = vp.runner.tdx_l2_tsc_deadline_state_mut();
         state.update_deadline = 0;
-        vp_state.deadline_100ns = None;
+
+        if vp_state.deadline_100ns.is_some() {
+            vp_state.last_deadline_100ns = vp_state.deadline_100ns.take();
+        }
     }
 }
 
@@ -472,6 +482,8 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
 struct TdxTscDeadline {
     #[inspect(hex)]
     deadline_100ns: Option<u64>,
+    #[inspect(hex)]
+    last_deadline_100ns: Option<u64>,
 }
 
 /// Backing for TDX partitions.
