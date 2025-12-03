@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 //! Build script that compiles Windows RPC stubs for the IGVM agent façade.
 
 use serde_json::Value;

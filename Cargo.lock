@@ -2636,7 +2636,6 @@ dependencies = [
  "inspect",
  "jiff",
  "mesh",
- "openhcl_attestation_protocol",
  "pal_async",
  "parking_lot",
  "power_resources",
@@ -7245,7 +7244,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "winapi",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]

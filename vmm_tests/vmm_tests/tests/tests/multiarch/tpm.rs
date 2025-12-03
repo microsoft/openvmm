@@ -480,10 +480,16 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
         .stdout
         .take()
         .context("failed to take stdout from RPC server")?;
-    let mut b = [0];
-    stdout
-        .read(&mut b)
+    let mut byte = [0u8];
+    let n = stdout
+        .read(&mut byte)
         .context("failed to read from RPC server stdout")?;
+    if n != 0 {
+        anyhow::bail!(
+            "expected RPC server stdout to close (EOF), but read {} bytes",
+            n
+        );
+    }
 
     // Spawn a task to read and log stderr from the RPC server
     let stderr_task = std::thread::spawn(move || {

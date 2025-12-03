@@ -7,7 +7,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::ptr;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use windows_sys::Win32::Foundation::BOOL;
+use winapi::shared::minwindef::BOOL;
 use windows_sys::Win32::Foundation::FALSE;
 use windows_sys::Win32::Foundation::TRUE;
 use windows_sys::Win32::System::Console::CTRL_BREAK_EVENT;
