@@ -192,6 +192,21 @@ pub fn run_server() -> Result<(), String> {
     register_protocol_and_interface()?;
     let _handler = ConsoleHandlerGuard::register()?;
 
+    // Close stdout to signal that the server is ready to accept connections.
+    // The test harness waits for stdout EOF before proceeding.
+    // We must close the actual file descriptor, not just drop the Rust handle.
+    // SAFETY: Make FFI calls.
+    unsafe {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Console::GetStdHandle;
+        use windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE;
+        let stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+        if stdout_handle != 0 && stdout_handle != !0 {
+            CloseHandle(stdout_handle);
+            tracing::info!("closed stdout to signal readiness");
+        }
+    }
+
     // SAFETY: Make an FFI call.
     let listen_status = unsafe { RpcServerListen(1, RPC_C_LISTEN_MAX_CALLS_DEFAULT, 0) };
 

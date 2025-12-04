@@ -62,10 +62,6 @@ fn main() -> ExitCode {
 
             tracing::info!("launching IGVM agent RPC server binary");
 
-            // Close stdout to signal that the server is ready to accept connections.
-            // The test harness waits for stdout EOF before proceeding.
-            drop(std::io::stdout());
-
             // Install test plan if a configuration was provided
             if let Some(test_config) = args.test_config {
                 let igvm_config: IgvmAttestTestConfig = test_config.into();
