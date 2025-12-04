@@ -86,7 +86,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
         // Gracefully tear down old state & reset device if a saved state is
         // present but the host doesn't support keepalive. The device should be
         // reset automatically when the Vfio device handle is dropped.
-        if saved_state.is_some() && !save_restore_supported {
+        if false && saved_state.is_some() && !save_restore_supported {
             let persistent_dma_client = self
                 .dma_client_spawner
                 .new_client(DmaClientParameters {
