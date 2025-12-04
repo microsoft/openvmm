@@ -46,8 +46,10 @@ fn get_module() -> Result<isize, WIN32_ERROR> {
     static MODULE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
     let mut module = MODULE.load(Ordering::Relaxed);
     if module.is_null() {
-        module = unsafe { LoadLibraryA(b"dnsapi.dll\0".as_ptr()) as *mut core::ffi::c_void };
+        // SAFETY: FFI call to load dnsapi.dll
+        module = unsafe { LoadLibraryA(c"dnsapi.dll".as_ptr().cast()).cast::<core::ffi::c_void>() };
         if module.is_null() {
+            // SAFETY: FFI call to get last error code
             return Err(unsafe { GetLastError() });
         }
         MODULE.store(module, Ordering::Relaxed);
@@ -59,6 +61,7 @@ fn get_proc_address(name: &[u8], cache: &AtomicUsize) -> Result<usize, WIN32_ERR
     let mut fnval = cache.load(Ordering::Relaxed);
     if fnval == 0 {
         let module = get_module()?;
+        // SAFETY: FFI call to get function address from module
         fnval = unsafe { GetProcAddress(module as _, name.as_ptr()) }
             .map(|f| f as usize)
             .unwrap_or(0);
@@ -209,13 +212,14 @@ impl DnsResolver {
             Anonymous: DNS_QUERY_RAW_REQUEST_0::default(),
         };
 
-        // UNSAFETY: Calling Windows DNS API through dynamically loaded function pointer
         let result = match get_dns_query_raw() {
             Ok(fnval) => {
+                // SAFETY: Transmute function pointer from usize
                 let fnptr: unsafe extern "system" fn(
                     *const DNS_QUERY_RAW_REQUEST,
                     *mut DNS_QUERY_RAW_CANCEL,
                 ) -> i32 = unsafe { std::mem::transmute(fnval) };
+                // SAFETY: Call DNS query API with valid request
                 unsafe { fnptr(&request, &mut cancel_handle) }
             }
             Err(_) => {
@@ -249,11 +253,12 @@ impl DnsResolver {
     /// Cancel all active DNS queries
     pub fn cancel_all(&mut self) {
         let mut handles = self.active_cancel_handles.lock();
-        // UNSAFETY: Calling Windows DNS API through dynamically loaded function pointer
         if let Ok(fnval) = get_dns_cancel_query_raw() {
+            // SAFETY: Transmute function pointer from usize
             let fnptr: unsafe extern "system" fn(*const DNS_QUERY_RAW_CANCEL) -> i32 =
                 unsafe { std::mem::transmute(fnval) };
             handles.iter().for_each(|(_, cancel_handle)| {
+                // SAFETY: Call DNS cancel API with valid handle
                 let _ = unsafe { fnptr(cancel_handle) };
             });
         }
@@ -332,10 +337,11 @@ unsafe extern "system" fn dns_query_raw_callback(
 
     // Free the query results
     if !query_results.is_null() {
-        // UNSAFETY: Calling Windows DNS API through dynamically loaded function pointer
         if let Ok(fnval) = get_dns_query_raw_result_free() {
+            // SAFETY: Transmute function pointer from usize
             let fnptr: unsafe extern "system" fn(*mut DNS_QUERY_RAW_RESULT) =
                 unsafe { std::mem::transmute(fnval) };
+            // SAFETY: Free DNS query results
             unsafe { fnptr(query_results.cast_mut()) };
         }
     }
