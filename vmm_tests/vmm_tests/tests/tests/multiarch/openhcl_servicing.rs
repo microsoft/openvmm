@@ -616,8 +616,9 @@ async fn mana_nic_servicing_keepalive(
 }
 
 /// Test servicing an OpenHCL VM when NVME keepalive is enabled but then
-/// disabled after servicing. Verifies that a CREATE_IO_COMPLETION_QUEUE command is
-/// observed after servicing which indicates that the device was reinitialized.
+/// disabled after servicing.
+/// It performs a basic check to verify that a CREATE_IO_COMPLETION_QUEUE
+/// command was seen which means that queues are not being reused.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn servicing_with_keepalive_disabled_after_servicing(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
