@@ -3,10 +3,13 @@
 
 //! Parse partition info using the IGVM device tree parameter.
 
+extern crate alloc;
+
 use super::PartitionInfo;
 use super::shim_params::ShimParams;
 use crate::boot_logger::log;
 use crate::cmdline::BootCommandLineOptions;
+use crate::cmdline::SidecarOptions;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
@@ -22,6 +25,7 @@ use crate::memory::AllocationPolicy;
 use crate::memory::AllocationType;
 use crate::single_threaded::OffStackRef;
 use crate::single_threaded::off_stack;
+use alloc::vec::Vec;
 use arrayvec::ArrayVec;
 use bump_alloc::ALLOCATOR;
 use core::cmp::max;
@@ -369,6 +373,14 @@ struct PartitionTopology {
     memory_allocation_mode: MemoryAllocationMode,
 }
 
+/// State derived while constructing the partition topology
+/// from persisted state.
+#[derive(Debug, PartialEq, Eq)]
+struct PersistedPartitionTopology {
+    topology: PartitionTopology,
+    cpus_with_mapped_interrupts: Vec<u32>,
+}
+
 // Calculate the default mmio size for VTL2 when not specified by the host.
 //
 // This is half of the high mmio gap size, rounded down, with a minimum of 128
@@ -562,7 +574,7 @@ fn topology_from_persisted_state(
     params: &ShimParams,
     parsed: &ParsedDt,
     address_space: &mut AddressSpaceManager,
-) -> Result<PartitionTopology, DtError> {
+) -> Result<PersistedPartitionTopology, DtError> {
     log!("reading topology from persisted state");
 
     // Verify the header describes a protobuf region within the bootshim
@@ -602,6 +614,7 @@ fn topology_from_persisted_state(
     let loader_defs::shim::save_restore::SavedState {
         partition_memory,
         partition_mmio,
+        cpus_with_mapped_interrupts,
     } = parsed_protobuf;
 
     // FUTURE: should memory allocation mode should persist in saved state and
@@ -743,11 +756,14 @@ fn topology_from_persisted_state(
         })
         .collect::<ArrayVec<MemoryRange, 2>>();
 
-    Ok(PartitionTopology {
-        vtl2_ram: OffStackRef::<'_, ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>>::leak(vtl2_ram),
-        vtl0_mmio,
-        vtl2_mmio,
-        memory_allocation_mode,
+    Ok(PersistedPartitionTopology {
+        topology: PartitionTopology {
+            vtl2_ram: OffStackRef::<'_, ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>>::leak(vtl2_ram),
+            vtl0_mmio,
+            vtl2_mmio,
+            memory_allocation_mode,
+        },
+        cpus_with_mapped_interrupts,
     })
 }
 
@@ -830,12 +846,22 @@ impl PartitionInfo {
         init_heap(params);
 
         let persisted_state_header = read_persisted_region_header(params);
-        let topology = if let Some(header) = persisted_state_header {
-            log!("found persisted state header");
-            topology_from_persisted_state(header, params, parsed, address_space)?
-        } else {
-            topology_from_host_dt(params, parsed, &options, address_space)?
-        };
+        let (topology, has_devices_that_should_disable_sidecar) =
+            if let Some(header) = persisted_state_header {
+                log!("found persisted state header");
+                let persisted_topology =
+                    topology_from_persisted_state(header, params, parsed, address_space)?;
+
+                (
+                    persisted_topology.topology,
+                    !persisted_topology.cpus_with_mapped_interrupts.is_empty(),
+                )
+            } else {
+                (
+                    topology_from_host_dt(params, parsed, &options, address_space)?,
+                    false,
+                )
+            };
 
         let Self {
             vtl2_ram,
@@ -855,6 +881,24 @@ impl PartitionInfo {
             nvme_keepalive,
             boot_options,
         } = storage;
+
+        if let (SidecarOptions::Enabled { cpu_threshold, .. }, true) = (
+            &boot_options.sidecar,
+            has_devices_that_should_disable_sidecar,
+        ) {
+            if cpu_threshold.is_none()
+                || cpu_threshold
+                    .and_then(|threshold| threshold.try_into().ok())
+                    .is_some_and(|threshold| parsed.cpu_count() < threshold)
+            {
+                // If we are in the restore path, disable sidecar for small VMs, as the amortization
+                // benefits don't apply when devices are kept alive; the CPUs need to be powered on anyway
+                // to check for interrupts.
+                log!("disabling sidecar, as we are restoring from persisted state");
+                boot_options.sidecar = SidecarOptions::DisabledServicing;
+                options.sidecar = SidecarOptions::DisabledServicing;
+            }
+        }
 
         // Set ram and memory alloction mode.
         vtl2_ram.clear();
