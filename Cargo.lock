@@ -7979,6 +7979,7 @@ dependencies = [
  "netvsp",
  "nvme_driver",
  "nvme_resources",
+ "nvme_spec",
  "openhcl_attestation_protocol",
  "openhcl_dma_manager",
  "pal",

@@ -614,7 +614,11 @@ impl PollDevice for GenericPciBus {
                     if let Poll::Ready(res) = deferred_device_read.poll_read(cx, buf.as_mut_bytes())
                     {
                         let value = match res {
-                            Ok(()) => buf,
+                            Ok(Ok(())) => buf,
+                            Ok(Err(e)) => {
+                                self.trace_error(e, "deferred read");
+                                0
+                            }
                             Err(e) => {
                                 self.trace_recv_error(e, "deferred read");
                                 0
@@ -644,7 +648,11 @@ impl PollDevice for GenericPciBus {
                     if let Poll::Ready(res) = deferred_device_read.poll_read(cx, buf.as_mut_bytes())
                     {
                         let old_value = match res {
-                            Ok(()) => buf,
+                            Ok(Ok(())) => buf,
+                            Ok(Err(e)) => {
+                                self.trace_error(e, "deferred read for write");
+                                0
+                            }
                             Err(e) => {
                                 self.trace_recv_error(e, "deferred read for write");
                                 0
@@ -689,7 +697,10 @@ impl PollDevice for GenericPciBus {
                 } => {
                     if let Poll::Ready(res) = deferred_device_write.poll_write(cx) {
                         match res {
-                            Ok(()) => {}
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => {
+                                self.trace_error(e, "deferred write");
+                            }
                             Err(e) => {
                                 self.trace_recv_error(e, "deferred write");
                             }

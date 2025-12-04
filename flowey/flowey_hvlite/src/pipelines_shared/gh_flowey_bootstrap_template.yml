@@ -55,12 +55,10 @@
     path: flowey_bootstrap
 
 # - CARGO_INCREMENTAL=0 - no need to waste time on incremental artifacts in CI
-# - RUSTC_BOOTSTRAP=1 + RUSTFLAGS="-Z threads=8" - use of the unstable parallel
-#   frontend to go f a s t
 - name: Build flowey
   run: |
     set -x
-    CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p {{FLOWEY_CRATE}} --target {{FLOWEY_TARGET}} --profile flowey-ci
+    CARGO_INCREMENTAL=0 cargo build -p {{FLOWEY_CRATE}} --target {{FLOWEY_TARGET}} --profile flowey-ci
     OutDirNormal=$(echo "{{FLOWEY_OUTDIR}}" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
     mkdir -p "$OutDirNormal"
     mv ./{{FLOWEY_PIPELINE_PATH}}.yaml "$OutDirNormal/pipeline.yaml"
