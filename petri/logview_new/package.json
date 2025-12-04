@@ -23,6 +23,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:ci": "vite build --outDir dist-ci",
     "preview": "vite preview",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
