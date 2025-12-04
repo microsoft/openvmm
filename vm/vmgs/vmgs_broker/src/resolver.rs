@@ -11,6 +11,7 @@ use vm_resource::CanResolveTo;
 use vm_resource::IntoResource;
 use vm_resource::PlatformResource;
 use vm_resource::ResolveResource;
+use vm_resource::ResourceKind;
 use vm_resource::ResourceResolver;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::NonVolatileStoreKind;
@@ -49,7 +50,7 @@ impl AsyncResolveResource<NonVolatileStoreKind, VmgsFileHandle> for VmgsFileReso
     ) -> Result<Self::Output, Self::Error> {
         Ok(VmgsNonVolatileStore::new(
             resolver
-                .resolve::<NonVolatileStoreKind, _>(PlatformResource.into_resource(), ())
+                .resolve::<VmgsClientKind, _>(PlatformResource.into_resource(), ())
                 .await
                 .map_err(VmgsFileResolverError::Client)?,
             vmgs_format::FileId(resource.file_id),
@@ -60,11 +61,20 @@ impl AsyncResolveResource<NonVolatileStoreKind, VmgsFileHandle> for VmgsFileReso
     }
 }
 
-impl CanResolveTo<VmgsClient> for NonVolatileStoreKind {
+/// A resource kind for getting a [`VmgsClient`].
+///
+/// This is primarily used with [`PlatformResource`].
+pub enum VmgsClientKind {}
+
+impl ResourceKind for VmgsClientKind {
+    const NAME: &'static str = "vmgs_client";
+}
+
+impl CanResolveTo<VmgsClient> for VmgsClientKind {
     type Input<'a> = ();
 }
 
-impl ResolveResource<NonVolatileStoreKind, PlatformResource> for VmgsClient {
+impl ResolveResource<VmgsClientKind, PlatformResource> for VmgsClient {
     type Output = VmgsClient;
     type Error = std::convert::Infallible;
 
