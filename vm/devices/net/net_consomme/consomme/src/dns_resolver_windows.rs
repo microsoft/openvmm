@@ -9,16 +9,18 @@
 
 // UNSAFETY: This module uses unsafe code to interface with Windows APIs and for FFI bindings.
 #![expect(unsafe_code)]
-#![allow(unused_doc_comments, missing_docs, unused_imports)]
+#![allow(missing_docs)]
+use parking_lot::Mutex;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Address;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+// Without this allow attribute, xtask fmt --fix removes the winapi dependency which is required for delay-load.
+#[allow(unused_imports)]
 use winapi;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_TCP;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_UDP;
@@ -34,7 +36,6 @@ use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULTS_VERSION1;
 use crate::DnsResponse;
 use crate::DropReason;
 
-/// Delay-load bindings for Windows DNS Raw APIs
 pal::delayload! {"dnsapi.dll" {
     pub fn DnsQueryRaw(
         request: *const DNS_QUERY_RAW_REQUEST,
@@ -54,7 +55,6 @@ pal::delayload! {"dnsapi.dll" {
 struct DnsQueryContext {
     id: u64,
     protocol: IpProtocol,
-    cancel_handle: DNS_QUERY_RAW_CANCEL,
     src_addr: Ipv4Address,
     dst_addr: Ipv4Address,
     src_port: u16,
@@ -67,7 +67,7 @@ struct DnsQueryContext {
 /// DNS resolver that manages active DNS queries using Windows DNS APIs.
 pub struct DnsResolver {
     next_request_id: AtomicU64,
-    active_requests: Arc<Mutex<HashMap<u64, Box<DnsQueryContext>>>>,
+    active_cancel_handles: Arc<Mutex<HashMap<u64, DNS_QUERY_RAW_CANCEL>>>,
     response_queue: Arc<Mutex<VecDeque<DnsResponse>>>,
 }
 
@@ -79,7 +79,7 @@ impl DnsResolver {
 
         Ok(Self {
             next_request_id: AtomicU64::new(0),
-            active_requests: Arc::new(Mutex::new(HashMap::new())),
+            active_cancel_handles: Arc::new(Mutex::new(HashMap::new())),
             response_queue: Arc::new(Mutex::new(VecDeque::new())),
         })
     }
@@ -107,10 +107,9 @@ impl DnsResolver {
         let mut dns_query_vec = dns_query.to_vec();
 
         // Create the context
-        let mut context = Box::new(DnsQueryContext {
+        let context = Box::new(DnsQueryContext {
             id: request_id,
             protocol,
-            cancel_handle: DNS_QUERY_RAW_CANCEL::default(),
             src_addr,
             dst_addr,
             src_port,
@@ -120,7 +119,8 @@ impl DnsResolver {
             response_queue: self.response_queue.clone(),
         });
 
-        let context_ptr = &mut *context as *mut DnsQueryContext as *mut core::ffi::c_void;
+        // Leak the box to pass ownership to the callback via raw pointer
+        let context_ptr = Box::into_raw(context);
 
         // Build the DNS request structure
         let dns_protocol = match protocol {
@@ -128,6 +128,8 @@ impl DnsResolver {
             IpProtocol::Udp => DNS_PROTOCOL_UDP,
             _ => return Err(DropReason::Packet(smoltcp::Error::Dropped)),
         };
+
+        let mut cancel_handle = DNS_QUERY_RAW_CANCEL::default();
 
         let request = DNS_QUERY_RAW_REQUEST {
             version: DNS_QUERY_RAW_REQUEST_VERSION1,
@@ -140,7 +142,7 @@ impl DnsResolver {
                 | DNS_QUERY_RAW_OPTION_BEST_EFFORT_PARSE as u64,
             interfaceIndex: 0,
             queryCompletionCallback: Some(dns_query_raw_callback),
-            queryContext: context_ptr,
+            queryContext: context_ptr.cast::<core::ffi::c_void>(),
             queryRawOptions: 0,
             customServersSize: 0,
             customServers: std::ptr::null_mut(),
@@ -148,42 +150,37 @@ impl DnsResolver {
             Anonymous: DNS_QUERY_RAW_REQUEST_0::default(),
         };
 
-        // Store the context before making the call
-        {
-            let mut requests = self.active_requests.lock().unwrap();
-            assert!(!requests.contains_key(&request_id), "Request ID collision");
-            requests.insert(request_id, context);
-        }
-
-        // Make the DNS query
-        let result = unsafe {
-            let mut requests = self.active_requests.lock().unwrap();
-            let context = requests.get_mut(&request_id).unwrap();
-            DnsQueryRaw(&request, &mut context.cancel_handle)
-        };
+        // UNSAFETY: Calling Windows DNS API
+        let result = unsafe { DnsQueryRaw(&request, &mut cancel_handle) };
 
         if result != 0 && result != 9506 {
             // 9506 is DNS_REQUEST_PENDING
             tracing::error!(request_id, result, "DnsQueryRaw failed");
 
-            // Remove the context on failure
-            let mut requests = self.active_requests.lock().unwrap();
-            requests.remove(&request_id);
-            drop(requests);
+            // UNSAFETY: Free the context on error
+            unsafe {
+                let _ = Box::from_raw(context_ptr);
+            }
             return Err(DropReason::DnsError(result));
         }
 
-        tracing::debug!(request_id, "DNS query submitted successfully");
+        // Store the cancel handle for potential cancellation
+        {
+            let mut handles = self.active_cancel_handles.lock();
+            handles.insert(request_id, cancel_handle);
+        }
+
         Ok(())
     }
 
     /// Cancel all active DNS queries
     pub fn cancel_all(&mut self) {
-        let mut requests = self.active_requests.lock().unwrap();
-        requests.iter().for_each(|(_, ctx)| unsafe {
-            DnsCancelQueryRaw(&ctx.cancel_handle);
+        let mut handles = self.active_cancel_handles.lock();
+        // UNSAFETY: Calling Windows DNS API
+        handles.iter().for_each(|(_, cancel_handle)| unsafe {
+            DnsCancelQueryRaw(cancel_handle);
         });
-        requests.clear();
+        handles.clear();
     }
 
     /// Poll for completed DNS responses.
@@ -194,7 +191,7 @@ impl DnsResolver {
             "protocol must be UDP or TCP"
         );
 
-        let mut queue = self.response_queue.lock().unwrap();
+        let mut queue = self.response_queue.lock();
         match queue.front() {
             Some(resp) if resp.protocol == protocol => queue.pop_front(),
             _ => None,
@@ -202,7 +199,9 @@ impl DnsResolver {
     }
 }
 
-/// DNS query completion callback
+/// # Safety
+///
+/// The Windows DNS API will call this function when a DNS query completes.
 unsafe extern "system" fn dns_query_raw_callback(
     query_context: *const core::ffi::c_void,
     query_results: *const DNS_QUERY_RAW_RESULT,
@@ -214,6 +213,7 @@ unsafe extern "system" fn dns_query_raw_callback(
 
     // Convert context back to a Box
     let context_ptr = query_context as *mut DnsQueryContext;
+    // UNSAFETY: Take ownership of the context
     let context = unsafe { Box::from_raw(context_ptr) };
 
     // Process the results
@@ -221,6 +221,7 @@ unsafe extern "system" fn dns_query_raw_callback(
         tracing::warn!(request_id = context.id, "DNS query returned null results");
         None
     } else {
+        // UNSAFETY: Dereferencing raw pointer from Windows API
         let results = unsafe { &*query_results };
 
         tracing::debug!(
@@ -233,7 +234,7 @@ unsafe extern "system" fn dns_query_raw_callback(
         if results.queryRawResponse.is_null() || results.queryRawResponseSize == 0 {
             None
         } else {
-            // Copy the DNS response
+            // UNSAFETY: Create a slice from the raw response data
             let response_slice = unsafe {
                 std::slice::from_raw_parts(
                     results.queryRawResponse,
@@ -246,8 +247,9 @@ unsafe extern "system" fn dns_query_raw_callback(
 
     // Free the query results
     if !query_results.is_null() {
+        // UNSAFETY: Calling Windows DNS API
         unsafe {
-            DnsQueryRawResultFree(query_results as *mut _);
+            DnsQueryRawResultFree(query_results.cast_mut());
         }
     }
 
@@ -263,6 +265,6 @@ unsafe extern "system" fn dns_query_raw_callback(
             response_data,
             protocol: context.protocol,
         };
-        context.response_queue.lock().unwrap().push_back(response);
+        context.response_queue.lock().push_back(response);
     }
 }

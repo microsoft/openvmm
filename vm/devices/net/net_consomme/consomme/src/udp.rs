@@ -430,8 +430,13 @@ impl<T: Client> Access<'_, T> {
         let buffer = &mut self.inner.state.buffer;
 
         let payload_offset = ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN;
-        buffer[payload_offset..payload_offset + response.response_data.len()]
-            .copy_from_slice(&response.response_data);
+        let required_size = payload_offset + response.response_data.len();
+
+        if required_size > buffer.len() {
+            return Err(DropReason::Packet(smoltcp::Error::Exhausted));
+        }
+
+        buffer[payload_offset..required_size].copy_from_slice(&response.response_data);
 
         let mut eth_frame = EthernetFrame::new_unchecked(&mut buffer[..]);
         let frame_len = build_udp_packet(

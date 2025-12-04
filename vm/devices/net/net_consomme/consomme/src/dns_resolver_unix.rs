@@ -27,7 +27,7 @@ pub enum DnsError {
 impl DnsResolver {
     /// Create a new DNS resolver instance
     pub fn new() -> Result<Self, DnsError> {
-        Ok(Self)
+        todo!("DNS resolver not yet implemented for Unix platforms")
     }
 
     /// Handle a DNS query by forwarding it to the system DNS resolver.
