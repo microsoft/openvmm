@@ -688,12 +688,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         let driver = driver_source.simple();
         let bar0_mapping = device
             .map_bar(0)
-            .context("failed to map device registers")?;
+            .context("failed to map device registers to clear existing state")?;
         let bar0 = Bar0(bar0_mapping);
         bar0.reset(&driver)
             .await
             .map_err(|e| anyhow::anyhow!("failed to reset device during clear: {:#x}", e))?;
-        drop(device);
         Ok(())
     }
 
