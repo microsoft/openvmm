@@ -9,7 +9,6 @@ rust-version.workspace = true
 [dependencies]
 inspect.workspace = true
 inspect_counters.workspace = true
-pal.workspace = true
 pal_async.workspace = true
 
 futures.workspace = true
@@ -25,8 +24,7 @@ resolv-conf.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 parking_lot.workspace = true
-winapi.workspace = true
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_IO", "Win32_NetworkManagement_Dns", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_IO", "Win32_NetworkManagement_Dns", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_System_LibraryLoader"] }
 
 [lints]
 workspace = true

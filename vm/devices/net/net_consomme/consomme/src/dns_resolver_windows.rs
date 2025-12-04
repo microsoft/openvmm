@@ -9,19 +9,22 @@
 
 // UNSAFETY: This module uses unsafe code to interface with Windows APIs and for FFI bindings.
 #![expect(unsafe_code)]
-#![allow(missing_docs)]
 use parking_lot::Mutex;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Address;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::ptr::null_mut;
 use std::sync::Arc;
+use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-// Without this allow attribute, xtask fmt --fix removes the winapi dependency which is required for delay-load.
-#[allow(unused_imports)]
-use winapi;
+use windows_sys::Win32::Foundation::DNS_REQUEST_PENDING;
+use windows_sys::Win32::Foundation::ERROR_PROC_NOT_FOUND;
+use windows_sys::Win32::Foundation::GetLastError;
+use windows_sys::Win32::Foundation::WIN32_ERROR;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_TCP;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_UDP;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_NO_MULTICAST;
@@ -32,24 +35,72 @@ use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST_0;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST_VERSION1;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULT;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULTS_VERSION1;
+use windows_sys::Win32::System::LibraryLoader::GetProcAddress;
+use windows_sys::Win32::System::LibraryLoader::LoadLibraryA;
 
 use crate::DnsResponse;
 use crate::DropReason;
 
-pal::delayload! {"dnsapi.dll" {
-    pub fn DnsQueryRaw(
-        request: *const DNS_QUERY_RAW_REQUEST,
-        cancel: *mut DNS_QUERY_RAW_CANCEL
-    ) -> i32;
+// Delay-load helpers for dnsapi.dll functions
+fn get_module() -> Result<isize, WIN32_ERROR> {
+    static MODULE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
+    let mut module = MODULE.load(Ordering::Relaxed);
+    if module.is_null() {
+        module = unsafe { LoadLibraryA(b"dnsapi.dll\0".as_ptr()) as *mut core::ffi::c_void };
+        if module.is_null() {
+            return Err(unsafe { GetLastError() });
+        }
+        MODULE.store(module, Ordering::Relaxed);
+    }
+    Ok(module as isize)
+}
 
-    pub fn DnsCancelQueryRaw(
-        cancel: *const DNS_QUERY_RAW_CANCEL
-    ) -> i32;
+fn get_proc_address(name: &[u8], cache: &AtomicUsize) -> Result<usize, WIN32_ERROR> {
+    let mut fnval = cache.load(Ordering::Relaxed);
+    if fnval == 0 {
+        let module = get_module()?;
+        fnval = unsafe { GetProcAddress(module as _, name.as_ptr()) }
+            .map(|f| f as usize)
+            .unwrap_or(0);
+        cache.store(if fnval == 0 { 1 } else { fnval }, Ordering::Relaxed);
+    }
+    if fnval == 1 {
+        Err(ERROR_PROC_NOT_FOUND)
+    } else {
+        Ok(fnval)
+    }
+}
 
-    pub fn DnsQueryRawResultFree(
-        result: *mut DNS_QUERY_RAW_RESULT
-    ) -> ();
-}}
+macro_rules! define_dns_api {
+    ($fn_name:ident, $api_name:literal, $fn_type:ty) => {
+        fn $fn_name() -> Result<usize, WIN32_ERROR> {
+            static CACHE: AtomicUsize = AtomicUsize::new(0);
+            get_proc_address(concat!($api_name, "\0").as_bytes(), &CACHE)
+        }
+    };
+}
+
+define_dns_api!(
+    get_dns_query_raw,
+    "DnsQueryRaw",
+    unsafe extern "system" fn(*const DNS_QUERY_RAW_REQUEST, *mut DNS_QUERY_RAW_CANCEL) -> i32
+);
+define_dns_api!(
+    get_dns_cancel_query_raw,
+    "DnsCancelQueryRaw",
+    unsafe extern "system" fn(*const DNS_QUERY_RAW_CANCEL) -> i32
+);
+define_dns_api!(
+    get_dns_query_raw_result_free,
+    "DnsQueryRawResultFree",
+    unsafe extern "system" fn(*mut DNS_QUERY_RAW_RESULT)
+);
+
+fn is_dns_apis_supported() -> bool {
+    get_dns_query_raw().is_ok()
+        && get_dns_cancel_query_raw().is_ok()
+        && get_dns_query_raw_result_free().is_ok()
+}
 
 // DNS query context for active requests
 struct DnsQueryContext {
@@ -62,6 +113,7 @@ struct DnsQueryContext {
     gateway_mac: EthernetAddress,
     client_mac: EthernetAddress,
     response_queue: Arc<Mutex<VecDeque<DnsResponse>>>,
+    active_cancel_handles: Arc<Mutex<HashMap<u64, DNS_QUERY_RAW_CANCEL>>>,
 }
 
 /// DNS resolver that manages active DNS queries using Windows DNS APIs.
@@ -74,8 +126,14 @@ pub struct DnsResolver {
 impl DnsResolver {
     /// Creates a new DNS resolver instance.
     pub fn new() -> Result<Self, std::io::Error> {
-        // Ensure the DNS Raw APIs are available on this platform
+        // Ensure the DNS APIs are available on this platform
         get_module().map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
+        if !is_dns_apis_supported() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "DNS APIs not available",
+            ));
+        }
 
         Ok(Self {
             next_request_id: AtomicU64::new(0),
@@ -103,7 +161,7 @@ impl DnsResolver {
             return Err(DropReason::Packet(smoltcp::Error::Dropped));
         }
 
-        // Create a mutable copy of the DNS query
+        // Create a mutable copy of the DNS query for the Windows API
         let mut dns_query_vec = dns_query.to_vec();
 
         // Create the context
@@ -117,6 +175,7 @@ impl DnsResolver {
             gateway_mac,
             client_mac,
             response_queue: self.response_queue.clone(),
+            active_cancel_handles: self.active_cancel_handles.clone(),
         });
 
         // Leak the box to pass ownership to the callback via raw pointer
@@ -136,7 +195,7 @@ impl DnsResolver {
             resultsVersion: DNS_QUERY_RAW_RESULTS_VERSION1,
             dnsQueryRawSize: dns_query_vec.len() as u32,
             dnsQueryRaw: dns_query_vec.as_mut_ptr(),
-            dnsQueryName: std::ptr::null_mut(),
+            dnsQueryName: null_mut(),
             dnsQueryType: 0,
             queryOptions: DNS_QUERY_NO_MULTICAST as u64
                 | DNS_QUERY_RAW_OPTION_BEST_EFFORT_PARSE as u64,
@@ -145,16 +204,30 @@ impl DnsResolver {
             queryContext: context_ptr.cast::<core::ffi::c_void>(),
             queryRawOptions: 0,
             customServersSize: 0,
-            customServers: std::ptr::null_mut(),
+            customServers: null_mut(),
             protocol: dns_protocol,
             Anonymous: DNS_QUERY_RAW_REQUEST_0::default(),
         };
 
-        // UNSAFETY: Calling Windows DNS API
-        let result = unsafe { DnsQueryRaw(&request, &mut cancel_handle) };
+        // UNSAFETY: Calling Windows DNS API through dynamically loaded function pointer
+        let result = match get_dns_query_raw() {
+            Ok(fnval) => {
+                let fnptr: unsafe extern "system" fn(
+                    *const DNS_QUERY_RAW_REQUEST,
+                    *mut DNS_QUERY_RAW_CANCEL,
+                ) -> i32 = unsafe { std::mem::transmute(fnval) };
+                unsafe { fnptr(&request, &mut cancel_handle) }
+            }
+            Err(_) => {
+                // UNSAFETY: Free the context on error
+                unsafe {
+                    let _ = Box::from_raw(context_ptr);
+                }
+                return Err(DropReason::Packet(smoltcp::Error::Dropped));
+            }
+        };
 
-        if result != 0 && result != 9506 {
-            // 9506 is DNS_REQUEST_PENDING
+        if result != 0 && result != DNS_REQUEST_PENDING {
             tracing::error!(request_id, result, "DnsQueryRaw failed");
 
             // UNSAFETY: Free the context on error
@@ -176,10 +249,14 @@ impl DnsResolver {
     /// Cancel all active DNS queries
     pub fn cancel_all(&mut self) {
         let mut handles = self.active_cancel_handles.lock();
-        // UNSAFETY: Calling Windows DNS API
-        handles.iter().for_each(|(_, cancel_handle)| unsafe {
-            DnsCancelQueryRaw(cancel_handle);
-        });
+        // UNSAFETY: Calling Windows DNS API through dynamically loaded function pointer
+        if let Ok(fnval) = get_dns_cancel_query_raw() {
+            let fnptr: unsafe extern "system" fn(*const DNS_QUERY_RAW_CANCEL) -> i32 =
+                unsafe { std::mem::transmute(fnval) };
+            handles.iter().for_each(|(_, cancel_handle)| {
+                let _ = unsafe { fnptr(cancel_handle) };
+            });
+        }
         handles.clear();
     }
 
@@ -199,6 +276,12 @@ impl DnsResolver {
     }
 }
 
+impl Drop for DnsResolver {
+    fn drop(&mut self) {
+        self.cancel_all();
+    }
+}
+
 /// # Safety
 ///
 /// The Windows DNS API will call this function when a DNS query completes.
@@ -215,6 +298,8 @@ unsafe extern "system" fn dns_query_raw_callback(
     let context_ptr = query_context as *mut DnsQueryContext;
     // UNSAFETY: Take ownership of the context
     let context = unsafe { Box::from_raw(context_ptr) };
+
+    context.active_cancel_handles.lock().remove(&context.id);
 
     // Process the results
     let dns_response_data = if query_results.is_null() {
@@ -247,9 +332,11 @@ unsafe extern "system" fn dns_query_raw_callback(
 
     // Free the query results
     if !query_results.is_null() {
-        // UNSAFETY: Calling Windows DNS API
-        unsafe {
-            DnsQueryRawResultFree(query_results.cast_mut());
+        // UNSAFETY: Calling Windows DNS API through dynamically loaded function pointer
+        if let Ok(fnval) = get_dns_query_raw_result_free() {
+            let fnptr: unsafe extern "system" fn(*mut DNS_QUERY_RAW_RESULT) =
+                unsafe { std::mem::transmute(fnval) };
+            unsafe { fnptr(query_results.cast_mut()) };
         }
     }
 

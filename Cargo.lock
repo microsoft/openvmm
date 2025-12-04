@@ -771,7 +771,6 @@ dependencies = [
  "inspect",
  "inspect_counters",
  "libc",
- "pal",
  "pal_async",
  "parking_lot",
  "resolv-conf",
@@ -779,7 +778,6 @@ dependencies = [
  "socket2",
  "thiserror 2.0.16",
  "tracing",
- "winapi",
  "windows-sys 0.61.0",
 ]
 
