@@ -19,6 +19,8 @@ use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X6
 use petri_artifacts_vmm_test::artifacts::host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64;
 use pipette_client::PipetteClient;
 use std::path::Path;
+#[cfg(windows)]
+use std::sync::LazyLock;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 
@@ -31,7 +33,7 @@ const TPM_GUEST_TESTS_WINDOWS_GUEST_PATH: &str = "C:\\tpm_guest_tests.exe";
 // Global mutex to serialize access to the RPC server endpoint.
 // Only one test can run the RPC server at a time since it binds to a fixed endpoint.
 #[cfg(windows)]
-static RPC_SERVER_LOCK: Mutex<()> = Mutex::new(());
+static RPC_SERVER_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn expected_ak_cert_hex() -> String {
     use std::fmt::Write as _;
