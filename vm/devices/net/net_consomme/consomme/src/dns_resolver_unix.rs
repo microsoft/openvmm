@@ -6,7 +6,11 @@
 //! This module provides a stub implementation of the DNS resolver for Unix platforms.
 //! The actual implementation is not yet available and uses `todo!()` macros.
 
+use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::IpProtocol;
+use smoltcp::wire::Ipv4Address;
+
+use crate::DnsResponse;
 
 /// DNS resolver that manages active DNS queries (Unix stub)
 pub struct DnsResolver;
@@ -34,9 +38,23 @@ impl DnsResolver {
         &mut self,
         _dns_query: &[u8],
         _protocol: IpProtocol,
-        _callback: impl FnOnce(Option<Vec<u8>>) + Send + 'static,
-    ) -> Result<(), DnsError> {
+        _src_addr: Ipv4Address,
+        _dst_addr: Ipv4Address,
+        _src_port: u16,
+        _dst_port: u16,
+        _gateway_mac: EthernetAddress,
+        _client_mac: EthernetAddress,
+    ) -> Result<(), crate::DropReason> {
         todo!("DNS resolver not yet implemented for Unix platforms")
+    }
+
+    /// Poll for completed DNS responses.
+    /// Returns the next available response, if any.
+    ///
+    /// # Note
+    /// This is a stub implementation for Unix platforms and is not yet implemented.
+    pub fn poll_responses(&mut self, _protocol: IpProtocol) -> Option<DnsResponse> {
+        None
     }
 
     /// Cancel all active DNS queries

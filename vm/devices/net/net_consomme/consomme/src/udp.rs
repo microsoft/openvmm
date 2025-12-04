@@ -336,7 +336,7 @@ impl<T: Client> Access<'_, T> {
                 Ok(true)
             }
             DNS_PORT => {
-                if let Some(_) = &mut self.inner.dns_resolver {
+                if self.inner.dns_resolver.is_some() {
                     let udp_repr = UdpRepr {
                         src_port: udp.src_port(),
                         dst_port: udp.dst_port(),
@@ -417,10 +417,7 @@ impl<T: Client> Access<'_, T> {
         Ok(())
     }
 
-    fn send_dns_response(
-        &mut self,
-        response: &crate::dns_resolver::DnsResponse,
-    ) -> Result<(), DropReason> {
+    fn send_dns_response(&mut self, response: &crate::DnsResponse) -> Result<(), DropReason> {
         tracing::debug!(
             response_len = response.response_data.len(),
             src = %response.src_addr,

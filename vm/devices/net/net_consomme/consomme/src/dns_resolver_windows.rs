@@ -31,8 +31,8 @@ use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST_VERSION1;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULT;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULTS_VERSION1;
 
+use crate::DnsResponse;
 use crate::DropReason;
-use crate::dns;
 
 /// Delay-load bindings for Windows DNS Raw APIs
 pal::delayload! {"dnsapi.dll" {
@@ -49,27 +49,6 @@ pal::delayload! {"dnsapi.dll" {
         result: *mut DNS_QUERY_RAW_RESULT
     ) -> ();
 }}
-
-/// A queued DNS response ready to be sent to the guest.
-#[derive(Debug, Clone)]
-pub struct DnsResponse {
-    /// Source IP address (the client)
-    pub src_addr: Ipv4Address,
-    /// Destination IP address (the gateway)
-    pub dst_addr: Ipv4Address,
-    /// Source port (the client's port)
-    pub src_port: u16,
-    /// Destination port (DNS port 53)
-    pub dst_port: u16,
-    /// Gateway MAC address
-    pub gateway_mac: EthernetAddress,
-    /// Client MAC address
-    pub client_mac: EthernetAddress,
-    /// The DNS response data
-    pub response_data: Vec<u8>,
-    /// The protocol (UDP or TCP)
-    pub protocol: IpProtocol,
-}
 
 // DNS query context for active requests
 struct DnsQueryContext {

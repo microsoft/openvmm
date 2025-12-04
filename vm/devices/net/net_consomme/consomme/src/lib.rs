@@ -297,6 +297,7 @@ pub enum DropReason {
     /// Specified port is not bound.
     #[error("port is not bound")]
     PortNotBound,
+    /// DNS resolver error.
     #[error("dns error {0:?}")]
     DnsError(i32),
 }
@@ -313,6 +314,27 @@ pub enum Error {
 struct Ipv4Addresses {
     src_addr: Ipv4Address,
     dst_addr: Ipv4Address,
+}
+
+/// A queued DNS response ready to be sent to the guest.
+#[derive(Debug, Clone)]
+pub struct DnsResponse {
+    /// Source IP address (the client)
+    pub src_addr: Ipv4Address,
+    /// Destination IP address (the gateway)
+    pub dst_addr: Ipv4Address,
+    /// Source port (the client's port)
+    pub src_port: u16,
+    /// Destination port (DNS port 53)
+    pub dst_port: u16,
+    /// Gateway MAC address
+    pub gateway_mac: EthernetAddress,
+    /// Client MAC address
+    pub client_mac: EthernetAddress,
+    /// The DNS response data
+    pub response_data: Vec<u8>,
+    /// The protocol (UDP or TCP)
+    pub protocol: IpProtocol,
 }
 
 impl Consomme {
