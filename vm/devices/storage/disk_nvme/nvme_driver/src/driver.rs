@@ -7,7 +7,6 @@ use super::spec;
 use crate::NVME_PAGE_SHIFT;
 use crate::Namespace;
 use crate::NamespaceError;
-use crate::NvmeDriverSavedState;
 use crate::RequestError;
 use crate::driver::save_restore::IoQueueSavedState;
 use crate::queue_pair::AdminAerHandler;
@@ -19,6 +18,7 @@ use crate::queue_pair::QueuePair;
 use crate::queue_pair::admin_cmd;
 use crate::registers::Bar0;
 use crate::registers::DeviceRegisters;
+use crate::save_restore::NvmeDriverSavedState;
 use anyhow::Context as _;
 use futures::StreamExt;
 use futures::future::join_all;
@@ -1428,6 +1428,8 @@ impl<T: DeviceBacking> InspectTask<WorkerState> for DriverWorkerTask<T> {
     }
 }
 
+/// Save/restore data structures exposed by the NVMe driver.
+#[expect(missing_docs)]
 pub mod save_restore {
     use super::*;
 
@@ -1529,6 +1531,7 @@ pub mod save_restore {
         pub aer_handler: Option<AerHandlerSavedState>,
     }
 
+    /// Snapshot of submission queue metadata captured during save.
     #[derive(Protobuf, Clone, Debug)]
     #[mesh(package = "nvme_driver")]
     pub struct SubmissionQueueSavedState {
@@ -1544,6 +1547,7 @@ pub mod save_restore {
         pub len: u32,
     }
 
+    /// Snapshot of completion queue metadata captured during save.
     #[derive(Protobuf, Clone, Debug)]
     #[mesh(package = "nvme_driver")]
     pub struct CompletionQueueSavedState {
@@ -1560,6 +1564,7 @@ pub mod save_restore {
         pub phase: bool,
     }
 
+    /// Pending command entry captured from a queue handler.
     #[derive(Protobuf, Clone, Debug)]
     #[mesh(package = "nvme_driver")]
     pub struct PendingCommandSavedState {
@@ -1567,6 +1572,7 @@ pub mod save_restore {
         pub command: spec::Command,
     }
 
+    /// Collection of pending commands indexed by CID.
     #[derive(Protobuf, Clone, Debug)]
     #[mesh(package = "nvme_driver")]
     pub struct PendingCommandsSavedState {
@@ -1588,6 +1594,7 @@ pub mod save_restore {
         pub identify_ns: nvme_spec::nvm::IdentifyNamespace,
     }
 
+    /// Saved Async Event Request handler metadata.
     #[derive(Clone, Debug, Protobuf)]
     #[mesh(package = "nvme_driver")]
     pub struct AerHandlerSavedState {

@@ -545,7 +545,7 @@ pub mod save_restore {
         #[mesh(1)]
         pub pci_id: String,
         #[mesh(2)]
-        pub driver_state: nvme_driver::NvmeDriverSavedState,
+        pub driver_state: nvme_driver::save_restore::NvmeDriverSavedState,
     }
 }
 
@@ -558,7 +558,7 @@ mod tests {
     use inspect::Inspect;
     use inspect::InspectionBuilder;
     use nvme_driver::Namespace;
-    use nvme_driver::NvmeDriverSavedState;
+    use nvme_driver::save_restore::NvmeDriverSavedState;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use std::sync::atomic::AtomicU32;
