@@ -532,6 +532,9 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
             if let Some(task) = self.stderr_task.take() {
                 let _ = task.join();
             }
+            // Give Windows a moment to fully release the RPC endpoint before
+            // the next test tries to bind to it.
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
     let _rpc_server_guard = RpcServerGuard {
