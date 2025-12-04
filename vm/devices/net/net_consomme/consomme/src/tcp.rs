@@ -432,12 +432,12 @@ impl<T: Client> Access<'_, T> {
                     // For DNS over TCP to the gateway, handle as a server-side connection
                     // rather than trying to establish an outbound connection
                     let conn = if is_dns && self.inner.dns_resolver.is_some() {
-                        tracing::info!(
+                        tracing::debug!(
                             src_ip = %addresses.src_addr,
                             src_port = tcp.src_port,
                             dst_ip = %addresses.dst_addr,
                             dst_port = tcp.dst_port,
-                            "Received SYN for DNS over TCP connection"
+                            "DNS over TCP connection initiated by guest"
                         );
                         TcpConnection::new_for_dns(&mut sender, &tcp)?
                     } else {
