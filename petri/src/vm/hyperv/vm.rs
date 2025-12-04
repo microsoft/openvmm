@@ -233,8 +233,7 @@ impl HyperVVM {
     /// Waits for an event emitted by the firmware about its boot status, and
     /// returns that status.
     pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
-        self.wait_for_off_or_internal(Self::boot_event, Default::default())
-            .await
+        self.wait_for_off_or_internal(Self::boot_event).await
     }
 
     async fn boot_event(&self) -> anyhow::Result<Option<FirmwareEvent>> {
@@ -405,19 +404,35 @@ impl HyperVVM {
 
     /// Wait for the VM to stop
     pub async fn wait_for_halt(&mut self, _allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
-        // Allow some time for the VM to be off when waiting for a halt event
-        // since CVMs may be "off" momentarily during a reboot. This also avoids
-        // a race between receiving a halt event and identifying the VM as off.
-        const ALLOWED_OFF_TIME_SECONDS: u64 = 10;
-        let (halt_reason, timestamp) = self
-            .wait_for_off_or_internal(
-                Self::halt_event,
-                Duration::from_secs(ALLOWED_OFF_TIME_SECONDS),
-            )
-            .await?;
+        // Allow CVMs some time for the VM to be off after reset.
+        const CVM_ALLOWED_OFF_TIME: Duration = Duration::from_secs(15);
+
+        let (halt_reason, timestamp) = self.wait_for_off_or_internal(Self::halt_event).await?;
+
         if halt_reason == PetriHaltReason::Reset {
             // add 1ms to avoid getting the same event again
             self.last_start_time = Some(timestamp.checked_add(Duration::from_millis(1))?);
+
+            // wait for the CVM to start again
+            if self.is_isolated {
+                loop {
+                    match self.state().await? {
+                        VmState::Off | VmState::Stopping | VmState::Resetting => {}
+                        VmState::Running | VmState::Starting => break,
+                        VmState::Saved
+                        | VmState::Paused
+                        | VmState::Saving
+                        | VmState::Pausing
+                        | VmState::Resuming => anyhow::bail!("Unexpected vm state"),
+                    }
+
+                    if Timestamp::now().duration_since(timestamp).unsigned_abs()
+                        > CVM_ALLOWED_OFF_TIME
+                    {
+                        anyhow::bail!("VM did not start after reset in the required time");
+                    }
+                }
+            }
         }
         Ok(halt_reason)
     }
@@ -463,15 +478,9 @@ impl HyperVVM {
 
     /// Wait for the VM shutdown ic
     pub async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()> {
-        self.wait_for_off_or_internal(
-            async move |s| {
-                Ok(
-                    (s.shutdown_ic_status().await? == powershell::VmShutdownIcStatus::Ok)
-                        .then_some(()),
-                )
-            },
-            Default::default(),
-        )
+        self.wait_for_off_or_internal(async move |s| {
+            Ok((s.shutdown_ic_status().await? == powershell::VmShutdownIcStatus::Ok).then_some(()))
+        })
         .await
         .context("wait_for_enlightened_shutdown_ready")
     }
@@ -491,46 +500,35 @@ impl HyperVVM {
     pub(crate) async fn wait_for_off_or_internal<T>(
         &mut self,
         f: impl AsyncFn(&Self) -> anyhow::Result<Option<T>>,
-        allowed_off_time: Duration,
     ) -> anyhow::Result<T> {
         // flush the logs every time we start waiting for something in case
         // they don't get flushed when the VM is destroyed.
         // TODO: run this periodically in a task.
         self.flush_logs().await?;
 
-        // In most cases, the VM should never be fully off even if it is
-        // rebooting or otherwise transitioning power states. There are some
-        // exceptions, so there is a parameter to specify the time the VM can
-        // be off before aborting the test.
-        let mut last_off = None;
+        // Even if the VM is rebooting or otherwise transitioning power states
+        // it should never be considered fully off. The only exception is if we
+        // are waiting for the VM to turn off, and we haven't detected the halt
+        // event yet. To avoid this race condition, allow for one more attempt
+        // a second after the VM turns off.
+        let mut last_off = false;
 
         loop {
             if let Some(output) = f(self).await? {
                 return Ok(output);
             }
 
-            if self.state().await? == VmState::Off {
-                let now = Timestamp::now();
-
-                if allowed_off_time.is_zero()
-                    || last_off
-                        .is_some_and(|t| now.duration_since(t).unsigned_abs() > allowed_off_time)
-                {
+            let off = self.state().await? == VmState::Off;
+            if last_off && off {
+                if let Some((halt_event, _)) = self.halt_event().await? {
+                    anyhow::bail!("Unexpected halt event: {halt_event:?}");
+                } else {
                     anyhow::bail!(
-                        "The VM is no longer running, but a halt event was either not received or not expected."
+                        "The VM is no longer running, but no known halt event was received."
                     );
                 }
-
-                if last_off.is_none() {
-                    tracing::warn!(
-                        "The VM is not running, allowing {}s for it to turn back on",
-                        allowed_off_time.as_secs_f64()
-                    );
-                    last_off = Some(now);
-                }
-            } else {
-                last_off = None;
             }
+            last_off = off;
 
             PolledTimer::new(&self.driver)
                 .sleep(Duration::from_secs(1))
