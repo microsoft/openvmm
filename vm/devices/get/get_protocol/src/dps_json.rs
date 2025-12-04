@@ -156,8 +156,9 @@ open_enum! {
 pub struct ManagementVtlFeatures {
     pub strict_encryption_policy: bool,
     pub _reserved1: bool,
+    pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
-    #[bits(61)]
+    #[bits(60)]
     pub _reserved2: u64,
 }
 

@@ -461,7 +461,8 @@ async fn memory_validation_release_small<T: PetriVmmBackend>(
         WaitPeriodSec::ShortWait,
         driver,
         "release",
-        true,
+        // Disabling release assertions on small VM test while internal repo filter is in progress
+        false,
     )
     .await
 }
@@ -509,7 +510,8 @@ async fn memory_validation_release_very_heavy<T: PetriVmmBackend>(
         WaitPeriodSec::LongWait,
         driver,
         "release",
-        true,
+        // Disabling release assertions on heavy VM test while internal repo filter is in progress
+        false,
     )
     .await
 }

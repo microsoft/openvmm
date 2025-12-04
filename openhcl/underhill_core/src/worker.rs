@@ -1494,6 +1494,9 @@ async fn new_underhill_vm(
             tracing::info!("using HCL_ATTEMPT_AK_CERT_CALLBACK={value} from cmdline");
             dps.general
                 .management_vtl_features
+                .set_control_ak_cert_provisioning(true);
+            dps.general
+                .management_vtl_features
                 .set_attempt_ak_cert_callback(value);
         }
 
@@ -2829,15 +2832,17 @@ async fn new_underhill_vm(
                     TpmAkCertTypeResource::HwAttested(request_ak_cert)
                 }
                 AttestationType::Vbs => TpmAkCertTypeResource::SwAttested(request_ak_cert),
-                AttestationType::Host
-                    if dps
-                        .general
+                AttestationType::Host => TpmAkCertTypeResource::Trusted(
+                    request_ak_cert,
+                    dps.general
                         .management_vtl_features
-                        .attempt_ak_cert_callback() =>
-                {
-                    TpmAkCertTypeResource::Trusted(request_ak_cert)
-                }
-                AttestationType::Host => TpmAkCertTypeResource::TrustedPreProvisionedOnly,
+                        .control_ak_cert_provisioning()
+                        .then(|| {
+                            dps.general
+                                .management_vtl_features
+                                .attempt_ak_cert_callback()
+                        }),
+                ),
             }
         };
 
