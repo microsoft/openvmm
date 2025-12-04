@@ -238,8 +238,7 @@ impl FuzzChipset {
         for _ in 0..self.max_defer_poll_count {
             dev.poll_device(&mut cx);
             match t.poll_read(&mut cx, data) {
-                Poll::Ready(Ok(r)) => return r,
-                Poll::Ready(Err(e)) => panic!("deferred read failed: {:?}", e),
+                Poll::Ready(r) => return r,
                 Poll::Pending => {}
             }
         }
@@ -272,8 +271,7 @@ impl FuzzChipset {
         for _ in 0..self.max_defer_poll_count {
             dev.poll_device(&mut cx);
             match t.poll_write(&mut cx) {
-                Poll::Ready(Ok(r)) => return r,
-                Poll::Ready(Err(e)) => panic!("deferred write failed: {:?}", e),
+                Poll::Ready(r) => return r,
                 Poll::Pending => {}
             }
         }

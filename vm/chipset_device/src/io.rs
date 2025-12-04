@@ -17,6 +17,8 @@ pub enum IoError {
     /// The caller attempted to perform an unaligned access to the device
     /// registers.
     UnalignedAccess,
+    /// The device never responded to the IO request.
+    NoResponse,
 }
 
 /// The result returned by a device IO (memory-mapped IO, port IO, or PCI Config
