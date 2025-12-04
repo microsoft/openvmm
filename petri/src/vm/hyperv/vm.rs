@@ -415,6 +415,7 @@ impl HyperVVM {
 
             // wait for the CVM to start again
             if self.is_isolated {
+                let mut timer = PolledTimer::new(&self.driver);
                 loop {
                     match self.state().await? {
                         VmState::Off | VmState::Stopping | VmState::Resetting => {}
@@ -431,6 +432,8 @@ impl HyperVVM {
                     {
                         anyhow::bail!("VM did not start after reset in the required time");
                     }
+
+                    timer.sleep(Duration::from_secs(1)).await;
                 }
             }
         }
@@ -513,6 +516,7 @@ impl HyperVVM {
         // a second after the VM turns off.
         let mut last_off = false;
 
+        let mut timer = PolledTimer::new(&self.driver);
         loop {
             if let Some(output) = f(self).await? {
                 return Ok(output);
@@ -530,9 +534,7 @@ impl HyperVVM {
             }
             last_off = off;
 
-            PolledTimer::new(&self.driver)
-                .sleep(Duration::from_secs(1))
-                .await;
+            timer.sleep(Duration::from_secs(1)).await;
         }
     }
 
