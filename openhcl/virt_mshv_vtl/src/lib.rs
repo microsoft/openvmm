@@ -474,7 +474,6 @@ struct UhCvmPartitionState {
     private_dma_client: Arc<dyn DmaClient>,
     hide_isolation: bool,
     proxy_interrupt_redirect: bool,
-    lower_vtl_timer_virt: bool,
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -1840,22 +1839,21 @@ impl<'a> UhProtoPartition<'a> {
             let proxy_interrupt_redirect_available =
                 vsm_caps.proxy_interrupt_redirect_available() && !params.disable_proxy_redirect;
 
-            let lower_vtl_timer_virt_available =
-                hcl.supports_lower_vtl_timer_virt() && !params.disable_lower_vtl_timer_virt;
-
             Some(Self::construct_cvm_state(
                 &params,
                 late_params.cvm_params.unwrap(),
                 &caps,
                 guest_vsm_available,
                 proxy_interrupt_redirect_available,
-                lower_vtl_timer_virt_available,
             )?)
         } else {
             None
         };
         #[cfg(guest_arch = "aarch64")]
         let cvm_state = None;
+
+        let lower_vtl_timer_virt_available =
+            hcl.supports_lower_vtl_timer_virt() && !params.disable_lower_vtl_timer_virt;
 
         let backing_shared = BackingShared::new(
             isolation,
@@ -1866,6 +1864,7 @@ impl<'a> UhProtoPartition<'a> {
                 cpuid: &cpuid,
                 hcl: &hcl,
                 guest_vsm_available,
+                lower_vtl_timer_virt_available,
             },
         )?;
 
@@ -2100,7 +2099,6 @@ impl UhProtoPartition<'_> {
         caps: &PartitionCapabilities,
         guest_vsm_available: bool,
         proxy_interrupt_redirect_available: bool,
-        lower_vtl_timer_virt_available: bool,
     ) -> Result<UhCvmPartitionState, Error> {
         use vmcore::reference_time::ReferenceTimeSource;
 
@@ -2154,7 +2152,6 @@ impl UhProtoPartition<'_> {
             private_dma_client: late_params.private_dma_client,
             hide_isolation: params.hide_isolation,
             proxy_interrupt_redirect: proxy_interrupt_redirect_available,
-            lower_vtl_timer_virt: lower_vtl_timer_virt_available,
         })
     }
 }

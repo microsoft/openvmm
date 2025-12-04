@@ -274,6 +274,7 @@ pub(crate) struct BackingSharedParams<'a> {
     pub cpuid: &'a virt::CpuidLeafSet,
     pub hcl: &'a Hcl,
     pub guest_vsm_available: bool,
+    pub lower_vtl_timer_virt_available: bool,
 }
 
 /// Supported intercept message types.

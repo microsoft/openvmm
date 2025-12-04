@@ -2945,14 +2945,21 @@ pub(super) trait HardwareIsolatedGuestTimer<T: HardwareIsolatedBacking>:
 
     /// Clear any pending deadline.
     fn clear_deadline(&self, vp: &mut UhProcessor<'_, T>);
+
+    /// Returns true if the implementation uses hardware virtualized timer service.
+    fn is_hardware_virtualized(&self) -> bool;
 }
 
-/// Interface for managing lower VTL timer deadlines via [VmTime].
+/// Interface for managing lower VTL timer deadlines via [`VmTime`].
 /// This is the default interface used when a hardware-isolated backing doesn't support
 /// timer virtualization.
 pub(super) struct VmTimeGuestTimer;
 
 impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTimer {
+    fn is_hardware_virtualized(&self) -> bool {
+        false
+    }
+
     fn update_deadline(&self, vp: &mut UhProcessor<'_, T>, ref_time_now: u64, ref_time_next: u64) {
         /// Convert reference time in 100ns units to Duration.
         fn duration_from_100ns(n: u64) -> std::time::Duration {
@@ -2960,7 +2967,7 @@ impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTi
             std::time::Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
         }
 
-        // Convert from reference timer basis to [VmTime] basis via
+        // Convert from reference timer basis to [`VmTime`] basis via
         // difference of programmed timer and current reference time.
         let ref_diff = ref_time_next.saturating_sub(ref_time_now);
         let timeout = vp.vmtime.now().wrapping_add(duration_from_100ns(ref_diff));
@@ -2968,7 +2975,7 @@ impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTi
     }
 
     fn clear_deadline(&self, _vp: &mut UhProcessor<'_, T>) {
-        // [VmTime] deadlines are always cleared in the main `run_vp` loop, so no
+        // [`VmTime`] deadlines are always cleared in the main `run_vp` loop, so no
         // cancellation is needed here.
     }
 }

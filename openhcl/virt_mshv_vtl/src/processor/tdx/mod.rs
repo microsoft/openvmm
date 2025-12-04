@@ -403,8 +403,8 @@ impl TdxTscDeadlineService {
 
     /// Returns true if `ref_time` is before `ref_time_last`.
     ///
-    /// This uses wrapping arithmetic to handle 64-bit timestamp wraparound.
-    /// Note that this is not transitive: if `a` is before `b`, and `b` is before `c`,
+    /// Note that this uses wrapping arithmetic to handle 64-bit timestamp wraparound
+    ///  and hence this is not transitive: if `a` is before `b`, and `b` is before `c`,
     /// `a` may still appear after `c` if they are too far apart in the circular space.
     fn is_before(ref_time_last: u64, ref_time: u64) -> bool {
         let delta = ref_time_last.wrapping_sub(ref_time);
@@ -413,6 +413,10 @@ impl TdxTscDeadlineService {
 }
 
 impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineService {
+    fn is_hardware_virtualized(&self) -> bool {
+        true
+    }
+
     /// Update the virtual timer deadline in the processor's context shared with kernel.
     /// This deadline will be set by `mshv_vtl` using
     /// `TDG.VP.WR(TDVPS.TSC_DEADLINE[L2-VM Index])` before entering into lower VTL.
@@ -424,9 +428,9 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
     ) {
         let vp_state = vp
             .backing
-            .timer_vp_state
+            .tsc_deadline_state
             .as_mut()
-            .expect("TdxTscDeadlineService requires timer_vp_state");
+            .expect("TdxTscDeadlineService requires tsc_deadline_state");
 
         // Update needed only if no deadline is set or the new time is earlier.
         if vp_state
@@ -464,9 +468,9 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
     fn clear_deadline(&self, vp: &mut UhProcessor<'_, TdxBacked>) {
         let vp_state = vp
             .backing
-            .timer_vp_state
+            .tsc_deadline_state
             .as_mut()
-            .expect("TdxTscDeadlineService requires timer_vp_state");
+            .expect("TdxTscDeadlineService requires tsc_deadline_state");
 
         let state = vp.runner.tdx_l2_tsc_deadline_state_mut();
         state.update_deadline = 0;
@@ -506,8 +510,9 @@ pub struct TdxBacked {
     #[inspect(flatten)]
     cvm: UhCvmVpState,
 
+    /// Per-processor state for [`TdxTscDeadlineService`].
     #[inspect(flatten)]
-    timer_vp_state: Option<TdxTscDeadline>,
+    tsc_deadline_state: Option<TdxTscDeadline>,
 }
 
 #[derive(InspectMut)]
@@ -916,7 +921,7 @@ impl TdxBackedShared {
 
         // Configure timer interface for lower VTLs.
         let guest_timer: Box<dyn hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked>> =
-            match cvm.lower_vtl_timer_virt {
+            match params.lower_vtl_timer_virt_available {
                 true => {
                     // Use TDX L2-VM TSC deadline timer service. Calculate scale factor
                     // for fixed-point conversion from 100ns to TSC units.
@@ -929,7 +934,7 @@ impl TdxBackedShared {
                     Box::new(TdxTscDeadlineService { tsc_scale_100ns })
                 }
                 false => {
-                    // Fall back to `VmTime` interface.
+                    // Fall back to [`VmTime`] interface.
                     Box::new(hardware_cvm::VmTimeGuestTimer)
                 }
             };
@@ -1166,9 +1171,9 @@ impl BackingPrivate for TdxBacked {
                 params.vp_info,
                 UhDirectOverlay::Count as usize,
             )?,
-            timer_vp_state: shared
-                .cvm
-                .lower_vtl_timer_virt
+            tsc_deadline_state: shared
+                .guest_timer
+                .is_hardware_virtualized()
                 .then(TdxTscDeadline::default),
         })
     }
