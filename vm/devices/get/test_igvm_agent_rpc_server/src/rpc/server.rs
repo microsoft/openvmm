@@ -201,7 +201,7 @@ pub fn run_server() -> Result<(), String> {
         use windows_sys::Win32::System::Console::GetStdHandle;
         use windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE;
         let stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
-        if stdout_handle != std::ptr::null_mut() && stdout_handle != std::ptr::null_mut() {
+        if !stdout_handle.is_null() {
             CloseHandle(stdout_handle);
             tracing::info!("closed stdout to signal readiness");
         }
