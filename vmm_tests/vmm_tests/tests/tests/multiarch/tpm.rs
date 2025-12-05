@@ -3,8 +3,6 @@
 
 use anyhow::Context;
 use anyhow::ensure;
-#[cfg(windows)]
-use futures::lock::Mutex;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
@@ -19,8 +17,6 @@ use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X6
 use petri_artifacts_vmm_test::artifacts::host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64;
 use pipette_client::PipetteClient;
 use std::path::Path;
-#[cfg(windows)]
-use std::sync::LazyLock;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 
@@ -30,10 +26,117 @@ const AK_CERT_TOTAL_BYTES: usize = 4096;
 const TPM_GUEST_TESTS_LINUX_GUEST_PATH: &str = "/tmp/tpm_guest_tests";
 const TPM_GUEST_TESTS_WINDOWS_GUEST_PATH: &str = "C:\\tpm_guest_tests.exe";
 
-// Global mutex to serialize access to the RPC server endpoint.
-// Only one test can run the RPC server at a time since it binds to a fixed endpoint.
+// Global RPC server that runs once for all tests.
+// The RPC server binds to a fixed endpoint, so we share one server across all tests.
 #[cfg(windows)]
-static RPC_SERVER_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+pub mod windows {
+    use anyhow::Context;
+    use parking_lot::Mutex;
+    use std::path::Path;
+    use std::sync::LazyLock;
+
+    pub static GLOBAL_RPC_SERVER: LazyLock<GlobalRpcServer> = LazyLock::new(GlobalRpcServer::new);
+
+    #[cfg(windows)]
+    pub struct GlobalRpcServer {
+        _child: Mutex<Option<std::process::Child>>,
+        _stderr_task: Mutex<Option<std::thread::JoinHandle<()>>>,
+    }
+
+    #[cfg(windows)]
+    impl GlobalRpcServer {
+        fn new() -> Self {
+            tracing::info!("initializing global RPC server");
+            // We'll start the server lazily in ensure_started
+            Self {
+                _child: Mutex::new(None),
+                _stderr_task: Mutex::new(None),
+            }
+        }
+
+        pub fn ensure_started(&self, rpc_server_path: &Path) -> anyhow::Result<()> {
+            use std::io::BufRead;
+            use std::io::BufReader;
+            use std::io::Read;
+            use std::process::Stdio;
+
+            let mut child_lock = self._child.lock();
+
+            // Check if already started
+            if let Some(ref mut child) = *child_lock {
+                // Check if still running
+                if child.try_wait()?.is_none() {
+                    tracing::debug!("global RPC server already running");
+                    return Ok(());
+                }
+                tracing::warn!("global RPC server died, restarting");
+            }
+
+            tracing::info!("starting global RPC server");
+            let (stderr_read, stderr_write) = pal::pipe_pair()?;
+            let mut rpc_server_child = std::process::Command::new(rpc_server_path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(stderr_write)
+                .spawn()
+                .context("failed to spawn test_igvm_agent_rpc_server")?;
+
+            // Wait for stdout to close to ensure the server is ready
+            let mut stdout = rpc_server_child
+                .stdout
+                .take()
+                .context("failed to take stdout from RPC server")?;
+            let mut byte = [0u8];
+            let n = stdout
+                .read(&mut byte)
+                .context("failed to read from RPC server stdout")?;
+            if n != 0 {
+                anyhow::bail!(
+                    "expected RPC server stdout to close (EOF), but read {} bytes",
+                    n
+                );
+            }
+            drop(stdout);
+
+            tracing::info!("global RPC server is ready");
+
+            // Spawn a task to read and log stderr from the RPC server
+            let stderr_task = std::thread::spawn(move || {
+                let reader = BufReader::new(stderr_read);
+                for line in reader.lines() {
+                    match line {
+                        Ok(line) => {
+                            tracing::info!(target: "test_igvm_agent_rpc_server", "{}", line)
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to read RPC server stderr: {}", e);
+                            break;
+                        }
+                    }
+                }
+            });
+
+            *child_lock = Some(rpc_server_child);
+            *self._stderr_task.lock() = Some(stderr_task);
+
+            Ok(())
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for GlobalRpcServer {
+        fn drop(&mut self) {
+            tracing::info!("shutting down global RPC server");
+            if let Some(mut child) = self._child.lock().take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            if let Some(task) = self._stderr_task.lock().take() {
+                let _ = task.join();
+            }
+        }
+    }
+}
 
 fn expected_ak_cert_hex() -> String {
     use std::fmt::Write as _;
@@ -464,83 +567,12 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
-    use std::io::BufRead;
-    use std::io::BufReader;
-    use std::io::Read;
-    use std::process::Stdio;
-
     let os_flavor = config.os_flavor();
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
 
-    // Acquire the RPC server lock to ensure only one test runs the server at a time.
-    // The RPC server binds to a fixed endpoint, so parallel tests would conflict.
-    let _rpc_lock = RPC_SERVER_LOCK.lock().await;
-    tracing::info!("acquired RPC server lock");
-
-    // Spawn the test IGVM agent RPC server on the host before creating the VM
-    tracing::info!("launching test_igvm_agent_rpc_server");
+    // Ensure the global RPC server is running
     let rpc_server_path = rpc_server_artifact.get();
-    let (stderr_read, stderr_write) = pal::pipe_pair()?;
-    let mut rpc_server_child = std::process::Command::new(rpc_server_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(stderr_write)
-        .spawn()
-        .context("failed to spawn test_igvm_agent_rpc_server")?;
-
-    // Wait for stdout to close to ensure the server is ready
-    let mut stdout = rpc_server_child
-        .stdout
-        .take()
-        .context("failed to take stdout from RPC server")?;
-    let mut byte = [0u8];
-    let n = stdout
-        .read(&mut byte)
-        .context("failed to read from RPC server stdout")?;
-    if n != 0 {
-        anyhow::bail!(
-            "expected RPC server stdout to close (EOF), but read {} bytes",
-            n
-        );
-    }
-
-    // Spawn a task to read and log stderr from the RPC server
-    let stderr_task = std::thread::spawn(move || {
-        let reader = BufReader::new(stderr_read);
-        for line in reader.lines() {
-            match line {
-                Ok(line) => tracing::info!(target: "test_igvm_agent_rpc_server", "{}", line),
-                Err(e) => {
-                    tracing::warn!("failed to read RPC server stderr: {}", e);
-                    break;
-                }
-            }
-        }
-    });
-
-    // Create a guard to ensure the RPC server is killed when this function exits
-    struct RpcServerGuard {
-        child: std::process::Child,
-        stderr_task: Option<std::thread::JoinHandle<()>>,
-    }
-    impl Drop for RpcServerGuard {
-        fn drop(&mut self) {
-            tracing::info!("terminating test_igvm_agent_rpc_server");
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-            // Give the stderr logging thread a moment to finish
-            if let Some(task) = self.stderr_task.take() {
-                let _ = task.join();
-            }
-            // Give Windows a moment to fully release the RPC endpoint before
-            // the next test tries to bind to it.
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    }
-    let _rpc_server_guard = RpcServerGuard {
-        child: rpc_server_child,
-        stderr_task: Some(stderr_task),
-    };
+    windows::GLOBAL_RPC_SERVER.ensure_started(rpc_server_path)?;
 
     let config = config
         .with_tpm(true)
