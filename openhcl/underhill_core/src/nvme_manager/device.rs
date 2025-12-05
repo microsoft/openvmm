@@ -88,6 +88,10 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
         // present but the host doesn't support keepalive. The device should be
         // reset automatically when the Vfio device handle is dropped.
         if saved_state.is_some() && !save_restore_supported {
+            tracing::warn!(
+                pci_id = pci_id,
+                "received a saved state but keepalive is not supported; clearing existing device state"
+            );
             // Create a persistent DMA client to attach & drop pending buffers.
             let persistent_dma_client = self.create_dma_client(pci_id, true)?;
             let _ = persistent_dma_client.attach_pending_buffers().map_err(|e| {

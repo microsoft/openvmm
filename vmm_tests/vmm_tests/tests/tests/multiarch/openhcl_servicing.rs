@@ -642,7 +642,7 @@ async fn servicing_with_keepalive_disabled_after_servicing(
         fault_configuration,
         fault_start_updater,
         igvm_file,
-        Some("OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=1"),
+        Some(""),
     )
     .await?;
 
