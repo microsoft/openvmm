@@ -110,6 +110,7 @@ struct TcpConnection {
     socket: Option<PolledSocket<Socket>>,
     loopback_port: LoopbackPortInfo,
     state: TcpState,
+    is_dns_connection: bool,
 
     #[inspect(with = "|x| x.len()")]
     rx_buffer: VecDeque<u8>,
@@ -197,8 +198,91 @@ impl TcpState {
     }
 }
 
+const DNS_TCP_LENGTH_FIELD_SIZE: usize = 2;
+
 impl<T: Client> Access<'_, T> {
+    /// Handles resolved DNS replies by sending them to the appropriate TCP connections.
+    fn send_dns_responses(&mut self) {
+        if self.inner.dns_resolver.is_none() {
+            return;
+        }
+
+        while let Some(response) = self
+            .inner
+            .dns_resolver
+            .as_mut()
+            .unwrap()
+            .poll_responses(IpProtocol::Tcp)
+        {
+            // Find the existing TCP connection for this DNS response
+            // The response goes FROM gateway:53 TO client:src_port
+            let ft = FourTuple {
+                src: SocketAddress {
+                    ip: response.src_addr,
+                    port: response.src_port,
+                },
+                dst: SocketAddress {
+                    ip: response.dst_addr,
+                    port: response.dst_port,
+                },
+            };
+
+            let response_data = response.response_data;
+
+            if let Some(conn) = self.inner.tcp.connections.get_mut(&ft) {
+                // Check if there's enough space in the transmit buffer
+                let available_space = conn.tx_buffer.capacity() - conn.tx_buffer.len();
+                if available_space >= response_data.len() {
+                    // Write the DNS response to the connection's tx buffer
+                    let (first_slice, second_slice) = conn.tx_buffer.unwritten_slices_mut();
+                    let mut bytes_written = 0;
+
+                    // Copy to first slice
+                    let bytes_to_first_slice = response_data.len().min(first_slice.len());
+                    first_slice[..bytes_to_first_slice]
+                        .copy_from_slice(&response_data[..bytes_to_first_slice]);
+                    bytes_written += bytes_to_first_slice;
+
+                    // Copy remaining to second slice if needed
+                    if bytes_written < response_data.len() {
+                        let bytes_to_second_slice = response_data.len() - bytes_written;
+                        second_slice[..bytes_to_second_slice]
+                            .copy_from_slice(&response_data[bytes_written..]);
+                        bytes_written += bytes_to_second_slice;
+                    }
+
+                    conn.tx_buffer.extend_by(bytes_written);
+
+                    // Trigger sending the data
+                    let mut sender = Sender {
+                        ft: &ft,
+                        state: &mut self.inner.state,
+                        client: self.client,
+                    };
+                    conn.send_next(&mut sender);
+                } else {
+                    tracing::warn!(
+                        response_len = response_data.len(),
+                        available_space,
+                        "TCP DNS response dropped: insufficient buffer space"
+                    );
+                }
+            } else {
+                tracing::warn!(
+                    src = %ft.src.ip,
+                    dst = %ft.dst.ip,
+                    src_port = ft.src.port,
+                    dst_port = ft.dst.port,
+                    "TCP DNS response dropped: connection not found"
+                );
+            }
+        }
+    }
+
     pub(crate) fn poll_tcp(&mut self, cx: &mut Context<'_>) {
+        // Poll for TCP DNS responses that are ready to be sent
+        self.send_dns_responses();
+
         // Check for any new incoming connections
         self.inner
             .tcp
@@ -320,6 +404,11 @@ impl<T: Client> Access<'_, T> {
             },
         };
 
+        // Check if this is a DNS connection (to gateway:53)
+        let is_dns = tcp.dst_port == 53
+            && addresses.dst_addr == self.inner.state.params.gateway_ip
+            && self.inner.dns_resolver.is_some();
+
         let mut sender = Sender {
             ft: &ft,
             client: self.client,
@@ -329,7 +418,7 @@ impl<T: Client> Access<'_, T> {
         match self.inner.tcp.connections.entry(ft) {
             hash_map::Entry::Occupied(mut e) => {
                 let conn = e.get_mut();
-                if !conn.handle_packet(&mut sender, &tcp)? {
+                if !conn.handle_packet(&mut sender, &tcp, &mut self.inner.dns_resolver)? {
                     e.remove();
                 }
             }
@@ -340,7 +429,20 @@ impl<T: Client> Access<'_, T> {
                     // This is for an old connection. Send reset.
                     sender.rst(ack, None);
                 } else if tcp.control == TcpControl::Syn {
-                    let conn = TcpConnection::new(&mut sender, &tcp)?;
+                    // For DNS over TCP to the gateway, handle as a server-side connection
+                    // rather than trying to establish an outbound connection
+                    let conn = if is_dns && self.inner.dns_resolver.is_some() {
+                        tracing::debug!(
+                            src_ip = %addresses.src_addr,
+                            src_port = tcp.src_port,
+                            dst_ip = %addresses.dst_addr,
+                            dst_port = tcp.dst_port,
+                            "DNS over TCP connection initiated by guest"
+                        );
+                        TcpConnection::new_for_dns(&mut sender, &tcp)?
+                    } else {
+                        TcpConnection::new(&mut sender, &tcp)?
+                    };
                     e.insert(conn);
                 } else {
                     // Ignore the packet.
@@ -478,6 +580,7 @@ impl Default for TcpConnection {
             socket: None,
             loopback_port: LoopbackPortInfo::None,
             state: TcpState::Connecting,
+            is_dns_connection: false,
             rx_buffer: VecDeque::with_capacity(rx_buffer_size),
             rx_window_cap: 0,
             rx_window_scale,
@@ -501,6 +604,59 @@ impl Default for TcpConnection {
 }
 
 impl TcpConnection {
+    /// Processes DNS queries from the rx_buffer for DNS over TCP connections.
+    /// Returns false if the connection should be terminated.
+    fn process_dns_queries(
+        &mut self,
+        resolver: &mut crate::dns_resolver::DnsResolver,
+        sender: &mut Sender<'_, impl Client>,
+    ) -> bool {
+        // Try to process DNS queries from the buffer
+        while self.rx_buffer.len() >= DNS_TCP_LENGTH_FIELD_SIZE {
+            // DNS over TCP has a 2-byte length prefix
+            let len_bytes: [u8; DNS_TCP_LENGTH_FIELD_SIZE] = [self.rx_buffer[0], self.rx_buffer[1]];
+            let dns_len = u16::from_be_bytes(len_bytes) as usize;
+
+            const MAX_DNS_MESSAGE_SIZE: usize = u16::MAX as usize;
+            if dns_len > MAX_DNS_MESSAGE_SIZE {
+                tracing::warn!("DNS query length too large: {}", dns_len);
+                sender.rst(self.tx_send, Some(self.rx_seq));
+                return false;
+            }
+
+            // Check if we have the complete DNS query
+            if self.rx_buffer.len() < DNS_TCP_LENGTH_FIELD_SIZE + dns_len {
+                // Not enough data yet, wait for more
+                break;
+            }
+
+            // Extract the DNS query (including the 2-byte length prefix)
+            let dns_query: Vec<u8> = self
+                .rx_buffer
+                .iter()
+                .take(DNS_TCP_LENGTH_FIELD_SIZE + dns_len)
+                .copied()
+                .collect();
+
+            if let Err(e) = resolver.handle_dns(
+                &dns_query,
+                IpProtocol::Tcp,
+                sender.ft.src.ip,
+                sender.ft.dst.ip,
+                sender.ft.src.port,
+                sender.ft.dst.port,
+                sender.state.params.gateway_mac,
+                sender.state.params.client_mac,
+            ) {
+                tracing::error!(error = ?e, "Failed to process DNS over TCP query");
+            }
+
+            // Remove the processed query from the buffer
+            self.rx_buffer.drain(..DNS_TCP_LENGTH_FIELD_SIZE + dns_len);
+        }
+        true
+    }
+
     fn new(sender: &mut Sender<'_, impl Client>, tcp: &TcpRepr<'_>) -> Result<Self, DropReason> {
         let mut this = Self::default();
         this.initialize_from_first_client_packet(tcp)?;
@@ -560,6 +716,26 @@ impl TcpConnection {
             ..Default::default()
         };
         this.send_syn(sender, None);
+        Ok(this)
+    }
+
+    fn new_for_dns(
+        sender: &mut Sender<'_, impl Client>,
+        tcp: &TcpRepr<'_>,
+    ) -> Result<Self, DropReason> {
+        let mut this = Self::default();
+        this.initialize_from_first_client_packet(tcp)?;
+
+        // Mark this as a DNS connection
+        this.is_dns_connection = true;
+
+        // Transition directly to SynReceived state (server-side)
+        this.state = TcpState::SynReceived;
+        this.rx_window_cap = this.rx_buffer.capacity();
+
+        // Send SYN-ACK immediately
+        this.send_syn(sender, Some(this.rx_seq));
+
         Ok(this)
     }
 
@@ -756,6 +932,25 @@ impl TcpConnection {
                     return false;
                 }
                 self.is_shutdown = true;
+            }
+        }
+
+        // Handle DNS path.
+        // DNS connections don't have sockets - they are handled via the DNS resolver.
+        if self.is_dns_connection && self.socket.is_none() {
+            // Send any queued data (DNS responses) or FIN
+            self.send_next(sender);
+
+            // Close connection if we're in a terminal state
+            match self.state {
+                TcpState::LastAck | TcpState::TimeWait => {
+                    // Connection should be closed and removed from hash map
+                    return false;
+                }
+                _ => {
+                    // Keep the connection alive
+                    return true;
+                }
             }
         }
 
@@ -966,6 +1161,7 @@ impl TcpConnection {
         &mut self,
         sender: &mut Sender<'_, impl Client>,
         tcp: &TcpRepr<'_>,
+        dns_resolver: &mut Option<crate::dns_resolver::DnsResolver>,
     ) -> Result<bool, DropReason> {
         if self.state == TcpState::Connecting {
             // We have not yet sent a syn (we are still deciding whether we are
@@ -1103,10 +1299,28 @@ impl TcpConnection {
         match self.state {
             TcpState::Connecting | TcpState::SynReceived | TcpState::SynSent => unreachable!(),
             TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2 => {
-                self.rx_buffer.extend(payload);
-                self.rx_seq = segment_end;
-                if tcp.segment_len() > 0 {
-                    self.needs_ack = true;
+                // If this is a DNS connection and we have payload data, intercept it
+                if self.is_dns_connection && !payload.is_empty() {
+                    if let Some(resolver) = dns_resolver {
+                        // Accumulate data in rx_buffer for DNS parsing
+                        self.rx_buffer.extend(payload);
+                        // Process any complete DNS queries in the buffer
+                        if !self.process_dns_queries(resolver, sender) {
+                            return Ok(false);
+                        }
+                    }
+
+                    self.rx_seq = segment_end;
+                    if tcp.segment_len() > 0 {
+                        self.needs_ack = true;
+                    }
+                } else {
+                    // Normal TCP data handling
+                    self.rx_buffer.extend(payload);
+                    self.rx_seq = segment_end;
+                    if tcp.segment_len() > 0 {
+                        self.needs_ack = true;
+                    }
                 }
             }
             TcpState::CloseWait | TcpState::Closing | TcpState::LastAck => {}

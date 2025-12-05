@@ -19,6 +19,9 @@ mod dhcp;
 #[cfg_attr(unix, path = "dns_unix.rs")]
 #[cfg_attr(windows, path = "dns_windows.rs")]
 mod dns;
+#[cfg_attr(windows, path = "dns_resolver_windows.rs")]
+#[cfg_attr(unix, path = "dns_resolver_unix.rs")]
+pub mod dns_resolver;
 mod icmp;
 mod tcp;
 mod udp;
@@ -50,6 +53,8 @@ pub struct Consomme {
     #[inspect(mut)]
     udp: udp::Udp,
     icmp: icmp::Icmp,
+    #[inspect(skip)]
+    dns_resolver: Option<dns_resolver::DnsResolver>,
 }
 
 #[derive(Inspect)]
@@ -80,6 +85,9 @@ pub struct ConsommeParams {
     /// Current list of DNS resolvers.
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
     pub nameservers: Vec<Ipv4Address>,
+    /// UDP NAT binding timeout duration.
+    #[inspect(skip)]
+    pub udp_timeout: std::time::Duration,
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -91,9 +99,19 @@ impl ConsommeParams {
     /// Create default dynamic network state. The default state is
     ///     IP address: 10.0.0.2 / 24
     ///     gateway: 10.0.0.1 with MAC address 52-55-10-0-0-1
-    ///     no DNS resolvers
+    ///     DNS resolvers: either 10.0.0.1 (if DNS Raw APIs available) or host nameservers
     pub fn new() -> Result<Self, Error> {
-        let nameservers = dns::nameservers()?;
+        // Try to use DNS resolver, fallback to host nameservers if not available
+        let nameservers = if dns_resolver::DnsResolver::new().is_ok() {
+            // DNS Raw APIs are available, use the NAT gateway as nameserver
+            tracing::info!("DNS Raw APIs available, using gateway as nameserver");
+            vec![Ipv4Address::new(10, 0, 0, 1)]
+        } else {
+            // DNS Raw APIs not available, use host nameservers
+            tracing::info!("DNS Raw APIs not available, using host nameservers");
+            dns::nameservers()?
+        };
+
         Ok(Self {
             gateway_ip: Ipv4Address::new(10, 0, 0, 1),
             gateway_mac: EthernetAddress([0x52, 0x55, 10, 0, 0, 1]),
@@ -101,6 +119,7 @@ impl ConsommeParams {
             client_mac: EthernetAddress([0x0, 0x0, 0x0, 0x0, 0x1, 0x0]),
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
+            udp_timeout: std::time::Duration::from_secs(300),
         })
     }
 
@@ -278,6 +297,9 @@ pub enum DropReason {
     /// Specified port is not bound.
     #[error("port is not bound")]
     PortNotBound,
+    /// DNS resolver error.
+    #[error("dns error {0:?}")]
+    DnsError(i32),
 }
 
 /// An error to create a consomme instance.
@@ -294,17 +316,41 @@ struct Ipv4Addresses {
     dst_addr: Ipv4Address,
 }
 
+/// A queued DNS response ready to be sent to the guest.
+#[derive(Debug, Clone)]
+pub struct DnsResponse {
+    /// Source IP address (the client)
+    pub src_addr: Ipv4Address,
+    /// Destination IP address (the gateway)
+    pub dst_addr: Ipv4Address,
+    /// Source port (the client's port)
+    pub src_port: u16,
+    /// Destination port (DNS port 53)
+    pub dst_port: u16,
+    /// Gateway MAC address
+    pub gateway_mac: EthernetAddress,
+    /// Client MAC address
+    pub client_mac: EthernetAddress,
+    /// The DNS response data
+    pub response_data: Vec<u8>,
+    /// The protocol (UDP or TCP)
+    pub protocol: IpProtocol,
+}
+
 impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(params: ConsommeParams) -> Self {
+        let dns_resolver = dns_resolver::DnsResolver::new().ok();
+
         Self {
+            udp: udp::Udp::new(params.udp_timeout),
             state: ConsommeState {
                 params,
                 buffer: Box::new([0; 65536]),
             },
             tcp: tcp::Tcp::new(),
-            udp: udp::Udp::new(),
             icmp: icmp::Icmp::new(),
+            dns_resolver,
         }
     }
 
