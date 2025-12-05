@@ -28,6 +28,7 @@
 //! }
 //! ```
 
+use crate::io::IoError;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::Context;
@@ -41,7 +42,7 @@ use std::task::ready;
 #[derive(Debug)]
 pub struct DeferredToken {
     is_read: bool,
-    recv: mesh::OneshotReceiver<(u64, usize)>,
+    recv: mesh::OneshotReceiver<Result<(u64, usize), IoError>>,
 }
 
 impl DeferredToken {
@@ -54,28 +55,38 @@ impl DeferredToken {
         &mut self,
         cx: &mut Context<'_>,
         bytes: &mut [u8],
-    ) -> Poll<Result<(), mesh::RecvError>> {
+    ) -> Poll<Result<(), IoError>> {
         assert!(self.is_read, "defer type mismatch");
-        let (v, len) = ready!(Pin::new(&mut self.recv).poll(cx))?;
-        assert_eq!(len, bytes.len(), "defer size mismatch");
-        bytes.copy_from_slice(&v.to_ne_bytes()[..len]);
-        Poll::Ready(Ok(()))
+        let r = ready!(Pin::new(&mut self.recv).poll(cx));
+        match r {
+            Ok(Ok((v, len))) => {
+                assert_eq!(len, bytes.len(), "defer size mismatch");
+                bytes.copy_from_slice(&v.to_ne_bytes()[..len]);
+                Poll::Ready(Ok(()))
+            }
+            Ok(Err(e)) => Poll::Ready(Err(e)),
+            Err(_) => Poll::Ready(Err(IoError::NoResponse)),
+        }
     }
 
     /// Polls the deferred token for the results of a write operation.
     ///
     /// Panics if the deferred token was for a read operation.
-    pub fn poll_write(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), mesh::RecvError>> {
+    pub fn poll_write(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
         assert!(!self.is_read, "defer type mismatch");
-        ready!(Pin::new(&mut self.recv).poll(cx))?;
-        Poll::Ready(Ok(()))
+        let r = ready!(Pin::new(&mut self.recv).poll(cx));
+        match r {
+            Ok(Ok(_)) => Poll::Ready(Ok(())),
+            Ok(Err(e)) => Poll::Ready(Err(e)),
+            Err(_) => Poll::Ready(Err(IoError::NoResponse)),
+        }
     }
 }
 
 /// A deferred read operation.
 #[derive(Debug)]
 pub struct DeferredRead {
-    send: mesh::OneshotSender<(u64, usize)>,
+    send: mesh::OneshotSender<Result<(u64, usize), IoError>>,
 }
 
 impl DeferredRead {
@@ -83,20 +94,30 @@ impl DeferredRead {
     pub fn complete(self, bytes: &[u8]) {
         let mut v = [0; 8];
         v[..bytes.len()].copy_from_slice(bytes);
-        self.send.send((u64::from_ne_bytes(v), bytes.len()));
+        self.send.send(Ok((u64::from_ne_bytes(v), bytes.len())));
+    }
+
+    /// Completes the read operation with an error.
+    pub fn complete_error(self, error: IoError) {
+        self.send.send(Err(error));
     }
 }
 
 /// A deferred write operation.
 #[derive(Debug)]
 pub struct DeferredWrite {
-    send: mesh::OneshotSender<(u64, usize)>,
+    send: mesh::OneshotSender<Result<(u64, usize), IoError>>,
 }
 
 impl DeferredWrite {
     /// Completes the write operation.
     pub fn complete(self) {
-        self.send.send((0, 0));
+        self.send.send(Ok((0, 0)));
+    }
+
+    /// Completes the write operation with an error.
+    pub fn complete_error(self, error: IoError) {
+        self.send.send(Err(error));
     }
 }
 

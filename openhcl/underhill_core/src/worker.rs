@@ -164,7 +164,6 @@ use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmgs::Vmgs;
-use vmgs_broker::resolver::VmgsFileResolver;
 use vmgs_broker::spawn_vmgs_broker;
 use vmgs_resources::VmgsFileHandle;
 use vmm_core::input_distributor::InputDistributor;
@@ -287,7 +286,7 @@ pub struct UnderhillEnvCfg {
     /// Hide the isolation mode from the guest.
     pub hide_isolation: bool,
     /// Enable nvme keep alive.
-    pub nvme_keep_alive: bool,
+    pub nvme_keep_alive: KeepAliveConfig,
     /// Enable mana keep alive.
     pub mana_keep_alive: KeepAliveConfig,
     /// Don't skip FLR for NVMe devices.
@@ -1061,9 +1060,15 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         Ok(params)
     }
 
-    async fn save(&mut self) -> Vec<ManaSavedState> {
+    async fn save(&mut self) -> Option<Vec<ManaSavedState>> {
         let mut vf_managers: Vec<(Guid, Arc<HclNetworkVFManager>)> =
             self.vf_managers.drain().collect();
+
+        // Nothing to save
+        if vf_managers.is_empty() {
+            return None;
+        }
+
         let (vf_managers, mut nic_channels) = self.begin_vf_teardown(&mut vf_managers, false);
 
         let mut endpoints: Vec<_> =
@@ -1097,7 +1102,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         let state = (run_endpoints, save_vf_managers).race().await;
 
         // Discard any vf_managers that failed to return valid save state.
-        state.into_iter().flatten().collect()
+        Some(state.into_iter().flatten().collect())
     }
 }
 
@@ -1976,17 +1981,10 @@ async fn new_underhill_vm(
     let (vmgs_client, vmgs) = if let Some((meta, vmgs)) = vmgs {
         // Spawn the VMGS client for multi-task access.
         let (vmgs_client, vmgs_handle) = spawn_vmgs_broker(get_spawner, vmgs);
-        resolver.add_resolver(VmgsFileResolver::new(vmgs_client.clone()));
-
-        // ...and then we immediately "API-slice" the fully featured `vmgs_client`
-        // into smaller, more focused objects. This promotes good code hygiene and
-        // predictable performance characteristics in downstream code.
-        let vmgs_thin_client = vmgs_broker::VmgsThinClient::new(vmgs_client.clone());
-        // let vmgs_client: &dyn VmgsBrokerNonVolatileStore = &vmgs_client;
-
+        resolver.add_resolver(vmgs_client.clone());
         (
-            Some(Box::new(vmgs_client) as Box<dyn VmgsBrokerNonVolatileStore>),
-            Some((vmgs_thin_client, meta, vmgs_handle)),
+            Some(Box::new(vmgs_client.clone()) as Box<dyn VmgsBrokerNonVolatileStore>),
+            Some((vmgs_client, meta, vmgs_handle)),
         )
     } else {
         (None, None)
@@ -2174,7 +2172,7 @@ async fn new_underhill_vm(
         // TODO: reevaluate enablement of nvme save restore when private pool
         // save restore to bootshim is available.
         let private_pool_available = !runtime_params.private_pool_ranges().is_empty();
-        let save_restore_supported = env_cfg.nvme_keep_alive && private_pool_available;
+        let save_restore_supported = env_cfg.nvme_keep_alive.is_enabled() && private_pool_available;
 
         let manager = NvmeManager::new(
             &driver_source,

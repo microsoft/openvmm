@@ -153,7 +153,8 @@ async fn servicing_upgrade<T: PetriVmmBackend>(
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     ),
 ) -> anyhow::Result<()> {
-    let flags = config.default_servicing_flags();
+    let mut flags = config.default_servicing_flags();
+    flags.enable_mana_keepalive = false; // MANA keepalive not supported until current main
 
     // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
     openhcl_servicing_core(
@@ -182,6 +183,7 @@ async fn servicing_downgrade<T: PetriVmmBackend>(
     // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
     let mut flags = config.default_servicing_flags();
     flags.enable_nvme_keepalive = false; // NVMe keepalive not supported in 2505 release
+    flags.enable_mana_keepalive = false; // MANA keepalive not supported until current main
     openhcl_servicing_core(
         config
             .with_custom_openhcl(from_igvm)
@@ -556,9 +558,7 @@ async fn mana_nic_servicing_keepalive(
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(|b| b.with_nic())
-        .with_openhcl_command_line(
-            "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_MANA_KEEP_ALIVE=host,privatepool",
-        )
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
         .run()
         .await?;
 
