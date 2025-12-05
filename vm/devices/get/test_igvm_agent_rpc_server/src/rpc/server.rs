@@ -101,60 +101,22 @@ fn register_protocol_and_interface() -> Result<(), String> {
     let mut protocol_seq = to_wide(PROTOCOL_SEQUENCE);
     let mut endpoint = to_wide(ENDPOINT);
 
-    // Retry binding to the endpoint, as it may take time for Windows to release
-    // it after a previous server process exits.
-    const MAX_RETRIES: u32 = 10;
-    const RETRY_DELAY_MS: u64 = 100;
-    let mut last_status = RPC_S_OK;
+    // SAFETY: Make an FFI call.
+    let status = unsafe {
+        RpcServerUseProtseqEpW(
+            protocol_seq.as_mut_ptr(),
+            RPC_C_PROTSEQ_MAX_REQS_DEFAULT,
+            endpoint.as_mut_ptr(),
+            ptr::null_mut(),
+        )
+    };
 
-    for attempt in 1..=MAX_RETRIES {
-        // SAFETY: Make an FFI call.
-        let status = unsafe {
-            RpcServerUseProtseqEpW(
-                protocol_seq.as_mut_ptr(),
-                RPC_C_PROTSEQ_MAX_REQS_DEFAULT,
-                endpoint.as_mut_ptr(),
-                ptr::null_mut(),
-            )
-        };
-
-        if status == RPC_S_OK {
-            tracing::info!("RPC protocol bound successfully");
-            break;
-        }
-
-        last_status = status;
-
-        // Error 1740 (EPT_S_CANT_PERFORM_OP or RPC_S_DUPLICATE_ENDPOINT) means
-        // the endpoint is already in use or still being released.
-        if status == 1740 && attempt < MAX_RETRIES {
-            tracing::warn!(
-                attempt = attempt,
-                max_retries = MAX_RETRIES,
-                "endpoint in use, retrying after delay"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
-            continue;
-        }
-
-        tracing::error!(
-            status = status,
-            attempt = attempt,
-            "RpcServerUseProtseqEpW failed"
-        );
+    if status != RPC_S_OK {
+        tracing::error!(status = status, "RpcServerUseProtseqEpW failed");
         return Err(format!("RpcServerUseProtseqEpW failed: {status}"));
     }
 
-    if last_status != RPC_S_OK {
-        tracing::error!(
-            status = last_status,
-            "failed to bind endpoint after retries"
-        );
-        return Err(format!(
-            "RpcServerUseProtseqEpW failed after {} retries: {}",
-            MAX_RETRIES, last_status
-        ));
-    }
+    tracing::info!("RPC protocol bound successfully");
 
     // SAFETY: Make an FFI call.
     let status = unsafe {

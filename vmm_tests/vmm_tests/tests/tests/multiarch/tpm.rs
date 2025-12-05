@@ -37,20 +37,17 @@ pub mod windows {
 
     pub static GLOBAL_RPC_SERVER: LazyLock<GlobalRpcServer> = LazyLock::new(GlobalRpcServer::new);
 
-    #[cfg(windows)]
     pub struct GlobalRpcServer {
+        // Keep the Child handle so we can check if it's still running.
+        // We intentionally don't kill it - it will be cleaned up when the test process exits.
         _child: Mutex<Option<std::process::Child>>,
-        _stderr_task: Mutex<Option<std::thread::JoinHandle<()>>>,
     }
 
-    #[cfg(windows)]
     impl GlobalRpcServer {
         fn new() -> Self {
             tracing::info!("initializing global RPC server");
-            // We'll start the server lazily in ensure_started
             Self {
                 _child: Mutex::new(None),
-                _stderr_task: Mutex::new(None),
             }
         }
 
@@ -100,8 +97,9 @@ pub mod windows {
 
             tracing::info!("global RPC server is ready");
 
-            // Spawn a task to read and log stderr from the RPC server
-            let stderr_task = std::thread::spawn(move || {
+            // Spawn a detached task to read and log stderr from the RPC server.
+            // This task will continue running for the lifetime of the test suite.
+            std::thread::spawn(move || {
                 let reader = BufReader::new(stderr_read);
                 for line in reader.lines() {
                     match line {
@@ -117,23 +115,8 @@ pub mod windows {
             });
 
             *child_lock = Some(rpc_server_child);
-            *self._stderr_task.lock() = Some(stderr_task);
 
             Ok(())
-        }
-    }
-
-    #[cfg(windows)]
-    impl Drop for GlobalRpcServer {
-        fn drop(&mut self) {
-            tracing::info!("shutting down global RPC server");
-            if let Some(mut child) = self._child.lock().take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-            if let Some(task) = self._stderr_task.lock().take() {
-                let _ = task.join();
-            }
         }
     }
 }
