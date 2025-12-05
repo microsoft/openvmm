@@ -38,16 +38,16 @@ pub mod windows {
     pub static GLOBAL_RPC_SERVER: LazyLock<GlobalRpcServer> = LazyLock::new(GlobalRpcServer::new);
 
     pub struct GlobalRpcServer {
-        // Keep the Child handle so we can check if it's still running.
-        // We intentionally don't kill it - it will be cleaned up when the test process exits.
-        _child: Mutex<Option<std::process::Child>>,
+        // We track whether the server has been started to avoid starting it multiple times.
+        // We intentionally don't keep a handle - the process will be cleaned up when the test exits.
+        _started: Mutex<bool>,
     }
 
     impl GlobalRpcServer {
         fn new() -> Self {
             tracing::info!("initializing global RPC server");
             Self {
-                _child: Mutex::new(None),
+                _started: Mutex::new(false),
             }
         }
 
@@ -57,16 +57,12 @@ pub mod windows {
             use std::io::Read;
             use std::process::Stdio;
 
-            let mut child_lock = self._child.lock();
+            let mut started = self._started.lock();
 
-            // Check if already started
-            if let Some(ref mut child) = *child_lock {
-                // Check if still running
-                if child.try_wait()?.is_none() {
-                    tracing::debug!("global RPC server already running");
-                    return Ok(());
-                }
-                tracing::warn!("global RPC server died, restarting");
+            // Only start once per test run
+            if *started {
+                tracing::debug!("global RPC server already started");
+                return Ok(());
             }
 
             tracing::info!("starting global RPC server");
@@ -114,7 +110,11 @@ pub mod windows {
                 }
             });
 
-            *child_lock = Some(rpc_server_child);
+            // Drop the Child handle so nextest doesn't track it as a leaked process.
+            // The OS will clean up the process when the test runner exits.
+            drop(rpc_server_child);
+
+            *started = true;
 
             Ok(())
         }
