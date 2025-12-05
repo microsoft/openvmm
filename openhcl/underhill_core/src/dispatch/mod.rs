@@ -175,7 +175,7 @@ pub(crate) struct LoadedVm {
     )>,
 
     pub vmgs: Option<(
-        vmgs_broker::VmgsThinClient,
+        vmgs_broker::VmgsClient,
         disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
         Task<()>,
     )>,

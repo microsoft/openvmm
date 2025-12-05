@@ -2246,7 +2246,6 @@ mod tests {
                     deferred.poll_write(cx)
                 })
                 .await
-                .unwrap()
                 .unwrap();
             }
             _ => panic!("{:?}", r),
@@ -2340,7 +2339,6 @@ mod tests {
                     deferred.poll_write(cx)
                 })
                 .await
-                .unwrap()
                 .unwrap();
             }
             _ => panic!("{:?}", r),

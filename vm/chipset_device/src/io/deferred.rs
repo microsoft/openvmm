@@ -55,29 +55,31 @@ impl DeferredToken {
         &mut self,
         cx: &mut Context<'_>,
         bytes: &mut [u8],
-    ) -> Poll<Result<Result<(), IoError>, mesh::RecvError>> {
+    ) -> Poll<Result<(), IoError>> {
         assert!(self.is_read, "defer type mismatch");
-        let r = ready!(Pin::new(&mut self.recv).poll(cx))?;
+        let r = ready!(Pin::new(&mut self.recv).poll(cx));
         match r {
-            Ok((v, len)) => {
+            Ok(Ok((v, len))) => {
                 assert_eq!(len, bytes.len(), "defer size mismatch");
                 bytes.copy_from_slice(&v.to_ne_bytes()[..len]);
-                Poll::Ready(Ok(Ok(())))
+                Poll::Ready(Ok(()))
             }
-            Err(e) => Poll::Ready(Ok(Err(e))),
+            Ok(Err(e)) => Poll::Ready(Err(e)),
+            Err(_) => Poll::Ready(Err(IoError::NoResponse)),
         }
     }
 
     /// Polls the deferred token for the results of a write operation.
     ///
     /// Panics if the deferred token was for a read operation.
-    pub fn poll_write(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<Result<(), IoError>, mesh::RecvError>> {
+    pub fn poll_write(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), IoError>> {
         assert!(!self.is_read, "defer type mismatch");
-        let r = ready!(Pin::new(&mut self.recv).poll(cx))?;
-        Poll::Ready(Ok(r.map(|_| ())))
+        let r = ready!(Pin::new(&mut self.recv).poll(cx));
+        match r {
+            Ok(Ok(_)) => Poll::Ready(Ok(())),
+            Ok(Err(e)) => Poll::Ready(Err(e)),
+            Err(_) => Poll::Ready(Err(IoError::NoResponse)),
+        }
     }
 }
 
