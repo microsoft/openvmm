@@ -31,6 +31,7 @@ const TPM_GUEST_TESTS_WINDOWS_GUEST_PATH: &str = "C:\\tpm_guest_tests.exe";
 #[cfg(windows)]
 pub mod windows {
     use anyhow::Context;
+    use pal::windows::job::Job;
     use parking_lot::Mutex;
     use std::path::Path;
     use std::sync::LazyLock;
@@ -39,8 +40,9 @@ pub mod windows {
 
     pub struct GlobalRpcServer {
         // We track whether the server has been started to avoid starting it multiple times.
-        // We intentionally don't keep a handle - the process will be cleaned up when the test exits.
         _started: Mutex<bool>,
+        // Keep a handle to the job object to ensure cleanup when tests exit.
+        _job: Mutex<Option<Job>>,
     }
 
     impl GlobalRpcServer {
@@ -48,6 +50,7 @@ pub mod windows {
             tracing::info!("initializing global RPC server");
             Self {
                 _started: Mutex::new(false),
+                _job: Mutex::new(None),
             }
         }
 
@@ -55,6 +58,7 @@ pub mod windows {
             use std::io::BufRead;
             use std::io::BufReader;
             use std::io::Read;
+            use std::os::windows::process::CommandExt;
             use std::process::Stdio;
 
             let mut started = self._started.lock();
@@ -66,13 +70,32 @@ pub mod windows {
             }
 
             tracing::info!("starting global RPC server");
+
+            // Create a job object that will kill all assigned processes when closed.
+            // This ensures the RPC server is cleaned up when the test runner exits.
+            let job = Job::new().context("failed to create job object")?;
+            job.set_terminate_on_close()
+                .context("failed to configure job object")?;
+
             let (stderr_read, stderr_write) = pal::pipe_pair()?;
+
+            // Spawn the RPC server as a detached process using CREATE_NEW_PROCESS_GROUP
+            // and CREATE_BREAKAWAY_FROM_JOB flags. This prevents nextest from tracking
+            // it as a child process.
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+            const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x01000000;
+
             let mut rpc_server_child = std::process::Command::new(rpc_server_path)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(stderr_write)
+                .creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB)
                 .spawn()
                 .context("failed to spawn test_igvm_agent_rpc_server")?;
+
+            // Assign the RPC server process to our job object so it gets cleaned up.
+            job.assign_process(rpc_server_child.id())
+                .context("failed to assign RPC server to job object")?;
 
             // Wait for stdout to close to ensure the server is ready
             let mut stdout = rpc_server_child
@@ -110,9 +133,13 @@ pub mod windows {
                 }
             });
 
-            // Drop the Child handle so nextest doesn't track it as a leaked process.
-            // The OS will clean up the process when the test runner exits.
+            // Drop the Child handle - the process was spawned with breakaway flags
+            // so it won't be tracked by nextest's job object.
             drop(rpc_server_child);
+
+            // Store the job handle so it stays alive until GlobalRpcServer is dropped.
+            // When the job is dropped, all processes in the job will be terminated.
+            *self._job.lock() = Some(job);
 
             *started = true;
 

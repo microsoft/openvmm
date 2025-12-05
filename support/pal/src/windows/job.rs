@@ -56,6 +56,36 @@ impl Job {
         }
         Ok(())
     }
+
+    /// Assigns a process to this job object by process ID.
+    pub fn assign_process(&self, process_id: u32) -> io::Result<()> {
+        // SAFETY: `OpenProcess` returns an owned handle or null.
+        let process_handle = unsafe {
+            winapi::um::processthreadsapi::OpenProcess(
+                winapi::um::winnt::PROCESS_SET_QUOTA | winapi::um::winnt::PROCESS_TERMINATE,
+                0,
+                process_id,
+            )
+        };
+        if process_handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+
+        // SAFETY: We just created this handle successfully.
+        let process_handle = unsafe { OwnedHandle::from_raw_handle(process_handle) };
+
+        // SAFETY: `AssignProcessToJobObject` is safe to call with valid handles.
+        let r = unsafe {
+            winapi::um::jobapi2::AssignProcessToJobObject(
+                self.0.as_raw_handle(),
+                process_handle.as_raw_handle(),
+            )
+        };
+        if r == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
 }
 
 impl AsHandle for Job {
