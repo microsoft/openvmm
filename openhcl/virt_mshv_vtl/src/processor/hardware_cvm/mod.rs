@@ -2940,7 +2940,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::AssertVirtualInterrupt
 ///
 /// Note that this interface is currently used only for synic timer emulation in VTL2
 /// and not for APIC timers. APIC timer emulation uses [`VmTime`] directly for managing
-/// its timer deadlines. In practice, VTL0 guest kernels typically prefer Hyper-V 
+/// its timer deadlines. In practice, VTL0 guest kernels typically prefer Hyper-V
 /// synthetic timers over APIC timers, so this should not be a concern. This can be
 /// revisited in the future if APIC timer emulation performance becomes a priority.
 pub(super) trait HardwareIsolatedGuestTimer<T: HardwareIsolatedBacking>:
@@ -2984,6 +2984,5 @@ impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTi
     /// Clear any pending deadline.
     fn clear_deadline(&self, vp: &mut UhProcessor<'_, T>) {
         vp.vmtime.cancel_timeout();
-
     }
 }
