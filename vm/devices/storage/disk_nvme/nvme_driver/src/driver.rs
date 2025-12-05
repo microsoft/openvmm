@@ -677,6 +677,25 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         }
     }
 
+    /// This should only be called during restore if keepalive is no longer
+    /// supported and the previously enabled device needs to be reset. It
+    /// performs a controller reset by setting cc.en to 0. It will then also
+    /// drop the given device instance.
+    pub async fn clear_existing_state(
+        driver_source: &VmTaskDriverSource,
+        mut device: T,
+    ) -> anyhow::Result<()> {
+        let driver = driver_source.simple();
+        let bar0_mapping = device
+            .map_bar(0)
+            .context("failed to map device registers to clear existing state")?;
+        let bar0 = Bar0(bar0_mapping);
+        bar0.reset(&driver)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to reset device during clear: {:#x}", e))?;
+        Ok(())
+    }
+
     /// Restores NVMe driver state after servicing.
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
