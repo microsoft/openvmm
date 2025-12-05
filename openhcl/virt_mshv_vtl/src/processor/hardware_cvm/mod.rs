@@ -2937,6 +2937,12 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::AssertVirtualInterrupt
 }
 
 /// Trait for managing lower VTL timer deadline in hardware-isolated partitions.
+///
+/// Note that this interface is currently used only for synic timer emulation in VTL2
+/// and not for APIC timers. APIC timer emulation uses [`VmTime`] directly for managing
+/// its timer deadlines. In practice, VTL0 guest kernels typically prefer Hyper-V 
+/// synthetic timers over APIC timers, so this should not be a concern. This can be
+/// revisited in the future if APIC timer emulation performance becomes a priority.
 pub(super) trait HardwareIsolatedGuestTimer<T: HardwareIsolatedBacking>:
     Send + Sync
 {
@@ -2960,6 +2966,7 @@ impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTi
         false
     }
 
+    /// Update timer deadline.
     fn update_deadline(&self, vp: &mut UhProcessor<'_, T>, ref_time_now: u64, ref_time_next: u64) {
         /// Convert reference time in 100ns units to Duration.
         fn duration_from_100ns(n: u64) -> std::time::Duration {
@@ -2974,8 +2981,9 @@ impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTi
         vp.vmtime.set_timeout_if_before(timeout);
     }
 
-    fn clear_deadline(&self, _vp: &mut UhProcessor<'_, T>) {
-        // [`VmTime`] deadlines are always cleared in the main `run_vp` loop, so no
-        // cancellation is needed here.
+    /// Clear any pending deadline.
+    fn clear_deadline(&self, vp: &mut UhProcessor<'_, T>) {
+        vp.vmtime.cancel_timeout();
+
     }
 }
