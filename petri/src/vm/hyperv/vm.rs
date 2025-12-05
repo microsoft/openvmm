@@ -404,10 +404,38 @@ impl HyperVVM {
 
     /// Wait for the VM to stop
     pub async fn wait_for_halt(&mut self, _allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
+        // Allow CVMs some time for the VM to be off after reset.
+        const CVM_ALLOWED_OFF_TIME: Duration = Duration::from_secs(15);
+
         let (halt_reason, timestamp) = self.wait_for_off_or_internal(Self::halt_event).await?;
+
         if halt_reason == PetriHaltReason::Reset {
             // add 1ms to avoid getting the same event again
             self.last_start_time = Some(timestamp.checked_add(Duration::from_millis(1))?);
+
+            // wait for the CVM to start again
+            if self.is_isolated {
+                let mut timer = PolledTimer::new(&self.driver);
+                loop {
+                    match self.state().await? {
+                        VmState::Off | VmState::Stopping | VmState::Resetting => {}
+                        VmState::Running | VmState::Starting => break,
+                        VmState::Saved
+                        | VmState::Paused
+                        | VmState::Saving
+                        | VmState::Pausing
+                        | VmState::Resuming => anyhow::bail!("Unexpected vm state"),
+                    }
+
+                    if Timestamp::now().duration_since(timestamp).unsigned_abs()
+                        > CVM_ALLOWED_OFF_TIME
+                    {
+                        anyhow::bail!("VM did not start after reset in the required time");
+                    }
+
+                    timer.sleep(Duration::from_secs(1)).await;
+                }
+            }
         }
         Ok(halt_reason)
     }
@@ -453,9 +481,11 @@ impl HyperVVM {
 
     /// Wait for the VM shutdown ic
     pub async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()> {
-        self.wait_for_target(Self::shutdown_ic_status, powershell::VmShutdownIcStatus::Ok)
-            .await
-            .context("wait_for_enlightened_shutdown_ready")
+        self.wait_for_off_or_internal(async move |s| {
+            Ok((s.shutdown_ic_status().await? == powershell::VmShutdownIcStatus::Ok).then_some(()))
+        })
+        .await
+        .context("wait_for_enlightened_shutdown_ready")
     }
 
     async fn shutdown_ic_status(&self) -> anyhow::Result<powershell::VmShutdownIcStatus> {
@@ -468,15 +498,6 @@ impl HyperVVM {
             anyhow::bail!("unexpected shutdown ic status {status:?}, should be Ok");
         }
         Ok(())
-    }
-
-    async fn wait_for_target<T: std::fmt::Debug + PartialEq>(
-        &mut self,
-        f: impl AsyncFn(&Self) -> anyhow::Result<T>,
-        target: T,
-    ) -> anyhow::Result<()> {
-        self.wait_for_off_or_internal(async move |s| Ok((f(s).await? == target).then_some(())))
-            .await
     }
 
     pub(crate) async fn wait_for_off_or_internal<T>(
@@ -495,6 +516,7 @@ impl HyperVVM {
         // a second after the VM turns off.
         let mut last_off = false;
 
+        let mut timer = PolledTimer::new(&self.driver);
         loop {
             if let Some(output) = f(self).await? {
                 return Ok(output);
@@ -502,15 +524,17 @@ impl HyperVVM {
 
             let off = self.state().await? == VmState::Off;
             if last_off && off {
-                anyhow::bail!(
-                    "The VM is no longer running, but a halt event was either not received or not expected."
-                );
+                if let Some((halt_event, _)) = self.halt_event().await? {
+                    anyhow::bail!("Unexpected halt event: {halt_event:?}");
+                } else {
+                    anyhow::bail!(
+                        "The VM is no longer running, but no known halt event was received."
+                    );
+                }
             }
             last_off = off;
 
-            PolledTimer::new(&self.driver)
-                .sleep(Duration::from_secs(1))
-                .await;
+            timer.sleep(Duration::from_secs(1)).await;
         }
     }
 
