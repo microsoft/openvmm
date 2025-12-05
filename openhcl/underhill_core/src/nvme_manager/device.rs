@@ -18,6 +18,7 @@ use openhcl_dma_manager::AllocationVisibility;
 use openhcl_dma_manager::DmaClientParameters;
 use openhcl_dma_manager::DmaClientSpawner;
 use openhcl_dma_manager::LowerVtlPermissionPolicy;
+use openhcl_dma_manager::OpenhclDmaClient;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::sync::Arc;
@@ -86,57 +87,59 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
         // Gracefully tear down old state & reset device if a saved state is
         // present but the host doesn't support keepalive. The device should be
         // reset automatically when the Vfio device handle is dropped.
-        if false && saved_state.is_some() && !save_restore_supported {
-            let persistent_dma_client = self
-                .dma_client_spawner
-                .new_client(DmaClientParameters {
-                    device_name: format!("nvme_{}", pci_id),
-                    lower_vtl_policy: LowerVtlPermissionPolicy::Any,
-                    allocation_visibility: if self.is_isolated {
-                        AllocationVisibility::Shared
-                    } else {
-                        AllocationVisibility::Private
-                    },
-                    persistent_allocations: true,
-                })
-                .map_err(NvmeSpawnerError::DmaClient)?;
-            let _ = persistent_dma_client
-                .attach_pending_buffers()
-                .map_err(NvmeSpawnerError::AttachingPendingBuffersFailed)?;
+        if saved_state.is_some() && !save_restore_supported {
+            // Create a persistent DMA client to attach & drop pending buffers.
+            let persistent_dma_client = self.create_dma_client(pci_id, true)?;
+            let _ = persistent_dma_client.attach_pending_buffers().map_err(|e| {
+                tracing::warn!(
+                    pci_id = pci_id,
+                    error = %e,
+                    "failed to attach pending DMA buffers when clering existing nvme device state",
+                )
+            });
 
-            let vfio_device = VfioDevice::restore(
+            let vfio_device = match VfioDevice::restore(
                 driver_source,
                 pci_id,
                 true,
                 VfioDmaClients::PersistentOnly(persistent_dma_client),
             )
-            .instrument(tracing::info_span!("nvme_vfio_device_restore", pci_id))
+            .instrument(tracing::info_span!(
+                "nvme_vfio_device_restore",
+                pci_id,
+                clearing_device = true
+            ))
             .await
-            .map_err(NvmeSpawnerError::Vfio)?;
+            {
+                Ok(dev) => Some(dev),
+                Err(err) => {
+                    tracing::warn!(
+                        pci_id = pci_id,
+                        error = %err,
+                        "failed to restore VFIO device for clearing existing NVMe state. proceeding without clearing"
+                    );
+                    None
+                }
+            };
 
-            let _ = nvme_driver::NvmeDriver::clear_existing_state(driver_source, vfio_device)
-                .await
-                .map_err(NvmeSpawnerError::DeviceClearFailed)?;
+            if let Some(vfio_device) = vfio_device {
+                if let Err(e) =
+                    nvme_driver::NvmeDriver::clear_existing_state(driver_source, vfio_device).await
+                {
+                    tracing::warn!(
+                        pci_id = pci_id,
+                        error = %e,
+                        "failed to clear existing NVMe device state",
+                    );
+                }
+            }
 
-            // Discard existing state to prevent restore (because keepalive is
+            // Always iscard existing state to prevent restore (because keepalive is
             // not supported)
             let _ = saved_state.take();
         }
 
-        let dma_client = self
-            .dma_client_spawner
-            .new_client(DmaClientParameters {
-                device_name: format!("nvme_{}", pci_id),
-                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
-                allocation_visibility: if self.is_isolated {
-                    AllocationVisibility::Shared
-                } else {
-                    AllocationVisibility::Private
-                },
-                persistent_allocations: save_restore_supported,
-            })
-            .map_err(NvmeSpawnerError::DmaClient)?;
-
+        let dma_client = self.create_dma_client(pci_id, save_restore_supported)?;
         let dma_clients = if save_restore_supported {
             VfioDmaClients::PersistentOnly(dma_client)
         } else {
@@ -150,7 +153,11 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
             Self::try_update_reset_method(pci_id, PciDeviceResetMethod::NoReset, "nvme_restore");
 
             let vfio_device = VfioDevice::restore(driver_source, pci_id, true, dma_clients)
-                .instrument(tracing::info_span!("nvme_vfio_device_restore", pci_id))
+                .instrument(tracing::info_span!(
+                    "nvme_vfio_device_restore",
+                    pci_id,
+                    clearing_device = false
+                ))
                 .await
                 .map_err(NvmeSpawnerError::Vfio)?;
 
@@ -187,6 +194,25 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
 }
 
 impl VfioNvmeDriverSpawner {
+    fn create_dma_client(
+        &self,
+        pci_id: &str,
+        save_restore_supported: bool,
+    ) -> Result<Arc<OpenhclDmaClient>, NvmeSpawnerError> {
+        self.dma_client_spawner
+            .new_client(DmaClientParameters {
+                device_name: format!("nvme_{}", pci_id),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                allocation_visibility: if self.is_isolated {
+                    AllocationVisibility::Shared
+                } else {
+                    AllocationVisibility::Private
+                },
+                persistent_allocations: save_restore_supported,
+            })
+            .map_err(NvmeSpawnerError::DmaClient)
+    }
+
     async fn create_nvme_device(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
