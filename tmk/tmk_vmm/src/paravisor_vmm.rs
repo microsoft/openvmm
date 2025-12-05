@@ -34,6 +34,8 @@ impl RunContext<'_> {
             use_mmio_hypercalls: false,
             intercept_debug_exceptions: false,
             disable_proxy_redirect: false,
+            // TODO: match openhcl defaults when TDX is supported.
+            disable_lower_vtl_timer_virt: true,
         };
         let p = virt_mshv_vtl::UhProtoPartition::new(params, |_| self.state.driver.clone())?;
 

@@ -34,6 +34,7 @@ open_enum! {
         GDTR_OR_IDTR = 0x2E,
         LDTR_OR_TR = 0x2F,
         EPT_VIOLATION = 0x30,
+        TIMER_EXPIRED = 0x34,
         WBINVD_INSTRUCTION = 0x36,
         XSETBV = 0x37,
         TDCALL = 0x4D,
