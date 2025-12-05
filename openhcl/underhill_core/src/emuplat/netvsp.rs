@@ -181,12 +181,12 @@ async fn try_create_mana_device(
         VfioDevice::restore(driver_source, pci_id, true, dma_clients)
             .instrument(tracing::info_span!("restore_mana_vfio_device"))
             .await
-            .context("failed to restore device")?
+            .with_context(|| format!("failed to restore vfio device for {}", pci_id))?
     } else {
         VfioDevice::new(driver_source, pci_id, dma_clients)
             .instrument(tracing::info_span!("new_mana_vfio_device"))
             .await
-            .context("failed to open device")?
+            .with_context(|| format!("failed to open vfio device for {}", pci_id))?
     };
 
     ManaDevice::new(
