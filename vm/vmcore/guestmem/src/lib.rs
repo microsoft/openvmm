@@ -389,9 +389,9 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     ///
     /// Bitmap checks are performed under the [`rcu()`] RCU domain, with relaxed
     /// accesses. After a thread updates the bitmap to be more restrictive, it
-    /// must call [`minircu::global().synchronize()`] to ensure that all threads
-    /// see the update before taking any action that depends on the bitmap
-    /// update being visible.
+    /// must call [minircu::RcuDomain::synchronize()] on [`minircu::global()`]
+    /// to ensure that all threads see the update before taking any action that
+    /// depends on the bitmap update being visible.
     #[cfg(feature = "bitmap")]
     fn access_bitmap(&self) -> Option<BitmapInfo> {
         None

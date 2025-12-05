@@ -56,6 +56,7 @@ tpm_device = { workspace = true, optional = true, features = ["tpm"] }
 
 # Non-volatile stores
 vmcore.workspace = true
+vmgs_broker.workspace = true
 
 # PCI devices
 gdma.workspace = true

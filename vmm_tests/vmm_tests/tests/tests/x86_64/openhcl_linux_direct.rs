@@ -76,33 +76,6 @@ async fn mana_nic_shared_pool(
     Ok(())
 }
 
-/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
-/// the MANA emulator), and vmbus relay. Perform servicing and validate that the
-/// nic is still functional.
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn mana_nic_servicing(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
-) -> Result<(), anyhow::Error> {
-    let flags = config.default_servicing_flags();
-    let (mut vm, agent) = config
-        .with_vmbus_redirect(true)
-        .modify_backend(|b| b.with_nic())
-        .run()
-        .await?;
-
-    validate_mana_nic(&agent).await?;
-
-    vm.restart_openhcl(igvm_file, flags).await?;
-
-    validate_mana_nic(&agent).await?;
-
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-
-    Ok(())
-}
-
 /// Test an OpenHCL Linux direct VM with many NVMe devices assigned to VTL2 and vmbus relay.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn many_nvme_devices_servicing_heavy(

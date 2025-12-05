@@ -36,13 +36,13 @@ use petri::vtl2_settings::Vtl2StorageControllerBuilder;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 #[allow(unused_imports)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_LINUX_DIRECT_X64;
+#[allow(unused_imports)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_STANDARD_AARCH64;
+#[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
-#[allow(unused_imports)]
-use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_LINUX_DIRECT_X64;
-#[allow(unused_imports)]
-use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_STANDARD_AARCH64;
 use pipette_client::PipetteClient;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::time::Duration;
@@ -143,8 +143,8 @@ async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
 }
 
 #[vmm_test(
-    openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, RELEASE_25_05_LINUX_DIRECT_X64],
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[RELEASE_25_05_STANDARD_AARCH64, LATEST_STANDARD_AARCH64]
+    openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, LATEST_RELEASE_LINUX_DIRECT_X64],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_RELEASE_STANDARD_AARCH64, LATEST_STANDARD_AARCH64]
 )]
 async fn servicing_upgrade<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -153,7 +153,8 @@ async fn servicing_upgrade<T: PetriVmmBackend>(
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     ),
 ) -> anyhow::Result<()> {
-    let flags = config.default_servicing_flags();
+    let mut flags = config.default_servicing_flags();
+    flags.enable_mana_keepalive = false; // MANA keepalive not supported until current main
 
     // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
     openhcl_servicing_core(
@@ -169,8 +170,8 @@ async fn servicing_upgrade<T: PetriVmmBackend>(
 }
 
 #[vmm_test(
-    openvmm_openhcl_linux_direct_x64 [RELEASE_25_05_LINUX_DIRECT_X64, LATEST_LINUX_DIRECT_TEST_X64],
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[RELEASE_25_05_STANDARD_AARCH64, LATEST_STANDARD_AARCH64]
+    openvmm_openhcl_linux_direct_x64 [LATEST_RELEASE_LINUX_DIRECT_X64, LATEST_LINUX_DIRECT_TEST_X64],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_RELEASE_STANDARD_AARCH64, LATEST_STANDARD_AARCH64]
 )]
 async fn servicing_downgrade<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -182,6 +183,7 @@ async fn servicing_downgrade<T: PetriVmmBackend>(
     // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
     let mut flags = config.default_servicing_flags();
     flags.enable_nvme_keepalive = false; // NVMe keepalive not supported in 2505 release
+    flags.enable_mana_keepalive = false; // MANA keepalive not supported until current main
     openhcl_servicing_core(
         config
             .with_custom_openhcl(from_igvm)
@@ -498,4 +500,83 @@ async fn create_keepalive_test_config(
         })
         .run()
         .await
+}
+
+/// Today this only tests that the nic can get an IP address via consomme's DHCP
+/// implementation.
+///
+/// FUTURE: Test traffic on the nic.
+async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
+    let sh = agent.unix_shell();
+    cmd!(sh, "ifconfig eth0 up").run().await?;
+    cmd!(sh, "udhcpc eth0").run().await?;
+    let output = cmd!(sh, "ifconfig eth0").read().await?;
+    // Validate that we see a mana nic with the expected MAC address and IPs.
+    assert!(output.contains("HWaddr 00:15:5D:12:12:12"));
+    assert!(output.contains("inet addr:10.0.0.2"));
+    assert!(output.contains("inet6 addr: fe80::215:5dff:fe12:1212/64"));
+
+    Ok(())
+}
+
+/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
+/// the MANA emulator), and vmbus relay. Perform servicing and validate that the
+/// nic is still functional.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    let flags = config.default_servicing_flags();
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(|b| b.with_nic())
+        .run()
+        .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    vm.restart_openhcl(igvm_file, flags).await?;
+
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
+/// the MANA emulator), and vmbus relay. Perform servicing and validate that the
+/// nic is still functional.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing_keepalive(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    let default_flags = config.default_servicing_flags();
+
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(|b| b.with_nic())
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
+        .run()
+        .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    vm.restart_openhcl(
+        igvm_file,
+        OpenHclServicingFlags {
+            enable_mana_keepalive: true,
+            ..default_flags
+        },
+    )
+    .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
 }
