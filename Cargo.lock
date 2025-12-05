@@ -582,6 +582,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "chipset_device_worker"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chipset_device",
+ "chipset_device_resources",
+ "futures",
+ "guest_emulation_transport",
+ "guestmem",
+ "inspect",
+ "mesh",
+ "mesh_worker",
+ "pal_async",
+ "slab",
+ "thiserror 2.0.16",
+ "tracing",
+ "vm_resource",
+ "vmcore",
+ "vmgs_broker",
+]
+
+[[package]]
 name = "chipset_legacy"
 version = "0.0.0"
 dependencies = [
@@ -5147,6 +5170,7 @@ dependencies = [
  "anyhow",
  "awaitgroup",
  "build_rs_guest_arch",
+ "chipset_device_worker",
  "chipset_resources",
  "clap",
  "clap_dyn_complete",
@@ -5274,6 +5298,7 @@ version = "0.0.0"
 dependencies = [
  "build_rs_guest_arch",
  "chipset",
+ "chipset_device_worker",
  "debug_worker",
  "disk_blob",
  "disk_crypt",
