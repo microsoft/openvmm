@@ -18,6 +18,23 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+/// Starting state for each CPU, supplied by `openhcl_boot`.
+/// For various reasons, `openhcl_boot` may have decided to
+/// instruct the linux kernel to start additional CPUs (notably,
+/// in the event that we know we're about to spawn tasks on those
+/// CPUs right away to handle device interrupts).
+#[repr(C)]
+#[derive(FromZeros, Immutable, KnownLayout, Debug, Clone)]
+pub struct PerCpuState {
+    /// Whether the per-CPU state is specified, since `NUM_CPUS_SUPPORTED_FOR_PER_CPU_STATE`
+    /// is less than the maximum number of CPUs supported by OpenHCL and also by sidecar.
+    pub per_cpu_state_specified: bool,
+
+    /// Whether the CPU should be started by the sidecar kernel. If false,
+    /// the CPU will be started by (or remain with) the main kernel instead.
+    pub sidecar_starts_cpu: [bool; NUM_CPUS_SUPPORTED_FOR_PER_CPU_STATE],
+}
+
 /// Sidecar start input parameters.
 #[repr(C, align(4096))]
 #[derive(FromZeros, Immutable, KnownLayout)]
@@ -30,6 +47,8 @@ pub struct SidecarParams {
     pub node_count: u32,
     /// The node-specific input parameters.
     pub nodes: [SidecarNodeParams; MAX_NODES],
+    /// The initial CPU state for each CPU.
+    pub initial_state: PerCpuState,
 }
 
 /// Node-specific input parameters.
@@ -49,6 +68,10 @@ pub struct SidecarNodeParams {
 
 /// The maximum number of supported sidecar nodes.
 pub const MAX_NODES: usize = 128;
+/// The maximum number of supported sidecar CPUs.
+/// This odd number is chosen so that `SidecarParams` still
+/// fits within a single page.
+pub const NUM_CPUS_SUPPORTED_FOR_PER_CPU_STATE: usize = 1000;
 
 const _: () = assert!(size_of::<SidecarParams>() <= PAGE_SIZE);
 

@@ -27,7 +27,9 @@ const _: () = assert!(
 );
 
 pub struct SidecarConfig<'a> {
+    pub num_cpus: usize,
     pub node_params: &'a [SidecarNodeParams],
+    pub per_cpu_state: &'a sidecar_defs::PerCpuState,
     pub nodes: &'a [SidecarNodeOutput],
     pub start_reftime: u64,
     pub end_reftime: u64,
@@ -49,10 +51,27 @@ impl core::fmt::Display for SidecarKernelCommandLine<'_> {
         // Linux boots with the base VP of each sidecar node. Other CPUs will
         // be brought up by the sidecar kernel.
         f.write_str("boot_cpus=")?;
-        let mut comma = "";
-        for node in self.0.node_params {
-            write!(f, "{}{}", comma, node.base_vp)?;
-            comma = ",";
+        if self.0.per_cpu_state.per_cpu_state_specified {
+            let mut comma = "";
+            for (cpu_index, &sidecar_starts) in self
+                .0
+                .per_cpu_state
+                .sidecar_starts_cpu
+                .iter()
+                .take(self.0.num_cpus)
+                .enumerate()
+            {
+                if !sidecar_starts {
+                    write!(f, "{}{}", comma, cpu_index)?;
+                    comma = ",";
+                }
+            }
+        } else {
+            let mut comma = "";
+            for node in self.0.node_params {
+                write!(f, "{}{}", comma, node.base_vp)?;
+                comma = ",";
+            }
         }
         Ok(())
     }
@@ -137,6 +156,7 @@ pub fn start_sidecar<'a>(
             enable_logging: _,
             node_count,
             nodes,
+            initial_state,
         } = sidecar_params;
 
         *hypercall_page = 0;
@@ -189,6 +209,14 @@ pub fn start_sidecar<'a>(
                 base_vp,
                 vp_count: cpus.len() as u32,
             };
+            *initial_state = partition_info.sidecar_cpu_overrides.clone();
+            if initial_state.per_cpu_state_specified {
+                // If per-CPU state is specified, make sure to explicitly state that
+                // sidecar should not start the base vp of this node.
+                // The code that set per_cpu_state_specified should have already ensured that
+                // the array is large enough for any `base_vp` we might have here.
+                initial_state.sidecar_starts_cpu[base_vp as usize] = false;
+            }
             base_vp += cpus.len() as u32;
             *node_count += 1;
             total_ram += required_ram;
@@ -217,9 +245,11 @@ pub fn start_sidecar<'a>(
 
     let SidecarOutput { nodes, error: _ } = sidecar_output;
     Some(SidecarConfig {
+        num_cpus: partition_info.cpus.len(),
         start_reftime: boot_start_reftime,
         end_reftime: boot_end_reftime,
         node_params: &sidecar_params.nodes[..node_count],
         nodes: &nodes[..node_count],
+        per_cpu_state: &sidecar_params.initial_state,
     })
 }
