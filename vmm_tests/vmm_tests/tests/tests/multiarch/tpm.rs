@@ -79,17 +79,13 @@ pub mod windows {
 
             let (stderr_read, stderr_write) = pal::pipe_pair()?;
 
-            // Spawn the RPC server as a detached process using CREATE_NEW_PROCESS_GROUP
-            // and CREATE_BREAKAWAY_FROM_JOB flags. This prevents nextest from tracking
-            // it as a child process.
             const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-            const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x01000000;
 
             let mut rpc_server_child = std::process::Command::new(rpc_server_path)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(stderr_write)
-                .creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB)
+                .creation_flags(CREATE_NEW_PROCESS_GROUP)
                 .spawn()
                 .context("failed to spawn test_igvm_agent_rpc_server")?;
 
