@@ -129,8 +129,8 @@ pub mod windows {
                 }
             });
 
-            // Drop the Child handle - the process was spawned with breakaway flags
-            // so it won't be tracked by nextest's job object.
+            // Drop the Child handle. The process is managed by our job object and will
+            // be automatically terminated when the job is closed (test runner exits).
             drop(rpc_server_child);
 
             // Store the job handle so it stays alive until GlobalRpcServer is dropped.
