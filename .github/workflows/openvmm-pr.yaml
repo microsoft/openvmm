@@ -67,7 +67,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -223,7 +223,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -393,7 +393,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -819,7 +819,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -1057,7 +1057,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -1297,7 +1297,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -1573,7 +1573,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -1837,7 +1837,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target aarch64-pc-windows-msvc --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target aarch64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -2074,7 +2074,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target aarch64-unknown-linux-gnu --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target aarch64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -2327,7 +2327,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target aarch64-unknown-linux-gnu --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target aarch64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -3157,7 +3157,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -4211,7 +4211,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target aarch64-pc-windows-msvc --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target aarch64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -4524,7 +4524,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -4699,7 +4699,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -5016,7 +5016,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -5234,7 +5234,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -5559,7 +5559,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -5878,7 +5878,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -6253,7 +6253,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -6575,7 +6575,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
