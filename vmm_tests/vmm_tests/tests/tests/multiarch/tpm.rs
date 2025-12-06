@@ -13,6 +13,8 @@ use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64;
+#[cfg(windows)]
+use petri_artifacts_vmm_test::artifacts::host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64;
 use pipette_client::PipetteClient;
 use std::path::Path;
 use vmm_test_macros::openvmm_test;
@@ -23,6 +25,124 @@ const AK_CERT_TOTAL_BYTES: usize = 4096;
 
 const TPM_GUEST_TESTS_LINUX_GUEST_PATH: &str = "/tmp/tpm_guest_tests";
 const TPM_GUEST_TESTS_WINDOWS_GUEST_PATH: &str = "C:\\tpm_guest_tests.exe";
+
+// Global RPC server that runs once for all tests.
+// The RPC server binds to a fixed endpoint, so we share one server across all tests.
+#[cfg(windows)]
+pub mod windows {
+    use anyhow::Context;
+    use pal::windows::job::Job;
+    use parking_lot::Mutex;
+    use std::path::Path;
+    use std::sync::LazyLock;
+
+    pub static GLOBAL_RPC_SERVER: LazyLock<GlobalRpcServer> = LazyLock::new(GlobalRpcServer::new);
+
+    pub struct GlobalRpcServer {
+        // We track whether the server has been started to avoid starting it multiple times.
+        _started: Mutex<bool>,
+        // Keep a handle to the job object to ensure cleanup when tests exit.
+        _job: Mutex<Option<Job>>,
+    }
+
+    impl GlobalRpcServer {
+        fn new() -> Self {
+            tracing::info!("initializing global RPC server");
+            Self {
+                _started: Mutex::new(false),
+                _job: Mutex::new(None),
+            }
+        }
+
+        pub fn ensure_started(&self, rpc_server_path: &Path) -> anyhow::Result<()> {
+            use std::io::BufRead;
+            use std::io::BufReader;
+            use std::io::Read;
+            use std::os::windows::process::CommandExt;
+            use std::process::Stdio;
+
+            let mut started = self._started.lock();
+
+            // Only start once per test run
+            if *started {
+                tracing::debug!("global RPC server already started");
+                return Ok(());
+            }
+
+            tracing::info!("starting global RPC server");
+
+            // Create a job object that will kill all assigned processes when closed.
+            // This ensures the RPC server is cleaned up when the test runner exits.
+            let job = Job::new().context("failed to create job object")?;
+            job.set_terminate_on_close()
+                .context("failed to configure job object")?;
+
+            let (stderr_read, stderr_write) = pal::pipe_pair()?;
+
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+
+            let mut rpc_server_child = std::process::Command::new(rpc_server_path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(stderr_write)
+                .creation_flags(CREATE_NEW_PROCESS_GROUP)
+                .spawn()
+                .context("failed to spawn test_igvm_agent_rpc_server")?;
+
+            // Assign the RPC server process to our job object so it gets cleaned up.
+            job.assign_process(rpc_server_child.id())
+                .context("failed to assign RPC server to job object")?;
+
+            // Wait for stdout to close to ensure the server is ready
+            let mut stdout = rpc_server_child
+                .stdout
+                .take()
+                .context("failed to take stdout from RPC server")?;
+            let mut byte = [0u8];
+            let n = stdout
+                .read(&mut byte)
+                .context("failed to read from RPC server stdout")?;
+            if n != 0 {
+                anyhow::bail!(
+                    "expected RPC server stdout to close (EOF), but read {} bytes",
+                    n
+                );
+            }
+            drop(stdout);
+
+            tracing::info!("global RPC server is ready");
+
+            // Spawn a detached task to read and log stderr from the RPC server.
+            // This task will continue running for the lifetime of the test suite.
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stderr_read);
+                for line in reader.lines() {
+                    match line {
+                        Ok(line) => {
+                            tracing::info!(target: "test_igvm_agent_rpc_server", "{}", line)
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to read RPC server stderr: {}", e);
+                            break;
+                        }
+                    }
+                }
+            });
+
+            // Drop the Child handle. The process is managed by our job object and will
+            // be automatically terminated when the job is closed (test runner exits).
+            drop(rpc_server_child);
+
+            // Store the job handle so it stays alive until GlobalRpcServer is dropped.
+            // When the job is dropped, all processes in the job will be terminated.
+            *self._job.lock() = Some(job);
+
+            *started = true;
+
+            Ok(())
+        }
+    }
+}
 
 fn expected_ak_cert_hex() -> String {
     use std::fmt::Write as _;
@@ -442,22 +562,27 @@ async fn tpm_test_platform_hierarchy_disabled(
 /// CVM with guest tpm tests on Hyper-V.
 #[cfg(windows)]
 #[vmm_test(
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 )]
-async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
+async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
-    extra_deps: (ResolvedArtifact<T>,),
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    // TODO: Add test IGVMAgent RPC server to support the boot-time attestation.
+    let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
+
+    // Ensure the global RPC server is running
+    let rpc_server_path = rpc_server_artifact.get();
+    windows::GLOBAL_RPC_SERVER.ensure_started(rpc_server_path)?;
+
     let config = config
         .with_tpm(true)
-        .with_tpm_state_persistence(false)
+        .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
 
     let (vm, agent) = config.run().await?;
@@ -467,20 +592,21 @@ async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
         OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
         _ => unreachable!(),
     };
-    let (artifact,) = extra_deps;
-    let host_binary_path = artifact.get();
+    let host_binary_path = tpm_guest_tests_artifact.get();
     let tpm_guest_tests =
         TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
             .await?;
 
-    // TODO: Add test IGVMAgent RPC server to support AK Cert
-    // let expected_hex = expected_ak_cert_hex();
-    // let ak_cert_output = tpm_guest_tests.read_ak_cert_with_expected_hex(expected_hex.as_str()).await?;
+    // Verify AK cert with the test IGVM agent RPC server
+    let expected_hex = expected_ak_cert_hex();
+    let ak_cert_output = tpm_guest_tests
+        .read_ak_cert_with_expected_hex(expected_hex.as_str())
+        .await?;
 
-    // ensure!(
-    //     ak_cert_output.contains("AK certificate matches expected value"),
-    //     format!("{ak_cert_output}")
-    // );
+    ensure!(
+        ak_cert_output.contains("AK certificate matches expected value"),
+        format!("{ak_cert_output}")
+    );
 
     let report_output = tpm_guest_tests
         .read_report()

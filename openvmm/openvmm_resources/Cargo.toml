@@ -79,7 +79,7 @@ virtio_pmem.workspace = true
 
 # Vmbus devices
 guest_crash_device.workspace = true
-guest_emulation_device = { workspace = true, features = ["test_igvm_agent"] }
+guest_emulation_device.workspace = true
 guest_emulation_log.workspace = true
 hyperv_ic.workspace = true
 netvsp.workspace = true

@@ -12,7 +12,8 @@ use rsa::rand_core::CryptoRng;
 use rsa::rand_core::RngCore;
 use rsa::rand_core::SeedableRng;
 use sha2::digest;
-use sha2::digest::consts::{U20, U64};
+use sha2::digest::consts::U20;
+use sha2::digest::consts::U64;
 use sha2::digest::core_api::BlockSizeUser;
 
 /// Minimal, non-constant-time SHA-1 implementation sufficient to satisfy the

@@ -95,6 +95,10 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
                 tpm_guest_tests_linux_path(MachineArch::X86_64)
             }
 
+            _ if id == host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64 => {
+                test_igvm_agent_rpc_server_windows_path(MachineArch::X86_64)
+            }
+
             _ => anyhow::bail!("no support for given artifact type"),
         }
     }
@@ -272,6 +276,19 @@ fn tpm_guest_tests_linux_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
         "tpm_guest_tests",
         MissingCommand::Build {
             package: "tpm_guest_tests",
+            target: Some(target),
+        },
+    )
+}
+
+/// Path to the output location of the test_igvm_agent_rpc_server executable.
+fn test_igvm_agent_rpc_server_windows_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    let target = windows_msvc_target(arch);
+    get_path(
+        format!("target/{target}/debug"),
+        "test_igvm_agent_rpc_server.exe",
+        MissingCommand::Build {
+            package: "test_igvm_agent_rpc_server",
             target: Some(target),
         },
     )
