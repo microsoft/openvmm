@@ -619,13 +619,6 @@ impl<S: VmmNvramStorage> NvramSpecServices<S> {
                 //
                 // NOTE: Does not implement all of the read-only
                 // variables defined by the UEFI spec in section 3.3
-                //
-                // PK and KEK are NOT in this list because they can be modified
-                // at runtime via authenticated writes (TIME_BASED_AUTHENTICATED_WRITE_ACCESS).
-                // Per UEFI spec 8.2.2:
-                // - While SetupMode==1 (PK not enrolled): KEK/PK can be written without authentication
-                // - While SetupMode==0 (PK enrolled): KEK/PK require authentication with PK signature
-                // The authentication logic handles this later in the function.
                 spec_vars::SECURE_BOOT(),
                 spec_vars::SETUP_MODE(),
                 spec_vars::DBDEFAULT(),
