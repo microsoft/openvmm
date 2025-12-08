@@ -74,10 +74,6 @@ pub enum NvmeSpawnerError {
     Vfio(#[source] anyhow::Error),
     #[error("failed to initialize nvme device")]
     DeviceInitFailed(#[source] anyhow::Error),
-    #[error("failed to clear existing nvme device state")]
-    DeviceClearFailed(#[source] anyhow::Error),
-    #[error("failed to attach pending buffers when trying to clear existing state for device")]
-    AttachingPendingBuffersFailed(#[source] anyhow::Error),
     #[error("failed to create dma client for device")]
     DmaClient(#[source] anyhow::Error),
     #[error("failed to get namespace {nsid}")]
