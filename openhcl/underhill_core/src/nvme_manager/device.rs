@@ -111,6 +111,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
             let vfio_device = VfioDevice::restore(driver_source, pci_id, true, dma_clients)
                 .instrument(tracing::info_span!("nvme_vfio_device_restore", pci_id))
                 .await
+                .with_context(|| format!("failed to restore vfio device for {}", pci_id))
                 .map_err(NvmeSpawnerError::Vfio)?;
 
             // TODO: For now, any isolation means use bounce buffering. This
@@ -213,6 +214,7 @@ impl VfioNvmeDriverSpawner {
         let device = VfioDevice::new(driver_source, pci_id, dma_clients)
             .instrument(tracing::info_span!("nvme_vfio_device_open", pci_id))
             .await
+            .with_context(|| format!("failed to create vfio device for {}", pci_id))
             .map_err(NvmeSpawnerError::Vfio)?;
 
         // TODO: For now, any isolation means use bounce buffering. This
