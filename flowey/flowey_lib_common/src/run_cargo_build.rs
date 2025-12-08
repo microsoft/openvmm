@@ -266,20 +266,64 @@ impl FlowNode for Node {
                     let out_dir = sh.current_dir();
 
                     sh.change_dir(cargo_work_dir);
-                    let mut cmd = xshell::cmd!(sh, "{argv0} {params...}");
-                    if !matches!(rt.backend(), FlowBackend::Local) {
-                        // if running in CI, no need to waste time with incremental
-                        // build artifacts
-                        with_env.insert("CARGO_INCREMENTAL".to_owned(), "0".to_owned());
+
+                    // Determine if we need nix-shell wrapper
+                    let use_nix_shell = matches!(
+                        rt.platform(),
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
+                    );
+
+                    let cmd = if use_nix_shell {
+                        // For nix-shell, we need to build the entire command as a string
+                        let mut all_params = params.clone();
+
+                        if !matches!(rt.backend(), FlowBackend::Local) {
+                            with_env.insert("CARGO_INCREMENTAL".to_owned(), "0".to_owned());
+                        } else {
+                            // Add target-dir args for local builds
+                            all_params.push("--target-dir".to_owned());
+                            all_params.push(
+                                in_folder
+                                    .join("target")
+                                    .join(&crate_name)
+                                    .to_string_lossy()
+                                    .to_string()
+                            );
+                        }
+
+                        // Build the full command string with environment variables
+                        let env_prefix = with_env
+                            .iter()
+                            .map(|(k, v)| format!("{k}={v}"))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+
+                        let cargo_cmd = format!("{} {}", argv0, all_params.join(" "));
+                        let full_cmd = if env_prefix.is_empty() {
+                            cargo_cmd
+                        } else {
+                            format!("{env_prefix} {cargo_cmd}")
+                        };
+
+                        xshell::cmd!(sh, "nix-shell --pure --run {full_cmd}")
                     } else {
-                        // if build locally, use per-package target dirs
-                        // to avoid rebuilding
-                        // TODO: remove this once cargo's caching improves
-                        cmd = cmd
-                            .arg("--target-dir")
-                            .arg(in_folder.join("target").join(&crate_name));
-                    }
-                    cmd = cmd.envs(&with_env);
+                        // Standard execution path (non-Nix)
+                        let mut cmd = xshell::cmd!(sh, "{argv0} {params...}");
+                        if !matches!(rt.backend(), FlowBackend::Local) {
+                            // if running in CI, no need to waste time with incremental
+                            // build artifacts
+                            with_env.insert("CARGO_INCREMENTAL".to_owned(), "0".to_owned());
+                        } else {
+                            // if build locally, use per-package target dirs
+                            // to avoid rebuilding
+                            // TODO: remove this once cargo's caching improves
+                            cmd = cmd
+                                .arg("--target-dir")
+                                .arg(in_folder.join("target").join(&crate_name));
+                        }
+                        cmd = cmd.envs(&with_env);
+                        cmd
+                    };
 
                     log::info!(
                         "$ {}{cmd}",
