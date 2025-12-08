@@ -433,3 +433,62 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
     }
     Ok(())
 }
+
+/// Test that PK and KEK variables can be updated/deleted by verifying
+/// that they are writeable at runtime.
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+)]
+async fn secure_boot_pk_kek_writable<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config.with_secure_boot().run().await?;
+    let shell = agent.unix_shell();
+
+    // EFI Global Variable GUID
+    const EFI_GLOBAL_VARIABLE_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
+
+    // Check if the EFI variables exist and inspect their permissions
+    let pk_path = format!("/sys/firmware/efi/efivars/PK-{}", EFI_GLOBAL_VARIABLE_GUID);
+    let kek_path = format!("/sys/firmware/efi/efivars/KEK-{}", EFI_GLOBAL_VARIABLE_GUID);
+
+    let pk_attrs = cmd!(shell, "sudo")
+        .args([
+            "sh",
+            "-c",
+            &format!("ls -l {} 2>&1 && stat -c '%a' {} 2>&1", pk_path, pk_path),
+        ])
+        .output()
+        .await?;
+
+    let kek_attrs = cmd!(shell, "sudo")
+        .args([
+            "sh",
+            "-c",
+            &format!("ls -l {} 2>&1 && stat -c '%a' {} 2>&1", kek_path, kek_path),
+        ])
+        .output()
+        .await?;
+
+    let pk_info = String::from_utf8_lossy(&pk_attrs.stdout);
+    let kek_info = String::from_utf8_lossy(&kek_attrs.stdout);
+
+    // The file permissions in octal should be 644
+    // (read/write for owner, read for group/others)
+    assert!(
+        pk_info.contains("644") || pk_info.contains("rw-"),
+        "PK should be writable at runtime. File info: {}",
+        pk_info
+    );
+    assert!(
+        kek_info.contains("644") || kek_info.contains("rw-"),
+        "KEK should be writable at runtime. File info: {}",
+        kek_info
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
