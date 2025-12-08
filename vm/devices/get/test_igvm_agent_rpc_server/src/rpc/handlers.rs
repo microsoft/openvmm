@@ -97,9 +97,23 @@ fn write_response_size(ptr: *mut u32, value: u32) -> Result<(), HRESULT> {
     }
 }
 
-fn copy_to_buffer(buffer: &[u8], dest: *mut u8) {
+/// Copies `buffer` to the destination pointer `dest`.
+///
+/// # Safety Requirements
+/// The caller must ensure:
+/// - `dest` is valid for writes of `buffer.len()` bytes
+/// - `dest` does not overlap with `buffer`
+fn copy_to_buffer(buffer: &[u8], dest: *mut u8, dest_size: usize) {
+    debug_assert!(
+        buffer.len() <= dest_size,
+        "buffer length {} exceeds destination size {}",
+        buffer.len(),
+        dest_size
+    );
+    debug_assert!(!dest.is_null() || buffer.is_empty());
+
     if !buffer.is_empty() {
-        // SAFETY: memory access
+        // SAFETY: Caller guarantees dest has sufficient space (verified by debug_assert above).
         unsafe {
             ptr::copy_nonoverlapping(buffer.as_ptr(), dest, buffer.len());
         }
@@ -126,34 +140,27 @@ fn read_utf16(ptr: *const u16) -> Option<String> {
         return None;
     }
 
-    // SAFETY: memory access
-    std::panic::catch_unwind(|| unsafe {
+    // SAFETY: The caller (RPC runtime) is responsible for providing valid pointers.
+    // This is a test server, so we trust the RPC infrastructure to provide valid data.
+    unsafe {
         let mut len = 0usize;
 
         // Scan for null terminator with bounds checking
         while len < MAX_LEN {
-            // Use read_volatile to prevent compiler optimizations that might
-            // assume the pointer is valid, and to ensure we actually read
-            // the memory (which will fault if invalid)
-            let char_val = ptr::read_volatile(ptr.add(len));
-            if char_val == 0 {
+            if *ptr.add(len) == 0 {
                 break;
             }
             len += 1;
         }
 
-        // If we hit MAX_LEN without finding a null terminator,
-        // the string is too long or the pointer is invalid
+        // If we hit MAX_LEN without finding a null terminator, truncate
         if len == MAX_LEN {
-            return None;
+            len = MAX_LEN - 1;
         }
 
-        // Now that we know the length, create a slice and convert to String
         let slice = slice::from_raw_parts(ptr, len);
         String::from_utf16(slice).ok()
-    })
-    .ok()
-    .flatten()
+    }
 }
 
 /// Entry point that services `RpcIGVmAttest` requests for the test agent.
@@ -235,7 +242,7 @@ pub extern "system" fn rpc_igvm_attest(
             tracing::error!("response buffer pointer is null while payload_len > 0");
             return E_INVALIDARG;
         }
-        copy_to_buffer(&payload, response);
+        copy_to_buffer(&payload, response, response_buffer_size as usize);
     }
 
     if let Err(err) = write_response_size(response_written_size, payload_len) {

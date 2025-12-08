@@ -112,22 +112,28 @@ pub mod windows {
 
             tracing::info!("global RPC server is ready");
 
-            // Spawn a detached task to read and log stderr from the RPC server.
-            // This task will continue running for the lifetime of the test suite.
-            std::thread::spawn(move || {
-                let reader = BufReader::new(stderr_read);
-                for line in reader.lines() {
-                    match line {
-                        Ok(line) => {
-                            tracing::info!(target: "test_igvm_agent_rpc_server", "{}", line)
-                        }
-                        Err(e) => {
-                            tracing::warn!("failed to read RPC server stderr: {}", e);
-                            break;
+            // Spawn a named thread to read and log stderr from the RPC server.
+            // When the RPC server exits (either normally or when killed by the job object),
+            // the pipe will be closed and reader.lines() will return None, causing the
+            // thread to exit naturally. No explicit cleanup is needed.
+            std::thread::Builder::new()
+                .name("rpc-server-stderr".to_string())
+                .spawn(move || {
+                    let reader = BufReader::new(stderr_read);
+                    for line in reader.lines() {
+                        match line {
+                            Ok(line) => {
+                                tracing::info!(target: "test_igvm_agent_rpc_server", "{}", line)
+                            }
+                            Err(e) => {
+                                tracing::debug!("RPC server stderr pipe closed: {}", e);
+                                break;
+                            }
                         }
                     }
-                }
-            });
+                    tracing::debug!("RPC server stderr reader thread exiting");
+                })
+                .expect("failed to spawn stderr reader thread");
 
             // Drop the Child handle. The process is managed by our job object and will
             // be automatically terminated when the job is closed (test runner exits).
