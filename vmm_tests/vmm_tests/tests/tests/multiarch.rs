@@ -492,3 +492,107 @@ async fn secure_boot_pk_kek_writable<T: PetriVmmBackend>(
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
+/// Test that deleting PK puts the system into Setup Mode.
+/// When PK is deleted, the system enters Setup Mode (SetupMode=1), allowing reconfiguration
+/// of secure boot variables without authentication.
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+)]
+async fn secure_boot_pk_delete_enters_setup_mode<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config.with_secure_boot().run().await?;
+    let shell = agent.unix_shell();
+
+    // EFI Global Variable GUID
+    const EFI_GLOBAL_VARIABLE_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
+
+    let pk_path = format!("/sys/firmware/efi/efivars/PK-{}", EFI_GLOBAL_VARIABLE_GUID);
+    let setup_mode_path = format!(
+        "/sys/firmware/efi/efivars/SetupMode-{}",
+        EFI_GLOBAL_VARIABLE_GUID
+    );
+
+    // Check initial state: SetupMode should be disabled (0)
+    let setup_mode_before = cmd!(shell, "sudo")
+        .args([
+            "sh",
+            "-c",
+            &format!("od -An -t u1 {} | tail -c 2", setup_mode_path),
+        ])
+        .output()
+        .await?;
+
+    let sm_before = String::from_utf8_lossy(&setup_mode_before.stdout)
+        .trim()
+        .to_string();
+
+    assert_eq!(
+        sm_before, "0",
+        "SetupMode should be disabled (0) before deleting PK, got: {}",
+        sm_before
+    );
+
+    // Remove immutable flag if set, then delete PK
+    cmd!(shell, "sudo")
+        .args([
+            "sh",
+            "-c",
+            &format!("chattr -i {} 2>/dev/null || true", pk_path),
+        ])
+        .run()
+        .await?;
+
+    let delete_result = cmd!(shell, "sudo")
+        .args(["rm", "-f", &pk_path])
+        .output()
+        .await?;
+
+    assert!(
+        delete_result.status.success(),
+        "Failed to delete PK: {}",
+        String::from_utf8_lossy(&delete_result.stderr)
+    );
+
+    // Verify PK is deleted - use ls which returns success even if file doesn't exist with || true
+    let pk_check = cmd!(shell, "sh")
+        .args([
+            "-c",
+            &format!("ls {} 2>/dev/null || echo 'file_not_found'", pk_path),
+        ])
+        .output()
+        .await?;
+    let pk_check_out = String::from_utf8_lossy(&pk_check.stdout);
+    assert!(
+        pk_check_out.contains("file_not_found") || pk_check_out.contains("No such file"),
+        "PK should be deleted but still exists: {}",
+        pk_check_out
+    );
+
+    // Check state after deletion: SetupMode should be enabled (1)
+    let setup_mode_after = cmd!(shell, "sudo")
+        .args([
+            "sh",
+            "-c",
+            &format!("od -An -t u1 {} | tail -c 2", setup_mode_path),
+        ])
+        .output()
+        .await?;
+
+    let sm_after = String::from_utf8_lossy(&setup_mode_after.stdout)
+        .trim()
+        .to_string();
+
+    assert_eq!(
+        sm_after, "1",
+        "SetupMode should be enabled (1) after deleting PK, got: {}",
+        sm_after
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
