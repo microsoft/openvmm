@@ -359,6 +359,8 @@ jobs:
       contents: read
       id-token: write
     if: github.event.pull_request.draft == false
+    env:
+      USING_NIX: '1'
     steps:
     - run: |
         set -x
@@ -6116,6 +6118,8 @@ jobs:
       contents: read
       id-token: write
     if: github.event.pull_request.draft == false
+    env:
+      USING_NIX: '1'
     steps:
     - run: |
         set -x
