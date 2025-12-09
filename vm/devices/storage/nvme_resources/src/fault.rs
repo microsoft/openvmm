@@ -46,13 +46,15 @@ pub enum IoQueueFaultBehavior {
 }
 
 /// Supported fault behaviour for PCI faults
-#[derive(Clone, MeshPayload)]
+#[derive(MeshPayload)]
 pub enum PciFaultBehavior {
     /// Introduce a delay to the PCI operation. This WILL block the processing
     /// thread for the delay duration.
     Delay(Duration),
     /// Do nothing
     Default,
+    /// Verify that a command was seen.
+    VerifyEnable(Option<OneshotSender<()>>),
 }
 
 /// A notification to the test confirming namespace change processing.
@@ -87,7 +89,7 @@ pub enum NamespaceChange {
 ///         )
 /// }
 /// ```
-#[derive(MeshPayload, Clone)]
+#[derive(MeshPayload)]
 pub struct PciFaultConfig {
     /// Fault to apply to cc.en() bit during enablement
     pub controller_management_fault_enable: PciFaultBehavior,
@@ -375,7 +377,7 @@ pub struct FaultConfiguration {
     /// Fault to apply to the admin queues
     pub admin_fault: AdminQueueFaultConfig,
     /// Fault to apply to management layer of the controller
-    pub pci_fault: PciFaultConfig,
+    pub pci_fault: Option<PciFaultConfig>,
     /// Fault for test triggered namespace change notifications
     pub namespace_fault: NamespaceFaultConfig,
     /// Fault to apply to all IO queues
@@ -391,7 +393,7 @@ impl FaultConfiguration {
         Self {
             fault_active: fault_active.clone(),
             admin_fault: AdminQueueFaultConfig::new(),
-            pci_fault: PciFaultConfig::new(),
+            pci_fault: Some(PciFaultConfig::new()),
             namespace_fault: NamespaceFaultConfig::new(mesh::channel().1),
             io_fault: Arc::new(IoQueueFaultConfig::new(fault_active)),
         }
@@ -399,7 +401,7 @@ impl FaultConfiguration {
 
     /// Add a PCI fault configuration to the fault configuration
     pub fn with_pci_fault(mut self, pci_fault: PciFaultConfig) -> Self {
-        self.pci_fault = pci_fault;
+        self.pci_fault = Some(pci_fault);
         self
     }
 

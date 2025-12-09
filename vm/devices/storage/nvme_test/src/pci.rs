@@ -117,7 +117,7 @@ impl NvmeFaultController {
         register_msi: &mut dyn RegisterMsi,
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeFaultControllerCaps,
-        fault_configuration: FaultConfiguration,
+        mut fault_configuration: FaultConfiguration,
     ) -> Self {
         let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, register_msi);
         let bars = DeviceBars::new()
@@ -149,8 +149,9 @@ impl NvmeFaultController {
             .map(|i| msix.interrupt(i).unwrap())
             .collect();
 
-        // Extract the PCI fault config
-        let pci_fault_config = fault_configuration.pci_fault.clone();
+        // Extract the PCI fault config. It should never be None here (probably
+        // could be)
+        let pci_fault_config = fault_configuration.pci_fault.take().unwrap();
 
         let qe_sizes = Arc::new(Default::default());
         let admin = NvmeWorkers::new(
@@ -349,11 +350,17 @@ impl NvmeFaultController {
         if cc.en() != self.registers.cc.en() {
             if cc.en() {
                 // If any fault was configured for cc.en() process it here
-                match self.pci_fault_config.controller_management_fault_enable {
+                match &mut self.pci_fault_config.controller_management_fault_enable {
                     PciFaultBehavior::Delay(duration) => {
-                        std::thread::sleep(duration);
+                        std::thread::sleep(*duration);
                     }
                     PciFaultBehavior::Default => {}
+                    PciFaultBehavior::VerifyEnable(send) => {
+                        // Verify that the enable command was received.
+                        if let Some(send) = send.take() {
+                            send.send(());
+                        }
+                    }
                 }
 
                 // Some drivers will write zeros to IOSQES and IOCQES, assuming that the defaults will work.
