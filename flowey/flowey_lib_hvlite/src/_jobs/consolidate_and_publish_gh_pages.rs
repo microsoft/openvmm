@@ -93,8 +93,7 @@ impl SimpleFlowNode for Node {
                     consolidated_html.join("test-results-old"),
                 )?;
 
-                // Testing CI changes to minimize disruptions to petri site
-                // availability. Will remove this once CI build changes are in.
+                // New logviewer
                 flowey_lib_common::_util::copy_dir_all(
                     logview_new_build,
                     consolidated_html.join("test-results"),
