@@ -139,11 +139,15 @@ impl PackageManager {
                 xshell::cmd!(sh, "sudo pacman -S {auto_accept...} {packages...}").run()?;
             }
             FlowPlatformLinuxDistro::Nix => {
-                log::warn!("===============================================================================");
+                log::warn!(
+                    "==============================================================================="
+                );
                 log::warn!("Missing packages in Nix environment: {:?}", packages);
                 log::warn!("Please add these to your shell.nix buildInputs");
                 log::warn!("Continuing anyway - build may fail if these are actually needed");
-                log::warn!("===============================================================================");
+                log::warn!(
+                    "==============================================================================="
+                );
             }
             FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
         }

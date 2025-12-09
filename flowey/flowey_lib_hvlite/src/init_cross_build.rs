@@ -61,8 +61,12 @@ impl FlowNode for Node {
                             Architecture::X86_64 => match platform {
                                 FlowPlatform::Linux(linux_distribution) => {
                                     let (pkg, bin) = match linux_distribution {
-                                        FlowPlatformLinuxDistro::Fedora => ("gcc-x86_64-linux-gnu", "x86_64-linux-gnu-gcc"),
-                                        FlowPlatformLinuxDistro::Ubuntu => ("gcc-x86-64-linux-gnu", "x86_64-linux-gnu-gcc"),
+                                        FlowPlatformLinuxDistro::Fedora => {
+                                            ("gcc-x86_64-linux-gnu", "x86_64-linux-gnu-gcc")
+                                        }
+                                        FlowPlatformLinuxDistro::Ubuntu => {
+                                            ("gcc-x86-64-linux-gnu", "x86_64-linux-gnu-gcc")
+                                        }
                                         FlowPlatformLinuxDistro::Arch => {
                                             match_arch!(host_arch, FlowArch::X86_64, ("gcc", "gcc"))
                                         }
