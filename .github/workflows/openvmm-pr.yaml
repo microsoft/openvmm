@@ -179,6 +179,12 @@ jobs:
     - name: run xtask fmt
       run: flowey.exe e 0 flowey_lib_hvlite::_jobs::check_xtask_fmt 0
       shell: bash
+    - name: add nix profile to path
+      run: flowey.exe e 0 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey.exe e 0 flowey_lib_common::install_nix 1
+      shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey.exe e 0 flowey_lib_common::cache 3
       shell: bash
@@ -345,6 +351,12 @@ jobs:
       shell: bash
     - name: run xtask fmt
       run: flowey e 1 flowey_lib_hvlite::_jobs::check_xtask_fmt 0
+      shell: bash
+    - name: add nix profile to path
+      run: flowey e 1 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey e 1 flowey_lib_common::install_nix 1
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 1 flowey_lib_common::cache 3
@@ -743,6 +755,12 @@ jobs:
         flowey e 10 flowey_lib_hvlite::build_tmk_vmm 0
         flowey e 10 flowey_core::pipeline::artifact::publish 1
       shell: bash
+    - name: add nix profile to path
+      run: flowey e 10 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey e 10 flowey_lib_common::install_nix 1
+      shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 10 flowey_lib_common::cache 3
       shell: bash
@@ -1010,6 +1028,12 @@ jobs:
     - name: binary size comparison
       run: flowey e 11 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 3
       shell: bash
+    - name: add nix profile to path
+      run: flowey e 11 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey e 11 flowey_lib_common::install_nix 1
+      shell: bash
     - name: 'validate cache entry: gh-cli'
       run: flowey e 11 flowey_lib_common::cache 3
       shell: bash
@@ -1246,6 +1270,12 @@ jobs:
       shell: bash
     - name: run doctests for x86_64-pc-windows-msvc
       run: flowey.exe e 12 flowey_lib_hvlite::_jobs::build_and_run_doc_tests 0
+      shell: bash
+    - name: add nix profile to path
+      run: flowey.exe e 12 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey.exe e 12 flowey_lib_common::install_nix 1
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 12 flowey_lib_common::cache 3
@@ -1523,6 +1553,12 @@ jobs:
     - name: run doctests for x86_64-unknown-linux-gnu
       run: flowey e 13 flowey_lib_hvlite::_jobs::build_and_run_doc_tests 0
       shell: bash
+    - name: add nix profile to path
+      run: flowey e 13 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey e 13 flowey_lib_common::install_nix 1
+      shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 13 flowey_lib_common::cache 3
       shell: bash
@@ -1790,6 +1826,12 @@ jobs:
     - name: run doctests for x86_64-unknown-linux-musl
       run: flowey e 14 flowey_lib_hvlite::_jobs::build_and_run_doc_tests 0
       shell: bash
+    - name: add nix profile to path
+      run: flowey e 14 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey e 14 flowey_lib_common::install_nix 1
+      shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 14 flowey_lib_common::cache 3
       shell: bash
@@ -2026,6 +2068,12 @@ jobs:
       shell: bash
     - name: run doctests for aarch64-pc-windows-msvc
       run: flowey.exe e 15 flowey_lib_hvlite::_jobs::build_and_run_doc_tests 0
+      shell: bash
+    - name: add nix profile to path
+      run: flowey.exe e 15 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey.exe e 15 flowey_lib_common::install_nix 1
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 15 flowey_lib_common::cache 3
@@ -2279,6 +2327,12 @@ jobs:
       shell: bash
     - name: run doctests for aarch64-unknown-linux-gnu
       run: flowey e 16 flowey_lib_hvlite::_jobs::build_and_run_doc_tests 0
+      shell: bash
+    - name: add nix profile to path
+      run: flowey e 16 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey e 16 flowey_lib_common::install_nix 1
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 16 flowey_lib_common::cache 3
@@ -2543,6 +2597,12 @@ jobs:
       shell: bash
     - name: run doctests for aarch64-unknown-linux-musl
       run: flowey e 17 flowey_lib_hvlite::_jobs::build_and_run_doc_tests 0
+      shell: bash
+    - name: add nix profile to path
+      run: flowey e 17 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey e 17 flowey_lib_common::install_nix 1
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 17 flowey_lib_common::cache 3
@@ -2813,6 +2873,12 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
       run: flowey.exe e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
+      shell: bash
+    - name: add nix profile to path
+      run: flowey.exe e 18 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey.exe e 18 flowey_lib_common::install_nix 1
       shell: bash
     - name: 'validate cache entry: azcopy'
       run: flowey.exe e 18 flowey_lib_common::cache 3
@@ -3097,6 +3163,12 @@ jobs:
     - name: report test results to overall pipeline status
       run: flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       shell: bash
+    - name: add nix profile to path
+      run: flowey.exe e 19 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey.exe e 19 flowey_lib_common::install_nix 1
+      shell: bash
     - name: 'validate cache entry: azcopy'
       run: flowey.exe e 19 flowey_lib_common::cache 3
       shell: bash
@@ -3295,6 +3367,12 @@ jobs:
         flowey.exe e 2 flowey_lib_hvlite::run_cargo_build 2
         flowey.exe e 2 flowey_lib_hvlite::build_ohcldiag_dev 0
         flowey.exe e 2 flowey_core::pipeline::artifact::publish 3
+      shell: bash
+    - name: add nix profile to path
+      run: flowey.exe e 2 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey.exe e 2 flowey_lib_common::install_nix 1
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey.exe e 2 flowey_lib_common::cache 3
@@ -3587,6 +3665,12 @@ jobs:
     - name: report test results to overall pipeline status
       run: flowey.exe e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       shell: bash
+    - name: add nix profile to path
+      run: flowey.exe e 20 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey.exe e 20 flowey_lib_common::install_nix 1
+      shell: bash
     - name: 'validate cache entry: azcopy'
       run: flowey.exe e 20 flowey_lib_common::cache 3
       shell: bash
@@ -3870,6 +3954,12 @@ jobs:
     - name: report test results to overall pipeline status
       run: flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       shell: bash
+    - name: add nix profile to path
+      run: flowey.exe e 21 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey.exe e 21 flowey_lib_common::install_nix 1
+      shell: bash
     - name: 'validate cache entry: azcopy'
       run: flowey.exe e 21 flowey_lib_common::cache 3
       shell: bash
@@ -4142,6 +4232,12 @@ jobs:
     - name: report test results to overall pipeline status
       run: flowey e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
       shell: bash
+    - name: add nix profile to path
+      run: flowey e 22 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey e 22 flowey_lib_common::install_nix 1
+      shell: bash
     - name: 'validate cache entry: azcopy'
       run: flowey e 22 flowey_lib_common::cache 3
       shell: bash
@@ -4252,8 +4348,12 @@ jobs:
         echo "${{ runner.temp }}\\used_artifacts\\aarch64-windows-vmgstool" | flowey.exe v 23 'artifact_use_from_aarch64-windows-vmgstool' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\aarch64-windows-vmm-tests-archive" | flowey.exe v 23 'artifact_use_from_aarch64-windows-vmm-tests-archive' --is-raw-string update
       shell: bash
-    - name: creating new test content dir
+    - name: add nix profile to path
+      run: flowey.exe e 23 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
       run: |-
+        flowey.exe e 23 flowey_lib_common::install_nix 1
         flowey.exe e 23 flowey_core::pipeline::artifact::resolve 5
         flowey.exe e 23 flowey_core::pipeline::artifact::resolve 1
         flowey.exe e 23 flowey_core::pipeline::artifact::resolve 0
@@ -4262,7 +4362,9 @@ jobs:
         flowey.exe e 23 flowey_core::pipeline::artifact::resolve 3
         flowey.exe e 23 flowey_core::pipeline::artifact::resolve 7
         flowey.exe e 23 flowey_core::pipeline::artifact::resolve 4
-        flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
+      shell: bash
+    - name: creating new test content dir
+      run: flowey.exe e 23 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
       shell: bash
     - name: resolve OpenHCL igvm artifact
       run: flowey.exe e 23 flowey_lib_hvlite::artifact_openhcl_igvm_from_recipe::resolve 0
@@ -4550,6 +4652,12 @@ jobs:
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
       shell: bash
+    - name: add nix profile to path
+      run: flowey e 24 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey e 24 flowey_lib_common::install_nix 1
+      shell: bash
     - name: check if openvmm needs to be cloned
       run: |-
         flowey e 24 flowey_lib_common::git_checkout 0
@@ -4643,6 +4751,12 @@ jobs:
         cat <<'EOF' | flowey v 25 'verbose' update
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
+      shell: bash
+    - name: add nix profile to path
+      run: flowey e 25 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey e 25 flowey_lib_common::install_nix 1
       shell: bash
     - name: Check if any jobs failed
       run: flowey e 25 flowey_lib_hvlite::_jobs::all_good_job 0
@@ -4889,6 +5003,13 @@ jobs:
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 1
         flowey.exe e 3 flowey_lib_hvlite::build_pipette 0
         flowey.exe e 3 flowey_core::pipeline::artifact::publish 2
+      shell: bash
+    - name: add nix profile to path
+      run: flowey.exe e 3 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: |-
+        flowey.exe e 3 flowey_lib_common::install_nix 1
         flowey.exe e 3 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build tmk_vmm
@@ -5136,6 +5257,12 @@ jobs:
         flowey.exe e 4 flowey_lib_hvlite::run_cargo_build 2
         flowey.exe e 4 flowey_lib_hvlite::build_ohcldiag_dev 0
         flowey.exe e 4 flowey_core::pipeline::artifact::publish 3
+      shell: bash
+    - name: add nix profile to path
+      run: flowey.exe e 4 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey.exe e 4 flowey_lib_common::install_nix 1
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey.exe e 4 flowey_lib_common::cache 3
@@ -5414,6 +5541,12 @@ jobs:
         flowey.exe e 5 flowey_lib_common::run_cargo_nextest_archive 0
         flowey.exe e 5 flowey_lib_hvlite::build_nextest_vmm_tests 0
         flowey.exe e 5 flowey_core::pipeline::artifact::publish 6
+      shell: bash
+    - name: add nix profile to path
+      run: flowey.exe e 5 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey.exe e 5 flowey_lib_common::install_nix 1
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 5 flowey_lib_common::cache 3
@@ -5738,6 +5871,12 @@ jobs:
         flowey e 6 flowey_lib_hvlite::run_cargo_build 12
         flowey e 6 flowey_lib_hvlite::build_tpm_guest_tests 0
         flowey e 6 flowey_core::pipeline::artifact::publish 7
+      shell: bash
+    - name: add nix profile to path
+      run: flowey e 6 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey e 6 flowey_lib_common::install_nix 1
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 6 flowey_lib_common::cache 3
@@ -6105,6 +6244,12 @@ jobs:
         flowey e 7 flowey_lib_hvlite::build_nextest_vmm_tests 0
         flowey e 7 flowey_core::pipeline::artifact::publish 8
       shell: bash
+    - name: add nix profile to path
+      run: flowey e 7 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey e 7 flowey_lib_common::install_nix 1
+      shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 7 flowey_lib_common::cache 3
       shell: bash
@@ -6463,6 +6608,12 @@ jobs:
         flowey e 8 flowey_lib_hvlite::build_tmk_vmm 0
         flowey e 8 flowey_core::pipeline::artifact::publish 1
       shell: bash
+    - name: add nix profile to path
+      run: flowey e 8 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey e 8 flowey_lib_common::install_nix 1
+      shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 8 flowey_lib_common::cache 3
       shell: bash
@@ -6721,6 +6872,12 @@ jobs:
       shell: bash
     - name: binary size comparison
       run: flowey e 9 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 3
+      shell: bash
+    - name: add nix profile to path
+      run: flowey e 9 flowey_lib_common::install_nix 0
+      shell: bash
+    - name: install Nix
+      run: flowey e 9 flowey_lib_common::install_nix 1
       shell: bash
     - name: 'validate cache entry: gh-cli'
       run: flowey e 9 flowey_lib_common::cache 3

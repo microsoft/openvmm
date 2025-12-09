@@ -267,6 +267,9 @@ impl FlowNode for Node {
 
                     sh.change_dir(cargo_work_dir);
 
+                    // TODO: Using nix should be a separate request type rather
+                    // than checking the platform here
+                    //
                     // Determine if we need nix-shell wrapper
                     let use_nix_shell = matches!(
                         rt.platform(),
@@ -287,7 +290,7 @@ impl FlowNode for Node {
                                     .join("target")
                                     .join(&crate_name)
                                     .to_string_lossy()
-                                    .to_string()
+                                    .to_string(),
                             );
                         }
 

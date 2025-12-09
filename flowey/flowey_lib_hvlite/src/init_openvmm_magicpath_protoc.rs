@@ -50,10 +50,7 @@ impl FlowNode for Node {
                 // (e.g., from previous runs or nix store)
                 let _ = fs_err::remove_dir_all(&include_dst);
 
-                flowey_lib_common::_util::copy_dir_all(
-                    protoc_pkg.include_dir,
-                    &include_dst,
-                )?;
+                flowey_lib_common::_util::copy_dir_all(protoc_pkg.include_dir, &include_dst)?;
 
                 let src = protoc_pkg.protoc_bin;
                 let dst = dst_folder.join(expected_protoc_bin);

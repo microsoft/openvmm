@@ -124,6 +124,7 @@ impl IntoPipeline for CheckinGatesCli {
             let mut job = job
                 .dep_on(&cfg_common_params)
                 .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Download)
+                .dep_on(|ctx| flowey_lib_common::install_nix::Request::EnsureInstalled(ctx.new_done_handle()))
                 .dep_on(
                     |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
                         hvlite_repo_source: openvmm_repo_source.clone(),

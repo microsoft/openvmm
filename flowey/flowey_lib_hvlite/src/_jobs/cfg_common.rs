@@ -58,6 +58,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
         ctx.import::<flowey_lib_common::install_git::Node>();
+        ctx.import::<flowey_lib_common::install_nix::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
         ctx.import::<flowey_lib_common::install_nuget_azure_credential_provider::Node>();
         ctx.import::<flowey_lib_common::install_rust::Node>();
@@ -86,6 +87,7 @@ impl SimpleFlowNode for Node {
             ctx.req(flowey_lib_common::install_rust::Request::IgnoreVersion(
                 false,
             ));
+            ctx.req(flowey_lib_common::install_nix::Request::AutoInstall(true));
             let token = ctx.get_gh_context_var().global().token();
             ctx.req(flowey_lib_common::use_gh_cli::Request::WithAuth(
                 flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(token),
