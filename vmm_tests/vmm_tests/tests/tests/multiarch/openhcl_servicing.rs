@@ -369,7 +369,14 @@ async fn servicing_keepalive_with_nvme_fault(
             ),
         );
 
-    apply_fault_with_keepalive(config, fault_configuration, fault_start_updater, igvm_file).await
+    apply_fault_with_keepalive(
+        config,
+        fault_configuration,
+        fault_start_updater,
+        igvm_file,
+        None,
+    )
+    .await
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself
@@ -390,7 +397,14 @@ async fn servicing_keepalive_fault_if_identify(
             ),
         );
 
-    apply_fault_with_keepalive(config, fault_configuration, fault_start_updater, igvm_file).await
+    apply_fault_with_keepalive(
+        config,
+        fault_configuration,
+        fault_start_updater,
+        igvm_file,
+        None,
+    )
+    .await
 }
 
 /// Verifies that the driver awaits an existing AER instead of issuing a new one after servicing.
@@ -409,7 +423,14 @@ async fn servicing_keepalive_verify_no_duplicate_aers(
             )
         );
 
-    apply_fault_with_keepalive(config, fault_configuration, fault_start_updater, igvm_file).await
+    apply_fault_with_keepalive(
+        config,
+        fault_configuration,
+        fault_start_updater,
+        igvm_file,
+        None,
+    )
+    .await
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself with NVMe keepalive support
@@ -443,7 +464,14 @@ async fn servicing_keepalive_with_nvme_identify_fault(
             ),
         );
 
-    apply_fault_with_keepalive(config, fault_configuration, fault_start_updater, igvm_file).await
+    apply_fault_with_keepalive(
+        config,
+        fault_configuration,
+        fault_start_updater,
+        igvm_file,
+        None,
+    )
+    .await
 }
 
 async fn apply_fault_with_keepalive(
@@ -451,6 +479,7 @@ async fn apply_fault_with_keepalive(
     fault_configuration: FaultConfiguration,
     mut fault_start_updater: CellUpdater<bool>,
     igvm_file: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+    new_cmdline: Option<&str>,
 ) -> Result<(), anyhow::Error> {
     let mut flags = config.default_servicing_flags();
     flags.enable_nvme_keepalive = true;
@@ -463,6 +492,11 @@ async fn apply_fault_with_keepalive(
     cmd!(sh, "ls /dev/sda").run().await?;
 
     fault_start_updater.set(true).await;
+
+    if let Some(cmdline) = new_cmdline {
+        vm.update_command_line(cmdline).await?;
+    }
+
     vm.restart_openhcl(igvm_file.clone(), flags).await?;
 
     fault_start_updater.set(false).await;
@@ -604,6 +638,46 @@ async fn mana_nic_servicing_keepalive(
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Test servicing an OpenHCL VM when NVME keepalive is enabled but then
+/// disabled after servicing.
+/// It performs a basic check to verify that a CREATE_IO_COMPLETION_QUEUE
+/// command was seen which means that queues are not being reused.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_with_keepalive_disabled_after_servicing(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let mut fault_start_updater = CellUpdater::new(false);
+    let (create_ioqueue_verify_send, create_ioqueue_verify_recv) = mesh::oneshot::<()>();
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
+                    .build(),
+                AdminQueueFaultBehavior::Verify(Some(create_ioqueue_verify_send)),
+            ),
+        );
+
+    apply_fault_with_keepalive(
+        config,
+        fault_configuration,
+        fault_start_updater,
+        igvm_file,
+        Some(""),
+    )
+    .await?;
+
+    let _ = CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(create_ioqueue_verify_recv)
+        .await
+        .expect("CREATE_IO_COMPLETION_QUEUE command was not observed within 10 seconds of vm restore after servicing with keepalive disabled");
 
     Ok(())
 }
