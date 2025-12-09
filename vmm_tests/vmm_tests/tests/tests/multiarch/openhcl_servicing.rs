@@ -121,7 +121,10 @@ async fn tpm_servicing<T: PetriVmmBackend>(
     let mut flags = config.default_servicing_flags();
     flags.override_version_checks = true;
     openhcl_servicing_core(
-        config.with_tpm(true).with_tpm_state_persistence(true),
+        config
+            .with_tpm(true)
+            .with_tpm_state_persistence(true)
+            .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
         "",
         igvm_file,
         flags,
