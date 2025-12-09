@@ -663,6 +663,7 @@ impl IntoPipeline for CheckinGatesCli {
                     build_openhcl_job_tag(arch_tag),
                 )
                 .gh_set_pool(crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk())
+                .gh_dangerous_global_env_var("USING_NIX", "1")
                 .dep_on(|ctx| {
                     let publish_baseline_artifact = pub_openhcl_baseline
                         .map(|baseline_artifact| ctx.publish_artifact(baseline_artifact));
