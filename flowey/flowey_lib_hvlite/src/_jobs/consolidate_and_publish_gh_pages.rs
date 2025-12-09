@@ -93,7 +93,7 @@ impl SimpleFlowNode for Node {
                     consolidated_html.join("test-results-old"),
                 )?;
 
-                // New logviewer
+                // New logviewer (built in CI).
                 flowey_lib_common::_util::copy_dir_all(
                     logview_new_build,
                     consolidated_html.join("test-results"),
