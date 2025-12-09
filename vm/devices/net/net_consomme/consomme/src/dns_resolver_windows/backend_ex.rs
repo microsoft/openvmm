@@ -217,7 +217,11 @@ impl DnsBackend for ExDnsBackend {
             let response_data = unsafe {
                 process_dns_query_results(
                     &context.parsed_query,
-                    if result == ERROR_SUCCESS as i32 { 0 } else { result },
+                    if result == ERROR_SUCCESS as i32 {
+                        0
+                    } else {
+                        result
+                    },
                     query_results_box.pQueryRecords,
                 )
             };
@@ -235,7 +239,7 @@ impl DnsBackend for ExDnsBackend {
             handles.insert(
                 request_id,
                 CancelHandle {
-                    handle: CancelHandleInner::Ex(cancel_handle)
+                    handle: CancelHandleInner::Ex(cancel_handle),
                 },
             );
         }
@@ -317,7 +321,13 @@ unsafe extern "system" fn dns_query_ex_callback(
 
         // Use the shared helper to process results
         // SAFETY: results.pQueryRecords is valid or null from Windows API
-        unsafe { process_dns_query_results(&context.parsed_query, results.QueryStatus, results.pQueryRecords) }
+        unsafe {
+            process_dns_query_results(
+                &context.parsed_query,
+                results.QueryStatus,
+                results.pQueryRecords,
+            )
+        }
     };
 
     // Free the query_results struct we allocated

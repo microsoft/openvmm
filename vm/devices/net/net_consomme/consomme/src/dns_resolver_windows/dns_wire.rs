@@ -171,7 +171,8 @@ pub fn try_parse_dns_query(data: &[u8]) -> Result<ParsedDnsQuery, DnsWireError> 
     }
 
     // Use smoltcp's DnsPacket for initial validation and header parsing
-    let packet = DnsPacket::new_checked(data).map_err(|_| DnsWireError::QueryTooShort(data.len()))?;
+    let packet =
+        DnsPacket::new_checked(data).map_err(|_| DnsWireError::QueryTooShort(data.len()))?;
 
     if packet.opcode() != DnsOpcode::Query {
         tracing::warn!(opcode = ?packet.opcode(), "DNS query with unexpected opcode");
@@ -191,7 +192,8 @@ pub fn try_parse_dns_query(data: &[u8]) -> Result<ParsedDnsQuery, DnsWireError> 
 
     // Use smoltcp's DnsQuestion::parse to parse the question section
     let payload = &data[12..]; // After DNS header
-    let (rest, question) = DnsQuestion::parse(payload).map_err(|_| DnsWireError::QuestionParseError)?;
+    let (rest, question) =
+        DnsQuestion::parse(payload).map_err(|_| DnsWireError::QuestionParseError)?;
 
     // Calculate where the question section ends
     let question_section_len = payload.len() - rest.len();
