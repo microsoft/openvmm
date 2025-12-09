@@ -134,7 +134,7 @@ async fn many_nvme_devices_servicing_heavy(
                     .collect::<Vec<_>>();
 
                 v.dynamic.as_mut().unwrap().storage_controllers.push(
-                    Vtl2StorageControllerBuilder::scsi()
+                    Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
                         .add_luns(
                             device_ids
                                 .iter()

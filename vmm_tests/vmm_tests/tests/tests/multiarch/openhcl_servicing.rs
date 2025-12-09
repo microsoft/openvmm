@@ -483,7 +483,7 @@ async fn create_keepalive_test_config(
             // Assign the fault controller to VTL2
             .with_custom_vtl2_settings(|v| {
                 v.dynamic.as_mut().unwrap().storage_controllers.push(
-                    Vtl2StorageControllerBuilder::scsi()
+                    Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
                         .with_instance_id(scsi_instance)
                         .add_lun(
                             Vtl2LunBuilder::disk()
