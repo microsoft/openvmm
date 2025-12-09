@@ -516,7 +516,7 @@ impl<T: Client> Sender<'_, T> {
         let ipv4 = Ipv4Repr {
             src_addr: self.ft.dst.ip,
             dst_addr: self.ft.src.ip,
-            protocol: IpProtocol::Tcp,
+            next_header: IpProtocol::Tcp,
             payload_len: tcp.header_len() + payload.as_ref().map_or(0, |p| p.len()),
             hop_limit: 64,
         };
@@ -550,6 +550,7 @@ impl<T: Client> Sender<'_, T> {
             max_seg_size: None,
             sack_permitted: false,
             sack_ranges: [None, None, None],
+            timestamp: None,
             payload: &[],
         };
 
@@ -994,6 +995,7 @@ impl TcpConnection {
             max_seg_size: Some(max_seg_size),
             sack_permitted: false,
             sack_ranges: [None, None, None],
+            timestamp: None,
             payload: &[],
         };
 
@@ -1026,6 +1028,7 @@ impl TcpConnection {
                 max_seg_size: None,
                 sack_permitted: false,
                 sack_ranges: [None, None, None],
+                timestamp: None,
                 payload: &[],
             };
 
@@ -1120,6 +1123,7 @@ impl TcpConnection {
             max_seg_size: None,
             sack_permitted: false,
             sack_ranges: [None, None, None],
+            timestamp: None,
             payload: &[],
         };
 

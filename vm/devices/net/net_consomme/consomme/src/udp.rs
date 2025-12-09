@@ -178,7 +178,7 @@ fn build_udp_packet<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized>(
     let ipv4_repr = Ipv4Repr {
         src_addr: src_ip,
         dst_addr: dst_ip,
-        protocol: IpProtocol::Udp,
+        next_header: IpProtocol::Udp,
         payload_len: UDP_HEADER_LEN + payload_len,
         hop_limit: 64,
     };
@@ -411,7 +411,7 @@ impl<T: Client> Access<'_, T> {
             )
             .map_err(|e| {
                 tracing::error!(error = ?e, "Failed to start DNS query");
-                DropReason::Packet(smoltcp::Error::Dropped)
+                DropReason::DnsError
             })?;
 
         Ok(())
@@ -433,7 +433,7 @@ impl<T: Client> Access<'_, T> {
         let required_size = payload_offset + response.response_data.len();
 
         if required_size > buffer.len() {
-            return Err(DropReason::Packet(smoltcp::Error::Exhausted));
+            return Err(DropReason::BufferExhausted);
         }
 
         buffer[payload_offset..required_size].copy_from_slice(&response.response_data);

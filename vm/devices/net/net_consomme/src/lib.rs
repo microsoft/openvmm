@@ -357,7 +357,8 @@ impl net_backend::Queue for ConsommeQueue {
                     | consomme::DropReason::Ipv4Checksum
                     | consomme::DropReason::Io(_)
                     | consomme::DropReason::BadTcpState(_)
-                    | consomme::DropReason::DnsError(_) => self.stats.tx_errors.increment(),
+                    | consomme::DropReason::DnsError
+                    | consomme::DropReason::BufferExhausted => self.stats.tx_errors.increment(),
                     consomme::DropReason::PortNotBound => unreachable!(),
                 }
             }
