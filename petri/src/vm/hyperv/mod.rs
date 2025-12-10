@@ -14,8 +14,9 @@ use crate::IsolationType;
 use crate::NoPetriVmInspector;
 use crate::OpenHclConfig;
 use crate::OpenHclServicingFlags;
-use crate::PetriDiskType;
+use crate::PetriDisk;
 use crate::PetriHaltReason;
+use crate::PetriStorageController;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmRuntime;
@@ -50,6 +51,7 @@ use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
+use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
@@ -64,17 +66,11 @@ use vtl2_settings_proto::Vtl2Settings;
 /// The Hyper-V Petri backend
 pub struct HyperVPetriBackend {}
 
-/// Represents a SCSI Controller addeded to a VM.
+/// Details about a storage controller addeded to a VM.
 #[derive(Debug)]
-pub struct HyperVScsiController {
-    /// An identifier provided by the test to identify this controller.
-    pub test_id: String,
-
+pub struct HyperVStorageControllerDetails {
     /// The controller number assigned by Hyper-V.
     pub controller_number: u32,
-
-    /// The target VTL this controller is mapped to (supplied by test).
-    pub target_vtl: u32,
 
     /// The VSID assigned by Hyper-V for this controller.
     pub vsid: guid::Guid,
@@ -90,37 +86,13 @@ pub struct HyperVPetriRuntime {
 
     is_openhcl: bool,
     is_isolated: bool,
-
-    /// Test-added SCSI controllers.
-    /// TODO (future PR): push this into `PetriVmConfig` and use in
-    /// openvmm as well.
-    additional_scsi_controllers: Vec<HyperVScsiController>,
-}
-
-/// Additional configuration for a Hyper-V VM.
-#[derive(Default, Debug)]
-pub struct HyperVPetriConfig {
-    /// Test-added SCSI controllers (targeting specific VTLs).
-    /// A tuple if test-identifier and targetvtl. Test-identifier
-    /// is used so that the test can find a specific controller, if that
-    /// is important to the test. These are resolved into a list of
-    /// [`HyperVScsiController`] objects stored in the runtime.
-    additional_scsi_controllers: Vec<(String, u32)>,
-}
-
-impl HyperVPetriConfig {
-    /// Add an additional SCSI controller to the VM.
-    /// Will be added before the VM starts.
-    pub fn with_additional_scsi_controller(mut self, test_id: String, target_vtl: u32) -> Self {
-        self.additional_scsi_controllers.push((test_id, target_vtl));
-        self
-    }
 }
 
 #[async_trait]
 impl PetriVmmBackend for HyperVPetriBackend {
-    type VmmConfig = HyperVPetriConfig;
+    type VmmConfig = ();
     type VmRuntime = HyperVPetriRuntime;
+    type StorageDetails = HyperVStorageControllerDetails;
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
         arch == MachineArch::host()
@@ -211,7 +183,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         config: PetriVmConfig,
         modify_vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
         resources: &PetriVmResources,
-    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
+    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig<Self::StorageDetails>)> {
         let PetriVmConfig {
             name,
             arch,
@@ -224,6 +196,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             vmgs,
             tpm,
             guest_crash_disk,
+            additional_storage_controllers,
         } = config;
 
         let PetriVmResources { driver, log_source } = resources;
@@ -297,6 +270,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         let mut openhcl_command_line = openhcl_config.as_ref().map(|(_, c)| c.command_line());
         let mut vtl2_settings = None;
+        let mut storage_controllers = HashMap::new();
 
         let vmgs_path = {
             // TODO: add support for configuring the TPM in Hyper-V
@@ -347,15 +321,15 @@ impl PetriVmmBackend for HyperVPetriBackend {
             };
 
             match disk {
-                None | Some(PetriDiskType::Memory) => None,
-                Some(PetriDiskType::Differencing(parent_path)) => {
+                None | Some(PetriDisk::Memory) => None,
+                Some(PetriDisk::Differencing(parent_path)) => {
                     let diff_disk_path = temp_dir
                         .path()
                         .join(parent_path.file_name().context("path has no filename")?);
                     make_temp_diff_disk(&diff_disk_path, &parent_path).await?;
                     Some(diff_disk_path)
                 }
-                Some(PetriDiskType::Persistent(path)) => Some(path),
+                Some(PetriDisk::Persistent(path)) => Some(path),
             }
         };
 
@@ -640,24 +614,56 @@ impl PetriVmmBackend for HyperVPetriBackend {
             hyperv_serial_log_task(driver.clone(), serial_pipe_path, serial_log_file),
         ));
 
-        let mut added_controllers = Vec::new();
-
         // TODO: If OpenHCL is being used, then translate storage through it.
         // (requires changes above where VHDs are added)
-        if let Some(modify_vmm_config) = modify_vmm_config {
-            let config = modify_vmm_config(HyperVPetriConfig::default());
 
-            tracing::debug!(?config, "additional hyper-v config");
+        // Add additional storage
+        for (config, disks) in additional_storage_controllers {
+            let target_vtl = match config.target_vtl {
+                crate::StorageTargetVtl::Vtl0 => 0,
+                crate::StorageTargetVtl::Vtl2 => 2,
+            };
 
-            for (test_id, target_vtl) in config.additional_scsi_controllers {
-                let (controller_number, vsid) = vm.add_scsi_controller(target_vtl).await?;
-                added_controllers.push(HyperVScsiController {
-                    test_id,
-                    controller_number,
-                    target_vtl,
-                    vsid,
-                });
+            let (controller_type, (controller_number, vsid)) = match config.device_type {
+                crate::StorageType::Ide => todo!(),
+                crate::StorageType::Scsi => (
+                    powershell::ControllerType::Scsi,
+                    vm.add_scsi_controller(target_vtl).await?,
+                ),
+                crate::StorageType::Nvme => todo!(),
+            };
+
+            for (controller_location, disk) in disks.iter() {
+                let path = match disk {
+                    PetriDisk::Memory => todo!(),
+                    PetriDisk::Differencing(parent_path) => {
+                        let diff_disk_path = temp_dir
+                            .path()
+                            .join(parent_path.file_name().context("path has no filename")?);
+                        make_temp_diff_disk(&diff_disk_path, &parent_path).await?;
+                        diff_disk_path
+                    }
+                    PetriDisk::Persistent(path) => path.to_owned(),
+                };
+                vm.add_vhd(
+                    &path,
+                    controller_type,
+                    Some(*controller_location),
+                    Some(controller_number),
+                )
+                .await?;
             }
+
+            storage_controllers.insert(
+                config,
+                (
+                    HyperVStorageControllerDetails {
+                        controller_number,
+                        vsid,
+                    },
+                    disks,
+                ),
+            );
         }
 
         // Configure the TPM
@@ -700,20 +706,16 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 driver: driver.clone(),
                 is_openhcl,
                 is_isolated,
-                additional_scsi_controllers: added_controllers,
             },
-            PetriVmRuntimeConfig { vtl2_settings },
+            PetriVmRuntimeConfig {
+                vtl2_settings,
+                storage_controllers,
+            },
         ))
     }
 }
 
 impl HyperVPetriRuntime {
-    /// Get the list of additional SCSI controllers added to this VM (those
-    /// configured to be added by the test, as opposed to the petri framework).
-    pub fn get_additional_scsi_controllers(&self) -> &[HyperVScsiController] {
-        &self.additional_scsi_controllers
-    }
-
     /// Adds a VHD with the optionally specified location (a.k.a LUN) to the
     /// optionally specified controller.
     pub async fn add_vhd(

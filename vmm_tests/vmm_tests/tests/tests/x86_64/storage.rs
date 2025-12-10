@@ -351,6 +351,12 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
     // Close a handle to the file without deleting it, so that Hyper-V can open it.
     let vhd_path = vhd.into_temp_path();
 
+    let storage_controller_config = petri::PetriStorageController {
+        test_id: CONTROLLER_TEST_ID.to_string(),
+        target_vtl: petri::StorageTargetVtl::Vtl2,
+        device_type: petri::StorageType::Scsi,
+    };
+
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .with_custom_vtl2_settings(move |v| {
@@ -360,19 +366,14 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
                     .build(),
             );
         })
-        .modify_backend(move |b| {
-            b.with_additional_scsi_controller(CONTROLLER_TEST_ID.to_string(), 2)
-        })
+        .with_additional_storage_controller(storage_controller_config.clone())
         .run()
         .await?;
 
     let (vtl2_controller_num, vtl2_vsid) = vm
-        .backend()
-        .get_additional_scsi_controllers()
-        .iter()
-        .filter(|c| c.test_id == CONTROLLER_TEST_ID)
-        .map(|c| (c.controller_number, c.vsid))
-        .next()
+        .get_storage_controllers()
+        .get(&storage_controller_config)
+        .map(|(d, _)| (d.controller_number, d.vsid))
         .ok_or_else(|| anyhow::anyhow!("couldn't find additional scsi controller"))?;
 
     vm.backend()

@@ -33,6 +33,9 @@ use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use petri_artifacts_core::ResolvedOptionalArtifact;
 use pipette_client::PipetteClient;
+use std::collections::BTreeSet;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -136,12 +139,16 @@ pub struct PetriVmConfig {
     pub boot_device_type: BootDeviceType,
     /// TPM configuration
     pub tpm: Option<TpmConfig>,
+    /// Additional storage for the VM
+    pub additional_storage_controllers: HashMap<PetriStorageController, HashMap<u8, PetriDisk>>,
 }
 
 /// VM configuration that can be changed after the VM is created
-pub struct PetriVmRuntimeConfig {
+pub struct PetriVmRuntimeConfig<T> {
     /// VTL2 settings
     pub vtl2_settings: Option<Vtl2Settings>,
+    /// Storage controllers and associated disks
+    pub storage_controllers: HashMap<PetriStorageController, (T, HashMap<u8, PetriDisk>)>,
 }
 
 /// Resources used by a Petri VM during contruction and runtime
@@ -158,6 +165,9 @@ pub trait PetriVmmBackend {
 
     /// Runtime object
     type VmRuntime: PetriVmRuntime;
+
+    /// Runtime details about a storage device
+    type StorageDetails;
 
     /// Check whether the combination of firmware and architecture is
     /// supported on the VMM.
@@ -190,7 +200,7 @@ pub trait PetriVmmBackend {
         config: PetriVmConfig,
         modify_vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
         resources: &PetriVmResources,
-    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)>;
+    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig<Self::StorageDetails>)>;
 }
 
 pub(crate) const PETRI_VTL0_SCSI_BOOT_LUN: u8 = 0;
@@ -209,7 +219,7 @@ pub struct PetriVm<T: PetriVmmBackend> {
     vmm_quirks: VmmQuirks,
     expected_boot_event: Option<FirmwareEvent>,
 
-    config: PetriVmRuntimeConfig,
+    config: PetriVmRuntimeConfig<T::StorageDetails>,
 }
 
 impl<T: PetriVmmBackend> PetriVmBuilder<T> {
@@ -299,6 +309,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 vmgs: PetriVmgsResource::Ephemeral,
                 tpm: None,
                 guest_crash_disk,
+                additional_storage_controllers: HashMap::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -704,7 +715,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             }
             PetriGuestStateLifetime::Reprovision => PetriVmgsResource::Reprovision(disk),
             PetriGuestStateLifetime::Ephemeral => {
-                if !matches!(disk.disk, PetriDiskType::Memory) {
+                if !matches!(disk.disk, PetriDisk::Memory) {
                     panic!("attempted to use ephemeral guest state after specifying backing vmgs")
                 }
                 PetriVmgsResource::Ephemeral
@@ -730,20 +741,20 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Use the specified backing VMGS file
     pub fn with_initial_vmgs(self, disk: ResolvedArtifact<impl IsTestVmgs>) -> Self {
-        self.with_backing_vmgs(PetriDiskType::Differencing(disk.into()))
+        self.with_backing_vmgs(PetriDisk::Differencing(disk.into()))
     }
 
     /// Use the specified backing VMGS file
     pub fn with_persistent_vmgs(self, disk: impl AsRef<Path>) -> Self {
-        self.with_backing_vmgs(PetriDiskType::Persistent(disk.as_ref().to_path_buf()))
+        self.with_backing_vmgs(PetriDisk::Persistent(disk.as_ref().to_path_buf()))
     }
 
-    fn with_backing_vmgs(mut self, disk: PetriDiskType) -> Self {
+    fn with_backing_vmgs(mut self, disk: PetriDisk) -> Self {
         match &mut self.config.vmgs {
             PetriVmgsResource::Disk(vmgs)
             | PetriVmgsResource::ReprovisionOnFailure(vmgs)
             | PetriVmgsResource::Reprovision(vmgs) => {
-                if !matches!(vmgs.disk, PetriDiskType::Memory) {
+                if !matches!(vmgs.disk, PetriDisk::Memory) {
                     panic!("already specified a backing vmgs file");
                 }
                 vmgs.disk = disk;
@@ -797,6 +808,14 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             panic!("only one with_custom_vtl2_settings allowed");
         }
         openhcl_config.modify_vtl2_settings = Some(ModifyFn(Box::new(f)));
+        self
+    }
+
+    /// Add an additional SCSI controller to the VM.
+    pub fn with_additional_storage_controller(mut self, config: PetriStorageController) -> Self {
+        self.config
+            .additional_storage_controllers
+            .insert(config, HashMap::new());
         self
     }
 
@@ -1153,6 +1172,13 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.runtime
             .set_vtl2_settings(self.config.vtl2_settings.as_ref().unwrap())
             .await
+    }
+
+    /// Get the list of storage controllers added to this VM
+    pub fn get_storage_controllers(
+        &self,
+    ) -> &HashMap<PetriStorageController, (T::StorageDetails, HashMap<u8, PetriDisk>)> {
+        &self.config.storage_controllers
     }
 }
 
@@ -1935,9 +1961,9 @@ pub struct OpenHclServicingFlags {
     pub stop_timeout_hint_secs: Option<u16>,
 }
 
-/// Petri disk type
+/// Petri disk
 #[derive(Debug, Clone)]
-pub enum PetriDiskType {
+pub enum PetriDisk {
     /// Memory backed
     Memory,
     /// Memory differencing disk backed by a file
@@ -1950,7 +1976,7 @@ pub enum PetriDiskType {
 #[derive(Debug, Clone)]
 pub struct PetriVmgsDisk {
     /// Backing disk
-    pub disk: PetriDiskType,
+    pub disk: PetriDisk,
     /// Guest state encryption policy
     pub encryption_policy: GuestStateEncryptionPolicy,
 }
@@ -1958,7 +1984,7 @@ pub struct PetriVmgsDisk {
 impl Default for PetriVmgsDisk {
     fn default() -> Self {
         PetriVmgsDisk {
-            disk: PetriDiskType::Memory,
+            disk: PetriDisk::Memory,
             // TODO: make this strict once we can set it in OpenHCL on Hyper-V
             encryption_policy: GuestStateEncryptionPolicy::None(false),
         }
@@ -2111,6 +2137,34 @@ impl<T> std::fmt::Debug for ModifyFn<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "_")
     }
+}
+
+/// The storage device type.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum StorageType {
+    /// IDE
+    Ide,
+    /// SCSI
+    Scsi,
+    /// NVMe
+    Nvme,
+}
+
+/// The target VTL for the storage controller.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum StorageTargetVtl {
+    /// VTL 0
+    Vtl0 = 0,
+    /// VTL 2
+    Vtl2 = 2,
+}
+
+/// Petri storage controller
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PetriStorageController {
+    pub test_id: String,
+    pub target_vtl: StorageTargetVtl,
+    pub device_type: StorageType,
 }
 
 #[cfg(test)]
