@@ -261,82 +261,45 @@ impl FlowNode for Node {
                         crate_type,
                     } = cmd;
 
-                    let sh = xshell::Shell::new()?;
+                    let sh = rt.shell()?;
 
                     let out_dir = sh.current_dir();
 
                     sh.change_dir(cargo_work_dir);
 
-                    // TODO: Using nix should be a separate request type rather
-                    // than checking the platform here
-                    //
-                    // Determine if we need nix-shell wrapper
-                    let use_nix_shell = matches!(
-                        rt.platform(),
-                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
-                    );
+                    // Prepare all parameters
+                    let mut all_params = params.clone();
 
-                    let cmd = if use_nix_shell {
-                        // For nix-shell, we need to build the entire command as a string
-                        let mut all_params = params.clone();
-
-                        if !matches!(rt.backend(), FlowBackend::Local) {
-                            with_env.insert("CARGO_INCREMENTAL".to_owned(), "0".to_owned());
-                        } else {
-                            // Add target-dir args for local builds
-                            all_params.push("--target-dir".to_owned());
-                            all_params.push(
-                                in_folder
-                                    .join("target")
-                                    .join(&crate_name)
-                                    .to_string_lossy()
-                                    .to_string(),
-                            );
-                        }
-
-                        // Build the full command string with environment variables
-                        let env_prefix = with_env
-                            .iter()
-                            .map(|(k, v)| format!("{k}={v}"))
-                            .collect::<Vec<_>>()
-                            .join(" ");
-
-                        let cargo_cmd = format!("{} {}", argv0, all_params.join(" "));
-                        let full_cmd = if env_prefix.is_empty() {
-                            cargo_cmd
-                        } else {
-                            format!("{env_prefix} {cargo_cmd}")
-                        };
-
-                        xshell::cmd!(sh, "nix-shell --pure --run {full_cmd}")
+                    if !matches!(rt.backend(), FlowBackend::Local) {
+                        // if running in CI, no need to waste time with incremental
+                        // build artifacts
+                        with_env.insert("CARGO_INCREMENTAL".to_owned(), "0".to_owned());
                     } else {
-                        // Standard execution path (non-Nix)
-                        let mut cmd = xshell::cmd!(sh, "{argv0} {params...}");
-                        if !matches!(rt.backend(), FlowBackend::Local) {
-                            // if running in CI, no need to waste time with incremental
-                            // build artifacts
-                            with_env.insert("CARGO_INCREMENTAL".to_owned(), "0".to_owned());
-                        } else {
-                            // if build locally, use per-package target dirs
-                            // to avoid rebuilding
-                            // TODO: remove this once cargo's caching improves
-                            cmd = cmd
-                                .arg("--target-dir")
-                                .arg(in_folder.join("target").join(&crate_name));
-                        }
-                        cmd = cmd.envs(&with_env);
-                        cmd
-                    };
+                        // if build locally, use per-package target dirs
+                        // to avoid rebuilding
+                        // TODO: remove this once cargo's caching improves
+                        all_params.push("--target-dir".to_owned());
+                        all_params.push(
+                            in_folder
+                                .join("target")
+                                .join(&crate_name)
+                                .to_string_lossy()
+                                .to_string(),
+                        );
+                    }
 
                     log::info!(
-                        "$ {}{cmd}",
+                        "$ {}{} {}",
                         with_env
                             .iter()
                             .map(|(k, v)| format!("{k}={v} "))
                             .collect::<Vec<_>>()
-                            .concat()
+                            .concat(),
+                        argv0,
+                        all_params.join(" ")
                     );
-                    let json = cmd.read()?;
+
+                    let json = sh.read_cmd(&argv0, &all_params, &with_env)?;
                     let messages: Vec<cargo_output::Message> =
                         serde_json::Deserializer::from_str(&json)
                             .into_iter()
