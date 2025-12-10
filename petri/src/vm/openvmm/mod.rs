@@ -117,6 +117,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
     fn default_servicing_flags() -> OpenHclServicingFlags {
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,
+            enable_mana_keepalive: true,
             override_version_checks: false,
             stop_timeout_hint_secs: None,
         }

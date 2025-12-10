@@ -17,9 +17,11 @@ pub use get_protocol::NUMBER_GSP;
 pub use get_protocol::ProtocolVersion;
 pub use get_protocol::SaveGuestVtl2StateFlags;
 pub use get_protocol::VmgsIoStatus;
-use zerocopy::FromZeros;
 
 use guid::Guid;
+use mesh::MeshPayload;
+use std::time::Duration;
+use zerocopy::FromZeros;
 
 /// Device platform settings.
 #[expect(missing_docs)]
@@ -247,11 +249,13 @@ impl RemoteRamGpaRangeHandle {
 }
 
 /// Request to save Guest state during servicing.
+#[derive(MeshPayload)]
 pub struct GuestSaveRequest {
     /// GUID associated with the request.
     pub correlation_id: Guid,
     /// When to complete the request.
-    pub deadline: std::time::Instant,
+    pub timeout_hint: Duration,
     /// Flags bitfield.
+    #[mesh(encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
     pub capabilities_flags: SaveGuestVtl2StateFlags,
 }

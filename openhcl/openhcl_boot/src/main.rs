@@ -83,7 +83,6 @@ struct BuildKernelCommandLineParams<'a> {
     is_confidential_debug: bool,
     sidecar: Option<&'a SidecarConfig<'a>>,
     vtl2_pool_supported: bool,
-    disable_keep_alive: bool,
 }
 
 /// Read and setup the underhill kernel command line into the specified buffer.
@@ -98,7 +97,6 @@ fn build_kernel_command_line(
         is_confidential_debug,
         sidecar,
         vtl2_pool_supported,
-        disable_keep_alive,
     } = fn_params;
 
     // For reference:
@@ -193,6 +191,9 @@ fn build_kernel_command_line(
         "hv_storvsc.storvsc_ringbuffer_size=0x8000",
         // Disable eager mimalloc commit to prevent core dumps from being overly large
         "MIMALLOC_ARENA_EAGER_COMMIT=0",
+        // Disable acpi runtime support. Unused in underhill, but some support
+        // is compiled in for the kernel (ie TDX mailbox protocol).
+        "acpi=off",
     ];
 
     const X86_KERNEL_PARAMETERS: &[&str] = &[
@@ -288,10 +289,25 @@ fn build_kernel_command_line(
         )?;
     }
 
-    // Only when explicitly supported by Host.
+    // Generate the NVMe keep alive command line which should look something
+    // like: OPENHCL_NVME_KEEP_ALIVE=disabled,host,privatepool
     // TODO: Move from command line to device tree when stabilized.
-    if partition_info.nvme_keepalive && vtl2_pool_supported && !disable_keep_alive {
-        write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=1 ")?;
+    write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=")?;
+
+    if partition_info.boot_options.disable_nvme_keep_alive {
+        write!(cmdline, "disabled,")?;
+    }
+
+    if partition_info.nvme_keepalive {
+        write!(cmdline, "host,")?;
+    } else {
+        write!(cmdline, "nohost,")?;
+    }
+
+    if vtl2_pool_supported {
+        write!(cmdline, "privatepool ")?;
+    } else {
+        write!(cmdline, "noprivatepool ")?;
     }
 
     if let Some(sidecar) = sidecar {
@@ -632,7 +648,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     validate_vp_hw_ids(partition_info);
 
-    setup_vtl2_memory(&p, partition_info);
+    setup_vtl2_memory(&p, partition_info, address_space);
     setup_vtl2_vp(partition_info);
 
     verify_imported_regions_hash(&p);
@@ -659,7 +675,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         is_confidential_debug,
         sidecar: sidecar.as_ref(),
         vtl2_pool_supported: address_space.has_vtl2_pool(),
-        disable_keep_alive: partition_info.boot_options.disable_nvme_keep_alive,
     })
     .unwrap();
 

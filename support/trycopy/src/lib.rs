@@ -656,13 +656,16 @@ fn recovery_table() -> &'static [RecoveryDescriptor] {
 
     // Ensure the section exists even if there no recovery descriptors get
     // generated.
-    #[cfg_attr(target_os = "linux", unsafe(link_section = "try_copy"))]
-    #[cfg_attr(
-        target_os = "macos",
-        unsafe(link_section = "__TEXT,__try_copy,regular")
-    )]
-    #[used]
-    static ENSURE_EXISTS: [RecoveryDescriptor; 0] = [];
+    //
+    // SAFETY: just a no-op asm block to force the section to be created.
+    unsafe {
+        core::arch::asm!(concat!(
+            ".pushsection ",
+            crate::recovery_section!(),
+            "\n",
+            ".popsection"
+        ))
+    };
 
     // SAFETY: accessing the trycopy section as defined above.
     unsafe {

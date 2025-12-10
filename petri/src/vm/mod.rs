@@ -133,8 +133,8 @@ pub struct PetriVmConfig {
     pub vmgs: PetriVmgsResource,
     /// The boot device type for the VM
     pub boot_device_type: BootDeviceType,
-    /// Configure TPM state persistence
-    pub tpm_state_persistence: bool,
+    /// TPM configuration
+    pub tpm: Option<TpmConfig>,
 }
 
 /// Resources used by a Petri VM during contruction and runtime
@@ -285,7 +285,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 agent_image: artifacts.agent_image,
                 openhcl_agent_image: artifacts.openhcl_agent_image,
                 vmgs: PetriVmgsResource::Ephemeral,
-                tpm_state_persistence: true,
+                tpm: None,
                 guest_crash_disk,
             },
             modify_vmm_config: None,
@@ -354,22 +354,24 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     fn expect_reset(&self) -> bool {
-        // TODO: use presence of TPM here once with_tpm() backend-agnostic.
         self.override_expect_reset
             || matches!(
                 (
                     self.guest_quirks.initial_reboot,
                     self.expected_boot_event,
                     &self.config.firmware,
+                    &self.config.tpm,
                 ),
                 (
                     Some(InitialRebootCondition::Always),
                     Some(FirmwareEvent::BootSuccess | FirmwareEvent::BootAttempt),
                     _,
+                    _,
                 ) | (
-                    Some(InitialRebootCondition::WithOpenHclUefi),
+                    Some(InitialRebootCondition::WithTpm),
                     Some(FirmwareEvent::BootSuccess | FirmwareEvent::BootAttempt),
-                    Firmware::OpenhclUefi { .. },
+                    _,
+                    Some(_),
                 )
             )
     }
@@ -389,7 +391,14 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                  driver: &DefaultDriver,
                  inspect: std::pin::Pin<Box<dyn Future<Output = _> + Send>>| {
                     driver.spawn(format!("petri-watchdog-inspect-{name}"), async move {
-                        save_inspect(name, inspect, &log_source).await;
+                        if CancelContext::new()
+                            .with_timeout(Duration::from_secs(10))
+                            .until_cancelled(save_inspect(name, inspect, &log_source))
+                            .await
+                            .is_err()
+                        {
+                            tracing::warn!(name, "Failed to collect inspect data within timeout");
+                        }
                     })
                 };
 
@@ -740,9 +749,23 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Enable the TPM for the VM.
+    pub fn with_tpm(mut self, enable: bool) -> Self {
+        if enable {
+            self.config.tpm.get_or_insert_default();
+        } else {
+            self.config.tpm = None;
+        }
+        self
+    }
+
     /// Enable or disable the TPM state persistence for the VM.
     pub fn with_tpm_state_persistence(mut self, tpm_state_persistence: bool) -> Self {
-        self.config.tpm_state_persistence = tpm_state_persistence;
+        self.config
+            .tpm
+            .as_mut()
+            .expect("TPM persistence requires a TPM")
+            .no_persistent_secrets = !tpm_state_persistence;
         self
     }
 
@@ -901,6 +924,13 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// Wait for a connection from a pipette agent running in the guest.
     /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
     async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient> {
+        // As a workaround for #2470 (where the guest crashes when the pipette
+        // connection timeout expires due to a vmbus bug), wait for the shutdown
+        // IC to come online first so that we probably won't time out when
+        // connecting to the agent.
+        // TODO: remove this once the bug is fixed, since it shouldn't be
+        // necessary and a guest could in theory support pipette and not the IC
+        self.runtime.wait_for_enlightened_shutdown_ready().await?;
         self.runtime.wait_for_agent(false).await
     }
 
@@ -1005,6 +1035,12 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.runtime
             .restart_openhcl(&new_openhcl.erase(), flags)
             .await
+    }
+
+    /// Update the command line parameter of the running VM that will apply on next boot.
+    /// Will fail if the VM is not using IGVM load mode.
+    pub async fn update_command_line(&mut self, command_line: &str) -> anyhow::Result<()> {
+        self.runtime.update_command_line(command_line).await
     }
 
     /// Instruct the OpenHCL to save the state of the VTL2 paravisor. Will fail if the VM
@@ -1115,6 +1151,9 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     /// Instruct the OpenHCL to restore the state of the VTL2 paravisor. Will fail if the VM
     /// is not running OpenHCL. Will also fail if the VM is running or if this is called without prior save.
     async fn restore_openhcl(&mut self) -> anyhow::Result<()>;
+    /// Update the command line parameter of the running VM that will apply on next boot.
+    /// Will fail if the VM is not using IGVM load mode.
+    async fn update_command_line(&mut self, command_line: &str) -> anyhow::Result<()>;
     /// If the backend supports it, get an inspect interface
     fn inspector(&self) -> Option<Self::VmInspector> {
         None
@@ -1299,6 +1338,10 @@ impl OpenHclConfig {
     /// the command line and log levels.
     pub fn command_line(&self) -> String {
         let mut cmdline = self.command_line.clone();
+
+        // Enable MANA keep-alive by default for all tests
+        append_cmdline(&mut cmdline, "OPENHCL_MANA_KEEP_ALIVE=host,privatepool");
+
         match &self.log_levels {
             OpenHclLogConfig::TestDefault => {
                 let default_log_levels = {
@@ -1339,6 +1382,21 @@ impl Default for OpenHclConfig {
             command_line: None,
             log_levels: OpenHclLogConfig::TestDefault,
             vtl2_base_address_type: None,
+        }
+    }
+}
+
+/// TPM configuration
+#[derive(Debug)]
+pub struct TpmConfig {
+    /// Use ephemeral TPM state (do not persist to VMGS)
+    pub no_persistent_secrets: bool,
+}
+
+impl Default for TpmConfig {
+    fn default() -> Self {
+        Self {
+            no_persistent_secrets: true,
         }
     }
 }
@@ -1807,6 +1865,8 @@ pub struct OpenHclServicingFlags {
     /// Preserve DMA memory for NVMe devices if supported.
     /// Defaults to `true`.
     pub enable_nvme_keepalive: bool,
+    /// Preserve DMA memory for MANA devices if supported.
+    pub enable_mana_keepalive: bool,
     /// Skip any logic that the vmm may have to ignore servicing updates if the supplied igvm file version is not different than the one currently running.
     pub override_version_checks: bool,
     /// Hint to the OpenHCL runtime how much time to wait when stopping / saving the OpenHCL.

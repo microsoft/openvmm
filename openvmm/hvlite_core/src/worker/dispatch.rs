@@ -131,7 +131,6 @@ use vmcore::vm_task::thread::ThreadDriverBackend;
 use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmcore::vmtime::VmTimeSource;
-use vmgs_broker::resolver::VmgsFileResolver;
 use vmgs_resources::GuestStateEncryptionPolicy;
 use vmgs_resources::VmgsResource;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
@@ -1093,7 +1092,7 @@ impl InitializedVm {
         let (vmgs_client, vmgs_task) = if let Some(vmgs) = vmgs {
             let (vmgs_client, vmgs_task) =
                 vmgs_broker::spawn_vmgs_broker(driver_source.builder().build("vmgs_broker"), vmgs);
-            resolver.add_resolver(VmgsFileResolver::new(vmgs_client.clone()));
+            resolver.add_resolver(vmgs_client.clone());
             (Some(vmgs_client), Some(vmgs_task))
         } else {
             (None, None)
@@ -2951,6 +2950,17 @@ impl LoadedVm {
                     VmRpc::WriteMemory(rpc) => rpc.handle_failable_sync(|(gpa, bytes)| {
                         self.inner.gm.write_at(gpa, bytes.as_slice())
                     }),
+                    VmRpc::UpdateCliParams(rpc) => {
+                        rpc.handle_failable_sync(|params| match &mut self.inner.load_mode {
+                            LoadMode::Igvm { cmdline, .. } => {
+                                *cmdline = params;
+                                Ok(())
+                            }
+                            _ => anyhow::bail!(
+                                "Updating command line parameters is only supported for Igvm load mode"
+                            ),
+                        })
+                    }
                 },
                 Event::Halt(Err(_)) => break,
                 Event::Halt(Ok(reason)) => {

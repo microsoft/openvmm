@@ -324,6 +324,7 @@ async fn launch_workers(
         gdbstub: opt.gdbstub,
         hide_isolation: opt.hide_isolation,
         nvme_keep_alive: opt.nvme_keep_alive,
+        mana_keep_alive: opt.mana_keep_alive,
         nvme_always_flr: opt.nvme_always_flr,
         test_configuration: opt.test_configuration,
         disable_uefi_frontpage: opt.disable_uefi_frontpage,
@@ -333,6 +334,7 @@ async fn launch_workers(
         strict_encryption_policy: opt.strict_encryption_policy,
         attempt_ak_cert_callback: opt.attempt_ak_cert_callback,
         enable_vpci_relay: opt.enable_vpci_relay,
+        disable_proxy_redirect: opt.disable_proxy_redirect,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =
