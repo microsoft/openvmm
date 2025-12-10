@@ -106,6 +106,33 @@ async fn basic_servicing<T: PetriVmmBackend>(
     openhcl_servicing_core(config, "", igvm_file, flags, DEFAULT_SERVICING_COUNT).await
 }
 
+/// Test servicing an OpenHCL VM from the current version to itself, with a tpm.
+///
+/// N.B. These Hyper-V tests fail in CI for x64. Tracked by #1652.
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
+    //hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64]
+)]
+async fn tpm_servicing<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> anyhow::Result<()> {
+    let mut flags = config.default_servicing_flags();
+    flags.override_version_checks = true;
+    openhcl_servicing_core(
+        config
+            .with_tpm(true)
+            .with_tpm_state_persistence(true)
+            .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
+        "",
+        igvm_file,
+        flags,
+        DEFAULT_SERVICING_COUNT,
+    )
+    .await
+}
+
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support and no vmbus redirect.
 #[openvmm_test(openhcl_linux_direct_x64[LATEST_LINUX_DIRECT_TEST_X64])]
