@@ -963,6 +963,6 @@ async fn petri_disk_to_hyperv(disk: &PetriDisk, temp_dir: &TempDir) -> anyhow::R
             make_temp_diff_disk(&diff_disk_path, &parent_path).await?;
             diff_disk_path
         }
-        PetriDisk::Persistent(path) => path.to_path_buf(),
+        PetriDisk::Persistent(path) => path.clone(),
     })
 }
