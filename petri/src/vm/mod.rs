@@ -823,7 +823,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .additional_storage_controllers
             .contains_key(&test_id)
         {
-            panic!("a storage controller with id \"{test_id}\" already exists");
+            panic!("storage controller with id \"{test_id}\" already exists");
         }
 
         self.config.additional_storage_controllers.insert(
@@ -852,7 +852,9 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .config
             .additional_storage_controllers
             .get_mut(controller_test_id)
-            .expect("a storage controller with id \"{test_id}\" does not exist");
+            .unwrap_or_else(|| {
+                panic!("storage controller with id \"{controller_test_id}\" does not exist")
+            });
 
         _ = controller.add_disk(controller_location, disk);
 
@@ -1238,7 +1240,9 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             .config
             .storage_controllers
             .get_mut(controller_test_id)
-            .expect("a storage controller with id \"{test_id}\" does not exist");
+            .unwrap_or_else(|| {
+                panic!("storage controller with id \"{controller_test_id}\" does not exist")
+            });
 
         let controller_location = controller.add_disk(controller_location, disk);
         let disk = controller.disks.get(&controller_location).unwrap();
@@ -2265,10 +2269,10 @@ impl<T> PetriStorageController<T> {
             }
             lun
         } else {
-            // find the first avilable lun
+            // find the first available lun
             let mut lun = None;
             for x in 0..u8::MAX {
-                if self.disks.contains_key(&x) {
+                if !self.disks.contains_key(&x) {
                     lun = Some(x)
                 }
             }

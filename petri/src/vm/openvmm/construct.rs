@@ -131,7 +131,7 @@ impl PetriVmConfigOpenVmm {
             additional_storage_controllers,
         } = petri_vm_config;
 
-        if additional_storage_controllers.len() > 0 {
+        if !additional_storage_controllers.is_empty() {
             unimplemented!("openvmm additional storage controllers");
         }
 
