@@ -13,6 +13,7 @@ linkme.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["std"] }
 serde_yaml.workspace = true
+xshell.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -4,6 +4,7 @@
 //! Core types and traits used to create and work with flowey nodes.
 
 mod github_context;
+mod shell;
 mod spec;
 
 pub use github_context::GhOutput;
@@ -59,6 +60,7 @@ pub mod user_facing {
     pub use super::steps::github::GhPermission;
     pub use super::steps::github::GhPermissionValue;
     pub use super::steps::rust::RustRuntimeServices;
+    pub use super::shell::FloweyShell;
     pub use crate::flowey_request;
     pub use crate::new_flow_node;
     pub use crate::new_simple_flow_node;
@@ -2189,6 +2191,14 @@ pub mod steps {
             /// What arch the flow is being running on (X86_64 or Aarch64)
             pub fn arch(&self) -> FlowArch {
                 self.arch
+            }
+
+            /// Get a shell configured for the current platform.
+            ///
+            /// The shell will automatically wrap commands in nix-shell when running
+            /// on the Nix platform.
+            pub fn shell(&self) -> Result<crate::node::shell::FloweyShell, xshell::Error> {
+                crate::node::shell::FloweyShell::new(self.platform)
             }
 
             /// Write a value.
