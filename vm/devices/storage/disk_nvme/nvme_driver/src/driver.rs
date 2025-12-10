@@ -98,9 +98,9 @@ struct DriverWorkerTask<T: DeviceBacking> {
     #[inspect(skip)]
     driver: VmTaskDriver,
     registers: Arc<DeviceRegisters<T>>,
-    admin: Option<QueuePair<AdminAerHandler>>,
+    admin: Option<QueuePair<AdminAerHandler, T>>,
     #[inspect(iter_by_index)]
-    io: Vec<IoQueue>,
+    io: Vec<IoQueue<T>>,
     /// Prototype IO queues for restoring from saved state. These are queues
     /// that were created on the device at some point, but had no pending
     /// IOs at save/restore time. These will be promoted to full IO queues
@@ -156,13 +156,13 @@ struct ProtoIoQueue {
 }
 
 #[derive(Inspect)]
-struct IoQueue {
-    queue: QueuePair<NoOpAerHandler>,
+struct IoQueue<T: DeviceBacking> {
+    queue: QueuePair<NoOpAerHandler, T>,
     iv: u16,
     cpu: u32,
 }
 
-impl IoQueue {
+impl<T: DeviceBacking> IoQueue<T> {
     pub async fn save(&self) -> anyhow::Result<IoQueueSavedState> {
         Ok(IoQueueSavedState {
             cpu: self.cpu,
@@ -174,7 +174,7 @@ impl IoQueue {
     pub fn restore(
         spawner: VmTaskDriver,
         interrupt: DeviceInterrupt,
-        registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        registers: Arc<DeviceRegisters<T>>,
         mem_block: MemoryBlock,
         saved_state: &IoQueueSavedState,
         bounce_buffer: bool,
@@ -859,7 +859,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .filter(|q| {
                 q.queue_data.qid == 1 || !q.queue_data.handler_data.pending_cmds.commands.is_empty()
             })
-            .flat_map(|q| -> Result<IoQueue, anyhow::Error> {
+            .flat_map(|q| -> Result<IoQueue<T>, anyhow::Error> {
                 let qid = q.queue_data.qid;
                 let cpu = q.cpu;
                 tracing::info!(qid, cpu, ?pci_id, "restoring queue");
