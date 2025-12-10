@@ -20,7 +20,7 @@ pub fn nameservers() -> Result<Vec<Ipv4Address>, Error> {
         .nameservers
         .iter()
         .filter_map(|ns| match ns {
-            ScopedIp::V4(addr) => Some(Ipv4Address::from(*addr)),
+            ScopedIp::V4(addr) => Some(*addr),
             ScopedIp::V6(_, _) => None,
         })
         .collect())
