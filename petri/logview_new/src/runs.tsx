@@ -130,6 +130,12 @@ export function RunsHeader({
           >
             main
           </button>
+          <button
+            className={`common-header-filter-btn ${branchFilter === "release/1.7.2511" ? "active" : ""}`}
+            onClick={() => setBranchFilter("release/1.7.2511")}
+          >
+            release/1.7.2511
+          </button>
         </div>
         {!loadingSuccess && (
           <div className="header-loading-indicator">

@@ -69,7 +69,7 @@ export function Tests(): React.JSX.Element {
 
     // Get the table definition (columns and default sorting)
     const [sorting, setSorting] = useState<SortingState>(defaultSorting);
-    const columns = useMemo(() => createColumns(), []);
+    const columns = useMemo(() => createColumns(branchFilter), [branchFilter]);
     const filteredTableData = useMemo(() => filterTests(tableData, searchFilter), [tableData, searchFilter]);
 
     return (
@@ -128,6 +128,12 @@ export function TestsHeader({
                         onClick={() => setBranchFilter('main')}
                     >
                         main
+                    </button>
+                    <button
+                        className={`common-header-filter-btn ${branchFilter === "release/1.7.2511" ? "active" : ""}`}
+                        onClick={() => setBranchFilter("release/1.7.2511")}
+                    >
+                        release/1.7.2511
                     </button>
                 </div>
                 {totalToFetch === null && (

@@ -137,7 +137,7 @@ export function TestDetailsHeader({
                     minWidth: 0,
                 }}>
                     <Menu />
-                    <Link to="/tests" className="common-header-path">Tests</Link>
+                    <Link to={`/tests?branchFilter=${encodeURIComponent(branchFilter)}`} className="common-header-path">Tests</Link>
                     <span>/</span>
                     <Link
                         to={`/tests/${encodedArchitecture}/${encodedTestName}`}
@@ -158,6 +158,12 @@ export function TestDetailsHeader({
                         onClick={() => setBranchFilter('main')}
                     >
                         main
+                    </button>
+                    <button
+                        className={`common-header-filter-btn ${branchFilter === "release/1.7.2511" ? "active" : ""}`}
+                        onClick={() => setBranchFilter("release/1.7.2511")}
+                    >
+                        release/1.7.2511
                     </button>
                 </div>
                 {totalToFetch === null && (
