@@ -619,8 +619,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
 
             if let Some(f) = modify_vtl2_settings {
-                f.0(vtl2_settings
-                    .get_or_insert_with(|| HyperVPetriBackend::default_vtl2_settings()))
+                f.0(vtl2_settings.get_or_insert_with(HyperVPetriBackend::default_vtl2_settings))
             };
         }
 

@@ -1149,7 +1149,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         f(self
             .config
             .vtl2_settings
-            .get_or_insert_with(|| T::default_vtl2_settings()));
+            .get_or_insert_with(T::default_vtl2_settings));
         self.runtime
             .set_vtl2_settings(self.config.vtl2_settings.as_ref().unwrap())
             .await
