@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Build script that compiles Windows RPC stubs for the IGVM agent façade.
+//! Build script that compiles the Windows RPC server for test IGVM agent.
 
 use serde_json::Value;
 use std::env;

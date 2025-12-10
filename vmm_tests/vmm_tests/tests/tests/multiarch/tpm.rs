@@ -31,7 +31,6 @@ const TPM_GUEST_TESTS_WINDOWS_GUEST_PATH: &str = "C:\\tpm_guest_tests.exe";
 #[cfg(windows)]
 pub mod windows {
     use anyhow::Context;
-    use pal::windows::job::Job;
     use parking_lot::Mutex;
     use std::path::Path;
     use std::sync::LazyLock;
@@ -39,10 +38,8 @@ pub mod windows {
     pub static GLOBAL_RPC_SERVER: LazyLock<GlobalRpcServer> = LazyLock::new(GlobalRpcServer::new);
 
     pub struct GlobalRpcServer {
-        // We track whether the server has been started to avoid starting it multiple times.
+        // We track whether we've attempted to start the server in this process.
         _started: Mutex<bool>,
-        // Keep a handle to the job object to ensure cleanup when tests exit.
-        _job: Mutex<Option<Job>>,
     }
 
     impl GlobalRpcServer {
@@ -50,7 +47,6 @@ pub mod windows {
             tracing::info!("initializing global RPC server");
             Self {
                 _started: Mutex::new(false),
-                _job: Mutex::new(None),
             }
         }
 
@@ -61,24 +57,24 @@ pub mod windows {
             use std::os::windows::process::CommandExt;
             use std::process::Stdio;
 
+            // Note: nextest runs each test in a separate process, so this lock only
+            // protects against concurrent calls within the same test process.
+            // Multiple test processes may race to start the server, but only one
+            // will succeed - the others will see the server exit with error 1740
+            // (endpoint already in use) and will use the existing server.
             let mut started = self._started.lock();
 
-            // Only start once per test run
             if *started {
-                tracing::debug!("global RPC server already started");
+                tracing::debug!("global RPC server already started in this process");
                 return Ok(());
             }
 
-            tracing::info!("starting global RPC server");
-
-            // Create a job object that will kill all assigned processes when closed.
-            // This ensures the RPC server is cleaned up when the test runner exits.
-            let job = Job::new().context("failed to create job object")?;
-            job.set_terminate_on_close()
-                .context("failed to configure job object")?;
+            tracing::info!("attempting to start global RPC server");
 
             let (stderr_read, stderr_write) = pal::pipe_pair()?;
 
+            // Spawn the RPC server in a new process group so it doesn't receive
+            // console signals from the test process.
             const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 
             let mut rpc_server_child = std::process::Command::new(rpc_server_path)
@@ -89,11 +85,9 @@ pub mod windows {
                 .spawn()
                 .context("failed to spawn test_igvm_agent_rpc_server")?;
 
-            // Assign the RPC server process to our job object so it gets cleaned up.
-            job.assign_process(rpc_server_child.id())
-                .context("failed to assign RPC server to job object")?;
-
-            // Wait for stdout to close to ensure the server is ready
+            // Wait for stdout to close - this signals either:
+            // 1. The server is ready and accepting connections
+            // 2. The server failed to start (e.g., endpoint already in use)
             let mut stdout = rpc_server_child
                 .stdout
                 .take()
@@ -110,12 +104,38 @@ pub mod windows {
             }
             drop(stdout);
 
-            tracing::info!("global RPC server is ready");
+            // Check if the server started successfully or failed.
+            // Give it a moment to exit if it's going to fail.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
+            match rpc_server_child.try_wait()? {
+                Some(status) => {
+                    // Server exited - likely because another process already started it.
+                    // This is expected in nextest where tests run in parallel processes.
+                    tracing::info!(
+                        exit_code = ?status.code(),
+                        "RPC server exited (another test process likely started it first)"
+                    );
+                    *started = true;
+                    return Ok(());
+                }
+                None => {
+                    // Server is still running - we successfully started it.
+                    // Note: We intentionally don't use a job object here because nextest
+                    // runs tests in separate processes. If we used a job object, the server
+                    // would be killed when THIS test process exits, even if other test
+                    // processes are still using it. Instead, we let the server run as an
+                    // orphan - it will be cleaned up by:
+                    // - nextest's own job object (if it uses one)
+                    // - The CI runner's cleanup
+                    // - Manual cleanup if running locally
+                    tracing::info!("global RPC server started successfully");
+                }
+            }
 
             // Spawn a named thread to read and log stderr from the RPC server.
-            // When the RPC server exits (either normally or when killed by the job object),
-            // the pipe will be closed and reader.lines() will return None, causing the
-            // thread to exit naturally. No explicit cleanup is needed.
+            // When the RPC server exits, the pipe will be closed and reader.lines()
+            // will return None, causing the thread to exit naturally.
             std::thread::Builder::new()
                 .name("rpc-server-stderr".to_string())
                 .spawn(move || {
@@ -135,13 +155,9 @@ pub mod windows {
                 })
                 .expect("failed to spawn stderr reader thread");
 
-            // Drop the Child handle. The process is managed by our job object and will
-            // be automatically terminated when the job is closed (test runner exits).
+            // Drop the Child handle. We intentionally don't keep it or use a job object
+            // to avoid killing the server when this test process exits.
             drop(rpc_server_child);
-
-            // Store the job handle so it stays alive until GlobalRpcServer is dropped.
-            // When the job is dropped, all processes in the job will be terminated.
-            *self._job.lock() = Some(job);
 
             *started = true;
 
