@@ -164,6 +164,46 @@ pub mod windows {
             Ok(())
         }
     }
+
+    /// Checks if any process with the given executable name is running.
+    /// Used for debugging to verify the RPC server is still alive.
+    pub fn is_process_running(exe_name: &str) -> bool {
+        use std::process::Command;
+
+        // Use tasklist to check if the process is running
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("IMAGENAME eq {}", exe_name), "/NH"])
+            .output();
+
+        match output {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // tasklist returns the process name if found, or "INFO: No tasks" if not
+                stdout.contains(exe_name)
+            }
+            Err(e) => {
+                tracing::warn!("failed to run tasklist: {}", e);
+                false
+            }
+        }
+    }
+
+    /// Logs diagnostic information about the RPC server process status.
+    pub fn check_rpc_server_status() {
+        const RPC_SERVER_EXE: &str = "test_igvm_agent_rpc_server.exe";
+
+        if is_process_running(RPC_SERVER_EXE) {
+            tracing::info!(
+                exe = RPC_SERVER_EXE,
+                "RPC server health check: process is still running"
+            );
+        } else {
+            tracing::warn!(
+                exe = RPC_SERVER_EXE,
+                "RPC server health check: process is NOT running - this may cause test failures!"
+            );
+        }
+    }
 }
 
 fn expected_ak_cert_hex() -> String {
@@ -646,6 +686,10 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+
+    // Debug: Check if the RPC server is still running at the end of the test.
+    // This helps diagnose flaky tests that may be caused by the server dying unexpectedly.
+    windows::check_rpc_server_status();
 
     Ok(())
 }
