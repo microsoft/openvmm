@@ -345,16 +345,19 @@ impl IntoPipeline for BuildIgvmCli {
                 .expect("must specify openvmm deps path to use local deps");
 
             // Only provide the path for the architecture we're building
+            // Wrap with ReadVar::from_static() for CLI arguments
             let (openvmm_deps_x64, openvmm_deps_aarch64) = match recipe_arch {
-                CommonArch::X86_64 => (Some(openvmm_deps_path), None),
-                CommonArch::Aarch64 => (None, Some(openvmm_deps_path)),
+                CommonArch::X86_64 => (Some(ReadVar::from_static(openvmm_deps_path)), None),
+                CommonArch::Aarch64 => (None, Some(ReadVar::from_static(openvmm_deps_path))),
             };
+
+            let protoc = custom_protoc.map(ReadVar::from_static);
 
             job.dep_on(move |_| {
                 flowey_lib_hvlite::_jobs::cfg_versions::Request::Local(LocalDependencyRequest {
                     openvmm_deps_x64,
                     openvmm_deps_aarch64,
-                    protoc: custom_protoc,
+                    protoc,
                 })
             })
         } else {

@@ -33,11 +33,11 @@ pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.12.52.2";
 pub const OPENVMM_DEPS: &str = "0.1.0-20250403.3";
 pub const PROTOC: &str = "27.1";
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LocalDependencyRequest {
-    pub openvmm_deps_x64: Option<PathBuf>,
-    pub openvmm_deps_aarch64: Option<PathBuf>,
-    pub protoc: Option<PathBuf>,
+    pub openvmm_deps_x64: Option<ReadVar<PathBuf>>,
+    pub openvmm_deps_aarch64: Option<ReadVar<PathBuf>>,
+    pub protoc: Option<ReadVar<PathBuf>>,
 }
 
 flowey_request! {
@@ -74,9 +74,9 @@ impl FlowNode for Node {
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let mut has_download_requests = false;
         let mut has_local_requests = false;
-        let mut local_openvmm_deps_x64: Option<PathBuf> = None;
-        let mut local_openvmm_deps_aarch64: Option<PathBuf> = None;
-        let mut local_protoc: Option<PathBuf> = None;
+        let mut local_openvmm_deps_x64: Option<ReadVar<PathBuf>> = None;
+        let mut local_openvmm_deps_aarch64: Option<ReadVar<PathBuf>> = None;
+        let mut local_protoc: Option<ReadVar<PathBuf>> = None;
 
         for req in requests {
             match req {
@@ -86,13 +86,13 @@ impl FlowNode for Node {
                 Request::Local(local_req) => {
                     has_local_requests = true;
                     if let Some(x64_path) = local_req.openvmm_deps_x64 {
-                        same_across_all_reqs("OpenvmmDepsPathX64", &mut local_openvmm_deps_x64, x64_path)?;
+                        same_across_all_reqs_backing_var("OpenvmmDepsPathX64", &mut local_openvmm_deps_x64, x64_path)?;
                     }
                     if let Some(aarch64_path) = local_req.openvmm_deps_aarch64 {
-                        same_across_all_reqs("OpenvmmDepsPathAarch64", &mut local_openvmm_deps_aarch64, aarch64_path)?;
+                        same_across_all_reqs_backing_var("OpenvmmDepsPathAarch64", &mut local_openvmm_deps_aarch64, aarch64_path)?;
                     }
                     if let Some(protoc_path) = local_req.protoc {
-                        same_across_all_reqs("ProtocPath", &mut local_protoc, protoc_path)?;
+                        same_across_all_reqs_backing_var("ProtocPath", &mut local_protoc, protoc_path)?;
                     }
                 }
             }

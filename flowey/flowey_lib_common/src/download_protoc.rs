@@ -14,7 +14,7 @@ pub struct ProtocPackage {
 flowey_request! {
     pub enum Request {
         /// Use a locally downloaded protoc
-        LocalPath(PathBuf),
+        LocalPath(ReadVar<PathBuf>),
         /// What version to download (e.g: 27.1)
         Version(String),
         /// Return paths to items in the protoc package
@@ -35,13 +35,13 @@ impl FlowNode for Node {
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let mut version = None;
-        let mut local_path = None;
+        let mut local_path: Option<ReadVar<PathBuf>> = None;
         let mut get_reqs = Vec::new();
 
         for req in requests {
             match req {
                 Request::LocalPath(path) => {
-                    same_across_all_reqs("LocalPath", &mut local_path, path)?
+                    same_across_all_reqs_backing_var("LocalPath", &mut local_path, path)?
                 }
                 Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
                 Request::Get(v) => get_reqs.push(v),
@@ -65,8 +65,11 @@ impl FlowNode for Node {
         if let Some(local_path) = local_path {
             ctx.emit_rust_step("use local protoc", |ctx| {
                 let get_reqs = get_reqs.claim(ctx);
-                let local_path = local_path.clone();
+                let local_path = local_path.claim(ctx);
                 move |rt| {
+                    // Read the ReadVar to get the actual PathBuf
+                    let local_path = rt.read(local_path);
+
                     let protoc_bin = local_path
                         .join("bin")
                         .join(rt.platform().binary("protoc"))
