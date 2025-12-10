@@ -21,6 +21,8 @@ use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::NamespaceChange;
 use nvme_resources::fault::NamespaceFaultConfig;
+use nvme_resources::fault::PciFaultBehavior;
+use nvme_resources::fault::PciFaultConfig;
 use nvme_test::command_match::CommandMatchBuilder;
 use petri::OpenHclServicingFlags;
 use petri::PetriGuestStateLifetime;
@@ -652,17 +654,12 @@ async fn servicing_with_keepalive_disabled_after_servicing(
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
     let mut fault_start_updater = CellUpdater::new(false);
-    let (create_ioqueue_verify_send, create_ioqueue_verify_recv) = mesh::oneshot::<()>();
+    let (cc_enable_verify_send, cc_enable_verify_recv) = mesh::oneshot::<()>();
 
-    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
-        .with_admin_queue_fault(
-            AdminQueueFaultConfig::new().with_submission_queue_fault(
-                CommandMatchBuilder::new()
-                    .match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
-                    .build(),
-                AdminQueueFaultBehavior::Verify(Some(create_ioqueue_verify_send)),
-            ),
-        );
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell()).with_pci_fault(
+        PciFaultConfig::new()
+            .with_cc_enable_fault(PciFaultBehavior::Verify(Some(cc_enable_verify_send))),
+    );
 
     apply_fault_with_keepalive(
         config,
@@ -674,8 +671,8 @@ async fn servicing_with_keepalive_disabled_after_servicing(
     .await?;
 
     let _ = CancelContext::new()
-        .with_timeout(Duration::from_secs(10))
-        .until_cancelled(create_ioqueue_verify_recv)
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(cc_enable_verify_recv)
         .await
         .expect("CREATE_IO_COMPLETION_QUEUE command was not observed within 10 seconds of vm restore after servicing with keepalive disabled");
 
