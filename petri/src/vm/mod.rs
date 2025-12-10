@@ -33,9 +33,7 @@ use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use petri_artifacts_core::ResolvedOptionalArtifact;
 use pipette_client::PipetteClient;
-use std::collections::BTreeSet;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -140,7 +138,7 @@ pub struct PetriVmConfig {
     /// TPM configuration
     pub tpm: Option<TpmConfig>,
     /// Additional storage for the VM
-    pub additional_storage_controllers: HashMap<PetriStorageController, HashMap<u8, PetriDisk>>,
+    pub additional_storage_controllers: HashMap<String, PetriStorageController>,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -148,7 +146,7 @@ pub struct PetriVmRuntimeConfig<T> {
     /// VTL2 settings
     pub vtl2_settings: Option<Vtl2Settings>,
     /// Storage controllers and associated disks
-    pub storage_controllers: HashMap<PetriStorageController, (T, HashMap<u8, PetriDisk>)>,
+    pub storage_controllers: HashMap<String, PetriStorageController<T>>,
 }
 
 /// Resources used by a Petri VM during contruction and runtime
@@ -165,9 +163,6 @@ pub trait PetriVmmBackend {
 
     /// Runtime object
     type VmRuntime: PetriVmRuntime;
-
-    /// Runtime details about a storage device
-    type StorageDetails;
 
     /// Check whether the combination of firmware and architecture is
     /// supported on the VMM.
@@ -200,7 +195,10 @@ pub trait PetriVmmBackend {
         config: PetriVmConfig,
         modify_vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
         resources: &PetriVmResources,
-    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig<Self::StorageDetails>)>;
+    ) -> anyhow::Result<(
+        Self::VmRuntime,
+        PetriVmRuntimeConfig<<Self::VmRuntime as PetriVmRuntime>::RealizedStorageController>,
+    )>;
 }
 
 pub(crate) const PETRI_VTL0_SCSI_BOOT_LUN: u8 = 0;
@@ -219,7 +217,7 @@ pub struct PetriVm<T: PetriVmmBackend> {
     vmm_quirks: VmmQuirks,
     expected_boot_event: Option<FirmwareEvent>,
 
-    config: PetriVmRuntimeConfig<T::StorageDetails>,
+    config: PetriVmRuntimeConfig<<T::VmRuntime as PetriVmRuntime>::RealizedStorageController>,
 }
 
 impl<T: PetriVmmBackend> PetriVmBuilder<T> {
@@ -812,10 +810,52 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     /// Add an additional SCSI controller to the VM.
-    pub fn with_additional_storage_controller(mut self, config: PetriStorageController) -> Self {
-        self.config
+    pub fn add_storage_controller(
+        mut self,
+        test_id: impl AsRef<str>,
+        target_vtl: Vtl,
+        device_type: StorageType,
+    ) -> Self {
+        let test_id = test_id.as_ref().to_string();
+
+        if self
+            .config
             .additional_storage_controllers
-            .insert(config, HashMap::new());
+            .contains_key(&test_id)
+        {
+            panic!("a storage controller with id \"{test_id}\" already exists");
+        }
+
+        self.config.additional_storage_controllers.insert(
+            test_id,
+            PetriStorageController {
+                target_vtl,
+                controller_type: device_type,
+                disks: HashMap::new(),
+                realized: (),
+            },
+        );
+        self
+    }
+
+    /// Adds a VHD with the optionally specified location (a.k.a LUN) to the
+    /// specified controller.
+    pub fn add_disk(
+        mut self,
+        disk: PetriDisk,
+        controller_test_id: impl AsRef<str>,
+        controller_location: Option<u8>,
+    ) -> Self {
+        let controller_test_id = controller_test_id.as_ref();
+
+        let controller = self
+            .config
+            .additional_storage_controllers
+            .get_mut(controller_test_id)
+            .expect("a storage controller with id \"{test_id}\" does not exist");
+
+        _ = controller.add_disk(controller_location, disk);
+
         self
     }
 
@@ -1177,8 +1217,42 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// Get the list of storage controllers added to this VM
     pub fn get_storage_controllers(
         &self,
-    ) -> &HashMap<PetriStorageController, (T::StorageDetails, HashMap<u8, PetriDisk>)> {
+    ) -> &HashMap<
+        String,
+        PetriStorageController<<T::VmRuntime as PetriVmRuntime>::RealizedStorageController>,
+    > {
         &self.config.storage_controllers
+    }
+
+    /// Adds a VHD with the optionally specified location (a.k.a LUN) to the
+    /// specified controller.
+    pub async fn add_disk(
+        &mut self,
+        disk: PetriDisk,
+        controller_test_id: impl AsRef<str>,
+        controller_location: Option<u8>,
+    ) -> anyhow::Result<()> {
+        let controller_test_id = controller_test_id.as_ref();
+
+        let controller = self
+            .config
+            .storage_controllers
+            .get_mut(controller_test_id)
+            .expect("a storage controller with id \"{test_id}\" does not exist");
+
+        let controller_location = controller.add_disk(controller_location, disk);
+        let disk = controller.disks.get(&controller_location).unwrap();
+
+        self.runtime
+            .add_disk(
+                disk,
+                controller.controller_type,
+                controller_location,
+                &controller.realized,
+            )
+            .await?;
+
+        Ok(())
     }
 }
 
@@ -1189,6 +1263,8 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     type VmInspector: PetriVmInspector;
     /// Interface for accessing the framebuffer
     type VmFramebufferAccess: PetriVmFramebufferAccess;
+    /// Information used to identify a realized storage controller
+    type RealizedStorageController;
 
     /// Cleanly tear down the VM immediately.
     async fn teardown(self) -> anyhow::Result<()>;
@@ -1245,6 +1321,14 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     }
     /// Set the OpenHCL VTL2 settings.
     async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()>;
+    /// Add a VHD
+    async fn add_disk(
+        &mut self,
+        disk: &PetriDisk,
+        controller_type: StorageType,
+        controller_location: u8,
+        controller: &Self::RealizedStorageController,
+    ) -> anyhow::Result<()>;
 }
 
 /// Interface for getting information about the state of the VM
@@ -2140,7 +2224,7 @@ impl<T> std::fmt::Debug for ModifyFn<T> {
 }
 
 /// The storage device type.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum StorageType {
     /// IDE
     Ide,
@@ -2150,9 +2234,9 @@ pub enum StorageType {
     Nvme,
 }
 
-/// The target VTL for the storage controller.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum StorageTargetVtl {
+/// Virtual trust level
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Vtl {
     /// VTL 0
     Vtl0 = 0,
     /// VTL 2
@@ -2160,11 +2244,45 @@ pub enum StorageTargetVtl {
 }
 
 /// Petri storage controller
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PetriStorageController {
-    pub test_id: String,
-    pub target_vtl: StorageTargetVtl,
-    pub device_type: StorageType,
+#[derive(Debug, Clone)]
+pub struct PetriStorageController<T = ()> {
+    /// The VTL to assign the storage controller to
+    pub target_vtl: Vtl,
+    /// The storage device type
+    pub controller_type: StorageType,
+    /// Disks attached to this storage controller
+    pub disks: HashMap<u8, PetriDisk>,
+    /// Backend-specific realized details
+    pub realized: T,
+}
+
+impl<T> PetriStorageController<T> {
+    /// Add a disk to the storage controller
+    pub fn add_disk(&mut self, lun: Option<u8>, disk: PetriDisk) -> u8 {
+        let lun = if let Some(lun) = lun {
+            if self.disks.contains_key(&lun) {
+                panic!("a disk with lun {lun} already exists on this controller");
+            }
+            lun
+        } else {
+            // find the first avilable lun
+            let mut lun = None;
+            for x in 0..u8::MAX {
+                if self.disks.contains_key(&x) {
+                    lun = Some(x)
+                }
+            }
+            if let Some(lun) = lun {
+                lun
+            } else {
+                panic!("all locations on this controller are in use")
+            }
+        };
+
+        self.disks.insert(lun, disk);
+
+        lun
+    }
 }
 
 #[cfg(test)]

@@ -351,12 +351,6 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
     // Close a handle to the file without deleting it, so that Hyper-V can open it.
     let vhd_path = vhd.into_temp_path();
 
-    let storage_controller_config = petri::PetriStorageController {
-        test_id: CONTROLLER_TEST_ID.to_string(),
-        target_vtl: petri::StorageTargetVtl::Vtl2,
-        device_type: petri::StorageType::Scsi,
-    };
-
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .with_custom_vtl2_settings(move |v| {
@@ -366,24 +360,26 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
                     .build(),
             );
         })
-        .with_additional_storage_controller(storage_controller_config.clone())
+        .add_storage_controller(
+            CONTROLLER_TEST_ID,
+            petri::Vtl::Vtl2,
+            petri::StorageType::Scsi,
+        )
         .run()
         .await?;
 
-    let (vtl2_controller_num, vtl2_vsid) = vm
+    let (_, vtl2_vsid) = vm
         .get_storage_controllers()
-        .get(&storage_controller_config)
-        .map(|(d, _)| (d.controller_number, d.vsid))
+        .get(CONTROLLER_TEST_ID)
+        .map(|c| (c.realized.controller_number, c.realized.vsid))
         .ok_or_else(|| anyhow::anyhow!("couldn't find additional scsi controller"))?;
 
-    vm.backend()
-        .add_vhd(
-            vhd_path,
-            petri::hyperv::powershell::ControllerType::Scsi,
-            Some(vtl2_lun),
-            Some(vtl2_controller_num),
-        )
-        .await?;
+    vm.add_disk(
+        petri::PetriDisk::Persistent(vhd_path.to_path_buf()),
+        CONTROLLER_TEST_ID,
+        Some(vtl2_lun),
+    )
+    .await?;
 
     vm.modify_vtl2_settings(|s| {
         let storage_controllers = &mut s.dynamic.as_mut().unwrap().storage_controllers;

@@ -98,7 +98,6 @@ pub struct OpenVmmPetriBackend {
 impl PetriVmmBackend for OpenVmmPetriBackend {
     type VmmConfig = PetriVmConfigOpenVmm;
     type VmRuntime = PetriVmOpenVmm;
-    type StorageDetails = ();
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
         arch == MachineArch::host()
@@ -156,7 +155,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         config: PetriVmConfig,
         modify_vmm_config: Option<impl FnOnce(PetriVmConfigOpenVmm) -> PetriVmConfigOpenVmm + Send>,
         resources: &PetriVmResources,
-    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig<Self::StorageDetails>)> {
+    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig<()>)> {
         let mut config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources)?;
 
         if let Some(f) = modify_vmm_config {
