@@ -128,7 +128,12 @@ impl PetriVmConfigOpenVmm {
             boot_device_type,
             tpm: tpm_config,
             guest_crash_disk,
+            additional_storage_controllers,
         } = petri_vm_config;
+
+        if !additional_storage_controllers.is_empty() {
+            unimplemented!("openvmm additional storage controllers");
+        }
 
         let PetriVmResources { driver, log_source } = resources;
 

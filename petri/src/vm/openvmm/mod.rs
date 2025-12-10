@@ -21,7 +21,7 @@ use crate::BootDeviceType;
 use crate::Firmware;
 use crate::OpenHclServicingFlags;
 use crate::OpenvmmLogConfig;
-use crate::PetriDiskType;
+use crate::PetriDisk;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
@@ -147,7 +147,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         config: PetriVmConfig,
         modify_vmm_config: Option<impl FnOnce(PetriVmConfigOpenVmm) -> PetriVmConfigOpenVmm + Send>,
         resources: &PetriVmResources,
-    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
+    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig<()>)> {
         let mut config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources).await?;
 
         if let Some(f) = modify_vmm_config {
@@ -231,12 +231,12 @@ fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
     let convert_disk = |disk: &PetriVmgsDisk| -> anyhow::Result<VmgsDisk> {
         Ok(VmgsDisk {
             disk: match &disk.disk {
-                PetriDiskType::Memory => LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                PetriDisk::Memory => LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                     len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
                 })
                 .into_resource(),
-                PetriDiskType::Differencing(path) => memdiff_disk(path)?,
-                PetriDiskType::Persistent(path) => open_disk_type(path, false)?,
+                PetriDisk::Differencing(path) => memdiff_disk(path)?,
+                PetriDisk::Persistent(path) => open_disk_type(path, false)?,
             },
             encryption_policy: disk.encryption_policy,
         })

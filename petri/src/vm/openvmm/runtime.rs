@@ -50,6 +50,7 @@ pub struct PetriVmOpenVmm {
 impl PetriVmRuntime for PetriVmOpenVmm {
     type VmInspector = OpenVmmInspector;
     type VmFramebufferAccess = OpenVmmFramebufferAccess;
+    type RealizedStorageController = ();
 
     async fn teardown(self) -> anyhow::Result<()> {
         tracing::info!("waiting for worker");
@@ -167,6 +168,16 @@ impl PetriVmRuntime for PetriVmOpenVmm {
 
     async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()> {
         Self::set_vtl2_settings(self, settings).await
+    }
+
+    async fn add_disk(
+        &mut self,
+        _disk: &crate::PetriDisk,
+        _controller_type: crate::StorageType,
+        _controller_location: u8,
+        _controller: &Self::RealizedStorageController,
+    ) -> anyhow::Result<()> {
+        todo!()
     }
 }
 
