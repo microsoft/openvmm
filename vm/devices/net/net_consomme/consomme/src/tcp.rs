@@ -466,11 +466,11 @@ impl<T: Client> Access<'_, T> {
             hash_map::Entry::Vacant(e) => {
                 let ft = FourTuple {
                     dst: SocketAddress {
-                        ip: Ipv4Addr::UNSPECIFIED.into(),
+                        ip: Ipv4Addr::UNSPECIFIED,
                         port: 0,
                     },
                     src: SocketAddress {
-                        ip: ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED).into(),
+                        ip: ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED),
                         port,
                     },
                 };
@@ -1394,7 +1394,7 @@ impl TcpListener {
                         Some(src_address) => Ok(Some((
                             socket,
                             SocketAddress {
-                                ip: (*src_address.ip()).into(),
+                                ip: *src_address.ip(),
                                 port: addr.port(),
                             },
                         ))),

@@ -255,7 +255,7 @@ impl DnsBackend for ExDnsBackend {
                 // SAFETY: Get and call the DnsCancelQuery function
                 if let Ok(fnptr) = unsafe { get_dns_cancel_query_fn() } {
                     // SAFETY: Call DNS cancel API with valid handle
-                    let _ = unsafe { fnptr(ex_handle as *const _ as *mut _) };
+                    let _ = unsafe { fnptr(std::ptr::from_ref(ex_handle).cast_mut()) };
                 }
             }
         }

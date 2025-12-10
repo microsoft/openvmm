@@ -313,7 +313,7 @@ pub fn build_dns_response(
     rcode: DnsRcode,
 ) -> Vec<u8> {
     // Cast to DNS_RECORDW since DnsQueryEx returns wide string records
-    let records_w = records as *const DNS_RECORDW;
+    let records_w = records.cast::<DNS_RECORDW>();
 
     let mut response = Vec::with_capacity(512);
 
@@ -371,8 +371,9 @@ unsafe fn count_answer_records_w(records: *const DNS_RECORDW) -> u16 {
     let mut current = records;
 
     while !current.is_null() {
+        // SAFETY: current is non-null and points to a valid DNS_RECORDW from Windows API
         let record = unsafe { &*current };
-        // Section field is bits 0-1 of Flags.DW; section 1 = Answer
+        // SAFETY: Flags.DW is a valid union access for reading the section bits
         let section = unsafe { record.Flags.DW & 0x3 };
         if section == 1 {
             count += 1;
@@ -413,9 +414,10 @@ unsafe fn encode_answer_records_w(
             break;
         }
 
+        // SAFETY: current is non-null and points to a valid DNS_RECORDW from Windows API
         let record = unsafe { &*current };
 
-        // Only include answer section records (section 1)
+        // SAFETY: Flags.DW is a valid union access for reading the section bits
         let section = unsafe { record.Flags.DW & 0x3 };
         if section == 1 {
             // SAFETY: record is a valid reference from the linked list
@@ -508,7 +510,8 @@ unsafe fn encode_dns_record_w(record: &DNS_RECORDW) -> Option<Vec<u8>> {
 unsafe fn encode_rdata_w(record: &DNS_RECORDW) -> Option<Vec<u8>> {
     let record_type = DnsRecordType::from(record.wType);
 
-    // Accessing union fields based on record type - safety guaranteed by caller
+    // SAFETY: Accessing union fields based on record type - Windows populates
+    // the correct union variant based on wType field
     unsafe {
         match record_type {
             DnsRecordType::A => {
@@ -617,9 +620,15 @@ unsafe fn encode_rdata_w(record: &DNS_RECORDW) -> Option<Vec<u8>> {
 }
 
 /// Encode SVCB/HTTPS record RDATA (wide string version).
+///
+/// # Safety
+///
+/// The `record` must be a valid DNS_RECORDW structure from Windows DNS APIs
+/// with wType set to SVCB or HTTPS and the Data.SVCB union variant populated.
 unsafe fn encode_svcb_rdata_w(record: &DNS_RECORDW) -> Option<Vec<u8>> {
     use windows_sys::Win32::NetworkManagement::Dns::DNS_SVCB_PARAM;
 
+    // SAFETY: Caller guarantees record is a valid SVCB/HTTPS record with Data.SVCB populated
     let svcb = unsafe { &record.Data.SVCB };
     let mut rdata = Vec::new();
 
@@ -629,6 +638,7 @@ unsafe fn encode_svcb_rdata_w(record: &DNS_RECORDW) -> Option<Vec<u8>> {
         rdata.push(0);
     } else {
         // Note: pszTargetName in SVCB is PSTR (narrow) even in DNS_RECORDW
+        // SAFETY: pszTargetName is non-null and points to a valid C string from Windows API
         let target_name = unsafe { cstr_to_string(svcb.pszTargetName as *const i8) };
         match target_name {
             Some(name) if !name.is_empty() => {
@@ -642,7 +652,9 @@ unsafe fn encode_svcb_rdata_w(record: &DNS_RECORDW) -> Option<Vec<u8>> {
 
     if svcb.cSvcParams > 0 && !svcb.pSvcParams.is_null() {
         for i in 0..svcb.cSvcParams as usize {
+            // SAFETY: i < cSvcParams and pSvcParams is non-null, so pSvcParams.add(i) is valid
             let param: &DNS_SVCB_PARAM = unsafe { &*svcb.pSvcParams.add(i) };
+            // SAFETY: param is a valid DNS_SVCB_PARAM from the pSvcParams array
             if let Some(param_data) = unsafe { encode_svcb_param(param) } {
                 rdata.extend_from_slice(&param_data);
             }
@@ -671,7 +683,8 @@ unsafe fn encode_svcb_param(
     // SvcParamKey (2 bytes)
     result.extend_from_slice(&key.to_be_bytes());
 
-    // Encode value based on parameter type
+    // SAFETY: Accessing union fields based on parameter key type - Windows populates
+    // the correct union variant based on wSvcParamKey field
     let value_bytes: Vec<u8> = unsafe {
         match key as i32 {
             k if k == DnsSvcbParamMandatory => {
@@ -790,7 +803,7 @@ pub unsafe fn cstr_to_string(ptr: *const i8) -> Option<String> {
             len += 1;
             p = p.add(1);
         }
-        let slice = std::slice::from_raw_parts(ptr as *const u8, len);
+        let slice = std::slice::from_raw_parts(ptr.cast::<u8>(), len);
         String::from_utf8(slice.to_vec()).ok()
     }
 }

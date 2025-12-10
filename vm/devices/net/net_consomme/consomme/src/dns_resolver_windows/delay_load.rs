@@ -137,7 +137,7 @@ pub type DnsCancelQueryFn = unsafe extern "system" fn(*mut DNS_QUERY_CANCEL) -> 
 pub unsafe fn get_dns_query_raw_fn() -> Result<DnsQueryRawFn, WIN32_ERROR> {
     let fnval = get_dns_query_raw()?;
     // SAFETY: Function pointer has the correct signature for DnsQueryRaw
-    Ok(unsafe { std::mem::transmute(fnval) })
+    Ok(unsafe { std::mem::transmute::<usize, DnsQueryRawFn>(fnval) })
 }
 
 /// Get DnsCancelQueryRaw as a typed function pointer.
@@ -148,7 +148,7 @@ pub unsafe fn get_dns_query_raw_fn() -> Result<DnsQueryRawFn, WIN32_ERROR> {
 pub unsafe fn get_dns_cancel_query_raw_fn() -> Result<DnsCancelQueryRawFn, WIN32_ERROR> {
     let fnval = get_dns_cancel_query_raw()?;
     // SAFETY: Function pointer has the correct signature for DnsCancelQueryRaw
-    Ok(unsafe { std::mem::transmute(fnval) })
+    Ok(unsafe { std::mem::transmute::<usize, DnsCancelQueryRawFn>(fnval) })
 }
 
 /// Get DnsQueryRawResultFree as a typed function pointer.
@@ -159,7 +159,7 @@ pub unsafe fn get_dns_cancel_query_raw_fn() -> Result<DnsCancelQueryRawFn, WIN32
 pub unsafe fn get_dns_query_raw_result_free_fn() -> Result<DnsQueryRawResultFreeFn, WIN32_ERROR> {
     let fnval = get_dns_query_raw_result_free()?;
     // SAFETY: Function pointer has the correct signature for DnsQueryRawResultFree
-    Ok(unsafe { std::mem::transmute(fnval) })
+    Ok(unsafe { std::mem::transmute::<usize, DnsQueryRawResultFreeFn>(fnval) })
 }
 
 /// Get DnsQueryEx as a typed function pointer.
@@ -170,7 +170,7 @@ pub unsafe fn get_dns_query_raw_result_free_fn() -> Result<DnsQueryRawResultFree
 pub unsafe fn get_dns_query_ex_fn() -> Result<DnsQueryExFn, WIN32_ERROR> {
     let fnval = get_dns_query_ex()?;
     // SAFETY: Function pointer has the correct signature for DnsQueryEx
-    Ok(unsafe { std::mem::transmute(fnval) })
+    Ok(unsafe { std::mem::transmute::<usize, DnsQueryExFn>(fnval) })
 }
 
 /// Get DnsCancelQuery as a typed function pointer.
@@ -181,5 +181,5 @@ pub unsafe fn get_dns_query_ex_fn() -> Result<DnsQueryExFn, WIN32_ERROR> {
 pub unsafe fn get_dns_cancel_query_fn() -> Result<DnsCancelQueryFn, WIN32_ERROR> {
     let fnval = get_dns_cancel_query()?;
     // SAFETY: Function pointer has the correct signature for DnsCancelQuery
-    Ok(unsafe { std::mem::transmute(fnval) })
+    Ok(unsafe { std::mem::transmute::<usize, DnsCancelQueryFn>(fnval) })
 }

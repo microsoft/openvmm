@@ -73,7 +73,7 @@ pub fn nameservers() -> Result<Vec<Ipv4Address>, Error> {
                 if dns_addr.sa_family == AF_INET {
                     let dns_addr = &*dns.Address.lpSockaddr.cast::<SOCKADDR_IN>();
                     dns_servers
-                        .push(Ipv4Addr::from(u32::from_be(dns_addr.sin_addr.S_un.S_addr)).into());
+                        .push(Ipv4Addr::from(u32::from_be(dns_addr.sin_addr.S_un.S_addr)));
                 }
                 dns_p = dns.Next;
             }
