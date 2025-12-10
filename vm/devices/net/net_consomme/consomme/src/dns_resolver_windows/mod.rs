@@ -34,13 +34,13 @@ use backend_raw::RawDnsBackend;
 use delay_load::get_module;
 use delay_load::is_dns_query_ex_supported;
 use delay_load::is_dns_raw_apis_supported;
-use smoltcp::wire::EthernetAddress;
-use smoltcp::wire::IpProtocol;
-use smoltcp::wire::Ipv4Address;
 use std::sync::Arc;
 
-use crate::DnsResponse;
-use crate::DropReason;
+use crate::dns_resolver_common::DnsResponse;
+use crate::dns_resolver_common::DropReason;
+use crate::dns_resolver_common::EthernetAddress;
+use crate::dns_resolver_common::IpProtocol;
+use crate::dns_resolver_common::Ipv4Address;
 /// DNS resolver that manages active DNS queries using Windows DNS APIs.
 ///
 /// This resolver automatically selects the best available Windows DNS API:
