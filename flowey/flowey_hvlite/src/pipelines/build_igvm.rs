@@ -339,13 +339,20 @@ impl IntoPipeline for BuildIgvmCli {
         );
 
         job = if use_local_deps {
-            let openvmm_deps_path = custom_openvmm_deps.unwrap();
-            let protoc_path = custom_protoc.unwrap();
+            let openvmm_deps_path = custom_openvmm_deps
+                .expect("must specify openvmm deps path to use local deps");
+            let protoc_path = custom_protoc
+                .expect("must specify protoc path to use local deps");
+
+            // Wrap with ReadVar::from_static() for CLI arguments
+            let openvmm_deps_var = ReadVar::from_static(openvmm_deps_path);
+            let protoc_var = ReadVar::from_static(protoc_path);
+
             job.dep_on(move |_| {
                 flowey_lib_hvlite::_jobs::cfg_versions::Request::Local(
                     recipe_arch,
-                    openvmm_deps_path,
-                    protoc_path,
+                    openvmm_deps_var,
+                    protoc_var,
                 )
             })
         } else {

@@ -37,7 +37,7 @@ pub const PROTOC: &str = "27.1";
 flowey_request! {
     pub enum Request {
         Download,
-        Local(CommonArch, PathBuf, PathBuf),
+        Local(CommonArch, ReadVar<PathBuf>, ReadVar<PathBuf>),
     }
 }
 
@@ -70,8 +70,8 @@ impl FlowNode for Node {
 
         let mut has_download_requests = false;
         let mut has_local_requests = false;
-        let mut local_openvmm_deps: BTreeMap<CommonArch, PathBuf> = BTreeMap::new();
-        let mut local_protoc: Option<PathBuf> = None;
+        let mut local_openvmm_deps: BTreeMap<CommonArch, ReadVar<PathBuf>> = BTreeMap::new();
+        let mut local_protoc: Option<ReadVar<PathBuf>> = None;
 
         for req in requests {
             match req {
@@ -83,7 +83,7 @@ impl FlowNode for Node {
 
                     // Check that for every arch that shows up, the path is always the same
                     if let Some(existing_path) = local_openvmm_deps.get(&arch) {
-                        if existing_path != &path {
+                        if !existing_path.eq(&path) {
                             anyhow::bail!(
                                 "OpenvmmDepsPath for {:?} must be consistent across requests",
                                 arch
@@ -93,7 +93,7 @@ impl FlowNode for Node {
                         local_openvmm_deps.insert(arch, path);
                     }
 
-                    same_across_all_reqs("ProtocPath", &mut local_protoc, protoc_path)?;
+                    same_across_all_reqs_backing_var("ProtocPath", &mut local_protoc, protoc_path)?;
                 }
             }
         }
