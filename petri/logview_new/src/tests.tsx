@@ -50,22 +50,41 @@ export function Tests(): React.JSX.Element {
 
     // Fetch run details for the selected branch
     useEffect(() => {
-        setFetchedCount(0);
+        // Clear the table to indicate loading state
+        setTableData([]);
+
+        // Create an abort controller for this effect
+        const abortController = new AbortController();
 
         // Fetch test analysis (which returns the test mapping)
         fetchTestAnalysis(
             branchFilter,
             queryClient,
             (fetched, total) => {
-                setFetchedCount(fetched);
-                setTotalToFetch(total);
+                if (!abortController.signal.aborted) {
+                    setFetchedCount(fetched);
+                    setTotalToFetch(total);
+                }
             },
-            () => concurrencyRef.current // Dynamic concurrency
+            () => concurrencyRef.current, // Dynamic concurrency
+            abortController.signal
         ).then(testMapping => {
-            setTableData(convertToTestData(testMapping));
+            // Only update state if this effect is still active
+            if (!abortController.signal.aborted) {
+                setTableData(convertToTestData(testMapping));
+            }
         }).catch(err => {
-            console.error('Error fetching test analysis:', err);
+            // Ignore abort errors, log others
+            if (err.name !== 'AbortError' && !abortController.signal.aborted) {
+                console.error('Error fetching test analysis:', err);
+            }
         });
+
+        // Cleanup function makes sure old requests don't update state
+        return () => {
+            // This only runs when the effect is being cleaned up (i.e., dependencies changed or component unmounted)
+            abortController.abort();
+        };
     }, [branchFilter, queryClient]);
 
     // Get the table definition (columns and default sorting)
@@ -126,11 +145,11 @@ export function TestsHeader({
                 <div className="common-header-filter-buttons">
                     {test_filters.map((branch) => (
                         <button
-                        key={branch}
-                        className={`common-header-filter-btn ${branchFilter === branch ? "active" : ""}`}
-                        onClick={() => setBranchFilter(branch)}
+                            key={branch}
+                            className={`common-header-filter-btn ${branchFilter === branch ? "active" : ""}`}
+                            onClick={() => setBranchFilter(branch)}
                         >
-                        {branch}
+                            {branch}
                         </button>
                     ))}
                 </div>
