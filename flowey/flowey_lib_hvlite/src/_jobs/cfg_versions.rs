@@ -87,7 +87,7 @@ impl FlowNode for Node {
                 Request::LocalOpenvmmDeps(arch, path) => {
                     // Check that for every arch that shows up, the path is always the same
                     if let Some(existing_path) = local_openvmm_deps.get(&arch) {
-                        if existing_path != &path {
+                        if !existing_path.eq(&path) {
                             anyhow::bail!(
                                 "OpenvmmDepsPath for {:?} must be consistent across requests",
                                 arch
@@ -130,7 +130,7 @@ impl FlowNode for Node {
 
             ctx.req(crate::resolve_openvmm_deps::Request::LocalPath(
                 openvmm_deps_arch,
-                path,
+                ReadVar::from_static(path),
             ));
         }
 
