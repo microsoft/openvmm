@@ -784,6 +784,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     /// Add custom VTL 2 settings.
+    // TODO: At some point we want to replace uses of this with nicer with_disk,
+    // with_nic, etc. methods.
     pub fn with_custom_vtl2_settings(
         mut self,
         f: impl FnOnce(&mut Vtl2Settings) + 'static + Send + Sync,
