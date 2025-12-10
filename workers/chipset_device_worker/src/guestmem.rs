@@ -105,6 +105,7 @@ impl GuestMemoryProxy {
                     break;
                 }
                 Err(RecvError::Error(e)) => {
+                    // TODO: Handle errors?
                     panic!("guest memory proxy channel error: {:?}", e);
                 }
             };
@@ -130,6 +131,7 @@ impl GuestMemoryRemote {
         let mut inner = self.inner.lock();
         inner.req_send.send(request);
         let resp = pal_async::local::block_on(inner.resp_recv.recv());
+        // TODO: Handle errors?
         resp.unwrap()
     }
 }

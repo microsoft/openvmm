@@ -241,6 +241,7 @@ impl PollDevice for ChipsetDeviceProxy {
         self.enc_gm_proxy.poll(cx);
 
         while let Poll::Ready(resp) = self.resp_recv.poll_recv(cx) {
+            // TODO: What should we do on error here?
             match resp.unwrap() {
                 DeviceResponse::Read { id, result } => {
                     let deferred_read = self.in_flight_reads.remove(id);
@@ -267,12 +268,14 @@ impl ChangeDeviceState for ChipsetDeviceProxy {
     }
 
     async fn stop(&mut self) {
+        // TODO: Handle errors?
         self.req_send.call(DeviceRequest::Stop, ()).await.unwrap()
     }
 
     async fn reset(&mut self) {
         self.in_flight_reads.clear();
         self.in_flight_writes.clear();
+        // TODO: Handle errors?
         self.req_send.call(DeviceRequest::Reset, ()).await.unwrap()
     }
 }
@@ -283,6 +286,7 @@ impl ProtobufSaveRestore for ChipsetDeviceProxy {
             self.req_send
                 .call(DeviceRequest::Save, ())
                 .await
+                // TODO: Handle errors?
                 .unwrap()
                 .map_err(|e| SaveError::Other(anyhow::anyhow!(e)))
         })
@@ -293,6 +297,7 @@ impl ProtobufSaveRestore for ChipsetDeviceProxy {
             self.req_send
                 .call(DeviceRequest::Restore, state)
                 .await
+                // TODO: Handle errors?
                 .unwrap()
                 .map_err(|e| RestoreError::Other(anyhow::anyhow!(e)))
         })
