@@ -12,6 +12,7 @@ import { VirtualizedTable } from './virtualized_table.tsx';
 import { Link, useSearchParams } from 'react-router-dom';
 import { SearchInput } from './search';
 import { createColumns, defaultSorting, columnWidthMap } from './table_defs/tests';
+import { test_filters } from './branch_quick_filters.tsx';
 
 export function Tests(): React.JSX.Element {
     const [searchParams, setSearchParams] = useSearchParams();
@@ -123,18 +124,15 @@ export function TestsHeader({
                     <Link to="/tests" className="common-header-path">Tests</Link>
                 </div>
                 <div className="common-header-filter-buttons">
-                    <button
-                        className={`common-header-filter-btn ${branchFilter === 'main' ? 'active' : ''}`}
-                        onClick={() => setBranchFilter('main')}
-                    >
-                        main
-                    </button>
-                    <button
-                        className={`common-header-filter-btn ${branchFilter === "release/1.7.2511" ? "active" : ""}`}
-                        onClick={() => setBranchFilter("release/1.7.2511")}
-                    >
-                        release/1.7.2511
-                    </button>
+                    {test_filters.map((branch) => (
+                        <button
+                        key={branch}
+                        className={`common-header-filter-btn ${branchFilter === branch ? "active" : ""}`}
+                        onClick={() => setBranchFilter(branch)}
+                        >
+                        {branch}
+                        </button>
+                    ))}
                 </div>
                 {totalToFetch === null && (
                     <div className="header-loading-indicator">
