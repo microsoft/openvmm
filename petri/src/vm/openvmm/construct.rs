@@ -21,7 +21,6 @@ use crate::PetriLogSource;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmgsResource;
-use crate::PetriVmmBackend;
 use crate::ProcessorTopology;
 use crate::SIZE_1_GB;
 use crate::SecureBootTemplate;
@@ -30,7 +29,6 @@ use crate::UefiConfig;
 use crate::UefiGuest;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openvmm::BOOT_NVME_INSTANCE;
-use crate::openvmm::OpenVmmPetriBackend;
 use crate::openvmm::memdiff_vmgs;
 use crate::vm::append_cmdline;
 use crate::vtl2_settings::ControllerType;
@@ -225,7 +223,7 @@ impl PetriVmConfigOpenVmm {
                     }),
                     Some(ged),
                     Some(ged_send),
-                    Some(OpenVmmPetriBackend::default_vtl2_settings()),
+                    Some(crate::vm::default_vtl2_settings()),
                     Some(vtl2_vsock_path),
                 )
             } else {

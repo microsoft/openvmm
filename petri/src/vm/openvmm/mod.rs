@@ -124,15 +124,6 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         }
     }
 
-    fn default_vtl2_settings() -> Vtl2Settings {
-        Vtl2Settings {
-            version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
-            dynamic: Some(Default::default()),
-            fixed: Some(Default::default()),
-            namespace_settings: Default::default(),
-        }
-    }
-
     fn create_guest_dump_disk() -> anyhow::Result<
         Option<(
             Arc<TempPath>,

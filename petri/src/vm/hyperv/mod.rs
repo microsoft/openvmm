@@ -141,15 +141,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
         }
     }
 
-    fn default_vtl2_settings() -> Vtl2Settings {
-        Vtl2Settings {
-            version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
-            fixed: None,
-            dynamic: Some(Default::default()),
-            namespace_settings: Default::default(),
-        }
-    }
-
     fn create_guest_dump_disk() -> anyhow::Result<
         Option<(
             Arc<TempPath>,
@@ -619,7 +610,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
 
             if let Some(f) = modify_vtl2_settings {
-                f.0(vtl2_settings.get_or_insert_with(HyperVPetriBackend::default_vtl2_settings))
+                f.0(vtl2_settings.get_or_insert_with(crate::vm::default_vtl2_settings))
             };
         }
 

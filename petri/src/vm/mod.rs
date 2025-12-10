@@ -169,9 +169,6 @@ pub trait PetriVmmBackend {
     /// Get the default servicing flags (based on what this backend supports)
     fn default_servicing_flags() -> OpenHclServicingFlags;
 
-    /// Get the default VTL2 settings for this backend
-    fn default_vtl2_settings() -> Vtl2Settings;
-
     /// Create a disk for guest crash dumps, and a post-test hook to open the disk
     /// to allow for reading the dumps.
     fn create_guest_dump_disk() -> anyhow::Result<
@@ -1151,7 +1148,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         f(self
             .config
             .vtl2_settings
-            .get_or_insert_with(T::default_vtl2_settings));
+            .get_or_insert_with(default_vtl2_settings));
         self.runtime
             .set_vtl2_settings(self.config.vtl2_settings.as_ref().unwrap())
             .await
@@ -2112,6 +2109,16 @@ pub struct ModifyFn<T>(pub Box<dyn FnOnce(&mut T) + Send + Sync>);
 impl<T> std::fmt::Debug for ModifyFn<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "_")
+    }
+}
+
+/// Default VTL 2 settings used by petri
+fn default_vtl2_settings() -> Vtl2Settings {
+    Vtl2Settings {
+        version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
+        fixed: None,
+        dynamic: Some(Default::default()),
+        namespace_settings: Default::default(),
     }
 }
 
