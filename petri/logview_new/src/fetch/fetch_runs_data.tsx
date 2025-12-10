@@ -463,7 +463,7 @@ export async function fetchRunDetails(
  * Fetch run details for runs filtered by branch.
  * Returns a map of testName -> TestRunInfo[].
  * 
- * DEV NOTE: Ideally the abort singal should also be passed to the query client
+ * DEV NOTE: Ideally the abort signal should also be passed to the query client
  * to abort any in-flight fetches, but due to time constraints this is not yet
  * implemented. Currently the tests and test details both use a foreground
  * concurrency of 15 which means that once this function is triggered it will
