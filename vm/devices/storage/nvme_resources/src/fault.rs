@@ -53,8 +53,8 @@ pub enum PciFaultBehavior {
     Delay(Duration),
     /// Do nothing
     Default,
-    /// Verify that a command was seen.
-    VerifyEnable(Option<OneshotSender<()>>),
+    /// Verify that the fault was triggered.
+    Verify(Option<OneshotSender<()>>),
 }
 
 /// A notification to the test confirming namespace change processing.
@@ -376,7 +376,8 @@ pub struct FaultConfiguration {
     pub fault_active: Cell<bool>,
     /// Fault to apply to the admin queues
     pub admin_fault: AdminQueueFaultConfig,
-    /// Fault to apply to management layer of the controller
+    /// Fault to apply to management layer of the controller. Option because it
+    /// needs to be extracted by the PCI layer during initialization.
     pub pci_fault: Option<PciFaultConfig>,
     /// Fault for test triggered namespace change notifications
     pub namespace_fault: NamespaceFaultConfig,

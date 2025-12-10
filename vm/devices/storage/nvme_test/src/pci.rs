@@ -149,9 +149,10 @@ impl NvmeFaultController {
             .map(|i| msix.interrupt(i).unwrap())
             .collect();
 
-        // Extract the PCI fault config. It should never be None here (probably
-        // could be)
-        let pci_fault_config = fault_configuration.pci_fault.take().unwrap();
+        let pci_fault_config = fault_configuration
+            .pci_fault
+            .take()
+            .unwrap_or(PciFaultConfig::new());
 
         let qe_sizes = Arc::new(Default::default());
         let admin = NvmeWorkers::new(
@@ -355,7 +356,7 @@ impl NvmeFaultController {
                         std::thread::sleep(*duration);
                     }
                     PciFaultBehavior::Default => {}
-                    PciFaultBehavior::VerifyEnable(send) => {
+                    PciFaultBehavior::Verify(send) => {
                         // Verify that the enable command was received.
                         if let Some(send) = send.take() {
                             send.send(());
