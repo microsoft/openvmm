@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-name = "chipset_device_worker_resources"
+name = "chipset_device_worker_defs"
 edition.workspace = true
 rust-version.workspace = true
 

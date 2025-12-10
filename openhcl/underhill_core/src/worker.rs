@@ -60,7 +60,7 @@ use crate::wrapped_partition::WrappedPartition;
 use anyhow::Context;
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
-use chipset_device_worker_resources::RemoteChipsetDeviceHandle;
+use chipset_device_worker_defs::RemoteChipsetDeviceHandle;
 use closeable_mutex::CloseableMutex;
 use cvm_tracing::CVM_ALLOWED;
 use debug_ptr::DebugPtr;

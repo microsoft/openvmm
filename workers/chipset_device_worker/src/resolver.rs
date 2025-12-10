@@ -10,7 +10,7 @@ use crate::worker::RemoteDynamicResolvers;
 use async_trait::async_trait;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
-use chipset_device_worker_resources::RemoteChipsetDeviceHandle;
+use chipset_device_worker_defs::RemoteChipsetDeviceHandle;
 use thiserror::Error;
 use vm_resource::AsyncResolveResource;
 use vm_resource::IntoResource;

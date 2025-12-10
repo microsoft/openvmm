@@ -589,7 +589,7 @@ dependencies = [
  "async-trait",
  "chipset_device",
  "chipset_device_resources",
- "chipset_device_worker_resources",
+ "chipset_device_worker_defs",
  "guest_emulation_transport",
  "guestmem",
  "inspect",
@@ -605,7 +605,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "chipset_device_worker_resources"
+name = "chipset_device_worker_defs"
 version = "0.0.0"
 dependencies = [
  "mesh",
@@ -5179,7 +5179,7 @@ dependencies = [
  "anyhow",
  "awaitgroup",
  "build_rs_guest_arch",
- "chipset_device_worker_resources",
+ "chipset_device_worker_defs",
  "chipset_resources",
  "clap",
  "clap_dyn_complete",
@@ -5665,7 +5665,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "blocking",
- "chipset_device_worker_resources",
+ "chipset_device_worker_defs",
  "chipset_resources",
  "clap",
  "diag_client",
@@ -7956,7 +7956,7 @@ dependencies = [
  "chipset",
  "chipset_device",
  "chipset_device_resources",
- "chipset_device_worker_resources",
+ "chipset_device_worker_defs",
  "chipset_legacy",
  "closeable_mutex",
  "cvm_tracing",

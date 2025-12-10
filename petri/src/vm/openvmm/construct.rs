@@ -1148,7 +1148,7 @@ impl PetriVmConfigSetupCore<'_> {
 
             Ok(Some(ChipsetDeviceHandle {
                 name: "tpm".to_string(),
-                resource: chipset_device_worker_resources::RemoteChipsetDeviceHandle {
+                resource: chipset_device_worker_defs::RemoteChipsetDeviceHandle {
                     device: TpmDeviceHandle {
                         ppi_store,
                         nvram_store,
