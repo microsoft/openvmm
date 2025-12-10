@@ -9,11 +9,11 @@
 //!
 //! ## Module Organization
 //!
-//! - [`dns_wire`]: DNS wire format parsing and building (RFC 1035)
-//! - [`delay_load`]: Runtime loading of dnsapi.dll functions
-//! - [`backend`]: Common trait and types for DNS backends
-//! - [`backend_raw`]: DnsQueryRaw implementation
-//! - [`backend_ex`]: DnsQueryEx implementation
+//! - `dns_wire`: DNS wire format parsing and building (RFC 1035)
+//! - `delay_load`: Runtime loading of dnsapi.dll functions
+//! - `backend`: Common trait and types for DNS backends
+//! - `backend_raw`: DnsQueryRaw implementation
+//! - `backend_ex`: DnsQueryEx implementation
 //!
 //! ## API Selection
 //!
