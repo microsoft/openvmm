@@ -305,9 +305,6 @@ async fn servicing_keepalive_with_namespace_update(
     let (aer_verify_send, aer_verify_recv) = mesh::oneshot::<()>();
     let (log_verify_send, log_verify_recv) = mesh::oneshot::<()>();
 
-    let (aer_verify_send_dummy, aer_verify_recv_dummy) = mesh::oneshot::<()>();
-    let (log_verify_send_dummy, log_verify_recv_dummy) = mesh::oneshot::<()>();
-
     let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
         .with_namespace_fault(NamespaceFaultConfig::new(ns_change_recv))
         .with_admin_queue_fault(
@@ -343,14 +340,14 @@ async fn servicing_keepalive_with_namespace_update(
 
     let _ = CancelContext::new()
         .with_timeout(Duration::from_secs(60))
-        .until_cancelled(aer_verify_recv_dummy)
+        .until_cancelled(aer_verify_recv)
         .await
         .expect("AER command was not observed within 60 seconds of vm restore after servicing with namespace change")
         .expect("AER verification failed");
 
     let _ = CancelContext::new()
         .with_timeout(Duration::from_secs(60))
-        .until_cancelled(log_verify_recv_dummy)
+        .until_cancelled(log_verify_recv)
         .await
         .expect("GET_LOG_PAGE command was not observed within 60 seconds of vm restore after servicing with namespace change")
         .expect("GET_LOG_PAGE verification failed");
@@ -678,7 +675,7 @@ async fn servicing_with_keepalive_disabled_after_servicing(
         .with_timeout(Duration::from_secs(60))
         .until_cancelled(cc_enable_verify_recv)
         .await
-        .expect("Controller Enable PCI command was not observed within 60 seconds of vm restore indicating that the controller was not reset, even though it should have.")
+        .expect("Controller Enable PCI command was not observed within 60 seconds of vm restore indicating that the controller was not reset, even though it should have been.")
         .expect("Failed to receive completion for CC Enable PCI command verification");
 
     Ok(())
