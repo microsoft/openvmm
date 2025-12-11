@@ -363,7 +363,6 @@ impl NvmeFaultController {
                         }
                         PciFaultBehavior::Default => {}
                         PciFaultBehavior::Verify(send) => {
-                            // Verify that the enable command was received.
                             if let Some(send) = send.take() {
                                 send.send(());
                             }
