@@ -53,7 +53,7 @@ export function createColumns(
                             className="attachment"
                             target="_blank"
                             rel="noopener noreferrer"
-                            data-inspect="true"
+                            data-inspect={link.inspect}
                             style={{ marginLeft: 8 }}
                         >
                             {link.text}
@@ -61,7 +61,7 @@ export function createColumns(
                     ))}
                 </>
             ),
-            enableSorting: false, // Disable sorting for complex HTML content
+            enableSorting: false, // Sorting by full message text is not useful
         },
         {
             id: 'screenshot',

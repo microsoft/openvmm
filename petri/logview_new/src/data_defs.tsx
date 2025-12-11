@@ -61,12 +61,14 @@ export interface LogEntry {
 
 export interface LogMessage {
   message: string;
+  link_string: string;  // This is a space-separated string of link texts for searching/sorting
   links: LogLink[];
 }
 
 export interface LogLink {
   text: string;
   url: string;
+  inspect: boolean;
 }
 
 // Concurrency settings when fetching test results

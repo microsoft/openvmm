@@ -162,6 +162,7 @@ export async function fetchProcessedLog(
     message = sevExtract.message;
     severity = sevExtract.severity;
     let logLinks: LogLink[] = [];
+    let links_text = "";
 
     let screenshot: string | null = null;
     if (rec.attachment) {
@@ -176,6 +177,7 @@ export async function fetchProcessedLog(
         entries[entries.length - 1].screenshot = attachmentUrl;
         continue; // don't emit separate row
       }
+
       // Inspect attachment gets two links (inspect + raw); others single link
       if (rec.attachment.includes("inspect")) {
         // Add two links:
@@ -186,16 +188,24 @@ export async function fetchProcessedLog(
         logLinks.push({
           text: rec.attachment,
           url: attachmentUrl,
+          inspect: true,
         });
+
         logLinks.push({
           text: "[raw]",
           url: attachmentUrl,
+          inspect: false,
         });
+
+        links_text += rec.attachment + " [raw] ";
       } else {
         logLinks.push({
           text: rec.attachment,
           url: attachmentUrl,
+          inspect: false,
         });
+
+        links_text += rec.attachment + " ";
       }
     }
 
@@ -207,6 +217,7 @@ export async function fetchProcessedLog(
       source,
       logMessage: {
         message: message,
+        link_string: links_text.trim(),
         links: logLinks,
       },
       screenshot,

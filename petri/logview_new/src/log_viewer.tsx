@@ -226,7 +226,7 @@ export function LogViewer(): React.JSX.Element {
                         const severityClass = `severity-${row.original.severity}`;
                         return `${severityClass} ${isSelected ? 'selected' : ''}`;
                     }}
-                    overscan={300}
+                    overscan={100}
                     onRowClick={(row, event) => {
                         const logId = `log-${row.original.index}`;
                         handleRowClick(
@@ -460,18 +460,21 @@ function filterLog(logs: LogEntry[] | undefined, query: string): LogEntry[] {
         return tokens.every(token => {
             const [prefix, ...rest] = token.split(':');
             const term = rest.join(':').toLowerCase();
+            const columnSearching = token.includes(':');
 
-            if (prefix === 'source') {
+            if (columnSearching && prefix === 'source') {
                 return log.source.toLowerCase().includes(term);
-            } else if (prefix === 'severity') {
+            } else if (columnSearching && prefix === 'severity') {
                 return log.severity.toLowerCase().includes(term);
-            } else if (prefix === 'message') {
-                return log.logMessage.message.toLowerCase().includes(term);
+            } else if (columnSearching && prefix === 'message') {
+                return log.logMessage.message.toLowerCase().includes(term)
+                    || log.logMessage.link_string.toLowerCase().includes(term);
             } else {
                 return (
                     log.source.toLowerCase().includes(token.toLowerCase()) ||
                     log.severity.toLowerCase().includes(token.toLowerCase()) ||
-                    log.logMessage.message.toLowerCase().includes(token.toLowerCase())
+                    log.logMessage.message.toLowerCase().includes(token.toLowerCase()) ||
+                    log.logMessage.link_string.toLowerCase().includes(token.toLowerCase())
                 );
             }
         });
