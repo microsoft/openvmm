@@ -326,10 +326,10 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
     let vtl2_lun = 5;
     let vtl0_scsi_lun = 0;
     let scsi_instance = Guid::new_random();
+    let vtl2_vsid = Guid::new_random();
     const SCSI_DISK_SECTORS: u64 = 0x4_0000;
     const SECTOR_SIZE: u64 = 512;
     const EXPECTED_SCSI_DISK_SIZE_BYTES: u64 = SCSI_DISK_SECTORS * SECTOR_SIZE;
-    const CONTROLLER_TEST_ID: &str = "scsi-controller";
 
     // Assumptions made by test infra & routines:
     //
@@ -360,26 +360,14 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
                     .build(),
             );
         })
-        .add_storage_controller(
-            CONTROLLER_TEST_ID,
-            petri::Vtl::Vtl2,
-            petri::StorageType::Scsi,
+        .add_vmbus_storage_controller(&vtl2_vsid, petri::Vtl::Vtl2, petri::VmbusStorageType::Scsi)
+        .add_vmbus_drive(
+            petri::Drive::new(Some(petri::Disk::Persistent(vhd_path.to_path_buf())), false),
+            &vtl2_vsid,
+            Some(vtl2_lun),
         )
         .run()
         .await?;
-
-    let (_, vtl2_vsid) = vm
-        .get_storage_controllers()
-        .get(CONTROLLER_TEST_ID)
-        .map(|c| (c.realized.controller_number, c.realized.vsid))
-        .ok_or_else(|| anyhow::anyhow!("couldn't find additional scsi controller"))?;
-
-    vm.add_disk(
-        petri::PetriDisk::Persistent(vhd_path.to_path_buf()),
-        CONTROLLER_TEST_ID,
-        Some(vtl2_lun),
-    )
-    .await?;
 
     vm.modify_vtl2_settings(|s| {
         let storage_controllers = &mut s.dynamic.as_mut().unwrap().storage_controllers;

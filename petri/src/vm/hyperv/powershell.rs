@@ -5,7 +5,6 @@
 
 use crate::CommandError;
 use crate::OpenHclServicingFlags;
-use crate::StorageType;
 use crate::VmScreenshotMeta;
 use crate::run_host_cmd;
 use anyhow::Context;
@@ -314,16 +313,6 @@ impl ps::AsVal for ControllerType {
     }
 }
 
-impl From<StorageType> for ControllerType {
-    fn from(value: StorageType) -> Self {
-        match value {
-            StorageType::Ide => Self::Ide,
-            StorageType::Scsi => Self::Scsi,
-            StorageType::Nvme => todo!(),
-        }
-    }
-}
-
 /// Runs Add-VMHardDiskDrive with the given arguments.
 pub async fn run_add_vm_hard_disk_drive(
     args: HyperVAddVMHardDiskDriveArgs<'_>,
@@ -380,6 +369,98 @@ pub async fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::
     .await
     .map(|_| ())
     .context("add_vm_dvd_drive")
+}
+
+/// Adds a SCSI controller with the specified VSID and target VTL to the VM
+pub async fn run_add_vm_scsi_controller_with_id(
+    ps_mod: &Path,
+    vmid: &Guid,
+    vsid: &Guid,
+    target_vtl: u32,
+) -> anyhow::Result<()> {
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Add-VmScsiControllerWithId")
+            .arg("Vsid", vsid)
+            .arg("TargetVtl", target_vtl)
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("add_vm_scsi_controller_with_id")
+}
+
+/// Adds or modifies the drive at the specified location on the SCSI controller
+/// with the specified VSID.
+pub async fn run_set_vm_drive_scsi(
+    ps_mod: &Path,
+    vmid: &Guid,
+    controller_vsid: &Guid,
+    controller_location: u8,
+    disk_path: Option<&Path>,
+    dvd: bool,
+    allow_modify_existing: bool,
+) -> anyhow::Result<()> {
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-VmDrive")
+            .arg("ControllerVsid", controller_vsid)
+            .arg("Lun", controller_location)
+            .arg_opt("DiskPath", disk_path)
+            .flag_opt(dvd.then_some("Dvd"))
+            .flag_opt(allow_modify_existing.then_some("AllowModifyExisting"))
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("set_vm_drive_scsi")
+}
+
+/// Adds or modifies the drive at the specified location on the IDE controller
+/// with the specified number.
+pub async fn run_set_vm_drive_ide(
+    ps_mod: &Path,
+    vmid: &Guid,
+    controller_number: u32,
+    controller_location: u8,
+    disk_path: Option<&Path>,
+    dvd: bool,
+    allow_modify_existing: bool,
+) -> anyhow::Result<()> {
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-VmDrive")
+            .arg("ControllerNumber", controller_number)
+            .arg("Lun", controller_location)
+            .arg_opt("DiskPath", disk_path)
+            .flag_opt(dvd.then_some("Dvd"))
+            .flag_opt(allow_modify_existing.then_some("AllowModifyExisting"))
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("set_vm_drive_scsi")
 }
 
 /// Runs Add-VMScsiController with the given arguments.

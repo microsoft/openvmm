@@ -50,7 +50,6 @@ pub struct PetriVmOpenVmm {
 impl PetriVmRuntime for PetriVmOpenVmm {
     type VmInspector = OpenVmmInspector;
     type VmFramebufferAccess = OpenVmmFramebufferAccess;
-    type RealizedStorageController = ();
 
     async fn teardown(self) -> anyhow::Result<()> {
         tracing::info!("waiting for worker");
@@ -170,14 +169,13 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         Self::set_vtl2_settings(self, settings).await
     }
 
-    async fn add_disk(
+    async fn set_vmbus_drive(
         &mut self,
-        _disk: &crate::PetriDisk,
-        _controller_type: crate::StorageType,
+        _disk: &crate::Drive,
+        _controller_id: &guid::Guid,
         _controller_location: u8,
-        _controller: &Self::RealizedStorageController,
     ) -> anyhow::Result<()> {
-        todo!()
+        todo!("openvmm set vmbus drive")
     }
 }
 

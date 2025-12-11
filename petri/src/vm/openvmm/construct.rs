@@ -9,7 +9,6 @@ use super::BOOT_NVME_NSID;
 use super::PARAVISOR_BOOT_NVME_INSTANCE;
 use super::PetriVmConfigOpenVmm;
 use super::PetriVmResourcesOpenVmm;
-use super::SCSI_INSTANCE;
 use super::memdiff_disk;
 use crate::BootDeviceType;
 use crate::Firmware;
@@ -30,6 +29,7 @@ use crate::UefiGuest;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openvmm::BOOT_NVME_INSTANCE;
 use crate::openvmm::memdiff_vmgs;
+use crate::vm::PETRI_VTL0_SCSI_CONTROLLER_ID;
 use crate::vm::append_cmdline;
 use crate::vtl2_settings::ControllerType;
 use crate::vtl2_settings::Vtl2LunBuilder;
@@ -128,11 +128,16 @@ impl PetriVmConfigOpenVmm {
             boot_device_type,
             tpm: tpm_config,
             guest_crash_disk,
-            additional_storage_controllers,
+            ide,
+            additional_vmbus_storage_controllers,
         } = petri_vm_config;
 
-        if !additional_storage_controllers.is_empty() {
+        if !additional_vmbus_storage_controllers.is_empty() {
             unimplemented!("openvmm additional storage controllers");
+        }
+
+        if ide.is_some_and(|c| c != crate::IdeConfig::default()) {
+            unimplemented!("custom ide config");
         }
 
         let PetriVmResources { driver, log_source } = resources;
@@ -242,7 +247,7 @@ impl PetriVmConfigOpenVmm {
             };
 
         let mut petri_vtl0_scsi = ScsiControllerHandle {
-            instance_id: SCSI_INSTANCE,
+            instance_id: PETRI_VTL0_SCSI_CONTROLLER_ID,
             max_sub_channel_count: 1,
             io_queue_depth: None,
             devices: vec![],
