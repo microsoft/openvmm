@@ -22,6 +22,12 @@ flowey_request! {
         GetOpenvmmDeps(OpenvmmDepsArch, WriteVar<PathBuf>),
         /// Get the Nix store path for protoc
         GetProtoc(WriteVar<PathBuf>),
+        /// Get the Nix store path for openhcl_kernel vmlinux
+        GetOpenhclKernelVmlinux(WriteVar<PathBuf>),
+        /// Get the Nix store path for openhcl_kernel modules
+        GetOpenhclKernelModules(WriteVar<PathBuf>),
+        /// Get the Nix store path for UEFI firmware (MSVM.fd)
+        GetUefiMuMsvm(WriteVar<PathBuf>),
     }
 }
 
@@ -38,6 +44,9 @@ impl FlowNode for Node {
         let mut openvmm_deps_requests: BTreeMap<OpenvmmDepsArch, Vec<WriteVar<PathBuf>>> =
             BTreeMap::new();
         let mut protoc_requests = Vec::new();
+        let mut openhcl_kernel_vmlinux_requests = Vec::new();
+        let mut openhcl_kernel_modules_requests = Vec::new();
+        let mut uefi_mu_msvm_requests = Vec::new();
 
         // Parse all requests and group by type
         for req in requests {
@@ -46,17 +55,28 @@ impl FlowNode for Node {
                     openvmm_deps_requests.entry(arch).or_default().push(var);
                 }
                 Request::GetProtoc(var) => protoc_requests.push(var),
+                Request::GetOpenhclKernelVmlinux(var) => openhcl_kernel_vmlinux_requests.push(var),
+                Request::GetOpenhclKernelModules(var) => openhcl_kernel_modules_requests.push(var),
+                Request::GetUefiMuMsvm(var) => uefi_mu_msvm_requests.push(var),
             }
         }
 
         // Only emit step if there are actual requests
-        if openvmm_deps_requests.is_empty() && protoc_requests.is_empty() {
+        if openvmm_deps_requests.is_empty()
+            && protoc_requests.is_empty()
+            && openhcl_kernel_vmlinux_requests.is_empty()
+            && openhcl_kernel_modules_requests.is_empty()
+            && uefi_mu_msvm_requests.is_empty()
+        {
             return Ok(());
         }
 
         ctx.emit_rust_step("resolve nix dependency paths", |ctx| {
             let openvmm_deps_requests = openvmm_deps_requests.claim(ctx);
             let protoc_requests = protoc_requests.claim(ctx);
+            let openhcl_kernel_vmlinux_requests = openhcl_kernel_vmlinux_requests.claim(ctx);
+            let openhcl_kernel_modules_requests = openhcl_kernel_modules_requests.claim(ctx);
+            let uefi_mu_msvm_requests = uefi_mu_msvm_requests.claim(ctx);
 
             move |rt| {
                 // Read Nix environment variables
@@ -85,6 +105,48 @@ impl FlowNode for Node {
 
                     log::info!("Resolved Nix protoc: {}", protoc_path.display());
                     rt.write_all(protoc_requests, &protoc_path);
+                }
+
+                // Read and write openhcl_kernel vmlinux path if requested
+                if !openhcl_kernel_vmlinux_requests.is_empty() {
+                    let kernel_vmlinux = std::env::var("NIX_OPENHCL_KERNEL_VMLINUX").context(
+                        "NIX_OPENHCL_KERNEL_VMLINUX not set - ensure shell.nix exports this variable",
+                    )?;
+                    let kernel_vmlinux_path = PathBuf::from(&kernel_vmlinux);
+
+                    log::info!(
+                        "Resolved Nix openhcl_kernel vmlinux: {}",
+                        kernel_vmlinux_path.display()
+                    );
+                    rt.write_all(openhcl_kernel_vmlinux_requests, &kernel_vmlinux_path);
+                }
+
+                // Read and write openhcl_kernel modules path if requested
+                if !openhcl_kernel_modules_requests.is_empty() {
+                    let kernel_modules = std::env::var("NIX_OPENHCL_KERNEL_MODULES").context(
+                        "NIX_OPENHCL_KERNEL_MODULES not set - ensure shell.nix exports this variable",
+                    )?;
+                    let kernel_modules_path = PathBuf::from(&kernel_modules);
+
+                    log::info!(
+                        "Resolved Nix openhcl_kernel modules: {}",
+                        kernel_modules_path.display()
+                    );
+                    rt.write_all(openhcl_kernel_modules_requests, &kernel_modules_path);
+                }
+
+                // Read and write UEFI firmware path if requested
+                if !uefi_mu_msvm_requests.is_empty() {
+                    let uefi_mu_msvm = std::env::var("NIX_UEFI_MU_MSVM").context(
+                        "NIX_UEFI_MU_MSVM not set - ensure shell.nix exports this variable",
+                    )?;
+                    let uefi_mu_msvm_path = PathBuf::from(&uefi_mu_msvm);
+
+                    log::info!(
+                        "Resolved Nix UEFI firmware: {}",
+                        uefi_mu_msvm_path.display()
+                    );
+                    rt.write_all(uefi_mu_msvm_requests, &uefi_mu_msvm_path);
                 }
 
                 Ok(())

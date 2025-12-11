@@ -156,6 +156,9 @@ in pkgs.mkShell {
   OPENVMM_DEPS_X64 = x64BaseDeps.openvmm_deps;
   OPENVMM_DEPS_AARCH64 = aarch64BaseDeps.openvmm_deps;
   NIX_PROTOC_PATH = protoc;
+  NIX_OPENHCL_KERNEL_VMLINUX = "${openhcl_kernel}/vmlinux";
+  NIX_OPENHCL_KERNEL_MODULES = "${openhcl_kernel}/modules";
+  NIX_UEFI_MU_MSVM = "${uefi_mu_msvm}/MSVM.fd";
   RUST_BACKTRACE = 1;
   SOURCE_DATE_EPOCH = 12345;
 
