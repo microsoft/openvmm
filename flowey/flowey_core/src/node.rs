@@ -52,6 +52,7 @@ pub mod user_facing {
     pub use super::VarEqBacking;
     pub use super::VarNotClaimed;
     pub use super::WriteVar;
+    pub use super::shell::FloweyShell;
     pub use super::steps::ado::AdoResourcesRepositoryId;
     pub use super::steps::ado::AdoRuntimeVar;
     pub use super::steps::ado::AdoStepServices;
@@ -60,7 +61,6 @@ pub mod user_facing {
     pub use super::steps::github::GhPermission;
     pub use super::steps::github::GhPermissionValue;
     pub use super::steps::rust::RustRuntimeServices;
-    pub use super::shell::FloweyShell;
     pub use crate::flowey_request;
     pub use crate::new_flow_node;
     pub use crate::new_simple_flow_node;

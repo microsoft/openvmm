@@ -58,6 +58,7 @@ impl FlowNode for Node {
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
         ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
+        ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
         ctx.import::<flowey_lib_common::download_cargo_fuzz::Node>();
         ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
@@ -78,6 +79,8 @@ impl FlowNode for Node {
         let mut local_openvmm_deps_x64: Option<ReadVar<PathBuf>> = None;
         let mut local_openvmm_deps_aarch64: Option<ReadVar<PathBuf>> = None;
         let mut local_protoc: Option<ReadVar<PathBuf>> = None;
+        let mut local_kernel: Option<ReadVar<PathBuf>> = None;
+        let mut local_uefi: Option<ReadVar<PathBuf>> = None;
 
         for req in requests {
             match req {
@@ -103,16 +106,26 @@ impl FlowNode for Node {
 
         // If NixEnvironment was requested, get paths from nix_deps_provider
         if has_nix_requests {
+            // Get the repo path so nix_deps_provider can access shell.nix
+            let repo_path = ctx.reqv(|v| crate::git_checkout_openvmm_repo::Request::GetRepoDir(
+                crate::git_checkout_openvmm_repo::req::GetRepoDir(v)
+            ));
+            ctx.req(flowey_lib_common::nix_deps_provider::Request::SetRepoPath(repo_path));
+
             local_openvmm_deps_x64 = Some(ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetOpenvmmDeps(
                 flowey_lib_common::nix_deps_provider::OpenvmmDepsArch::X86_64,
                 v,
             )));
-            local_protoc = Some(ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetProtoc(v)));
+            local_protoc = Some(ctx.reqv(flowey_lib_common::nix_deps_provider::Request::GetProtoc));
+            local_kernel = Some(ctx.reqv(flowey_lib_common::nix_deps_provider::Request::GetKernel));
+            local_uefi = Some(ctx.reqv(flowey_lib_common::nix_deps_provider::Request::GetUefiMuMsvm));
         }
 
         // Track whether we have local paths for openvmm_deps and protoc
         let has_local_openvmm_deps = local_openvmm_deps_x64.is_some() || local_openvmm_deps_aarch64.is_some();
         let has_local_protoc = local_protoc.is_some();
+        let has_local_kernel = local_kernel.is_some();
+        let has_local_uefi = local_uefi.is_some();
 
         // Set up local paths for openvmm_deps if provided
         if let Some(openvmm_deps_path_x64) = local_openvmm_deps_x64 {
@@ -135,16 +148,30 @@ impl FlowNode for Node {
             ));
         }
 
+        if let Some(kernel_path) = local_kernel {
+            ctx.req(crate::download_openhcl_kernel_package::Request::LocalPath(kernel_path));
+        }
+
+        if let Some(uefi_path) = local_uefi {
+            ctx.req(crate::download_uefi_mu_msvm::Request::LocalPath(uefi_path));
+        }
+
         // Set up version requests for everything
-        // Note: openvmm_deps and protoc will only use these if local paths weren't provided
-        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
-        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()));
-        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()));
-        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::CvmDev, OPENHCL_KERNEL_DEV_VERSION.into()));
+        if !has_local_kernel {
+            ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
+            ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()));
+            ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()));
+            ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::CvmDev, OPENHCL_KERNEL_DEV_VERSION.into()));
+        }
+
         if !has_local_openvmm_deps {
             ctx.req(crate::resolve_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
         }
-        ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
+
+        if !has_local_uefi {
+            ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
+        }
+
         ctx.req(flowey_lib_common::download_azcopy::Request::Version(AZCOPY.into()));
         ctx.req(flowey_lib_common::download_cargo_fuzz::Request::Version(FUZZ.into()));
         ctx.req(flowey_lib_common::download_cargo_nextest::Request::Version(NEXTEST.into()));

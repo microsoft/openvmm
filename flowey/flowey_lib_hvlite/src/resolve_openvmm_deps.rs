@@ -104,16 +104,16 @@ impl FlowNode for Node {
                 let openhcl_cpio_dbgrd = openhcl_cpio_dbgrd.claim(ctx);
                 let openhcl_cpio_shell = openhcl_cpio_shell.claim(ctx);
                 let openhcl_sysroot = openhcl_sysroot.claim(ctx);
-                let local_paths: BTreeMap<OpenvmmDepsArch, ClaimedReadVar<PathBuf>> =
-                    local_paths.into_iter()
-                        .map(|(arch, var)| (arch, var.claim(ctx)))
-                        .collect();
+                let local_paths: BTreeMap<OpenvmmDepsArch, ClaimedReadVar<PathBuf>> = local_paths
+                    .into_iter()
+                    .map(|(arch, var)| (arch, var.claim(ctx)))
+                    .collect();
                 move |rt| {
                     // Read all paths upfront for efficiency
-                    let resolved_paths: BTreeMap<OpenvmmDepsArch, PathBuf> =
-                        local_paths.iter()
-                            .map(|(arch, claimed_var)| (*arch, rt.read(claimed_var.clone())))
-                            .collect();
+                    let resolved_paths: BTreeMap<OpenvmmDepsArch, PathBuf> = local_paths
+                        .iter()
+                        .map(|(arch, claimed_var)| (*arch, rt.read(claimed_var.clone())))
+                        .collect();
 
                     let get_base_dir = |arch: OpenvmmDepsArch| -> anyhow::Result<&PathBuf> {
                         resolved_paths.get(&arch).ok_or_else(|| {

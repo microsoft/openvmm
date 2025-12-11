@@ -47,10 +47,10 @@ in pkgs.mkShell.override { } {
     pkgs.openssl.dev
   ];
   CARGO_BUILD_ARGS = "--use-local-deps --custom-openvmm-deps ${openvmm_deps} --custom-uefi=${uefi_mu_msvm}/MSVM.fd --custom-kernel ${openhcl_kernel}/vmlinux --custom-kernel-modules ${openhcl_kernel}/modules --custom-protoc ${protoc}";
-  # CARGO_BUILD_ARGS = "--use-local-deps --custom-openvmm-deps ${openvmm_deps} --custom-uefi=${uefi_mu_msvm}/MSVM.fd --custom-kernel-pkg ${openhcl_kernel} --custom-kernel ${openhcl_kernel}/vmlinux --custom-kernel-modules ${openhcl_kernel}/modules --custom-protoc ${protoc}";
-  OPENVMM_DEPS = openvmm_deps;
+
+  NIX_OPENVMM_DEPS = openvmm_deps;
   NIX_PROTOC_PATH = protoc;
-  NIX_OPENHCL_KERNEL_VMLINUX = "${openhcl_kernel}/vmlinux";
+  NIX_OPENHCL_KERNEL = "${openhcl_kernel}/vmlinux";
   NIX_OPENHCL_KERNEL_MODULES = "${openhcl_kernel}/modules";
   NIX_UEFI_MU_MSVM = "${uefi_mu_msvm}/MSVM.fd";
   RUST_BACKTRACE = 1;
