@@ -46,6 +46,7 @@ pub mod install_nix;
 pub mod install_nodejs;
 pub mod install_nuget_azure_credential_provider;
 pub mod install_rust;
+pub mod nix_deps_provider;
 pub mod nuget_install_package;
 pub mod publish_test_results;
 pub mod run_cargo_build;

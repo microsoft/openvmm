@@ -49,6 +49,7 @@ in pkgs.mkShell.override { } {
   CARGO_BUILD_ARGS = "--use-local-deps --custom-openvmm-deps ${openvmm_deps} --custom-uefi=${uefi_mu_msvm}/MSVM.fd --custom-kernel ${openhcl_kernel}/vmlinux --custom-kernel-modules ${openhcl_kernel}/modules --custom-protoc ${protoc}";
   # CARGO_BUILD_ARGS = "--use-local-deps --custom-openvmm-deps ${openvmm_deps} --custom-uefi=${uefi_mu_msvm}/MSVM.fd --custom-kernel-pkg ${openhcl_kernel} --custom-kernel ${openhcl_kernel}/vmlinux --custom-kernel-modules ${openhcl_kernel}/modules --custom-protoc ${protoc}";
   OPENVMM_DEPS = openvmm_deps;
+  NIX_PROTOC_PATH = protoc;
   RUST_BACKTRACE = 1;
   # will probably need more than one of these for local source + dependencies.
   # RUSTFLAGS = "--remap-path-prefix =/src";
