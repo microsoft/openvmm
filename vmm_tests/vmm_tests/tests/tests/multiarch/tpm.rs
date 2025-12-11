@@ -5,7 +5,6 @@ use anyhow::Context;
 use anyhow::ensure;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
-#[cfg(windows)]
 use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
 use petri::ShutdownKind;
@@ -17,7 +16,6 @@ use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X6
 use pipette_client::PipetteClient;
 use std::path::Path;
 use vmm_test_macros::openvmm_test;
-#[cfg(windows)]
 use vmm_test_macros::vmm_test;
 
 const AK_CERT_NONZERO_BYTES: usize = 2500;
@@ -160,27 +158,34 @@ impl<'a> TpmGuestTests<'a> {
 }
 
 /// Basic boot tests with TPM enabled.
-#[openvmm_test(
-    openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+#[vmm_test(
+    // TODO: enable openvmm TPM tests once we can build OpenSSL on Windows in CI
+    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    // openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))
 )]
-async fn boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
-    let os_flavor = config.os_flavor();
-    let config = config.modify_backend(|b| b.with_tpm());
-
-    let (vm, agent) = match os_flavor {
-        OsFlavor::Windows => config.run().await?,
-        OsFlavor::Linux => {
-            config
-                .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-                // TODO: this shouldn't be needed once with_tpm() is
-                // backend-agnostic.
-                .with_expect_reset()
-                .run()
-                .await?
-        }
-        _ => unreachable!(),
-    };
+async fn boot_with_tpm<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_tpm(true)
+        .with_tpm_state_persistence(true)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .run()
+        .await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -197,34 +202,32 @@ async fn tpm_ak_cert_persisted<T>(
     extra_deps: (ResolvedArtifact<T>,),
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    let config = config
+    let (mut vm, mut agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .with_tpm(true)
+        .with_tpm_state_persistence(true)
         .modify_backend(|b| {
-            b.with_tpm()
-                .with_tpm_state_persistence(true)
-                .with_igvm_attest_test_config(
-                    get_resources::ged::IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
-                )
-        });
+            b.with_igvm_attest_test_config(
+                get_resources::ged::IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
+            )
+        })
+        .run()
+        .await?;
 
-    let (vm, agent, guest_binary_path) = match os_flavor {
+    let guest_binary_path = match os_flavor {
+        // Ubuntu automatically reboots when the TPM is enabled
         OsFlavor::Linux => {
             // First boot - AK cert request will be served by GED.
             // Second boot - Ak cert request will be bypassed by GED.
-            // TODO: with_expect_reset shouldn't be needed once with_tpm() is backend-agnostic.
-            let (vm, agent) = config.with_expect_reset().run().await?;
-
-            (vm, agent, TPM_GUEST_TESTS_LINUX_GUEST_PATH)
+            TPM_GUEST_TESTS_LINUX_GUEST_PATH
         }
         OsFlavor::Windows => {
             // First boot - AK cert request will be served by GED
-            let (mut vm, agent) = config.run().await?;
-
             // Second boot - Ak cert request will be bypassed by GED.
             agent.reboot().await?;
-            let agent = vm.wait_for_reset().await?;
+            agent = vm.wait_for_reset().await?;
 
-            (vm, agent, TPM_GUEST_TESTS_WINDOWS_GUEST_PATH)
+            TPM_GUEST_TESTS_WINDOWS_GUEST_PATH
         }
         _ => unreachable!(),
     };
@@ -261,33 +264,29 @@ async fn tpm_ak_cert_retry<T>(
     extra_deps: (ResolvedArtifact<T>,),
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    let config = config
+    let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .with_tpm(true)
+        .with_tpm_state_persistence(true)
         .modify_backend(|b| {
-            b.with_tpm()
-                .with_tpm_state_persistence(true)
-                .with_igvm_attest_test_config(
-                    get_resources::ged::IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
-                )
-        });
+            b.with_igvm_attest_test_config(
+                get_resources::ged::IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+            )
+        })
+        .run()
+        .await?;
 
-    let (vm, agent, guest_binary_path) = match os_flavor {
+    let guest_binary_path = match os_flavor {
         OsFlavor::Linux => {
             // First boot - expect no AK cert from GED
             // Second boot - expect get AK cert from GED on the second attempts
-            // TODO: with_expect_reset shouldn't be needed once with_tpm() is backend-agnostic.
-            let (vm, agent) = config.with_expect_reset().run().await?;
-
-            (vm, agent, TPM_GUEST_TESTS_LINUX_GUEST_PATH)
+            TPM_GUEST_TESTS_LINUX_GUEST_PATH
         }
         OsFlavor::Windows => {
-            let (vm, agent) = config.run().await?;
-
             // At this point, two AK cert requests are made. One is during tpm
             // initialization, another one is during boot triggering by a NV read (Windows-specific).
             // Both requests are expected to fail due to the GED configuration.
-
-            (vm, agent, TPM_GUEST_TESTS_WINDOWS_GUEST_PATH)
+            TPM_GUEST_TESTS_WINDOWS_GUEST_PATH
         }
         _ => unreachable!(),
     };
@@ -329,27 +328,12 @@ async fn tpm_ak_cert_retry<T>(
 async fn vbs_boot_with_attestation(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
-    let os_flavor = config.os_flavor();
-    let config = config.modify_backend(|b| b.with_tpm().with_tpm_state_persistence(true));
-
-    let mut vm = match os_flavor {
-        OsFlavor::Windows => {
-            config
-                .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-                .run_without_agent()
-                .await?
-        }
-        OsFlavor::Linux => {
-            config
-                .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-                // TODO: this shouldn't be needed once with_tpm() is
-                // backend-agnostic.
-                .with_expect_reset()
-                .run_without_agent()
-                .await?
-        }
-        _ => unreachable!(),
-    };
+    let mut vm = config
+        .with_tpm(true)
+        .with_tpm_state_persistence(true)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .run_without_agent()
+        .await?;
 
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_clean_teardown().await?;
@@ -362,14 +346,11 @@ async fn vbs_boot_with_attestation(
 async fn tpm_test_platform_hierarchy_disabled(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
-    let config = config
+    let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-        .modify_backend(|b| b.with_tpm())
-        // TODO: this shouldn't be needed once with_tpm() is
-        // backend-agnostic.
-        .with_expect_reset();
-
-    let (vm, agent) = config.run().await?;
+        .with_tpm(true)
+        .run()
+        .await?;
 
     // Use the python script to test that platform hierarchy operations fail
     const TEST_FILE: &str = "tpm_platform_hierarchy.py";
@@ -475,6 +456,7 @@ async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
     let os_flavor = config.os_flavor();
     // TODO: Add test IGVMAgent RPC server to support the boot-time attestation.
     let config = config
+        .with_tpm(true)
         .with_tpm_state_persistence(false)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
 

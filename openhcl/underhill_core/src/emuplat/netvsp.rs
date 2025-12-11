@@ -181,12 +181,12 @@ async fn try_create_mana_device(
         VfioDevice::restore(driver_source, pci_id, true, dma_clients)
             .instrument(tracing::info_span!("restore_mana_vfio_device"))
             .await
-            .context("failed to restore device")?
+            .with_context(|| format!("failed to restore vfio device for {}", pci_id))?
     } else {
         VfioDevice::new(driver_source, pci_id, dma_clients)
             .instrument(tracing::info_span!("new_mana_vfio_device"))
             .await
-            .context("failed to open device")?
+            .with_context(|| format!("failed to open vfio device for {}", pci_id))?
     };
 
     ManaDevice::new(
@@ -1350,7 +1350,7 @@ mod save_restore {
 
     impl From<&state::SavedState> for RuntimeSavedState {
         fn from(state: &state::SavedState) -> Self {
-            let direction_to_vtl0 = Arc::new(Mutex::new(state.direction_to_vtl0.to_vec()));
+            let direction_to_vtl0 = Arc::new(Mutex::new(state.direction_to_vtl0.clone()));
             let hidden_vtl0 = Arc::new(Mutex::new(state.hidden_vtl0));
             Self {
                 instance_id: state.instance_id,

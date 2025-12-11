@@ -47,6 +47,8 @@ open_enum! {
         HW_KEY_PROTECTOR = 11,
         GUEST_SECRET_KEY = 13,
         HIBERNATION_FIRMWARE = 14,
+        PLATFORM_SEED = 15,
+        PROVENANCE_DOC = 16,
 
         EXTENDED_FILE_TABLE = 63,
     }

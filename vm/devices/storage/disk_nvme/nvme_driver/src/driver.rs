@@ -7,7 +7,6 @@ use super::spec;
 use crate::NVME_PAGE_SHIFT;
 use crate::Namespace;
 use crate::NamespaceError;
-use crate::NvmeDriverSavedState;
 use crate::RequestError;
 use crate::driver::save_restore::IoQueueSavedState;
 use crate::queue_pair::AdminAerHandler;
@@ -19,6 +18,7 @@ use crate::queue_pair::QueuePair;
 use crate::queue_pair::admin_cmd;
 use crate::registers::Bar0;
 use crate::registers::DeviceRegisters;
+use crate::save_restore::NvmeDriverSavedState;
 use anyhow::Context as _;
 use futures::StreamExt;
 use futures::future::join_all;
@@ -61,9 +61,9 @@ use zerocopy::IntoBytes;
 /// only by `NvmeDisk`! Remove any sanitization in `fuzz_nvm_driver.rs`
 /// if this struct is used anywhere else.
 #[derive(Inspect)]
-pub struct NvmeDriver<T: DeviceBacking> {
+pub struct NvmeDriver<D: DeviceBacking> {
     #[inspect(flatten)]
-    task: Option<TaskControl<DriverWorkerTask<T>, WorkerState>>,
+    task: Option<TaskControl<DriverWorkerTask<D>, WorkerState>>,
     device_id: String,
     identify: Option<Arc<spec::IdentifyController>>,
     #[inspect(skip)]
@@ -88,19 +88,19 @@ struct NamespaceHandle {
 }
 
 #[derive(Inspect)]
-struct DriverWorkerTask<T: DeviceBacking> {
+struct DriverWorkerTask<D: DeviceBacking> {
     /// The VFIO device backing this driver. For KeepAlive cases, the VFIO handle
     /// is never dropped, otherwise there is a chance that VFIO will reset the
     /// device. We don't want that.
     ///
     /// Dropped in `NvmeDriver::reset`.
-    device: ManuallyDrop<T>,
+    device: ManuallyDrop<D>,
     #[inspect(skip)]
     driver: VmTaskDriver,
-    registers: Arc<DeviceRegisters<T>>,
-    admin: Option<QueuePair<AdminAerHandler>>,
+    registers: Arc<DeviceRegisters<D>>,
+    admin: Option<QueuePair<AdminAerHandler, D>>,
     #[inspect(iter_by_index)]
-    io: Vec<IoQueue>,
+    io: Vec<IoQueue<D>>,
     /// Prototype IO queues for restoring from saved state. These are queues
     /// that were created on the device at some point, but had no pending
     /// IOs at save/restore time. These will be promoted to full IO queues
@@ -156,13 +156,13 @@ struct ProtoIoQueue {
 }
 
 #[derive(Inspect)]
-struct IoQueue {
-    queue: QueuePair<NoOpAerHandler>,
+struct IoQueue<D: DeviceBacking> {
+    queue: QueuePair<NoOpAerHandler, D>,
     iv: u16,
     cpu: u32,
 }
 
-impl IoQueue {
+impl<D: DeviceBacking> IoQueue<D> {
     pub async fn save(&self) -> anyhow::Result<IoQueueSavedState> {
         Ok(IoQueueSavedState {
             cpu: self.cpu,
@@ -174,7 +174,7 @@ impl IoQueue {
     pub fn restore(
         spawner: VmTaskDriver,
         interrupt: DeviceInterrupt,
-        registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        registers: Arc<DeviceRegisters<D>>,
         mem_block: MemoryBlock,
         saved_state: &IoQueueSavedState,
         bounce_buffer: bool,
@@ -224,12 +224,12 @@ enum NvmeWorkerRequest {
     Save(Rpc<Span, anyhow::Result<NvmeDriverWorkerSavedState>>),
 }
 
-impl<T: DeviceBacking> NvmeDriver<T> {
+impl<D: DeviceBacking> NvmeDriver<D> {
     /// Initializes the driver.
     pub async fn new(
         driver_source: &VmTaskDriverSource,
         cpu_count: u32,
-        device: T,
+        device: D,
         bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
         let pci_id = device.id().to_owned();
@@ -258,7 +258,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     async fn new_disabled(
         driver_source: &VmTaskDriverSource,
         cpu_count: u32,
-        mut device: T,
+        mut device: D,
         bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
         let driver = driver_source.simple();
@@ -549,7 +549,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         drop(self);
     }
 
-    fn reset(&mut self) -> impl Send + Future<Output = ()> + use<T> {
+    fn reset(&mut self) -> impl Send + Future<Output = ()> + use<D> {
         let driver = self.driver.clone();
         let id = self.device_id.clone();
         let mut task = std::mem::take(&mut self.task).unwrap();
@@ -640,10 +640,20 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .io_issuers
             .send
             .call(NvmeWorkerRequest::Save, span.clone())
-            .instrument(span)
+            .instrument(span.clone())
             .await?
         {
             Ok(s) => {
+                let _e = span.entered();
+                tracing::info!(
+                    namespaces = self
+                        .namespaces
+                        .keys()
+                        .map(|nsid| nsid.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    "saving namespaces",
+                );
                 let mut saved_namespaces = vec![];
                 for (nsid, handle) in self.namespaces.iter() {
                     saved_namespaces.push(handle.namespace.save().with_context(|| {
@@ -667,11 +677,30 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         }
     }
 
+    /// This should only be called during restore if keepalive is no longer
+    /// supported and the previously enabled device needs to be reset. It
+    /// performs a controller reset by setting cc.en to 0. It will then also
+    /// drop the given device instance.
+    pub async fn clear_existing_state(
+        driver_source: &VmTaskDriverSource,
+        mut device: D,
+    ) -> anyhow::Result<()> {
+        let driver = driver_source.simple();
+        let bar0_mapping = device
+            .map_bar(0)
+            .context("failed to map device registers to clear existing state")?;
+        let bar0 = Bar0(bar0_mapping);
+        bar0.reset(&driver)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to reset device during clear: {:#x}", e))?;
+        Ok(())
+    }
+
     /// Restores NVMe driver state after servicing.
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
         cpu_count: u32,
-        mut device: T,
+        mut device: D,
         saved_state: &NvmeDriverSavedState,
         bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
@@ -830,7 +859,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .filter(|q| {
                 q.queue_data.qid == 1 || !q.queue_data.handler_data.pending_cmds.commands.is_empty()
             })
-            .flat_map(|q| -> Result<IoQueue, anyhow::Error> {
+            .flat_map(|q| -> Result<IoQueue<D>, anyhow::Error> {
                 let qid = q.queue_data.qid;
                 let cpu = q.cpu;
                 tracing::info!(qid, cpu, ?pci_id, "restoring queue");
@@ -1016,7 +1045,7 @@ async fn handle_asynchronous_events(
     }
 }
 
-impl<T: DeviceBacking> Drop for NvmeDriver<T> {
+impl<D: DeviceBacking> Drop for NvmeDriver<D> {
     fn drop(&mut self) {
         tracing::trace!(pci_id = ?self.device_id, ka = self.nvme_keepalive, task = self.task.is_some(), "dropping nvme driver");
         if self.task.is_some() {
@@ -1051,7 +1080,7 @@ impl IoIssuers {
     }
 }
 
-impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
+impl<D: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<D> {
     async fn run(
         &mut self,
         stop: &mut task_control::StopTask<'_>,
@@ -1066,20 +1095,27 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
                                 .await
                         }
                         Some(NvmeWorkerRequest::Save(rpc)) => {
-                            rpc.handle(async |span| self.save(state).instrument(span).await)
-                                .await
+                            rpc.handle(async |span| {
+                                let child_span = tracing::info_span!(
+                                    parent: &span,
+                                    "nvme_worker_save",
+                                    pci_id = %self.device.id()
+                                );
+                                self.save(state).instrument(child_span).await
+                            })
+                            .await
                         }
                         None => break,
                     }
                 }
             })
             .await;
-        tracing::debug!("nvme worker task exiting");
+        tracing::info!(pci_id = %self.device.id(), "nvme worker task exiting");
         r
     }
 }
 
-impl<T: DeviceBacking> DriverWorkerTask<T> {
+impl<D: DeviceBacking> DriverWorkerTask<D> {
     fn restore_io_issuer(&mut self, proto: ProtoIoQueue) -> anyhow::Result<()> {
         let pci_id = self.device.id().to_owned();
         let qid = proto.save_state.queue_data.qid;
@@ -1386,12 +1422,14 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
     }
 }
 
-impl<T: DeviceBacking> InspectTask<WorkerState> for DriverWorkerTask<T> {
+impl<D: DeviceBacking> InspectTask<WorkerState> for DriverWorkerTask<D> {
     fn inspect(&self, req: inspect::Request<'_>, state: Option<&WorkerState>) {
         req.respond().merge(self).merge(state);
     }
 }
 
+/// Save/restore data structures exposed by the NVMe driver.
+#[expect(missing_docs)]
 pub mod save_restore {
     use super::*;
 
@@ -1493,6 +1531,7 @@ pub mod save_restore {
         pub aer_handler: Option<AerHandlerSavedState>,
     }
 
+    /// Snapshot of submission queue metadata captured during save.
     #[derive(Protobuf, Clone, Debug)]
     #[mesh(package = "nvme_driver")]
     pub struct SubmissionQueueSavedState {
@@ -1508,6 +1547,7 @@ pub mod save_restore {
         pub len: u32,
     }
 
+    /// Snapshot of completion queue metadata captured during save.
     #[derive(Protobuf, Clone, Debug)]
     #[mesh(package = "nvme_driver")]
     pub struct CompletionQueueSavedState {
@@ -1524,6 +1564,7 @@ pub mod save_restore {
         pub phase: bool,
     }
 
+    /// Pending command entry captured from a queue handler.
     #[derive(Protobuf, Clone, Debug)]
     #[mesh(package = "nvme_driver")]
     pub struct PendingCommandSavedState {
@@ -1531,6 +1572,7 @@ pub mod save_restore {
         pub command: spec::Command,
     }
 
+    /// Collection of pending commands indexed by CID.
     #[derive(Protobuf, Clone, Debug)]
     #[mesh(package = "nvme_driver")]
     pub struct PendingCommandsSavedState {
@@ -1552,6 +1594,7 @@ pub mod save_restore {
         pub identify_ns: nvme_spec::nvm::IdentifyNamespace,
     }
 
+    /// Saved Async Event Request handler metadata.
     #[derive(Clone, Debug, Protobuf)]
     #[mesh(package = "nvme_driver")]
     pub struct AerHandlerSavedState {

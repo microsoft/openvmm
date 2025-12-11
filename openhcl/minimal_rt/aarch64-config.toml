@@ -13,7 +13,7 @@
 target = "minimal_rt/aarch64-minimal_rt-none.json"
 
 [unstable]
-build-std = ["core"]
+build-std = ["core", "alloc"]
 
 [env]
 MINIMAL_RT_BUILD = "1"
