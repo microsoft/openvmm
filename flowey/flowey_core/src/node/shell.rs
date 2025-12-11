@@ -197,13 +197,13 @@ mod tests {
 
     #[test]
     fn test_build_shell_command_simple() {
-        let cmd = build_shell_command("cargo", &vec!["build".into()], &BTreeMap::new());
+        let cmd = build_shell_command("cargo", &["build".into()], &BTreeMap::new());
         assert_eq!(cmd, "cargo build");
     }
 
     #[test]
     fn test_build_shell_command_no_args() {
-        let cmd = build_shell_command("cargo", &vec![], &BTreeMap::new());
+        let cmd = build_shell_command("cargo", &[], &BTreeMap::new());
         assert_eq!(cmd, "cargo");
     }
 
@@ -218,7 +218,7 @@ mod tests {
     fn test_build_shell_command_with_env() {
         let mut env = BTreeMap::new();
         env.insert("RUST_LOG".into(), "debug".into());
-        let cmd = build_shell_command("cargo", &vec!["build".into()], &env);
+        let cmd = build_shell_command("cargo", &["build".into()], &env);
         assert_eq!(cmd, "RUST_LOG=debug cargo build");
     }
 
@@ -227,7 +227,7 @@ mod tests {
         let mut env = BTreeMap::new();
         env.insert("RUST_LOG".into(), "debug".into());
         env.insert("CARGO_INCREMENTAL".into(), "0".into());
-        let cmd = build_shell_command("cargo", &vec!["build".into()], &env);
+        let cmd = build_shell_command("cargo", &["build".into()], &env);
         // BTreeMap maintains sorted order by key
         assert_eq!(cmd, "CARGO_INCREMENTAL=0 RUST_LOG=debug cargo build");
     }
@@ -243,15 +243,13 @@ mod tests {
 
     #[test]
     fn test_needs_nix_wrapper_for_nix_platform() {
-        let shell =
-            FloweyShell::new(FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)).unwrap();
+        let shell = FloweyShell::new(FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)).unwrap();
         assert!(shell.needs_nix_wrapper());
     }
 
     #[test]
     fn test_needs_nix_wrapper_for_ubuntu() {
-        let shell =
-            FloweyShell::new(FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)).unwrap();
+        let shell = FloweyShell::new(FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)).unwrap();
         assert!(!shell.needs_nix_wrapper());
     }
 
@@ -263,8 +261,7 @@ mod tests {
 
     #[test]
     fn test_deref_to_inner_shell() {
-        let shell =
-            FloweyShell::new(FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)).unwrap();
+        let shell = FloweyShell::new(FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)).unwrap();
         // Test that we can call xshell::Shell methods via Deref
         let _current_dir = shell.current_dir();
     }

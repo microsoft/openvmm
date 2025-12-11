@@ -155,10 +155,12 @@ in pkgs.mkShell {
   # Expose deps for reference in update-rootfs.py
   OPENVMM_DEPS_X64 = x64BaseDeps.openvmm_deps;
   OPENVMM_DEPS_AARCH64 = aarch64BaseDeps.openvmm_deps;
+
+  # Nix environment variables for flowey integration
+  NIX_OPENVMM_DEPS = x64BaseDeps.openvmm_deps;
   NIX_PROTOC_PATH = protoc;
-  NIX_OPENHCL_KERNEL_VMLINUX = "${openhcl_kernel}/vmlinux";
-  NIX_OPENHCL_KERNEL_MODULES = "${openhcl_kernel}/modules";
-  NIX_UEFI_MU_MSVM = "${uefi_mu_msvm}/MSVM.fd";
+  NIX_OPENHCL_KERNEL = x64Kernel;
+  NIX_UEFI_MU_MSVM = "${x64BaseDeps.uefi_mu_msvm}/MSVM.fd";
   RUST_BACKTRACE = 1;
   SOURCE_DATE_EPOCH = 12345;
 

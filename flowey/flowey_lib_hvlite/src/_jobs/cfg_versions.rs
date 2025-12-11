@@ -60,9 +60,11 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::resolve_openhcl_kernel_package::Node>();
+        ctx.import::<crate::download_openhcl_kernel_package::Node>();
         ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::cfg_rustup_version::Node>();
+        ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
         ctx.import::<flowey_lib_common::download_cargo_fuzz::Node>();
         ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
@@ -83,6 +85,7 @@ impl FlowNode for Node {
         let mut local_protoc: Option<PathBuf> = None;
         let mut local_kernel: BTreeMap<CommonArch, (PathBuf, PathBuf)> = BTreeMap::new();
         let mut has_nix_requests = false;
+        let mut local_uefi: Option<ReadVar<PathBuf>> = None;
 
         for req in requests {
             match req {
@@ -126,6 +129,12 @@ impl FlowNode for Node {
 
         // If NixEnvironment was requested, get paths from nix_deps_provider
         if has_nix_requests {
+            // Get the repo path so nix_deps_provider can access shell.nix
+            let repo_path = ctx.reqv(|v| crate::git_checkout_openvmm_repo::Request::GetRepoDir(
+                crate::git_checkout_openvmm_repo::req::GetRepoDir(v)
+            ));
+            ctx.req(flowey_lib_common::nix_deps_provider::Request::SetRepoPath(repo_path));
+
             let nix_openvmm_deps_x64 = ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetOpenvmmDeps(
                 flowey_lib_common::nix_deps_provider::OpenvmmDepsArch::X86_64,
                 v,
@@ -134,8 +143,11 @@ impl FlowNode for Node {
                 crate::resolve_openvmm_deps::OpenvmmDepsArch::X86_64,
                 nix_openvmm_deps_x64,
             ));
-            let nix_protoc = ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetProtoc(v));
+            let nix_protoc = ctx.reqv(flowey_lib_common::nix_deps_provider::Request::GetProtoc);
             ctx.req(flowey_lib_common::resolve_protoc::Request::LocalPathReadVar(nix_protoc));
+            // Note: For nix builds, the kernel is handled via the nix environment.
+            // The version will still be set below, but nix jobs override the kernel source.
+            local_uefi = Some(ctx.reqv(flowey_lib_common::nix_deps_provider::Request::GetUefiMuMsvm));
         }
 
 
@@ -143,7 +155,8 @@ impl FlowNode for Node {
         // (nix requests also count as local paths since they provide paths directly)
         let has_local_openvmm_deps = !local_openvmm_deps.is_empty() || has_nix_requests;
         let has_local_protoc = local_protoc.is_some() || has_nix_requests;
-        let has_local_kernel = !local_kernel.is_empty();
+        let has_local_kernel = !local_kernel.is_empty();  // Don't count nix for kernel - we always need versions
+        let has_local_uefi = local_uefi.is_some();
 
         // Set up local paths for openvmm_deps if provided
         for (arch, path) in local_openvmm_deps {
@@ -178,6 +191,10 @@ impl FlowNode for Node {
             });
         }
 
+        if let Some(uefi_path) = local_uefi {
+            ctx.req(crate::download_uefi_mu_msvm::Request::LocalPath(uefi_path));
+        }
+
         // Only set kernel versions if we don't have local paths
         // (versions are only needed for downloading)
         if !has_local_kernel {
@@ -189,7 +206,11 @@ impl FlowNode for Node {
         if !has_local_openvmm_deps {
             ctx.req(crate::resolve_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
         }
-        ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
+
+        if !has_local_uefi {
+            ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
+        }
+
         ctx.req(flowey_lib_common::download_azcopy::Request::Version(AZCOPY.into()));
         ctx.req(flowey_lib_common::download_cargo_fuzz::Request::Version(FUZZ.into()));
         ctx.req(flowey_lib_common::download_cargo_nextest::Request::Version(NEXTEST.into()));

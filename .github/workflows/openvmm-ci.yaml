@@ -879,11 +879,90 @@ jobs:
     - name: install Nix
       run: flowey e 11 flowey_lib_common::install_nix 1
       shell: bash
+    - name: check if openvmm needs to be cloned
+      run: |-
+        flowey e 11 flowey_lib_common::git_checkout 0
+        flowey v 11 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46 write-to-env github floweyvar3
+        flowey v 11 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
+      shell: bash
+    - id: flowey_lib_common__git_checkout__1
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: '1'
+        path: repo0
+        persist-credentials: ${{ env.floweyvar3 }}
+      name: checkout repo openvmm
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: report cloned repo directories
+      run: |-
+        flowey v 11 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.workspace <<EOF
+        ${{ github.workspace }}
+        EOF
+        flowey e 11 flowey_lib_common::git_checkout 3
+        flowey e 11 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+      shell: bash
+    - name: resolve nix dependency paths
+      run: flowey e 11 flowey_lib_common::nix_deps_provider 0
+      shell: bash
+    - name: use local UEFI firmware
+      run: flowey e 11 flowey_lib_hvlite::download_uefi_mu_msvm 0
+      shell: bash
+    - name: add default cargo home to path
+      run: flowey e 11 flowey_lib_common::install_rust 0
+      shell: bash
+    - name: install Rust
+      run: flowey e 11 flowey_lib_common::install_rust 1
+      shell: bash
+    - name: detect active toolchain
+      run: |-
+        flowey e 11 flowey_lib_common::install_rust 2
+        flowey e 11 flowey_lib_common::cfg_cargo_common_flags 0
+      shell: bash
+    - name: set '-Dwarnings' in .cargo/config.toml
+      run: flowey e 11 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
+      shell: bash
+    - name: use local protoc
+      run: |-
+        flowey e 11 flowey_lib_common::resolve_protoc 0
+        flowey e 11 flowey_lib_hvlite::cfg_openvmm_magicpath 0
+      shell: bash
+    - name: symlink protoc
+      run: |-
+        flowey e 11 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
+        flowey e 11 flowey_lib_hvlite::init_cross_build 0
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 7
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 8
+      shell: bash
+    - name: cargo build sidecar
+      run: |-
+        flowey e 11 flowey_lib_common::run_cargo_build 3
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 9
+      shell: bash
     - name: checking if packages need to be installed
       run: flowey e 11 flowey_lib_common::install_dist_pkg 0
       shell: bash
     - name: installing packages
       run: flowey e 11 flowey_lib_common::install_dist_pkg 1
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 11 flowey_lib_hvlite::run_split_debug_info 6
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 10
+        flowey e 11 flowey_lib_hvlite::build_sidecar 0
+        flowey e 11 flowey_lib_hvlite::init_cross_build 1
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 2
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 3
+      shell: bash
+    - name: cargo build openhcl_boot
+      run: |-
+        flowey e 11 flowey_lib_common::run_cargo_build 1
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 4
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 11 flowey_lib_hvlite::run_split_debug_info 5
+        flowey e 11 flowey_lib_hvlite::run_cargo_build 5
+        flowey e 11 flowey_lib_hvlite::build_openhcl_boot 0
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 11 flowey_lib_common::download_gh_release 0
@@ -907,85 +986,6 @@ jobs:
         EOF
         flowey e 11 flowey_lib_common::cache 2
         flowey e 11 flowey_lib_common::download_gh_release 1
-      shell: bash
-    - name: unpack mu_msvm package (x64)
-      run: flowey e 11 flowey_lib_hvlite::download_uefi_mu_msvm 0
-      shell: bash
-    - name: add default cargo home to path
-      run: flowey e 11 flowey_lib_common::install_rust 0
-      shell: bash
-    - name: install Rust
-      run: flowey e 11 flowey_lib_common::install_rust 1
-      shell: bash
-    - name: detect active toolchain
-      run: |-
-        flowey e 11 flowey_lib_common::install_rust 2
-        flowey e 11 flowey_lib_common::cfg_cargo_common_flags 0
-      shell: bash
-    - name: check if openvmm needs to be cloned
-      run: |-
-        flowey e 11 flowey_lib_common::git_checkout 0
-        flowey v 11 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46 write-to-env github floweyvar3
-        flowey v 11 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
-      shell: bash
-    - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: '1'
-        path: repo0
-        persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo openvmm
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: report cloned repo directories
-      run: |-
-        flowey v 11 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.workspace <<EOF
-        ${{ github.workspace }}
-        EOF
-        flowey e 11 flowey_lib_common::git_checkout 3
-        flowey e 11 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-      shell: bash
-    - name: set '-Dwarnings' in .cargo/config.toml
-      run: flowey e 11 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
-      shell: bash
-    - name: resolve nix dependency paths
-      run: flowey e 11 flowey_lib_common::nix_deps_provider 0
-      shell: bash
-    - name: use local protoc
-      run: |-
-        flowey e 11 flowey_lib_common::resolve_protoc 0
-        flowey e 11 flowey_lib_hvlite::cfg_openvmm_magicpath 0
-      shell: bash
-    - name: symlink protoc
-      run: |-
-        flowey e 11 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-        flowey e 11 flowey_lib_hvlite::init_cross_build 0
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 7
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 8
-      shell: bash
-    - name: cargo build sidecar
-      run: |-
-        flowey e 11 flowey_lib_common::run_cargo_build 3
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 9
-      shell: bash
-    - name: split debug symbols
-      run: |-
-        flowey e 11 flowey_lib_hvlite::run_split_debug_info 6
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 10
-        flowey e 11 flowey_lib_hvlite::build_sidecar 0
-        flowey e 11 flowey_lib_hvlite::init_cross_build 1
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 2
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 3
-      shell: bash
-    - name: cargo build openhcl_boot
-      run: |-
-        flowey e 11 flowey_lib_common::run_cargo_build 1
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 4
-      shell: bash
-    - name: split debug symbols
-      run: |-
-        flowey e 11 flowey_lib_hvlite::run_split_debug_info 5
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 5
-        flowey e 11 flowey_lib_hvlite::build_openhcl_boot 0
       shell: bash
     - name: extract and resolve kernel package
       run: |-
@@ -6656,11 +6656,76 @@ jobs:
     - name: install Nix
       run: flowey e 9 flowey_lib_common::install_nix 1
       shell: bash
+    - name: check if openvmm needs to be cloned
+      run: |-
+        flowey e 9 flowey_lib_common::git_checkout 0
+        flowey v 9 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46 write-to-env github floweyvar3
+        flowey v 9 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
+      shell: bash
+    - id: flowey_lib_common__git_checkout__1
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: '1'
+        path: repo0
+        persist-credentials: ${{ env.floweyvar3 }}
+      name: checkout repo openvmm
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: report cloned repo directories
+      run: |-
+        flowey v 9 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.workspace <<EOF
+        ${{ github.workspace }}
+        EOF
+        flowey e 9 flowey_lib_common::git_checkout 3
+        flowey e 9 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+      shell: bash
+    - name: resolve nix dependency paths
+      run: flowey e 9 flowey_lib_common::nix_deps_provider 0
+      shell: bash
+    - name: use local UEFI firmware
+      run: flowey e 9 flowey_lib_hvlite::download_uefi_mu_msvm 0
+      shell: bash
+    - name: add default cargo home to path
+      run: flowey e 9 flowey_lib_common::install_rust 0
+      shell: bash
+    - name: install Rust
+      run: flowey e 9 flowey_lib_common::install_rust 1
+      shell: bash
+    - name: detect active toolchain
+      run: |-
+        flowey e 9 flowey_lib_common::install_rust 2
+        flowey e 9 flowey_lib_common::cfg_cargo_common_flags 0
+      shell: bash
+    - name: set '-Dwarnings' in .cargo/config.toml
+      run: flowey e 9 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
+      shell: bash
+    - name: use local protoc
+      run: |-
+        flowey e 9 flowey_lib_common::resolve_protoc 0
+        flowey e 9 flowey_lib_hvlite::cfg_openvmm_magicpath 0
+      shell: bash
+    - name: symlink protoc
+      run: |-
+        flowey e 9 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
+        flowey e 9 flowey_lib_hvlite::init_cross_build 0
+        flowey e 9 flowey_lib_hvlite::run_cargo_build 2
+        flowey e 9 flowey_lib_hvlite::run_cargo_build 3
+      shell: bash
+    - name: cargo build openhcl_boot
+      run: |-
+        flowey e 9 flowey_lib_common::run_cargo_build 1
+        flowey e 9 flowey_lib_hvlite::run_cargo_build 4
+      shell: bash
     - name: checking if packages need to be installed
       run: flowey e 9 flowey_lib_common::install_dist_pkg 0
       shell: bash
     - name: installing packages
       run: flowey e 9 flowey_lib_common::install_dist_pkg 1
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 9 flowey_lib_hvlite::run_cargo_build 5
+        flowey e 9 flowey_lib_hvlite::build_openhcl_boot 0
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 9 flowey_lib_common::download_gh_release 0
@@ -6684,71 +6749,6 @@ jobs:
         EOF
         flowey e 9 flowey_lib_common::cache 2
         flowey e 9 flowey_lib_common::download_gh_release 1
-      shell: bash
-    - name: unpack mu_msvm package (aarch64)
-      run: flowey e 9 flowey_lib_hvlite::download_uefi_mu_msvm 0
-      shell: bash
-    - name: add default cargo home to path
-      run: flowey e 9 flowey_lib_common::install_rust 0
-      shell: bash
-    - name: install Rust
-      run: flowey e 9 flowey_lib_common::install_rust 1
-      shell: bash
-    - name: detect active toolchain
-      run: |-
-        flowey e 9 flowey_lib_common::install_rust 2
-        flowey e 9 flowey_lib_common::cfg_cargo_common_flags 0
-      shell: bash
-    - name: check if openvmm needs to be cloned
-      run: |-
-        flowey e 9 flowey_lib_common::git_checkout 0
-        flowey v 9 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46 write-to-env github floweyvar3
-        flowey v 9 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
-      shell: bash
-    - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: '1'
-        path: repo0
-        persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo openvmm
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: report cloned repo directories
-      run: |-
-        flowey v 9 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.workspace <<EOF
-        ${{ github.workspace }}
-        EOF
-        flowey e 9 flowey_lib_common::git_checkout 3
-        flowey e 9 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-      shell: bash
-    - name: set '-Dwarnings' in .cargo/config.toml
-      run: flowey e 9 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
-      shell: bash
-    - name: resolve nix dependency paths
-      run: flowey e 9 flowey_lib_common::nix_deps_provider 0
-      shell: bash
-    - name: use local protoc
-      run: |-
-        flowey e 9 flowey_lib_common::resolve_protoc 0
-        flowey e 9 flowey_lib_hvlite::cfg_openvmm_magicpath 0
-      shell: bash
-    - name: symlink protoc
-      run: |-
-        flowey e 9 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-        flowey e 9 flowey_lib_hvlite::init_cross_build 0
-        flowey e 9 flowey_lib_hvlite::run_cargo_build 2
-        flowey e 9 flowey_lib_hvlite::run_cargo_build 3
-      shell: bash
-    - name: cargo build openhcl_boot
-      run: |-
-        flowey e 9 flowey_lib_common::run_cargo_build 1
-        flowey e 9 flowey_lib_hvlite::run_cargo_build 4
-      shell: bash
-    - name: split debug symbols
-      run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 2
-        flowey e 9 flowey_lib_hvlite::run_cargo_build 5
-        flowey e 9 flowey_lib_hvlite::build_openhcl_boot 0
       shell: bash
     - name: extract and resolve kernel package
       run: |-

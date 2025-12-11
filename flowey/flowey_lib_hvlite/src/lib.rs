@@ -51,6 +51,7 @@ pub mod init_vmm_tests_env;
 pub mod install_git_credential_manager;
 pub mod install_openvmm_rust_build_essential;
 pub mod install_vmm_tests_deps;
+pub mod download_openhcl_kernel_package;
 pub mod resolve_openhcl_kernel_package;
 pub mod resolve_openvmm_deps;
 pub mod run_cargo_build;
