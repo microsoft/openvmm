@@ -338,14 +338,14 @@ async fn servicing_keepalive_with_namespace_update(
         .await?;
     vm.restore_openhcl().await?;
 
-    let _ = CancelContext::new()
+    CancelContext::new()
         .with_timeout(Duration::from_secs(60))
         .until_cancelled(aer_verify_recv)
         .await
         .expect("AER command was not observed within 60 seconds of vm restore after servicing with namespace change")
         .expect("AER verification failed");
 
-    let _ = CancelContext::new()
+    CancelContext::new()
         .with_timeout(Duration::from_secs(60))
         .until_cancelled(log_verify_recv)
         .await
@@ -671,7 +671,7 @@ async fn servicing_with_keepalive_disabled_after_servicing(
     )
     .await?;
 
-    let _ = CancelContext::new()
+    CancelContext::new()
         .with_timeout(Duration::from_secs(60))
         .until_cancelled(cc_enable_verify_recv)
         .await
