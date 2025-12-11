@@ -64,9 +64,9 @@ const PER_QUEUE_PAGES_NO_BOUNCE_BUFFER: usize = 64;
 const SQ_ENTRIES_PER_PAGE: usize = PAGE_SIZE / SQ_ENTRY_SIZE;
 
 #[derive(Inspect)]
-pub(crate) struct QueuePair<T: AerHandler, S: DeviceBacking> {
+pub(crate) struct QueuePair<A: AerHandler, D: DeviceBacking> {
     #[inspect(skip)]
-    task: TaskControl<QueueHandlerLoop<T, S>, ()>,
+    task: TaskControl<QueueHandlerLoop<A, D>, ()>,
     #[inspect(flatten, with = "|x| inspect::send(&x.send, Req::Inspect)")]
     issuer: Arc<Issuer>,
     #[inspect(skip)]
@@ -180,14 +180,14 @@ impl PendingCommands {
     }
 }
 
-struct QueueHandlerLoop<T: AerHandler, S: DeviceBacking> {
-    queue_handler: QueueHandler<T>,
-    registers: Arc<DeviceRegisters<S>>,
+struct QueueHandlerLoop<A: AerHandler, D: DeviceBacking> {
+    queue_handler: QueueHandler<A>,
+    registers: Arc<DeviceRegisters<D>>,
     recv: Option<mesh::Receiver<Req>>,
     interrupt: DeviceInterrupt,
 }
 
-impl<T: AerHandler, S: DeviceBacking> AsyncRun<()> for QueueHandlerLoop<T, S> {
+impl<A: AerHandler, D: DeviceBacking> AsyncRun<()> for QueueHandlerLoop<A, D> {
     async fn run(
         &mut self,
         stop: &mut task_control::StopTask<'_>,
@@ -206,7 +206,7 @@ impl<T: AerHandler, S: DeviceBacking> AsyncRun<()> for QueueHandlerLoop<T, S> {
     }
 }
 
-impl<T: AerHandler, S: DeviceBacking> QueuePair<T, S> {
+impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
     /// Create a new queue pair.
     ///
     /// `sq_entries` and `cq_entries` are the requested sizes in entries.
@@ -218,14 +218,14 @@ impl<T: AerHandler, S: DeviceBacking> QueuePair<T, S> {
     /// calls to [`QueuePair::sq_entries`] and [`QueuePair::cq_entries`] AFTER calling this routine.
     pub fn new(
         spawner: impl SpawnDriver,
-        device: &S,
+        device: &D,
         qid: u16,
         sq_entries: u16,
         cq_entries: u16,
         interrupt: DeviceInterrupt,
-        registers: Arc<DeviceRegisters<S>>,
+        registers: Arc<DeviceRegisters<D>>,
         bounce_buffer: bool,
-        aer_handler: T,
+        aer_handler: A,
     ) -> anyhow::Result<Self> {
         // FUTURE: Consider splitting this into several allocations, rather than
         // allocating the sum total together. This can increase the likelihood
@@ -268,11 +268,11 @@ impl<T: AerHandler, S: DeviceBacking> QueuePair<T, S> {
         sq_entries: u16,
         cq_entries: u16,
         interrupt: DeviceInterrupt,
-        registers: Arc<DeviceRegisters<S>>,
+        registers: Arc<DeviceRegisters<D>>,
         mem: MemoryBlock,
         saved_state: Option<&QueueHandlerSavedState>,
         bounce_buffer: bool,
-        aer_handler: T,
+        aer_handler: A,
     ) -> anyhow::Result<Self> {
         // MemoryBlock is either allocated or restored prior calling here.
         let sq_mem_block = mem.subblock(0, SQ_SIZE);
@@ -435,11 +435,11 @@ impl<T: AerHandler, S: DeviceBacking> QueuePair<T, S> {
     pub fn restore(
         spawner: impl SpawnDriver,
         interrupt: DeviceInterrupt,
-        registers: Arc<DeviceRegisters<S>>,
+        registers: Arc<DeviceRegisters<D>>,
         mem: MemoryBlock,
         saved_state: &QueuePairSavedState,
         bounce_buffer: bool,
-        aer_handler: T,
+        aer_handler: A,
     ) -> anyhow::Result<Self> {
         let QueuePairSavedState {
             mem_len: _,  // Used to restore DMA buffer before calling this.
@@ -884,14 +884,14 @@ impl AerHandler for NoOpAerHandler {
 }
 
 #[derive(Inspect)]
-struct QueueHandler<T: AerHandler> {
+struct QueueHandler<A: AerHandler> {
     sq: SubmissionQueue,
     cq: CompletionQueue,
     commands: PendingCommands,
     stats: QueueStats,
     drain_after_restore: bool,
     #[inspect(skip)]
-    aer_handler: T,
+    aer_handler: A,
 }
 
 #[derive(Inspect, Default)]
@@ -901,7 +901,7 @@ struct QueueStats {
     interrupts: Counter,
 }
 
-impl<T: AerHandler> QueueHandler<T> {
+impl<A: AerHandler> QueueHandler<A> {
     async fn run(
         &mut self,
         registers: &DeviceRegisters<impl DeviceBacking>,
@@ -1015,7 +1015,7 @@ impl<T: AerHandler> QueueHandler<T> {
         sq_mem_block: MemoryBlock,
         cq_mem_block: MemoryBlock,
         saved_state: &QueueHandlerSavedState,
-        mut aer_handler: T,
+        mut aer_handler: A,
     ) -> anyhow::Result<Self> {
         let QueueHandlerSavedState {
             sq_state,
