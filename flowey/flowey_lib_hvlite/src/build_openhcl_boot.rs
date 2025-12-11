@@ -56,21 +56,14 @@ impl FlowNode for Node {
             });
 
         for (OpenhclBootBuildParams { arch, profile }, openhcl_boot) in requests {
-            let target = match arch {
-                CommonArch::X86_64 => target_lexicon::Triple {
-                    architecture: arch.as_arch(),
-                    operating_system: target_lexicon::OperatingSystem::None_,
-                    environment: target_lexicon::Environment::Unknown,
-                    vendor: target_lexicon::Vendor::Unknown,
-                    binary_format: target_lexicon::BinaryFormat::Unknown,
-                },
-                CommonArch::Aarch64 => target_lexicon::Triple {
-                    architecture: arch.as_arch(),
-                    operating_system: target_lexicon::OperatingSystem::Linux,
-                    environment: target_lexicon::Environment::Musl,
-                    vendor: target_lexicon::Vendor::Unknown,
-                    binary_format: target_lexicon::BinaryFormat::Elf,
-                },
+            let target = target_lexicon::Triple {
+                architecture: arch.as_arch(),
+                operating_system: target_lexicon::OperatingSystem::None_,
+                environment: target_lexicon::Environment::Unknown,
+                vendor: target_lexicon::Vendor::Custom(target_lexicon::CustomVendor::Static(
+                    "minimal_rt",
+                )),
+                binary_format: target_lexicon::BinaryFormat::Unknown,
             };
 
             // We use special profiles for boot, convert from the standard ones:
@@ -88,7 +81,7 @@ impl FlowNode for Node {
                 target,
                 no_split_dbg_info: false,
                 extra_env: Some(ReadVar::from_static(
-                    [("MINIMAL_RT_BUILD".to_string(), "1".to_string())]
+                    [("RUSTC_BOOTSTRAP".to_string(), "1".to_string())]
                         .into_iter()
                         .collect(),
                 )),
