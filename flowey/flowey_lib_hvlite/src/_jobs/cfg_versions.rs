@@ -44,6 +44,7 @@ flowey_request! {
     pub enum Request {
         Download,
         Local(LocalDependencyRequest),
+        NixEnvironment,
     }
 }
 
@@ -68,12 +69,12 @@ impl FlowNode for Node {
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
         ctx.import::<flowey_lib_common::install_rust::Node>();
+        ctx.import::<flowey_lib_common::nix_deps_provider::Node>();
     }
 
     #[rustfmt::skip]
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut has_download_requests = false;
-        let mut has_local_requests = false;
+        let mut has_nix_requests = false;
         let mut local_openvmm_deps_x64: Option<ReadVar<PathBuf>> = None;
         let mut local_openvmm_deps_aarch64: Option<ReadVar<PathBuf>> = None;
         let mut local_protoc: Option<ReadVar<PathBuf>> = None;
@@ -81,10 +82,9 @@ impl FlowNode for Node {
         for req in requests {
             match req {
                 Request::Download => {
-                    has_download_requests = true;
+                    // Download requests are always allowed and coexist with Local/Nix requests
                 }
                 Request::Local(local_req) => {
-                    has_local_requests = true;
                     if let Some(x64_path) = local_req.openvmm_deps_x64 {
                         same_across_all_reqs_backing_var("OpenvmmDepsPathX64", &mut local_openvmm_deps_x64, x64_path)?;
                     }
@@ -95,11 +95,19 @@ impl FlowNode for Node {
                         same_across_all_reqs_backing_var("ProtocPath", &mut local_protoc, protoc_path)?;
                     }
                 }
+                Request::NixEnvironment => {
+                    has_nix_requests = true;
+                }
             }
         }
 
-        if has_download_requests && has_local_requests {
-            anyhow::bail!("cannot mix Download and Local requests");
+        // If NixEnvironment was requested, get paths from nix_deps_provider
+        if has_nix_requests {
+            local_openvmm_deps_x64 = Some(ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetOpenvmmDeps(
+                flowey_lib_common::nix_deps_provider::OpenvmmDepsArch::X86_64,
+                v,
+            )));
+            local_protoc = Some(ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetProtoc(v)));
         }
 
         // Track whether we have local paths for openvmm_deps and protoc

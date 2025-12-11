@@ -124,7 +124,6 @@ impl IntoPipeline for CheckinGatesCli {
             let mut job = job
                 .dep_on(&cfg_common_params)
                 .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Download)
-                .dep_on(|ctx| flowey_lib_common::install_nix::Request::EnsureInstalled(ctx.new_done_handle()))
                 .dep_on(
                     |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
                         hvlite_repo_source: openvmm_repo_source.clone(),
@@ -599,6 +598,11 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_openhcl_igvm_extras, _use_openhcl_igvm_extras) =
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras"));
 
+            let (pub_openhcl_igvm_nix, _use_openhcl_igvm_nix) =
+                pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-nix"));
+            let (pub_openhcl_igvm_extras_nix, _use_openhcl_igvm_extras_nix) =
+                pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras-nix"));
+
             let (pub_openhcl_baseline, _use_openhcl_baseline) =
                 if matches!(config, PipelineConfig::Ci) {
                     let (p, u) = pipeline.new_artifact(format!("{arch_tag}-openhcl-baseline"));
@@ -663,7 +667,6 @@ impl IntoPipeline for CheckinGatesCli {
                     build_openhcl_job_tag(arch_tag),
                 )
                 .gh_set_pool(crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk())
-                .gh_dangerous_global_env_var("USING_NIX", "1")
                 .dep_on(|ctx| {
                     let publish_baseline_artifact = pub_openhcl_baseline
                         .map(|baseline_artifact| ctx.publish_artifact(baseline_artifact));
@@ -703,6 +706,41 @@ impl IntoPipeline for CheckinGatesCli {
                     profile: CommonProfile::from_release(release),
                     unstable_whp: false,
                     tmk_vmm: ctx.publish_typed_artifact(pub_tmk_vmm),
+                });
+
+            all_jobs.push(job.finish());
+
+            let job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    format!("{} with nix", build_openhcl_job_tag(arch_tag)),
+                )
+                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk())
+                .gh_dangerous_global_env_var("USING_NIX", "1")
+                .dep_on(|ctx| {
+                    flowey_lib_common::install_nix::Request::EnsureInstalled(ctx.new_done_handle())
+                })
+                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::NixEnvironment)
+                .dep_on(|ctx| {
+                    flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
+                        igvm_files: igvm_recipes
+                            .clone()
+                            .into_iter()
+                            .map(|recipe| OpenhclIgvmBuildParams {
+                                profile: openvmm_hcl_profile,
+                                recipe,
+                                custom_target: Some(CommonTriple::Custom(openhcl_musl_target(
+                                    arch,
+                                ))),
+                            })
+                            .collect(),
+                        artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm_nix),
+                        artifact_dir_openhcl_igvm_extras: ctx
+                            .publish_artifact(pub_openhcl_igvm_extras_nix),
+                        artifact_openhcl_verify_size_baseline: None,
+                        done: ctx.new_done_handle(),
+                    }
                 });
 
             all_jobs.push(job.finish());
