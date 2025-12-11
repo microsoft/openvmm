@@ -483,7 +483,7 @@ export async function fetchTestAnalysis(
     queryKey: ["runs"],
     queryFn: () => fetchRunData(queryClient),
     staleTime: 2 * 60 * 1000, // refetch every 2 minutes
-    gcTime: Infinity, // never garbage collect,
+    gcTime: Infinity, // never garbage collect
   });
 
   // Filter runs based on branch selection

@@ -76,9 +76,10 @@ export const createColumns = (branchFilter: string): ColumnDef<TestData>[] => {
                 const architecture = info.row.original.architecture;
                 const encodedArchitecture = encodeURIComponent(architecture);
                 const encodedTestName = encodeURIComponent(name);
+                const encodedBranchName = encodeURIComponent(branchFilter);
                 return (
                     <Link
-                        to={`/tests/${encodedArchitecture}/${encodedTestName}?branchFilter=${encodeURIComponent(branchFilter)}`}
+                        to={`/tests/${encodedArchitecture}/${encodedTestName}?branchFilter=${encodedBranchName}`}
                         state={{ testData: info.row.original }}
                         className="common-table-link"
                         title={name}
