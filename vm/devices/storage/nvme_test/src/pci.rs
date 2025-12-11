@@ -62,6 +62,8 @@ pub struct NvmeFaultController {
     workers: NvmeWorkers,
     #[inspect(skip)]
     pci_fault_config: PciFaultConfig,
+    #[inspect(skip)]
+    fault_active: mesh::Cell<bool>,
 }
 
 #[derive(Inspect)]
@@ -154,6 +156,8 @@ impl NvmeFaultController {
             .take()
             .unwrap_or(PciFaultConfig::new());
 
+        let fault_active = fault_configuration.fault_active.clone();
+
         let qe_sizes = Arc::new(Default::default());
         let admin = NvmeWorkers::new(
             driver_source,
@@ -173,6 +177,7 @@ impl NvmeFaultController {
             workers: admin,
             qe_sizes,
             pci_fault_config,
+            fault_active,
         }
     }
 
@@ -351,15 +356,17 @@ impl NvmeFaultController {
         if cc.en() != self.registers.cc.en() {
             if cc.en() {
                 // If any fault was configured for cc.en() process it here
-                match &mut self.pci_fault_config.controller_management_fault_enable {
-                    PciFaultBehavior::Delay(duration) => {
-                        std::thread::sleep(*duration);
-                    }
-                    PciFaultBehavior::Default => {}
-                    PciFaultBehavior::Verify(send) => {
-                        // Verify that the enable command was received.
-                        if let Some(send) = send.take() {
-                            send.send(());
+                if self.fault_active.get() {
+                    match &mut self.pci_fault_config.controller_management_fault_enable {
+                        PciFaultBehavior::Delay(duration) => {
+                            std::thread::sleep(*duration);
+                        }
+                        PciFaultBehavior::Default => {}
+                        PciFaultBehavior::Verify(send) => {
+                            // Verify that the enable command was received.
+                            if let Some(send) = send.take() {
+                                send.send(());
+                            }
                         }
                     }
                 }
@@ -454,6 +461,7 @@ impl ChangeDeviceState for NvmeFaultController {
             qe_sizes,
             workers,
             pci_fault_config: _,
+            fault_active: _,
         } = self;
         workers.reset().await;
         cfg_space.reset();

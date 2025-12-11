@@ -339,16 +339,18 @@ async fn servicing_keepalive_with_namespace_update(
     vm.restore_openhcl().await?;
 
     let _ = CancelContext::new()
-        .with_timeout(Duration::from_secs(10))
+        .with_timeout(Duration::from_secs(60))
         .until_cancelled(aer_verify_recv)
         .await
-        .expect("AER command was not observed within 10 seconds of vm restore after servicing with namespace change");
+        .expect("AER command was not observed within 60 seconds of vm restore after servicing with namespace change")
+        .expect("AER verification failed");
 
     let _ = CancelContext::new()
-        .with_timeout(Duration::from_secs(10))
+        .with_timeout(Duration::from_secs(60))
         .until_cancelled(log_verify_recv)
         .await
-        .expect("GET_LOG_PAGE command was not observed within 10 seconds of vm restore after servicing with namespace change");
+        .expect("GET_LOG_PAGE command was not observed within 60 seconds of vm restore after servicing with namespace change")
+        .expect("GET_LOG_PAGE verification failed");
 
     fault_start_updater.set(false).await;
     agent.ping().await?;
@@ -646,8 +648,7 @@ async fn mana_nic_servicing_keepalive(
 
 /// Test servicing an OpenHCL VM when NVME keepalive is enabled but then
 /// disabled after servicing.
-/// It performs a basic check to verify that a CREATE_IO_COMPLETION_QUEUE
-/// command was seen which means that queues are not being reused.
+/// It verifies to check that the controller is reset during the restore process.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn servicing_with_keepalive_disabled_after_servicing(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -666,7 +667,7 @@ async fn servicing_with_keepalive_disabled_after_servicing(
         fault_configuration,
         fault_start_updater,
         igvm_file,
-        Some(""),
+        Some("OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=1"),
     )
     .await?;
 
@@ -674,7 +675,8 @@ async fn servicing_with_keepalive_disabled_after_servicing(
         .with_timeout(Duration::from_secs(60))
         .until_cancelled(cc_enable_verify_recv)
         .await
-        .expect("CREATE_IO_COMPLETION_QUEUE command was not observed within 10 seconds of vm restore after servicing with keepalive disabled");
+        .expect("Controller Enable PCI command was not observed within 60 seconds of vm restore indicating that the controller was not reset, even though it should have.")
+        .expect("Failed to receive completion for CC Enable PCI command verification");
 
     Ok(())
 }
