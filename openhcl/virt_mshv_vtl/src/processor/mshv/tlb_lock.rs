@@ -64,7 +64,7 @@ impl UhProcessor<'_, HypervisorBacked> {
         clippy::debug_assert_with_mut_call,
         reason = "is_tlb_locked_in_hypervisor doesn't actually mutate state"
     )]
-    #[expect(clippy::assertions_on_constants)]
+    #[allow(clippy::assertions_on_constants)]
     pub(crate) fn is_tlb_locked(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
         // This function should only be called in debug assertions.
         assert!(cfg!(debug_assertions));
@@ -77,7 +77,7 @@ impl UhProcessor<'_, HypervisorBacked> {
         local_status
     }
 
-    #[expect(clippy::assertions_on_constants)]
+    #[allow(clippy::assertions_on_constants)]
     fn is_tlb_locked_in_hypervisor(&mut self, target_vtl: GuestVtl) -> bool {
         // This function should only be called in debug assertions.
         assert!(cfg!(debug_assertions));
