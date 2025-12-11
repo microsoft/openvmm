@@ -177,6 +177,7 @@ impl GsiRoute {
     }
 
     /// Signals the interrupt if it is enabled.
+    #[expect(clippy::assertions_on_constants)]
     pub fn _signal(&self) {
         // Use a relaxed atomic read to avoid extra synchronization in this
         // path. It's up to callers to synchronize this with `enable`/`disable`
@@ -189,9 +190,7 @@ impl GsiRoute {
                 // the type of the interrupt: SPI or PPI handled by the in-kernel vGIC,
                 // or the user mode GIC emulator (where have to specify the target VP, too).
 
-                const {
-                    assert!(cfg!(guest_arch = "x86_64"));
-                }
+                assert!(cfg!(guest_arch = "x86_64"));
                 partition
                     .kvm
                     .irq_line(self.gsi, true)
