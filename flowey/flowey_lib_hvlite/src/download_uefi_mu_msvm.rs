@@ -14,6 +14,8 @@ pub enum MuMsvmArch {
 
 flowey_request! {
     pub enum Request {
+        /// Use a locally provided UEFI firmware file
+        LocalPath(ReadVar<PathBuf>),
         /// Specify version of mu_msvm to use
         Version(String),
         /// Download the mu_msvm package for the given arch
@@ -36,22 +38,50 @@ impl FlowNode for Node {
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let mut version = None;
+        let mut local_path: Option<ReadVar<PathBuf>> = None;
         let mut reqs: BTreeMap<MuMsvmArch, Vec<WriteVar<PathBuf>>> = BTreeMap::new();
 
         for req in requests {
             match req {
+                Request::LocalPath(path) => {
+                    same_across_all_reqs_backing_var("LocalPath", &mut local_path, path)?
+                }
                 Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
                 Request::GetMsvmFd { arch, msvm_fd } => reqs.entry(arch).or_default().push(msvm_fd),
             }
         }
 
-        let version = version.ok_or(anyhow::anyhow!("Missing essential request: Version"))?;
+        if version.is_some() && local_path.is_some() {
+            anyhow::bail!("Cannot specify both Version and LocalPath");
+        }
+
+        if version.is_none() && local_path.is_none() {
+            anyhow::bail!("Must specify a Version or LocalPath request");
+        }
 
         // -- end of req processing -- //
 
         if reqs.is_empty() {
             return Ok(());
         }
+
+        // If local path provided, use it directly
+        if let Some(local_path) = local_path {
+            ctx.emit_rust_step("use local UEFI firmware", |ctx| {
+                let local_path = local_path.claim(ctx);
+                let reqs = reqs.into_values().flatten().collect::<Vec<_>>().claim(ctx);
+
+                move |rt| {
+                    let msvm_fd = rt.read(local_path);
+                    rt.write_all(reqs, &msvm_fd);
+                    Ok(())
+                }
+            });
+
+            return Ok(());
+        }
+
+        let version = version.expect("checked above");
 
         let extract_zip_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
 
