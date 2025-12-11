@@ -48,6 +48,8 @@ flowey_request! {
             kernel: PathBuf,
             modules: PathBuf,
         },
+        /// Use paths from nix environment
+        NixEnvironment,
     }
 }
 
@@ -71,6 +73,8 @@ impl FlowNode for Node {
         ctx.import::<flowey_lib_common::resolve_protoc::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
+        ctx.import::<flowey_lib_common::install_rust::Node>();
+        ctx.import::<flowey_lib_common::nix_deps_provider::Node>();
     }
 
     #[rustfmt::skip]
@@ -78,6 +82,7 @@ impl FlowNode for Node {
         let mut local_openvmm_deps: BTreeMap<CommonArch, PathBuf> = BTreeMap::new();
         let mut local_protoc: Option<PathBuf> = None;
         let mut local_kernel: BTreeMap<CommonArch, (PathBuf, PathBuf)> = BTreeMap::new();
+        let mut has_nix_requests = false;
 
         for req in requests {
             match req {
@@ -113,12 +118,31 @@ impl FlowNode for Node {
                         local_kernel.insert(arch, paths);
                     }
                 }
+                Request::NixEnvironment => {
+                    has_nix_requests = true;
+                }
             }
         }
 
+        // If NixEnvironment was requested, get paths from nix_deps_provider
+        if has_nix_requests {
+            let nix_openvmm_deps_x64 = ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetOpenvmmDeps(
+                flowey_lib_common::nix_deps_provider::OpenvmmDepsArch::X86_64,
+                v,
+            ));
+            ctx.req(crate::resolve_openvmm_deps::Request::LocalPath(
+                crate::resolve_openvmm_deps::OpenvmmDepsArch::X86_64,
+                nix_openvmm_deps_x64,
+            ));
+            let nix_protoc = ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetProtoc(v));
+            ctx.req(flowey_lib_common::resolve_protoc::Request::LocalPathReadVar(nix_protoc));
+        }
+
+
         // Track whether we have local paths for openvmm_deps and protoc
-        let has_local_openvmm_deps = !local_openvmm_deps.is_empty();
-        let has_local_protoc = local_protoc.is_some();
+        // (nix requests also count as local paths since they provide paths directly)
+        let has_local_openvmm_deps = !local_openvmm_deps.is_empty() || has_nix_requests;
+        let has_local_protoc = local_protoc.is_some() || has_nix_requests;
         let has_local_kernel = !local_kernel.is_empty();
 
         // Set up local paths for openvmm_deps if provided

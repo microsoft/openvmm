@@ -155,7 +155,7 @@ in pkgs.mkShell {
   # Expose deps for reference in update-rootfs.py
   OPENVMM_DEPS_X64 = x64BaseDeps.openvmm_deps;
   OPENVMM_DEPS_AARCH64 = aarch64BaseDeps.openvmm_deps;
-
+  NIX_PROTOC_PATH = protoc;
   RUST_BACKTRACE = 1;
   SOURCE_DATE_EPOCH = 12345;
 
