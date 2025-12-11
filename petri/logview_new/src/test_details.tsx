@@ -74,7 +74,9 @@ export function TestDetails(): React.JSX.Element {
             () => concurrencyRef.current, // Dynamic concurrency
             abortController.signal
         ).then(testMapping => {
-            setTableData(convertToTestDetailsData(testMapping, fullTestName));
+            if (!abortController.signal.aborted) {
+                setTableData(convertToTestDetailsData(testMapping, fullTestName));
+            }
         }).catch(err => {
             // Ignore abort errors, log others
             if (err.name !== 'AbortError' && !abortController.signal.aborted) {
