@@ -55,7 +55,9 @@ rustflags = [
   # Set up the CRT: use ucrtbase.dll but statically link the VC runtime.
   "-C", "link-args=/nodefaultlib onecore_apiset.lib ucrt.lib libvcruntime.lib libcmt.lib",
   # Enable CFG
-  "-Ccontrol-flow-guard"
+  "-Ccontrol-flow-guard",
+  # Reenable unwind tables as they're required on windows.
+  "-Cforce-unwind-tables=no",
 ]
 
 [target.aarch64-apple-darwin]
