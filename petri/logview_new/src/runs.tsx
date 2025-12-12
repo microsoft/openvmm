@@ -12,6 +12,7 @@ import { Menu } from "./menu";
 import { VirtualizedTable } from "./virtualized_table.tsx";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { SearchInput } from "./search";
+import { run_filters } from "./branch_quick_filters";
 import {
   createColumns,
   defaultSorting,
@@ -118,18 +119,15 @@ export function RunsHeader({
           </Link>
         </div>
         <div className="common-header-filter-buttons">
-          <button
-            className={`common-header-filter-btn ${branchFilter === "all" ? "active" : ""}`}
-            onClick={() => setBranchFilter("all")}
-          >
-            all
-          </button>
-          <button
-            className={`common-header-filter-btn ${branchFilter === "main" ? "active" : ""}`}
-            onClick={() => setBranchFilter("main")}
-          >
-            main
-          </button>
+          {run_filters.map((branch) => (
+            <button
+              key={branch}
+              className={`common-header-filter-btn ${branchFilter === branch ? "active" : ""}`}
+              onClick={() => setBranchFilter(branch)}
+            >
+              {branch}
+            </button>
+          ))}
         </div>
         {!loadingSuccess && (
           <div className="header-loading-indicator">

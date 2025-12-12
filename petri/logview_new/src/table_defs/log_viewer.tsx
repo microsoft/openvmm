@@ -41,17 +41,27 @@ export function createColumns(
         },
         {
             id: 'message',
-            accessorFn: (row) => row.message, // Use text for sorting/filtering
+            accessorFn: (row) => row.logMessage, // Use text for sorting/filtering
             header: 'Message',
             cell: (info) => (
-                // NOTE: React normally escapes HTML to prevent XSS attacks.
-                // Using dangerouslySetInnerHTML bypasses that protection.
-                // This message data is NOT user controlled and comes from the
-                // logs. We need to add a link to the inspect attachment so we need to
-                // treat this as html.
-                <div dangerouslySetInnerHTML={{ __html: info.row.original.message }} />
+                <>
+                    <div>{info.row.original.logMessage.message}</div>
+                    {info.row.original.logMessage.links?.map((link, idx) => (
+                        <a
+                            key={idx}
+                            href={link.url}
+                            className="attachment"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            data-inspect={link.inspect}
+                            style={{ marginLeft: 8 }}
+                        >
+                            {link.text}
+                        </a>
+                    ))}
+                </>
             ),
-            enableSorting: false, // Disable sorting for complex HTML content
+            enableSorting: false, // Sorting by full message text is not useful
         },
         {
             id: 'screenshot',

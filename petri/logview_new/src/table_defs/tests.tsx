@@ -18,7 +18,7 @@ export const columnWidthMap = {
 };
 
 // Define the columns for the tests table
-export const createColumns = (): ColumnDef<TestData>[] => {
+export const createColumns = (branchFilter: string): ColumnDef<TestData>[] => {
     return [
         {
             id: 'status',
@@ -76,9 +76,10 @@ export const createColumns = (): ColumnDef<TestData>[] => {
                 const architecture = info.row.original.architecture;
                 const encodedArchitecture = encodeURIComponent(architecture);
                 const encodedTestName = encodeURIComponent(name);
+                const encodedBranchName = encodeURIComponent(branchFilter);
                 return (
                     <Link
-                        to={`/tests/${encodedArchitecture}/${encodedTestName}`}
+                        to={`/tests/${encodedArchitecture}/${encodedTestName}?branchFilter=${encodedBranchName}`}
                         state={{ testData: info.row.original }}
                         className="common-table-link"
                         title={name}
