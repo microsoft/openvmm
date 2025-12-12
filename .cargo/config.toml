@@ -56,8 +56,6 @@ rustflags = [
   "-C", "link-args=/nodefaultlib onecore_apiset.lib ucrt.lib libvcruntime.lib libcmt.lib",
   # Enable CFG
   "-Ccontrol-flow-guard",
-  # Reenable unwind tables as they're required on windows.
-  "-Cforce-unwind-tables=no",
 ]
 
 [target.aarch64-apple-darwin]
@@ -91,6 +89,8 @@ rustflags = [
   "-Ctarget-feature=+crt-static",
   # Use RELR relocation format, which is considerably smaller.
   "-Clink-arg=-Wl,-z,pack-relative-relocs",
+  # Disable unwind tables to reduce binary size.
+  "-Cforce-unwind-tables=no",
 ]
 
 [target.'cfg(all(target_arch = "aarch64", target_env = "musl"))']
@@ -107,9 +107,6 @@ rustflags = [
   # Disable FPO to get full call stack as the '--call-graph=dwarf' option
   # is not working well.
   "-Cforce-frame-pointers=yes",
-
-  # Disable unwind tables to reduce binary size.
-  "-Cforce-unwind-tables=no",
 
   # Enable v0 symbols to get better output from `perf` and related tools.
   "-Csymbol-mangling-version=v0",
