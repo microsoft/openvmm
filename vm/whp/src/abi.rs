@@ -36,6 +36,9 @@ macro_rules! bitops_base {
     };
 }
 
+#[cfg(target_arch = "x86_64")]
+pub(crate) use bitops_base;
+
 macro_rules! bitops {
     ($t:ty) => {
         bitops_base!($t);
@@ -66,6 +69,9 @@ macro_rules! bitops {
         }
     };
 }
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) use bitops;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
