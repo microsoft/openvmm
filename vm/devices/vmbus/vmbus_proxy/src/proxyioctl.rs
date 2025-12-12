@@ -49,7 +49,6 @@ pub const IOCTL_VMBUS_PROXY_TL_CONNECT_REQUEST: u32 = VMBUS_PROXY_IOCTL(0xc);
 pub const IOCTL_VMBUS_PROXY_RESTORE_CHANNEL: u32 = VMBUS_PROXY_IOCTL(0xd);
 pub const IOCTL_VMBUS_PROXY_REVOKE_UNCLAIMED_CHANNELS: u32 = VMBUS_PROXY_IOCTL(0xe);
 pub const IOCTL_VMBUS_PROXY_RESTORE_SET_INTERRUPT: u32 = VMBUS_PROXY_IOCTL(0xf);
-pub const IOCTL_VMBUS_PROXY_GET_NUMA_MAP: u32 = VMBUS_PROXY_IOCTL(0x14);
 
 #[repr(C)]
 #[derive(Copy, Clone, zerocopy::IntoBytes)]
@@ -206,10 +205,4 @@ pub struct VMBUS_PROXY_TL_CONNECT_REQUEST_INPUT {
     pub Flags: VMBUS_PROXY_TL_CONNECT_REQUEST_FLAGS,
     pub Vtl: u8,
     pub Padding: [u8; 3],
-}
-
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct VMBUS_PROXY_GET_NUMA_MAP_OUTPUT {
-    pub VpCount: u32,
 }
