@@ -398,6 +398,8 @@ vmm_core_defs = { path = "vmm_core/vmm_core_defs" }
 vmotherboard = { path = "vmm_core/vmotherboard" }
 
 # workers
+chipset_device_worker = { path = "workers/chipset_device_worker" }
+chipset_device_worker_defs = { path = "workers/chipset_device_worker_defs" }
 debug_worker = { path = "workers/debug_worker" }
 debug_worker_defs = { path = "workers/debug_worker_defs" }
 vnc_worker = { path = "workers/vnc_worker" }

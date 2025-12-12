@@ -13,6 +13,7 @@ petri_artifacts_common.workspace = true
 petri_artifacts_core.workspace = true
 petri_artifacts_vmm_test.workspace = true
 chipset_resources.workspace = true
+chipset_device_worker_defs.workspace = true
 diag_client.workspace = true
 disk_backend.workspace = true
 disk_vhd1.workspace = true
