@@ -15,8 +15,8 @@ use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_openvmm_hcl::OpenvmmHclFeature;
 use crate::download_openhcl_kernel_package::OpenhclKernelPackageArch;
 use crate::download_openhcl_kernel_package::OpenhclKernelPackageKind;
-use crate::download_openvmm_deps::OpenvmmDepsArch;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
+use crate::resolve_openvmm_deps::OpenvmmDepsArch;
 use crate::run_cargo_build::BuildProfile;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonPlatform;
@@ -275,7 +275,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_openvmm_hcl::Node>();
         ctx.import::<crate::build_sidecar::Node>();
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::run_igvmfilegen::Node>();
@@ -394,7 +394,7 @@ impl SimpleFlowNode for Node {
             } else {
                 match typ {
                     Vtl0KernelType::Example => ctx.reqv(|v| {
-                        crate::download_openvmm_deps::Request::GetLinuxTestKernel(
+                        crate::resolve_openvmm_deps::Request::GetLinuxTestKernel(
                             match arch {
                                 CommonArch::X86_64 => OpenvmmDepsArch::X86_64,
                                 CommonArch::Aarch64 => OpenvmmDepsArch::Aarch64,
@@ -407,7 +407,7 @@ impl SimpleFlowNode for Node {
             };
 
             let initrd = ctx.reqv(|v| {
-                crate::download_openvmm_deps::Request::GetLinuxTestInitrd(
+                crate::resolve_openvmm_deps::Request::GetLinuxTestInitrd(
                     match arch {
                         CommonArch::X86_64 => OpenvmmDepsArch::X86_64,
                         CommonArch::Aarch64 => OpenvmmDepsArch::Aarch64,
