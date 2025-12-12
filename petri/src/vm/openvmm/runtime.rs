@@ -50,6 +50,7 @@ pub struct PetriVmOpenVmm {
 impl PetriVmRuntime for PetriVmOpenVmm {
     type VmInspector = OpenVmmInspector;
     type VmFramebufferAccess = OpenVmmFramebufferAccess;
+    type RealizedStorageController = ();
 
     async fn teardown(self) -> anyhow::Result<()> {
         tracing::info!("waiting for worker");
@@ -164,6 +165,20 @@ impl PetriVmRuntime for PetriVmOpenVmm {
     async fn reset(&mut self) -> anyhow::Result<()> {
         Self::reset(self).await
     }
+
+    async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()> {
+        Self::set_vtl2_settings(self, settings).await
+    }
+
+    async fn add_disk(
+        &mut self,
+        _disk: &crate::PetriDisk,
+        _controller_type: crate::StorageType,
+        _controller_location: u8,
+        _controller: &Self::RealizedStorageController,
+    ) -> anyhow::Result<()> {
+        todo!()
+    }
 }
 
 pub(super) struct PetriVmInner {
@@ -260,8 +275,8 @@ impl PetriVmOpenVmm {
         pub async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>
     );
     petri_vm_fn!(
-        /// Modifies OpenHCL VTL2 settings.
-        pub async fn modify_vtl2_settings(&mut self, f: impl FnOnce(&mut Vtl2Settings)) -> anyhow::Result<()>
+        /// Set the OpenHCL VTL2 settings.
+        pub async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()>
     );
 
     petri_vm_fn!(pub(crate) async fn resume(&mut self) -> anyhow::Result<()>);
@@ -432,12 +447,7 @@ impl PetriVmInner {
         self.worker.restore_openhcl(ged_send).await
     }
 
-    async fn modify_vtl2_settings(
-        &mut self,
-        f: impl FnOnce(&mut Vtl2Settings),
-    ) -> anyhow::Result<()> {
-        f(self.resources.vtl2_settings.as_mut().unwrap());
-
+    async fn set_vtl2_settings(&self, settings: &Vtl2Settings) -> anyhow::Result<()> {
         let ged_send = self
             .resources
             .ged_send
@@ -447,7 +457,7 @@ impl PetriVmInner {
         ged_send
             .call_failable(
                 get_resources::ged::GuestEmulationRequest::ModifyVtl2Settings,
-                prost::Message::encode_to_vec(self.resources.vtl2_settings.as_ref().unwrap()),
+                prost::Message::encode_to_vec(settings),
             )
             .await?;
 

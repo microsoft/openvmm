@@ -33,6 +33,7 @@ use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use petri_artifacts_core::ResolvedOptionalArtifact;
 use pipette_client::PipetteClient;
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -42,6 +43,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempPath;
 use vmgs_resources::GuestStateEncryptionPolicy;
+use vtl2_settings_proto::Vtl2Settings;
 
 /// The set of artifacts and resources needed to instantiate a
 /// [`PetriVmBuilder`].
@@ -135,6 +137,16 @@ pub struct PetriVmConfig {
     pub boot_device_type: BootDeviceType,
     /// TPM configuration
     pub tpm: Option<TpmConfig>,
+    /// Additional storage for the VM
+    pub additional_storage_controllers: HashMap<String, PetriStorageController>,
+}
+
+/// VM configuration that can be changed after the VM is created
+pub struct PetriVmRuntimeConfig<T> {
+    /// VTL2 settings
+    pub vtl2_settings: Option<Vtl2Settings>,
+    /// Storage controllers and associated disks
+    pub storage_controllers: HashMap<String, PetriStorageController<T>>,
 }
 
 /// Resources used by a Petri VM during contruction and runtime
@@ -162,6 +174,9 @@ pub trait PetriVmmBackend {
     /// Get the default servicing flags (based on what this backend supports)
     fn default_servicing_flags() -> OpenHclServicingFlags;
 
+    /// Get the default VTL2 settings for this backend
+    fn default_vtl2_settings() -> Vtl2Settings;
+
     /// Create a disk for guest crash dumps, and a post-test hook to open the disk
     /// to allow for reading the dumps.
     fn create_guest_dump_disk() -> anyhow::Result<
@@ -180,7 +195,10 @@ pub trait PetriVmmBackend {
         config: PetriVmConfig,
         modify_vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
         resources: &PetriVmResources,
-    ) -> anyhow::Result<Self::VmRuntime>;
+    ) -> anyhow::Result<(
+        Self::VmRuntime,
+        PetriVmRuntimeConfig<<Self::VmRuntime as PetriVmRuntime>::RealizedStorageController>,
+    )>;
 }
 
 pub(crate) const PETRI_VTL0_SCSI_BOOT_LUN: u8 = 0;
@@ -198,6 +216,8 @@ pub struct PetriVm<T: PetriVmmBackend> {
     guest_quirks: GuestQuirksInner,
     vmm_quirks: VmmQuirks,
     expected_boot_event: Option<FirmwareEvent>,
+
+    config: PetriVmRuntimeConfig<<T::VmRuntime as PetriVmRuntime>::RealizedStorageController>,
 }
 
 impl<T: PetriVmmBackend> PetriVmBuilder<T> {
@@ -287,6 +307,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 vmgs: PetriVmgsResource::Ephemeral,
                 tpm: None,
                 guest_crash_disk,
+                additional_storage_controllers: HashMap::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -325,7 +346,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         let arch = self.config.arch;
         let expect_reset = self.expect_reset();
 
-        let mut runtime = self
+        let (mut runtime, config) = self
             .backend
             .run(self.config, self.modify_vmm_config, &self.resources)
             .await?;
@@ -342,6 +363,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             guest_quirks: self.guest_quirks,
             vmm_quirks: self.vmm_quirks,
             expected_boot_event: self.expected_boot_event,
+
+            config,
         };
 
         if expect_reset {
@@ -586,7 +609,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
-    /// Sets the command line for the paravisor.
+    /// Append additional command line arguments to pass to the paravisor.
     pub fn with_openhcl_command_line(mut self, additional_command_line: &str) -> Self {
         append_cmdline(
             &mut self
@@ -594,7 +617,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 .firmware
                 .openhcl_config_mut()
                 .expect("OpenHCL command line is only supported for OpenHCL firmware.")
-                .command_line,
+                .custom_command_line,
             additional_command_line,
         );
         self
@@ -690,7 +713,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             }
             PetriGuestStateLifetime::Reprovision => PetriVmgsResource::Reprovision(disk),
             PetriGuestStateLifetime::Ephemeral => {
-                if !matches!(disk.disk, PetriDiskType::Memory) {
+                if !matches!(disk.disk, PetriDisk::Memory) {
                     panic!("attempted to use ephemeral guest state after specifying backing vmgs")
                 }
                 PetriVmgsResource::Ephemeral
@@ -716,20 +739,20 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Use the specified backing VMGS file
     pub fn with_initial_vmgs(self, disk: ResolvedArtifact<impl IsTestVmgs>) -> Self {
-        self.with_backing_vmgs(PetriDiskType::Differencing(disk.into()))
+        self.with_backing_vmgs(PetriDisk::Differencing(disk.into()))
     }
 
     /// Use the specified backing VMGS file
     pub fn with_persistent_vmgs(self, disk: impl AsRef<Path>) -> Self {
-        self.with_backing_vmgs(PetriDiskType::Persistent(disk.as_ref().to_path_buf()))
+        self.with_backing_vmgs(PetriDisk::Persistent(disk.as_ref().to_path_buf()))
     }
 
-    fn with_backing_vmgs(mut self, disk: PetriDiskType) -> Self {
+    fn with_backing_vmgs(mut self, disk: PetriDisk) -> Self {
         match &mut self.config.vmgs {
             PetriVmgsResource::Disk(vmgs)
             | PetriVmgsResource::ReprovisionOnFailure(vmgs)
             | PetriVmgsResource::Reprovision(vmgs) => {
-                if !matches!(vmgs.disk, PetriDiskType::Memory) {
+                if !matches!(vmgs.disk, PetriDisk::Memory) {
                     panic!("already specified a backing vmgs file");
                 }
                 vmgs.disk = disk;
@@ -766,6 +789,75 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .as_mut()
             .expect("TPM persistence requires a TPM")
             .no_persistent_secrets = !tpm_state_persistence;
+        self
+    }
+
+    /// Add custom VTL 2 settings.
+    pub fn with_custom_vtl2_settings(
+        mut self,
+        f: impl FnOnce(&mut Vtl2Settings) + 'static + Send + Sync,
+    ) -> Self {
+        let openhcl_config = self
+            .config
+            .firmware
+            .openhcl_config_mut()
+            .expect("Custom VTL 2 settings are only supported with OpenHCL");
+        if openhcl_config.modify_vtl2_settings.is_some() {
+            panic!("only one with_custom_vtl2_settings allowed");
+        }
+        openhcl_config.modify_vtl2_settings = Some(ModifyFn(Box::new(f)));
+        self
+    }
+
+    /// Add an additional SCSI controller to the VM.
+    pub fn add_storage_controller(
+        mut self,
+        test_id: impl AsRef<str>,
+        target_vtl: Vtl,
+        device_type: StorageType,
+    ) -> Self {
+        let test_id = test_id.as_ref().to_string();
+
+        if self
+            .config
+            .additional_storage_controllers
+            .contains_key(&test_id)
+        {
+            panic!("storage controller with id \"{test_id}\" already exists");
+        }
+
+        self.config.additional_storage_controllers.insert(
+            test_id,
+            PetriStorageController {
+                target_vtl,
+                controller_type: device_type,
+                disks: HashMap::new(),
+                realized: (),
+            },
+        );
+        self
+    }
+
+    /// Adds a VHD with the optionally specified location (a.k.a LUN) to the
+    /// specified controller.
+    pub fn add_disk(
+        mut self,
+        disk: PetriDisk,
+        controller_test_id: impl AsRef<str>,
+        controller_location: Option<u8>,
+    ) -> Self {
+        let controller_test_id = controller_test_id.as_ref();
+
+        let controller = self
+            .config
+            .additional_storage_controllers
+            .get_mut(controller_test_id)
+            .unwrap_or_else(|| {
+                panic!("storage controller with id \"{controller_test_id}\" does not exist")
+            });
+
+        _ = controller.add_disk(controller_location, disk);
+
         self
     }
 
@@ -1106,6 +1198,66 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     pub async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
         self.runtime.get_guest_state_file().await
     }
+
+    /// Modify OpenHCL VTL2 settings.
+    pub async fn modify_vtl2_settings(
+        &mut self,
+        f: impl FnOnce(&mut Vtl2Settings),
+    ) -> anyhow::Result<()> {
+        if self.openhcl_diag_handler.is_none() {
+            panic!("Custom VTL 2 settings are only supported with OpenHCL");
+        }
+        f(self
+            .config
+            .vtl2_settings
+            .get_or_insert_with(T::default_vtl2_settings));
+        self.runtime
+            .set_vtl2_settings(self.config.vtl2_settings.as_ref().unwrap())
+            .await
+    }
+
+    /// Get the list of storage controllers added to this VM
+    pub fn get_storage_controllers(
+        &self,
+    ) -> &HashMap<
+        String,
+        PetriStorageController<<T::VmRuntime as PetriVmRuntime>::RealizedStorageController>,
+    > {
+        &self.config.storage_controllers
+    }
+
+    /// Adds a VHD with the optionally specified location (a.k.a LUN) to the
+    /// specified controller.
+    pub async fn add_disk(
+        &mut self,
+        disk: PetriDisk,
+        controller_test_id: impl AsRef<str>,
+        controller_location: Option<u8>,
+    ) -> anyhow::Result<()> {
+        let controller_test_id = controller_test_id.as_ref();
+
+        let controller = self
+            .config
+            .storage_controllers
+            .get_mut(controller_test_id)
+            .unwrap_or_else(|| {
+                panic!("storage controller with id \"{controller_test_id}\" does not exist")
+            });
+
+        let controller_location = controller.add_disk(controller_location, disk);
+        let disk = controller.disks.get(&controller_location).unwrap();
+
+        self.runtime
+            .add_disk(
+                disk,
+                controller.controller_type,
+                controller_location,
+                &controller.realized,
+            )
+            .await?;
+
+        Ok(())
+    }
 }
 
 /// A running VM that tests can interact with.
@@ -1115,6 +1267,8 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     type VmInspector: PetriVmInspector;
     /// Interface for accessing the framebuffer
     type VmFramebufferAccess: PetriVmFramebufferAccess;
+    /// Information used to identify a realized storage controller
+    type RealizedStorageController;
 
     /// Cleanly tear down the VM immediately.
     async fn teardown(self) -> anyhow::Result<()>;
@@ -1169,6 +1323,16 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
         Ok(None)
     }
+    /// Set the OpenHCL VTL2 settings.
+    async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()>;
+    /// Add a VHD
+    async fn add_disk(
+        &mut self,
+        disk: &PetriDisk,
+        controller_type: StorageType,
+        controller_location: u8,
+        controller: &Self::RealizedStorageController,
+    ) -> anyhow::Result<()>;
 }
 
 /// Interface for getting information about the state of the VM
@@ -1313,17 +1477,17 @@ pub enum OpenHclLogConfig {
 }
 
 /// OpenHCL configuration
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct OpenHclConfig {
     /// Emulate SCSI via NVME to VTL2, with the provided namespace ID on
     /// the controller with `BOOT_NVME_INSTANCE`.
     pub vtl2_nvme_boot: bool,
     /// Whether to enable VMBus redirection
     pub vmbus_redirect: bool,
-    /// Test-specified command-line parameters to pass to OpenHCL. VM backends
-    /// should use [`OpenHclConfig::command_line()`] rather than reading this
-    /// directly.
-    pub command_line: Option<String>,
+    /// Test-specified command-line parameters to append to the petri generated
+    /// command line and pass to OpenHCL. VM backends should use
+    /// [`OpenHclConfig::command_line()`] rather than reading this directly.
+    pub custom_command_line: Option<String>,
     /// Command line parameters that control OpenHCL logging behavior. Separate
     /// from `command_line` so that petri can decide to use default log
     /// levels.
@@ -1331,13 +1495,15 @@ pub struct OpenHclConfig {
     /// How to place VTL2 in address space. If `None`, the backend VMM
     /// will decide on default behavior.
     pub vtl2_base_address_type: Option<Vtl2BaseAddressType>,
+    /// Optional manual modification of the VTL2 settings
+    pub modify_vtl2_settings: Option<ModifyFn<Vtl2Settings>>,
 }
 
 impl OpenHclConfig {
     /// Returns the command line to pass to OpenHCL based on these parameters. Aggregates
     /// the command line and log levels.
     pub fn command_line(&self) -> String {
-        let mut cmdline = self.command_line.clone();
+        let mut cmdline = self.custom_command_line.clone();
 
         // Enable MANA keep-alive by default for all tests
         append_cmdline(&mut cmdline, "OPENHCL_MANA_KEEP_ALIVE=host,privatepool");
@@ -1379,9 +1545,10 @@ impl Default for OpenHclConfig {
         Self {
             vtl2_nvme_boot: false,
             vmbus_redirect: false,
-            command_line: None,
+            custom_command_line: None,
             log_levels: OpenHclLogConfig::TestDefault,
             vtl2_base_address_type: None,
+            modify_vtl2_settings: None,
         }
     }
 }
@@ -1703,6 +1870,15 @@ impl Firmware {
         }
     }
 
+    fn into_openhcl_config(self) -> Option<OpenHclConfig> {
+        match self {
+            Firmware::OpenhclLinuxDirect { openhcl_config, .. }
+            | Firmware::OpenhclUefi { openhcl_config, .. }
+            | Firmware::OpenhclPcat { openhcl_config, .. } => Some(openhcl_config),
+            Firmware::LinuxDirect { .. } | Firmware::Pcat { .. } | Firmware::Uefi { .. } => None,
+        }
+    }
+
     fn uefi_config(&self) -> Option<&UefiConfig> {
         match self {
             Firmware::Uefi { uefi_config, .. } | Firmware::OpenhclUefi { uefi_config, .. } => {
@@ -1873,9 +2049,9 @@ pub struct OpenHclServicingFlags {
     pub stop_timeout_hint_secs: Option<u16>,
 }
 
-/// Petri disk type
+/// Petri disk
 #[derive(Debug, Clone)]
-pub enum PetriDiskType {
+pub enum PetriDisk {
     /// Memory backed
     Memory,
     /// Memory differencing disk backed by a file
@@ -1888,7 +2064,7 @@ pub enum PetriDiskType {
 #[derive(Debug, Clone)]
 pub struct PetriVmgsDisk {
     /// Backing disk
-    pub disk: PetriDiskType,
+    pub disk: PetriDisk,
     /// Guest state encryption policy
     pub encryption_policy: GuestStateEncryptionPolicy,
 }
@@ -1896,7 +2072,7 @@ pub struct PetriVmgsDisk {
 impl Default for PetriVmgsDisk {
     fn default() -> Self {
         PetriVmgsDisk {
-            disk: PetriDiskType::Memory,
+            disk: PetriDisk::Memory,
             // TODO: make this strict once we can set it in OpenHCL on Hyper-V
             encryption_policy: GuestStateEncryptionPolicy::None(false),
         }
@@ -2040,6 +2216,77 @@ async fn save_inspect(
         return;
     }
     tracing::info!("{name} inspect task finished.");
+}
+
+/// Wrapper for modification functions with stubbed out debug impl
+pub struct ModifyFn<T>(pub Box<dyn FnOnce(&mut T) + Send + Sync>);
+
+impl<T> std::fmt::Debug for ModifyFn<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "_")
+    }
+}
+
+/// The storage device type.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum StorageType {
+    /// IDE
+    Ide,
+    /// SCSI
+    Scsi,
+    /// NVMe
+    Nvme,
+}
+
+/// Virtual trust level
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Vtl {
+    /// VTL 0
+    Vtl0 = 0,
+    /// VTL 2
+    Vtl2 = 2,
+}
+
+/// Petri storage controller
+#[derive(Debug, Clone)]
+pub struct PetriStorageController<T = ()> {
+    /// The VTL to assign the storage controller to
+    pub target_vtl: Vtl,
+    /// The storage device type
+    pub controller_type: StorageType,
+    /// Disks attached to this storage controller
+    pub disks: HashMap<u8, PetriDisk>,
+    /// Backend-specific realized details
+    pub realized: T,
+}
+
+impl<T> PetriStorageController<T> {
+    /// Add a disk to the storage controller
+    pub fn add_disk(&mut self, lun: Option<u8>, disk: PetriDisk) -> u8 {
+        let lun = if let Some(lun) = lun {
+            if self.disks.contains_key(&lun) {
+                panic!("a disk with lun {lun} already exists on this controller");
+            }
+            lun
+        } else {
+            // find the first available lun
+            let mut lun = None;
+            for x in 0..u8::MAX {
+                if !self.disks.contains_key(&x) {
+                    lun = Some(x)
+                }
+            }
+            if let Some(lun) = lun {
+                lun
+            } else {
+                panic!("all locations on this controller are in use")
+            }
+        };
+
+        self.disks.insert(lun, disk);
+
+        lun
+    }
 }
 
 #[cfg(test)]

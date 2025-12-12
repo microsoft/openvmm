@@ -5,6 +5,7 @@
 
 use crate::CommandError;
 use crate::OpenHclServicingFlags;
+use crate::StorageType;
 use crate::VmScreenshotMeta;
 use crate::run_host_cmd;
 use anyhow::Context;
@@ -309,6 +310,16 @@ impl ps::AsVal for ControllerType {
             ControllerType::Ide => "IDE",
             ControllerType::Scsi => "SCSI",
             ControllerType::Pmem => "PMem",
+        }
+    }
+}
+
+impl From<StorageType> for ControllerType {
+    fn from(value: StorageType) -> Self {
+        match value {
+            StorageType::Ide => Self::Ide,
+            StorageType::Scsi => Self::Scsi,
+            StorageType::Nvme => todo!(),
         }
     }
 }
