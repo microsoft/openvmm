@@ -889,6 +889,7 @@ mod test {
     use loader_defs::linux::e820entry;
     use memory_range::MemoryRange;
     use memory_range::subtract_ranges;
+    use sidecar_defs::PerCpuState;
     use zerocopy::FromZeros;
 
     const HIGH_MMIO_GAP_END: u64 = 0x1000000000; //  64 GiB
@@ -915,6 +916,10 @@ mod test {
             isolation: IsolationType::None,
             bsp_reg: cpus[0].reg as u32,
             cpus,
+            sidecar_cpu_overrides: PerCpuState {
+                per_cpu_state_specified: false,
+                sidecar_starts_cpu: [true; sidecar_defs::NUM_CPUS_SUPPORTED_FOR_PER_CPU_STATE],
+            },
             cmdline: ArrayString::new(),
             vmbus_vtl2: VmbusInfo {
                 mmio,
