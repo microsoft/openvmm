@@ -657,7 +657,7 @@ async fn mana_nic_servicing_keepalive(
 
 /// Test servicing an OpenHCL VM when NVME keepalive is enabled but then
 /// disabled after servicing.
-/// It verifies to check that the controller is reset during the restore process.
+/// It verifies that the controller is reset during the restore process.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn servicing_with_keepalive_disabled_after_servicing(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
