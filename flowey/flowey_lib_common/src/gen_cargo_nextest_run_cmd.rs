@@ -191,7 +191,6 @@ impl FlowNode for Node {
                                     packages,
                                     features,
                                     no_default_features,
-                                    unstable_panic_abort_tests,
                                     target,
                                     profile,
                                     extra_env,
@@ -206,7 +205,6 @@ impl FlowNode for Node {
                                 target,
                                 rt.read(packages),
                                 features,
-                                unstable_panic_abort_tests,
                                 no_default_features,
                                 rt.read(extra_env),
                             );
@@ -381,7 +379,6 @@ pub(crate) fn cargo_nextest_build_args_and_env(
     target: target_lexicon::Triple,
     packages: build_params::TestPackages,
     features: crate::run_cargo_build::CargoFeatureSet,
-    unstable_panic_abort_tests: Option<build_params::PanicAbortTests>,
     no_default_features: bool,
     mut extra_env: BTreeMap<String, String>,
 ) -> (Vec<String>, BTreeMap<String, String>) {
@@ -417,23 +414,11 @@ pub(crate) fn cargo_nextest_build_args_and_env(
         v
     };
 
-    let (z_panic_abort_tests, use_rustc_bootstrap) = match unstable_panic_abort_tests {
-        Some(kind) => (
-            Some("-Zpanic-abort-tests"),
-            match kind {
-                build_params::PanicAbortTests::UsingNightly => false,
-                build_params::PanicAbortTests::UsingRustcBootstrap => true,
-            },
-        ),
-        None => (None, false),
-    };
-
     let mut args = Vec::new();
     args.extend(locked.map(Into::into));
     args.extend(verbose.map(Into::into));
     args.push("--cargo-profile".into());
     args.push(cargo_profile.into());
-    args.extend(z_panic_abort_tests.map(Into::into));
     args.push("--target".into());
     args.push(target);
     args.extend(packages);
@@ -443,9 +428,7 @@ pub(crate) fn cargo_nextest_build_args_and_env(
     args.extend(features.to_cargo_arg_strings());
 
     let mut env = BTreeMap::new();
-    if use_rustc_bootstrap {
-        env.insert("RUSTC_BOOTSTRAP".into(), "1".into());
-    }
+
     env.append(&mut extra_env);
 
     (args, env)
