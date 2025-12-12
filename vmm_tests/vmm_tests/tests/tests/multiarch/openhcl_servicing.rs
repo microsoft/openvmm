@@ -26,6 +26,7 @@ use nvme_resources::fault::PciFaultConfig;
 use nvme_test::command_match::CommandMatchBuilder;
 use petri::OpenHclServicingFlags;
 use petri::PetriGuestStateLifetime;
+use petri::PetriVm;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
@@ -375,14 +376,16 @@ async fn servicing_keepalive_with_nvme_fault(
             ),
         );
 
-    apply_fault_with_keepalive(
+    let _vm = apply_fault_with_keepalive(
         config,
         fault_configuration,
         fault_start_updater,
         igvm_file,
         None,
     )
-    .await
+    .await?;
+
+    Ok(())
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself
@@ -403,14 +406,16 @@ async fn servicing_keepalive_fault_if_identify(
             ),
         );
 
-    apply_fault_with_keepalive(
+    let _vm = apply_fault_with_keepalive(
         config,
         fault_configuration,
         fault_start_updater,
         igvm_file,
         None,
     )
-    .await
+    .await?;
+
+    Ok(())
 }
 
 /// Verifies that the driver awaits an existing AER instead of issuing a new one after servicing.
@@ -429,14 +434,16 @@ async fn servicing_keepalive_verify_no_duplicate_aers(
             )
         );
 
-    apply_fault_with_keepalive(
+    let _vm = apply_fault_with_keepalive(
         config,
         fault_configuration,
         fault_start_updater,
         igvm_file,
         None,
     )
-    .await
+    .await?;
+
+    Ok(())
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself with NVMe keepalive support
@@ -470,14 +477,16 @@ async fn servicing_keepalive_with_nvme_identify_fault(
             ),
         );
 
-    apply_fault_with_keepalive(
+    let _vm = apply_fault_with_keepalive(
         config,
         fault_configuration,
         fault_start_updater,
         igvm_file,
         None,
     )
-    .await
+    .await?;
+
+    Ok(())
 }
 
 async fn apply_fault_with_keepalive(
@@ -486,7 +495,7 @@ async fn apply_fault_with_keepalive(
     mut fault_start_updater: CellUpdater<bool>,
     igvm_file: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     new_cmdline: Option<&str>,
-) -> Result<(), anyhow::Error> {
+) -> Result<PetriVm<OpenVmmPetriBackend>, anyhow::Error> {
     let mut flags = config.default_servicing_flags();
     flags.enable_nvme_keepalive = true;
     let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
@@ -508,7 +517,7 @@ async fn apply_fault_with_keepalive(
     fault_start_updater.set(false).await;
     agent.ping().await?;
 
-    Ok(())
+    Ok(vm)
 }
 
 async fn create_keepalive_test_config(
