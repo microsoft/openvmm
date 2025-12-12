@@ -12,7 +12,7 @@ flowey_request! {
     pub enum Request {
         /// Automatically install Nix package manager.
         ///
-        /// Only supported on Github backend.
+        /// Supported on Github and ADO backends.
         AutoInstall(bool),
 
         /// Ensure that Nix was installed and is available on the $PATH
@@ -26,10 +26,6 @@ impl FlowNode for Node {
     fn imports(_ctx: &mut ImportCtx<'_>) {}
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        if !matches!(ctx.backend(), FlowBackend::Github) {
-            anyhow::bail!("only supported on the Github backend at this time");
-        }
-
         let mut ensure_installed = Vec::new();
         let mut auto_install = None;
 
@@ -50,17 +46,38 @@ impl FlowNode for Node {
 
         if !ensure_installed.is_empty() && auto_install {
             // Add nix profile bin to PATH first
-            let added_to_path = ctx.emit_rust_step("add nix profile to path", |_| {
-                |_| {
+            let added_to_path = ctx.emit_rust_step("add nix profile to path", |ctx| {
+                let backend = ctx.backend();
+                move |_| {
                     let nix_profile_bin = home::home_dir()
                         .context("Unable to get home dir")?
                         .join(".nix-profile")
                         .join("bin");
-                    let github_path = std::env::var("GITHUB_PATH")?;
-                    let mut github_path = fs_err::File::options().append(true).open(github_path)?;
-                    github_path.write_all(nix_profile_bin.as_os_str().as_encoded_bytes())?;
-                    github_path.write_all(b"\n")?;
-                    log::info!("Added {} to PATH", nix_profile_bin.display());
+
+                    match backend {
+                        FlowBackend::Github => {
+                            let github_path = std::env::var("GITHUB_PATH")?;
+                            let mut github_path =
+                                fs_err::File::options().append(true).open(github_path)?;
+                            github_path
+                                .write_all(nix_profile_bin.as_os_str().as_encoded_bytes())?;
+                            github_path.write_all(b"\n")?;
+                            log::info!("Added {} to PATH (Github)", nix_profile_bin.display());
+                        }
+                        FlowBackend::Ado => {
+                            // ADO uses logging commands to update PATH
+                            println!("##vso[task.prependpath]{}", nix_profile_bin.display());
+                            log::info!("Added {} to PATH (ADO)", nix_profile_bin.display());
+                        }
+                        FlowBackend::Local => {
+                            log::warn!("Cannot automatically add to PATH in local backend");
+                            log::warn!(
+                                "Please add {} to your PATH manually",
+                                nix_profile_bin.display()
+                            );
+                        }
+                    }
+
                     Ok(())
                 }
             });

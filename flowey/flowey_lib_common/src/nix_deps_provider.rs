@@ -32,7 +32,9 @@ new_flow_node!(struct Node);
 impl FlowNode for Node {
     type Request = Request;
 
-    fn imports(_ctx: &mut ImportCtx<'_>) {}
+    fn imports(ctx: &mut ImportCtx<'_>) {
+        ctx.import::<crate::install_nix::Node>();
+    }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let mut repo_path = None;
@@ -41,6 +43,8 @@ impl FlowNode for Node {
         let mut protoc_requests = Vec::new();
         let mut openhcl_kernel_requests = Vec::new();
         let mut uefi_mu_msvm_requests = Vec::new();
+
+        let nix_installed = ctx.reqv(crate::install_nix::Request::EnsureInstalled);
 
         // Parse all requests and group by type
         for req in requests {
@@ -69,6 +73,7 @@ impl FlowNode for Node {
         }
 
         ctx.emit_rust_step("resolve nix dependency paths", |ctx| {
+            nix_installed.claim(ctx);
             let repo_path = repo_path.claim(ctx);
             let openvmm_deps_requests = openvmm_deps_requests.claim(ctx);
             let protoc_requests = protoc_requests.claim(ctx);
