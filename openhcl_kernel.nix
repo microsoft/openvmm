@@ -40,11 +40,10 @@ in stdenv.mkDerivation {
 
   installPhase = ''
     runHook preInstall
-    mkdir $out
-    cp vmlinux* $out
-    mkdir -p $out/modules/build/native/bin/${arch}
-    cp kernel_build_metadata.json $out/modules/build/native/bin/
-    cp -r modules $out/modules/build/native/bin/${arch}
+    mkdir -p $out/build/native/bin/${arch}
+    cp vmlinux* $out/build/native/bin/${arch}/
+    cp kernel_build_metadata.json $out/build/native/bin/
+    cp -r modules $out/build/native/bin/${arch}/
     runHook postInstall
   '';
 }

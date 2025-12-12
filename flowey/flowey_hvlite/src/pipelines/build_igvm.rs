@@ -339,10 +339,9 @@ impl IntoPipeline for BuildIgvmCli {
         );
 
         job = if use_local_deps {
-            let openvmm_deps_path = custom_openvmm_deps
-                .expect("must specify openvmm deps path to use local deps");
-            let protoc_path = custom_protoc
-                .expect("must specify protoc path to use local deps");
+            let openvmm_deps_path =
+                custom_openvmm_deps.expect("must specify openvmm deps path to use local deps");
+            let protoc_path = custom_protoc.expect("must specify protoc path to use local deps");
 
             // Wrap with ReadVar::from_static() for CLI arguments
             let openvmm_deps_var = ReadVar::from_static(openvmm_deps_path);
