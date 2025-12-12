@@ -406,8 +406,8 @@ impl TdxTscDeadlineService {
     /// Note that this uses wrapping arithmetic to handle 64-bit timestamp wraparound
     ///  and hence this is not transitive: if `a` is before `b`, and `b` is before `c`,
     /// `a` may still appear after `c` if they are too far apart in the circular space.
-    fn is_before(ref_time_last: u64, ref_time: u64) -> bool {
-        let delta = ref_time_last.wrapping_sub(ref_time);
+    fn is_before(ref_time: u64, ref_time_last: u64) -> bool {
+        let delta = ref_time.wrapping_sub(ref_time_last);
         (delta as i64) < 0
     }
 }
@@ -435,7 +435,7 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
         // Update needed only if no deadline is set or the new time is earlier.
         if vp_state
             .deadline_100ns
-            .is_none_or(|last| Self::is_before(last, ref_time_next))
+            .is_none_or(|last| Self::is_before(ref_time_next, last))
         {
             // Record the new reference time.
             vp_state.deadline_100ns = Some(ref_time_next);
@@ -472,12 +472,21 @@ impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineServi
             .as_mut()
             .expect("TdxTscDeadlineService requires tsc_deadline_state");
 
+        vp_state.deadline_100ns = None;
+
         let state = vp.runner.tdx_l2_tsc_deadline_state_mut();
         state.update_deadline = 0;
+    }
 
-        if vp_state.deadline_100ns.is_some() {
-            vp_state.last_deadline_100ns = vp_state.deadline_100ns.take();
-        }
+    /// Synchronize armed deadline state in the processor context.
+    fn sync_deadline_state(&self, vp: &mut UhProcessor<'_, TdxBacked>) {
+        let vp_state = vp
+            .backing
+            .tsc_deadline_state
+            .as_mut()
+            .expect("TdxTscDeadlineService requires tsc_deadline_state");
+
+        vp_state.last_deadline_100ns = vp_state.deadline_100ns;
     }
 }
 
@@ -1740,6 +1749,9 @@ impl UhProcessor<'_, TdxBacked> {
         let entered_from_vtl = next_vtl;
         self.runner
             .read_private_regs(&mut self.backing.vtls[entered_from_vtl].private_regs);
+
+        // Synchronize timer deadline state
+        self.shared.guest_timer.sync_deadline_state(self);
 
         // Kernel offload may have set or cleared the halt/idle states
         if offload_enabled && kernel_known_state {

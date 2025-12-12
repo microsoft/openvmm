@@ -2946,14 +2946,17 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::AssertVirtualInterrupt
 pub(super) trait HardwareIsolatedGuestTimer<T: HardwareIsolatedBacking>:
     Send + Sync
 {
+    /// Returns true if the implementation uses hardware virtualized timer service.
+    fn is_hardware_virtualized(&self) -> bool;
+
     /// Update timer deadline.
     fn update_deadline(&self, vp: &mut UhProcessor<'_, T>, ref_time_now: u64, ref_time_next: u64);
 
     /// Clear any pending deadline.
     fn clear_deadline(&self, vp: &mut UhProcessor<'_, T>);
 
-    /// Returns true if the implementation uses hardware virtualized timer service.
-    fn is_hardware_virtualized(&self) -> bool;
+    /// Synchronize armed deadline state for hardware virtualized timers.
+    fn sync_deadline_state(&self, vp: &mut UhProcessor<'_, T>);
 }
 
 /// Interface for managing lower VTL timer deadlines via [`VmTime`].
@@ -2984,5 +2987,9 @@ impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTi
     /// Clear any pending deadline.
     fn clear_deadline(&self, vp: &mut UhProcessor<'_, T>) {
         vp.vmtime.cancel_timeout();
+    }
+
+    fn sync_deadline_state(&self, _vp: &mut UhProcessor<'_, T>) {
+        // No-op for software timers
     }
 }
