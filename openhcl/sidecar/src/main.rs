@@ -44,6 +44,36 @@
 //! can interrupt the command via another request on the control page (and
 //! another IPI).
 //!
+//! # Processor Startup
+//!
+//! The sidecar kernel is initialized by a single bootstrap processor (BSP),
+//! which is typically VP 0 from the main Linux kernel. The BSP performs all
+//! global initialization tasks: copying the hypercall page, setting up the IDT,
+//! initializing control pages for each node, and preparing page tables and
+//! per-CPU state for all application processors (APs).
+//!
+//! After the BSP completes its initialization work, it begins starting APs. The
+//! startup process uses a fan-out pattern to minimize total boot time: the BSP
+//! starts the first few APs, and then each newly-started AP immediately helps
+//! start additional APs. This creates an exponential growth in the number of
+//! CPUs actively participating in the boot process.
+//!
+//! Concurrency during startup is managed through atomic operations on a
+//! per-node `next_vp` counter. Each CPU (whether BSP or AP) atomically
+//! increments this counter to claim the next VP index to start within that
+//! node. This ensures that each VP is started exactly once without requiring
+//! locks or complex coordination. The startup fan-out continues until all VPs
+//! in all nodes have been started (or skipped if marked as REMOVED).
+//!
+//! Each CPU's page tables include a mapping for its node's control page at a
+//! fixed virtual address (PTE_CONTROL_PAGE). This is set up during AP
+//! initialization via the `init_ap` function, which builds the per-CPU page
+//! table hierarchy and maps the control page at the same virtual address for
+//! all CPUs in the node. This allows each CPU to access its control page
+//! without knowing its physical address, and ensures that all CPUs in a node
+//! see the same control page data (since they all map the same physical page).
+//! The control page mapping is read-only from the sidecar's perspective.
+//!
 //! As of this writing, sidecar only supports x86_64, without hardware
 //! isolation.
 
