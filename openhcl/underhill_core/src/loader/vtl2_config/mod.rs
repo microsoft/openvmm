@@ -8,6 +8,7 @@
 //! runtime, unlike measured config. Parameters provided by openhcl_boot are
 //! expected to be already validated by the bootloader.
 
+use crate::nvme_manager::save_restore_helpers::VPInterruptState;
 use anyhow::Context;
 use bootloader_fdt_parser::IsolationType;
 use bootloader_fdt_parser::ParsedBootDtInfo;
@@ -203,7 +204,7 @@ impl Drop for Vtl2ParamsMap<'_> {
 /// Write persisted info into the bootshim described persisted region.
 pub fn write_persisted_info(
     parsed: &ParsedBootDtInfo,
-    cpus_with_mapped_interrupts: Vec<u32>,
+    interrupt_state: VPInterruptState,
 ) -> anyhow::Result<()> {
     use loader_defs::shim::PersistedStateHeader;
     use loader_defs::shim::save_restore::MemoryEntry;
@@ -218,6 +219,11 @@ pub fn write_persisted_info(
     let ranges = [parsed.vtl2_persisted_protobuf_region];
     let mapping =
         Vtl2ParamsMap::new_writeable(&ranges).context("failed to map persisted protobuf region")?;
+
+    let VPInterruptState {
+        vps_with_mapped_interrupts_no_io: cpus_with_mapped_interrupts_no_io,
+        vps_with_outstanding_io: cpus_with_outstanding_io,
+    } = interrupt_state;
 
     // Create the serialized data to write.
     let state = SavedState {
@@ -248,7 +254,8 @@ pub fn write_persisted_info(
                 bootloader_fdt_parser::AddressRange::Memory(_) => None,
             })
             .collect(),
-        cpus_with_mapped_interrupts,
+        cpus_with_mapped_interrupts_no_io,
+        cpus_with_outstanding_io,
     };
 
     let protobuf = mesh_protobuf::encode(state);

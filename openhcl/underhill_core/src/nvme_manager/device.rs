@@ -13,7 +13,7 @@ use inspect::Inspect;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use nvme_driver::NvmeDriverSavedState;
+use nvme_driver::save_restore::NvmeDriverSavedState;
 use openhcl_dma_manager::AllocationVisibility;
 use openhcl_dma_manager::DmaClientParameters;
 use openhcl_dma_manager::DmaClientSpawner;
