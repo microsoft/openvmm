@@ -42,6 +42,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempPath;
 use vmgs_resources::GuestStateEncryptionPolicy;
+use vtl2_settings_proto::Vtl2Settings;
 
 /// The set of artifacts and resources needed to instantiate a
 /// [`PetriVmBuilder`].
@@ -137,6 +138,12 @@ pub struct PetriVmConfig {
     pub tpm: Option<TpmConfig>,
 }
 
+/// VM configuration that can be changed after the VM is created
+pub struct PetriVmRuntimeConfig {
+    /// VTL2 settings
+    pub vtl2_settings: Option<Vtl2Settings>,
+}
+
 /// Resources used by a Petri VM during contruction and runtime
 pub struct PetriVmResources {
     driver: DefaultDriver,
@@ -180,7 +187,7 @@ pub trait PetriVmmBackend {
         config: PetriVmConfig,
         modify_vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
         resources: &PetriVmResources,
-    ) -> anyhow::Result<Self::VmRuntime>;
+    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)>;
 }
 
 pub(crate) const PETRI_VTL0_SCSI_BOOT_LUN: u8 = 0;
@@ -198,6 +205,8 @@ pub struct PetriVm<T: PetriVmmBackend> {
     guest_quirks: GuestQuirksInner,
     vmm_quirks: VmmQuirks,
     expected_boot_event: Option<FirmwareEvent>,
+
+    config: PetriVmRuntimeConfig,
 }
 
 impl<T: PetriVmmBackend> PetriVmBuilder<T> {
@@ -325,7 +334,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         let arch = self.config.arch;
         let expect_reset = self.expect_reset();
 
-        let mut runtime = self
+        let (mut runtime, config) = self
             .backend
             .run(self.config, self.modify_vmm_config, &self.resources)
             .await?;
@@ -342,6 +351,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             guest_quirks: self.guest_quirks,
             vmm_quirks: self.vmm_quirks,
             expected_boot_event: self.expected_boot_event,
+
+            config,
         };
 
         if expect_reset {
@@ -586,7 +597,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
-    /// Sets the command line for the paravisor.
+    /// Append additional command line arguments to pass to the paravisor.
     pub fn with_openhcl_command_line(mut self, additional_command_line: &str) -> Self {
         append_cmdline(
             &mut self
@@ -594,7 +605,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 .firmware
                 .openhcl_config_mut()
                 .expect("OpenHCL command line is only supported for OpenHCL firmware.")
-                .command_line,
+                .custom_command_line,
             additional_command_line,
         );
         self
@@ -766,6 +777,25 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .as_mut()
             .expect("TPM persistence requires a TPM")
             .no_persistent_secrets = !tpm_state_persistence;
+        self
+    }
+
+    /// Add custom VTL 2 settings.
+    // TODO: At some point we want to replace uses of this with nicer with_disk,
+    // with_nic, etc. methods.
+    pub fn with_custom_vtl2_settings(
+        mut self,
+        f: impl FnOnce(&mut Vtl2Settings) + 'static + Send + Sync,
+    ) -> Self {
+        let openhcl_config = self
+            .config
+            .firmware
+            .openhcl_config_mut()
+            .expect("Custom VTL 2 settings are only supported with OpenHCL");
+        if openhcl_config.modify_vtl2_settings.is_some() {
+            panic!("only one with_custom_vtl2_settings allowed");
+        }
+        openhcl_config.modify_vtl2_settings = Some(ModifyFn(Box::new(f)));
         self
     }
 
@@ -1106,6 +1136,23 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     pub async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
         self.runtime.get_guest_state_file().await
     }
+
+    /// Modify OpenHCL VTL2 settings.
+    pub async fn modify_vtl2_settings(
+        &mut self,
+        f: impl FnOnce(&mut Vtl2Settings),
+    ) -> anyhow::Result<()> {
+        if self.openhcl_diag_handler.is_none() {
+            panic!("Custom VTL 2 settings are only supported with OpenHCL");
+        }
+        f(self
+            .config
+            .vtl2_settings
+            .get_or_insert_with(default_vtl2_settings));
+        self.runtime
+            .set_vtl2_settings(self.config.vtl2_settings.as_ref().unwrap())
+            .await
+    }
 }
 
 /// A running VM that tests can interact with.
@@ -1169,6 +1216,8 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
         Ok(None)
     }
+    /// Set the OpenHCL VTL2 settings.
+    async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()>;
 }
 
 /// Interface for getting information about the state of the VM
@@ -1313,17 +1362,17 @@ pub enum OpenHclLogConfig {
 }
 
 /// OpenHCL configuration
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct OpenHclConfig {
     /// Emulate SCSI via NVME to VTL2, with the provided namespace ID on
     /// the controller with `BOOT_NVME_INSTANCE`.
     pub vtl2_nvme_boot: bool,
     /// Whether to enable VMBus redirection
     pub vmbus_redirect: bool,
-    /// Test-specified command-line parameters to pass to OpenHCL. VM backends
-    /// should use [`OpenHclConfig::command_line()`] rather than reading this
-    /// directly.
-    pub command_line: Option<String>,
+    /// Test-specified command-line parameters to append to the petri generated
+    /// command line and pass to OpenHCL. VM backends should use
+    /// [`OpenHclConfig::command_line()`] rather than reading this directly.
+    pub custom_command_line: Option<String>,
     /// Command line parameters that control OpenHCL logging behavior. Separate
     /// from `command_line` so that petri can decide to use default log
     /// levels.
@@ -1331,13 +1380,15 @@ pub struct OpenHclConfig {
     /// How to place VTL2 in address space. If `None`, the backend VMM
     /// will decide on default behavior.
     pub vtl2_base_address_type: Option<Vtl2BaseAddressType>,
+    /// Optional manual modification of the VTL2 settings
+    pub modify_vtl2_settings: Option<ModifyFn<Vtl2Settings>>,
 }
 
 impl OpenHclConfig {
     /// Returns the command line to pass to OpenHCL based on these parameters. Aggregates
     /// the command line and log levels.
     pub fn command_line(&self) -> String {
-        let mut cmdline = self.command_line.clone();
+        let mut cmdline = self.custom_command_line.clone();
         match &self.log_levels {
             OpenHclLogConfig::TestDefault => {
                 let default_log_levels = {
@@ -1375,9 +1426,10 @@ impl Default for OpenHclConfig {
         Self {
             vtl2_nvme_boot: false,
             vmbus_redirect: false,
-            command_line: None,
+            custom_command_line: None,
             log_levels: OpenHclLogConfig::TestDefault,
             vtl2_base_address_type: None,
+            modify_vtl2_settings: None,
         }
     }
 }
@@ -1691,6 +1743,15 @@ impl Firmware {
     }
 
     fn openhcl_config_mut(&mut self) -> Option<&mut OpenHclConfig> {
+        match self {
+            Firmware::OpenhclLinuxDirect { openhcl_config, .. }
+            | Firmware::OpenhclUefi { openhcl_config, .. }
+            | Firmware::OpenhclPcat { openhcl_config, .. } => Some(openhcl_config),
+            Firmware::LinuxDirect { .. } | Firmware::Pcat { .. } | Firmware::Uefi { .. } => None,
+        }
+    }
+
+    fn into_openhcl_config(self) -> Option<OpenHclConfig> {
         match self {
             Firmware::OpenhclLinuxDirect { openhcl_config, .. }
             | Firmware::OpenhclUefi { openhcl_config, .. }
@@ -2036,6 +2097,25 @@ async fn save_inspect(
         return;
     }
     tracing::info!("{name} inspect task finished.");
+}
+
+/// Wrapper for modification functions with stubbed out debug impl
+pub struct ModifyFn<T>(pub Box<dyn FnOnce(&mut T) + Send + Sync>);
+
+impl<T> std::fmt::Debug for ModifyFn<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "_")
+    }
+}
+
+/// Default VTL 2 settings used by petri
+fn default_vtl2_settings() -> Vtl2Settings {
+    Vtl2Settings {
+        version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
+        fixed: None,
+        dynamic: Some(Default::default()),
+        namespace_settings: Default::default(),
+    }
 }
 
 #[cfg(test)]

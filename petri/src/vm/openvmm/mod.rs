@@ -24,6 +24,7 @@ use crate::PetriDiskType;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
+use crate::PetriVmRuntimeConfig;
 use crate::PetriVmgsDisk;
 use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
@@ -145,7 +146,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         config: PetriVmConfig,
         modify_vmm_config: Option<impl FnOnce(PetriVmConfigOpenVmm) -> PetriVmConfigOpenVmm + Send>,
         resources: &PetriVmResources,
-    ) -> anyhow::Result<Self::VmRuntime> {
+    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
         let mut config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources)?;
 
         if let Some(f) = modify_vmm_config {
@@ -176,6 +177,8 @@ pub struct PetriVmConfigOpenVmm {
 
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
     framebuffer_view: Option<framebuffer::View>,
+
+    vtl2_settings: Option<Vtl2Settings>,
 }
 /// Various channels and resources used to interact with the VM while it is running.
 struct PetriVmResourcesOpenVmm {
@@ -198,8 +201,6 @@ struct PetriVmResourcesOpenVmm {
     // TempPaths that cannot be dropped until the end.
     vtl2_vsock_path: Option<TempPath>,
     _vmbus_vsock_path: TempPath,
-
-    vtl2_settings: Option<Vtl2Settings>,
 }
 
 impl PetriVmConfigOpenVmm {

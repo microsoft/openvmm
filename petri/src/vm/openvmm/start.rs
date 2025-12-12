@@ -9,6 +9,7 @@ use super::PetriVmResourcesOpenVmm;
 use crate::BootDeviceType;
 use crate::Firmware;
 use crate::PetriLogFile;
+use crate::PetriVmRuntimeConfig;
 use crate::worker::Worker;
 use anyhow::Context;
 use disk_backend_resources::FileDiskHandle;
@@ -30,7 +31,7 @@ use storvsp_resources::ScsiPath;
 use vm_resource::IntoResource;
 
 impl PetriVmConfigOpenVmm {
-    async fn run_core(self) -> anyhow::Result<PetriVmOpenVmm> {
+    async fn run_core(self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
         let Self {
             firmware,
             arch,
@@ -44,7 +45,24 @@ impl PetriVmConfigOpenVmm {
             petri_vtl0_scsi,
             ged,
             framebuffer_view,
+
+            mut vtl2_settings,
         } = self;
+
+        tracing::debug!(?firmware, ?arch, "Petri VM firmware configuration");
+
+        let has_pcie = !config.pcie_root_complexes.is_empty();
+
+        // TODO: OpenHCL needs virt_whp support
+        // TODO: PCAT needs vga device support
+        // TODO: arm64 is broken?
+        // TODO: VPCI and NVMe don't support save/restore
+        // TODO: PCIe emulators don't support save/restore yet
+        let supports_save_restore = !firmware.is_openhcl()
+            && !matches!(firmware, Firmware::Pcat { .. })
+            && !matches!(arch, MachineArch::Aarch64)
+            && !matches!(boot_device_type, BootDeviceType::Nvme)
+            && !has_pcie;
 
         if firmware.is_openhcl() {
             // Add a pipette disk for VTL 2
@@ -93,19 +111,25 @@ impl PetriVmConfigOpenVmm {
                 .push((DeviceVtl::Vtl0, petri_vtl0_scsi.into_resource()));
         }
 
+        // Apply custom VTL2 settings
+        if let Some(f) = firmware
+            .into_openhcl_config()
+            .and_then(|c| c.modify_vtl2_settings)
+        {
+            f.0(vtl2_settings.as_mut().unwrap())
+        };
+
         // Add the GED and VTL 2 settings.
         if let Some(mut ged) = ged {
             ged.vtl2_settings = Some(prost::Message::encode_to_vec(
-                resources.vtl2_settings.as_ref().unwrap(),
+                vtl2_settings.as_ref().unwrap(),
             ));
             config
                 .vmbus_devices
                 .push((DeviceVtl::Vtl2, ged.into_resource()));
         }
 
-        tracing::debug!(?config, ?firmware, ?arch, "VM config");
-
-        let has_pcie = !config.pcie_root_complexes.is_empty();
+        tracing::debug!(?config, "OpenVMM config");
 
         let mesh = Mesh::new("petri_mesh".to_string())?;
 
@@ -131,29 +155,19 @@ impl PetriVmConfigOpenVmm {
         tracing::info!("Resuming VM");
         vm.resume().await?;
 
-        // Run basic save/restore test that should run on every vm
-        // TODO: OpenHCL needs virt_whp support
-        // TODO: PCAT needs vga device support
-        // TODO: arm64 is broken?
-        // TODO: VPCI and NVMe don't support save/restore
-        // TODO: PCIe emulators don't support save/restore yet
-        if !firmware.is_openhcl()
-            && !matches!(firmware, Firmware::Pcat { .. })
-            && !matches!(arch, MachineArch::Aarch64)
-            && !matches!(boot_device_type, BootDeviceType::Nvme)
-            && !has_pcie
-        {
+        // Run basic save/restore test if it is supported
+        if supports_save_restore {
             tracing::info!("Testing save/restore");
             vm.verify_save_restore().await?;
         }
 
         tracing::info!("VM ready");
-        Ok(vm)
+        Ok((vm, PetriVmRuntimeConfig { vtl2_settings }))
     }
 
     /// Run the VM, configuring pipette to automatically start if it is
     /// included in the config
-    pub async fn run(mut self) -> anyhow::Result<PetriVmOpenVmm> {
+    pub async fn run(mut self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
         let launch_linux_direct_pipette = if let Some(agent_image) = &self.resources.agent_image {
             // Construct the agent disk.
             if let Some(agent_disk) = agent_image.build().context("failed to build agent image")? {
@@ -199,13 +213,13 @@ impl PetriVmConfigOpenVmm {
         };
 
         // Start the VM.
-        let mut vm = self.run_core().await?;
+        let (mut vm, config) = self.run_core().await?;
 
         if launch_linux_direct_pipette {
             vm.launch_linux_direct_pipette().await?;
         }
 
-        Ok(vm)
+        Ok((vm, config))
     }
 
     async fn openvmm_host(
