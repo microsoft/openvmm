@@ -50,8 +50,7 @@ in pkgs.mkShell.override { } {
 
   NIX_OPENVMM_DEPS = openvmm_deps;
   NIX_PROTOC_PATH = protoc;
-  NIX_OPENHCL_KERNEL = "${openhcl_kernel}/vmlinux";
-  NIX_OPENHCL_KERNEL_MODULES = "${openhcl_kernel}/modules";
+  NIX_OPENHCL_KERNEL = openhcl_kernel;
   NIX_UEFI_MU_MSVM = "${uefi_mu_msvm}/MSVM.fd";
   RUST_BACKTRACE = 1;
   # will probably need more than one of these for local source + dependencies.
