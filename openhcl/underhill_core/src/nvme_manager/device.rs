@@ -138,7 +138,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
                 }
             }
 
-            // Always iscard existing state to prevent restore (because keepalive is
+            // Always discard existing state to prevent restore (because keepalive is
             // not supported)
             let _ = saved_state.take();
         }
