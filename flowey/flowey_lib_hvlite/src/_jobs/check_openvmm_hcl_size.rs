@@ -95,7 +95,7 @@ impl SimpleFlowNode for Node {
         let merge_commit = ctx.reqv(|v| git_merge_commit::Request {
             repo_path: openvmm_repo_path.clone(),
             merge_commit: v,
-            base_branch: "main".into(),
+            base_branch: "release/1.7.2511".into(),
         });
 
         let merge_run = ctx.reqv(|v| {
