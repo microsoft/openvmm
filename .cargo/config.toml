@@ -106,6 +106,9 @@ rustflags = [
   # is not working well.
   "-Cforce-frame-pointers=yes",
 
+  # Disable unwind tables to reduce binary size.
+  "-Cforce-unwind-tables=no",
+
   # Enable v0 symbols to get better output from `perf` and related tools.
   "-Csymbol-mangling-version=v0",
 
