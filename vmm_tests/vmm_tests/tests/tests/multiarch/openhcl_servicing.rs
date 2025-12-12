@@ -523,7 +523,7 @@ async fn apply_fault_with_keepalive(
 async fn create_keepalive_test_config(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     fault_configuration: FaultConfiguration,
-) -> Result<(petri::PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
+) -> Result<(PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
     let vtl0_nvme_lun = 1;
     let scsi_instance = Guid::new_random();
@@ -671,7 +671,7 @@ async fn servicing_with_keepalive_disabled_after_servicing(
             .with_cc_enable_fault(PciFaultBehavior::Verify(Some(cc_enable_verify_send))),
     );
 
-    apply_fault_with_keepalive(
+    let _vm = apply_fault_with_keepalive(
         config,
         fault_configuration,
         fault_start_updater,
