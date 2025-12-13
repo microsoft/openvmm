@@ -1401,6 +1401,8 @@ pub struct UhPartitionNewParams<'a> {
     pub intercept_debug_exceptions: bool,
     /// Disable proxy interrupt redirection.
     pub disable_proxy_redirect: bool,
+    /// Disable lower VTL timer virtualization.
+    pub disable_lower_vtl_timer_virt: bool,
 }
 
 /// Parameters to [`UhProtoPartition::build`].
@@ -1832,13 +1834,11 @@ impl<'a> UhProtoPartition<'a> {
         }
 
         #[cfg(guest_arch = "x86_64")]
-        let vsm_caps = hcl.get_vsm_capabilities().map_err(Error::Hcl)?;
-        #[cfg(guest_arch = "x86_64")]
-        let proxy_interrupt_redirect_available =
-            vsm_caps.proxy_interrupt_redirect_available() && !params.disable_proxy_redirect;
-
-        #[cfg(guest_arch = "x86_64")]
         let cvm_state = if is_hardware_isolated {
+            let vsm_caps = hcl.get_vsm_capabilities().map_err(Error::Hcl)?;
+            let proxy_interrupt_redirect_available =
+                vsm_caps.proxy_interrupt_redirect_available() && !params.disable_proxy_redirect;
+
             Some(Self::construct_cvm_state(
                 &params,
                 late_params.cvm_params.unwrap(),
@@ -1852,6 +1852,9 @@ impl<'a> UhProtoPartition<'a> {
         #[cfg(guest_arch = "aarch64")]
         let cvm_state = None;
 
+        let lower_vtl_timer_virt_available =
+            hcl.supports_lower_vtl_timer_virt() && !params.disable_lower_vtl_timer_virt;
+
         let backing_shared = BackingShared::new(
             isolation,
             &params,
@@ -1861,6 +1864,7 @@ impl<'a> UhProtoPartition<'a> {
                 cpuid: &cpuid,
                 hcl: &hcl,
                 guest_vsm_available,
+                lower_vtl_timer_virt_available,
             },
         )?;
 

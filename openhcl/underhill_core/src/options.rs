@@ -266,6 +266,9 @@ pub struct Options {
 
     /// (OPENHCL_DISABLE_PROXY_REDIRECT=1) Disable proxy interrupt redirection.
     pub disable_proxy_redirect: bool,
+
+    /// (OPENHCL_DISABLE_LOWER_VTL_TIMER_VIRT=1) Disable lower VTL timer virtualization.
+    pub disable_lower_vtl_timer_virt: bool,
 }
 
 impl Options {
@@ -437,6 +440,7 @@ impl Options {
         let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK");
         let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY");
         let disable_proxy_redirect = parse_env_bool("OPENHCL_DISABLE_PROXY_REDIRECT");
+        let disable_lower_vtl_timer_virt = parse_env_bool("OPENHCL_DISABLE_LOWER_VTL_TIMER_VIRT");
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -501,6 +505,7 @@ impl Options {
             attempt_ak_cert_callback,
             enable_vpci_relay,
             disable_proxy_redirect,
+            disable_lower_vtl_timer_virt,
         })
     }
 
