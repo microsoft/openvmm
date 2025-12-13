@@ -75,7 +75,7 @@ mod ffi {
     unsafe extern "C" {
         /// Initialize the resolver state (macOS variant).
         #[link_name = "res_9_init"]
-        pub safe fn res_init() -> c_int;
+        pub fn res_init() -> c_int;
 
         /// Send a pre-formatted DNS query and receive the response (macOS variant).
         #[link_name = "res_9_send"]
