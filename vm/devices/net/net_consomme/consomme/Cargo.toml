@@ -7,13 +7,14 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+heapless.workspace = true
 inspect.workspace = true
 inspect_counters.workspace = true
 pal_async.workspace = true
 
 futures.workspace = true
 getrandom.workspace = true
-smoltcp = { workspace = true, features = [ "proto-ipv4", "medium-ethernet", "socket-raw", "std", "proto-dhcpv4" ] }
+smoltcp = { workspace = true, features = [ "proto-ipv4", "proto-ipv6", "proto-dns", "medium-ethernet", "socket-raw", "std", "proto-dhcpv4" ] }
 socket2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -23,7 +24,8 @@ libc.workspace = true
 resolv-conf.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_IO", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
+parking_lot.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_IO", "Win32_NetworkManagement_Dns", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_System_LibraryLoader"] }
 
 [lints]
 workspace = true

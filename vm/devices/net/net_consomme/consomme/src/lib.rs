@@ -19,6 +19,10 @@ mod dhcp;
 #[cfg_attr(unix, path = "dns_unix.rs")]
 #[cfg_attr(windows, path = "dns_windows.rs")]
 mod dns;
+#[cfg_attr(windows, path = "dns_resolver_windows/mod.rs")]
+#[cfg_attr(unix, path = "dns_resolver_unix.rs")]
+pub mod dns_resolver;
+mod dns_resolver_common;
 mod icmp;
 mod tcp;
 mod udp;
@@ -50,6 +54,8 @@ pub struct Consomme {
     #[inspect(mut)]
     udp: udp::Udp,
     icmp: icmp::Icmp,
+    #[inspect(skip)]
+    dns_resolver: Option<dns_resolver::DnsResolver>,
 }
 
 #[derive(Inspect)]
@@ -80,6 +86,9 @@ pub struct ConsommeParams {
     /// Current list of DNS resolvers.
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
     pub nameservers: Vec<Ipv4Address>,
+    /// UDP NAT binding timeout duration.
+    #[inspect(skip)]
+    pub udp_timeout: std::time::Duration,
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -91,9 +100,19 @@ impl ConsommeParams {
     /// Create default dynamic network state. The default state is
     ///     IP address: 10.0.0.2 / 24
     ///     gateway: 10.0.0.1 with MAC address 52-55-10-0-0-1
-    ///     no DNS resolvers
+    ///     DNS resolvers: either 10.0.0.1 (if DNS Raw APIs available) or host nameservers
     pub fn new() -> Result<Self, Error> {
-        let nameservers = dns::nameservers()?;
+        // Try to use DNS resolver, fallback to host nameservers if not available
+        let nameservers = if dns_resolver::DnsResolver::new().is_ok() {
+            // DNS Raw APIs are available, use the NAT gateway as nameserver
+            tracing::info!("DNS Raw APIs available, using gateway as nameserver");
+            vec![Ipv4Address::new(10, 0, 0, 1)]
+        } else {
+            // DNS Raw APIs not available, use host nameservers
+            tracing::info!("DNS Raw APIs not available, using host nameservers");
+            dns::nameservers()?
+        };
+
         Ok(Self {
             gateway_ip: Ipv4Address::new(10, 0, 0, 1),
             gateway_mac: EthernetAddress([0x52, 0x55, 10, 0, 0, 1]),
@@ -101,6 +120,7 @@ impl ConsommeParams {
             client_mac: EthernetAddress([0x0, 0x0, 0x0, 0x0, 0x1, 0x0]),
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
+            udp_timeout: std::time::Duration::from_secs(300),
         })
     }
 
@@ -111,10 +131,22 @@ impl ConsommeParams {
     pub fn set_cidr(&mut self, cidr: &str) -> Result<(), InvalidCidr> {
         let cidr: smoltcp::wire::Ipv4Cidr = cidr.parse().map_err(|()| InvalidCidr)?;
         let base_address = cidr.network().address();
-        self.gateway_ip = base_address;
-        self.gateway_ip.0[3] += 1;
-        self.client_ip = base_address;
-        self.client_ip.0[3] += 2;
+        let mut gateway_octets = base_address.octets();
+        gateway_octets[3] += 1;
+        self.gateway_ip = Ipv4Address::new(
+            gateway_octets[0],
+            gateway_octets[1],
+            gateway_octets[2],
+            gateway_octets[3],
+        );
+        let mut client_octets = base_address.octets();
+        client_octets[3] += 2;
+        self.client_ip = Ipv4Address::new(
+            client_octets[0],
+            client_octets[1],
+            client_octets[2],
+            client_octets[3],
+        );
         self.net_mask = cidr.netmask();
         Ok(())
     }
@@ -229,7 +261,7 @@ struct SocketAddress {
 
 impl From<SocketAddress> for SocketAddrV4 {
     fn from(addr: SocketAddress) -> Self {
-        Self::new(addr.ip.into(), addr.port)
+        Self::new(addr.ip, addr.port)
     }
 }
 
@@ -245,12 +277,45 @@ struct FourTuple {
     src: SocketAddress,
 }
 
+/// Packet parsing/handling errors.
+#[derive(Debug, Error)]
+pub enum PacketError {
+    /// The packet was malformed.
+    #[error("malformed packet")]
+    Malformed,
+    /// The packet was fragmented.
+    #[error("fragmented packet")]
+    Fragmented,
+    /// The packet was truncated.
+    #[error("truncated packet")]
+    Truncated,
+    /// The packet was dropped.
+    #[error("dropped packet")]
+    Dropped,
+    /// Resources exhausted.
+    #[error("exhausted")]
+    Exhausted,
+}
+
+impl From<smoltcp::wire::Error> for PacketError {
+    fn from(_err: smoltcp::wire::Error) -> Self {
+        // smoltcp 0.12 uses a unit-like Error type for all wire errors
+        PacketError::Malformed
+    }
+}
+
+impl From<smoltcp::wire::Error> for DropReason {
+    fn from(err: smoltcp::wire::Error) -> Self {
+        DropReason::Packet(PacketError::from(err))
+    }
+}
+
 /// The reason a packet was dropped without being handled.
 #[derive(Debug, Error)]
 pub enum DropReason {
     /// The packet could not be parsed.
     #[error("packet parsing error")]
-    Packet(#[from] smoltcp::Error),
+    Packet(#[from] PacketError),
     /// The ethertype is unknown.
     #[error("unsupported ethertype {0}")]
     UnsupportedEthertype(EthernetProtocol),
@@ -278,6 +343,12 @@ pub enum DropReason {
     /// Specified port is not bound.
     #[error("port is not bound")]
     PortNotBound,
+    /// DNS resolver error.
+    #[error("dns resolver error")]
+    DnsError,
+    /// Buffer space exhausted.
+    #[error("buffer exhausted")]
+    BufferExhausted,
 }
 
 /// An error to create a consomme instance.
@@ -294,17 +365,41 @@ struct Ipv4Addresses {
     dst_addr: Ipv4Address,
 }
 
+/// A queued DNS response ready to be sent to the guest.
+#[derive(Debug, Clone)]
+pub struct DnsResponse {
+    /// Source IP address (the client)
+    pub src_addr: Ipv4Address,
+    /// Destination IP address (the gateway)
+    pub dst_addr: Ipv4Address,
+    /// Source port (the client's port)
+    pub src_port: u16,
+    /// Destination port (DNS port 53)
+    pub dst_port: u16,
+    /// Gateway MAC address
+    pub gateway_mac: EthernetAddress,
+    /// Client MAC address
+    pub client_mac: EthernetAddress,
+    /// The DNS response data
+    pub response_data: Vec<u8>,
+    /// The protocol (UDP or TCP)
+    pub protocol: IpProtocol,
+}
+
 impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(params: ConsommeParams) -> Self {
+        let dns_resolver = dns_resolver::DnsResolver::new().ok();
+
         Self {
+            udp: udp::Udp::new(params.udp_timeout),
             state: ConsommeState {
                 params,
                 buffer: Box::new([0; 65536]),
             },
             tcp: tcp::Tcp::new(),
-            udp: udp::Udp::new(),
             icmp: icmp::Icmp::new(),
+            dns_resolver,
         }
     }
 
@@ -403,7 +498,7 @@ impl<T: Client> Access<'_, T> {
             || payload.len() < ipv4.header_len().into()
             || payload.len() < ipv4.total_len().into()
         {
-            return Err(DropReason::Packet(smoltcp::Error::Malformed));
+            return Err(DropReason::Packet(PacketError::Malformed));
         }
 
         let total_len = if checksum.tso.is_some() {
@@ -412,11 +507,11 @@ impl<T: Client> Access<'_, T> {
             ipv4.total_len().into()
         };
         if total_len < ipv4.header_len().into() {
-            return Err(DropReason::Packet(smoltcp::Error::Malformed));
+            return Err(DropReason::Packet(PacketError::Malformed));
         }
 
         if ipv4.more_frags() || ipv4.frag_offset() != 0 {
-            return Err(DropReason::Packet(smoltcp::Error::Fragmented));
+            return Err(DropReason::Packet(PacketError::Fragmented));
         }
 
         if !checksum.ipv4 && !ipv4.verify_checksum() {
@@ -430,7 +525,7 @@ impl<T: Client> Access<'_, T> {
 
         let inner = &payload[ipv4.header_len().into()..total_len];
 
-        match ipv4.protocol() {
+        match ipv4.next_header() {
             IpProtocol::Tcp => self.handle_tcp(&addresses, inner, checksum)?,
             IpProtocol::Udp => self.handle_udp(frame, &addresses, inner, checksum)?,
             IpProtocol::Icmp => {
