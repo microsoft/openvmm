@@ -70,6 +70,7 @@ impl FlowNode for Node {
                     FlowPlatformLinuxDistro::Fedora => vec!["bsdtar".into()],
                     FlowPlatformLinuxDistro::Ubuntu => vec!["libarchive-tools".into()],
                     FlowPlatformLinuxDistro::Arch => vec!["libarchive".into()],
+                    FlowPlatformLinuxDistro::Nix => vec!["bsdtar".into()],
                     FlowPlatformLinuxDistro::Unknown => vec![],
                 },
                 _ => {

@@ -4,7 +4,7 @@
 //! Ensure the OpenHCL sysroot is extracted into the correct "magic directory"
 //! set by the project-level `[env]` table in `.cargo/config.toml`
 
-use crate::download_openvmm_deps::OpenvmmDepsArch;
+use crate::resolve_openvmm_deps::OpenvmmDepsArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -28,7 +28,7 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::cfg_openvmm_magicpath::Node>();
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -50,7 +50,7 @@ impl FlowNode for Node {
 
         for (arch, out_vars) in sysroot_arch {
             let openhcl_sysroot_tar_gz = ctx.reqv(|v| {
-                crate::download_openvmm_deps::Request::GetOpenhclSysroot(
+                crate::resolve_openvmm_deps::Request::GetOpenhclSysroot(
                     match arch {
                         OpenvmmSysrootArch::Aarch64 => OpenvmmDepsArch::Aarch64,
                         OpenvmmSysrootArch::X64 => OpenvmmDepsArch::X86_64,
