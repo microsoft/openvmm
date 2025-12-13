@@ -1372,7 +1372,6 @@ dependencies = [
  "pal_async",
  "scsi_buffers",
  "thiserror 2.0.16",
- "tracelimit",
  "tracing",
  "vm_resource",
 ]
