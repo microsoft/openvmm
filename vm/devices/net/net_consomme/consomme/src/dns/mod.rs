@@ -64,7 +64,7 @@ pub trait DnsBackend: Send + Sync {
         accessor: DnsResponseAccessor,
     ) -> Result<(), DropReason>;
 
-    fn cancel_all(&self) -> Result<(), std::io::Error>;
+    fn cancel_all(&mut self) -> Result<(), std::io::Error>;
 }
 
 pub struct DnsResolver {

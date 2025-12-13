@@ -4,7 +4,12 @@
 //! Build script for consomme package.
 
 fn main() {
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        println!("cargo:rustc-link-lib=resolv");
+    }
+
+    #[cfg(target_os = "linux")]
     {
         println!("cargo:rustc-link-lib=resolv");
     }

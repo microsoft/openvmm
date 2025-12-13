@@ -11,6 +11,7 @@ inspect.workspace = true
 inspect_counters.workspace = true
 pal_async.workspace = true
 
+async-channel.workspace = true
 futures.workspace = true
 getrandom.workspace = true
 heapless.workspace = true
