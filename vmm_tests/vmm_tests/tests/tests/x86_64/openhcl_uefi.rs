@@ -51,6 +51,7 @@ async fn nvme_relay_test_core(
     } = params;
 
     let (vm, agent) = config
+        .with_host_env_var("OPENVMM_LOG", "debug,vpci=trace")
         .with_openhcl_command_line(openhcl_cmdline)
         .with_vmbus_redirect(true)
         .with_processor_topology(processor_topology.unwrap_or(ProcessorTopology {

@@ -33,7 +33,10 @@ use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use petri_artifacts_core::ResolvedOptionalArtifact;
 use pipette_client::PipetteClient;
+use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
+use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::path::Path;
@@ -118,6 +121,9 @@ pub struct PetriVmConfig {
     pub name: String,
     /// The architecture of the VM
     pub arch: MachineArch,
+    /// Environment variables to set on the host when running the VMM
+    /// process.
+    pub vmm_env: Option<BTreeMap<OsString, OsString>>,
     /// Firmware and/or OS to load into the VM and associated settings
     pub firmware: Firmware,
     /// The amount of memory, in bytes, to assign to the VM
@@ -287,6 +293,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             config: PetriVmConfig {
                 name: make_vm_safe_name(params.test_name),
                 arch: artifacts.arch,
+                vmm_env: None,
                 firmware: artifacts.firmware,
                 boot_device_type,
                 memory: Default::default(),
@@ -566,6 +573,19 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// Set the VM to use the specified processor topology.
     pub fn with_memory(mut self, memory: MemoryConfig) -> Self {
         self.config.memory = memory;
+        self
+    }
+
+    /// Adds an env var to be set when the host vmm process is run.
+    pub fn with_host_env_var(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
+        if self.config.vmm_env.is_none() {
+            self.config.vmm_env = Some(BTreeMap::new());
+        }
+        self.config
+            .vmm_env
+            .as_mut()
+            .unwrap()
+            .insert(OsString::from(key.as_ref()), OsString::from(value.as_ref()));
         self
     }
 

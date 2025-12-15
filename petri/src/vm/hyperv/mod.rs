@@ -206,6 +206,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         let PetriVmConfig {
             name,
             arch,
+            vmm_env,
             firmware,
             memory,
             proc_topology,
@@ -218,6 +219,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
         } = config;
 
         let PetriVmResources { driver, log_source } = resources;
+
+        assert_eq!(vmm_env, None); // Doesn't make sense to support host env in Hyper-V backend yet.
 
         let temp_dir = tempfile::tempdir()?;
 
