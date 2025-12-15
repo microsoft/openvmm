@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use chipset_device::io::IoError;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;

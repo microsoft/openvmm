@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 //! Handle definitions for remote chipset devices.
 
 use mesh::MeshPayload;
