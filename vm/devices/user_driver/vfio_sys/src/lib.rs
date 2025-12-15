@@ -496,12 +496,31 @@ pub fn find_msix_irq(pci_id: &str, index: u32) -> anyhow::Result<u32> {
 }
 
 pub fn print_relevant_params() {
-    if let Ok(contents) = fs::read_to_string("/sys/module/driver/parameters/async_probe") {
-        tracing::debug!(
-            async_probe = contents.trim(),
-            "driver async_probe parameter"
-        );
+    #[derive(Debug)]
+    struct Param {
+        _name: &'static str,
+        _value: Option<String>,
     }
+
+    let read_param = |path: &'static str| -> Param {
+        Param {
+            _name: path,
+            _value: fs::read_to_string(path).ok().map(|s| s.trim().to_string()),
+        }
+    };
+
+    let vfio_params = [
+        "/sys/module/vfio/parameters/enable_unsafe_noiommu_mode",
+        "/sys/module/driver/parameters/async_probe",
+    ]
+    .iter()
+    .map(|&path| read_param(path))
+    .collect::<Vec<_>>();
+
+    tracing::debug!(
+        vfio_params = ?vfio_params,
+        "Relevant VFIO module parameters"
+    );
 }
 
 pub struct MappedRegion {

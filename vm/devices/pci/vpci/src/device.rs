@@ -24,6 +24,7 @@ use std::sync::atomic::Ordering;
 use task_control::Cancelled;
 use task_control::StopTask;
 use thiserror::Error;
+use tracing::Instrument;
 use vmbus_async::queue;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
@@ -702,7 +703,9 @@ impl ReadyState {
     ) -> Result<(), WorkerError> {
         loop {
             if self.send_device {
-                self.send_child_device(conn, dev).await?;
+                let span =
+                    tracing::trace_span!("vpci_send_child_device", instance_id = ?dev.instance_id);
+                self.send_child_device(conn, dev).instrument(span).await?;
                 self.send_device = false;
             }
             if let Some(transaction_id) = self.send_completion {
@@ -711,7 +714,9 @@ impl ReadyState {
             }
 
             // Don't pull a packets off the ring until there is space for its completion.
-            conn.wait_for_completion_space().await?;
+            conn.wait_for_completion_space()
+                .instrument(tracing::trace_span!("vpci_wait_for_completion_space", instance_id = ?dev.instance_id))
+                .await?;
 
             let (packet, transaction_id) = {
                 let (mut queue, _) = conn.queue.split();
@@ -724,8 +729,13 @@ impl ReadyState {
 
             let r = match packet {
                 Ok(packet) => {
-                    tracing::trace!(?packet, "vpci packet");
-                    match self.handle_packet(packet, dev, conn, transaction_id).await {
+                    tracing::trace!(?packet, instance_id = ?dev.instance_id, "vpci packet");
+                    let span = tracing::trace_span!("vpci_handle_packet", instance_id = ?dev.instance_id, packet = ?packet, transaction_id);
+                    match self
+                        .handle_packet(packet, dev, conn, transaction_id)
+                        .instrument(span)
+                        .await
+                    {
                         Ok(()) => Ok(()),
                         Err(WorkerError::Packet(err)) => Err(err),
                         Err(err) => return Err(err),
@@ -738,6 +748,7 @@ impl ReadyState {
                 tracelimit::warn_ratelimited!(
                     error = &err as &dyn std::error::Error,
                     transaction_id,
+                    instance_id = ?dev.instance_id,
                     "request failed"
                 );
                 conn.send_completion(transaction_id, &protocol::Status::BAD_DATA, &[])?;
