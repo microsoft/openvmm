@@ -10,7 +10,7 @@ use mesh_worker::WorkerHost;
 use vm_resource::Resource;
 use vm_resource::kind::ChipsetDeviceHandleKind;
 
-/// A handle to a construct a chipset device in a remote process.
+/// A handle to construct a chipset device in a remote process.
 #[derive(MeshPayload)]
 pub struct RemoteChipsetDeviceHandle {
     /// The device to run in the worker.
