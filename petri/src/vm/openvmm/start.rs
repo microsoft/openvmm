@@ -245,7 +245,8 @@ impl PetriVmConfigOpenVmm {
         mesh.launch_host(
             ProcessConfig::new("vmm")
                 .process_name(&resources.openvmm_path)
-                .stderr(Some(stderr_write)),
+                .stderr(Some(stderr_write))
+                .env([("OPENVMM_LOG".into(), "debug,vpci=trace".into())]),
             hvlite_defs::entrypoint::MeshHostParams { runner },
         )
         .await?;
