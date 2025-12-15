@@ -99,7 +99,9 @@ async fn many_nvme_devices_servicing_very_heavy(
         .with_vtl2_base_address_type(Vtl2BaseAddressType::MemoryLayout {
             size: Some((960 + 64) * 1024 * 1024), // 960MB as specified in manifest, plus 64MB extra for private pool.
         })
-        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=16384") // 64MB of private pool for VTL2 NVMe devices.
+        .with_openhcl_command_line(
+            "OPENHCL_ENABLE_VTL2_GPA_POOL=16384 dyndbg=\"file drivers/vfio/pci/* +p; file drivers/pci/* +p\"",
+        ) // 64MB of private pool for VTL2 NVMe devices, debug logging for vfio-pci driver.
         .with_memory(MemoryConfig {
             startup_bytes: 8 * 1024 * 1024 * 1024, // 8GB
             ..Default::default()

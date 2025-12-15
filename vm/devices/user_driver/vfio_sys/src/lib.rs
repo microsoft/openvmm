@@ -495,6 +495,15 @@ pub fn find_msix_irq(pci_id: &str, index: u32) -> anyhow::Result<u32> {
     Ok(irq)
 }
 
+pub fn print_relevant_params() {
+    if let Ok(contents) = fs::read_to_string("/sys/module/driver/parameters/async_probe") {
+        tracing::debug!(
+            async_probe = contents.trim(),
+            "driver async_probe parameter"
+        );
+    }
+}
+
 pub struct MappedRegion {
     addr: *mut c_void,
     len: usize,
