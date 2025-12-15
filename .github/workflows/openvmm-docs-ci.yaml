@@ -572,7 +572,7 @@ jobs:
     - id: flowey_lib_common__install_nodejs__0
       uses: actions/setup-node@v4
       with:
-        node-version: 18.x
+        node-version: 24.x
       name: Install nodejs
     - name: build test-results website
       run: flowey e 3 flowey_lib_hvlite::_jobs::build_test_results_website 0

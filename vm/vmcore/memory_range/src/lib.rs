@@ -66,7 +66,7 @@ pub struct InvalidMemoryRange {
 
 impl MemoryRange {
     /// The maximum address that can be represented by a `MemoryRange`.
-    pub const MAX_ADDRESS: u64 = u64::MAX & !(PAGE_SIZE - 1);
+    pub const MAX_ADDRESS: u64 = !(PAGE_SIZE - 1);
 
     /// Returns a new range for the given guest address range.
     ///
