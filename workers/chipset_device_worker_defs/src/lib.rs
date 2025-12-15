@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Handle definitions for remote chipset devices.
+//! Resources for remote chipset devices.
+
+#![forbid(unsafe_code)]
 
 use mesh::MeshPayload;
 use mesh_worker::WorkerHost;
