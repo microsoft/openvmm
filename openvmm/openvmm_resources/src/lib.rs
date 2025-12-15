@@ -12,7 +12,6 @@ vm_resource::register_static_resolvers! {
     #[cfg(guest_arch = "x86_64")]
     chipset::i8042::resolver::I8042Resolver,
     missing_dev::resolver::MissingDevResolver,
-    chipset_device_worker::resolver::RemoteChipsetDeviceResolver,
     #[cfg(feature = "tpm")]
     tpm_device::resolver::TpmDeviceResolver,
     #[cfg(guest_arch = "x86_64")]
@@ -95,7 +94,6 @@ vm_resource::register_static_resolvers! {
 mesh_worker::register_workers! {
     openvmm_core::VmWorker,
     vnc_worker::VncWorker<std::net::TcpListener>,
-    chipset_device_worker::worker::RemoteChipsetDeviceWorker,
 
     #[cfg(feature = "gdb")]
     debug_worker::DebuggerWorker<std::net::TcpListener>,

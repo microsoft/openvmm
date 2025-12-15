@@ -27,7 +27,6 @@ storvsp.workspace = true
 uidevices = { workspace = true, optional = true }
 
 chipset.workspace = true
-chipset_device_worker.workspace = true
 hyperv_ic.workspace = true
 missing_dev.workspace = true
 serial_16550.workspace = true

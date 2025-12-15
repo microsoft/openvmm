@@ -1,14 +1,8 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-
-//! Resources for remote chipset devices.
-
-#![forbid(unsafe_code)]
+//! Handle definitions for remote chipset devices.
 
 use mesh::MeshPayload;
 use mesh_worker::WorkerHost;
 use vm_resource::Resource;
-use vm_resource::ResourceId;
 use vm_resource::kind::ChipsetDeviceHandleKind;
 
 /// A handle to a construct a chipset device in a remote process.
@@ -20,6 +14,6 @@ pub struct RemoteChipsetDeviceHandle {
     pub worker_host: WorkerHost,
 }
 
-impl ResourceId<ChipsetDeviceHandleKind> for RemoteChipsetDeviceHandle {
+impl vm_resource::ResourceId<ChipsetDeviceHandleKind> for RemoteChipsetDeviceHandle {
     const ID: &'static str = "ChipsetDeviceWorkerHandle";
 }

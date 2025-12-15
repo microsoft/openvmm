@@ -1,32 +1,26 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::RemoteDynamicResolvers;
 use crate::guestmem::GuestMemoryProxy;
 use crate::proxy::ChipsetDeviceProxy;
-use crate::worker::REMOTE_CHIPSET_DEVICE_WORKER_ID;
 use crate::worker::RemoteChipsetDeviceHandleParams;
 use crate::worker::RemoteChipsetDeviceWorkerParameters;
-use crate::worker::RemoteDynamicResolvers;
+use crate::worker::remote_chipset_device_worker_id;
 use async_trait::async_trait;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
 use chipset_device_worker_defs::RemoteChipsetDeviceHandle;
 use thiserror::Error;
 use vm_resource::AsyncResolveResource;
-use vm_resource::IntoResource;
-use vm_resource::PlatformResource;
 use vm_resource::ResourceResolver;
-use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::ChipsetDeviceHandleKind;
-use vmgs_broker::resolver::VmgsClientKind;
 
 /// The resolver for remote chipset devices.
-pub struct RemoteChipsetDeviceResolver;
-
-declare_static_async_resolver! {
-    RemoteChipsetDeviceResolver,
-    (ChipsetDeviceHandleKind, RemoteChipsetDeviceHandle),
-}
+/// T is the type of the dynamic resolvers needed for the remote chipset device.
+// FUTURE: Create a way to store a Vec of all registered dynamic resolvers
+// and transfer them, instead of maintaining a list of just a few.
+pub struct RemoteChipsetDeviceResolver<T: RemoteDynamicResolvers>(pub T);
 
 /// Errors that can occur while resolving a remote chipset device.
 #[derive(Debug, Error)]
@@ -40,15 +34,16 @@ pub enum ResolveRemoteChipsetDeviceError {
 }
 
 #[async_trait]
-impl AsyncResolveResource<ChipsetDeviceHandleKind, RemoteChipsetDeviceHandle>
-    for RemoteChipsetDeviceResolver
+impl<T: RemoteDynamicResolvers>
+    AsyncResolveResource<ChipsetDeviceHandleKind, RemoteChipsetDeviceHandle>
+    for RemoteChipsetDeviceResolver<T>
 {
     type Error = ResolveRemoteChipsetDeviceError;
     type Output = ResolvedChipsetDevice;
 
     async fn resolve(
         &self,
-        resolver: &ResourceResolver,
+        _resolver: &ResourceResolver,
         resource: RemoteChipsetDeviceHandle,
         input: ResolveChipsetDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
@@ -67,23 +62,10 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, RemoteChipsetDeviceHandle>
 
         let worker = worker_host
             .launch_worker(
-                REMOTE_CHIPSET_DEVICE_WORKER_ID,
+                remote_chipset_device_worker_id(),
                 RemoteChipsetDeviceWorkerParameters {
                     device,
-                    dyn_resolvers: RemoteDynamicResolvers {
-                        #[cfg(target_os = "linux")]
-                        get: resolver
-                            .resolve::<guest_emulation_transport::resolver::GetClientKind, _>(
-                                PlatformResource.into_resource(),
-                                (),
-                            )
-                            .await
-                            .ok(),
-                        vmgs: resolver
-                            .resolve::<VmgsClientKind, _>(PlatformResource.into_resource(), ())
-                            .await
-                            .ok(),
-                    },
+                    dyn_resolvers: self.0.clone(),
                     inputs: RemoteChipsetDeviceHandleParams {
                         device_name: input.device_name.to_string(),
                         vmtime: input.vmtime.builder().clone(),

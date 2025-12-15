@@ -590,7 +590,6 @@ dependencies = [
  "chipset_device",
  "chipset_device_resources",
  "chipset_device_worker_defs",
- "guest_emulation_transport",
  "guestmem",
  "inspect",
  "mesh",
@@ -601,7 +600,6 @@ dependencies = [
  "thiserror 2.0.16",
  "vm_resource",
  "vmcore",
- "vmgs_broker",
 ]
 
 [[package]]
@@ -5030,6 +5028,7 @@ dependencies = [
  "cache_topology",
  "cfg-if",
  "chipset_device_resources",
+ "chipset_device_worker",
  "chipset_legacy",
  "debug_ptr",
  "disk_backend",
@@ -5242,7 +5241,6 @@ version = "0.0.0"
 dependencies = [
  "build_rs_guest_arch",
  "chipset",
- "chipset_device_worker",
  "debug_worker",
  "disk_striped",
  "hyperv_ic",
@@ -5296,7 +5294,6 @@ version = "0.0.0"
 dependencies = [
  "build_rs_guest_arch",
  "chipset",
- "chipset_device_worker",
  "debug_worker",
  "disk_blob",
  "disk_crypt",
@@ -7955,6 +7952,7 @@ dependencies = [
  "chipset",
  "chipset_device",
  "chipset_device_resources",
+ "chipset_device_worker",
  "chipset_device_worker_defs",
  "chipset_legacy",
  "closeable_mutex",

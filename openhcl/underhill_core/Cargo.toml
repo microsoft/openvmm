@@ -40,6 +40,7 @@ vnc_worker_defs.workspace = true
 chipset.workspace = true
 chipset_device.workspace = true
 chipset_device_resources.workspace = true
+chipset_device_worker.workspace = true
 chipset_device_worker_defs.workspace = true
 closeable_mutex.workspace = true
 profiler_worker = { workspace = true, optional = true }

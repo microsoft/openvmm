@@ -11,15 +11,9 @@
 
 mod configure;
 
-use crate::DeviceInit;
-use crate::DeviceRequest;
-use crate::DeviceResponse;
-use crate::MmioInit;
-use crate::PciInit;
-use crate::PioInit;
-use crate::ReadRequest;
-use crate::WriteRequest;
+use crate::RemoteDynamicResolvers;
 use crate::guestmem::GuestMemoryRemoteBuilder;
+use crate::protocol::*;
 use anyhow::Context;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
@@ -40,30 +34,22 @@ use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::ProtobufSaveRestore;
 
 /// Worker ID for ChipsetDevice workers.
-pub const REMOTE_CHIPSET_DEVICE_WORKER_ID: WorkerId<RemoteChipsetDeviceWorkerParameters> =
-    WorkerId::new("ChipsetDeviceWorker");
+pub(crate) const fn remote_chipset_device_worker_id<T>()
+-> WorkerId<RemoteChipsetDeviceWorkerParameters<T>> {
+    // TODO: Integrate T into the ID somehow?
+    WorkerId::new("ChipsetDeviceWorker")
+}
 
 /// Parameters for launching a remote chipset device worker.
 #[derive(MeshPayload)]
-pub struct RemoteChipsetDeviceWorkerParameters {
+pub struct RemoteChipsetDeviceWorkerParameters<T> {
     pub(crate) device: Resource<ChipsetDeviceHandleKind>,
-    pub(crate) dyn_resolvers: RemoteDynamicResolvers,
+    pub(crate) dyn_resolvers: T,
     pub(crate) inputs: RemoteChipsetDeviceHandleParams,
 
     pub(crate) req_recv: mesh::Receiver<DeviceRequest>,
     pub(crate) resp_send: mesh::Sender<DeviceResponse>,
     pub(crate) cap_send: mesh::OneshotSender<DeviceInit>,
-}
-
-// FUTURE: Create a way to store a Vec of all registered dynamic resolvers
-// and transfer them, instead of maintaining a list of just a few.
-// TODO: This should be passed in from the hosting VMM, since something like the
-// GET doesn't make sense for openvmm.
-#[derive(MeshPayload)]
-pub(crate) struct RemoteDynamicResolvers {
-    #[cfg(target_os = "linux")]
-    pub get: Option<guest_emulation_transport::GuestEmulationTransportClient>,
-    pub vmgs: Option<vmgs_broker::VmgsClient>,
 }
 
 #[derive(MeshPayload)]
@@ -79,13 +65,15 @@ pub(crate) struct RemoteChipsetDeviceHandleParams {
 ///
 /// This worker wraps any device implementing ChipsetDevice and handles
 /// device operations sent via mesh channels.
-pub struct RemoteChipsetDeviceWorker {
+pub struct RemoteChipsetDeviceWorker<T> {
     device: ErasedChipsetDevice,
     pool: Option<DefaultPool>,
     req_recv: mesh::Receiver<DeviceRequest>,
     resp_send: mesh::Sender<DeviceResponse>,
     deferred_reads: Vec<DeferredRead>,
     deferred_writes: Vec<DeferredWrite>,
+
+    _phantom_resolvers: std::marker::PhantomData<T>,
 }
 
 struct DeferredRead {
@@ -99,10 +87,10 @@ struct DeferredWrite {
     token: DeferredToken,
 }
 
-impl Worker for RemoteChipsetDeviceWorker {
-    type Parameters = RemoteChipsetDeviceWorkerParameters;
+impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
+    type Parameters = RemoteChipsetDeviceWorkerParameters<T>;
     type State = ();
-    const ID: WorkerId<Self::Parameters> = REMOTE_CHIPSET_DEVICE_WORKER_ID;
+    const ID: WorkerId<Self::Parameters> = remote_chipset_device_worker_id();
 
     fn new(params: Self::Parameters) -> anyhow::Result<Self> {
         let mut pool = DefaultPool::new();
@@ -118,17 +106,13 @@ impl Worker for RemoteChipsetDeviceWorker {
         } = params;
 
         let mut resolver = ResourceResolver::new();
-        #[cfg(target_os = "linux")]
-        if let Some(get) = dyn_resolvers.get {
-            resolver.add_resolver(get);
-        }
-        if let Some(vmgs) = dyn_resolvers.vmgs {
-            resolver.add_resolver(vmgs);
-        }
 
         let driver = pool.driver();
         let mut device = pool
             .run_until(async move {
+                dyn_resolvers
+                    .register_remote_dynamic_resolvers(&mut resolver)
+                    .await?;
                 resolver
                     .resolve(
                         device,
@@ -192,6 +176,7 @@ impl Worker for RemoteChipsetDeviceWorker {
             resp_send,
             deferred_reads: Vec::new(),
             deferred_writes: Vec::new(),
+            _phantom_resolvers: std::marker::PhantomData,
         })
     }
 
@@ -203,7 +188,7 @@ impl Worker for RemoteChipsetDeviceWorker {
         self.pool.take().unwrap().run_until(async move {
             loop {
                 enum WorkerEvent {
-                    Rpc(WorkerRpc<<RemoteChipsetDeviceWorker as Worker>::State>),
+                    Rpc(WorkerRpc<()>),
                     DeviceRequest(DeviceRequest),
                 }
 
@@ -335,7 +320,7 @@ impl Worker for RemoteChipsetDeviceWorker {
     }
 }
 
-impl RemoteChipsetDeviceWorker {
+impl<T> RemoteChipsetDeviceWorker<T> {
     fn handle_read_result(&mut self, id: usize, result: IoResult, data: Vec<u8>) {
         match result {
             IoResult::Ok => self.resp_send.send(DeviceResponse::Read {

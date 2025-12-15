@@ -6,15 +6,8 @@
 //! This module provides a [`ChipsetDeviceProxy`] that implements the
 //! [`ChipsetDevice`] trait and forwards all operations over a channel.
 
-use crate::DeviceInit;
-use crate::DeviceRequest;
-use crate::DeviceResponse;
-use crate::MmioInit;
-use crate::PciInit;
-use crate::PioInit;
-use crate::ReadRequest;
-use crate::WriteRequest;
 use crate::guestmem::GuestMemoryProxy;
+use crate::protocol::*;
 use anyhow::Context;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;

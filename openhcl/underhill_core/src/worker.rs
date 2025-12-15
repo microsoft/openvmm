@@ -1994,6 +1994,16 @@ async fn new_underhill_vm(
         (None, None)
     };
 
+    // Enable remote chipset devices.
+    resolver.add_async_resolver(
+        chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
+            OpenHclRemoteDynamicResolvers {
+                get: get_client.clone(),
+                vmgs: vmgs.as_ref().map(|(client, _, _)| client.clone()),
+            },
+        ),
+    );
+
     // Read measured config from VTL0 memory. When restoring, it is already gone.
     let (firmware_type, measured_vtl0_info, load_kind) = {
         if let Some(firmware_type) = servicing_state.firmware_type {
@@ -3936,4 +3946,29 @@ impl WatchdogCallback for WatchdogTimeoutReset {
             watchdog_send.send(());
         }
     }
+}
+
+#[derive(MeshPayload, Clone)]
+pub struct OpenHclRemoteDynamicResolvers {
+    /// GET client
+    pub get: GuestEmulationTransportClient,
+    /// VMGS client
+    pub vmgs: Option<vmgs_broker::VmgsClient>,
+}
+
+impl chipset_device_worker::RemoteDynamicResolvers for OpenHclRemoteDynamicResolvers {
+    async fn register_remote_dynamic_resolvers(
+        self,
+        resolver: &mut ResourceResolver,
+    ) -> anyhow::Result<()> {
+        resolver.add_resolver(self.get);
+        if let Some(vmgs) = self.vmgs {
+            resolver.add_resolver(vmgs);
+        }
+        Ok(())
+    }
+}
+
+mesh_worker::register_workers! {
+    chipset_device_worker::worker::RemoteChipsetDeviceWorker<OpenHclRemoteDynamicResolvers>
 }

@@ -1040,6 +1040,12 @@ impl InitializedVm {
 
         let mut resolver = ResourceResolver::new();
 
+        resolver.add_async_resolver(
+            chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
+                OpenVmmRemoteDynamicResolvers {},
+            ),
+        );
+
         // Expose the partition reference time source, if available.
         if cfg.hypervisor.with_hv {
             if let Some(ref_time) = partition.reference_time_source() {
@@ -3270,4 +3276,20 @@ impl WatchdogCallback for WatchdogTimeoutReset {
             watchdog_send.send(());
         }
     }
+}
+
+#[derive(MeshPayload, Clone)]
+struct OpenVmmRemoteDynamicResolvers {}
+
+impl chipset_device_worker::RemoteDynamicResolvers for OpenVmmRemoteDynamicResolvers {
+    async fn register_remote_dynamic_resolvers(
+        self,
+        _resolver: &mut ResourceResolver,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+mesh_worker::register_workers! {
+    chipset_device_worker::worker::RemoteChipsetDeviceWorker<OpenVmmRemoteDynamicResolvers>
 }
