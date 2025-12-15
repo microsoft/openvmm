@@ -18,6 +18,14 @@ use smoltcp::wire::Ipv6Repr;
 use smoltcp::wire::UdpPacket;
 use smoltcp::wire::UdpRepr;
 use std::collections::HashMap;
+use std::mem::size_of;
+use thiserror::Error;
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
+use zerocopy::Ref;
+use zerocopy::big_endian::U16;
 
 const DHCPV6_ALL_AGENTS_MULTICAST: Ipv6Address =
     Ipv6Address([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2]);
@@ -88,6 +96,30 @@ struct Message {
     options: HashMap<OptionCode, DhcpOption>,
 }
 
+#[derive(Debug, Error)]
+enum DhcpV6Error {
+    #[error("message too short: {0:#x}")]
+    MessageTooShort(usize),
+    #[error("malformed option at offset {0:#x}")]
+    MalformedOption(usize),
+    #[error("invalid DNS Server option length {0:#x}")]
+    InvalidDnsServerOption(usize),
+}
+
+#[repr(C)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+struct DhcpV6Header {
+    msg_type: u8,
+    transaction_id: [u8; 3],
+}
+
+#[repr(C)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+struct DhcpV6Option {
+    code: U16,
+    len: U16,
+}
+
 impl Message {
     fn new(msg_type: MessageType) -> Self {
         Self {
@@ -97,29 +129,30 @@ impl Message {
         }
     }
 
-    fn decode(data: &[u8]) -> Result<Self, &'static str> {
-        if data.len() < 4 {
-            return Err("DHCPv6 message too short");
-        }
+    fn decode(data: &[u8]) -> Result<Self, DhcpV6Error> {
+        // Parse header using zerocopy
+        let (header, mut remaining) = Ref::<_, DhcpV6Header>::from_prefix(data)
+            .map_err(|_| DhcpV6Error::MessageTooShort(data.len()))?;
 
-        let msg_type = MessageType::from_u8(data[0]);
-        let transaction_id = [data[1], data[2], data[3]];
+        let msg_type = MessageType::from_u8(header.msg_type);
+        let transaction_id = header.transaction_id;
 
         let mut options = HashMap::new();
-        let mut offset = 4;
 
-        // Parse options
-        while offset + 4 <= data.len() {
-            let option_code = u16::from_be_bytes([data[offset], data[offset + 1]]);
-            let option_len = u16::from_be_bytes([data[offset + 2], data[offset + 3]]) as usize;
-            offset += 4;
+        // Parse options using zerocopy
+        while remaining.len() >= size_of::<DhcpV6Option>() {
+            let (option_header, rest) = Ref::<_, DhcpV6Option>::from_prefix(remaining)
+                .map_err(|_| DhcpV6Error::MalformedOption(data.len() - remaining.len()))?;
 
-            if offset + option_len > data.len() {
-                return Err("Invalid option length");
+            let option_code = option_header.code.get();
+            let option_len = option_header.len.get() as usize;
+
+            if option_len > rest.len() {
+                return Err(DhcpV6Error::MalformedOption(data.len() - remaining.len()));
             }
 
-            let option_data = &data[offset..offset + option_len];
-            offset += option_len;
+            let option_data = &rest[..option_len];
+            remaining = &rest[option_len..];
 
             if let Some(code) = OptionCode::from_u16(option_code) {
                 match code {
@@ -132,7 +165,7 @@ impl Message {
                     OptionCode::DnsServers => {
                         // DNS servers option contains a list of IPv6 addresses (16 bytes each)
                         if !option_len.is_multiple_of(16) {
-                            return Err("Invalid DNS servers option length");
+                            return Err(DhcpV6Error::InvalidDnsServerOption(option_len));
                         }
                         let mut dns_servers = Vec::new();
                         for i in (0..option_len).step_by(16) {
@@ -212,8 +245,8 @@ impl<T: Client> Access<'_, T> {
     ) -> Result<(), DropReason> {
         // Parse the DHCPv6 message
         let msg = Message::decode(payload).map_err(|e| {
-            tracing::info!(error = e, "failed to decode DHCPv6 message");
-            DropReason::Packet(smoltcp::wire::Error)
+            tracing::info!(error = %e, "failed to decode DHCPv6 message");
+            DropReason::MalformedPacket
         })?;
 
         match msg.msg_type {

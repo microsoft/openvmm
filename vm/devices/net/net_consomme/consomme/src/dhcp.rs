@@ -6,7 +6,7 @@ use super::Client;
 use super::DropReason;
 use crate::ChecksumState;
 use crate::MIN_MTU;
-use heapless::Vec;
+use heapless::Vec as HeaplessVec;
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::DHCP_MAX_DNS_SERVER_COUNT;
 use smoltcp::wire::DhcpMessageType;
@@ -49,10 +49,11 @@ impl<T: Client> Access<'_, T> {
         }
 
         let dns_servers = if self.inner.state.params.nameservers.is_empty() {
-            let dns_servers: Vec<Ipv4Address, DHCP_MAX_DNS_SERVER_COUNT> = Vec::new();
+            let dns_servers: HeaplessVec<Ipv4Address, DHCP_MAX_DNS_SERVER_COUNT> =
+                HeaplessVec::new();
             Some(dns_servers)
         } else {
-            let dns_servers: Vec<Ipv4Address, DHCP_MAX_DNS_SERVER_COUNT> = self
+            let dns_servers: HeaplessVec<Ipv4Address, DHCP_MAX_DNS_SERVER_COUNT> = self
                 .inner
                 .state
                 .params
@@ -63,7 +64,7 @@ impl<T: Client> Access<'_, T> {
                     _ => None,
                 })
                 .take(DHCP_MAX_DNS_SERVER_COUNT)
-                .collect::<Vec<Ipv4Address, DHCP_MAX_DNS_SERVER_COUNT>>();
+                .collect::<HeaplessVec<Ipv4Address, DHCP_MAX_DNS_SERVER_COUNT>>();
             Some(dns_servers)
         };
 

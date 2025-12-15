@@ -323,31 +323,25 @@ impl<T: Client> Access<'_, T> {
             &checksum.caps(),
         )?;
 
-        let (ft, tcp) = match addresses {
-            IpAddresses::V4(addresses) => {
-                let ft = FourTuple {
-                    dst: SocketAddr::V4(SocketAddrV4::new(addresses.dst_addr.into(), tcp.dst_port)),
-                    src: SocketAddr::V4(SocketAddrV4::new(addresses.src_addr.into(), tcp.src_port)),
-                };
-                (ft, tcp)
-            }
-            IpAddresses::V6(addresses) => {
-                let ft = FourTuple {
-                    dst: SocketAddr::V6(SocketAddrV6::new(
-                        addresses.dst_addr.into(),
-                        tcp.dst_port,
-                        0,
-                        0,
-                    )),
-                    src: SocketAddr::V6(SocketAddrV6::new(
-                        addresses.src_addr.into(),
-                        tcp.src_port,
-                        0,
-                        0,
-                    )),
-                };
-                (ft, tcp)
-            }
+        let ft = match addresses {
+            IpAddresses::V4(addresses) => FourTuple {
+                dst: SocketAddr::V4(SocketAddrV4::new(addresses.dst_addr.into(), tcp.dst_port)),
+                src: SocketAddr::V4(SocketAddrV4::new(addresses.src_addr.into(), tcp.src_port)),
+            },
+            IpAddresses::V6(addresses) => FourTuple {
+                dst: SocketAddr::V6(SocketAddrV6::new(
+                    addresses.dst_addr.into(),
+                    tcp.dst_port,
+                    0,
+                    0,
+                )),
+                src: SocketAddr::V6(SocketAddrV6::new(
+                    addresses.src_addr.into(),
+                    tcp.src_port,
+                    0,
+                    0,
+                )),
+            },
         };
         tracing::trace!(?tcp, "tcp packet");
 

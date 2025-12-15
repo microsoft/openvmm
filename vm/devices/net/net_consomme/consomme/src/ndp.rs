@@ -62,15 +62,15 @@ impl<T: Client> Access<'_, T> {
                 lladdr: source_lladdr,
             } => self.handle_neighbor_solicit(frame, ipv6_src_addr, target_addr, source_lladdr),
             NdiscRepr::NeighborAdvert { .. } => {
-                tracing::debug!("received unsolicited Neighbor Advertisement, ignoring");
+                tracing::trace!("received unsolicited Neighbor Advertisement, ignoring");
                 Ok(())
             }
             NdiscRepr::RouterAdvert { .. } => {
-                tracing::debug!("received Router Advertisement, ignoring");
+                tracing::trace!("received Router Advertisement, ignoring");
                 Ok(())
             }
             NdiscRepr::Redirect { .. } => {
-                tracing::debug!("received Redirect, ignoring");
+                tracing::trace!("received Redirect, ignoring");
                 Ok(())
             }
         }
@@ -89,8 +89,10 @@ impl<T: Client> Access<'_, T> {
         // RFC 4861 Section 6.1.1: Validate source link-layer address option
         // If source is unspecified (::), there must be no source link-layer address option
         if ipv6_src_addr.is_unspecified() && lladdr.is_some() {
-            tracing::warn!("invalid RS: source is :: but source link-layer address present");
-            return Err(DropReason::Packet(smoltcp::wire::Error));
+            tracelimit::warn_ratelimited!(
+                "invalid RS: source is :: but source link-layer address present"
+            );
+            return Err(DropReason::MalformedPacket);
         }
 
         // Verify this is from the expected client MAC (if link-layer address is provided)
@@ -98,7 +100,9 @@ impl<T: Client> Access<'_, T> {
             if let Ok(hw_addr) = lladdr.parse(Medium::Ethernet) {
                 let HardwareAddress::Ethernet(eth_addr) = hw_addr;
                 if eth_addr != self.inner.state.params.client_mac {
-                    tracing::warn!("Router Solicitation from unexpected MAC, ignoring");
+                    tracelimit::warn_ratelimited!(
+                        "Router Solicitation from unexpected MAC, ignoring"
+                    );
                     return Ok(());
                 }
             }
@@ -150,20 +154,20 @@ impl<T: Client> Access<'_, T> {
         // We set the ADDRCONF flag to enable SLAAC and ON_LINK flag to indicate
         // that addresses with this prefix are on-link.
         let ndp_repr = NdiscRepr::RouterAdvert {
-            hop_limit: 64,
+            hop_limit: 255,
             flags: NdiscRouterFlags::empty(),
-            router_lifetime: smoltcp::time::Duration::from_secs(1800),
-            reachable_time: smoltcp::time::Duration::from_millis(0),
-            retrans_time: smoltcp::time::Duration::from_millis(0),
+            router_lifetime: smoltcp::time::Duration::from_secs(9000), // https://www.rfc-editor.org/rfc/rfc4861#section-4.2
+            reachable_time: smoltcp::time::Duration::from_millis(30000), // https://www.rfc-editor.org/rfc/rfc4861#section-6
+            retrans_time: smoltcp::time::Duration::from_millis(1000), // https://www.rfc-editor.org/rfc/rfc4861#section-6
             lladdr: Some(RawHardwareAddress::from(
                 self.inner.state.params.gateway_mac_ipv6,
             )),
-            mtu: Some(1500),
+            mtu: None,
             prefix_info: Some(NdiscPrefixInformation {
                 prefix_len: self.inner.state.params.prefix_len_ipv6,
                 prefix,
-                valid_lifetime: smoltcp::time::Duration::from_secs(86400),
-                preferred_lifetime: smoltcp::time::Duration::from_secs(14400),
+                valid_lifetime: smoltcp::time::Duration::from_secs(2592000), // https://www.rfc-editor.org/rfc/rfc4861#section-6.2.1
+                preferred_lifetime: smoltcp::time::Duration::from_secs(604800), // https://www.rfc-editor.org/rfc/rfc4861#section-6.2.1
                 flags: NdiscPrefixInfoFlags::ON_LINK | NdiscPrefixInfoFlags::ADDRCONF,
             }),
         };
@@ -174,7 +178,7 @@ impl<T: Client> Access<'_, T> {
             dst_addr,
             next_header: IpProtocol::Icmpv6,
             payload_len: ndp_repr.buffer_len(),
-            hop_limit: 255,
+            hop_limit: 255, // Router advertisements must have a hop limit of 255 to indicate the packet was not forwarded by another router.
         };
 
         let eth_repr = EthernetRepr {
@@ -219,15 +223,17 @@ impl<T: Client> Access<'_, T> {
         // RFC 4861 Section 7.1.1: If source is unspecified, there must be no
         // source link-layer address option
         if ipv6_src_addr.is_unspecified() && source_lladdr.is_some() {
-            tracing::warn!("invalid NS: source is :: but source link-layer address present");
-            return Err(DropReason::Packet(smoltcp::wire::Error));
+            tracelimit::warn_ratelimited!(
+                "invalid NS: source is :: but source link-layer address present"
+            );
+            return Err(DropReason::MalformedPacket);
         }
 
         // RFC 4862 Section 5.4.3: Handle Duplicate Address Detection (DAD)
         // If source is unspecified (::), this is DAD - we should NOT respond
         // to avoid interfering with the client's address configuration
         if ipv6_src_addr.is_unspecified() {
-            tracing::warn!(
+            tracelimit::warn_ratelimited!(
                 target_addr = %target_addr,
                 "received DAD Neighbor Solicitation, silently ignoring per RFC 4862"
             );
@@ -247,7 +253,7 @@ impl<T: Client> Access<'_, T> {
             .unwrap_or(false);
 
         if !client_mac_matches {
-            tracing::warn!("Neighbor Solicitation from unexpected MAC, ignoring");
+            tracelimit::warn_ratelimited!("Neighbor Solicitation from unexpected MAC, ignoring");
             return Ok(());
         }
 
@@ -321,7 +327,7 @@ impl<T: Client> Access<'_, T> {
             dst_addr,              // Respond to the solicitation's source
             next_header: IpProtocol::Icmpv6,
             payload_len: ndp_repr.buffer_len(),
-            hop_limit: 255, // RFC 4861: NDP messages MUST have hop limit 255
+            hop_limit: 255, // RFC 4861: Neighbor Advertisements must have a hop limit of 255 to indicate the packet was not forwarded.
         };
 
         // Build Ethernet header

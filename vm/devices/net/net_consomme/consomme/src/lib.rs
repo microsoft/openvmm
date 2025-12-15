@@ -329,6 +329,14 @@ pub enum DropReason {
     /// The NDP message type is unsupported.
     #[error("unsupported ndp message type {0:?}")]
     UnsupportedNdp(ndp::NdpMessageType),
+    /// An incoming packet was recognized but was self-contradictory.
+    /// E.g. a TCP packet with both SYN and FIN flags set.
+    #[error("packet is malformed")]
+    MalformedPacket,
+    /// An incoming IP packet has been split into several IP fragments and was dropped,
+    /// since IP reassembly is not supported.
+    #[error("packet fragmentation is not supported")]
+    FragmentedPacket,
 }
 
 /// An error to create a consomme instance.
@@ -483,7 +491,7 @@ impl<T: Client> Access<'_, T> {
             || payload.len() < ipv4.header_len().into()
             || payload.len() < ipv4.total_len().into()
         {
-            return Err(DropReason::Packet(smoltcp::wire::Error));
+            return Err(DropReason::MalformedPacket);
         }
 
         let total_len = if checksum.tso.is_some() {
@@ -492,11 +500,11 @@ impl<T: Client> Access<'_, T> {
             ipv4.total_len().into()
         };
         if total_len < ipv4.header_len().into() {
-            return Err(DropReason::Packet(smoltcp::wire::Error));
+            return Err(DropReason::MalformedPacket);
         }
 
         if ipv4.more_frags() || ipv4.frag_offset() != 0 {
-            return Err(DropReason::Packet(smoltcp::wire::Error));
+            return Err(DropReason::FragmentedPacket);
         }
 
         if !checksum.ipv4 && !ipv4.verify_checksum() {
@@ -531,7 +539,7 @@ impl<T: Client> Access<'_, T> {
     ) -> Result<(), DropReason> {
         let ipv6 = Ipv6Packet::new_unchecked(payload);
         if payload.len() < smoltcp::wire::IPV6_HEADER_LEN || ipv6.version() != 6 {
-            return Err(DropReason::Packet(smoltcp::wire::Error));
+            return Err(DropReason::MalformedPacket);
         }
 
         //TODO: Walk extension headers.
