@@ -7,8 +7,8 @@
 #![expect(unsafe_code)]
 use super::DropReason;
 use crate::dns_resolver::{DnsBackend, DnsRequest, DnsResponse, DnsResponseAccessor};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // FFI declarations for libc resolver functions.
 //
@@ -85,11 +85,10 @@ mod ffi {
 /// Initialize the libc resolver.
 ///
 /// This must be called once before using `res_send()`.
-/// Reads configuration from /etc/resolv.conf.
 pub fn init_resolver() -> Result<(), std::io::Error> {
     // SAFETY: res_init() initializes thread-local resolver state by reading
     // /etc/resolv.conf. It is safe to call concurrently from different threads
-    // since the resolver state is thread-local on modern systems.
+    // since the resolver state is thread-local
     let result = unsafe { ffi::res_init() };
 
     if result == -1 {
@@ -127,7 +126,7 @@ impl DnsBackend for UnixDnsResolverBackend {
             query: request.dns_query.to_vec(),
             accessor,
         };
-        
+
         // Try to send the request to the worker thread
         // If the channel is closed (worker shut down), drop silently
         if let Some(ref tx) = self.request_tx {
@@ -188,14 +187,14 @@ impl UnixDnsResolverBackend {
 }
 
 /// Handle a single DNS query using the blocking res_send() function.
-/// 
+///
 /// This function is called sequentially by the worker thread.
 /// The resolver state has already been initialized via res_init() at thread startup.
 fn handle_dns_query(req: DnsRequestInternal) {
     #[cfg(target_os = "linux")]
     let saved_options = {
         let use_tcp = req.flow.protocol == smoltcp::wire::IpProtocol::Tcp;
-        
+
         // Save current resolver options and set RES_USEVC flag if TCP is requested
         if use_tcp {
             // SAFETY: res_state() returns a pointer to thread-local resolver state.
@@ -216,10 +215,12 @@ fn handle_dns_query(req: DnsRequestInternal) {
             None
         }
     };
-    
+
     #[cfg(target_os = "macos")]
     if req.flow.protocol == smoltcp::wire::IpProtocol::Tcp {
-        tracing::debug!("TCP mode requested but cannot force on macOS; resolver will use UDP with automatic TCP fallback");
+        tracing::debug!(
+            "TCP mode requested but cannot force on macOS; resolver will use UDP with automatic TCP fallback"
+        );
     }
 
     // DNS UDP responses are typically <= 512 bytes without EDNS0, but allow
@@ -305,17 +306,6 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone)]
-    struct TestDnsResponseAccessor {
-        queues: Arc<TestDnsResponseQueues>,
-    }
-
-    impl TestDnsResponseAccessor {
-        fn push(&self, response: DnsResponse) {
-            self.queues.push(response);
-        }
-    }
-
     #[test]
     fn test_query_with_custom_buffer() {
         // Example DNS query buffer for google.com A record
@@ -345,12 +335,6 @@ mod tests {
         });
 
         let test_queues_clone = queues.clone();
-        let accessor = DnsResponseAccessor {
-            queues: Arc::new(crate::dns_resolver::DnsResponseQueues {
-                udp: Mutex::new(Vec::new()),
-                tcp: Mutex::new(Vec::new()),
-            }),
-        };
 
         // Create a test DNS flow
         let flow = DnsFlow {
@@ -363,22 +347,16 @@ mod tests {
             protocol: IpProtocol::Udp,
         };
 
-        // Create the DNS request
-        let request = DnsRequest {
-            flow: flow.clone(),
-            dns_query: &dns_query,
-        };
-
         // Use the backend properly through its query() method
         // We need to manually handle the response by wrapping the accessor
         let flow_for_thread = flow.clone();
         let query_for_thread = dns_query.clone();
-        
+
         // Spawn a thread to manually call res_send and push to our test queues
         let handle = std::thread::spawn(move || {
             // Initialize resolver in this thread
             let _ = init_resolver();
-            
+
             let mut answer = vec![0u8; 4096];
             let answer_len = unsafe {
                 ffi::res_send(
@@ -431,7 +409,7 @@ mod tests {
                 "Warning: No DNS response received (this may be expected in test environments)"
             );
         }
-        
+
         // Properly shut down the backend
         backend.cancel_all().unwrap();
         // Drop will join the worker thread

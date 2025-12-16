@@ -2,13 +2,17 @@
 // Licensed under the MIT License.
 
 use parking_lot::Mutex;
-use smoltcp::wire::{EthernetAddress, IpProtocol, Ipv4Address};
+use smoltcp::wire::EthernetAddress;
+use smoltcp::wire::IpProtocol;
+use smoltcp::wire::Ipv4Address;
 use std::sync::Arc;
 
 use crate::DropReason;
 
 #[cfg_attr(unix, path = "dns_resolver_unix.rs")]
 mod resolver;
+
+static DNS_HEADER_SIZE: usize = 12;
 
 #[derive(Debug, Clone)]
 pub struct DnsFlow {
@@ -51,7 +55,7 @@ impl DnsResponseAccessor {
     pub fn push(&self, response: DnsResponse) {
         match response.flow.protocol {
             IpProtocol::Udp => self.queues.udp.lock().push(response),
-            IpProtocol::Tcp => self.queues.tcp.lock().push(response),
+            IpProtocol::Tcp => todo!("Not yet implemented"),
             _ => panic!("Unexpected protocol for DNS Response"),
         }
     }
@@ -123,8 +127,6 @@ impl Drop for DnsResolver {
         let _ = self.cancel_all();
     }
 }
-
-static DNS_HEADER_SIZE: usize = 12;
 
 fn build_servfail_response(query: &[u8]) -> Vec<u8> {
     // We need at least the DNS header (12 bytes) to build a response
