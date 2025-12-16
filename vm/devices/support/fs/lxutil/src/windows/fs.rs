@@ -529,7 +529,7 @@ pub fn validate_lx_attributes(info: &mut FileSystem::FILE_STAT_LX_INFORMATION) {
         info.LxFlags &= !FileSystem::LX_FILE_METADATA_HAS_UID;
     }
 
-    if (info.LxFlags & FileSystem::LX_FILE_METADATA_HAS_GID != 0) && (info.LxUid == lx::GID_INVALID)
+    if (info.LxFlags & FileSystem::LX_FILE_METADATA_HAS_GID != 0) && (info.LxGid == lx::GID_INVALID)
     {
         info.LxFlags &= !FileSystem::LX_FILE_METADATA_HAS_GID;
     }
