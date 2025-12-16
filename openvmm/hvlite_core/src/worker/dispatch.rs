@@ -786,6 +786,7 @@ impl InitializedVm {
         }
     }
 
+    #[allow(dead_code)]
     async fn new_with_hypervisor<P, H>(
         driver_source: VmTaskDriverSource,
         hypervisor: &mut H,
