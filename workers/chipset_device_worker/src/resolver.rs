@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! The resolver for remote chipset devices.
+
 use crate::RemoteDynamicResolvers;
 use crate::guestmem::GuestMemoryProxy;
 use crate::proxy::ChipsetDeviceProxy;

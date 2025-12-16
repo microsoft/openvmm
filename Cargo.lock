@@ -590,6 +590,7 @@ dependencies = [
  "chipset_device",
  "chipset_device_resources",
  "chipset_device_worker_defs",
+ "futures",
  "guestmem",
  "inspect",
  "mesh",

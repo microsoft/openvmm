@@ -3282,6 +3282,8 @@ impl WatchdogCallback for WatchdogTimeoutReset {
 struct OpenVmmRemoteDynamicResolvers {}
 
 impl chipset_device_worker::RemoteDynamicResolvers for OpenVmmRemoteDynamicResolvers {
+    const WORKER_ID_STR: &str = "openvmm_remote_chipset_worker";
+
     async fn register_remote_dynamic_resolvers(
         self,
         _resolver: &mut ResourceResolver,

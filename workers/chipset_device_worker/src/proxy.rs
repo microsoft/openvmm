@@ -10,6 +10,7 @@ use crate::guestmem::GuestMemoryProxy;
 use crate::protocol::*;
 use anyhow::Context;
 use chipset_device::ChipsetDevice;
+use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredRead;
 use chipset_device::io::deferred::DeferredWrite;
@@ -20,6 +21,7 @@ use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
+use futures::StreamExt;
 use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::rpc::RpcSend;
@@ -40,7 +42,7 @@ use vmcore::save_restore::SavedStateBlob;
 #[derive(InspectMut)]
 pub(crate) struct ChipsetDeviceProxy {
     #[inspect(skip)]
-    req_send: mesh::Sender<DeviceRequest>,
+    req_send: RemoteDevice,
     #[inspect(skip)]
     resp_recv: mesh::Receiver<DeviceResponse>,
     worker: WorkerHandle,
@@ -58,6 +60,11 @@ pub(crate) struct ChipsetDeviceProxy {
     mmio: Option<MmioProxy>,
     pio: Option<PioProxy>,
     pci: Option<PciProxy>,
+}
+
+enum RemoteDevice {
+    Present(mesh::Sender<DeviceRequest>),
+    Failed,
 }
 
 #[derive(Inspect)]
@@ -118,7 +125,7 @@ impl ChipsetDeviceProxy {
         let pci = pci.map(|PciInit { suggested_bdf }| PciProxy { suggested_bdf });
 
         Ok(Self {
-            req_send,
+            req_send: RemoteDevice::Present(req_send),
             resp_recv,
             worker,
             in_flight_reads: Slab::new(),
@@ -152,75 +159,103 @@ impl ChipsetDevice for ChipsetDeviceProxy {
 
 impl MmioIntercept for ChipsetDeviceProxy {
     fn mmio_read(&mut self, address: u64, data: &mut [u8]) -> IoResult {
-        let (read, token) = defer_read();
-        let id = self.in_flight_reads.insert(read);
-        self.req_send.send(DeviceRequest::MmioRead(ReadRequest {
-            id,
-            address,
-            size: data.len(),
-        }));
-        IoResult::Defer(token)
+        match &self.req_send {
+            RemoteDevice::Present(req_send) => {
+                let (read, token) = defer_read();
+                let id = self.in_flight_reads.insert(read);
+                req_send.send(DeviceRequest::MmioRead(ReadRequest {
+                    id,
+                    address,
+                    size: data.len(),
+                }));
+                IoResult::Defer(token)
+            }
+            RemoteDevice::Failed => IoResult::Err(IoError::NoResponse),
+        }
     }
 
     fn mmio_write(&mut self, address: u64, data: &[u8]) -> IoResult {
-        let (write, token) = defer_write();
-        let id = self.in_flight_writes.insert(write);
-        self.req_send.send(DeviceRequest::MmioWrite(WriteRequest {
-            id,
-            address,
-            data: data.to_vec(),
-        }));
-        IoResult::Defer(token)
+        match &self.req_send {
+            RemoteDevice::Present(req_send) => {
+                let (write, token) = defer_write();
+                let id = self.in_flight_writes.insert(write);
+                req_send.send(DeviceRequest::MmioWrite(WriteRequest {
+                    id,
+                    address,
+                    data: data.to_vec(),
+                }));
+                IoResult::Defer(token)
+            }
+            RemoteDevice::Failed => IoResult::Err(IoError::NoResponse),
+        }
     }
 }
 
 impl PortIoIntercept for ChipsetDeviceProxy {
     fn io_read(&mut self, port: u16, data: &mut [u8]) -> IoResult {
-        let (read, token) = defer_read();
-        let id = self.in_flight_reads.insert(read);
-        self.req_send.send(DeviceRequest::PioRead(ReadRequest {
-            id,
-            address: port,
-            size: data.len(),
-        }));
-        IoResult::Defer(token)
+        match &self.req_send {
+            RemoteDevice::Present(req_send) => {
+                let (read, token) = defer_read();
+                let id = self.in_flight_reads.insert(read);
+                req_send.send(DeviceRequest::PioRead(ReadRequest {
+                    id,
+                    address: port,
+                    size: data.len(),
+                }));
+                IoResult::Defer(token)
+            }
+            RemoteDevice::Failed => IoResult::Err(IoError::NoResponse),
+        }
     }
 
     fn io_write(&mut self, port: u16, data: &[u8]) -> IoResult {
-        let (write, token) = defer_write();
-        let id = self.in_flight_writes.insert(write);
-        self.req_send.send(DeviceRequest::PioWrite(WriteRequest {
-            id,
-            address: port,
-            data: data.to_vec(),
-        }));
-        IoResult::Defer(token)
+        match &self.req_send {
+            RemoteDevice::Present(req_send) => {
+                let (write, token) = defer_write();
+                let id = self.in_flight_writes.insert(write);
+                req_send.send(DeviceRequest::PioWrite(WriteRequest {
+                    id,
+                    address: port,
+                    data: data.to_vec(),
+                }));
+                IoResult::Defer(token)
+            }
+            RemoteDevice::Failed => IoResult::Err(IoError::NoResponse),
+        }
     }
 }
 
 impl PciConfigSpace for ChipsetDeviceProxy {
     fn pci_cfg_read(&mut self, offset: u16, _value: &mut u32) -> IoResult {
-        let (read, token) = defer_read();
-        let id = self.in_flight_reads.insert(read);
-        self.req_send
-            .send(DeviceRequest::PciConfigRead(ReadRequest {
-                id,
-                address: offset,
-                size: 4,
-            }));
-        IoResult::Defer(token)
+        match &self.req_send {
+            RemoteDevice::Present(req_send) => {
+                let (read, token) = defer_read();
+                let id = self.in_flight_reads.insert(read);
+                req_send.send(DeviceRequest::PciConfigRead(ReadRequest {
+                    id,
+                    address: offset,
+                    size: 4,
+                }));
+                IoResult::Defer(token)
+            }
+            RemoteDevice::Failed => IoResult::Err(IoError::NoResponse),
+        }
     }
 
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        let (write, token) = defer_write();
-        let id = self.in_flight_writes.insert(write);
-        self.req_send
-            .send(DeviceRequest::PciConfigWrite(WriteRequest {
-                id,
-                address: offset,
-                data: value,
-            }));
-        IoResult::Defer(token)
+        match &self.req_send {
+            RemoteDevice::Present(req_send) => {
+                let (write, token) = defer_write();
+                let id = self.in_flight_writes.insert(write);
+                req_send.send(DeviceRequest::PciConfigWrite(WriteRequest {
+                    id,
+                    address: offset,
+                    data: value,
+                }));
+                IoResult::Defer(token)
+            }
+            RemoteDevice::Failed => IoResult::Err(IoError::NoResponse),
+        }
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
@@ -233,66 +268,92 @@ impl PollDevice for ChipsetDeviceProxy {
         self.gm_proxy.poll(cx);
         self.enc_gm_proxy.poll(cx);
 
-        while let Poll::Ready(resp) = self.resp_recv.poll_recv(cx) {
-            // TODO: What should we do on error here?
-            match resp.unwrap() {
-                DeviceResponse::Read { id, result } => {
+        while let Poll::Ready(resp) = self.resp_recv.poll_next_unpin(cx) {
+            match resp {
+                Some(DeviceResponse::Read { id, result }) => {
                     let deferred_read = self.in_flight_reads.remove(id);
                     match result {
                         Ok(data) => deferred_read.complete(&data),
                         Err(e) => deferred_read.complete_error(e),
                     }
                 }
-                DeviceResponse::Write { id, result } => {
+                Some(DeviceResponse::Write { id, result }) => {
                     let deferred_write = self.in_flight_writes.remove(id);
                     match result {
                         Ok(()) => deferred_write.complete(),
                         Err(e) => deferred_write.complete_error(e),
                     }
                 }
+                None => {
+                    // The remote device has closed the channel, fail all in-flight
+                    // requests and prevent any new ones.
+                    for deferred_read in self.in_flight_reads.drain() {
+                        deferred_read.complete_error(IoError::NoResponse);
+                    }
+                    for deferred_write in self.in_flight_writes.drain() {
+                        deferred_write.complete_error(IoError::NoResponse);
+                    }
+                    self.req_send = RemoteDevice::Failed;
+                }
             }
         }
     }
 }
 
+// TODO: Figure out what to do on errors for all the below.
 impl ChangeDeviceState for ChipsetDeviceProxy {
     fn start(&mut self) {
-        self.req_send.send(DeviceRequest::Start)
+        match &self.req_send {
+            RemoteDevice::Present(req_send) => req_send.send(DeviceRequest::Start),
+            RemoteDevice::Failed => todo!(),
+        }
     }
 
     async fn stop(&mut self) {
-        // TODO: Handle errors?
-        self.req_send.call(DeviceRequest::Stop, ()).await.unwrap()
+        match &self.req_send {
+            RemoteDevice::Present(req_send) => {
+                req_send.call(DeviceRequest::Stop, ()).await.unwrap()
+            }
+            RemoteDevice::Failed => todo!(),
+        }
     }
 
     async fn reset(&mut self) {
         self.in_flight_reads.clear();
         self.in_flight_writes.clear();
-        // TODO: Handle errors?
-        self.req_send.call(DeviceRequest::Reset, ()).await.unwrap()
+        match &self.req_send {
+            RemoteDevice::Present(req_send) => {
+                req_send.call(DeviceRequest::Reset, ()).await.unwrap()
+            }
+            RemoteDevice::Failed => todo!(),
+        }
     }
 }
 
+// TODO: Remove block_on calls for the below
 impl ProtobufSaveRestore for ChipsetDeviceProxy {
     fn save(&mut self) -> Result<SavedStateBlob, SaveError> {
-        block_on(async {
-            self.req_send
-                .call(DeviceRequest::Save, ())
-                .await
-                // TODO: Handle errors?
-                .unwrap()
-                .map_err(|e| SaveError::Other(anyhow::anyhow!(e)))
-        })
+        // TODO: Do we need to include any state from ourselves?
+        match &self.req_send {
+            RemoteDevice::Present(req_send) => block_on(req_send.call(DeviceRequest::Save, ()))
+                .map_err(|e| SaveError::Other(anyhow::anyhow!(e)))?
+                .map_err(|e| SaveError::Other(anyhow::anyhow!(e))),
+            RemoteDevice::Failed => Err(SaveError::Other(anyhow::anyhow!(
+                "remote device not available"
+            ))),
+        }
     }
 
     fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError> {
-        block_on(async {
-            self.req_send
-                .call(DeviceRequest::Restore, state)
-                .await
-                // TODO: Handle errors?
-                .unwrap()
-                .map_err(|e| RestoreError::Other(anyhow::anyhow!(e)))
-        })
+        match &self.req_send {
+            RemoteDevice::Present(req_send) => {
+                block_on(req_send.call(DeviceRequest::Restore, state))
+                    .map_err(|e| RestoreError::Other(anyhow::anyhow!(e)))?
+                    .map_err(|e| RestoreError::Other(anyhow::anyhow!(e)))
+            }
+            RemoteDevice::Failed => Err(RestoreError::Other(anyhow::anyhow!(
+                "remote device not available"
+            ))),
+        }
     }
 }

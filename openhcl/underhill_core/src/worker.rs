@@ -3957,6 +3957,8 @@ pub struct OpenHclRemoteDynamicResolvers {
 }
 
 impl chipset_device_worker::RemoteDynamicResolvers for OpenHclRemoteDynamicResolvers {
+    const WORKER_ID_STR: &str = "openhcl_remote_chipset_worker";
+
     async fn register_remote_dynamic_resolvers(
         self,
         resolver: &mut ResourceResolver,

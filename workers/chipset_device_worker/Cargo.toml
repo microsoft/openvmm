@@ -13,6 +13,7 @@ chipset_device_worker_defs.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
 
+futures.workspace = true
 guestmem.workspace = true
 inspect.workspace = true
 mesh.workspace = true

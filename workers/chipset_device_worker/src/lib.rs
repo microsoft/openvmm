@@ -9,19 +9,17 @@
 
 use mesh::MeshPayload;
 
-/// Guest memory proxy for remote access.
 mod guestmem;
-/// The internal protocol for communications between the proxy and the device wrapper.
 mod protocol;
-/// The proxy for communicating with a remote chipset device.
 mod proxy;
-/// The resolver for remote chipset devices.
 pub mod resolver;
-/// The worker implementation.
 pub mod worker;
 
 /// Trait for registering dynamic resolvers needed for remote chipset devices.
 pub trait RemoteDynamicResolvers: MeshPayload + Send + Sync + Clone + 'static {
+    /// Worker ID string for this remote chipset device worker.
+    const WORKER_ID_STR: &str;
+
     #[allow(async_fn_in_trait)]
     /// Register dynamic resolvers needed for remote chipset devices.
     async fn register_remote_dynamic_resolvers(

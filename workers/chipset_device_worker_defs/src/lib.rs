@@ -20,5 +20,5 @@ pub struct RemoteChipsetDeviceHandle {
 }
 
 impl vm_resource::ResourceId<ChipsetDeviceHandleKind> for RemoteChipsetDeviceHandle {
-    const ID: &'static str = "ChipsetDeviceWorkerHandle";
+    const ID: &'static str = "chipset_device_worker_handle";
 }

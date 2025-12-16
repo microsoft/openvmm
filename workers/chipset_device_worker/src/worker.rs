@@ -34,10 +34,9 @@ use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::ProtobufSaveRestore;
 
 /// Worker ID for ChipsetDevice workers.
-pub(crate) const fn remote_chipset_device_worker_id<T>()
+pub(crate) const fn remote_chipset_device_worker_id<T: RemoteDynamicResolvers>()
 -> WorkerId<RemoteChipsetDeviceWorkerParameters<T>> {
-    // TODO: Integrate T into the ID somehow?
-    WorkerId::new("ChipsetDeviceWorker")
+    WorkerId::new(T::WORKER_ID_STR)
 }
 
 /// Parameters for launching a remote chipset device worker.
@@ -226,6 +225,7 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                         })
                         .for_each(|_| ());
 
+                    // If either of these channels fail, we fail the worker too.
                     if let Poll::Ready(r) = rpc_recv.poll_recv(cx) {
                         return Poll::Ready(r.map(WorkerEvent::Rpc));
                     }

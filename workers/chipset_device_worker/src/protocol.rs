@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! The internal protocol for communications between the proxy and the device wrapper.
+
 use chipset_device::io::IoError;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
