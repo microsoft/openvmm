@@ -24,12 +24,12 @@ pub const MDBOOK_MERMAID: &str = "0.14.0";
 pub const RUSTUP_TOOLCHAIN: &str = "1.91.1";
 pub const MU_MSVM: &str = "25.1.9";
 pub const NEXTEST: &str = "0.9.101";
-pub const NODEJS: &str = "18.x";
+pub const NODEJS: &str = "24.x";
 // N.B. Kernel version numbers for dev and stable branches are not directly
 //      comparable. They originate from separate branches, and the fourth digit
 //      increases with each release from the respective branch.
 pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.12.52.2";
-pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.12.52.2";
+pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.12.52.4";
 pub const OPENVMM_DEPS: &str = "0.1.0-20250403.3";
 pub const PROTOC: &str = "27.1";
 

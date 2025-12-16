@@ -323,10 +323,11 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
 
         let save_restore = self.device.task_mut().0.supports_save_restore();
         let saved_state = self.saved_state.take();
-        let device_runner = if save_restore.is_some() && saved_state.is_some() {
+        let device_runner = if let Some(save_restore) = save_restore
+            && let Some(saved_state) = saved_state
+        {
             save_restore
-                .unwrap()
-                .restore_open(saved_state.unwrap(), channel)
+                .restore_open(saved_state, channel)
                 .context("device restore_open callback")?
         } else {
             self.device

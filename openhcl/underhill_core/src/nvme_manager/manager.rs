@@ -90,7 +90,7 @@ impl NvmeManager {
         let task = driver.spawn("nvme-manager", async move {
             // Restore saved data (if present) before async worker thread runs.
             if let Some(s) = saved_state.as_ref() {
-                if let Err(e) = NvmeManager::restore(&mut worker, s)
+                if let Err(e) = NvmeManager::restore(&mut worker, s, save_restore_supported)
                     .instrument(tracing::info_span!("nvme_manager_restore"))
                     .await
                 {
@@ -145,9 +145,10 @@ impl NvmeManager {
     async fn restore(
         worker: &mut NvmeManagerWorker,
         saved_state: &NvmeSavedState,
+        save_restore_supported: bool,
     ) -> anyhow::Result<()> {
         worker
-            .restore(&saved_state.nvme_state)
+            .restore(&saved_state.nvme_state, save_restore_supported)
             .instrument(tracing::info_span!("nvme_manager_worker_restore"))
             .await?;
 
@@ -439,7 +440,11 @@ impl NvmeManagerWorker {
     }
 
     /// Restore NVMe manager and device states from the buffer after servicing.
-    pub async fn restore(&mut self, saved_state: &NvmeManagerSavedState) -> anyhow::Result<()> {
+    pub async fn restore(
+        &mut self,
+        saved_state: &NvmeManagerSavedState,
+        save_restore_supported: bool,
+    ) -> anyhow::Result<()> {
         let mut restored_devices: HashMap<String, NvmeDriverManager> = HashMap::new();
 
         for disk in &saved_state.nvme_disks {
@@ -451,7 +456,7 @@ impl NvmeManagerWorker {
                     &self.context.driver_source,
                     &pci_id,
                     saved_state.cpu_count,
-                    true, // save_restore_supported is always `true` when restoring.
+                    save_restore_supported,
                     Some(&disk.driver_state),
                 )
                 .await?;

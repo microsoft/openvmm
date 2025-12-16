@@ -462,6 +462,12 @@ export async function fetchRunDetails(
 /**
  * Fetch run details for runs filtered by branch.
  * Returns a map of testName -> TestRunInfo[].
+ * 
+ * DEV NOTE: Ideally the abort signal should also be passed to the query client
+ * to abort any in-flight fetches, but due to time constraints this is not yet
+ * implemented. Currently the tests and test details both use a foreground
+ * concurrency of 15 which means that once this function is triggered it will
+ * fully fetch AT LEAST that many requests before it can respond to an abort.
  *
  * @param getConcurrency - Optional callback to get current max concurrent requests (defaults to 5)
  */
@@ -469,7 +475,8 @@ export async function fetchTestAnalysis(
   branchFilter: string,
   queryClient: QueryClient,
   onProgress?: (fetched: number, total: number) => void,
-  getConcurrency?: () => number
+  getConcurrency?: () => number,
+  signal?: AbortSignal
 ): Promise<Map<string, TestRunInfo[]>> {
   // Fetch all runs
   const runs = await queryClient.ensureQueryData<RunData[]>({
@@ -487,9 +494,17 @@ export async function fetchTestAnalysis(
   const totalToFetch = filteredRuns.length;
   let fetchedCount = 0;
 
+  // Set to initial progress
+  onProgress?.(fetchedCount, totalToFetch);
+
   const prefetchRun = async (run: RunData) => {
     const runId = run.name.split("/")[1]; // run.name is "runs/123456789", we want "123456789"
     const key = ["runDetails", runId];
+
+    // Check if already aborted
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
 
     // Skip if already cached
     if (queryClient.getQueryData(key)) {
@@ -561,6 +576,11 @@ export async function fetchTestAnalysis(
     // Wait for at least one to complete before continuing
     if (inFlight.size > 0) {
       await Promise.race(inFlight);
+    }
+
+    // If it was aborted don't do the consolidation step
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
     }
   }
 

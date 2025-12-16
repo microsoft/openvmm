@@ -309,6 +309,8 @@ pub struct UnderhillEnvCfg {
     pub enable_vpci_relay: Option<bool>,
     /// Disable proxy interrupt redirection
     pub disable_proxy_redirect: bool,
+    /// Disable lower VTL timer virtualization
+    pub disable_lower_vtl_timer_virt: bool,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1792,6 +1794,7 @@ async fn new_underhill_vm(
         intercept_debug_exceptions: env_cfg.gdbstub,
         hide_isolation,
         disable_proxy_redirect: env_cfg.disable_proxy_redirect,
+        disable_lower_vtl_timer_virt: env_cfg.disable_lower_vtl_timer_virt,
     };
 
     let proto_partition = UhProtoPartition::new(params, |cpu| tp.driver(cpu).clone())
@@ -1928,20 +1931,7 @@ async fn new_underhill_vm(
     // `agent_data` and `guest_secret_key` may also be used by vTPM
     // initialization.
     let platform_attestation_data = {
-        if is_restoring || vmgs.is_none() {
-            // TODO CVM: Save and restore last returned data when live servicing is supported.
-            // We also need to revisit what states should be saved and restored.
-            //
-            // If this is an Underhill restart, the VMGS has already been
-            // restored in its unlocked state.
-            underhill_attestation::PlatformAttestationData {
-                host_attestation_settings: underhill_attestation::HostAttestationSettings {
-                    refresh_tpm_seeds: false,
-                },
-                agent_data: None,
-                guest_secret_key: None,
-            }
-        } else {
+        if !is_restoring && let Some(vmgs) = vmgs.as_mut() {
             // Perform attestation by calling `initialize_platform_security`. This
             // will unlock the VMGS file internally.
             // Note that the routine will make callouts to the host via GET and receive
@@ -1956,7 +1946,7 @@ async fn new_underhill_vm(
                 &get_client,
                 dps.general.bios_guid,
                 &attestation_vm_config,
-                &mut vmgs.as_mut().unwrap().1,
+                &mut vmgs.1,
                 tee_call.as_deref(),
                 suppress_attestation,
                 early_init_driver,
@@ -1971,6 +1961,19 @@ async fn new_underhill_vm(
             ))
             .await
             .context("failed to initialize platform security")?
+        } else {
+            // TODO CVM: Save and restore last returned data when live servicing is supported.
+            // We also need to revisit what states should be saved and restored.
+            //
+            // If this is an Underhill restart, the VMGS has already been
+            // restored in its unlocked state.
+            underhill_attestation::PlatformAttestationData {
+                host_attestation_settings: underhill_attestation::HostAttestationSettings {
+                    refresh_tpm_seeds: false,
+                },
+                agent_data: None,
+                guest_secret_key: None,
+            }
         }
     };
 
