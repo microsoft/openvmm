@@ -1034,11 +1034,31 @@ impl LxVolume {
             }
         };
 
-        // If the target isn't inside the volume, create an LX symlink.
-        // TODO: Improve this; this doesn't protect against paths that walk out of the volume
-        //       and then back in.
+        // If the target isn't inside the volume, create an LX symlink. This catches cases where
+        // symlinks in the path point outside the mount.
         if !path.starts_with(&self.root_path) {
             return SymlinkType::Lx;
+        }
+
+        // Manually resolve the target path to check if it would cross the mount boundary. This
+        // catches cases where the target contains ".." components that would escape the volume
+        // (e.g., "../..") or that walk out and back in (e.g., "../../mount/dir").
+        let mut working_path = self.root_path.clone();
+        working_path.push(symlink_parent);
+        for component in target.components() {
+            match component {
+                Component::ParentDir => {
+                    if !working_path.pop() {
+                        return SymlinkType::Lx;
+                    }
+                    if !working_path.starts_with(&self.root_path) {
+                        return SymlinkType::Lx;
+                    }
+                }
+                Component::Normal(name) => working_path.push(name),
+                Component::CurDir => {}
+                _ => return SymlinkType::Lx,
+            }
         }
 
         // Determine the attributes of the found target. If an error occurs, create an LX symlink.
