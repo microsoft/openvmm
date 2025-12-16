@@ -335,6 +335,7 @@ async fn launch_workers(
         attempt_ak_cert_callback: opt.attempt_ak_cert_callback,
         enable_vpci_relay: opt.enable_vpci_relay,
         disable_proxy_redirect: opt.disable_proxy_redirect,
+        disable_lower_vtl_timer_virt: opt.disable_lower_vtl_timer_virt,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =

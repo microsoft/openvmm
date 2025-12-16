@@ -309,6 +309,8 @@ pub struct UnderhillEnvCfg {
     pub enable_vpci_relay: Option<bool>,
     /// Disable proxy interrupt redirection
     pub disable_proxy_redirect: bool,
+    /// Disable lower VTL timer virtualization
+    pub disable_lower_vtl_timer_virt: bool,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1792,6 +1794,7 @@ async fn new_underhill_vm(
         intercept_debug_exceptions: env_cfg.gdbstub,
         hide_isolation,
         disable_proxy_redirect: env_cfg.disable_proxy_redirect,
+        disable_lower_vtl_timer_virt: env_cfg.disable_lower_vtl_timer_virt,
     };
 
     let proto_partition = UhProtoPartition::new(params, |cpu| tp.driver(cpu).clone())
