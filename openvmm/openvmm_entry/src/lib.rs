@@ -100,7 +100,6 @@ use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh_worker::WorkerEvent;
 use mesh_worker::WorkerHandle;
-use mesh_worker::launch_local_worker;
 use meshworker::VmmMesh;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::DefaultDriver;
@@ -137,7 +136,6 @@ use storvsp_resources::ScsiPath;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
 use tracing_helpers::AnyhowValueExt;
-use ttrpc::TtrpcWorker;
 use uidevices_resources::SynthKeyboardHandle;
 use uidevices_resources::SynthMouseHandle;
 use uidevices_resources::SynthVideoHandle;
@@ -1789,8 +1787,9 @@ fn do_main() -> anyhow::Result<()> {
         return console_relay::relay_console(&path, console_title.as_str());
     }
 
+    #[cfg(any(feature = "grpc", feature = "ttrpc"))]
     if let Some(path) = opt.ttrpc.as_ref().or(opt.grpc.as_ref()) {
-        block_on(async {
+        return block_on(async {
             let _ = std::fs::remove_file(path);
             let listener =
                 unix_socket::UnixListener::bind(path).context("failed to bind to socket")?;
@@ -1802,11 +1801,12 @@ fn do_main() -> anyhow::Result<()> {
             };
 
             // This is a local launch
-            let mut handle = launch_local_worker::<TtrpcWorker>(ttrpc::Parameters {
-                listener,
-                transport,
-            })
-            .await?;
+            let mut handle =
+                mesh_worker::launch_local_worker::<ttrpc::TtrpcWorker>(ttrpc::Parameters {
+                    listener,
+                    transport,
+                })
+                .await?;
 
             tracing::info!(%transport, path = %path.display(), "listening");
 
@@ -1816,15 +1816,15 @@ fn do_main() -> anyhow::Result<()> {
             handle.join().await?;
 
             Ok(())
-        })
-    } else {
-        DefaultPool::run_with(async |driver| {
-            let mesh = VmmMesh::new(&driver, opt.single_process)?;
-            let result = run_control(&driver, &mesh, opt).await;
-            mesh.shutdown().await;
-            result
-        })
+        });
     }
+
+    DefaultPool::run_with(async |driver| {
+        let mesh = VmmMesh::new(&driver, opt.single_process)?;
+        let result = run_control(&driver, &mesh, opt).await;
+        mesh.shutdown().await;
+        result
+    })
 }
 
 fn maybe_with_radix_u64(s: &str) -> Result<u64, String> {
