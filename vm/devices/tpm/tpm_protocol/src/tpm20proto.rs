@@ -1227,7 +1227,7 @@ pub mod protocol {
     impl TpmtRsaScheme {
         /// Create a TpmtRsaScheme from its components.
         pub fn new(scheme: AlgId, hash_alg: Option<AlgId>) -> Self {
-            let hash_alg = hash_alg.map_or_else(|| AlgId::new(0), |v| v);
+            let hash_alg = hash_alg.unwrap_or_else(|| AlgId::new(0));
 
             Self { scheme, hash_alg }
         }
@@ -1296,7 +1296,7 @@ pub mod protocol {
         /// Creates a new TpmtSymDefObject.
         pub fn new(algorithm: AlgId, key_bits: Option<u16>, mode: Option<AlgId>) -> Self {
             let key_bits = key_bits.map_or_else(|| new_u16_be(0), |v| v.into());
-            let mode = mode.map_or_else(|| AlgId::new(0), |v| v);
+            let mode = mode.unwrap_or_else(|| AlgId::new(0));
 
             Self {
                 algorithm,

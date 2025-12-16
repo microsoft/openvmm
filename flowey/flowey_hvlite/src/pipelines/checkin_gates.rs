@@ -910,7 +910,6 @@ impl IntoPipeline for CheckinGatesCli {
                             fail_job_on_test_fail: true,
                             target: target.clone(),
                             profile: CommonProfile::from_release(release),
-                            unstable_panic_abort_tests: None,
                             artifact_dir: pub_unit_test_junit_xml.map(|x| ctx.publish_artifact(x)),
                             done: ctx.new_done_handle(),
                         }
