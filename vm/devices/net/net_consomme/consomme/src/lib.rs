@@ -542,6 +542,11 @@ impl<T: Client> Access<'_, T> {
             return Err(DropReason::MalformedPacket);
         }
 
+        let required_len = smoltcp::wire::IPV6_HEADER_LEN + ipv6.payload_len() as usize;
+        if payload.len() < required_len {
+            return Err(DropReason::MalformedPacket);
+        }
+
         //TODO: Walk extension headers.
         let next_header = ipv6.next_header();
         let inner = &payload[smoltcp::wire::IPV6_HEADER_LEN..];

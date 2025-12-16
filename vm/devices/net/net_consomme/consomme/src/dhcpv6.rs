@@ -268,7 +268,7 @@ impl<T: Client> Access<'_, T> {
                 duid_bytes.extend_from_slice(&gateway_mac);
                 reply.insert_option(DhcpOption::ServerId(duid_bytes));
 
-                // Add DNS Recursive Name Server option if we have nameservers
+                // Add DNS Name Server option if we have nameservers
                 let dns_servers: Vec<std::net::Ipv6Addr> = self
                     .inner
                     .state
@@ -284,8 +284,8 @@ impl<T: Client> Access<'_, T> {
                             || addr.is_loopback()
                             || addr.is_link_local()
                             || addr.is_multicast()
-                            || addr.0.starts_with(&[0xfc, 0x00])
-                            || addr.0.starts_with(&[0xfe, 0xc0]))
+                            || matches!(addr.0[0], 0xfc | 0xfd) // Is unique local address
+                            || addr.0.starts_with(&[0xfe, 0xc0])) // Is synthetic DNS server
                     })
                     .map(|addr| addr.into())
                     .collect();

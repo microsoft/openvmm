@@ -31,7 +31,7 @@ use smoltcp::wire::NdiscRepr;
 use smoltcp::wire::NdiscRouterFlags;
 use smoltcp::wire::RawHardwareAddress;
 
-const NETWORK_PREFIX_BASE: Ipv6Address = Ipv6Address::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 0);
+const NETWORK_PREFIX_BASE: Ipv6Address = Ipv6Address::new(0x2001, 0xabcd, 0, 0, 0, 0, 0, 0);
 
 #[derive(Debug)]
 pub enum NdpMessageType {
