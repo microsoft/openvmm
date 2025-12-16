@@ -251,7 +251,6 @@ impl PetriVmConfigOpenVmm {
                 .process_name(&resources.openvmm_path)
                 .stderr(Some(stderr_write))
                 .env(vmm_env.unwrap_or_default().into_iter()),
-            // mattkur .env([("OPENVMM_LOG".into(), "debug,vpci=trace".into())]),
             hvlite_defs::entrypoint::MeshHostParams { runner },
         )
         .await?;

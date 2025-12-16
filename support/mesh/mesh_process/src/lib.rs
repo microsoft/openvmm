@@ -330,23 +330,22 @@ impl ProcessConfig {
     }
 
     /// Adds arguments to the process command line.
-    pub fn args<I>(mut self, additional_env: I) -> Self
+    pub fn args<I>(mut self, args: I) -> Self
     where
         I: IntoIterator,
         I::Item: Into<OsString>,
     {
-        self.process_args
-            .extend(additional_env.into_iter().map(|x| x.into()));
+        self.process_args.extend(args.into_iter().map(|x| x.into()));
         self
     }
 
     /// Adds environment variables when launching the process.
-    pub fn env<I>(mut self, args: I) -> Self
+    pub fn env<I>(mut self, env_vars: I) -> Self
     where
         I: IntoIterator,
         I::Item: Into<(OsString, OsString)>,
     {
-        self.env_vars.extend(args.into_iter().map(|x| x.into()));
+        self.env_vars.extend(env_vars.into_iter().map(|x| x.into()));
         self
     }
 
