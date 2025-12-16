@@ -118,6 +118,7 @@
     - [mesh]()
     - [inspect]()
   - [OpenHCL Architecture](./reference/architecture/openhcl.md)
+    - [IGVM](./reference/architecture/igvm.md)
     - [Boot Process](./reference/architecture/openhcl_boot.md)
 
 ---
