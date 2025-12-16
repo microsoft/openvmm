@@ -81,7 +81,8 @@ pub struct ConsommeParams {
     /// Current list of DNS resolvers.
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
     pub nameservers: Vec<Ipv4Address>,
-    #[inspect(skip)]
+    /// Idle timeout for UDP connections.
+    #[inspect(debug)]
     pub udp_timeout: Duration,
 }
 
@@ -302,7 +303,7 @@ struct Ipv4Addresses {
 impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(params: ConsommeParams) -> Self {
-        let timeout = params.udp_timeout.clone();
+        let timeout = params.udp_timeout;
         Self {
             state: ConsommeState {
                 params,

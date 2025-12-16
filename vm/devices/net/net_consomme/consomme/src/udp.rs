@@ -167,9 +167,8 @@ impl<T: Client> Access<'_, T> {
                 );
                 return false;
             }
-            // Update last activity time
-            conn.last_activity = now;
-            true
+
+            conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
         });
     }
 
