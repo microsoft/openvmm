@@ -587,6 +587,7 @@ mod ioctls {
     pub const HCL_CAP_REGISTER_PAGE: u32 = 1;
     pub const HCL_CAP_VTL_RETURN_ACTION: u32 = 2;
     pub const HCL_CAP_DR6_SHARED: u32 = 3;
+    pub const HCL_CAP_LOWER_VTL_TIMER_VIRT: u32 = 4;
 
     ioctl_write_ptr!(
         /// Check for the presence of an extension capability.
@@ -1621,6 +1622,7 @@ pub struct Hcl {
     supports_vtl_ret_action: bool,
     supports_register_page: bool,
     dr6_shared: bool,
+    supports_lower_vtl_timer_virt: bool,
     isolation: IsolationType,
     snp_register_bitmap: [u8; 64],
     sidecar: Option<SidecarClient>,
@@ -1656,6 +1658,11 @@ impl Hcl {
     /// Returns true if DR6 is a shared register on this processor.
     pub fn dr6_shared(&self) -> bool {
         self.dr6_shared
+    }
+
+    /// Returns true if timer virtualization for lower VTL is supported.
+    pub fn supports_lower_vtl_timer_virt(&self) -> bool {
+        self.supports_lower_vtl_timer_virt
     }
 }
 
@@ -2339,9 +2346,12 @@ impl Hcl {
         let supports_vtl_ret_action = mshv_fd.check_extension(HCL_CAP_VTL_RETURN_ACTION)?;
         let supports_register_page = mshv_fd.check_extension(HCL_CAP_REGISTER_PAGE)?;
         let dr6_shared = mshv_fd.check_extension(HCL_CAP_DR6_SHARED)?;
+        let supports_lower_vtl_timer_virt =
+            mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
         tracing::debug!(
             supports_vtl_ret_action,
             supports_register_page,
+            supports_lower_vtl_timer_virt,
             "HCL capabilities",
         );
 
@@ -2365,6 +2375,7 @@ impl Hcl {
             supports_vtl_ret_action,
             supports_register_page,
             dr6_shared,
+            supports_lower_vtl_timer_virt,
             isolation,
             snp_register_bitmap,
             sidecar,

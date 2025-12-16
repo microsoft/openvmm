@@ -2475,6 +2475,9 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         first_scan_irr: &mut bool,
         dev: &impl CpuIo,
     ) -> bool {
+        // Cancel any existing deadline before processing interrupts.
+        B::clear_deadline(self);
+
         self.cvm_handle_exit_activity();
 
         if self.backing.untrusted_synic_mut().is_some() {
@@ -2493,11 +2496,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     }
 
     fn update_synic(&mut self, vtl: GuestVtl, untrusted_synic: bool) {
-        fn duration_from_100ns(n: u64) -> std::time::Duration {
-            const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
-            std::time::Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
-        }
-
         loop {
             let hv = &mut self.backing.cvm_state_mut().hv[vtl];
 
@@ -2515,14 +2513,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
             );
             if let Some(next_ref_time) = next_ref_time {
-                // Convert from reference timer basis to vmtime basis via
-                // difference of programmed timer and current reference time.
-                let ref_diff = next_ref_time.saturating_sub(ref_time_now);
-                let timeout = self
-                    .vmtime
-                    .now()
-                    .wrapping_add(duration_from_100ns(ref_diff));
-                self.vmtime.set_timeout_if_before(timeout);
+                B::update_deadline(self, ref_time_now, next_ref_time);
             }
             if ready_sints == 0 {
                 break;
@@ -2942,5 +2933,63 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::AssertVirtualInterrupt
         );
 
         Ok(())
+    }
+}
+
+/// Trait for managing lower VTL timer deadline in hardware-isolated partitions.
+///
+/// Note that this interface is currently used only for synic timer emulation in VTL2
+/// and not for APIC timers. APIC timer emulation uses [`VmTime`] directly for managing
+/// its timer deadlines. In practice, VTL0 guest kernels typically prefer Hyper-V
+/// synthetic timers over APIC timers, so this should not be a concern. This can be
+/// revisited in the future if APIC timer emulation performance becomes a priority.
+pub(super) trait HardwareIsolatedGuestTimer<T: HardwareIsolatedBacking>:
+    Send + Sync
+{
+    /// Returns true if the implementation uses hardware virtualized timer service.
+    fn is_hardware_virtualized(&self) -> bool;
+
+    /// Update timer deadline.
+    fn update_deadline(&self, vp: &mut UhProcessor<'_, T>, ref_time_now: u64, ref_time_next: u64);
+
+    /// Clear any pending deadline.
+    fn clear_deadline(&self, vp: &mut UhProcessor<'_, T>);
+
+    /// Synchronize armed deadline state for hardware virtualized timers.
+    fn sync_deadline_state(&self, vp: &mut UhProcessor<'_, T>);
+}
+
+/// Interface for managing lower VTL timer deadlines via [`VmTime`].
+/// This is the default interface used when a hardware-isolated backing doesn't support
+/// timer virtualization.
+pub(super) struct VmTimeGuestTimer;
+
+impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTimer {
+    fn is_hardware_virtualized(&self) -> bool {
+        false
+    }
+
+    /// Update timer deadline.
+    fn update_deadline(&self, vp: &mut UhProcessor<'_, T>, ref_time_now: u64, ref_time_next: u64) {
+        /// Convert reference time in 100ns units to Duration.
+        fn duration_from_100ns(n: u64) -> std::time::Duration {
+            const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
+            std::time::Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
+        }
+
+        // Convert from reference timer basis to [`VmTime`] basis via
+        // difference of programmed timer and current reference time.
+        let ref_diff = ref_time_next.saturating_sub(ref_time_now);
+        let timeout = vp.vmtime.now().wrapping_add(duration_from_100ns(ref_diff));
+        vp.vmtime.set_timeout_if_before(timeout);
+    }
+
+    /// Clear any pending deadline.
+    fn clear_deadline(&self, vp: &mut UhProcessor<'_, T>) {
+        vp.vmtime.cancel_timeout();
+    }
+
+    fn sync_deadline_state(&self, _vp: &mut UhProcessor<'_, T>) {
+        // No-op for software timers
     }
 }
