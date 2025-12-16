@@ -766,7 +766,6 @@ dependencies = [
 name = "consomme"
 version = "0.0.0"
 dependencies = [
- "async-channel",
  "futures",
  "getrandom 0.3.3",
  "heapless",

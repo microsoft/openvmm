@@ -10,7 +10,11 @@ use std::sync::Arc;
 use crate::DropReason;
 
 #[cfg_attr(unix, path = "dns_resolver_unix.rs")]
+#[cfg_attr(windows, path = "dns_resolver_windows.rs")]
 mod resolver;
+
+#[cfg(target_os = "windows")]
+mod delay_load;
 
 static DNS_HEADER_SIZE: usize = 12;
 
@@ -138,7 +142,15 @@ impl Drop for DnsResolver {
     }
 }
 
-fn build_servfail_response(query: &[u8]) -> Vec<u8> {
+/// Internal DNS request structure used by backend implementations.
+#[derive(Debug)]
+pub(crate) struct DnsRequestInternal {
+    pub flow: DnsFlow,
+    pub query: Vec<u8>,
+    pub accessor: DnsResponseAccessor,
+}
+
+pub(crate) fn build_servfail_response(query: &[u8]) -> Vec<u8> {
     // We need at least the DNS header (12 bytes) to build a response
     if query.len() < DNS_HEADER_SIZE {
         // Return an empty response if the query is malformed

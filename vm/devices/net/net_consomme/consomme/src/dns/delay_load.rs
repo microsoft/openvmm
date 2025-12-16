@@ -107,16 +107,6 @@ pub type DnsCancelQueryRawFn = unsafe extern "system" fn(*const DNS_QUERY_RAW_CA
 /// Function signature for DnsQueryRawResultFree.
 pub type DnsQueryRawResultFreeFn = unsafe extern "system" fn(*mut DNS_QUERY_RAW_RESULT);
 
-/// Function signature for DnsQueryEx.
-pub type DnsQueryExFn = unsafe extern "system" fn(
-    *const DNS_QUERY_REQUEST,
-    *mut DNS_QUERY_RESULT,
-    *mut DNS_QUERY_CANCEL,
-) -> i32;
-
-/// Function signature for DnsCancelQuery.
-pub type DnsCancelQueryFn = unsafe extern "system" fn(*mut DNS_QUERY_CANCEL) -> i32;
-
 /// Get DnsQueryRaw as a typed function pointer.
 ///
 /// # Safety

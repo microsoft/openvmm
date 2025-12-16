@@ -5,7 +5,9 @@
 //!
 // UNSAFETY: FFI calls to libc resolver functions.
 #![expect(unsafe_code)]
+use super::DnsRequestInternal;
 use super::DropReason;
+use super::build_servfail_response;
 use crate::dns_resolver::DnsBackend;
 use crate::dns_resolver::DnsRequest;
 use crate::dns_resolver::DnsResponse;
@@ -106,13 +108,6 @@ pub struct UnixDnsResolverBackend {
     worker_thread: Option<std::thread::JoinHandle<()>>,
     request_tx: Option<std::sync::mpsc::Sender<DnsRequestInternal>>,
     shutdown: Arc<AtomicBool>,
-}
-
-#[derive(Debug)]
-struct DnsRequestInternal {
-    flow: super::DnsFlow,
-    query: Vec<u8>,
-    accessor: DnsResponseAccessor,
 }
 
 impl DnsBackend for UnixDnsResolverBackend {
@@ -264,7 +259,7 @@ fn handle_dns_query(req: DnsRequestInternal) {
         });
     } else {
         tracing::error!("DNS query failed, returning SERVFAIL");
-        let response = super::build_servfail_response(&req.query);
+        let response = build_servfail_response(&req.query);
         req.accessor.push(DnsResponse {
             flow: req.flow,
             response_data: response,
