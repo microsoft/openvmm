@@ -60,8 +60,10 @@ impl UhProcessor<'_, HypervisorBacked> {
     }
 
     /// Check the status of the TLB lock of the target VTL on the current VP.
-    #[cfg(debug_assertions)]
+    #[allow(clippy::assertions_on_constants)]
     pub(crate) fn is_tlb_locked(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
+        // This function should only be called in debug assertions.
+        assert!(cfg!(debug_assertions));
         assert_eq!(requesting_vtl, Vtl::Vtl2);
         let local_status = self.vtls_tlb_locked.get(requesting_vtl, target_vtl);
         // The hypervisor may lock the TLB without us knowing, but the inverse should never happen.
@@ -71,8 +73,10 @@ impl UhProcessor<'_, HypervisorBacked> {
         local_status
     }
 
-    #[cfg(debug_assertions)]
+    #[allow(clippy::assertions_on_constants)]
     fn is_tlb_locked_in_hypervisor(&mut self, target_vtl: GuestVtl) -> bool {
+        // This function should only be called in debug assertions.
+        assert!(cfg!(debug_assertions));
         let name = HvAllArchRegisterName(
             HvAllArchRegisterName::VsmVpSecureConfigVtl0.0 + target_vtl as u32,
         );
