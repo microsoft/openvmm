@@ -44,6 +44,7 @@ use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 use std::net::Shutdown;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
@@ -379,23 +380,24 @@ impl<T: Client> Access<'_, T> {
     /// connections.
     pub fn bind_tcp_port(&mut self, ip_addr: Option<IpAddr>, port: u16) -> Result<(), DropReason> {
         let ip_addr = match ip_addr {
-            Some(IpAddr::V4(ip)) => Some(ip),
-            Some(IpAddr::V6(_)) => {
-                return Err(DropReason::UnsupportedEthertype(EthernetProtocol::Ipv6));
-            }
-            None => None,
+            Some(IpAddr::V4(ip)) => SocketAddr::V4(SocketAddrV4::new(ip, port)),
+            Some(IpAddr::V6(ip)) => SocketAddr::V6(SocketAddrV6::new(ip, port, 0, 0)),
+            None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
         };
         match self.inner.tcp.listeners.entry(port) {
             hash_map::Entry::Occupied(_) => {
                 tracing::warn!(port, "Duplicate TCP bind for port");
             }
             hash_map::Entry::Vacant(e) => {
-                let ft = FourTuple {
-                    dst: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
-                    src: SocketAddr::V4(SocketAddrV4::new(
-                        ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED),
-                        port,
-                    )),
+                let ft = match ip_addr {
+                    SocketAddr::V4(ip) => FourTuple {
+                        dst: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
+                        src: SocketAddr::V4(ip),
+                    },
+                    SocketAddr::V6(ip) => FourTuple {
+                        dst: SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0)),
+                        src: SocketAddr::V6(ip),
+                    },
                 };
                 let mut sender = Sender {
                     ft: &ft,
