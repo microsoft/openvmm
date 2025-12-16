@@ -10,7 +10,7 @@ rust-version.workspace = true
 default = []
 
 inspect = ["dep:inspect", "uefi_specs/inspect"]
-save_restore = ["inspect", "dep:mesh_protobuf", "dep:vmcore"]
+save_restore = ["inspect", "dep:mesh_protobuf", "dep:vmcore", "guid/mesh"]
 
 [dependencies]
 guid.workspace = true
