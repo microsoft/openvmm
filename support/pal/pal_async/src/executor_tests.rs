@@ -203,7 +203,7 @@ pub async fn socket_tests(driver: impl Driver) {
 #[cfg(windows)]
 pub mod windows {
     // UNSAFETY: needed to use `OverlappedFile`.
-    #![allow(unsafe_code)]
+    #![expect(unsafe_code)]
 
     //! Windows-specific executor tests.
 
