@@ -178,8 +178,11 @@ pub mod windows {
         match output {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                // tasklist returns the process name if found, or "INFO: No tasks" if not
-                stdout.contains(exe_name)
+                // tasklist returns "INFO: No tasks are running..." if no match found.
+                // If a process is found, it shows the process info without "INFO: No tasks".
+                // Note: tasklist truncates long process names in output, so we can't
+                // reliably check for the exact name in the output.
+                !stdout.contains("INFO: No tasks")
             }
             Err(e) => {
                 tracing::warn!("failed to run tasklist: {}", e);
@@ -687,7 +690,6 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
         report_output.contains("\"vmUniqueId\""),
         format!("{report_output}")
     );
-
 
     // Debug: Check if the RPC server is still running at the end of the test.
     // This helps diagnose flaky tests that may be caused by the server dying unexpectedly.
