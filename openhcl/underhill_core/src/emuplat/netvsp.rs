@@ -62,6 +62,7 @@ enum HclNetworkVfManagerMessage {
     Inspect(inspect::Deferred),
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
     SaveState(Rpc<(), VfManagerSaveResult>),
+    VfReconfig,
 }
 
 #[expect(clippy::large_enum_variant)]
@@ -269,6 +270,8 @@ struct HclNetworkVFManagerWorker {
     dma_mode: GuestDmaMode,
     #[inspect(skip)]
     dma_clients: VfioDmaClients,
+    #[inspect(skip)]
+    vf_reconfig_receiver: Option<mesh::Receiver<()>>,
 }
 
 impl HclNetworkVFManagerWorker {
@@ -315,6 +318,7 @@ impl HclNetworkVFManagerWorker {
                 vtl2_pci_id,
                 dma_mode,
                 dma_clients,
+                vf_reconfig_receiver: None,
             },
             tx_to_worker,
         )
@@ -531,6 +535,61 @@ impl HclNetworkVFManagerWorker {
         .await;
     }
 
+    async fn startup_vtl2_device(&mut self, restart_notifications: bool) -> bool {
+        let mut vtl2_device_present = false;
+        let device_bound = match create_mana_device(
+            &self.driver_source,
+            &self.vtl2_pci_id,
+            self.vp_count,
+            self.max_sub_channels,
+            KeepAliveConfig::Disabled,
+            self.dma_clients.clone(),
+            None, // No ManaSavedState
+        )
+        .await
+        {
+            Ok(mut device) => {
+                if restart_notifications {
+                    tracing::info!("resubscribing to notifications");
+                    device.start_notification_task(&self.driver_source).await;
+                    self.vf_reconfig_receiver = Some(device.subscribe_vf_reconfig().await);
+                }
+
+                self.mana_device = Some(device);
+                self.connect_endpoints().await.is_ok()
+            }
+            Err(err) => {
+                tracing::error!(
+                    err = err.as_ref() as &dyn std::error::Error,
+                    "Failed to create MANA device"
+                );
+                false
+            }
+        };
+
+        if let Err(err) = self
+            .vtl2_bus_control
+            .update_vtl2_device_bind_state(device_bound)
+            .await
+        {
+            tracing::error!(
+                err = err.as_ref() as &dyn std::error::Error,
+                "Failed to report new binding state to host"
+            );
+        }
+
+        if device_bound {
+            vtl2_device_present = true;
+            if matches!(&self.vtl0_bus_control, Vtl0Bus::Present(_)) {
+                *self.guest_state.vtl0_vfid.lock().await =
+                    vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
+                self.notify_vtl0_vf_arrival();
+            }
+        }
+
+        vtl2_device_present
+    }
+
     pub async fn run(&mut self) {
         #[derive(Debug)]
         enum NextWorkItem {
@@ -564,7 +623,18 @@ impl HclNetworkVFManagerWorker {
                         NextWorkItem::Continue
                     }
                 });
-                (next_message, device_change, device_arrival)
+                let vf_reconfig: futures::stream::BoxStream<'_, NextWorkItem> =
+                    self.vf_reconfig_receiver.as_mut().map_or_else(
+                        || futures::stream::pending().boxed(),
+                        |rx| {
+                            rx.map(|_| {
+                                NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::VfReconfig)
+                            })
+                            .boxed()
+                        },
+                    );
+
+                (next_message, device_change, device_arrival, vf_reconfig)
                     .merge()
                     .next()
                     .await
@@ -764,6 +834,24 @@ impl HclNetworkVFManagerWorker {
                     // Exit worker thread.
                     return;
                 }
+                NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::VfReconfig) => {
+                    tracing::info!("reconfiguring VF");
+                    // Remove VTL0 VF if present
+                    *self.guest_state.vtl0_vfid.lock().await = None;
+                    if self.guest_state.is_offered_to_guest().await {
+                        tracing::warn!("VTL0 VF being removed as a result of VF Reconfiguration.");
+                        self.try_notify_guest_and_revoke_vtl0_vf(&Vtl0Bus::NotPresent)
+                            .await;
+                    }
+
+                    // Don't 'keep alive'. VTL2 is reconfigured when in a bad state.
+                    let keep_vf_alive = false;
+                    self.shutdown_vtl2_device(keep_vf_alive).await;
+
+                    // Start the VTL2 device and resubscribe to notifications.
+                    let restart_notifications = true;
+                    vtl2_device_present = self.startup_vtl2_device(restart_notifications).await;
+                }
                 NextWorkItem::ManaDeviceArrived => {
                     assert!(!self.is_shutdown_active);
                     let mut ctx =
@@ -780,47 +868,8 @@ impl HclNetworkVFManagerWorker {
                         tracing::info!("VTL2 VF arrived");
                     }
 
-                    let device_bound = match create_mana_device(
-                        &self.driver_source,
-                        &self.vtl2_pci_id,
-                        self.vp_count,
-                        self.max_sub_channels,
-                        KeepAliveConfig::Disabled,
-                        self.dma_clients.clone(),
-                        None, // No saved state on new device arrival
-                    )
-                    .await
-                    {
-                        Ok(device) => {
-                            self.mana_device = Some(device);
-                            self.connect_endpoints().await.is_ok()
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                err = err.as_ref() as &dyn std::error::Error,
-                                "Failed to create MANA device"
-                            );
-                            false
-                        }
-                    };
-                    if let Err(err) = self
-                        .vtl2_bus_control
-                        .update_vtl2_device_bind_state(device_bound)
-                        .await
-                    {
-                        tracing::error!(
-                            err = err.as_ref() as &dyn std::error::Error,
-                            "Failed to report new binding state to host"
-                        );
-                    }
-                    if device_bound {
-                        vtl2_device_present = true;
-                        if matches!(&self.vtl0_bus_control, Vtl0Bus::Present(_)) {
-                            *self.guest_state.vtl0_vfid.lock().await =
-                                vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
-                            self.notify_vtl0_vf_arrival();
-                        }
-                    }
+                    let restart_notifications = false;
+                    vtl2_device_present = self.startup_vtl2_device(restart_notifications).await;
                 }
                 NextWorkItem::ManaDeviceRemoved => {
                     assert!(!self.is_shutdown_active);
@@ -1041,12 +1090,9 @@ impl HclNetworkVFManager {
 
         // Now that the endpoints are connected, start the device notification task that will
         // listen for and relay endpoint actions.
-        worker
-            .mana_device
-            .as_mut()
-            .unwrap()
-            .start_notification_task(driver_source)
-            .await;
+        let device = worker.mana_device.as_mut().unwrap();
+        device.start_notification_task(driver_source).await;
+        worker.vf_reconfig_receiver = Some(device.subscribe_vf_reconfig().await);
         let endpoints = endpoints
             .into_iter()
             .zip(mac_addresses)

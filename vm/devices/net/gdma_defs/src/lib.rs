@@ -260,6 +260,8 @@ pub const GDMA_EQE_HWC_INIT_EQ_ID_DB: u8 = 129;
 pub const GDMA_EQE_HWC_INIT_DATA: u8 = 130;
 pub const GDMA_EQE_HWC_INIT_DONE: u8 = 131;
 pub const GDMA_EQE_HWC_RECONFIG_DATA: u8 = 133;
+// Sent on the event of a SoC Crash or certain Firmware updates.
+pub const GDMA_EQE_HWC_RECONFIG_VF: u8 = 135;
 
 #[bitfield(u32)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
@@ -306,6 +308,7 @@ open_enum! {
         GDMA_REGISTER_DEVICE = 4,
         GDMA_DEREGISTER_DEVICE = 5,
         GDMA_GENERATE_TEST_EQE = 10,
+        GDMA_GENERATE_RECONFIG_VF_EVENT = 11,
         GDMA_CREATE_QUEUE = 12,
         GDMA_DISABLE_QUEUE = 13,
         GDMA_CREATE_DMA_REGION = 25,
