@@ -666,6 +666,10 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
         TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
             .await?;
 
+    // Debug: Check if the RPC server is still running at the end of the test.
+    // This helps diagnose flaky tests that may be caused by the server dying unexpectedly.
+    windows::check_rpc_server_status();
+
     // Verify AK cert with the test IGVM agent RPC server
     let expected_hex = expected_ak_cert_hex();
     let ak_cert_output = tpm_guest_tests
@@ -690,10 +694,6 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
         report_output.contains("\"vmUniqueId\""),
         format!("{report_output}")
     );
-
-    // Debug: Check if the RPC server is still running at the end of the test.
-    // This helps diagnose flaky tests that may be caused by the server dying unexpectedly.
-    windows::check_rpc_server_status();
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
