@@ -79,7 +79,17 @@ pub struct DnsResolver {
 impl DnsResolver {
     #[cfg(target_os = "windows")]
     pub fn new() -> Result<Self, std::io::Error> {
-        return Ok(());
+        use crate::dns_resolver::resolver::WindowsDnsResolverBackend;
+
+        let queues = Arc::new(DnsResponseQueues {
+            udp: Mutex::new(Vec::new()),
+            tcp: Mutex::new(Vec::new()),
+        });
+
+        Ok(Self {
+            backend: Box::new(WindowsDnsResolverBackend::new()?),
+            queues,
+        })
     }
 
     #[cfg(not(target_os = "windows"))]

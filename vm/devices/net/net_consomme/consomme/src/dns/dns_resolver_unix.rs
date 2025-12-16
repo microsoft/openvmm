@@ -6,9 +6,13 @@
 // UNSAFETY: FFI calls to libc resolver functions.
 #![expect(unsafe_code)]
 use super::DropReason;
-use crate::dns_resolver::{DnsBackend, DnsRequest, DnsResponse, DnsResponseAccessor};
+use crate::dns_resolver::DnsBackend;
+use crate::dns_resolver::DnsRequest;
+use crate::dns_resolver::DnsResponse;
+use crate::dns_resolver::DnsResponseAccessor;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 // FFI declarations for libc resolver functions.
 //
