@@ -134,8 +134,8 @@ impl<'a, T: SpawnDriver + Clone> ProxyIntegrationBuilder<'a, T> {
 
     /// Adds a NUMA node map to be passed to the proxy driver. This map is of the format
     /// VP -> Physical NUMA Node. For example, `map[0]` is the physical NUMA node for VP 0.
-    pub fn vp_to_physical_node_map(mut self, map: Option<Vec<u16>>) -> Self {
-        self.vp_to_physical_node_map = map;
+    pub fn vp_to_physical_node_map(mut self, map: Vec<u16>) -> Self {
+        self.vp_to_physical_node_map = Some(map);
         self
     }
 
