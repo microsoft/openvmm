@@ -647,6 +647,10 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
 
+    // Debug: Check if the RPC server is still running at the end of the test.
+    // This helps diagnose flaky tests that may be caused by the server dying unexpectedly.
+    windows::check_rpc_server_status();
+
     let (vm, agent) = config.run().await?;
 
     let guest_binary_path = match os_flavor {
@@ -684,12 +688,13 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
         format!("{report_output}")
     );
 
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
 
     // Debug: Check if the RPC server is still running at the end of the test.
     // This helps diagnose flaky tests that may be caused by the server dying unexpectedly.
     windows::check_rpc_server_status();
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }
