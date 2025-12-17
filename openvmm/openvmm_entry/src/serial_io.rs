@@ -6,7 +6,7 @@ use anyhow::Context;
 use futures::StreamExt;
 use futures::stream;
 use futures_concurrency::prelude::*;
-use hvlite_defs::config::SerialPipes;
+use openvmm_defs::config::SerialPipes;
 use io::ErrorKind;
 use io::Read;
 use pal_async::driver::Driver;

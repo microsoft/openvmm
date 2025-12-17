@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! This module contains Underhill specific functionality and implementations of require traits
-//! in order to plug into the rest of the common HvLite code.
+//! This module contains Underhill specific functionality and implementations of required traits
+//! in order to plug into the rest of the common code.
 
 pub mod mshv;
 mod nice;

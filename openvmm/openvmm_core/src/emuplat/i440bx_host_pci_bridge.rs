@@ -8,7 +8,7 @@ use membacking::RamVisibility;
 use membacking::RamVisibilityControl;
 use memory_range::MemoryRange;
 
-/// Implementation of [`AdjustGpaRange`] used by the legacy PCI bus for HvLite
+/// Implementation of [`AdjustGpaRange`] used by the legacy PCI bus for OpenVMM
 /// and the legacy PCAT and SVGA BIOSes.
 pub struct ManageRamGpaRange {
     memory: RamVisibilityControl,

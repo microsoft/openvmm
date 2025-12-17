@@ -45,25 +45,25 @@ use futures::StreamExt;
 use get_resources::crash::GuestCrashDeviceHandle;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
-use hvlite_defs::config::Config;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
-use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
-use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
-use hvlite_defs::config::DeviceVtl;
-use hvlite_defs::config::HypervisorConfig;
-use hvlite_defs::config::LateMapVtl0MemoryPolicy;
-use hvlite_defs::config::LoadMode;
-use hvlite_defs::config::ProcessorTopologyConfig;
-use hvlite_defs::config::SerialInformation;
-use hvlite_defs::config::VmbusConfig;
-use hvlite_defs::config::VpciDeviceConfig;
-use hvlite_defs::config::Vtl2BaseAddressType;
-use hvlite_defs::config::Vtl2Config;
-use hvlite_helpers::disk::open_disk_type;
-use hvlite_pcat_locator::RomFileLocation;
+use openvmm_defs::config::Config;
+use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
+use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
+use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
+use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
+use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
+use openvmm_defs::config::DEFAULT_PCIE_ECAM_BASE;
+use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::HypervisorConfig;
+use openvmm_defs::config::LateMapVtl0MemoryPolicy;
+use openvmm_defs::config::LoadMode;
+use openvmm_defs::config::ProcessorTopologyConfig;
+use openvmm_defs::config::SerialInformation;
+use openvmm_defs::config::VmbusConfig;
+use openvmm_defs::config::VpciDeviceConfig;
+use openvmm_defs::config::Vtl2BaseAddressType;
+use openvmm_defs::config::Vtl2Config;
+use openvmm_helpers::disk::open_disk_type;
+use openvmm_pcat_locator::RomFileLocation;
 use hyperv_ic_resources::shutdown::ShutdownIcHandle;
 use ide_resources::GuestMedia;
 use ide_resources::IdeDeviceConfig;
@@ -330,7 +330,7 @@ impl PetriVmConfigOpenVmm {
                 anyhow::bail!("dynamic memory not supported in OpenVMM");
             }
 
-            hvlite_defs::config::MemoryConfig {
+            openvmm_defs::config::MemoryConfig {
                 mem_size: startup_bytes,
                 mmio_gaps: if firmware.is_openhcl() {
                     match arch {
@@ -361,27 +361,27 @@ impl PetriVmConfigOpenVmm {
                 vps_per_socket,
                 enable_smt,
                 arch: Some(match arch {
-                    MachineArch::X86_64 => hvlite_defs::config::ArchTopologyConfig::X86(
-                        hvlite_defs::config::X86TopologyConfig {
+                    MachineArch::X86_64 => openvmm_defs::config::ArchTopologyConfig::X86(
+                        openvmm_defs::config::X86TopologyConfig {
                             x2apic: match apic_mode {
-                                None => hvlite_defs::config::X2ApicConfig::Auto,
+                                None => openvmm_defs::config::X2ApicConfig::Auto,
                                 Some(x) => match x {
                                     crate::ApicMode::Xapic => {
-                                        hvlite_defs::config::X2ApicConfig::Unsupported
+                                        openvmm_defs::config::X2ApicConfig::Unsupported
                                     }
                                     crate::ApicMode::X2apicSupported => {
-                                        hvlite_defs::config::X2ApicConfig::Supported
+                                        openvmm_defs::config::X2ApicConfig::Supported
                                     }
                                     crate::ApicMode::X2apicEnabled => {
-                                        hvlite_defs::config::X2ApicConfig::Enabled
+                                        openvmm_defs::config::X2ApicConfig::Enabled
                                     }
                                 },
                             },
                             ..Default::default()
                         },
                     ),
-                    MachineArch::Aarch64 => hvlite_defs::config::ArchTopologyConfig::Aarch64(
-                        hvlite_defs::config::Aarch64TopologyConfig::default(),
+                    MachineArch::Aarch64 => openvmm_defs::config::ArchTopologyConfig::Aarch64(
+                        openvmm_defs::config::Aarch64TopologyConfig::default(),
                     ),
                 }),
             }
@@ -449,7 +449,7 @@ impl PetriVmConfigOpenVmm {
                 user_mode_apic: false,
                 with_vtl2,
                 with_isolation: match firmware.isolation() {
-                    Some(IsolationType::Vbs) => Some(hvlite_defs::config::IsolationType::Vbs),
+                    Some(IsolationType::Vbs) => Some(openvmm_defs::config::IsolationType::Vbs),
                     None => None,
                     _ => anyhow::bail!("unsupported isolation type"),
                 },
@@ -687,7 +687,7 @@ impl PetriVmConfigSetupCore<'_> {
                     svga_firmware: _, // config_video
                 },
             ) => {
-                let firmware = hvlite_pcat_locator::find_pcat_bios(firmware.get())
+                let firmware = openvmm_pcat_locator::find_pcat_bios(firmware.get())
                     .context("Failed to load packaged PCAT binary")?;
                 LoadMode::Pcat {
                     firmware,
@@ -720,7 +720,7 @@ impl PetriVmConfigSetupCore<'_> {
                     enable_battery: false,
                     enable_serial: true,
                     enable_vpci_boot: matches!(self.boot_device_type, BootDeviceType::Nvme),
-                    uefi_console_mode: Some(hvlite_defs::config::UefiConsoleMode::Com1),
+                    uefi_console_mode: Some(openvmm_defs::config::UefiConsoleMode::Com1),
                     default_boot_always_attempt: *default_boot_always_attempt,
                     bios_guid: Guid::new_random(),
                 }
@@ -1087,7 +1087,7 @@ impl PetriVmConfigSetupCore<'_> {
         let video_dev = match self.firmware {
             Firmware::Pcat { svga_firmware, .. } | Firmware::OpenhclPcat { svga_firmware, .. } => {
                 Some(VideoDevice::Vga(
-                    hvlite_pcat_locator::find_svga_bios(svga_firmware.get())
+                    openvmm_pcat_locator::find_svga_bios(svga_firmware.get())
                         .context("Failed to load VGA BIOS")?,
                 ))
             }

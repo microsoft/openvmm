@@ -16,7 +16,7 @@ use crate::disk_image::SECTOR_SIZE;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
-use hvlite_defs::config::Vtl2BaseAddressType;
+use openvmm_defs::config::Vtl2BaseAddressType;
 use mesh::CancelContext;
 use pal_async::DefaultDriver;
 use pal_async::task::Spawn;

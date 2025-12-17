@@ -485,7 +485,7 @@ impl<T: CpuIo> hv1_hypercall::ModifyVtlProtectionMask for WhpHypercallExit<'_, '
             }
 
             // TODO: Note that this implementation of VTL protections is more
-            //       permissive than it should be. Today, hvlite only supports a
+            //       permissive than it should be. Today, OpenVMM only supports a
             //       single GuestMemory struct which contains the VTL2 ranges,
             //       which means that devices can still do DMA on behalf of VTL0
             //       targeting VTL2 protected memory. This requires a rethink

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Structures and definitions used between the underhill kernel and HvLite.
+//! Structures and definitions used between the underhill kernel and VMM.
 
 #![expect(non_camel_case_types, missing_docs)]
 

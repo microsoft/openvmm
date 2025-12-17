@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 use guestmem::GuestMemory;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
+use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
 use loader::importer::Aarch64Register;
 use loader::importer::X86Register;
 use loader::linux::AcpiConfig;
@@ -130,7 +130,7 @@ pub fn load_linux_x86(
 /// Returns the device tree blob.
 /// NOTE: if need to use GICv2, then the interrupt level must include flags
 /// derived from the number of CPUs for the PPI interrupts.
-/// TODO: the hvlite's command line should provide a device tree blob, optionally, too.
+/// TODO: openvmm's command line should provide a device tree blob, optionally, too.
 /// TODO: this is a large function, break it up.
 /// TODO: disjoint from the VM configuration, must work key off of the VM configuration.
 fn build_dt(

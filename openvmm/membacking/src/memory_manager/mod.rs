@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Hvlite's memory manager.
+//! OpenVMM's memory manager.
 
 mod device_memory;
 
@@ -28,7 +28,7 @@ use std::thread::JoinHandle;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
 
-/// The HvLite memory manager.
+/// The OpenVMM memory manager.
 #[derive(Debug, Inspect)]
 pub struct GuestMemoryManager {
     /// Guest RAM allocation.

@@ -2,24 +2,17 @@
 # Licensed under the MIT License.
 
 [package]
-name = "hvlite_helpers"
+name = "openvmm_pcat_locator"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-disk_backend_resources.workspace = true
-disk_vhd1.workspace = true
-get_resources.workspace = true
-hvlite_defs.workspace = true
-vm_resource.workspace = true
-
 mesh.workspace = true
 
 anyhow.workspace = true
+fs-err.workspace = true
+object = { workspace = true, features = ["pe", "read_core", "std"] }
 tracing.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-disk_vhdmp.workspace = true
 
 [lints]
 workspace = true
