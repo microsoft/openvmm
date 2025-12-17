@@ -8,11 +8,11 @@ mod openhcl_uefi;
 mod storage;
 
 use anyhow::Context;
-use openvmm_defs::config::DeviceVtl;
-use openvmm_defs::config::VpciDeviceConfig;
 use net_backend_resources::mac_address::MacAddress;
 use net_backend_resources::null::NullHandle;
 use nvme_resources::NvmeControllerHandle;
+use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::VpciDeviceConfig;
 use petri::ApicMode;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;

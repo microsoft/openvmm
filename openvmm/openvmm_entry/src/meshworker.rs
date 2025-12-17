@@ -5,13 +5,13 @@
 //! within it.
 
 use anyhow::Context;
-use openvmm_defs::entrypoint::MeshHostParams;
 use inspect::Inspect;
 use mesh_process::Mesh;
 use mesh_process::ProcessConfig;
 use mesh_process::try_run_mesh_host;
 use mesh_worker::RegisteredWorkers;
 use mesh_worker::WorkerHost;
+use openvmm_defs::entrypoint::MeshHostParams;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::path::PathBuf;

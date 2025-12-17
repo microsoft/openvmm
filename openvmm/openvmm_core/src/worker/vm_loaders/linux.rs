@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use guestmem::GuestMemory;
-use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
 use loader::importer::Aarch64Register;
 use loader::importer::X86Register;
 use loader::linux::AcpiConfig;
@@ -11,6 +10,7 @@ use loader::linux::InitrdAddressType;
 use loader::linux::InitrdConfig;
 use loader::linux::RegisterConfig;
 use loader::linux::ZeroPageConfig;
+use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
 use std::ffi::CString;
 use std::io::Read;
 use std::io::Seek;

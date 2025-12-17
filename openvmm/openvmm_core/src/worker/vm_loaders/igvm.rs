@@ -5,8 +5,6 @@
 
 use guestmem::GuestMemory;
 use hvdef::HV_PAGE_SIZE;
-use openvmm_defs::config::SerialInformation;
-use openvmm_defs::config::Vtl2BaseAddressType;
 use igvm::IgvmDirectiveHeader;
 use igvm::IgvmFile;
 use igvm::IgvmPlatformHeader;
@@ -28,6 +26,8 @@ use loader::importer::TableRegister;
 use loader::importer::X86Register;
 use memory_range::MemoryRange;
 use memory_range::subtract_ranges;
+use openvmm_defs::config::SerialInformation;
+use openvmm_defs::config::Vtl2BaseAddressType;
 use range_map_vec::RangeMap;
 use std::collections::HashMap;
 use std::ffi::CString;

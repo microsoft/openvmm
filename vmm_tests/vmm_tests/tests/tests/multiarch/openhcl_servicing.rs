@@ -9,8 +9,6 @@
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use guid::Guid;
-use openvmm_defs::config::DeviceVtl;
-use openvmm_defs::config::VpciDeviceConfig;
 use mesh::CancelContext;
 use mesh::CellUpdater;
 use mesh::rpc::RpcSend;
@@ -24,6 +22,8 @@ use nvme_resources::fault::NamespaceFaultConfig;
 use nvme_resources::fault::PciFaultBehavior;
 use nvme_resources::fault::PciFaultConfig;
 use nvme_test::command_match::CommandMatchBuilder;
+use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::VpciDeviceConfig;
 use petri::OpenHclServicingFlags;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVm;

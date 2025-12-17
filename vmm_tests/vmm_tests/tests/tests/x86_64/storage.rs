@@ -12,11 +12,11 @@ use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use guid::Guid;
-use openvmm_defs::config::DeviceVtl;
-use openvmm_defs::config::VpciDeviceConfig;
 use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
+use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::VpciDeviceConfig;
 use petri::PetriVmBuilder;
 #[cfg(windows)]
 use petri::hyperv::HyperVPetriBackend;
