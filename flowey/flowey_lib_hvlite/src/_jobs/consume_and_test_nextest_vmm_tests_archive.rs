@@ -77,6 +77,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::install_vmm_tests_deps::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
         ctx.import::<crate::run_prep_steps::Node>();
+        ctx.import::<crate::run_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
@@ -187,6 +188,17 @@ impl SimpleFlowNode for Node {
             release_igvm_files: Some(release_igvm_files),
             use_relative_paths: false,
         });
+
+        // Start the test_igvm_agent_rpc_server before running tests.
+        // This must happen after init_vmm_tests_env which copies the binary.
+        // The server runs in the background for the duration of the test run.
+        #[cfg(windows)]
+        pre_run_deps.push(
+            ctx.reqv(|done| crate::run_test_igvm_agent_rpc_server::Request {
+                env: extra_env.clone(),
+                done,
+            }),
+        );
 
         if needs_prep_run {
             pre_run_deps.push(ctx.reqv(|done| crate::run_prep_steps::Request {

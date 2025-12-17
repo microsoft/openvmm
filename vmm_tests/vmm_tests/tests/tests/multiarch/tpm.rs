@@ -13,8 +13,6 @@ use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64;
-#[cfg(windows)]
-use petri_artifacts_vmm_test::artifacts::host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64;
 use pipette_client::PipetteClient;
 use std::path::Path;
 use vmm_test_macros::openvmm_test;
@@ -26,147 +24,12 @@ const AK_CERT_TOTAL_BYTES: usize = 4096;
 const TPM_GUEST_TESTS_LINUX_GUEST_PATH: &str = "/tmp/tpm_guest_tests";
 const TPM_GUEST_TESTS_WINDOWS_GUEST_PATH: &str = "C:\\tpm_guest_tests.exe";
 
-// Global RPC server that runs once for all tests.
-// The RPC server binds to a fixed endpoint, so we share one server across all tests.
+// Utilities for checking if the RPC server is running.
+// In CI, the RPC server is started by flowey before tests run.
+// For local development, the server can be started manually.
 #[cfg(windows)]
 pub mod windows {
-    use anyhow::Context;
-    use parking_lot::Mutex;
-    use std::path::Path;
-    use std::sync::LazyLock;
-
-    pub static GLOBAL_RPC_SERVER: LazyLock<GlobalRpcServer> = LazyLock::new(GlobalRpcServer::new);
-
-    pub struct GlobalRpcServer {
-        // We track whether we've attempted to start the server in this process.
-        _started: Mutex<bool>,
-    }
-
-    impl GlobalRpcServer {
-        fn new() -> Self {
-            tracing::info!("initializing global RPC server");
-            Self {
-                _started: Mutex::new(false),
-            }
-        }
-
-        pub fn ensure_started(&self, rpc_server_path: &Path) -> anyhow::Result<()> {
-            use std::io::BufRead;
-            use std::io::BufReader;
-            use std::io::Read;
-            use std::os::windows::process::CommandExt;
-            use std::process::Stdio;
-
-            // Note: nextest runs each test in a separate process, so this lock only
-            // protects against concurrent calls within the same test process.
-            // Multiple test processes may race to start the server, but only one
-            // will succeed - the others will see the server exit with error 1740
-            // (endpoint already in use) and will use the existing server.
-            let mut started = self._started.lock();
-
-            if *started {
-                tracing::debug!("global RPC server already started in this process");
-                return Ok(());
-            }
-
-            tracing::info!("attempting to start global RPC server");
-
-            let (stderr_read, stderr_write) = pal::pipe_pair()?;
-
-            // Spawn the RPC server in a new process group so it doesn't receive
-            // console signals from the test process.
-            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-
-            let mut rpc_server_child = std::process::Command::new(rpc_server_path)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(stderr_write)
-                .creation_flags(CREATE_NEW_PROCESS_GROUP)
-                .spawn()
-                .context("failed to spawn test_igvm_agent_rpc_server")?;
-
-            // Wait for stdout to close - this signals either:
-            // 1. The server is ready and accepting connections
-            // 2. The server failed to start (e.g., endpoint already in use)
-            let mut stdout = rpc_server_child
-                .stdout
-                .take()
-                .context("failed to take stdout from RPC server")?;
-            let mut byte = [0u8];
-            let n = stdout
-                .read(&mut byte)
-                .context("failed to read from RPC server stdout")?;
-            if n != 0 {
-                anyhow::bail!(
-                    "expected RPC server stdout to close (EOF), but read {} bytes",
-                    n
-                );
-            }
-            drop(stdout);
-
-            // Check if the server started successfully or failed.
-            // Give it a moment to exit if it's going to fail.
-            std::thread::sleep(std::time::Duration::from_millis(50));
-
-            match rpc_server_child.try_wait()? {
-                Some(status) => {
-                    // Server exited - likely because another process already started it.
-                    // This is expected in nextest where tests run in parallel processes.
-                    tracing::info!(
-                        exit_code = ?status.code(),
-                        "RPC server exited (another test process likely started it first)"
-                    );
-                    *started = true;
-                    return Ok(());
-                }
-                None => {
-                    // Server is still running - we successfully started it.
-                    // Note: We intentionally don't use a job object here because nextest
-                    // runs tests in separate processes. If we used a job object, the server
-                    // would be killed when THIS test process exits, even if other test
-                    // processes are still using it. Instead, we let the server run as an
-                    // orphan - it will be cleaned up by:
-                    // - nextest's own job object (if it uses one)
-                    // - The CI runner's cleanup
-                    // - Manual cleanup if running locally
-                    tracing::info!("global RPC server started successfully");
-                }
-            }
-
-            // Spawn a named thread to read and log stderr from the RPC server.
-            // When the RPC server exits, the pipe will be closed and reader.lines()
-            // will return None, causing the thread to exit naturally.
-            std::thread::Builder::new()
-                .name("rpc-server-stderr".to_string())
-                .spawn(move || {
-                    let reader = BufReader::new(stderr_read);
-                    for line in reader.lines() {
-                        match line {
-                            Ok(line) => {
-                                tracing::info!(target: "test_igvm_agent_rpc_server", "{}", line)
-                            }
-                            Err(e) => {
-                                tracing::debug!("RPC server stderr pipe closed: {}", e);
-                                break;
-                            }
-                        }
-                    }
-                    tracing::debug!("RPC server stderr reader thread exiting");
-                })
-                .expect("failed to spawn stderr reader thread");
-
-            // Drop the Child handle. We intentionally don't keep it or use a job object
-            // to avoid killing the server when this test process exits.
-            drop(rpc_server_child);
-
-            *started = true;
-
-            Ok(())
-        }
-    }
-
     /// Checks if any process with the given executable name is running.
-    /// Used for debugging to verify the RPC server is still alive.
     pub fn is_process_running(exe_name: &str) -> bool {
         use std::process::Command;
 
@@ -180,8 +43,6 @@ pub mod windows {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 // tasklist returns "INFO: No tasks are running..." if no match found.
                 // If a process is found, it shows the process info without "INFO: No tasks".
-                // Note: tasklist truncates long process names in output, so we can't
-                // reliably check for the exact name in the output.
                 !stdout.contains("INFO: No tasks")
             }
             Err(e) => {
@@ -191,20 +52,22 @@ pub mod windows {
         }
     }
 
-    /// Logs diagnostic information about the RPC server process status.
-    pub fn check_rpc_server_status() {
+    /// Verifies that the RPC server is running.
+    /// In CI, the server is started by flowey before tests run.
+    /// Returns an error if the server is not running.
+    pub fn ensure_rpc_server_running() -> anyhow::Result<()> {
         const RPC_SERVER_EXE: &str = "test_igvm_agent_rpc_server.exe";
 
         if is_process_running(RPC_SERVER_EXE) {
-            tracing::info!(
-                exe = RPC_SERVER_EXE,
-                "RPC server health check: process is still running"
-            );
+            tracing::info!(exe = RPC_SERVER_EXE, "RPC server is running");
+            Ok(())
         } else {
-            tracing::warn!(
-                exe = RPC_SERVER_EXE,
-                "RPC server health check: process is NOT running - this may cause test failures!"
-            );
+            anyhow::bail!(
+                "RPC server ({}) is not running. \
+                In CI, the server should be started by flowey. \
+                For local development, start the server manually before running tests.",
+                RPC_SERVER_EXE
+            )
         }
     }
 }
@@ -625,34 +488,32 @@ async fn tpm_test_platform_hierarchy_disabled(
 // }
 
 /// CVM with guest tpm tests on Hyper-V.
+///
+/// The test requires the test_igvm_agent_rpc_server to be running.
+/// In CI, the server is started by flowey before tests run.
+/// For local development, start the server manually before running tests.
 #[cfg(windows)]
 #[vmm_test(
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
 )]
-async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
+async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
-    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+    (tpm_guest_tests_artifact,): (ResolvedArtifact<T>,),
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
 
-    // Ensure the global RPC server is running
-    let rpc_server_path = rpc_server_artifact.get();
-    windows::GLOBAL_RPC_SERVER.ensure_started(rpc_server_path)?;
+    // Verify the RPC server is running (started by flowey in CI)
+    windows::ensure_rpc_server_running()?;
 
     let config = config
         .with_tpm(true)
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
-
-    // Debug: Check if the RPC server is still running at the end of the test.
-    // This helps diagnose flaky tests that may be caused by the server dying unexpectedly.
-    windows::check_rpc_server_status();
 
     let (vm, agent) = config.run().await?;
 
@@ -665,10 +526,6 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
     let tpm_guest_tests =
         TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
             .await?;
-
-    // Debug: Check if the RPC server is still running at the end of the test.
-    // This helps diagnose flaky tests that may be caused by the server dying unexpectedly.
-    windows::check_rpc_server_status();
 
     // Verify AK cert with the test IGVM agent RPC server
     let expected_hex = expected_ak_cert_hex();

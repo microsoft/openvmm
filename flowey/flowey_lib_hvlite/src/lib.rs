@@ -57,5 +57,6 @@ pub mod run_cargo_nextest_run;
 pub mod run_igvmfilegen;
 pub mod run_prep_steps;
 pub mod run_split_debug_info;
+pub mod run_test_igvm_agent_rpc_server;
 pub mod test_nextest_unit_tests_archive;
 pub mod test_nextest_vmm_tests_archive;
