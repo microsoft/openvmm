@@ -70,13 +70,13 @@ flowey_lib_common = { path = "flowey/flowey_lib_common" }
 flowey_lib_hvlite = { path = "flowey/flowey_lib_hvlite" }
 schema_ado_yaml = { path = "flowey/schema_ado_yaml" }
 
-hvlite_core = { path = "openvmm/hvlite_core" }
-hvlite_defs = { path = "openvmm/hvlite_defs" }
+openvmm_core = { path = "openvmm/openvmm_core" }
+openvmm_defs = { path = "openvmm/openvmm_defs" }
 openvmm_entry = { path = "openvmm/openvmm_entry" }
-hvlite_helpers = { path = "openvmm/hvlite_helpers" }
-hvlite_pcat_locator = { path = "openvmm/hvlite_pcat_locator" }
+openvmm_helpers = { path = "openvmm/openvmm_helpers" }
+openvmm_pcat_locator = { path = "openvmm/openvmm_pcat_locator" }
 openvmm_resources = { path = "openvmm/openvmm_resources" }
-hvlite_ttrpc_vmservice = { path = "openvmm/hvlite_ttrpc_vmservice" }
+openvmm_ttrpc_vmservice = { path = "openvmm/openvmm_ttrpc_vmservice" }
 membacking = { path = "openvmm/membacking" }
 
 petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact_resolver_openvmm_known_paths" }

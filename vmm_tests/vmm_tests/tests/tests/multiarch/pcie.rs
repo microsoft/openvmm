@@ -3,8 +3,8 @@
 
 use crate::multiarch::OsFlavor;
 use crate::multiarch::cmd;
-use hvlite_defs::config::PcieRootComplexConfig;
-use hvlite_defs::config::PcieRootPortConfig;
+use openvmm_defs::config::PcieRootComplexConfig;
+use openvmm_defs::config::PcieRootPortConfig;
 use petri::PetriVmBuilder;
 use petri::openvmm::OpenVmmPetriBackend;
 use pipette_client::PipetteClient;

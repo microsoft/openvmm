@@ -12,7 +12,7 @@
 //! deferring the act of obtaining interesting SMBIOS information up-the-stack.
 //!
 //! On Underhill, this information is generated host-side, and sent over the
-//! GET, whereas on HvLite, it will need to be fetched from the Host itself.
+//! GET, whereas on OpenVMM, it will need to be fetched from the Host itself.
 
 use super::config::SmbiosProcessorInfoBundle;
 use core::mem::size_of;

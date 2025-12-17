@@ -3,15 +3,15 @@
 
 use crate::OpenHclServicingFlags;
 use get_resources::ged::GuestServicingFlags;
-use hvlite_defs::config::Config;
-use hvlite_defs::rpc::PulseSaveRestoreError;
-use hvlite_defs::rpc::VmRpc;
-use hvlite_defs::worker::VM_WORKER;
-use hvlite_defs::worker::VmWorkerParameters;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh_worker::WorkerHandle;
 use mesh_worker::WorkerHost;
+use openvmm_defs::config::Config;
+use openvmm_defs::rpc::PulseSaveRestoreError;
+use openvmm_defs::rpc::VmRpc;
+use openvmm_defs::worker::VM_WORKER;
+use openvmm_defs::worker::VmWorkerParameters;
 use vmm_core_defs::HaltReason;
 
 pub(crate) struct Worker {
@@ -64,7 +64,7 @@ impl Worker {
         flags: OpenHclServicingFlags,
         file: std::fs::File,
     ) -> anyhow::Result<()> {
-        hvlite_helpers::underhill::save_underhill(
+        openvmm_helpers::underhill::save_underhill(
             &self.rpc,
             send,
             GuestServicingFlags {
@@ -80,7 +80,7 @@ impl Worker {
         &self,
         send: &mesh::Sender<get_resources::ged::GuestEmulationRequest>,
     ) -> anyhow::Result<()> {
-        hvlite_helpers::underhill::restore_underhill(&self.rpc, send).await
+        openvmm_helpers::underhill::restore_underhill(&self.rpc, send).await
     }
 
     pub(crate) async fn update_command_line(&self, command_line: &str) -> anyhow::Result<()> {

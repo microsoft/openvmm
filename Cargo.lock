@@ -3023,159 +3023,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hvlite_core"
-version = "0.0.0"
-dependencies = [
- "aarch64defs",
- "acpi",
- "anyhow",
- "async-trait",
- "build_rs_guest_arch",
- "cache_topology",
- "cfg-if",
- "chipset_device_resources",
- "chipset_legacy",
- "debug_ptr",
- "disk_backend",
- "fdt",
- "firmware_pcat",
- "firmware_uefi",
- "firmware_uefi_custom_vars",
- "floppy",
- "floppy_resources",
- "framebuffer",
- "futures",
- "futures-concurrency",
- "get_resources",
- "getrandom 0.3.3",
- "guestmem",
- "guid",
- "hcl_compat_uefi_nvram_storage",
- "hvdef",
- "hvlite_defs",
- "hvlite_pcat_locator",
- "ide",
- "ide_resources",
- "igvm",
- "igvm_defs",
- "input_core",
- "inspect",
- "loader",
- "local_clock",
- "membacking",
- "memory_range",
- "mesh",
- "mesh_worker",
- "missing_dev",
- "page_table",
- "pal",
- "pal_async",
- "pci_bus",
- "pci_core",
- "pcie",
- "range_map_vec",
- "scsi_core",
- "scsidisk",
- "serial_16550_resources",
- "sparse_mmap",
- "state_unit",
- "storvsp",
- "thiserror 2.0.16",
- "tracing",
- "tracing_helpers",
- "uefi_nvram_storage",
- "virt",
- "virt_hvf",
- "virt_kvm",
- "virt_mshv",
- "virt_whp",
- "virtio",
- "virtio_serial",
- "vm_loader",
- "vm_resource",
- "vm_topology",
- "vmbus_channel",
- "vmbus_core",
- "vmbus_server",
- "vmcore",
- "vmgs",
- "vmgs_broker",
- "vmgs_resources",
- "vmm_core",
- "vmm_core_defs",
- "vmotherboard",
- "vmswitch",
- "vpci",
- "watchdog_core",
- "zerocopy 0.8.25",
-]
-
-[[package]]
-name = "hvlite_defs"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "firmware_uefi_custom_vars",
- "floppy_resources",
- "framebuffer",
- "get_resources",
- "guid",
- "hvlite_pcat_locator",
- "ide_resources",
- "input_core",
- "memory_range",
- "mesh",
- "mesh_worker",
- "net_backend_resources",
- "thiserror 2.0.16",
- "unix_socket",
- "virt",
- "virt_whp",
- "vm_resource",
- "vmbus_proxy",
- "vmgs_resources",
- "vmm_core_defs",
- "vmotherboard",
-]
-
-[[package]]
-name = "hvlite_helpers"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "disk_backend_resources",
- "disk_vhd1",
- "disk_vhdmp",
- "get_resources",
- "hvlite_defs",
- "mesh",
- "tracing",
- "vm_resource",
-]
-
-[[package]]
-name = "hvlite_pcat_locator"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "fs-err",
- "mesh",
- "object 0.37.3",
- "tracing",
-]
-
-[[package]]
-name = "hvlite_ttrpc_vmservice"
-version = "0.0.0"
-dependencies = [
- "mesh",
- "mesh_build",
- "mesh_rpc",
- "prost",
- "prost-build",
-]
-
-[[package]]
 name = "hyper"
 version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5140,6 +4987,122 @@ dependencies = [
 ]
 
 [[package]]
+name = "openvmm_core"
+version = "0.0.0"
+dependencies = [
+ "aarch64defs",
+ "acpi",
+ "anyhow",
+ "async-trait",
+ "build_rs_guest_arch",
+ "cache_topology",
+ "cfg-if",
+ "chipset_device_resources",
+ "chipset_legacy",
+ "debug_ptr",
+ "disk_backend",
+ "fdt",
+ "firmware_pcat",
+ "firmware_uefi",
+ "firmware_uefi_custom_vars",
+ "floppy",
+ "floppy_resources",
+ "framebuffer",
+ "futures",
+ "futures-concurrency",
+ "get_resources",
+ "getrandom 0.3.3",
+ "guestmem",
+ "guid",
+ "hcl_compat_uefi_nvram_storage",
+ "hvdef",
+ "ide",
+ "ide_resources",
+ "igvm",
+ "igvm_defs",
+ "input_core",
+ "inspect",
+ "loader",
+ "local_clock",
+ "membacking",
+ "memory_range",
+ "mesh",
+ "mesh_worker",
+ "missing_dev",
+ "openvmm_defs",
+ "openvmm_pcat_locator",
+ "page_table",
+ "pal",
+ "pal_async",
+ "pci_bus",
+ "pci_core",
+ "pcie",
+ "range_map_vec",
+ "scsi_core",
+ "scsidisk",
+ "serial_16550_resources",
+ "sparse_mmap",
+ "state_unit",
+ "storvsp",
+ "thiserror 2.0.16",
+ "tracing",
+ "tracing_helpers",
+ "uefi_nvram_storage",
+ "virt",
+ "virt_hvf",
+ "virt_kvm",
+ "virt_mshv",
+ "virt_whp",
+ "virtio",
+ "virtio_serial",
+ "vm_loader",
+ "vm_resource",
+ "vm_topology",
+ "vmbus_channel",
+ "vmbus_core",
+ "vmbus_server",
+ "vmcore",
+ "vmgs",
+ "vmgs_broker",
+ "vmgs_resources",
+ "vmm_core",
+ "vmm_core_defs",
+ "vmotherboard",
+ "vmswitch",
+ "vpci",
+ "watchdog_core",
+ "zerocopy 0.8.25",
+]
+
+[[package]]
+name = "openvmm_defs"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "firmware_uefi_custom_vars",
+ "floppy_resources",
+ "framebuffer",
+ "get_resources",
+ "guid",
+ "ide_resources",
+ "input_core",
+ "memory_range",
+ "mesh",
+ "mesh_worker",
+ "net_backend_resources",
+ "openvmm_pcat_locator",
+ "thiserror 2.0.16",
+ "unix_socket",
+ "virt",
+ "virt_whp",
+ "vm_resource",
+ "vmbus_proxy",
+ "vmgs_resources",
+ "vmm_core_defs",
+ "vmotherboard",
+]
+
+[[package]]
 name = "openvmm_entry"
 version = "0.0.0"
 dependencies = [
@@ -5165,10 +5128,6 @@ dependencies = [
  "get_resources",
  "getrandom 0.3.3",
  "guid",
- "hvlite_defs",
- "hvlite_helpers",
- "hvlite_pcat_locator",
- "hvlite_ttrpc_vmservice",
  "hyperv_ic_resources",
  "hyperv_secure_boot_templates",
  "hyperv_uefi_custom_vars_json",
@@ -5186,6 +5145,10 @@ dependencies = [
  "netvsp_resources",
  "nvme_resources",
  "openssl",
+ "openvmm_defs",
+ "openvmm_helpers",
+ "openvmm_pcat_locator",
+ "openvmm_ttrpc_vmservice",
  "pal",
  "pal_async",
  "parking_lot",
@@ -5267,6 +5230,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "openvmm_helpers"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "disk_backend_resources",
+ "disk_vhd1",
+ "disk_vhdmp",
+ "get_resources",
+ "mesh",
+ "openvmm_defs",
+ "tracing",
+ "vm_resource",
+]
+
+[[package]]
+name = "openvmm_pcat_locator"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "fs-err",
+ "mesh",
+ "object 0.37.3",
+ "tracing",
+]
+
+[[package]]
 name = "openvmm_resources"
 version = "0.0.0"
 dependencies = [
@@ -5287,7 +5276,6 @@ dependencies = [
  "guest_crash_device",
  "guest_emulation_device",
  "guest_emulation_log",
- "hvlite_core",
  "hyperv_ic",
  "mesh_worker",
  "missing_dev",
@@ -5298,6 +5286,7 @@ dependencies = [
  "netvsp",
  "nvme",
  "nvme_test",
+ "openvmm_core",
  "rusqlite",
  "scsidisk",
  "serial_16550",
@@ -5318,6 +5307,17 @@ dependencies = [
  "vmbus_serial_host",
  "vmcore",
  "vnc_worker",
+]
+
+[[package]]
+name = "openvmm_ttrpc_vmservice"
+version = "0.0.0"
+dependencies = [
+ "mesh",
+ "mesh_build",
+ "mesh_rpc",
+ "prost",
+ "prost-build",
 ]
 
 [[package]]
@@ -5645,9 +5645,6 @@ dependencies = [
  "gptman",
  "guid",
  "hvdef",
- "hvlite_defs",
- "hvlite_helpers",
- "hvlite_pcat_locator",
  "hyperv_ic_resources",
  "hyperv_secure_boot_templates",
  "ide_resources",
@@ -5663,6 +5660,9 @@ dependencies = [
  "net_backend_resources",
  "netvsp_resources",
  "nvme_resources",
+ "openvmm_defs",
+ "openvmm_helpers",
+ "openvmm_pcat_locator",
  "pal",
  "pal_async",
  "parking_lot",
@@ -5953,8 +5953,8 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "guid",
- "hvlite_defs",
- "hvlite_helpers",
+ "openvmm_defs",
+ "openvmm_helpers",
  "pal_async",
  "petri",
  "petri_artifact_resolver_openvmm_known_paths",
@@ -9413,8 +9413,6 @@ dependencies = [
  "futures",
  "get_resources",
  "guid",
- "hvlite_defs",
- "hvlite_ttrpc_vmservice",
  "hyperv_ic_resources",
  "jiff",
  "kmsg",
@@ -9424,6 +9422,8 @@ dependencies = [
  "nvme_resources",
  "nvme_spec",
  "nvme_test",
+ "openvmm_defs",
+ "openvmm_ttrpc_vmservice",
  "pal",
  "pal_async",
  "petri",

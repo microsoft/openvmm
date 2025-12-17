@@ -91,7 +91,7 @@ vm_resource::register_static_resolvers! {
 
 // Workers.
 mesh_worker::register_workers! {
-    hvlite_core::VmWorker,
+    openvmm_core::VmWorker,
     vnc_worker::VncWorker<std::net::TcpListener>,
 
     #[cfg(feature = "gdb")]

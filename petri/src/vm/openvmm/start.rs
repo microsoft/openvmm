@@ -13,10 +13,10 @@ use crate::worker::Worker;
 use anyhow::Context;
 use disk_backend_resources::FileDiskHandle;
 use guid::Guid;
-use hvlite_defs::config::DeviceVtl;
 use mesh_process::Mesh;
 use mesh_process::ProcessConfig;
 use mesh_worker::WorkerHost;
+use openvmm_defs::config::DeviceVtl;
 use pal_async::pipe::PolledPipe;
 use pal_async::task::Spawn;
 use petri_artifacts_common::tags::MachineArch;
@@ -232,7 +232,7 @@ impl PetriVmConfigOpenVmm {
             ProcessConfig::new("vmm")
                 .process_name(&resources.openvmm_path)
                 .stderr(Some(stderr_write)),
-            hvlite_defs::entrypoint::MeshHostParams { runner },
+            openvmm_defs::entrypoint::MeshHostParams { runner },
         )
         .await?;
         Ok(host)

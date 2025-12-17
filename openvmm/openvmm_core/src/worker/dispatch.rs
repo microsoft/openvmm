@@ -25,34 +25,6 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::Vtl;
-use hvlite_defs::config::Aarch64TopologyConfig;
-use hvlite_defs::config::ArchTopologyConfig;
-use hvlite_defs::config::Config;
-use hvlite_defs::config::DeviceVtl;
-use hvlite_defs::config::EfiDiagnosticsLogLevelType;
-use hvlite_defs::config::GicConfig;
-use hvlite_defs::config::Hypervisor;
-use hvlite_defs::config::HypervisorConfig;
-use hvlite_defs::config::LoadMode;
-use hvlite_defs::config::MemoryConfig;
-use hvlite_defs::config::PcieDeviceConfig;
-use hvlite_defs::config::PcieRootComplexConfig;
-use hvlite_defs::config::PcieSwitchConfig;
-use hvlite_defs::config::PmuGsivConfig;
-use hvlite_defs::config::ProcessorTopologyConfig;
-use hvlite_defs::config::SerialPipes;
-use hvlite_defs::config::VirtioBus;
-use hvlite_defs::config::VmbusConfig;
-use hvlite_defs::config::VpciDeviceConfig;
-use hvlite_defs::config::Vtl2BaseAddressType;
-use hvlite_defs::config::Vtl2Config;
-use hvlite_defs::config::X2ApicConfig;
-use hvlite_defs::config::X86TopologyConfig;
-use hvlite_defs::rpc::PulseSaveRestoreError;
-use hvlite_defs::rpc::VmRpc;
-use hvlite_defs::worker::VM_WORKER;
-use hvlite_defs::worker::VmWorkerParameters;
-use hvlite_pcat_locator::RomFileLocation;
 use ide_resources::GuestMedia;
 use ide_resources::IdeDeviceConfig;
 use igvm::IgvmFile;
@@ -72,6 +44,34 @@ use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use missing_dev::MissingDevManifest;
+use openvmm_defs::config::Aarch64TopologyConfig;
+use openvmm_defs::config::ArchTopologyConfig;
+use openvmm_defs::config::Config;
+use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::EfiDiagnosticsLogLevelType;
+use openvmm_defs::config::GicConfig;
+use openvmm_defs::config::Hypervisor;
+use openvmm_defs::config::HypervisorConfig;
+use openvmm_defs::config::LoadMode;
+use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieRootComplexConfig;
+use openvmm_defs::config::PcieSwitchConfig;
+use openvmm_defs::config::PmuGsivConfig;
+use openvmm_defs::config::ProcessorTopologyConfig;
+use openvmm_defs::config::SerialPipes;
+use openvmm_defs::config::VirtioBus;
+use openvmm_defs::config::VmbusConfig;
+use openvmm_defs::config::VpciDeviceConfig;
+use openvmm_defs::config::Vtl2BaseAddressType;
+use openvmm_defs::config::Vtl2Config;
+use openvmm_defs::config::X2ApicConfig;
+use openvmm_defs::config::X86TopologyConfig;
+use openvmm_defs::rpc::PulseSaveRestoreError;
+use openvmm_defs::rpc::VmRpc;
+use openvmm_defs::worker::VM_WORKER;
+use openvmm_defs::worker::VmWorkerParameters;
+use openvmm_pcat_locator::RomFileLocation;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::local::block_with_io;
@@ -232,7 +232,7 @@ pub struct Manifest {
     hypervisor: HypervisorConfig,
     chipset: BaseChipsetManifest,
     #[cfg(windows)]
-    kernel_vmnics: Vec<hvlite_defs::config::KernelVmNicConfig>,
+    kernel_vmnics: Vec<openvmm_defs::config::KernelVmNicConfig>,
     input: mesh::Receiver<InputData>,
     framebuffer: Option<framebuffer::Framebuffer>,
     vga_firmware: Option<RomFileLocation>,
@@ -502,8 +502,8 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
             }
         } else {
             GicInfo {
-                gic_distributor_base: hvlite_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE,
-                gic_redistributors_base: hvlite_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE,
+                gic_distributor_base: openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE,
+                gic_redistributors_base: openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE,
             }
         };
         let pmu_gsiv = match arch.pmu_gsiv {
@@ -1253,7 +1253,7 @@ impl InitializedVm {
                             boot_order: {
                                 use firmware_pcat::config::BootDevice;
                                 use firmware_pcat::config::BootDeviceStatus;
-                                use hvlite_defs::config::PcatBootDevice;
+                                use openvmm_defs::config::PcatBootDevice;
                                 boot_order.map(|dev| BootDeviceStatus {
                                     kind: match dev {
                                         PcatBootDevice::Floppy => BootDevice::Floppy,
