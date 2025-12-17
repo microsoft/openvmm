@@ -3,6 +3,8 @@
 
 //! Worker for the prototype gRPC/ttrpc management endpoint.
 
+#![cfg(any(feature = "ttrpc", feature = "grpc"))]
+
 use self::vmservice::nic_config::Backend;
 use crate::serial_io::bind_serial;
 use anyhow::Context;
