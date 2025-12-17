@@ -509,7 +509,7 @@ mod tests {
             .unwrap();
 
         let mut wrapping_aes_key = [0u8; 32];
-        openssl::rand::rand_bytes(&mut wrapping_aes_key[..]).unwrap();
+        getrandom::fill(&mut wrapping_aes_key[..]).unwrap();
 
         let wrapping_rsa_key = Rsa::generate(2048).unwrap();
         let wrapped_aes_key = rsa_oaep_encrypt(

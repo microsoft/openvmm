@@ -291,7 +291,7 @@ mod tests {
     /// Generate an AES-256 key
     fn generate_aes_256() -> [u8; 32] {
         let mut buf = [0u8; 32];
-        let result = openssl::rand::rand_bytes(&mut buf[..]);
+        let result = getrandom::fill(&mut buf[..]);
         assert!(result.is_ok());
 
         buf
