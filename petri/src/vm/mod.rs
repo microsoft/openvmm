@@ -641,11 +641,18 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// DEVNOTE: In the future, this could be generalized for both HyperV and OpenVMM.
     /// For now, this is only implemented for OpenVMM.
     pub fn with_host_log_levels(mut self, levels: OpenvmmLogConfig) -> Self {
-        self.config
-            .firmware
-            .openhcl_config_mut()
-            .expect("OpenHCL firmware is required to set custom OpenHCL log levels.")
-            .log_levels = levels;
+        match levels {
+            OpenvmmLogConfig::Custom(ref custom_levels) => {
+                for key in custom_levels.keys() {
+                    if !["OPENVMM_LOG", "OPENVMM_SHOW_SPANS"].contains(&key.as_str()) {
+                        panic!("Unsupported OpenVMM log level key: {}", key);
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        self.config.host_log_levels = Some(levels.clone());
         self
     }
 
@@ -1372,8 +1379,15 @@ pub enum OpenvmmLogConfig {
     /// Use the built-in default log levels of OpenHCL/OpenVMM (e.g. don't pass
     /// OPENVMM_LOG or OPENVMM_SHOW_SPANS)
     BuiltInDefault,
-    /// Use the provided custom log levels (e.g.
+    /// Use the provided custom log levels, specified as key/value pairs. At this time,
+    /// simply uses the already-defined environment variables (e.g.
     /// `OPENVMM_LOG=info,disk_nvme=debug OPENVMM_SHOW_SPANS=true`)
+    ///
+    /// See the Guide and source code for configuring these logs.
+    /// - For the host VMM: see `enable_tracing` in `tracing_init.rs` for details on
+    ///   the accepted keys and values.
+    /// - For OpenHCL, see `init_tracing_backend` in `openhcl/src/logging/mod.rs` for details on
+    ///   the accepted keys and values.
     Custom(BTreeMap<String, String>),
 }
 
