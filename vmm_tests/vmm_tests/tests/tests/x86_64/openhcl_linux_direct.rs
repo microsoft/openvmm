@@ -5,7 +5,7 @@
 
 use crate::x86_64::storage::new_test_vtl2_nvme_device;
 use guid::Guid;
-use hvlite_defs::config::Vtl2BaseAddressType;
+use openvmm_defs::config::Vtl2BaseAddressType;
 use petri::MemoryConfig;
 use petri::OpenvmmLogConfig;
 use petri::PetriVmBuilder;

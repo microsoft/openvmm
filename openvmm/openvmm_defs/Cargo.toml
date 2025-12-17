@@ -2,12 +2,12 @@
 # Licensed under the MIT License.
 
 [package]
-name = "hvlite_defs"
+name = "openvmm_defs"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-hvlite_pcat_locator.workspace = true
+openvmm_pcat_locator.workspace = true
 
 # vmcore
 memory_range.workspace = true

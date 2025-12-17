@@ -21,12 +21,12 @@
 use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
-use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
-use hvlite_defs::config::DeviceVtl;
-use hvlite_defs::config::Hypervisor;
-use hvlite_defs::config::PcatBootDevice;
-use hvlite_defs::config::Vtl2BaseAddressType;
-use hvlite_defs::config::X2ApicConfig;
+use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
+use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::Hypervisor;
+use openvmm_defs::config::PcatBootDevice;
+use openvmm_defs::config::Vtl2BaseAddressType;
+use openvmm_defs::config::X2ApicConfig;
 use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -465,7 +465,7 @@ flags:
     /// This is a _very_ niche utility, and it's unlikely you'll need to use it.
     ///
     /// e.g: this flag helped bring up certain Hyper-V Generation 1 legacy
-    /// devices without needing to port the associated ACPI code into HvLite's
+    /// devices without needing to port the associated ACPI code into OpenVMM's
     /// DSDT builder.
     #[clap(long, value_name = "FILE", conflicts_with_all(&["uefi", "pcat", "igvm"]))]
     pub custom_dsdt: Option<PathBuf>,
@@ -2086,7 +2086,7 @@ mod tests {
 
     #[test]
     fn test_nic_config_from_str() {
-        use hvlite_defs::config::DeviceVtl;
+        use openvmm_defs::config::DeviceVtl;
 
         // Test basic endpoint
         let config = NicConfigCli::from_str("none").unwrap();

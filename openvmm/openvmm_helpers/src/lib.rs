@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Functions used by hvlite entry points to help construct resources.
+//! Functions used by OpenVMM entry points to help construct resources.
 
 #![forbid(unsafe_code)]
 

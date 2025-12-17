@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-name = "hvlite_core"
+name = "openvmm_core"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -12,8 +12,8 @@ gdb = ["vmm_core/gdb"]
 unstable_whp = ["virt_whp/unstable_whp"]
 
 [dependencies]
-hvlite_defs.workspace = true
-hvlite_pcat_locator.workspace = true
+openvmm_defs.workspace = true
+openvmm_pcat_locator.workspace = true
 membacking.workspace = true
 
 # vmcore

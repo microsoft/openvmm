@@ -3,8 +3,8 @@
 
 //! Definitions for the mesh entrypoint.
 //!
-//! These are here instead of in `openvmm_entry` to support launching hvlite from
-//! a foreign mesh host. The only supported use case is launching hvlite from
+//! These are here instead of in `openvmm_entry` to support launching OpenVMM from
+//! a foreign mesh host. The only supported use case is launching OpenVMM from
 //! petri for testing.
 
 use mesh::MeshPayload;

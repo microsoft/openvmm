@@ -5,8 +5,6 @@
 
 use guestmem::GuestMemory;
 use hvdef::HV_PAGE_SIZE;
-use hvlite_defs::config::SerialInformation;
-use hvlite_defs::config::Vtl2BaseAddressType;
 use igvm::IgvmDirectiveHeader;
 use igvm::IgvmFile;
 use igvm::IgvmPlatformHeader;
@@ -28,6 +26,8 @@ use loader::importer::TableRegister;
 use loader::importer::X86Register;
 use memory_range::MemoryRange;
 use memory_range::subtract_ranges;
+use openvmm_defs::config::SerialInformation;
+use openvmm_defs::config::Vtl2BaseAddressType;
 use range_map_vec::RangeMap;
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -965,7 +965,7 @@ fn load_igvm_x86(
                 }
             }
             IgvmDirectiveHeader::MmioRanges(ref info) => {
-                // Convert the hvlite format to the IGVM format
+                // Convert the OpenVMM format to the IGVM format
                 // Any gaps above 2 are ignored.
                 let mmio = mem_layout.mmio();
                 if mmio.len() < 2 {

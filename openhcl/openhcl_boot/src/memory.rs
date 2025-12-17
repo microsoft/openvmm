@@ -572,8 +572,6 @@ pub enum AllocationPolicy {
     // prefer low memory
     LowMemory,
     // prefer high memory
-    // TODO: only used in tests, but will be used in an upcoming change
-    #[allow(dead_code)]
     HighMemory,
 }
 
