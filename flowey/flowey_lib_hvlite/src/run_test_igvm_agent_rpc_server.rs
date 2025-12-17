@@ -58,8 +58,7 @@ impl SimpleFlowNode for Node {
                         .get("TEST_OUTPUT_PATH")
                         .context("TEST_OUTPUT_PATH not set")?;
 
-                    let exe = Path::new(test_content_dir)
-                        .join("test_igvm_agent_rpc_server.exe");
+                    let exe = Path::new(test_content_dir).join("test_igvm_agent_rpc_server.exe");
 
                     if !exe.exists() {
                         log::info!(
@@ -70,8 +69,8 @@ impl SimpleFlowNode for Node {
                     }
 
                     // Create log file for server output
-                    let log_file_path = Path::new(test_output_path)
-                        .join("test_igvm_agent_rpc_server.log");
+                    let log_file_path =
+                        Path::new(test_output_path).join("test_igvm_agent_rpc_server.log");
                     let log_file = std::fs::File::create(&log_file_path)?;
                     let log_file_stderr = log_file.try_clone()?;
 

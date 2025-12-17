@@ -2780,6 +2780,9 @@ jobs:
     - name: install vmm tests deps (windows)
       run: flowey.exe e 18 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
+    - name: starting test_igvm_agent_rpc_server
+      run: flowey.exe e 18 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
+      shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
         flowey.exe e 18 flowey_lib_common::run_cargo_nextest_run 0
@@ -3058,8 +3061,11 @@ jobs:
       run: flowey.exe e 19 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
     - name: install vmm tests deps (windows)
+      run: flowey.exe e 19 flowey_lib_hvlite::install_vmm_tests_deps 0
+      shell: bash
+    - name: starting test_igvm_agent_rpc_server
       run: |-
-        flowey.exe e 19 flowey_lib_hvlite::install_vmm_tests_deps 0
+        flowey.exe e 19 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
         flowey.exe e 19 flowey_core::pipeline::artifact::resolve 7
       shell: bash
     - name: running vmm_test prep_steps
@@ -3557,6 +3563,9 @@ jobs:
     - name: install vmm tests deps (windows)
       run: flowey.exe e 20 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
+    - name: starting test_igvm_agent_rpc_server
+      run: flowey.exe e 20 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
+      shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
         flowey.exe e 20 flowey_lib_common::run_cargo_nextest_run 0
@@ -3835,8 +3844,11 @@ jobs:
       run: flowey.exe e 21 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
     - name: install vmm tests deps (windows)
+      run: flowey.exe e 21 flowey_lib_hvlite::install_vmm_tests_deps 0
+      shell: bash
+    - name: starting test_igvm_agent_rpc_server
       run: |-
-        flowey.exe e 21 flowey_lib_hvlite::install_vmm_tests_deps 0
+        flowey.exe e 21 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
         flowey.exe e 21 flowey_core::pipeline::artifact::resolve 7
       shell: bash
     - name: running vmm_test prep_steps
@@ -4434,6 +4446,9 @@ jobs:
       shell: bash
     - name: install vmm tests deps (windows)
       run: flowey.exe e 23 flowey_lib_hvlite::install_vmm_tests_deps 0
+      shell: bash
+    - name: starting test_igvm_agent_rpc_server
+      run: flowey.exe e 23 flowey_lib_hvlite::run_test_igvm_agent_rpc_server 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
