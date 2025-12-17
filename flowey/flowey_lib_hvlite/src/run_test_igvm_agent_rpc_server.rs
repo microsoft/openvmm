@@ -43,7 +43,7 @@ impl SimpleFlowNode for Node {
                 {
                     let _ = env;
                     log::info!("test_igvm_agent_rpc_server is Windows-only, skipping");
-                    return Ok(());
+                    Ok(())
                 }
 
                 #[cfg(windows)]

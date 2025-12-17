@@ -503,7 +503,7 @@ async fn tpm_test_platform_hierarchy_disabled(
 )]
 async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
-    (tpm_guest_tests_artifact,): (ResolvedArtifact<T>,),
+    extra_deps: (ResolvedArtifact<T>,),
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
 
@@ -522,7 +522,8 @@ async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
         OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
         _ => unreachable!(),
     };
-    let host_binary_path = tpm_guest_tests_artifact.get();
+    let (artifact,) = extra_deps;
+    let host_binary_path = artifact.get();
     let tpm_guest_tests =
         TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
             .await?;

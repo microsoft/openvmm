@@ -186,6 +186,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_tpm_guest_tests::Node>();
         ctx.import::<crate::build_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
+        ctx.import::<crate::run_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
@@ -1019,6 +1020,20 @@ impl SimpleFlowNode for Node {
             }
         } else {
             side_effects.push(ctx.reqv(crate::install_vmm_tests_deps::Request::Install));
+
+            // Start the test_igvm_agent_rpc_server before running tests (Windows only).
+            if matches!(
+                target_triple.operating_system,
+                target_lexicon::OperatingSystem::Windows
+            ) {
+                side_effects.push(ctx.reqv(|done| {
+                    crate::run_test_igvm_agent_rpc_server::Request {
+                        env: extra_env.clone(),
+                        done,
+                    }
+                }));
+            }
+
             if let Some((prep_steps, _)) = register_prep_steps {
                 side_effects.push(ctx.reqv(|done| crate::run_prep_steps::Request {
                     prep_steps,
