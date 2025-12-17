@@ -206,7 +206,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         let PetriVmConfig {
             name,
             arch,
-            vmm_env,
+            host_log_levels,
             firmware,
             memory,
             proc_topology,
@@ -220,7 +220,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         let PetriVmResources { driver, log_source } = resources;
 
-        assert_eq!(vmm_env, None); // Doesn't make sense to support host env in Hyper-V backend yet.
+        assert_eq!(host_log_levels, None); // Custom host log levels not supported in HyperV backend yet.
 
         let temp_dir = tempfile::tempdir()?;
 

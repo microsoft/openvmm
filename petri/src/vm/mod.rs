@@ -35,8 +35,6 @@ use petri_artifacts_core::ResolvedOptionalArtifact;
 use pipette_client::PipetteClient;
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
-use std::ffi::OsStr;
-use std::ffi::OsString;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::path::Path;
@@ -121,9 +119,8 @@ pub struct PetriVmConfig {
     pub name: String,
     /// The architecture of the VM
     pub arch: MachineArch,
-    /// Environment variables to set on the host when running the VMM
-    /// process.
-    pub vmm_env: Option<BTreeMap<OsString, OsString>>,
+    /// Log levels for the host VMM process.
+    pub host_log_levels: Option<OpenvmmLogConfig>,
     /// Firmware and/or OS to load into the VM and associated settings
     pub firmware: Firmware,
     /// The amount of memory, in bytes, to assign to the VM
@@ -293,7 +290,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             config: PetriVmConfig {
                 name: make_vm_safe_name(params.test_name),
                 arch: artifacts.arch,
-                vmm_env: None,
+                host_log_levels: None,
                 firmware: artifacts.firmware,
                 boot_device_type,
                 memory: Default::default(),
@@ -576,19 +573,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
-    /// Adds an env var to be set when the host vmm process is run.
-    pub fn with_host_env_var(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
-        if self.config.vmm_env.is_none() {
-            self.config.vmm_env = Some(BTreeMap::new());
-        }
-        self.config
-            .vmm_env
-            .as_mut()
-            .unwrap()
-            .insert(OsString::from(key.as_ref()), OsString::from(value.as_ref()));
-        self
-    }
-
     /// Sets a custom OpenHCL IGVM VTL2 address type. This controls the behavior
     /// of where VTL2 is placed in address space, and also the total size of memory
     /// allocated for VTL2. VTL2 start will fail if `address_type` is specified
@@ -644,7 +628,19 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     /// Sets the command line parameters passed to OpenHCL related to logging.
-    pub fn with_openhcl_log_levels(mut self, levels: OpenHclLogConfig) -> Self {
+    pub fn with_openhcl_log_levels(mut self, levels: OpenvmmLogConfig) -> Self {
+        self.config
+            .firmware
+            .openhcl_config_mut()
+            .expect("OpenHCL firmware is required to set custom OpenHCL log levels.")
+            .log_levels = levels;
+        self
+    }
+
+    /// Sets the log levels for the host OpenVMM process.
+    /// DEVNOTE: In the future, this could be generalized for both HyperV and OpenVMM.
+    /// For now, this is only implemented for OpenVMM.
+    pub fn with_host_log_levels(mut self, levels: OpenvmmLogConfig) -> Self {
         self.config
             .firmware
             .openhcl_config_mut()
@@ -1366,19 +1362,19 @@ impl Default for UefiConfig {
     }
 }
 
-/// Control the logging configuration of OpenHCL for this VM.
+/// Control the logging configuration of OpenVMM/OpenHCL.
 #[derive(Debug, Clone)]
-pub enum OpenHclLogConfig {
+pub enum OpenvmmLogConfig {
     /// Use the default log levels used by petri tests. This will forward
     /// `OPENVMM_LOG` and `OPENVMM_SHOW_SPANS` from the environment if they are
     /// set, otherwise it will use `debug` and `true` respectively
     TestDefault,
-    /// Use the built-in default log levels of OpenHCL (e.g. don't pass
+    /// Use the built-in default log levels of OpenHCL/OpenVMM (e.g. don't pass
     /// OPENVMM_LOG or OPENVMM_SHOW_SPANS)
     BuiltInDefault,
     /// Use the provided custom log levels (e.g.
     /// `OPENVMM_LOG=info,disk_nvme=debug OPENVMM_SHOW_SPANS=true`)
-    Custom(String),
+    Custom(BTreeMap<String, String>),
 }
 
 /// OpenHCL configuration
@@ -1396,7 +1392,7 @@ pub struct OpenHclConfig {
     /// Command line parameters that control OpenHCL logging behavior. Separate
     /// from `command_line` so that petri can decide to use default log
     /// levels.
-    pub log_levels: OpenHclLogConfig,
+    pub log_levels: OpenvmmLogConfig,
     /// How to place VTL2 in address space. If `None`, the backend VMM
     /// will decide on default behavior.
     pub vtl2_base_address_type: Option<Vtl2BaseAddressType>,
@@ -1414,7 +1410,7 @@ impl OpenHclConfig {
         append_cmdline(&mut cmdline, "OPENHCL_MANA_KEEP_ALIVE=host,privatepool");
 
         match &self.log_levels {
-            OpenHclLogConfig::TestDefault => {
+            OpenvmmLogConfig::TestDefault => {
                 let default_log_levels = {
                     // Forward OPENVMM_LOG and OPENVMM_SHOW_SPANS to OpenHCL if they're set.
                     let openhcl_tracing = if let Ok(x) =
@@ -1433,11 +1429,13 @@ impl OpenHclConfig {
                 };
                 append_cmdline(&mut cmdline, &default_log_levels);
             }
-            OpenHclLogConfig::BuiltInDefault => {
+            OpenvmmLogConfig::BuiltInDefault => {
                 // do nothing, use whatever the built-in default is
             }
-            OpenHclLogConfig::Custom(levels) => {
-                append_cmdline(&mut cmdline, levels);
+            OpenvmmLogConfig::Custom(levels) => {
+                levels.iter().for_each(|(key, value)| {
+                    append_cmdline(&mut cmdline, &format!("{key}={value}"));
+                });
             }
         }
 
@@ -1451,7 +1449,7 @@ impl Default for OpenHclConfig {
             vtl2_nvme_boot: false,
             vmbus_redirect: false,
             custom_command_line: None,
-            log_levels: OpenHclLogConfig::TestDefault,
+            log_levels: OpenvmmLogConfig::TestDefault,
             vtl2_base_address_type: None,
             modify_vtl2_settings: None,
         }

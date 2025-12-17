@@ -502,19 +502,15 @@ pub fn print_relevant_params() {
         _value: Option<String>,
     }
 
-    let read_param = |path: &'static str| -> Param {
-        Param {
-            _name: path,
-            _value: fs::read_to_string(path).ok().map(|s| s.trim().to_string()),
-        }
-    };
-
     let vfio_params = [
         "/sys/module/vfio/parameters/enable_unsafe_noiommu_mode",
         "/sys/module/driver/parameters/async_probe",
     ]
     .iter()
-    .map(|&path| read_param(path))
+    .map(|path| Param {
+        _name: path,
+        _value: fs::read_to_string(path).ok().map(|s| s.trim().to_string()),
+    })
     .collect::<Vec<_>>();
 
     tracing::debug!(

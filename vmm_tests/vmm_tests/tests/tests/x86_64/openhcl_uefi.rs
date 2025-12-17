@@ -6,6 +6,7 @@
 use anyhow::Context;
 use futures::StreamExt;
 use petri::MemoryConfig;
+use petri::OpenvmmLogConfig;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
@@ -51,7 +52,13 @@ async fn nvme_relay_test_core(
     } = params;
 
     let (vm, agent) = config
-        .with_host_env_var("OPENVMM_LOG", "debug,vpci=trace")
+        .with_host_log_levels(OpenvmmLogConfig::Custom(
+            [
+                ("OPENVMM_LOG".to_owned(), "debug,vpci=trace".to_owned()),
+                ("OPENVMM_SHOW_SPANS".to_owned(), "true".to_owned()),
+            ]
+            .into(),
+        ))
         .with_openhcl_command_line(openhcl_cmdline)
         .with_vmbus_redirect(true)
         .with_processor_topology(processor_topology.unwrap_or(ProcessorTopology {

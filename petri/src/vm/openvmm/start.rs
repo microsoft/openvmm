@@ -8,6 +8,7 @@ use super::PetriVmOpenVmm;
 use super::PetriVmResourcesOpenVmm;
 use crate::BootDeviceType;
 use crate::Firmware;
+use crate::OpenvmmLogConfig;
 use crate::PetriLogFile;
 use crate::PetriVmRuntimeConfig;
 use crate::worker::Worker;
@@ -37,7 +38,7 @@ impl PetriVmConfigOpenVmm {
         let Self {
             firmware,
             arch,
-            vmm_env,
+            host_log_levels,
             mut config,
             boot_device_type,
 
@@ -136,7 +137,19 @@ impl PetriVmConfigOpenVmm {
 
         let mesh = Mesh::new("petri_mesh".to_string())?;
 
-        let host = Self::openvmm_host(&mut resources, &mesh, openvmm_log_file, vmm_env)
+        let log_env = match host_log_levels {
+            None | Some(OpenvmmLogConfig::TestDefault) => BTreeMap::<OsString, OsString>::from([
+                ("OPENVMM_LOG".into(), "debug".into()),
+                ("OPENVMM_SHOW_SPANS".into(), "true".into()),
+            ]),
+            Some(OpenvmmLogConfig::BuiltInDefault) => BTreeMap::new(),
+            Some(OpenvmmLogConfig::Custom(levels)) => levels
+                .iter()
+                .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+                .collect::<BTreeMap<OsString, OsString>>(),
+        };
+
+        let host = Self::openvmm_host(&mut resources, &mesh, openvmm_log_file, log_env)
             .await
             .context("failed to create host process")?;
         let (worker, halt_notif) = Worker::launch(&host, config)
@@ -229,7 +242,7 @@ impl PetriVmConfigOpenVmm {
         resources: &mut PetriVmResourcesOpenVmm,
         mesh: &Mesh,
         log_file: PetriLogFile,
-        vmm_env: Option<BTreeMap<OsString, OsString>>,
+        vmm_env: BTreeMap<OsString, OsString>,
     ) -> anyhow::Result<WorkerHost> {
         // Copy the child's stderr to this process's, since internally this is
         // wrapped by the test harness.
@@ -250,7 +263,7 @@ impl PetriVmConfigOpenVmm {
             ProcessConfig::new("vmm")
                 .process_name(&resources.openvmm_path)
                 .stderr(Some(stderr_write))
-                .env(vmm_env.unwrap_or_default().into_iter()),
+                .env(vmm_env.into_iter()),
             hvlite_defs::entrypoint::MeshHostParams { runner },
         )
         .await?;

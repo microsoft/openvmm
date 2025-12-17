@@ -20,6 +20,7 @@ pub use runtime::PetriVmOpenVmm;
 use crate::BootDeviceType;
 use crate::Firmware;
 use crate::OpenHclServicingFlags;
+use crate::OpenvmmLogConfig;
 use crate::PetriDiskType;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
@@ -52,8 +53,6 @@ use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
-use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -164,7 +163,7 @@ pub struct PetriVmConfigOpenVmm {
     // Direct configuration related information.
     firmware: Firmware,
     arch: MachineArch,
-    vmm_env: Option<BTreeMap<OsString, OsString>>,
+    host_log_levels: Option<OpenvmmLogConfig>,
     config: Config,
     boot_device_type: BootDeviceType,
 

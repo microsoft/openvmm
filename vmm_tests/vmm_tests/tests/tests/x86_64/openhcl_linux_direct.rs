@@ -7,6 +7,7 @@ use crate::x86_64::storage::new_test_vtl2_nvme_device;
 use guid::Guid;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use petri::MemoryConfig;
+use petri::OpenvmmLogConfig;
 use petri::PetriVmBuilder;
 use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
@@ -99,9 +100,12 @@ async fn many_nvme_devices_servicing_very_heavy(
         .with_vtl2_base_address_type(Vtl2BaseAddressType::MemoryLayout {
             size: Some((960 + 64) * 1024 * 1024), // 960MB as specified in manifest, plus 64MB extra for private pool.
         })
-        .with_host_env_var("OPENVMM_LOG", "debug,vpci=trace")
+        .with_host_log_levels(OpenvmmLogConfig::Custom([
+            ("OPENVMM_LOG".to_owned(), "debug,vpci=trace".to_owned()),
+            ("OPENVMM_SHOW_SPANS".to_owned(), "true".to_owned()),
+        ].into()))
         .with_openhcl_command_line(
-            "OPENHCL_ENABLE_VTL2_GPA_POOL=16384 dyndbg=\"file drivers/vfio/pci/* +p; file drivers/pci/* +p\"",
+            "OPENHCL_ENABLE_VTL2_GPA_POOL=16384 dyndbg=\"module vfio_pci +p; module pci_hyperv +p\" udev.log_priority=debug",
         ) // 64MB of private pool for VTL2 NVMe devices, debug logging for vfio-pci driver.
         .with_memory(MemoryConfig {
             startup_bytes: 8 * 1024 * 1024 * 1024, // 8GB
