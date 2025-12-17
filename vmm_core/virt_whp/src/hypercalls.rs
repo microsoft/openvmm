@@ -375,7 +375,7 @@ impl<T: CpuIo> hv1_hypercall::InstallIntercept for WhpHypercallExit<'_, '_, T> {
                 HvInterceptType::HvInterceptTypeException => {
                     // This intercept currently enables capturing VTL0 debugging exceptions for
                     // Hyper-V created and gdbstub enabled VMs. Implementing this would enable
-                    // hardware debugging capabilities for HvLite managed VMs.
+                    // hardware debugging capabilities for OpenVMM managed VMs.
                     tracing::error!("HvInterceptTypeException not implemented");
                 }
                 _ => {

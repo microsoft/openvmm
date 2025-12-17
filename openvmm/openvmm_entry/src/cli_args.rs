@@ -465,7 +465,7 @@ flags:
     /// This is a _very_ niche utility, and it's unlikely you'll need to use it.
     ///
     /// e.g: this flag helped bring up certain Hyper-V Generation 1 legacy
-    /// devices without needing to port the associated ACPI code into HvLite's
+    /// devices without needing to port the associated ACPI code into OpenVMM's
     /// DSDT builder.
     #[clap(long, value_name = "FILE", conflicts_with_all(&["uefi", "pcat", "igvm"]))]
     pub custom_dsdt: Option<PathBuf>,
