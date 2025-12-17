@@ -251,13 +251,11 @@ impl SavedStatePair {
     }
 }
 
-struct VpToPhysicalNodeMap(Option<Vec<u16>>);
+struct VpToPhysicalNodeMap(Vec<u16>);
 
 impl VpToPhysicalNodeMap {
     fn get_numa_node(&self, vp_index: u32) -> u16 {
-        self.0.as_ref().map_or(0, |nodes| {
-            nodes.get(vp_index as usize).copied().unwrap_or(0)
-        })
+        self.0.get(vp_index as usize).copied().unwrap_or(0)
     }
 }
 
@@ -1159,7 +1157,7 @@ async fn proxy_thread(
         hvsock_response_send,
         vtl2_hvsock_response_send,
         Arc::clone(&proxy),
-        VpToPhysicalNodeMap(vp_to_physical_node_map),
+        VpToPhysicalNodeMap(vp_to_physical_node_map.unwrap_or_default()),
     ));
     let offers = task.run_proxy_actions(send, flush_recv, await_flush);
     let requests = task.run_server_requests(
