@@ -641,15 +641,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// DEVNOTE: In the future, this could be generalized for both HyperV and OpenVMM.
     /// For now, this is only implemented for OpenVMM.
     pub fn with_host_log_levels(mut self, levels: OpenvmmLogConfig) -> Self {
-        match levels {
-            OpenvmmLogConfig::Custom(ref custom_levels) => {
-                for key in custom_levels.keys() {
-                    if !["OPENVMM_LOG", "OPENVMM_SHOW_SPANS"].contains(&key.as_str()) {
-                        panic!("Unsupported OpenVMM log level key: {}", key);
-                    }
+        if let OpenvmmLogConfig::Custom(ref custom_levels) = levels {
+            for key in custom_levels.keys() {
+                if !["OPENVMM_LOG", "OPENVMM_SHOW_SPANS"].contains(&key.as_str()) {
+                    panic!("Unsupported OpenVMM log level key: {}", key);
                 }
             }
-            _ => {}
         }
 
         self.config.host_log_levels = Some(levels.clone());
@@ -1448,7 +1445,7 @@ impl OpenHclConfig {
             }
             OpenvmmLogConfig::Custom(levels) => {
                 levels.iter().for_each(|(key, value)| {
-                    append_cmdline(&mut cmdline, &format!("{key}={value}"));
+                    append_cmdline(&mut cmdline, format!("{key}={value}"));
                 });
             }
         }
