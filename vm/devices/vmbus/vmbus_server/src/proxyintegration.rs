@@ -110,7 +110,7 @@ pub struct ProxyIntegrationBuilder<'a, T: SpawnDriver + Clone> {
     vtl2_server: Option<ProxyServerInfo>,
     mem: Option<&'a GuestMemory>,
     require_flush_before_start: bool,
-    vp_to_physical_node_map: Option<Vec<u16>>,
+    vp_to_physical_node_map: Vec<u16>,
 }
 
 impl<'a, T: SpawnDriver + Clone> ProxyIntegrationBuilder<'a, T> {
@@ -135,7 +135,7 @@ impl<'a, T: SpawnDriver + Clone> ProxyIntegrationBuilder<'a, T> {
     /// Adds a NUMA node map to be passed to the proxy driver. This map is of the format
     /// VP -> Physical NUMA Node. For example, `map[0]` is the physical NUMA node for VP 0.
     pub fn vp_to_physical_node_map(mut self, map: Vec<u16>) -> Self {
-        self.vp_to_physical_node_map = Some(map);
+        self.vp_to_physical_node_map = map;
         self
     }
 
@@ -192,7 +192,7 @@ impl ProxyIntegration {
             vtl2_server: None,
             mem: None,
             require_flush_before_start: false,
-            vp_to_physical_node_map: None,
+            vp_to_physical_node_map: vec![],
         }
     }
 
@@ -1123,7 +1123,7 @@ async fn proxy_thread(
     vtl2_server: Option<ProxyServerInfo>,
     flush_recv: mesh::Receiver<FailableRpc<(), ()>>,
     await_flush: bool,
-    vp_to_physical_node_map: Option<Vec<u16>>,
+    vp_to_physical_node_map: Vec<u16>,
 ) {
     // Separate the hvsocket relay channels.
     let (hvsock_request_recv, hvsock_response_send) = server
@@ -1157,7 +1157,7 @@ async fn proxy_thread(
         hvsock_response_send,
         vtl2_hvsock_response_send,
         Arc::clone(&proxy),
-        VpToPhysicalNodeMap(vp_to_physical_node_map.unwrap_or_default()),
+        VpToPhysicalNodeMap(vp_to_physical_node_map),
     ));
     let offers = task.run_proxy_actions(send, flush_recv, await_flush);
     let requests = task.run_server_requests(
