@@ -516,7 +516,7 @@ async fn unlock_vmgs_data_store(
         return Ok(());
     };
 
-    if new_ingress_key != new_egress_key {
+    if !openssl::memcmp::eq(&new_ingress_key, &new_egress_key) {
         tracing::trace!(CVM_ALLOWED, "EgressKey is different than IngressKey");
         new_key = true;
     }
