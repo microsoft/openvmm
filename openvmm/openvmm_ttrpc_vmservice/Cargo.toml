@@ -2,17 +2,20 @@
 # Licensed under the MIT License.
 
 [package]
-name = "hvlite_pcat_locator"
+name = "openvmm_ttrpc_vmservice"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 mesh.workspace = true
+mesh_rpc.workspace = true
 
-anyhow.workspace = true
-fs-err.workspace = true
-object = { workspace = true, features = ["pe", "read_core", "std"] }
-tracing.workspace = true
+prost.workspace = true
+
+[build-dependencies]
+mesh_build.workspace = true
+
+prost-build.workspace = true
 
 [lints]
 workspace = true

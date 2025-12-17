@@ -1341,7 +1341,7 @@ impl VtlPartition {
                         features.bank0 |= F::AccessIntrCtrlRegs;
 
                         // BUG: this feature is required for running VTL2 w/ vmbus
-                        // under hvlite to avoid timer/vmbus sint contention
+                        // under OpenVMM to avoid timer/vmbus sint contention
                         features.bank0 |= F::DirectSyntheticTimers;
                     }
 

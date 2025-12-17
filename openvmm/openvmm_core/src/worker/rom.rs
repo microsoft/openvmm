@@ -11,7 +11,7 @@ use guestmem::MapRom;
 use guestmem::MappableGuestMemory;
 use guestmem::MemoryMapper;
 use guestmem::UnmapRom;
-use hvlite_pcat_locator::RomFileLocation;
+use openvmm_pcat_locator::RomFileLocation;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;

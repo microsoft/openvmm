@@ -4,12 +4,12 @@
 //! Configuration for the VM worker.
 
 use guid::Guid;
-use hvlite_pcat_locator::RomFileLocation;
 use input_core::InputData;
 use memory_range::MemoryRange;
 use mesh::MeshPayload;
 use mesh::payload::Protobuf;
 use net_backend_resources::mac_address::MacAddress;
+use openvmm_pcat_locator::RomFileLocation;
 use std::fmt;
 use std::fs::File;
 use vm_resource::Resource;

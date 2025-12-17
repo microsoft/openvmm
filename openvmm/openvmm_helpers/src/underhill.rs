@@ -6,8 +6,8 @@
 use anyhow::Context;
 use get_resources::ged::GuestEmulationRequest;
 use get_resources::ged::GuestServicingFlags;
-use hvlite_defs::rpc::VmRpc;
 use mesh::rpc::RpcSend;
+use openvmm_defs::rpc::VmRpc;
 
 /// Save the running state of Underhill and stage the new version.
 pub async fn save_underhill(

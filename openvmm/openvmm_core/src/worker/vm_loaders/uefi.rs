@@ -4,10 +4,10 @@
 use guestmem::GuestMemory;
 use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
-use hvlite_defs::config::UefiConsoleMode;
 use loader::importer::Register;
 use loader::uefi::IMAGE_SIZE;
 use loader::uefi::config;
+use openvmm_defs::config::UefiConsoleMode;
 use std::io::Read;
 use std::io::Seek;
 use thiserror::Error;

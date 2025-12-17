@@ -15,11 +15,11 @@ use chipset_resources::battery::HostBatteryUpdate;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
 use get_resources::ged::IgvmAttestTestConfig;
-use hvlite_defs::config::Config;
-use hvlite_defs::config::DeviceVtl;
-use hvlite_defs::config::LoadMode;
-use hvlite_defs::config::VpciDeviceConfig;
-use hvlite_defs::config::Vtl2BaseAddressType;
+use openvmm_defs::config::Config;
+use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::LoadMode;
+use openvmm_defs::config::VpciDeviceConfig;
+use openvmm_defs::config::Vtl2BaseAddressType;
 use vm_resource::IntoResource;
 use vmotherboard::ChipsetDeviceHandle;
 
@@ -152,7 +152,7 @@ impl PetriVmConfigOpenVmm {
             .as_mut()
             .unwrap()
             .late_map_vtl0_memory =
-            (!allow).then_some(hvlite_defs::config::LateMapVtl0MemoryPolicy::InjectException);
+            (!allow).then_some(openvmm_defs::config::LateMapVtl0MemoryPolicy::InjectException);
 
         self
     }

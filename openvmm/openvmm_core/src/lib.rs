@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! This crate implements the core VM worker for hvlite. This includes static
-//! configuration of hvlite platform resources, such as the clock source and
+//! This crate implements the core VM worker for OpenVMM. This includes static
+//! configuration of OpenVMM platform resources, such as the clock source and
 //! memory management.
 //!
 //! Try not to add new functionality to this crate. Add it to other crates, and
