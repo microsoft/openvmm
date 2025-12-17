@@ -29,6 +29,7 @@ use net_packet_capture::PacketCaptureEndpointControl;
 use net_packet_capture::PacketCaptureParams;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pal_async::timer::PolledTimer;
 pub use save_restore::RuntimeSavedState;
 pub use save_restore::state::SavedState;
 use socket2::Socket;
@@ -847,7 +848,37 @@ impl HclNetworkVFManagerWorker {
                     self.shutdown_vtl2_device(keep_vf_alive).await;
 
                     // Start the VTL2 device and resubscribe to notifications.
-                    vtl2_device_present = self.startup_vtl2_device().await;
+                    // After sending the VF Reconfiguration notification, the SoC may need time to recover.
+                    // Keep retrying with backoff until the device successfully restarts.
+                    let mut timer = PolledTimer::new(&self.driver_source.simple());
+                    let mut sleep = std::time::Duration::from_millis(100);
+                    let max_sleep = std::time::Duration::from_secs(2);
+                    let mut attempts: u64 = 0;
+
+                    loop {
+                        attempts += 1;
+                        vtl2_device_present = self.startup_vtl2_device().await;
+                        if vtl2_device_present {
+                            tracing::info!(
+                                attempts,
+                                "VTL2 device restarted after VF reconfiguration"
+                            );
+                            break;
+                        }
+
+                        // Log first failure and every 10th.
+                        // TODO: Should this just be a tracelimit::warn_ratelimited ???
+                        if attempts == 1 || attempts.is_multiple_of(10) {
+                            tracing::warn!(
+                                attempts,
+                                sleep_ms = sleep.as_millis(),
+                                "VTL2 device restart not ready after VF reconfiguration; retrying"
+                            );
+                        }
+
+                        timer.sleep(sleep).await;
+                        sleep = std::cmp::min(max_sleep, sleep.saturating_mul(2));
+                    }
                 }
                 NextWorkItem::ManaDeviceArrived => {
                     assert!(!self.is_shutdown_active);
