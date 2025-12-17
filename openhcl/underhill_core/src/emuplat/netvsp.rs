@@ -535,7 +535,7 @@ impl HclNetworkVFManagerWorker {
         .await;
     }
 
-    async fn startup_vtl2_device(&mut self, restart_notifications: bool) -> bool {
+    async fn startup_vtl2_device(&mut self) -> bool {
         let mut vtl2_device_present = false;
         let device_bound = match create_mana_device(
             &self.driver_source,
@@ -549,11 +549,9 @@ impl HclNetworkVFManagerWorker {
         .await
         {
             Ok(mut device) => {
-                if restart_notifications {
-                    tracing::info!("resubscribing to notifications");
-                    device.start_notification_task(&self.driver_source).await;
-                    self.vf_reconfig_receiver = Some(device.subscribe_vf_reconfig().await);
-                }
+                // Resubscribe to notifications from the MANA device.
+                device.start_notification_task(&self.driver_source).await;
+                self.vf_reconfig_receiver = Some(device.subscribe_vf_reconfig().await);
 
                 self.mana_device = Some(device);
                 self.connect_endpoints().await.is_ok()
@@ -849,8 +847,7 @@ impl HclNetworkVFManagerWorker {
                     self.shutdown_vtl2_device(keep_vf_alive).await;
 
                     // Start the VTL2 device and resubscribe to notifications.
-                    let restart_notifications = true;
-                    vtl2_device_present = self.startup_vtl2_device(restart_notifications).await;
+                    vtl2_device_present = self.startup_vtl2_device().await;
                 }
                 NextWorkItem::ManaDeviceArrived => {
                     assert!(!self.is_shutdown_active);
@@ -868,8 +865,7 @@ impl HclNetworkVFManagerWorker {
                         tracing::info!("VTL2 VF arrived");
                     }
 
-                    let restart_notifications = false;
-                    vtl2_device_present = self.startup_vtl2_device(restart_notifications).await;
+                    vtl2_device_present = self.startup_vtl2_device().await;
                 }
                 NextWorkItem::ManaDeviceRemoved => {
                     assert!(!self.is_shutdown_active);

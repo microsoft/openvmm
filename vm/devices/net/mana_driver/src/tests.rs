@@ -235,9 +235,18 @@ async fn test_gdma_reconfig_vf(driver: DefaultDriver) {
     // Trigger the reconfig event
     gdma.generate_reconfig_vf_event().await.unwrap();
 
-    // `vf_reconfiguration_pending` flag should be set.
-    assert!(
-        gdma.get_vf_reconfiguration_pending(),
-        "vf_reconfiguration_pending should be true"
-    );
+    // Wait for `vf_reconfiguration_pending` flag to be set, with a timeout.
+    use std::time::{Duration, Instant};
+    let start = Instant::now();
+    let timeout = Duration::from_secs(2);
+    loop {
+        if gdma.get_vf_reconfiguration_pending() {
+            break;
+        }
+        if start.elapsed() > timeout {
+            panic!("vf_reconfiguration_pending was not set within timeout");
+        }
+        // Sleep a bit to avoid busy-waiting
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }

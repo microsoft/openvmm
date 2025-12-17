@@ -288,8 +288,14 @@ impl<T: DeviceBacking> ManaDevice<T> {
     /// Returned receiver will receive a message on VF reconfiguration events.
     pub async fn subscribe_vf_reconfig(&self) -> mesh::Receiver<()> {
         tracing::info!("subscribing to VF reconfiguration events");
+        let mut vf_reconfig_sender = self.inner.vf_reconfig_sender.lock().await;
+        if vf_reconfig_sender.is_some() {
+            // If a device has a sender/receiver, they are replaced and the prior receiver no longer gets events.
+            // Not expected, since a VF reconfiguration should have dropped the old device.
+            tracing::warn!("overwriting existing VF reconfiguration subscriber");
+        }
         let (sender, receiver) = mesh::channel();
-        *self.inner.vf_reconfig_sender.lock().await = Some(sender);
+        *vf_reconfig_sender = Some(sender);
         receiver
     }
 
