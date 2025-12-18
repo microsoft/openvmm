@@ -30,8 +30,10 @@ type HvArchRegisterName = hvdef::HvX64RegisterName;
 #[cfg(guest_arch = "aarch64")]
 type HvArchRegisterName = hvdef::HvArm64RegisterName;
 
+// TODO add register name
 #[derive(Error, Debug)]
-pub enum GetVpError {
+#[expect(missing_docs)]
+pub enum GetRegError {
     #[error("failed to get VP register from ioctl")]
     Ioctl(#[source] nix::Error),
     #[error("failed to get VP register from hypercall")]
@@ -40,8 +42,10 @@ pub enum GetVpError {
     Sidecar(#[source] sidecar_client::SidecarError),
 }
 
+// TODO add register name
 #[derive(Error, Debug)]
-pub enum SetVpError {
+#[expect(missing_docs)]
+pub enum SetRegError {
     #[error("failed to set VP register via ioctl")]
     Ioctl(#[source] nix::Error),
     #[error("failed to set VP register via hypercall")]
@@ -56,7 +60,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         &mut self,
         vtl: GuestVtl,
         name: HvArchRegisterName,
-    ) -> Result<HvRegisterValue, GetVpError> {
+    ) -> Result<HvRegisterValue, GetRegError> {
         let mut value = [FromZeros::new_zeroed(); 1];
         self.get_vp_registers(vtl, &[name], &mut value)?;
         Ok(value[0])
@@ -68,7 +72,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         vtl: GuestVtl,
         name: HvArchRegisterName,
         value: HvRegisterValue,
-    ) -> Result<(), SetVpError> {
+    ) -> Result<(), SetRegError> {
         self.set_vp_registers(vtl, [(name, value)])
     }
 
@@ -81,7 +85,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         vtl: GuestVtl,
         names: &[HvArchRegisterName],
         values: &mut [HvRegisterValue],
-    ) -> Result<(), GetVpError> {
+    ) -> Result<(), GetRegError> {
         assert_eq!(names.len(), values.len());
         let mut assoc = Vec::new();
         let mut offset = Vec::new();
@@ -109,7 +113,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     }
 
     /// Set the given registers on the current VP for the given VTL.
-    pub fn set_vp_registers<I>(&mut self, vtl: GuestVtl, values: I) -> Result<(), SetVpError>
+    pub fn set_vp_registers<I>(&mut self, vtl: GuestVtl, values: I) -> Result<(), SetRegError>
     where
         I: IntoIterator,
         I::Item: Into<HvRegisterAssoc> + Clone,
@@ -136,7 +140,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
 
     /// Get the given registers on the current VP for the given VTL via
     /// ioctl/hypercall, as appropriate.
-    fn get_regs(&mut self, vtl: GuestVtl, regs: &mut [HvRegisterAssoc]) -> Result<(), GetVpError> {
+    fn get_regs(&mut self, vtl: GuestVtl, regs: &mut [HvRegisterAssoc]) -> Result<(), GetRegError> {
         if regs.is_empty() {
             return Ok(());
         }
@@ -144,7 +148,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         if let Some(sidecar) = &mut self.sidecar {
             sidecar
                 .get_vp_registers(vtl.into(), regs)
-                .map_err(GetVpError::Sidecar)?;
+                .map_err(GetRegError::Sidecar)?;
         } else {
             // TODO: group up to MSHV_VP_MAX_REGISTERS regs. The kernel
             // currently has a bug where it only supports one register at a
@@ -163,7 +167,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                             self.hcl.mshv_vtl.file.as_raw_fd(),
                             &mut mshv_vp_register_args,
                         )
-                        .map_err(GetVpError::Ioctl)?;
+                        .map_err(GetRegError::Ioctl)?;
                     }
                 } else {
                     reg.value = self
@@ -178,7 +182,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
 
     /// Set the given registers on the current VP for the given VTL via
     /// ioctl/hypercall, as appropriate.
-    fn set_regs(&mut self, vtl: GuestVtl, regs: &[HvRegisterAssoc]) -> Result<(), SetVpError> {
+    fn set_regs(&mut self, vtl: GuestVtl, regs: &[HvRegisterAssoc]) -> Result<(), SetRegError> {
         if regs.is_empty() {
             return Ok(());
         }
@@ -186,7 +190,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         if let Some(sidecar) = &mut self.sidecar {
             sidecar
                 .set_vp_registers(vtl.into(), regs)
-                .map_err(SetVpError::Sidecar)?;
+                .map_err(SetRegError::Sidecar)?;
         } else {
             // TODO: group up to MSHV_VP_MAX_REGISTERS regs. The kernel
             // currently has a bug where it only supports one register at a
@@ -205,7 +209,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                             self.hcl.mshv_vtl.file.as_raw_fd(),
                             &mshv_vp_register_args,
                         )
-                        .map_err(SetVpError::Ioctl)?;
+                        .map_err(SetRegError::Ioctl)?;
                     }
                 } else {
                     self.hcl
@@ -238,7 +242,7 @@ impl MshvHvcall {
         &self,
         vtl: Vtl,
         name: HvArchRegisterName,
-    ) -> Result<HvRegisterValue, GetVpError> {
+    ) -> Result<HvRegisterValue, GetRegError> {
         let header = hvdef::hypercall::GetSetVpRegisters {
             partition_id: HV_PARTITION_ID_SELF,
             vp_index: HV_VP_INDEX_SELF,
@@ -260,7 +264,7 @@ impl MshvHvcall {
         };
 
         // Status must be success with 1 rep completed
-        status.result().map_err(GetVpError::Hypercall)?;
+        status.result().map_err(GetRegError::Hypercall)?;
         assert_eq!(status.elements_processed(), 1);
 
         Ok(output[0])
@@ -275,7 +279,7 @@ impl MshvHvcall {
         &self,
         vtl: Vtl,
         register: HvRegisterAssoc,
-    ) -> Result<(), SetVpError> {
+    ) -> Result<(), SetRegError> {
         let header = hvdef::hypercall::GetSetVpRegisters {
             partition_id: HV_PARTITION_ID_SELF,
             vp_index: HV_VP_INDEX_SELF,
@@ -296,7 +300,7 @@ impl MshvHvcall {
         };
 
         // Status must be success
-        status.result().map_err(SetVpError::Hypercall)?;
+        status.result().map_err(SetRegError::Hypercall)?;
         Ok(())
     }
 }
@@ -455,7 +459,7 @@ impl Hcl {
     fn get_vp_vtl2_register(
         &self,
         name: HvArchRegisterName,
-    ) -> Result<HvRegisterValue, GetVpError> {
+    ) -> Result<HvRegisterValue, GetRegError> {
         #[cfg(guest_arch = "x86_64")]
         let per_arch = false;
 
@@ -483,7 +487,7 @@ impl Hcl {
         &self,
         name: HvArchRegisterName,
         value: HvRegisterValue,
-    ) -> Result<(), SetVpError> {
+    ) -> Result<(), SetRegError> {
         #[cfg(guest_arch = "x86_64")]
         let per_arch = matches!(name, hvdef::HvX64RegisterName::PmTimerAssist);
 
@@ -509,14 +513,14 @@ impl Hcl {
     }
 
     /// Gets the current hypervisor reference time.
-    pub fn reference_time(&self) -> Result<u64, GetVpError> {
+    pub fn reference_time(&self) -> Result<u64, GetRegError> {
         Ok(self
             .get_vp_vtl2_register(HvArchRegisterName::TimeRefCount)?
             .as_u64())
     }
 
     /// Read the vsm capabilities register for VTL2.
-    pub fn get_vsm_capabilities(&self) -> Result<hvdef::HvRegisterVsmCapabilities, GetVpError> {
+    pub fn get_vsm_capabilities(&self) -> Result<hvdef::HvRegisterVsmCapabilities, GetRegError> {
         let caps = hvdef::HvRegisterVsmCapabilities::from(
             self.get_vp_vtl2_register(HvArchRegisterName::VsmCapabilities)?
                 .as_u64(),
@@ -542,7 +546,7 @@ impl Hcl {
     /// Get the [`hvdef::HvRegisterGuestVsmPartitionConfig`] register for VTL2.
     pub fn get_guest_vsm_partition_config(
         &self,
-    ) -> Result<hvdef::HvRegisterGuestVsmPartitionConfig, GetVpError> {
+    ) -> Result<hvdef::HvRegisterGuestVsmPartitionConfig, GetRegError> {
         Ok(hvdef::HvRegisterGuestVsmPartitionConfig::from(
             self.get_vp_vtl2_register(HvArchRegisterName::GuestVsmPartitionConfig)?
                 .as_u64(),
@@ -552,7 +556,7 @@ impl Hcl {
     /// Get the [`hvdef::HvRegisterVsmPartitionStatus`] register for VTL2.
     pub fn get_vsm_partition_status(
         &self,
-    ) -> Result<hvdef::HvRegisterVsmPartitionStatus, GetVpError> {
+    ) -> Result<hvdef::HvRegisterVsmPartitionStatus, GetRegError> {
         Ok(hvdef::HvRegisterVsmPartitionStatus::from(
             self.get_vp_vtl2_register(HvArchRegisterName::VsmPartitionStatus)?
                 .as_u64(),
@@ -563,7 +567,7 @@ impl Hcl {
     /// CPUID. On aarch64, it uses get_vp_register.
     pub fn get_privileges_and_features_info(
         &self,
-    ) -> Result<hvdef::HvPartitionPrivilege, GetVpError> {
+    ) -> Result<hvdef::HvPartitionPrivilege, GetRegError> {
         #[cfg(guest_arch = "x86_64")]
         {
             let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
@@ -595,7 +599,7 @@ impl Hcl {
     pub fn set_vtl2_vsm_partition_config(
         &self,
         vsm_config: hvdef::HvRegisterVsmPartitionConfig,
-    ) -> Result<(), SetVpError> {
+    ) -> Result<(), SetRegError> {
         self.set_vp_vtl2_register(
             HvArchRegisterName::VsmPartitionConfig,
             HvRegisterValue::from(u64::from(vsm_config)),
@@ -605,7 +609,10 @@ impl Hcl {
     /// Configure guest VSM.
     /// The only configuration attribute currently supported is changing the maximum number of
     /// guest-visible virtual trust levels for the partition. (VTL 1)
-    pub fn set_guest_vsm_partition_config(&self, enable_guest_vsm: bool) -> Result<(), SetVpError> {
+    pub fn set_guest_vsm_partition_config(
+        &self,
+        enable_guest_vsm: bool,
+    ) -> Result<(), SetRegError> {
         let register_value = hvdef::HvRegisterGuestVsmPartitionConfig::new()
             .with_maximum_vtl(if enable_guest_vsm { 1 } else { 0 })
             .with_reserved(0);
@@ -623,7 +630,7 @@ impl Hcl {
 
     /// Sets the Power Management Timer assist in the hypervisor.
     #[cfg(guest_arch = "x86_64")]
-    pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), SetVpError> {
+    pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), SetRegError> {
         tracing::debug!(?port, "set_pm_timer_assist");
         if self.isolation.is_hardware_isolated() {
             if port.is_some() {
@@ -644,8 +651,8 @@ impl Hcl {
 
     /// Sets the Power Management Timer assist in the hypervisor.
     #[cfg(guest_arch = "aarch64")]
-    pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), SetVpError> {
+    pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), SetRegError> {
         tracing::debug!(?port, "set_pm_timer_assist unimplemented on aarch64");
-        Err(SetVpError::Hypercall(HvError::UnknownRegisterName))
+        Err(SetRegError::Hypercall(HvError::UnknownRegisterName))
     }
 }

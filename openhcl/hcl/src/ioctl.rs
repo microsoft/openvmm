@@ -4,7 +4,7 @@
 //! Interface to `mshv_vtl` driver.
 
 mod deferred;
-mod register;
+pub mod register;
 
 pub mod aarch64;
 pub mod snp;
