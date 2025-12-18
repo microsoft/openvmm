@@ -52,15 +52,13 @@
 //! Linux CPU) calls into the sidecar kernel to perform all global initialization
 //! tasks: copying the hypercall page, setting up the IDT, initializing control
 //! pages for each node, and preparing page tables and per-CPU state for all
-//! application processors (APs). This logic is contained in
-//! [`arch::x86_64::init::start`].
+//! application processors (APs).
 //!
 //! After the BSP completes its initialization work, it begins starting APs. The
 //! startup process uses a fan-out pattern to minimize total boot time: the BSP
 //! starts the first few APs, and then each newly-started AP immediately helps
 //! start additional APs. This creates an exponential growth in the number of
-//! CPUs actively participating in the boot process. This logic is contained in
-//! [`arch::x86_64::init::start_aps`] and [`arch::x86_64::init::ap_init`].
+//! CPUs actively participating in the boot process.
 //!
 //! Concurrency during startup is managed through atomic operations on a
 //! per-node `next_vp` counter. Each CPU (whether BSP or AP) atomically
