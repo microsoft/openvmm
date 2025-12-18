@@ -383,15 +383,21 @@ pub struct LxFile {
 }
 
 impl LxFile {
-    pub fn fstat(&self) -> lx::Result<lx::Stat> {
+    pub fn fstat(&self) -> lx::Result<lx::StatEx> {
         // SAFETY: Calling C API as documented, with no special requirements.
-        let stat = unsafe {
-            let mut stat = mem::zeroed();
-            util::check_lx_errno(libc::fstat(self.fd.as_raw_fd(), &mut stat))?;
-            stat
+        let statx = unsafe {
+            let mut statx = mem::zeroed();
+            util::check_lx_errno(libc::statx(
+                self.fd.as_raw_fd(),
+                "",
+                libc::AT_EMPTY_PATH,
+                libc::STATX_BASIC_STATS | libc::STATX_BTIME,
+                &mut statx,
+            ))?;
+            statx
         };
 
-        Ok(util::libc_stat_to_lx_stat(stat))
+        Ok(util::libc_statx_to_lx_statex(statx))
     }
 
     pub fn set_attr(&self, attr: SetAttributes) -> lx::Result<()> {

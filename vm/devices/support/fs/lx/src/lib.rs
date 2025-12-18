@@ -9,8 +9,14 @@
 mod macros;
 mod string;
 
+use bitfield_struct::bitfield;
+use static_assertions::const_assert_eq;
 use std::io;
 use thiserror::Error;
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 pub use string::LxStr;
 pub use string::LxString;
@@ -254,6 +260,116 @@ impl From<&std::time::Duration> for Timespec {
     }
 }
 
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct StatExMask {
+    pub file_type: bool,     // STATX_TYPE
+    pub mode: bool,          // STATX_MODE
+    pub nlink: bool,         // STATX_NLINK
+    pub uid: bool,           // STATX_UID
+    pub gid: bool,           // STATX_GID
+    pub atime: bool,         // STATX_ATIME
+    pub mtime: bool,         // STATX_MTIME
+    pub ctime: bool,         // STATX_CTIME
+    pub ino: bool,           // STATX_INO
+    pub size: bool,          // STATX_SIZE
+    pub blocks: bool,        // STATX_BLOCKS
+    pub btime: bool,         // STATX_BTIME
+    pub mnt_id: bool,        // STATX_MNT_ID
+    pub dio_align: bool,     // STATX_DIOALIGN
+    pub mnt_id_unique: bool, // STATX_MNT_ID_UNIQUE
+    pub subvol: bool,        // STATX_SUBVOL
+    pub write_atomic: bool,  // STATX_WRITE_ATOMIC
+    #[bits(15)]
+    pub _rsvd: u32,
+}
+
+#[bitfield(u64)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct StatExAttributes {
+    #[bits(2)]
+    pub _rsvd1: u8,
+    pub compressed: bool, // STATX_ATTR_COMPRESSED
+    pub _rsvd2: bool,
+    pub immutable: bool, // STATX_ATTR_IMMUTABLE
+    pub append: bool,    // STATX_ATTR_APPEND
+    pub nodump: bool,    // STATX_ATTR_NODUMP
+    #[bits(4)]
+    pub _rsvd3: u8,
+    pub encrypted: bool,  // STATX_ATTR_ENCRYPTED
+    pub automount: bool,  // STATX_ATTR_AUTOMOUNT
+    pub mount_root: bool, // STATX_ATTR_MOUNT_ROOT
+    #[bits(6)]
+    pub _rsvd4: u8,
+    pub verity: bool,       // STATX_ATTR_VERITY
+    pub dax: bool,          // STATX_ATTR_DAX,
+    pub write_atomic: bool, // STATX_ATTR_WRITE_ATOMIC
+    #[bits(41)]
+    pub _rsvd: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Eq, PartialEq)]
+pub struct StatExTimestamp {
+    pub seconds: i64,
+    pub nanoseconds: u32,
+    pub _rsvd: i32,
+}
+
+impl From<StatExTimestamp> for Timespec {
+    fn from(ts: StatExTimestamp) -> Self {
+        Timespec {
+            seconds: ts.seconds as usize,
+            nanoseconds: ts.nanoseconds as usize,
+        }
+    }
+}
+impl From<Timespec> for StatExTimestamp {
+    fn from(ts: Timespec) -> Self {
+        StatExTimestamp {
+            seconds: ts.seconds as i64,
+            nanoseconds: ts.nanoseconds as u32,
+            _rsvd: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct StatEx {
+    pub mask: StatExMask,
+    pub block_size: u32,
+    pub attributes: StatExAttributes,
+    pub link_count: u32,
+    pub uid: uid_t,
+    pub gid: gid_t,
+    pub mode: u16,
+    pub _rsvd1: u16,
+    pub inode_id: ino_t,
+    pub file_size: u64,
+    pub block_count: u64,
+    pub attributes_mask: StatExAttributes,
+    pub access_time: StatExTimestamp,
+    pub creation_time: StatExTimestamp,
+    pub change_time: StatExTimestamp,
+    pub write_time: StatExTimestamp,
+    pub rdev_major: u32,
+    pub rdev_minor: u32,
+    pub dev_major: u32,
+    pub dev_minor: u32,
+    pub mount_id: u64,
+    pub dio_mem_align: u32,
+    pub dio_offset_align: u32,
+    pub subvolume_id: u64,
+    pub atomic_write_unit_min: u32,
+    pub atomic_write_unit_max: u32,
+    pub atomic_write_segments_max: u32,
+    pub _rsvd2: u32,
+    pub _rsvd3: [u64; 9],
+}
+
+const_assert_eq!(size_of::<StatEx>(), 256);
+
 /// A Linux `stat` structure.
 #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
 #[repr(C)]
@@ -291,12 +407,39 @@ pub struct Stat {
     pub pad0: u32,
     pub file_size: u64,
     pub block_size: u32,
-    pub pad2: u32,
+    pub pad1: u32,
     pub block_count: u64,
     pub access_time: Timespec,
     pub write_time: Timespec,
     pub change_time: Timespec,
     pub unused: [u32; 2],
+}
+
+impl From<StatEx> for Stat {
+    fn from(statx: StatEx) -> Self {
+        Stat {
+            device_nr: make_dev(statx.dev_major, statx.dev_minor) as _,
+            inode_nr: statx.inode_id,
+            link_count: statx.link_count as _,
+            mode: statx.mode as _,
+            uid: statx.uid,
+            gid: statx.gid,
+            device_nr_special: make_dev(statx.rdev_major, statx.rdev_minor) as _,
+            file_size: statx.file_size,
+            block_size: statx.block_size as _,
+            block_count: statx.block_count,
+            access_time: statx.access_time.into(),
+            write_time: statx.write_time.into(),
+            change_time: statx.change_time.into(),
+            pad0: 0,
+            #[cfg(target_arch = "x86_64")]
+            pad1: [0; 3],
+            #[cfg(target_arch = "aarch64")]
+            pad1: 0,
+            #[cfg(target_arch = "aarch64")]
+            unused: [0; 2],
+        }
+    }
 }
 
 #[repr(C)]
