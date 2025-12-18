@@ -224,7 +224,9 @@ fn ap_run(globals: &mut VpGlobals) {
     }
 }
 
-fn control() -> &'static ControlPage {
+/// Returns a reference to the control page for this VP.
+/// Only use this on AP startup paths.
+pub fn control() -> &'static ControlPage {
     // SAFETY: all mutable fields of the control page have interior mutability,
     // so this is a valid dereference.
     unsafe { &*addr_space::control_page() }
