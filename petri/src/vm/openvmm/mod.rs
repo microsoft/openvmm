@@ -20,6 +20,7 @@ pub use runtime::PetriVmOpenVmm;
 use crate::BootDeviceType;
 use crate::Firmware;
 use crate::OpenHclServicingFlags;
+use crate::OpenvmmLogConfig;
 use crate::PetriDiskType;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
@@ -162,6 +163,7 @@ pub struct PetriVmConfigOpenVmm {
     // Direct configuration related information.
     firmware: Firmware,
     arch: MachineArch,
+    host_log_levels: Option<OpenvmmLogConfig>,
     config: Config,
     boot_device_type: BootDeviceType,
 

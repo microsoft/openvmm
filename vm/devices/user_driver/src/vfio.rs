@@ -121,6 +121,7 @@ impl VfioDevice {
         let _ = ctx.until_cancelled(wait_for_vfio_device).await;
 
         tracing::info!(pci_id, keepalive, "device arrived");
+        vfio_sys::print_relevant_params();
 
         let container = vfio_sys::Container::new()?;
         let group_id = vfio_sys::Group::find_group_for_device(&path)?;

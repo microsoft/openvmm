@@ -14,6 +14,7 @@ use crate::IsolationType;
 use crate::NoPetriVmInspector;
 use crate::OpenHclConfig;
 use crate::OpenHclServicingFlags;
+use crate::OpenvmmLogConfig;
 use crate::PetriDiskType;
 use crate::PetriHaltReason;
 use crate::PetriVmConfig;
@@ -206,6 +207,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         let PetriVmConfig {
             name,
             arch,
+            host_log_levels,
             firmware,
             memory,
             proc_topology,
@@ -218,6 +220,11 @@ impl PetriVmmBackend for HyperVPetriBackend {
         } = config;
 
         let PetriVmResources { driver, log_source } = resources;
+
+        assert!(matches!(
+            host_log_levels,
+            None | Some(OpenvmmLogConfig::TestDefault)
+        )); // Custom host log levels not supported in HyperV backend yet.
 
         let temp_dir = tempfile::tempdir()?;
 

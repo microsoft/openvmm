@@ -8991,7 +8991,6 @@ dependencies = [
  "futures",
  "guestmem",
  "guid",
- "headervec",
  "mesh",
  "pal",
  "pal_async",
