@@ -64,6 +64,7 @@ enum HclNetworkVfManagerMessage {
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
     SaveState(Rpc<(), VfManagerSaveResult>),
     VfReconfig,
+    VfReconfigRestart,
 }
 
 #[expect(clippy::large_enum_variant)]
@@ -599,7 +600,17 @@ impl HclNetworkVFManagerWorker {
             ExitWorker,
         }
 
+        #[derive(Clone, Copy, Debug)]
+        struct VfReconfigBackoff {
+            sleep: std::time::Duration,
+            attempts: u64,
+        }
+
+        const RECONFIG_INITIAL_SLEEP: std::time::Duration = std::time::Duration::from_millis(100);
+        const RECONFIG_MAX_SLEEP: std::time::Duration = std::time::Duration::from_secs(2);
+
         let mut vtl2_device_present = true;
+        let mut vf_reconfig_backoff: Option<VfReconfigBackoff> = None;
         loop {
             let next_work_item = {
                 let next_message = self
@@ -633,7 +644,29 @@ impl HclNetworkVFManagerWorker {
                         },
                     );
 
-                (next_message, device_change, device_arrival, vf_reconfig)
+                let vf_restart_tick: futures::stream::BoxStream<'_, NextWorkItem> =
+                    vf_reconfig_backoff.map_or_else(
+                        || futures::stream::pending().boxed(),
+                        |backoff| {
+                            let driver = self.driver_source.simple();
+                            futures::stream::once(async move {
+                                let mut timer = PolledTimer::new(&driver);
+                                timer.sleep(backoff.sleep).await;
+                                NextWorkItem::ManagerMessage(
+                                    HclNetworkVfManagerMessage::VfReconfigRestart,
+                                )
+                            })
+                            .boxed()
+                        },
+                    );
+
+                (
+                    next_message,
+                    device_change,
+                    device_arrival,
+                    vf_reconfig,
+                    vf_restart_tick,
+                )
                     .merge()
                     .next()
                     .await
@@ -850,34 +883,44 @@ impl HclNetworkVFManagerWorker {
                     // Start the VTL2 device and resubscribe to notifications.
                     // After sending the VF Reconfiguration notification, the SoC may need time to recover.
                     // Keep retrying with backoff until the device successfully restarts.
-                    let mut timer = PolledTimer::new(&self.driver_source.simple());
-                    let mut sleep = std::time::Duration::from_millis(100);
-                    let max_sleep = std::time::Duration::from_secs(2);
-                    let mut attempts: u64 = 0;
+                    vtl2_device_present = false;
+                    vf_reconfig_backoff = Some(VfReconfigBackoff {
+                        sleep: RECONFIG_INITIAL_SLEEP,
+                        attempts: 0,
+                    });
+                }
+                NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::VfReconfigRestart) => {
+                    let Some(mut backoff) = vf_reconfig_backoff else {
+                        tracing::debug!("VF reconfiguration restart without backoff state");
+                        continue;
+                    };
 
-                    loop {
-                        attempts += 1;
-                        vtl2_device_present = self.startup_vtl2_device().await;
-                        if vtl2_device_present {
-                            tracing::info!(
-                                attempts,
-                                "VTL2 device restarted after VF reconfiguration"
-                            );
-                            break;
-                        }
+                    if self.is_shutdown_active {
+                        vf_reconfig_backoff = None;
+                        continue;
+                    }
 
-                        // Log first failure and every 10th.
-                        // TODO: Should this just be a tracelimit::warn_ratelimited ???
-                        if attempts == 1 || attempts.is_multiple_of(10) {
+                    backoff.attempts += 1;
+                    vtl2_device_present = self.startup_vtl2_device().await;
+                    if vtl2_device_present {
+                        tracing::info!(
+                            attempts = backoff.attempts,
+                            "VTL2 device restarted after VF reconfiguration"
+                        );
+                        vf_reconfig_backoff = None;
+                    } else {
+                        if backoff.attempts == 1 || backoff.attempts.is_multiple_of(10) {
+                            // TODO: Should this just be a tracelimit::warn_ratelimited ???
                             tracing::warn!(
-                                attempts,
-                                sleep_ms = sleep.as_millis(),
+                                attempts = backoff.attempts,
+                                sleep_ms = backoff.sleep.as_millis(),
                                 "VTL2 device restart not ready after VF reconfiguration; retrying"
                             );
                         }
 
-                        timer.sleep(sleep).await;
-                        sleep = std::cmp::min(max_sleep, sleep.saturating_mul(2));
+                        backoff.sleep =
+                            std::cmp::min(RECONFIG_MAX_SLEEP, backoff.sleep.saturating_mul(2));
+                        vf_reconfig_backoff = Some(backoff);
                     }
                 }
                 NextWorkItem::ManaDeviceArrived => {
@@ -897,6 +940,10 @@ impl HclNetworkVFManagerWorker {
                     }
 
                     vtl2_device_present = self.startup_vtl2_device().await;
+                    if vtl2_device_present {
+                        // If the device has arrived, remove outstanding vf reconfiguration.
+                        vf_reconfig_backoff = None;
+                    }
                 }
                 NextWorkItem::ManaDeviceRemoved => {
                     assert!(!self.is_shutdown_active);
@@ -910,6 +957,8 @@ impl HclNetworkVFManagerWorker {
 
                     self.shutdown_vtl2_device(false).await;
                     vtl2_device_present = false;
+                    // If the device is being removed, remove outstanding vf reconfiguration.
+                    vf_reconfig_backoff = None;
 
                     if let Err(err) = self
                         .vtl2_bus_control
