@@ -14,6 +14,11 @@ use crate::ShutdownKind;
 use crate::disk_image::AgentImage;
 use crate::disk_image::SECTOR_SIZE;
 use crate::openhcl_diag::OpenHclDiagHandler;
+use crate::test::PetriPostTestHook;
+use crate::vtl2_settings::ControllerType;
+use crate::vtl2_settings::Vtl2LunBuilder;
+use crate::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
+use crate::vtl2_settings::Vtl2StorageControllerBuilder;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
@@ -45,6 +50,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempPath;
 use vmgs_resources::GuestStateEncryptionPolicy;
+use vtl2_settings_proto::StorageController;
 use vtl2_settings_proto::Vtl2Settings;
 
 /// The set of artifacts and resources needed to instantiate a
@@ -113,6 +119,15 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     // Defaults to expected behavior for firmware configuration.
     expected_boot_event: Option<FirmwareEvent>,
     override_expect_reset: bool,
+
+    // Config that is used to modify the `PetriVmConfig` before it is passed
+    // to the VMM backend.
+    /// Agent to run in the guest
+    agent_image: Option<AgentImage>,
+    /// Agent to run in OpenHCL
+    openhcl_agent_image: Option<AgentImage>,
+    /// The boot device type for the VM
+    boot_device_type: BootDeviceType,
 }
 
 /// Petri VM configuration
@@ -129,22 +144,33 @@ pub struct PetriVmConfig {
     pub memory: MemoryConfig,
     /// The processor tology for the VM
     pub proc_topology: ProcessorTopology,
-    /// Agent to run in the guest
-    pub agent_image: Option<AgentImage>,
-    /// Agent to run in OpenHCL
-    pub openhcl_agent_image: Option<AgentImage>,
-    /// Disk to use for guest crash dumps
-    pub guest_crash_disk: Option<Arc<TempPath>>,
     /// VM guest state
     pub vmgs: PetriVmgsResource,
-    /// The boot device type for the VM
-    pub boot_device_type: BootDeviceType,
     /// TPM configuration
     pub tpm: Option<TpmConfig>,
-    /// IDE configuration
-    pub ide: Option<IdeConfig>,
-    /// Additional VMBus storage for the VM
-    pub additional_vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
+    /// IDE controllers and associated disks
+    pub ide_controllers: Option<[[Option<Drive>; 2]; 2]>,
+    /// Storage controllers and associated disks
+    pub vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
+}
+
+/// Static properties about the VM for convenience during contruction and
+/// runtime of a VMM backend
+pub struct PetriVmProperties {
+    /// Whether this VM uses OpenHCL
+    pub is_openhcl: bool,
+    /// Whether this VM is isolated
+    pub is_isolated: bool,
+    /// Whether this VM uses the PCAT BIOS
+    pub is_pcat: bool,
+    /// Whether this VM boots with linux direct
+    pub is_linux_direct: bool,
+    /// Whether this VM is using pipette in VTL0
+    pub using_vtl0_pipette: bool,
+    /// Whether this VM is using VPCI
+    pub using_vpci: bool,
+    /// The OS flavor of the guest in the VM
+    pub os_flavor: OsFlavor,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -152,7 +178,7 @@ pub struct PetriVmRuntimeConfig {
     /// VTL2 settings
     pub vtl2_settings: Option<Vtl2Settings>,
     /// IDE controllers and associated disks
-    pub ide_controllers: Option<[[Drive; 2]; 2]>,
+    pub ide_controllers: Option<[[Option<Drive>; 2]; 2]>,
     /// Storage controllers and associated disks
     pub vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
 }
@@ -200,28 +226,35 @@ pub trait PetriVmmBackend {
         config: PetriVmConfig,
         modify_vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
         resources: &PetriVmResources,
+        properties: PetriVmProperties,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)>;
 }
 
-#[cfg_attr(not(windows), expect(dead_code))]
-pub(crate) const PETRI_IDE_BOOT_CONTROLLER: u32 = 0;
-#[cfg_attr(not(windows), expect(dead_code))]
+// IDE is only ever offered to VTL0
+pub(crate) const PETRI_IDE_BOOT_CONTROLLER_NUMBER: u32 = 0;
 pub(crate) const PETRI_IDE_BOOT_LUN: u8 = 0;
+pub(crate) const PETRI_IDE_BOOT_CONTROLLER: Guid =
+    guid::guid!("ca56751f-e643-4bef-bf54-f73678e8b7b5");
 
-pub(crate) const PETRI_VTL0_SCSI_BOOT_LUN: u8 = 0;
-pub(crate) const PETRI_VTL0_SCSI_PIPETTE_LUN: u8 = 1;
-pub(crate) const PETRI_VTL0_SCSI_CRASH_LUN: u8 = 2;
-
-#[cfg_attr(not(windows), expect(dead_code))]
-pub(crate) const PETRI_VTL2_SCSI_PIPETTE_LUN: u8 = 1;
-
-/// The instance guid used for all of our SCSI drives.
-pub(crate) const PETRI_VTL0_SCSI_CONTROLLER_ID: Guid =
+// SCSI luns used for both VTL0 and VTL2
+pub(crate) const PETRI_SCSI_BOOT_LUN: u32 = 0;
+pub(crate) const PETRI_SCSI_PIPETTE_LUN: u32 = 1;
+pub(crate) const PETRI_SCSI_CRASH_LUN: u32 = 2;
+/// VTL0 SCSI controller instance guid used by Petri
+pub(crate) const PETRI_SCSI_VTL0_CONTROLLER: Guid =
     guid::guid!("27b553e8-8b39-411b-a55f-839971a7884f");
+/// VTL2 SCSI controller instance guid used by Petri
+pub(crate) const PETRI_SCSI_VTL2_CONTROLLER: Guid =
+    guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7c");
 
-#[cfg_attr(not(windows), expect(dead_code))]
-pub(crate) const PETRI_VTL2_SCSI_CONTROLLER_ID: Guid =
-    guid::guid!("818ae0a4-4f68-4b8e-94bc-c520c049097d");
+/// The namespace ID used by Petri for the boot disk
+pub(crate) const PETRI_NVME_BOOT_NSID: u32 = 37;
+/// VTL0 NVMe controller instance guid used by Petri
+pub(crate) const PETRI_NVME_BOOT_VTL0_CONTROLLER: Guid =
+    guid::guid!("e23a04e2-90f5-4852-bc9d-e7ac691b756c");
+/// VTL2 NVMe controller instance guid used by Petri
+pub(crate) const PETRI_NVME_BOOT_VTL2_CONTROLLER: Guid =
+    guid::guid!("92bc8346-718b-449a-8751-edbf3dcd27e4");
 
 /// A constructed Petri VM
 pub struct PetriVm<T: PetriVmmBackend> {
@@ -261,56 +294,9 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             } => BootDeviceType::None,
             Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => BootDeviceType::Scsi,
         };
-        let ide = artifacts.firmware.is_pcat().then(IdeConfig::default);
 
-        let guest_crash_disk = if matches!(
-            artifacts.firmware.os_flavor(),
-            OsFlavor::Windows | OsFlavor::Linux
-        ) {
-            let (guest_crash_disk, guest_dump_disk_hook) = T::create_guest_dump_disk()?.unzip();
-            if let Some(guest_dump_disk_hook) = guest_dump_disk_hook {
-                let logger = params.logger.clone();
-                params
-                    .post_test_hooks
-                    .push(crate::test::PetriPostTestHook::new(
-                        "extract guest crash dumps".into(),
-                        move |test_passed| {
-                            if test_passed {
-                                return Ok(());
-                            }
-                            let mut disk = guest_dump_disk_hook()?;
-                            let gpt = gptman::GPT::read_from(&mut disk, SECTOR_SIZE)?;
-                            let partition = fscommon::StreamSlice::new(
-                                &mut disk,
-                                gpt[1].starting_lba * SECTOR_SIZE,
-                                gpt[1].ending_lba * SECTOR_SIZE,
-                            )?;
-                            let fs = fatfs::FileSystem::new(partition, fatfs::FsOptions::new())?;
-                            for entry in fs.root_dir().iter() {
-                                let Ok(entry) = entry else {
-                                    tracing::warn!(
-                                        ?entry,
-                                        "failed to read entry in guest crash dump disk"
-                                    );
-                                    continue;
-                                };
-                                if !entry.is_file() {
-                                    tracing::warn!(
-                                        ?entry,
-                                        "skipping non-file entry in guest crash dump disk"
-                                    );
-                                    continue;
-                                }
-                                logger.write_attachment(&entry.file_name(), entry.to_file())?;
-                            }
-                            Ok(())
-                        },
-                    ));
-            }
-            guest_crash_disk
-        } else {
-            None
-        };
+        let ide_controllers = matches!(artifacts.firmware, Firmware::Pcat { .. })
+            .then(|| [[None, None], [None, None]]);
 
         Ok(Self {
             backend: artifacts.backend,
@@ -319,16 +305,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 arch: artifacts.arch,
                 host_log_levels: None,
                 firmware: artifacts.firmware,
-                boot_device_type,
                 memory: Default::default(),
                 proc_topology: Default::default(),
-                agent_image: artifacts.agent_image,
-                openhcl_agent_image: artifacts.openhcl_agent_image,
+
                 vmgs: PetriVmgsResource::Ephemeral,
                 tpm: None,
-                guest_crash_disk,
-                ide,
-                additional_vmbus_storage_controllers: HashMap::new(),
+                ide_controllers,
+                vmbus_storage_controllers: HashMap::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -340,11 +323,251 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             vmm_quirks,
             expected_boot_event,
             override_expect_reset: false,
-        })
-    }
-}
 
-impl<T: PetriVmmBackend> PetriVmBuilder<T> {
+            agent_image: artifacts.agent_image,
+            openhcl_agent_image: artifacts.openhcl_agent_image,
+            boot_device_type,
+        }
+        .add_petri_scsi_controllers()
+        .add_guest_crash_disk(params.post_test_hooks))
+    }
+
+    fn add_petri_scsi_controllers(self) -> Self {
+        let builder = self.add_vmbus_storage_controller(
+            &PETRI_SCSI_VTL0_CONTROLLER,
+            Vtl::Vtl0,
+            VmbusStorageType::Scsi,
+        );
+
+        if builder.is_openhcl() {
+            builder.add_vmbus_storage_controller(
+                &PETRI_SCSI_VTL2_CONTROLLER,
+                Vtl::Vtl2,
+                VmbusStorageType::Scsi,
+            )
+        } else {
+            builder
+        }
+    }
+
+    fn add_guest_crash_disk(self, post_test_hooks: &mut Vec<PetriPostTestHook>) -> Self {
+        let logger = self.resources.log_source.clone();
+        let (disk, disk_hook) = matches!(
+            self.config.firmware.os_flavor(),
+            OsFlavor::Windows | OsFlavor::Linux
+        )
+        .then(|| T::create_guest_dump_disk().expect("failed to create guest dump disk"))
+        .flatten()
+        .unzip();
+
+        if let Some(disk_hook) = disk_hook {
+            post_test_hooks.push(PetriPostTestHook::new(
+                "extract guest crash dumps".into(),
+                move |test_passed| {
+                    if test_passed {
+                        return Ok(());
+                    }
+                    let mut disk = disk_hook()?;
+                    let gpt = gptman::GPT::read_from(&mut disk, SECTOR_SIZE)?;
+                    let partition = fscommon::StreamSlice::new(
+                        &mut disk,
+                        gpt[1].starting_lba * SECTOR_SIZE,
+                        gpt[1].ending_lba * SECTOR_SIZE,
+                    )?;
+                    let fs = fatfs::FileSystem::new(partition, fatfs::FsOptions::new())?;
+                    for entry in fs.root_dir().iter() {
+                        let Ok(entry) = entry else {
+                            tracing::warn!(?entry, "failed to read entry in guest crash dump disk");
+                            continue;
+                        };
+                        if !entry.is_file() {
+                            tracing::warn!(
+                                ?entry,
+                                "skipping non-file entry in guest crash dump disk"
+                            );
+                            continue;
+                        }
+                        logger.write_attachment(&entry.file_name(), entry.to_file())?;
+                    }
+                    Ok(())
+                },
+            ));
+        }
+
+        if let Some(disk) = disk {
+            self.add_vmbus_drive(
+                Drive::new(Some(Disk::Temporary(disk)), false),
+                &PETRI_SCSI_VTL0_CONTROLLER,
+                Some(PETRI_SCSI_CRASH_LUN),
+            )
+        } else {
+            self
+        }
+    }
+
+    fn add_agent_disks(self) -> Self {
+        self.add_agent_disk_inner(Vtl::Vtl0)
+            .add_agent_disk_inner(Vtl::Vtl2)
+    }
+
+    fn add_agent_disk_inner(self, target_vtl: Vtl) -> Self {
+        let (agent_image, controller_id) = match target_vtl {
+            Vtl::Vtl0 => (self.agent_image.as_ref(), PETRI_SCSI_VTL0_CONTROLLER),
+            Vtl::Vtl2 => (
+                self.openhcl_agent_image.as_ref(),
+                PETRI_SCSI_VTL2_CONTROLLER,
+            ),
+        };
+
+        if let Some(agent_disk) = agent_image.and_then(|i| {
+            i.build(crate::disk_image::ImageType::Vhd)
+                .expect("failed to build agent image")
+        }) {
+            self.add_vmbus_drive(
+                Drive::new(
+                    Some(Disk::Temporary(Arc::new(agent_disk.into_temp_path()))),
+                    false,
+                ),
+                &controller_id,
+                Some(PETRI_SCSI_PIPETTE_LUN),
+            )
+        } else {
+            self
+        }
+    }
+
+    fn add_boot_disk(mut self) -> Self {
+        if self.boot_device_type.requires_vtl2() && !self.is_openhcl() {
+            panic!("boot device type {:?} requires vtl2", self.boot_device_type);
+        }
+
+        if self.boot_device_type.requires_vpci_boot() {
+            self.config
+                .firmware
+                .uefi_config_mut()
+                .expect("vpci boot requires uefi")
+                .enable_vpci_boot = true;
+        }
+
+        if let Some(boot_drive) = self.config.firmware.boot_drive() {
+            match self.boot_device_type {
+                BootDeviceType::None => unreachable!(),
+                BootDeviceType::Ide => self.add_ide_drive(
+                    boot_drive,
+                    PETRI_IDE_BOOT_CONTROLLER_NUMBER,
+                    PETRI_IDE_BOOT_LUN,
+                ),
+                BootDeviceType::IdeViaScsi => self
+                    .add_vmbus_drive(
+                        boot_drive,
+                        &PETRI_SCSI_VTL2_CONTROLLER,
+                        Some(PETRI_SCSI_BOOT_LUN),
+                    )
+                    .add_vtl2_storage_controller(
+                        Vtl2StorageControllerBuilder::new(ControllerType::Ide)
+                            .with_instance_id(PETRI_IDE_BOOT_CONTROLLER)
+                            .add_lun(
+                                Vtl2LunBuilder::disk()
+                                    .with_channel(PETRI_IDE_BOOT_CONTROLLER_NUMBER)
+                                    .with_location(PETRI_IDE_BOOT_LUN as u32)
+                                    .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                                        ControllerType::Scsi,
+                                        PETRI_SCSI_VTL2_CONTROLLER,
+                                        PETRI_SCSI_BOOT_LUN,
+                                    )),
+                            )
+                            .build(),
+                    ),
+                BootDeviceType::IdeViaNvme => todo!(),
+                BootDeviceType::Scsi => self.add_vmbus_drive(
+                    boot_drive,
+                    &PETRI_SCSI_VTL0_CONTROLLER,
+                    Some(PETRI_SCSI_BOOT_LUN),
+                ),
+                BootDeviceType::ScsiViaScsi => self
+                    .add_vmbus_drive(
+                        boot_drive,
+                        &PETRI_SCSI_VTL2_CONTROLLER,
+                        Some(PETRI_SCSI_BOOT_LUN),
+                    )
+                    .add_vtl2_storage_controller(
+                        Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                            .with_instance_id(PETRI_SCSI_VTL0_CONTROLLER)
+                            .add_lun(
+                                Vtl2LunBuilder::disk()
+                                    .with_location(PETRI_SCSI_BOOT_LUN)
+                                    .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                                        ControllerType::Scsi,
+                                        PETRI_SCSI_VTL2_CONTROLLER,
+                                        PETRI_SCSI_BOOT_LUN,
+                                    )),
+                            )
+                            .build(),
+                    ),
+                BootDeviceType::ScsiViaNvme => self
+                    .add_vmbus_storage_controller(
+                        &PETRI_NVME_BOOT_VTL2_CONTROLLER,
+                        Vtl::Vtl2,
+                        VmbusStorageType::Nvme,
+                    )
+                    .add_vmbus_drive(
+                        boot_drive,
+                        &PETRI_NVME_BOOT_VTL2_CONTROLLER,
+                        Some(PETRI_NVME_BOOT_NSID),
+                    )
+                    .add_vtl2_storage_controller(
+                        Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                            .with_instance_id(PETRI_SCSI_VTL0_CONTROLLER)
+                            .add_lun(
+                                Vtl2LunBuilder::disk()
+                                    .with_location(PETRI_SCSI_BOOT_LUN)
+                                    .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                                        ControllerType::Nvme,
+                                        PETRI_NVME_BOOT_VTL2_CONTROLLER,
+                                        PETRI_NVME_BOOT_NSID,
+                                    )),
+                            )
+                            .build(),
+                    ),
+                BootDeviceType::Nvme => self
+                    .add_vmbus_storage_controller(
+                        &PETRI_NVME_BOOT_VTL0_CONTROLLER,
+                        Vtl::Vtl2,
+                        VmbusStorageType::Nvme,
+                    )
+                    .add_vmbus_drive(
+                        boot_drive,
+                        &PETRI_NVME_BOOT_VTL0_CONTROLLER,
+                        Some(PETRI_NVME_BOOT_NSID),
+                    ),
+                BootDeviceType::NvmeViaScsi => todo!(),
+                BootDeviceType::NvmeViaNvme => todo!(),
+            }
+        } else {
+            self
+        }
+    }
+
+    /// Get properties about the vm for convenience
+    pub fn properties(&self) -> PetriVmProperties {
+        PetriVmProperties {
+            is_openhcl: self.config.firmware.is_openhcl(),
+            is_isolated: self.config.firmware.isolation().is_some(),
+            is_pcat: self.config.firmware.is_pcat(),
+            is_linux_direct: self.config.firmware.is_linux_direct(),
+            using_vtl0_pipette: self.using_vtl0_pipette(),
+            using_vpci: self.boot_device_type.requires_vpci_boot(),
+            os_flavor: self.config.firmware.os_flavor(),
+        }
+    }
+
+    /// Whether this VM is using pipette in VTL0
+    pub fn using_vtl0_pipette(&self) -> bool {
+        self.agent_image
+            .as_ref()
+            .is_some_and(|x| x.contains_pipette())
+    }
+
     /// Build and run the VM, then wait for the VM to emit the expected boot
     /// event (if configured). Does not configure and start pipette. Should
     /// only be used for testing platforms that pipette does not support.
@@ -355,21 +578,30 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// Build and run the VM, then wait for the VM to emit the expected boot
     /// event (if configured). Launches pipette and returns a client to it.
     pub async fn run(self) -> anyhow::Result<(PetriVm<T>, PipetteClient)> {
-        assert!(self.config.agent_image.is_some());
-        assert!(self.config.agent_image.as_ref().unwrap().contains_pipette());
+        assert!(self.using_vtl0_pipette());
 
         let mut vm = self.run_core().await?;
         let client = vm.wait_for_agent().await?;
         Ok((vm, client))
     }
 
-    async fn run_core(self) -> anyhow::Result<PetriVm<T>> {
+    async fn run_core(mut self) -> anyhow::Result<PetriVm<T>> {
+        // Add the boot disk now to allow the test to modify the boot type
+        // Add the agent disks now to allow the test to add custom files
+        self = self.add_boot_disk().add_agent_disks();
+
         let arch = self.config.arch;
         let expect_reset = self.expect_reset();
+        let properties = self.properties();
 
         let (mut runtime, config) = self
             .backend
-            .run(self.config, self.modify_vmm_config, &self.resources)
+            .run(
+                self.config,
+                self.modify_vmm_config,
+                &self.resources,
+                properties,
+            )
             .await?;
         let openhcl_diag_handler = runtime.openhcl_diag();
         let watchdog_tasks = Self::start_watchdog_tasks(&self.resources, &mut runtime)?;
@@ -684,8 +916,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Adds a file to the VM's pipette agent image.
     pub fn with_agent_file(mut self, name: &str, artifact: ResolvedArtifact) -> Self {
-        self.config
-            .agent_image
+        self.agent_image
             .as_mut()
             .expect("no guest pipette")
             .add_file(name, artifact);
@@ -694,8 +925,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Adds a file to the paravisor's pipette agent image.
     pub fn with_openhcl_agent_file(mut self, name: &str, artifact: ResolvedArtifact) -> Self {
-        self.config
-            .openhcl_agent_image
+        self.openhcl_agent_image
             .as_mut()
             .expect("no openhcl pipette")
             .add_file(name, artifact);
@@ -805,7 +1035,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     ///
     /// This overrides the default, which is determined by the firmware type.
     pub fn with_boot_device_type(mut self, boot: BootDeviceType) -> Self {
-        self.config.boot_device_type = boot;
+        self.boot_device_type = boot;
         self
     }
 
@@ -836,16 +1066,23 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         mut self,
         f: impl FnOnce(&mut Vtl2Settings) + 'static + Send + Sync,
     ) -> Self {
-        let openhcl_config = self
+        f(self
             .config
             .firmware
-            .openhcl_config_mut()
-            .expect("Custom VTL 2 settings are only supported with OpenHCL");
-        if openhcl_config.modify_vtl2_settings.is_some() {
-            panic!("only one with_custom_vtl2_settings allowed");
-        }
-        openhcl_config.modify_vtl2_settings = Some(ModifyFn(Box::new(f)));
+            .vtl2_settings()
+            .expect("Custom VTL 2 settings are only supported with OpenHCL"));
         self
+    }
+
+    /// Add a storage controller to VTL2
+    pub fn add_vtl2_storage_controller(self, controller: StorageController) -> Self {
+        self.with_custom_vtl2_settings(move |v| {
+            v.dynamic
+                .as_mut()
+                .unwrap()
+                .storage_controllers
+                .push(controller)
+        })
     }
 
     /// Add an additional SCSI controller to the VM.
@@ -855,15 +1092,11 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         target_vtl: Vtl,
         controller_type: VmbusStorageType,
     ) -> Self {
-        if self
-            .config
-            .additional_vmbus_storage_controllers
-            .contains_key(id)
-        {
+        if self.config.vmbus_storage_controllers.contains_key(id) {
             panic!("storage controller {id} already exists");
         }
 
-        self.config.additional_vmbus_storage_controllers.insert(
+        self.config.vmbus_storage_controllers.insert(
             *id,
             VmbusStorageController::new(target_vtl, controller_type),
         );
@@ -875,15 +1108,31 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         mut self,
         drive: Drive,
         controller_id: &Guid,
-        controller_location: Option<u8>,
+        controller_location: Option<u32>,
     ) -> Self {
         let controller = self
             .config
-            .additional_vmbus_storage_controllers
+            .vmbus_storage_controllers
             .get_mut(controller_id)
             .unwrap_or_else(|| panic!("storage controller {controller_id} does not exist"));
 
         _ = controller.set_drive(controller_location, drive, false);
+
+        self
+    }
+
+    /// Add a VMBus disk drive to the VM
+    pub fn add_ide_drive(
+        mut self,
+        drive: Drive,
+        controller_number: u32,
+        controller_location: u8,
+    ) -> Self {
+        self.config
+            .ide_controllers
+            .as_mut()
+            .expect("Host IDE requires PCAT with no HCL")[controller_number as usize]
+            [controller_location as usize] = Some(drive);
 
         self
     }
@@ -1253,7 +1502,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         &mut self,
         drive: Drive,
         controller_id: &Guid,
-        controller_location: Option<u8>,
+        controller_location: Option<u32>,
     ) -> anyhow::Result<()> {
         let controller = self
             .config
@@ -1340,7 +1589,7 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
         &mut self,
         disk: &Drive,
         controller_id: &Guid,
-        controller_location: u8,
+        controller_location: u32,
     ) -> anyhow::Result<()>;
 }
 
@@ -1440,7 +1689,7 @@ pub struct MemoryConfig {
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            startup_bytes: 0x1_0000_0000,
+            startup_bytes: 0x4000_0000,
             dynamic_memory_range: None,
         }
     }
@@ -1457,6 +1706,8 @@ pub struct UefiConfig {
     pub disable_frontpage: bool,
     /// Always attempt a default boot
     pub default_boot_always_attempt: bool,
+    /// Enable vPCI boot (for NVMe)
+    pub enable_vpci_boot: bool,
 }
 
 impl Default for UefiConfig {
@@ -1466,6 +1717,7 @@ impl Default for UefiConfig {
             secure_boot_template: None,
             disable_frontpage: true,
             default_boot_always_attempt: false,
+            enable_vpci_boot: false,
         }
     }
 }
@@ -1511,8 +1763,8 @@ pub struct OpenHclConfig {
     /// How to place VTL2 in address space. If `None`, the backend VMM
     /// will decide on default behavior.
     pub vtl2_base_address_type: Option<Vtl2BaseAddressType>,
-    /// Optional manual modification of the VTL2 settings
-    pub modify_vtl2_settings: Option<ModifyFn<Vtl2Settings>>,
+    /// VTL2 settings
+    pub vtl2_settings: Option<Vtl2Settings>,
 }
 
 impl OpenHclConfig {
@@ -1566,7 +1818,7 @@ impl Default for OpenHclConfig {
             custom_command_line: None,
             log_levels: OpenvmmLogConfig::TestDefault,
             vtl2_base_address_type: None,
-            modify_vtl2_settings: None,
+            vtl2_settings: None,
         }
     }
 }
@@ -1587,6 +1839,8 @@ impl Default for TpmConfig {
 }
 
 /// Firmware to load into the test VM.
+// TODO: remove the guests from the firmware enum so that we don't pass them
+// to the VMM backend after we have already used them generically.
 #[derive(Debug)]
 pub enum Firmware {
     /// Boot Linux directly, without any firmware.
@@ -1656,10 +1910,46 @@ pub enum BootDeviceType {
     None,
     /// Boot from IDE.
     Ide,
+    /// Boot from IDE via SCSI to VTL2.
+    IdeViaScsi,
+    /// Boot from IDE via NVME to VTL2.
+    IdeViaNvme,
     /// Boot from SCSI.
     Scsi,
-    /// Boot from an NVMe controller.
+    /// Boot from SCSI via SCSI to VTL2.
+    ScsiViaScsi,
+    /// Boot from SCSI via NVME to VTL2.
+    ScsiViaNvme,
+    /// Boot from NVMe.
     Nvme,
+    /// Boot from NVMe via SCSI to VTL2.
+    NvmeViaScsi,
+    /// Boot from NVMe via NVMe to VTL2.
+    NvmeViaNvme,
+}
+
+impl BootDeviceType {
+    fn requires_vtl2(&self) -> bool {
+        match self {
+            BootDeviceType::None
+            | BootDeviceType::Ide
+            | BootDeviceType::Scsi
+            | BootDeviceType::Nvme => false,
+            BootDeviceType::IdeViaScsi
+            | BootDeviceType::IdeViaNvme
+            | BootDeviceType::ScsiViaScsi
+            | BootDeviceType::ScsiViaNvme
+            | BootDeviceType::NvmeViaScsi
+            | BootDeviceType::NvmeViaNvme => true,
+        }
+    }
+
+    fn requires_vpci_boot(&self) -> bool {
+        matches!(
+            self,
+            BootDeviceType::Nvme | BootDeviceType::NvmeViaScsi | BootDeviceType::NvmeViaNvme
+        )
+    }
 }
 
 impl Firmware {
@@ -1720,7 +2010,6 @@ impl Firmware {
         arch: MachineArch,
         guest: UefiGuest,
         isolation: Option<IsolationType>,
-        vtl2_nvme_boot: bool,
     ) -> Self {
         use petri_artifacts_vmm_test::artifacts::openhcl_igvm::*;
         let igvm_path = match arch {
@@ -1733,10 +2022,7 @@ impl Firmware {
             isolation,
             igvm_path,
             uefi_config: Default::default(),
-            openhcl_config: OpenHclConfig {
-                vtl2_nvme_boot,
-                ..Default::default()
-            },
+            openhcl_config: Default::default(),
         }
     }
 
@@ -1920,6 +2206,29 @@ impl Firmware {
             | Firmware::OpenhclPcat { .. } => None,
         }
     }
+
+    fn boot_drive(&self) -> Option<Drive> {
+        match self {
+            Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => None,
+            Firmware::Pcat { guest, .. } | Firmware::OpenhclPcat { guest, .. } => {
+                Some((guest.artifact().to_owned(), guest.is_dvd()))
+            }
+            Firmware::Uefi { guest, .. } | Firmware::OpenhclUefi { guest, .. } => {
+                guest.artifact().map(|a| (a.to_owned(), false))
+            }
+        }
+        .map(|(artifact, is_dvd)| {
+            Drive::new(
+                Some(Disk::Differencing(artifact.get().to_path_buf())),
+                is_dvd,
+            )
+        })
+    }
+
+    fn vtl2_settings(&mut self) -> Option<&mut Vtl2Settings> {
+        self.openhcl_config_mut()
+            .map(|c| c.vtl2_settings.get_or_insert_with(default_vtl2_settings))
+    }
 }
 
 /// The guest the VM will boot into. A boot drive with the chosen setup
@@ -1940,7 +2249,6 @@ impl PcatGuest {
         }
     }
 
-    #[cfg_attr(not(windows), expect(dead_code))]
     fn is_dvd(&self) -> bool {
         matches!(self, Self::Iso(_))
     }
@@ -2073,14 +2381,16 @@ pub struct OpenHclServicingFlags {
 }
 
 /// Petri disk
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Disk {
     /// Memory backed with specified size
     Memory(u64),
-    /// Memory differencing disk backed by a file
+    /// Memory differencing disk backed by a VHD
     Differencing(PathBuf),
-    /// Persistent disk
+    /// Persistent VHD
     Persistent(PathBuf),
+    /// Disk backed by a temporary VHD
+    Temporary(Arc<TempPath>),
 }
 
 /// Petri VMGS disk
@@ -2279,7 +2589,7 @@ pub enum VmbusStorageType {
 }
 
 /// VM disk drive
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Drive {
     /// Backing disk
     pub disk: Option<Disk>,
@@ -2294,39 +2604,6 @@ impl Drive {
     }
 }
 
-/// IDE configuration
-///
-/// Controller 0, location 0 is reserved for the boot disk.
-#[derive(Debug, Clone, PartialEq)]
-pub struct IdeConfig {
-    /// Controller 0, location 1
-    pub drive_0_1: Option<Drive>,
-    /// Controller 1, location 0
-    pub drive_1_0: Option<Drive>,
-    /// Controller 1, location 1
-    pub drive_1_1: Option<Drive>,
-}
-
-impl Default for IdeConfig {
-    fn default() -> Self {
-        Self {
-            drive_0_1: None,
-            drive_1_0: Some(Drive {
-                disk: None,
-                is_dvd: true,
-            }),
-            drive_1_1: None,
-        }
-    }
-}
-
-impl IdeConfig {
-    /// Get the config with the boot disk
-    pub fn into_controllers(self) -> [[Option<Drive>; 2]; 2] {
-        [[None, self.drive_0_1], [self.drive_1_0, self.drive_1_1]]
-    }
-}
-
 /// VMBus storage controller
 #[derive(Debug, Clone)]
 pub struct VmbusStorageController {
@@ -2335,7 +2612,7 @@ pub struct VmbusStorageController {
     /// The storage device type
     pub controller_type: VmbusStorageType,
     /// Drives (with any inserted disks) attached to this storage controller
-    pub drives: HashMap<u8, Drive>,
+    pub drives: HashMap<u32, Drive>,
 }
 
 impl VmbusStorageController {
@@ -2349,7 +2626,12 @@ impl VmbusStorageController {
     }
 
     /// Add a disk to the storage controller
-    pub fn set_drive(&mut self, lun: Option<u8>, drive: Drive, allow_modify_existing: bool) -> u8 {
+    pub fn set_drive(
+        &mut self,
+        lun: Option<u32>,
+        drive: Drive,
+        allow_modify_existing: bool,
+    ) -> u32 {
         let lun = if let Some(lun) = lun {
             if !allow_modify_existing && self.drives.contains_key(&lun) {
                 panic!("a disk with lun {lun} already exists on this controller");
@@ -2358,7 +2640,7 @@ impl VmbusStorageController {
         } else {
             // find the first available lun
             let mut lun = None;
-            for x in 0..u8::MAX {
+            for x in 0..u8::MAX as u32 {
                 if !self.drives.contains_key(&x) {
                     lun = Some(x)
                 }

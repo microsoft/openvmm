@@ -460,7 +460,7 @@ pub async fn run_set_vm_drive_ide(
     )
     .await
     .map(|_| ())
-    .context("set_vm_drive_scsi")
+    .context("set_vm_drive_ide")
 }
 
 /// Runs Add-VMScsiController with the given arguments.

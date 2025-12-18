@@ -156,14 +156,16 @@ async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
 
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64])]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64])]
 async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
     let flags = config.default_servicing_flags();
     openhcl_servicing_core(
-        config.with_vmbus_redirect(true), // Need this to attach the NVMe device
+        config
+            .with_boot_device_type(petri::BootDeviceType::ScsiViaNvme)
+            .with_vmbus_redirect(true), // Need this to attach the NVMe device
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         igvm_file,
         flags,

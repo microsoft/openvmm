@@ -384,7 +384,7 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
                 .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
                     ControllerType::Scsi,
                     vtl2_vsid,
-                    vtl2_lun.into(),
+                    vtl2_lun,
                 ))
                 .build(),
         );

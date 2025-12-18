@@ -173,7 +173,7 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         &mut self,
         _disk: &crate::Drive,
         _controller_id: &guid::Guid,
-        _controller_location: u8,
+        _controller_location: u32,
     ) -> anyhow::Result<()> {
         todo!("openvmm set vmbus drive")
     }
@@ -469,12 +469,7 @@ impl PetriVmInner {
         if let Some(agent) = self.resources.linux_direct_serial_agent.as_mut() {
             agent.reset();
 
-            if self
-                .resources
-                .agent_image
-                .as_ref()
-                .is_some_and(|x| x.contains_pipette())
-            {
+            if self.resources.properties.using_vtl0_pipette {
                 self.launch_linux_direct_pipette().await?;
             }
         }
