@@ -397,7 +397,7 @@ impl LxFile {
             statx
         };
 
-        Ok(util::libc_statx_to_lx_statex(statx))
+        Ok(util::libc_statx_to_lx_statx(statx))
     }
 
     pub fn set_attr(&self, attr: SetAttributes) -> lx::Result<()> {
