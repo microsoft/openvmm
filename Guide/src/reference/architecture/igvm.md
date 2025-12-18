@@ -17,4 +17,4 @@ An OpenHCL IGVM bundles the artifacts that must be present when VTL2 starts:
 
 ## Tooling and Builds
 
-The host VMM builds the IGVM artifact using OpenHCL's build scripts; see [Building OpenHCL](../../dev_guide/getting_started/build_openhcl.md) for the end-to-end flow. The file format itself, validation tooling, and examples live in the [IGVM repository](https://github.com/microsoft/igvm).
+For OpenHCL, the IGVM artifact is built using OpenHCL's build scripts; see [Building OpenHCL](../../dev_guide/getting_started/build_openhcl.md) for the end-to-end flow. The file format itself, validation tooling, and examples live in the [IGVM repository](https://github.com/microsoft/igvm).

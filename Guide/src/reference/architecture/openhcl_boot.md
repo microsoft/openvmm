@@ -12,7 +12,7 @@ The boot shim is the first code that executes in VTL2. It performs early initial
 
 1. **Hardware initialization** - Sets up CPU state, enables MMU, configures initial page tables
 2. **Configuration parsing** - Receives boot parameters from the host via IGVM
-3. **Device tree construction** - (non-isolated only) Builds a device tree describing the hardware configuration (CPU topology, memory regions, devices)
+3. **Device tree construction** - Builds a device tree describing the hardware configuration (CPU topology, memory regions, devices)
 4. **Sidecar initialization** (x86_64 only, non-isolated only) - Sets up sidecar control/command pages so sidecar CPUs can start (see Sidecar Kernel section below)
 5. **Kernel handoff** - Transfers control to the Linux kernel entry point with device tree and command line
 
@@ -20,6 +20,7 @@ The boot shim receives configuration through:
 
 - **IGVM parameters** - Structured data from the IGVM file
 - **Architecture-specific boot protocol** - Device tree pointer (ARM64) or boot parameters structure (x86_64)
+- **Saved state** - In the case of VTL2 Servicing, some state is preserved at a well-known location in address space.
 
 ### Stage 2: Linux Kernel
 
