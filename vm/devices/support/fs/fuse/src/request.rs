@@ -61,6 +61,7 @@ fuse_operations! {
     FUSE_SETUPMAPPING SetupMapping arg:fuse_setupmapping_in;
     FUSE_REMOVEMAPPING RemoveMapping arg:fuse_removemapping_in mappings:[u8];
     FUSE_SYNCFS SyncFs _arg:fuse_syncfs_in;
+    FUSE_STATX StatX arg:fuse_statx_in;
     FUSE_CANONICAL_PATH CanonicalPath;
 }
 
@@ -251,6 +252,21 @@ pub(crate) mod tests {
             panic!("Incorrect operation {:?}", request.operation);
         }
     }
+
+    #[test]
+    fn parse_statx() {
+        let request = Request::new(FUSE_STATX_REQUEST).unwrap();
+        check_header(&request, 2, FUSE_STATX, 1);
+        if let FuseOperation::StatX { arg } = request.operation {
+            assert_eq!(arg.fh, 0);
+            assert_eq!(arg.getattr_flags, 0);
+            assert_eq!(arg.mask, 0);
+            assert_eq!(arg.flags, 0);
+        } else {
+            panic!("Incorrect operation {:?}", request.operation);
+        }
+    }
+
 
     #[test]
     fn parse_lookup() {

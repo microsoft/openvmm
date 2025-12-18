@@ -89,6 +89,11 @@ impl LxVolume {
 
     /// Retrieves the attributes of a file. Symlinks are not followed.
     pub fn lstat(&self, path: impl AsRef<Path>) -> lx::Result<lx::Stat> {
+        self.inner.lstat(path.as_ref()).map(|x| x.into())
+    }
+
+    /// Retrieves the statx details of a file. Symlinks are not followed.
+    pub fn statx(&self, path: impl AsRef<Path>) -> lx::Result<lx::StatEx> {
         self.inner.lstat(path.as_ref())
     }
 
@@ -530,7 +535,7 @@ pub struct LxFile {
 
 impl LxFile {
     /// Retrieves the attributes of the file.
-    pub fn fstat(&self) -> lx::Result<lx::Stat> {
+    pub fn fstat(&self) -> lx::Result<lx::StatEx> {
         self.inner.fstat()
     }
 

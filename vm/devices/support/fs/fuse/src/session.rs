@@ -402,6 +402,16 @@ impl Session {
                 // Rely on host file system to sync data
                 sender.send_empty(request.unique())?;
             }
+            FuseOperation::StatX { arg } => {
+                let out = self.fs.get_statx(
+                    &request,
+                    arg.fh,
+                    arg.getattr_flags,
+                    arg.flags,
+                    arg.mask.into(),
+                )?;
+                sender.send_arg(request.unique(), out)?;
+            }
             FuseOperation::CanonicalPath {} => {
                 // Android-specific opcode used to return a guest accessible
                 // path to the file location being proxied by the fuse
