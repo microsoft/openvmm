@@ -117,6 +117,7 @@ impl PetriVmConfigOpenVmm {
         let PetriVmConfig {
             name: _,
             arch,
+            host_log_levels,
             firmware,
             memory,
             proc_topology,
@@ -523,6 +524,7 @@ impl PetriVmConfigOpenVmm {
         Ok(Self {
             firmware,
             arch,
+            host_log_levels,
             config,
             boot_device_type,
 
