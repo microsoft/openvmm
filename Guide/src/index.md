@@ -9,7 +9,7 @@ currently focused on its role in the [OpenHCL paravisor][paravisor].
 The project is open-source, MIT Licensed, and developed publicly at
 [microsoft/openvmm](https://github.com/microsoft/openvmm) on GitHub.
 
-**Cross-Platform**
+## Cross-Platform
 
 OpenVMM supports a variety of host operating systems, architectures, and
 virtualization backends:
@@ -22,7 +22,7 @@ virtualization backends:
 |                     | x64           | MSHV (Microsoft Hypervisor)            |
 | macOS               | Aarch64       | Hypervisor.framework                   |
 
-**Running in the OpenHCL paravisor**
+## Running in the OpenHCL paravisor
 
 OpenVMM is the VMM that runs in the [OpenHCL paravisor][paravisor].
 
@@ -47,7 +47,7 @@ enabling several important Azure scenarios:
 - Powering [Trusted Launch VMs] - VMs that support Secure Boot, and include a
   vTPM.
 
-**Standalone VMM**
+## Standalone VMM
 
 OpenVMM can also run as a general-purpose VMM on a Windows, Linux, or macOS
 host. At the moment, this is primarily a development vehicle: most of the same
@@ -61,7 +61,7 @@ general-purpose use. We recommend you consider other Rust-based VMMs such as
 [Cloud Hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor) for
 such use cases.
 
-***Relationship to other Rust-based VMMs***
+## Relationship to other Rust-based VMMs
 
 OpenVMM's core security principles are aligned with those of the Rust-based
 Cloud Hypervisor, Firecracker, and crosvm projects, which is why we also chose
@@ -89,7 +89,7 @@ We are indebted to the Rust VMM community for their trailblazing work. Now that
 the OpenVMM project is open source, we hope to find ways to collaborate on
 shared code while maintaining the benefits of the OpenVMM architecture.
 
-**Guest Compatibility**
+## Guest Compatibility
 
 Similar to other general-purpose VMMs (such as Hyper-V, QEMU, VirtualBox),
 OpenVMM is able to host a wide variety of both modern and legacy guest operating

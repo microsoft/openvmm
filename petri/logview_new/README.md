@@ -61,7 +61,7 @@ npx eslint .
 
 ## Project Structure
 
-```
+```text
 logview_new/
 ├── src/
 │   ├── main.tsx          # Application entry point

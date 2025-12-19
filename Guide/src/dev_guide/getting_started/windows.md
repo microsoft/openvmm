@@ -36,7 +36,7 @@ Please follow the [official instructions](https://www.rust-lang.org/tools/instal
 ### Visual Studio C++ Build Tools and Windows SDK
 
 If you don't already have it, you will need to install
-[Visual Studio C++ Build tools ](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+[Visual Studio C++ Build tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 or [Visual Studio](https://visualstudio.microsoft.com/vs/) with the components
 "Desktop Development for C++" and the Windows SDK. Windows 11 SDK version 26100 is the latest
 version as of this update, but you should install the newest version if there is a newer

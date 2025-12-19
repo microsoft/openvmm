@@ -14,7 +14,7 @@ don't neatly fall under the `cargo` umbrella. e.g:
 The following chapter discusses some of the various dev-facing tools / utilities
 you may encounter and/or find useful when working on OpenVMM.
 
-### Rust-based Tooling
+## Rust-based Tooling
 
 As with many projects, OpenVMM initially took the simple approach of spinning up
 ad-hoc Bash/Python scripts, and hand-written YAML workflow automation.
