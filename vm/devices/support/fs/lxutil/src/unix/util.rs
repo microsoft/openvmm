@@ -131,18 +131,6 @@ pub unsafe fn set_errno(error: i32) {
     }
 }
 
-pub fn libc_stat_to_lx_stat(stat: libc::stat) -> lx::Stat {
-    // SAFETY: lx::Stat is identical to libc's version, and padding bytes are not exposed, so just transmute it.
-    // N.B. This call won't compile if the two aren't the same size.
-    unsafe { mem::transmute(stat) }
-}
-
-pub fn libc_statx_to_lx_statx(statx: libc::statx) -> lx::StatEx {
-    // SAFETY: lx::StatEx is identical to libc's version, and padding bytes are not exposed, so just transmute it.
-    // N.B. This call won't compile if the two aren't the same size.
-    unsafe { mem::transmute(statx) }
-}
-
 pub fn libc_stat_fs_to_lx_stat_fs(stat_fs: libc::statfs) -> lx::StatFs {
     // SAFETY: lx::StatFs is identical to libc's version, and padding bytes are not exposed, so just transmute it.
     // N.B. This call won't compile if the two aren't the same size.

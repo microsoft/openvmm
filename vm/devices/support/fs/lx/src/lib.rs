@@ -432,11 +432,11 @@ impl From<StatEx> for Stat {
             write_time: statx.write_time.into(),
             change_time: statx.change_time.into(),
             pad0: 0,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
             pad1: [0; 3],
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(target_arch = "aarch64")] // xtask-fmt allow-target-arch sys-crate
             pad1: 0,
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(target_arch = "aarch64")] // xtask-fmt allow-target-arch sys-crate
             unused: [0; 2],
         }
     }
