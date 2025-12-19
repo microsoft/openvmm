@@ -530,7 +530,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 BootDeviceType::Nvme => self
                     .add_vmbus_storage_controller(
                         &PETRI_NVME_BOOT_VTL0_CONTROLLER,
-                        Vtl::Vtl2,
+                        Vtl::Vtl0,
                         VmbusStorageType::Nvme,
                     )
                     .add_vmbus_drive(
