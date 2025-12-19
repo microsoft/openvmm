@@ -55,29 +55,12 @@ The DMA Manager supports save/restore operations, which is essential for servici
 
 ## Integration with Device Drivers
 
-### NVMe Driver
+Device drivers use the DMA Manager to allocate memory for device I/O operations. Major users include:
 
-The NVMe driver is a primary user of the DMA Manager's private pool:
+- **NVMe Driver**: Uses private pool for persistent allocations when keepalive is enabled
+- **MANA Driver**: Uses DMA allocations for network operations
 
-1. NVMe drivers request persistent, private allocations with VTL0 permissions
-2. The DMA Manager allocates from the private pool and adjusts VTL permissions
-3. During servicing, these allocations are preserved, allowing NVMe devices to remain operational
-4. After servicing, the restored private pool state reconnects the device to its buffers
-
-### Other Device Drivers
-
-Device drivers use the DMA Manager through the client spawner API:
-
-```rust
-let dma_client = dma_manager.client_spawner().create_client(
-    DmaClientParameters {
-        device_name: "my-device",
-        lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
-        allocation_visibility: AllocationVisibility::Private,
-        persistent_allocations: true,
-    }
-)?;
-```
+For implementation details, see the device driver rustdocs and the `DmaClientParameters` API documentation.
 
 ## Memory Visibility on CVMs
 
@@ -102,10 +85,22 @@ On hardware-isolated VMs:
 
 ## Configuration
 
-The DMA Manager is initialized during OpenHCL startup with:
+The DMA Manager is initialized during OpenHCL startup based on configuration determined by the boot shim.
+
+### Private Pool Configuration
+
+The `OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG` parameter controls the VTL2 GPA pool size used for the private pool:
+
+- `debug`: Use debug version of lookup table or device tree
+- `off`: Disable the VTL2 GPA pool
+- `<num_pages>`: Explicitly specify pool size in pages
+
+The boot shim (see `openhcl_boot`) determines pool sizes using heuristics based on the system configuration (memory size, device requirements, etc.) unless explicitly overridden by this parameter.
+
+### Initialization Parameters
 
 - **Shared Pool Ranges**: Memory ranges from the host for shared visibility
-- **Private Pool Ranges**: Memory ranges reserved for private persistent allocations
+- **Private Pool Ranges**: Memory ranges reserved for private persistent allocations (determined by VTL2 GPA pool config)
 - **VTOM Offset**: Bit position for shared/private memory distinction on CVMs
 - **Isolation Type**: Whether running on hardware-isolated or software-isolated platform
 

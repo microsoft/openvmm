@@ -10,47 +10,32 @@ The NVMe driver in Underhill (OpenHCL's userspace component) provides a safe, Ru
 
 ### NVMe Driver
 
-The NVMe driver (`nvme_driver` crate) provides the core functionality for interacting with NVMe devices:
-
-- **Device Initialization**: Handles NVMe controller initialization, queue setup, and namespace discovery
-- **I/O Operations**: Provides asynchronous read/write operations through submission and completion queues
-- **Save/Restore Support**: Enables device state preservation during servicing operations (when supported)
-
-For detailed implementation information, see the [NVMe Driver API documentation](https://openvmm.dev/rustdoc/linux/nvme_driver/index.html).
+The NVMe driver (`nvme_driver` crate) provides the core functionality for interacting with NVMe devices. For detailed implementation information, see the [NVMe Driver API documentation](https://openvmm.dev/rustdoc/linux/nvme_driver/index.html).
 
 ### NVMe Manager
 
-The NVMe manager (`underhill_core::nvme_manager`) coordinates multiple NVMe devices and provides:
-
-- **Device Registry**: Tracks and manages multiple NVMe devices by PCI ID
-- **Multi-threaded Architecture**: Uses mesh RPC for concurrent cross-device operations while serializing per-device requests
-- **Namespace Resolution**: Resolves disk configurations to specific NVMe namespaces
-- **Lifecycle Management**: Handles device initialization, operation, and shutdown
-
-### DMA Manager Integration
-
-NVMe devices work closely with the [DMA Manager](../../openhcl/dma_manager.md) for memory management:
-
-- **Private Pool**: When available, NVMe devices use the private pool for persistent DMA allocations that survive servicing
-- **VTL Permissions**: The DMA manager ensures proper VTL0 access permissions for memory buffers
-- **Save/Restore Support**: Persistent allocations enable NVMe keepalive during servicing operations
-
-## Relayed Storage
-
-In OpenHCL, "relayed storage" refers to devices that are:
-
-1. First assigned to VTL2 by the host
-2. Then relayed by OpenHCL over VMBus to VTL0
-
-While relayed storage can be any device type, NVMe devices are the most common use case, particularly for Azure Boost storage acceleration. OpenHCL translates VMBus storage requests from VTL0 into NVMe operations, providing compatibility with existing guest OS storage stacks while leveraging hardware-accelerated NVMe storage.
+The NVMe manager coordinates multiple NVMe devices with a multi-threaded architecture. For implementation details, see the [underhill_core::nvme_manager rustdocs](https://openvmm.dev/rustdoc/linux/underhill_core/nvme_manager/index.html).
 
 ## Configuration
 
-NVMe device support is enabled through OpenHCL configuration:
+NVMe device support is controlled through environment variables:
+
+### `OPENHCL_NVME_KEEP_ALIVE`
+
+Controls whether NVMe devices remain active during servicing operations:
+
+- `host,privatepool`: Enable keepalive when both host support and private pool are available
+- `nohost,privatepool`: Private pool available but host keepalive disabled  
+- `nohost,noprivatepool`: Keepalive fully disabled
+
+The boot shim infers this configuration based on the detected environment unless explicitly overridden.
+
+### Additional Flags
 
 - **`nvme_vfio`**: Enables VFIO-based NVMe driver support
-- **`nvme_keep_alive`**: Controls whether NVMe devices remain active during servicing operations
-- **Private Pool**: Must be available for save/restore support
+- **Private Pool**: Must be configured via `OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG` for keepalive support
+
+For more details on private pool configuration, see [DMA Manager](../../openhcl/dma_manager.md).
 
 ## See Also
 

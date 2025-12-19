@@ -112,7 +112,7 @@
 - [Device Backends]()
   - [Serial]()
   - [Graphics and Input]()
-  - [Storage]()
+  - [Storage](./reference/backends/storage.md)
     - [NVMe](./reference/backends/storage/nvme.md)
   - [Networking]()
 - [Architecture](./reference/architecture.md)
