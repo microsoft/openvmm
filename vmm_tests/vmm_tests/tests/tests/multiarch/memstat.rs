@@ -461,7 +461,7 @@ async fn memory_validation_release_small<T: PetriVmmBackend>(
         WaitPeriodSec::ShortWait,
         driver,
         "release",
-        true,
+        false,
     )
     .await
 }
@@ -487,7 +487,7 @@ async fn memory_validation_debug_small<T: PetriVmmBackend>(
         WaitPeriodSec::ShortWait,
         driver,
         "debug",
-        true,
+        false,
     )
     .await
 }
@@ -509,7 +509,7 @@ async fn memory_validation_release_very_heavy<T: PetriVmmBackend>(
         WaitPeriodSec::LongWait,
         driver,
         "release",
-        true,
+        false,
     )
     .await
 }
@@ -535,7 +535,7 @@ async fn memory_validation_debug_very_heavy<T: PetriVmmBackend>(
         WaitPeriodSec::LongWait,
         driver,
         "debug",
-        true,
+        false,
     )
     .await
 }

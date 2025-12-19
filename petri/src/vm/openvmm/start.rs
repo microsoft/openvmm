@@ -42,6 +42,8 @@ impl PetriVmConfigOpenVmm {
             mut config,
             boot_device_type,
 
+            mesh,
+
             mut resources,
 
             openvmm_log_file,
@@ -134,8 +136,6 @@ impl PetriVmConfigOpenVmm {
         }
 
         tracing::debug!(?config, "OpenVMM config");
-
-        let mesh = Mesh::new("petri_mesh".to_string())?;
 
         let log_env = match host_log_levels {
             None | Some(OpenvmmLogConfig::TestDefault) => BTreeMap::<OsString, OsString>::from([
