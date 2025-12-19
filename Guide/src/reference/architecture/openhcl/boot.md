@@ -58,7 +58,7 @@ sequenceDiagram
 
 The boot process begins when the host VMM loads the OpenHCL IGVM package into VTL2 memory.
 The IGVM package contains the initial code and data required to start the paravisor, including the boot shim, kernel, and initial ramdisk.
-The host places these components at specific physical addresses defined in the IGVM header.
+The host places these components at specific physical addresses defined in the IGVM header and carries the configuration blob (parameters and optional host device tree) into VTL2.
 
 ## 2. Boot Shim Execution (`openhcl_boot`)
 
@@ -82,6 +82,7 @@ The **Linux Kernel** takes over on the BSP and initializes the operating system 
 1. **Kernel Init:** The kernel initializes its subsystems (memory, scheduler, etc.).
 2. **Driver Init:** It loads drivers for the paravisor hardware and standard devices.
 3. **Root FS:** It mounts the initial ramdisk (initrd) as the root filesystem.
+4. **Expose DT:** It exposes the boot-time Device Tree to userspace (e.g., under `/proc/device-tree`) for early consumers.
 4. **User Space:** It spawns the first userspace process, `underhill_init` (PID 1).
 
 ## 4. Userspace Initialization (`underhill_init`)
@@ -104,13 +105,3 @@ The **Paravisor** process (`openvmm_hcl`) starts and initializes the virtualizat
 
 At this point, the OpenHCL environment is fully established.
 The `underhill_vm` process runs the VTL0 guest, handling exits and emulating devices, while `openvmm_hcl` manages the overall policy and communicates with the host.
-
-## Configuration Data Flow
-
-Configuration flows through the system as follows:
-
-1. **Host VMM** generates the configuration.
-2. **IGVM** delivers the configuration to VTL2.
-3. **Boot Shim** parses it and converts it to a Device Tree.
-4. **Linux Kernel** exposes the Device Tree to userspace.
-5. **Paravisor** reads the Device Tree to configure itself.
