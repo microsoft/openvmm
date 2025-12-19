@@ -137,7 +137,9 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
 
         let do_hvcall =
             |hv_names: &mut ArrayVec<_, _>, hv_values: &mut ArrayVec<&mut HvRegisterValue, _>| {
-                let mut values: ArrayVec<_, MAX_REGS_PER_HVCALL> = ArrayVec::new();
+                let mut values: ArrayVec<_, MAX_REGS_PER_HVCALL> = ArrayVec::from_iter(
+                    std::iter::repeat_n(FromZeros::new_zeroed(), hv_names.len()),
+                );
                 self.hcl
                     .mshv_hvcall
                     .get_vp_registers_hypercall(vtl, hv_names, &mut values)
