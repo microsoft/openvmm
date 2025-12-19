@@ -133,9 +133,9 @@ pub enum LowerVtlPermissionPolicy {
 /// The CVM page visibility required for DMA allocations.
 #[derive(Copy, Clone, Inspect)]
 pub enum AllocationVisibility {
-    /// Allocations must be shared aka host visible.
+    /// Allocations must be shared with the host (aka host visible).
     Shared,
-    /// Allocations must be private.
+    /// Allocations must be private to the guest (but is allowed to be visible to the VTL0 guest).
     Private,
 }
 
@@ -148,7 +148,8 @@ pub struct DmaClientParameters {
     pub lower_vtl_policy: LowerVtlPermissionPolicy,
     /// The required CVM page visibility for allocations.
     pub allocation_visibility: AllocationVisibility,
-    /// Whether allocations must be persistent.
+    /// Whether allocations should be persistent. Persistent allocations can
+    /// survive save/restore.
     pub persistent_allocations: bool,
 }
 
@@ -323,6 +324,14 @@ impl OpenhclDmaManager {
         vtom: u64,
         isolation_type: virt::IsolationType,
     ) -> anyhow::Result<Self> {
+        tracing::info!(
+            ?shared_ranges,
+            ?private_ranges,
+            vtom,
+            ?isolation_type,
+            "create dma manager"
+        );
+
         let shared_pool = if shared_ranges.is_empty() {
             None
         } else {
@@ -442,7 +451,13 @@ impl DmaClientBacking {
         match self {
             DmaClientBacking::SharedPool(allocator) => allocator.attach_pending_buffers(),
             DmaClientBacking::PrivatePool(allocator) => allocator.attach_pending_buffers(),
-            DmaClientBacking::LockedMemory(spawner) => spawner.attach_pending_buffers(),
+            DmaClientBacking::LockedMemory(_) => {
+                anyhow::bail!(
+                    "attaching pending buffers is not supported with locked memory; \
+                    this client type does not maintain a pool of pending allocations. \
+                    To use attach_pending_buffers, create a client backed by a shared or private pool."
+                )
+            }
             DmaClientBacking::PrivatePoolLowerVtl(spawner) => spawner.attach_pending_buffers(),
             DmaClientBacking::LockedMemoryLowerVtl(spawner) => spawner.attach_pending_buffers(),
         }

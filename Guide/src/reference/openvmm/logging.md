@@ -6,13 +6,13 @@ To configure logging, use the `OPENVMM_LOG` environment variable. For example:
 
 Enables debug events from all modules:
 
-```
+```cmd
 set OPENVMM_LOG=debug
 ```
 
 Enables trace events from the `mesh` crate and info events from everything else:
 
-```
+```cmd
 set OPENVMM_LOG=info,mesh=trace
 ```
 
@@ -31,17 +31,17 @@ OpenHCL tracing can also be configured and dumped at runtime with `ohcldiag-dev`
 To retrieve OpenHCL log output at runtime, an output console or file must attach to the OpenHCL logging COM port. By default, OpenHCL outputs to `COM3`.
 
 To open a new terminal window with global OpenHCL debug level tracing enabled:
-```
+```cmd
 openvmm.exe -c "OPENVMM_LOG=debug" --com3 "term,name=VTL2 OpenHCL" [...]
 ```
 
 Configure log levels of only a given module name:
-```
+```cmd
 openvmm.exe -c "OPENVMM_LOG=mesh=trace" --com3 "term,name=VTL2 OpenHCL" [...]
 ```
 
 Multiple modules can be specified by separating them with a comma:
-```
+```cmd
 openvmm.exe -c "OPENVMM_LOG=mesh=trace,nvme_driver=trace" --com3 "term,name=VTL2 OpenHCL" [...]
 ```
 

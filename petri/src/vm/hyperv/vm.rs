@@ -6,9 +6,11 @@
 use super::hvc;
 use super::hvc::VmState;
 use super::powershell;
+use crate::CommandError;
 use crate::OpenHclServicingFlags;
 use crate::PetriHaltReason;
 use crate::PetriLogFile;
+use crate::PetriLogSource;
 use crate::PetriVmFramebufferAccess;
 use crate::VmScreenshotMeta;
 use anyhow::Context;
@@ -21,13 +23,10 @@ use pal_async::timer::PolledTimer;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
-use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Weak;
 use std::time::Duration;
 use tempfile::TempDir;
-use thiserror::Error;
 use tracing::Level;
 
 /// A Hyper-V VM
@@ -43,11 +42,13 @@ pub struct HyperVVM {
     ps_mod: PathBuf,
     // TODO: use a trait interface here
     log_file: PetriLogFile,
+    logger: PetriLogSource,
     driver: DefaultDriver,
 
     // state
     destroyed: bool,
     last_start_time: Option<Timestamp>,
+    last_log_flushed: Option<Timestamp>,
 }
 
 impl HyperVVM {
@@ -57,9 +58,11 @@ impl HyperVVM {
         generation: powershell::HyperVGeneration,
         guest_state_isolation_type: powershell::HyperVGuestStateIsolationType,
         memory: u64,
-        log_file: PetriLogFile,
+        vmgs_path: Option<&Path>,
+        logger: PetriLogSource,
         driver: DefaultDriver,
     ) -> anyhow::Result<Self> {
+        let log_file = logger.log_file("hyperv")?;
         let create_time = Timestamp::now();
         let name = name.to_owned();
         let temp_dir = tempfile::tempdir()?;
@@ -108,6 +111,7 @@ impl HyperVVM {
             memory_startup_bytes: Some(memory),
             path: None,
             vhd_path: None,
+            source_guest_state_path: vmgs_path,
         })
         .await?;
 
@@ -123,9 +127,11 @@ impl HyperVVM {
             temp_dir: Arc::new(temp_dir),
             ps_mod,
             log_file,
+            logger,
             driver,
             destroyed: false,
             last_start_time: None,
+            last_log_flushed: None,
         };
 
         // Remove the default network adapter
@@ -172,29 +178,62 @@ impl HyperVVM {
     }
 
     /// Get Hyper-V logs and write them to the log file
-    pub async fn flush_logs(&self) -> anyhow::Result<()> {
-        for event in powershell::hyperv_event_logs(&self.vmid, &self.create_time).await? {
-            self.log_file.write_entry_fmt(
-                Some(event.time_created),
-                match event.level {
-                    1 | 2 => Level::ERROR,
-                    3 => Level::WARN,
-                    5 => Level::TRACE,
-                    _ => Level::INFO,
-                },
-                format_args!(
-                    "[{}] {}: ({}, {}) {}",
-                    event.time_created, event.provider_name, event.level, event.id, event.message,
-                ),
-            );
+    pub async fn flush_logs(&mut self) -> anyhow::Result<()> {
+        let start_time = self.last_log_flushed.as_ref().unwrap_or(&self.create_time);
+        for event in powershell::hyperv_event_logs(Some(&self.vmid), start_time).await? {
+            self.log_winevent(&event);
+            if self.last_log_flushed.is_none_or(|t| t < event.time_created) {
+                // add 1ms to avoid duplicate log entries
+                self.last_log_flushed =
+                    Some(event.time_created.checked_add(Duration::from_millis(1))?);
+            }
         }
         Ok(())
+    }
+
+    fn log_winevent(&self, event: &powershell::WinEvent) {
+        self.log_file.write_entry_fmt(
+            Some(event.time_created),
+            match event.level {
+                1 | 2 => Level::ERROR,
+                3 => Level::WARN,
+                5 => Level::TRACE,
+                _ => Level::INFO,
+            },
+            format_args!(
+                "[{}] {}: ({}, {}) {}",
+                event.time_created, event.provider_name, event.level, event.id, event.message,
+            ),
+        );
+
+        const HYPERV_CRASHDUMP_PROVIDER: &str = "Microsoft-Windows-Hyper-V-CrashDump";
+        const CRASH_DUMP_WRITTEN_EVENT_ID: u32 = 40001;
+
+        // If we see an event indicating a crash dump was written, parse the message
+        // to find the dump file path and attach it.
+        if event.provider_name == HYPERV_CRASHDUMP_PROVIDER
+            && event.id == CRASH_DUMP_WRITTEN_EVENT_ID
+        {
+            let Some(path_start) = event.message.find("C:\\") else {
+                tracing::warn!("could not find crash dump path in crash event message");
+                return;
+            };
+            // Messages end with a period, exclude it
+            let path = Path::new(&event.message[path_start..event.message.len() - 1]);
+            let filename = path.file_name().and_then(|x| x.to_str()).unwrap();
+            if let Err(e) = self.logger.copy_attachment(filename, path) {
+                tracing::warn!(
+                    error = e.as_ref() as &dyn std::error::Error,
+                    "failed to copy hyper-v crash dump file"
+                );
+            }
+        }
     }
 
     /// Waits for an event emitted by the firmware about its boot status, and
     /// returns that status.
     pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
-        self.wait_for_some(Self::boot_event).await
+        self.wait_for_off_or_internal(Self::boot_event).await
     }
 
     async fn boot_event(&self) -> anyhow::Result<Option<FirmwareEvent>> {
@@ -261,8 +300,9 @@ impl HyperVVM {
     }
 
     /// Add a SCSI controller
-    pub async fn add_scsi_controller(&mut self, target_vtl: u32) -> anyhow::Result<u32> {
-        let controller_number = powershell::run_add_vm_scsi_controller(&self.vmid).await?;
+    pub async fn add_scsi_controller(&mut self, target_vtl: u32) -> anyhow::Result<(u32, Guid)> {
+        let (controller_number, vsid) =
+            powershell::run_add_vm_scsi_controller(&self.ps_mod, &self.vmid).await?;
         if target_vtl != 0 {
             powershell::run_set_vm_scsi_controller_target_vtl(
                 &self.ps_mod,
@@ -272,7 +312,7 @@ impl HyperVVM {
             )
             .await?;
         }
-        Ok(controller_number)
+        Ok((controller_number, vsid))
     }
 
     /// Add a VHD
@@ -280,7 +320,7 @@ impl HyperVVM {
         &mut self,
         path: &Path,
         controller_type: powershell::ControllerType,
-        controller_location: Option<u32>,
+        controller_location: Option<u8>,
         controller_number: Option<u32>,
     ) -> anyhow::Result<()> {
         powershell::run_add_vm_hard_disk_drive(powershell::HyperVAddVMHardDiskDriveArgs {
@@ -363,12 +403,39 @@ impl HyperVVM {
     }
 
     /// Wait for the VM to stop
-    pub async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
-        powershell::run_set_turn_off_on_guest_restart(&self.vmid, &self.ps_mod, !allow_reset)
-            .await?;
-        let (halt_reason, timestamp) = self.wait_for_some(Self::halt_event).await?;
+    pub async fn wait_for_halt(&mut self, _allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
+        // Allow CVMs some time for the VM to be off after reset.
+        const CVM_ALLOWED_OFF_TIME: Duration = Duration::from_secs(15);
+
+        let (halt_reason, timestamp) = self.wait_for_off_or_internal(Self::halt_event).await?;
+
         if halt_reason == PetriHaltReason::Reset {
+            // add 1ms to avoid getting the same event again
             self.last_start_time = Some(timestamp.checked_add(Duration::from_millis(1))?);
+
+            // wait for the CVM to start again
+            if self.is_isolated {
+                let mut timer = PolledTimer::new(&self.driver);
+                loop {
+                    match self.state().await? {
+                        VmState::Off | VmState::Stopping | VmState::Resetting => {}
+                        VmState::Running | VmState::Starting => break,
+                        VmState::Saved
+                        | VmState::Paused
+                        | VmState::Saving
+                        | VmState::Pausing
+                        | VmState::Resuming => anyhow::bail!("Unexpected vm state"),
+                    }
+
+                    if Timestamp::now().duration_since(timestamp).unsigned_abs()
+                        > CVM_ALLOWED_OFF_TIME
+                    {
+                        anyhow::bail!("VM did not start after reset in the required time");
+                    }
+
+                    timer.sleep(Duration::from_secs(1)).await;
+                }
+            }
         }
         Ok(halt_reason)
     }
@@ -402,7 +469,8 @@ impl HyperVVM {
                         | powershell::MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR => {
                             PetriHaltReason::TripleFault
                         }
-                        powershell::MSVM_STOP_CRITICAL_SUCCESS => PetriHaltReason::Other,
+                        powershell::MSVM_STOP_CRITICAL_SUCCESS
+                        | powershell::MSVM_VMMS_VM_TERMINATE_ERROR => PetriHaltReason::Other,
                         id => anyhow::bail!("Unexpected event id: {id}"),
                     },
                     e.time_created,
@@ -412,10 +480,12 @@ impl HyperVVM {
     }
 
     /// Wait for the VM shutdown ic
-    pub async fn wait_for_enlightened_shutdown_ready(&self) -> anyhow::Result<()> {
-        self.wait_for(Self::shutdown_ic_status, powershell::VmShutdownIcStatus::Ok)
-            .await
-            .context("wait_for_enlightened_shutdown_ready")
+    pub async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()> {
+        self.wait_for_off_or_internal(async move |s| {
+            Ok((s.shutdown_ic_status().await? == powershell::VmShutdownIcStatus::Ok).then_some(()))
+        })
+        .await
+        .context("wait_for_enlightened_shutdown_ready")
     }
 
     async fn shutdown_ic_status(&self) -> anyhow::Result<powershell::VmShutdownIcStatus> {
@@ -430,36 +500,41 @@ impl HyperVVM {
         Ok(())
     }
 
-    async fn wait_for<T: std::fmt::Debug + PartialEq>(
-        &self,
-        f: impl AsyncFn(&Self) -> anyhow::Result<T>,
-        target: T,
-    ) -> anyhow::Result<()> {
-        loop {
-            let state = f(self).await?;
-            if state == target {
-                break;
-            }
-            PolledTimer::new(&self.driver)
-                .sleep(Duration::from_secs(1))
-                .await;
-        }
-
-        Ok(())
-    }
-
-    async fn wait_for_some<T: std::fmt::Debug + PartialEq>(
-        &self,
+    pub(crate) async fn wait_for_off_or_internal<T>(
+        &mut self,
         f: impl AsyncFn(&Self) -> anyhow::Result<Option<T>>,
     ) -> anyhow::Result<T> {
+        // flush the logs every time we start waiting for something in case
+        // they don't get flushed when the VM is destroyed.
+        // TODO: run this periodically in a task.
+        self.flush_logs().await?;
+
+        // Even if the VM is rebooting or otherwise transitioning power states
+        // it should never be considered fully off. The only exception is if we
+        // are waiting for the VM to turn off, and we haven't detected the halt
+        // event yet. To avoid this race condition, allow for one more attempt
+        // a second after the VM turns off.
+        let mut last_off = false;
+
+        let mut timer = PolledTimer::new(&self.driver);
         loop {
-            let state = f(self).await?;
-            if let Some(state) = state {
-                return Ok(state);
+            if let Some(output) = f(self).await? {
+                return Ok(output);
             }
-            PolledTimer::new(&self.driver)
-                .sleep(Duration::from_secs(1))
-                .await;
+
+            let off = self.state().await? == VmState::Off;
+            if last_off && off {
+                if let Some((halt_event, _)) = self.halt_event().await? {
+                    anyhow::bail!("Unexpected halt event: {halt_event:?}");
+                } else {
+                    anyhow::bail!(
+                        "The VM is no longer running, but no known halt event was received."
+                    );
+                }
+            }
+            last_off = off;
+
+            timer.sleep(Duration::from_secs(1)).await;
         }
     }
 
@@ -471,22 +546,25 @@ impl HyperVVM {
     async fn remove_inner(&mut self) -> anyhow::Result<()> {
         if !self.destroyed {
             let res_off = hvc::hvc_ensure_off(&self.vmid).await;
-            let res_remove = powershell::run_remove_vm(&self.vmid).await;
 
-            self.flush_logs().await?;
+            // Flush logs before we remove the VM so we can capture any
+            // interesting files before they get deleted.
+            let res_flush = self.flush_logs().await;
+            let res_remove = powershell::run_remove_vm(&self.vmid).await;
 
             res_off?;
             res_remove?;
             self.destroyed = true;
+            res_flush?;
         }
 
         Ok(())
     }
 
-    /// Sets the VM firmware  command line.
+    /// Sets the VM firmware command line.
     pub async fn set_vm_firmware_command_line(
         &self,
-        openhcl_command_line: &str,
+        openhcl_command_line: impl AsRef<str>,
     ) -> anyhow::Result<()> {
         powershell::run_set_vm_command_line(&self.vmid, &self.ps_mod, openhcl_command_line).await
     }
@@ -509,6 +587,38 @@ impl HyperVVM {
             temp_bin_path: self.temp_dir.path().join("screenshot.bin"),
             ps_mod: self.ps_mod.clone(),
         }
+    }
+
+    /// Get the VM's guest state file
+    pub async fn get_guest_state_file(&self) -> anyhow::Result<PathBuf> {
+        powershell::run_get_guest_state_file(&self.vmid, &self.ps_mod).await
+    }
+
+    /// Set the VTL2 settings in the `Base` namespace (fixed settings, storage
+    /// settings, etc).
+    pub async fn set_base_vtl2_settings(
+        &self,
+        settings: &vtl2_settings_proto::Vtl2Settings,
+    ) -> anyhow::Result<()> {
+        powershell::run_set_base_vtl2_settings(&self.vmid, &self.ps_mod, settings).await
+    }
+
+    /// Set GuestStateIsolationMode
+    pub async fn set_guest_state_isolation_mode(
+        &self,
+        mode: powershell::HyperVGuestStateIsolationMode,
+    ) -> anyhow::Result<()> {
+        powershell::run_set_guest_state_isolation_mode(&self.vmid, &self.ps_mod, mode).await
+    }
+
+    /// Enable the TPM
+    pub async fn enable_tpm(&self) -> anyhow::Result<()> {
+        powershell::run_enable_vmtpm(&self.vmid).await
+    }
+
+    /// Disable the TPM
+    pub async fn disable_tpm(&self) -> anyhow::Result<()> {
+        powershell::run_disable_vmtpm(&self.vmid).await
     }
 }
 
@@ -554,47 +664,4 @@ impl PetriVmFramebufferAccess for HyperVFramebufferAccess {
             Ok(None)
         }
     }
-}
-
-/// Error running command
-#[derive(Error, Debug)]
-pub(crate) enum CommandError {
-    /// failed to launch command
-    #[error("failed to launch command")]
-    Launch(#[from] std::io::Error),
-    /// command exited with non-zero status
-    #[error("command exited with non-zero status ({0}): {1}")]
-    Command(std::process::ExitStatus, String),
-    /// command output is not utf-8
-    #[error("command output is not utf-8")]
-    Utf8(#[from] std::string::FromUtf8Error),
-}
-
-/// Run the PowerShell script and return the output
-pub(crate) async fn run_cmd(mut cmd: Command) -> Result<String, CommandError> {
-    cmd.stderr(Stdio::piped()).stdin(Stdio::null());
-
-    let cmd_debug = format!("{cmd:?}");
-    tracing::debug!(cmd = cmd_debug, "executing command");
-
-    let start = Timestamp::now();
-    let output = blocking::unblock(move || cmd.output()).await?;
-    let time_elapsed = Timestamp::now() - start;
-
-    let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
-    tracing::debug!(
-        cmd = cmd_debug,
-        stdout_str,
-        stderr_str,
-        "command exited in {:.3}s with status {}",
-        time_elapsed.total(jiff::Unit::Second).unwrap(),
-        output.status
-    );
-
-    if !output.status.success() {
-        return Err(CommandError::Command(output.status, stderr_str));
-    }
-
-    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
 }

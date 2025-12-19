@@ -214,8 +214,8 @@ impl std::fmt::Debug for Error {
 /// A specialized `Result` type for operations that return Linux error codes.
 pub type Result<T> = std::result::Result<T, Error>;
 
-const UTIME_NOW: usize = (1 << 30) - 1;
-const UTIME_OMIT: usize = (1 << 30) - 2;
+pub const UTIME_NOW: usize = (1 << 30) - 1;
+pub const UTIME_OMIT: usize = (1 << 30) - 2;
 
 /// A Linux `timespec` structure.
 ///

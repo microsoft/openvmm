@@ -6,13 +6,9 @@
 pub use x86defs::apic::DeliveryMode;
 
 use hvdef::HvInterruptType;
-use hvdef::Vtl;
 use inspect::Inspect;
 use parking_lot::Mutex;
 use std::fmt::Debug;
-use std::sync::Arc;
-use vm_topology::processor::VpIndex;
-use vmcore::line_interrupt::LineSetTarget;
 use x86defs::msi::MsiAddress;
 use x86defs::msi::MsiData;
 
@@ -158,29 +154,5 @@ impl IrqRoutes {
                 tracelimit::warn_ratelimited!(irq, "irq for masked interrupt");
             }
         }
-    }
-}
-
-/// A [`LineSetTarget`] implementation that raises APIC local interrupt lines.
-pub struct ApicLintLineTarget<T> {
-    partition: Arc<T>,
-    vtl: Vtl,
-}
-
-impl<T: crate::X86Partition> ApicLintLineTarget<T> {
-    /// Creates a new APIC LINT line set target.
-    pub fn new(partition: Arc<T>, vtl: Vtl) -> Self {
-        Self { partition, vtl }
-    }
-}
-
-impl<T: crate::X86Partition> LineSetTarget for ApicLintLineTarget<T> {
-    fn set_irq(&self, vector: u32, high: bool) {
-        if !high {
-            return;
-        }
-        let vp_index = VpIndex::new(vector / 2);
-        let lint = vector % 2;
-        self.partition.pulse_lint(vp_index, self.vtl, lint as u8);
     }
 }

@@ -456,6 +456,10 @@ impl PacketCaptureQueue {
 
 #[async_trait]
 impl Queue for PacketCaptureQueue {
+    async fn update_target_vp(&mut self, target_vp: u32) {
+        self.current_mut().update_target_vp(target_vp).await
+    }
+
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         self.current_mut().poll_ready(cx)
     }
@@ -532,12 +536,10 @@ impl Queue for PacketCaptureQueue {
                     continue;
                 }
 
-                if !self.pcap.write_packet(
-                    &buf[..len],
-                    metadata.len as u32,
-                    snaplen as u32,
-                    &timestamp,
-                ) {
+                if !self
+                    .pcap
+                    .write_packet(&buf[..len], metadata.len, snaplen as u32, &timestamp)
+                {
                     break;
                 }
             }

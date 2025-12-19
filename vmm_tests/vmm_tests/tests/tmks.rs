@@ -3,6 +3,8 @@
 
 //! Test entrypoint for running TMK tests in different environments.
 
+#![forbid(unsafe_code)]
+
 // Include all the tests.
 //
 // FUTURE: probably the tmk_tests package should own this crate, rather than

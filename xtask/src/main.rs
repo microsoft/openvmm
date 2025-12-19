@@ -1,12 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! HvLite repo-specific automation.
+//! OpenVMM repo-specific automation.
 //!
 //! If you're thinking of writing a bash script, write an xtask instead!
 //!
 //! Follows the xtask workflow/convention, as described at
 //! <https://github.com/matklad/cargo-xtask>
+
+#![forbid(unsafe_code)]
 
 use anyhow::Context;
 use clap::Parser;
@@ -48,7 +50,7 @@ pub trait Xtask: Parser {
 }
 
 #[derive(Parser)]
-#[clap(name = "xtask", about = "HvLite repo automation")]
+#[clap(name = "xtask", about = "OpenVMM repo automation")]
 struct Cli {
     #[clap(subcommand)]
     command: Commands,

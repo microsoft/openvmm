@@ -1,0 +1,27 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "prep_steps"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+openvmm_defs.workspace = true
+openvmm_helpers.workspace = true
+petri.workspace = true
+petri_artifacts_common.workspace = true
+petri_artifacts_vmm_test.workspace = true
+petri_artifact_resolver_openvmm_known_paths.workspace = true
+scsidisk_resources.workspace = true
+storvsp_resources.workspace = true
+vm_resource.workspace = true
+
+guid.workspace = true
+pal_async.workspace = true
+
+anyhow.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

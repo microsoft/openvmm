@@ -15,6 +15,7 @@ use chipset_arc_mutex_device::services::PciConfigSpaceServices;
 use chipset_arc_mutex_device::services::PollDeviceServices;
 use chipset_arc_mutex_device::services::PortIoInterceptServices;
 use chipset_device::ChipsetDevice;
+use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredToken;
 use chipset_device::mmio::ControlMmioIntercept;
@@ -86,12 +87,17 @@ impl FuzzChipset {
             .supports_mmio()
             .expect("objects on the mmio bus support mmio")
             .mmio_read(addr, data);
+        // Convert to a non-deferred result
+        let result = match result {
+            IoResult::Ok => Ok(()),
+            IoResult::Err(e) => Err(e),
+            IoResult::Defer(t) => self.defer_read_now_or_never(&mut *locked_dev, t, data),
+        };
         match result {
-            IoResult::Ok => {}
-            IoResult::Err(_) => {
+            Ok(()) => {}
+            Err(_) => {
                 data.fill(!0);
             }
-            IoResult::Defer(t) => self.defer_read_now_or_never(&mut *locked_dev, t, data),
         }
         Some(())
     }
@@ -109,7 +115,9 @@ impl FuzzChipset {
         match result {
             IoResult::Ok => {}
             IoResult::Err(_) => {}
-            IoResult::Defer(t) => self.defer_write_now_or_never(&mut *locked_dev, t),
+            IoResult::Defer(t) => {
+                let _ = self.defer_write_now_or_never(&mut *locked_dev, t);
+            }
         }
         Some(())
     }
@@ -124,12 +132,17 @@ impl FuzzChipset {
             .supports_pio()
             .expect("objects on the pio bus support pio")
             .io_read(addr, data);
+        // Convert to a non-deferred result
+        let result = match result {
+            IoResult::Ok => Ok(()),
+            IoResult::Err(e) => Err(e),
+            IoResult::Defer(t) => self.defer_read_now_or_never(&mut *locked_dev, t, data),
+        };
         match result {
-            IoResult::Ok => {}
-            IoResult::Err(_) => {
+            Ok(()) => {}
+            Err(_) => {
                 data.fill(!0);
             }
-            IoResult::Defer(t) => self.defer_read_now_or_never(&mut *locked_dev, t, data),
         }
         Some(())
     }
@@ -147,7 +160,9 @@ impl FuzzChipset {
         match result {
             IoResult::Ok => {}
             IoResult::Err(_) => {}
-            IoResult::Defer(t) => self.defer_write_now_or_never(&mut *locked_dev, t),
+            IoResult::Defer(t) => {
+                let _ = self.defer_write_now_or_never(&mut *locked_dev, t);
+            }
         }
         Some(())
     }
@@ -160,12 +175,17 @@ impl FuzzChipset {
             .supports_pci()
             .expect("objects on the pci bus support pci")
             .pci_cfg_read(offset, u32::mut_from_bytes(data).unwrap());
+        // Convert to a non-deferred result
+        let result = match result {
+            IoResult::Ok => Ok(()),
+            IoResult::Err(e) => Err(e),
+            IoResult::Defer(t) => self.defer_read_now_or_never(&mut *locked_dev, t, data),
+        };
         match result {
-            IoResult::Ok => {}
-            IoResult::Err(_) => {
+            Ok(()) => {}
+            Err(_) => {
                 data.fill(0);
             }
-            IoResult::Defer(t) => self.defer_read_now_or_never(&mut *locked_dev, t, data),
         }
         Some(())
     }
@@ -181,7 +201,9 @@ impl FuzzChipset {
         match result {
             IoResult::Ok => {}
             IoResult::Err(_) => {}
-            IoResult::Defer(t) => self.defer_write_now_or_never(&mut *locked_dev, t),
+            IoResult::Defer(t) => {
+                let _ = self.defer_write_now_or_never(&mut *locked_dev, t);
+            }
         }
         Some(())
     }
@@ -204,7 +226,7 @@ impl FuzzChipset {
         dev: &mut dyn ChipsetDevice,
         mut t: DeferredToken,
         data: &mut [u8],
-    ) {
+    ) -> Result<(), IoError> {
         let mut cx = Context::from_waker(Waker::noop());
         let dev = dev
             .supports_poll_device()
@@ -216,8 +238,7 @@ impl FuzzChipset {
         for _ in 0..self.max_defer_poll_count {
             dev.poll_device(&mut cx);
             match t.poll_read(&mut cx, data) {
-                Poll::Ready(Ok(())) => return,
-                Poll::Ready(Err(e)) => panic!("deferred read failed: {:?}", e),
+                Poll::Ready(r) => return r,
                 Poll::Pending => {}
             }
         }
@@ -234,7 +255,11 @@ impl FuzzChipset {
     }
 
     /// Poll a deferred write once, panic if it isn't complete afterwards.
-    fn defer_write_now_or_never(&self, dev: &mut dyn ChipsetDevice, mut t: DeferredToken) {
+    fn defer_write_now_or_never(
+        &self,
+        dev: &mut dyn ChipsetDevice,
+        mut t: DeferredToken,
+    ) -> Result<(), IoError> {
         let mut cx = Context::from_waker(Waker::noop());
         let dev = dev
             .supports_poll_device()
@@ -246,8 +271,7 @@ impl FuzzChipset {
         for _ in 0..self.max_defer_poll_count {
             dev.poll_device(&mut cx);
             match t.poll_write(&mut cx) {
-                Poll::Ready(Ok(())) => return,
-                Poll::Ready(Err(e)) => panic!("deferred write failed: {:?}", e),
+                Poll::Ready(r) => return r,
                 Poll::Pending => {}
             }
         }

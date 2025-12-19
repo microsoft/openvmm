@@ -260,6 +260,7 @@ pub fn create_host_channel(
         guest_state_lifetime: Default::default(),
         guest_state_encryption_policy: Default::default(),
         management_vtl_features: Default::default(),
+        efi_diagnostics_log_level: Default::default(),
     };
 
     let halt_reason = Arc::new(Mutex::new(None));
@@ -283,6 +284,7 @@ pub fn create_host_channel(
         None,
         Some(disklayer_ram::ram_disk(TEST_VMGS_CAPACITY as u64, false).unwrap()),
         igvm_agent_plan.map(IgvmAgentTestSetting::TestPlan),
+        false,
     );
 
     if let Some(ged_responses) = ged_responses {

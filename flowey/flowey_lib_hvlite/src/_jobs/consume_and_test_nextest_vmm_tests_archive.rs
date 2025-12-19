@@ -7,8 +7,11 @@ use crate::build_guest_test_uefi::GuestTestUefiOutput;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
 use crate::build_openvmm::OpenvmmOutput;
 use crate::build_pipette::PipetteOutput;
+use crate::build_prep_steps::PrepStepsOutput;
 use crate::build_tmk_vmm::TmkVmmOutput;
 use crate::build_tmks::TmksOutput;
+use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
+use crate::build_vmgstool::VmgstoolOutput;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
@@ -21,10 +24,14 @@ pub struct VmmTestsDepArtifacts {
     pub pipette_windows: Option<ReadVar<PipetteOutput>>,
     pub pipette_linux_musl: Option<ReadVar<PipetteOutput>>,
     pub guest_test_uefi: Option<ReadVar<GuestTestUefiOutput>>,
+    pub prep_steps: Option<ReadVar<PrepStepsOutput>>,
     pub artifact_dir_openhcl_igvm_files: Option<ReadVar<PathBuf>>,
     pub tmks: Option<ReadVar<TmksOutput>>,
     pub tmk_vmm: Option<ReadVar<TmkVmmOutput>>,
     pub tmk_vmm_linux_musl: Option<ReadVar<TmkVmmOutput>>,
+    pub vmgstool: Option<ReadVar<VmgstoolOutput>>,
+    pub tpm_guest_tests_windows: Option<ReadVar<TpmGuestTestsOutput>>,
+    pub tpm_guest_tests_linux: Option<ReadVar<TpmGuestTestsOutput>>,
 }
 
 flowey_request! {
@@ -43,6 +50,8 @@ flowey_request! {
         pub dep_artifact_dirs: VmmTestsDepArtifacts,
         /// Test artifacts to download
         pub test_artifacts: Vec<KnownTestArtifacts>,
+        /// Whether the prep steps should be run before the tests
+        pub needs_prep_run: bool,
 
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
@@ -65,6 +74,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
         ctx.import::<crate::install_vmm_tests_deps::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
+        ctx.import::<crate::run_prep_steps::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
@@ -79,6 +89,7 @@ impl SimpleFlowNode for Node {
             dep_artifact_dirs,
             test_artifacts,
             fail_job_on_test_fail,
+            needs_prep_run,
             artifact_dir,
             done,
         } = request;
@@ -93,10 +104,14 @@ impl SimpleFlowNode for Node {
             pipette_windows: register_pipette_windows,
             pipette_linux_musl: register_pipette_linux_musl,
             guest_test_uefi: register_guest_test_uefi,
+            prep_steps: register_prep_steps,
             artifact_dir_openhcl_igvm_files,
             tmks: register_tmks,
             tmk_vmm: register_tmk_vmm,
             tmk_vmm_linux_musl: register_tmk_vmm_linux_musl,
+            vmgstool: register_vmgstool,
+            tpm_guest_tests_windows: register_tpm_guest_tests_windows,
+            tpm_guest_tests_linux: register_tpm_guest_tests_linux,
         } = dep_artifact_dirs;
 
         let register_openhcl_igvm_files = artifact_dir_openhcl_igvm_files.map(|artifact_dir| {
@@ -144,7 +159,7 @@ impl SimpleFlowNode for Node {
                 },
             );
 
-        let pre_run_deps = vec![ctx.reqv(crate::install_vmm_tests_deps::Request::Install)];
+        let mut pre_run_deps = vec![ctx.reqv(crate::install_vmm_tests_deps::Request::Install)];
 
         let (test_log_path, get_test_log_path) = ctx.new_var();
 
@@ -158,6 +173,9 @@ impl SimpleFlowNode for Node {
             register_tmks,
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
+            register_vmgstool,
+            register_tpm_guest_tests_windows,
+            register_tpm_guest_tests_linux,
             disk_images_dir: Some(disk_images_dir),
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
@@ -165,6 +183,16 @@ impl SimpleFlowNode for Node {
             release_igvm_files: Some(release_igvm_files),
             use_relative_paths: false,
         });
+
+        if needs_prep_run {
+            pre_run_deps.push(ctx.reqv(|done| crate::run_prep_steps::Request {
+                prep_steps: register_prep_steps.expect("Test run indicated prep_steps was needed but built prep_steps binary was not given"),
+                env: extra_env.clone(),
+                done,
+            }));
+        } else if let Some(register_prep_steps) = register_prep_steps {
+            register_prep_steps.claim_unused(ctx);
+        }
 
         let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
             nextest_archive_file: nextest_vmm_tests_archive,

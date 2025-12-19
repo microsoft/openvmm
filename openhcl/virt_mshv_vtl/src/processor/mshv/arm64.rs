@@ -23,6 +23,8 @@ use crate::processor::UhEmulationState;
 use crate::processor::UhHypercallHandler;
 use crate::processor::UhProcessor;
 use aarch64defs::Cpsr64;
+use aarch64defs::SystemOff2Code;
+use aarch64defs::SystemReset2Code;
 use aarch64emu::AccessCpuState;
 use aarch64emu::InterceptState;
 use hcl::GuestVtl;
@@ -94,6 +96,10 @@ struct ProcessorStatsArm64 {
     hypercall: Counter,
     synic_deliverable: Counter,
 }
+
+#[derive(Debug, Error)]
+#[error("vendor-specific system reset with code {0:#x}")]
+struct VendorSpecificSystemReset(u32);
 
 #[expect(private_interfaces)]
 impl BackingPrivate for HypervisorBackedArm64 {
@@ -194,9 +200,52 @@ impl BackingPrivate for HypervisorBackedArm64 {
                         .exit_message()
                         .as_message::<hvdef::HvArm64ResetInterceptMessage>();
                     match message.reset_type {
-                        HvArm64ResetType::POWER_OFF => return Err(VpHaltReason::PowerOff),
-                        HvArm64ResetType::REBOOT => return Err(VpHaltReason::Reset),
-                        ty => unreachable!("unknown reset type: {:#x?}", ty),
+                        HvArm64ResetType::POWER_OFF => {
+                            return Err(VpHaltReason::PowerOff);
+                        }
+                        HvArm64ResetType::REBOOT => {
+                            return Err(VpHaltReason::Reset);
+                        }
+                        HvArm64ResetType::HIBERNATE => match SystemOff2Code(message.reset_code) {
+                            SystemOff2Code::DEFAULT | SystemOff2Code::HIBERNATE_OFF => {
+                                return Err(VpHaltReason::Hibernate);
+                            }
+                            _ => {
+                                tracing::error!(
+                                    reset_code = message.reset_code,
+                                    "received unknown architectural hibernate reset code, treating as hibernate"
+                                );
+                                return Err(VpHaltReason::Hibernate);
+                            }
+                        },
+                        HvArm64ResetType::SYSTEM_RESET => {
+                            // High bit set indicates vendor-specific reset code.
+                            if message.reset_code & 0x80000000 != 0 {
+                                tracing::error!(
+                                    reset_code = message.reset_code,
+                                    "received vendor-specific system_reset2 reset code, treating as fatal error"
+                                );
+                                return Err(dev.fatal_error(
+                                    VendorSpecificSystemReset(message.reset_code).into(),
+                                ));
+                            }
+                            match SystemReset2Code(message.reset_code) {
+                                SystemReset2Code::WARM_RESET => return Err(VpHaltReason::Reset),
+                                _ => {
+                                    tracing::error!(
+                                        reset_code = message.reset_code,
+                                        "received unknown architectural system_reset2 reset code, treating as reset"
+                                    );
+                                    return Err(VpHaltReason::Reset);
+                                }
+                            }
+                        }
+                        ty => {
+                            unreachable!(
+                                "unknown reset type: {:#x?}, {:#x}",
+                                ty, message.reset_code
+                            )
+                        }
                     }
                 }
                 reason => unreachable!("unknown exit reason: {:#x?}", reason),

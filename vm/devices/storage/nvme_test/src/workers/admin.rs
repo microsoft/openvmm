@@ -31,9 +31,11 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
+use mesh::rpc::Rpc;
+use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::CommandMatch;
 use nvme_resources::fault::FaultConfiguration;
-use nvme_resources::fault::QueueFaultBehavior;
+use nvme_resources::fault::NamespaceChange;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
@@ -117,6 +119,8 @@ pub struct AdminState {
     send_changed_namespace: futures::channel::mpsc::Sender<u32>,
     #[inspect(skip)]
     poll_namespace_change: BTreeMap<u32, Task<()>>,
+    #[inspect(skip)]
+    confirm_namespace_change_fault: Option<Rpc<(), ()>>,
 }
 
 #[derive(Inspect)]
@@ -190,6 +194,7 @@ impl AdminState {
             recv_changed_namespace,
             send_changed_namespace,
             poll_namespace_change,
+            confirm_namespace_change_fault: None,
         };
         state.set_max_queues(handler, handler.config.max_sqs, handler.config.max_cqs);
         state
@@ -429,6 +434,14 @@ impl AdminHandler {
                     )?;
 
                     state.notified_changed_namespaces = true;
+
+                    // Note: Since the tests require AEN before invoking restore on the VM, this approach will
+                    // fail if the completion queue is full during save. In that case, the test will hang. Unless
+                    // the test is specifically stress testing the completion queue, this approach should be fine
+                    // since it is unexpected to fill the queue with admin commands.
+                    if let Some(aen_confirmation) = state.confirm_namespace_change_fault.take() {
+                        aen_confirmation.complete(());
+                    }
                     continue;
                 }
             }
@@ -446,8 +459,39 @@ impl AdminHandler {
                 };
                 Event::NamespaceChange(nsid)
             };
+            let changed_namespace_fault = async {
+                // NOTE: Don't check 'fault_active' as it may get toggled after
+                // this future is created. This channel is only used by the test
+                // so it is fine to always listen on it.
+                let Some(ns_change) = self
+                    .config
+                    .fault_configuration
+                    .namespace_fault
+                    .recv_changed_namespace
+                    .next()
+                    .await
+                else {
+                    pending().await
+                };
 
-            break (next_command, sq_delete_complete, changed_namespace)
+                let nsid = match ns_change {
+                    NamespaceChange::ChangeNotification(rpc) => {
+                        let (nsid, notify) = rpc.split();
+                        state.confirm_namespace_change_fault = Some(notify);
+                        nsid
+                    }
+                };
+
+                // Don't notify the test quite yet because nothing has been written to the completion queue.
+                Event::NamespaceChange(nsid)
+            };
+
+            break (
+                next_command,
+                sq_delete_complete,
+                changed_namespace,
+                changed_namespace_fault,
+            )
                 .race()
                 .await;
         };
@@ -465,8 +509,8 @@ impl AdminHandler {
                 let opcode = spec::AdminOpcode(command.cdw0.opcode());
 
                 if self.config.fault_configuration.fault_active.get()
-                    && let Some(fault) = Self::get_configured_fault_behavior::<nvme_spec::Command>(
-                        &self
+                    && let Some(fault) = Self::get_configured_fault_behavior_mut::<nvme_spec::Command>(
+                        &mut self
                             .config
                             .fault_configuration
                             .admin_fault
@@ -475,35 +519,41 @@ impl AdminHandler {
                     )
                 {
                     match fault {
-                        QueueFaultBehavior::Update(command_updated) => {
+                        AdminQueueFaultBehavior::Update(command_updated) => {
                             tracing::info!(
                                 "configured fault: admin command updated in sq. original: {:?},\n new: {:?}",
                                 &command,
-                                &command_updated
+                                command_updated
                             );
-                            command = command_updated;
+                            command = *command_updated;
                         }
-                        QueueFaultBehavior::Drop => {
+                        AdminQueueFaultBehavior::Drop => {
                             tracing::info!(
                                 "configured fault: admin command dropped from sq {:?}",
                                 &command
                             );
                             return Ok(());
                         }
-                        QueueFaultBehavior::Delay(duration) => {
-                            self.timer.sleep(duration).await;
+                        AdminQueueFaultBehavior::Delay(duration) => {
+                            self.timer.sleep(*duration).await;
                         }
-                        QueueFaultBehavior::Panic(message) => {
+                        AdminQueueFaultBehavior::Panic(message) => {
                             panic!(
                                 "configured fault: admin command panic with command: {:?} and message: {}",
                                 &command, &message
                             );
                         }
-                        QueueFaultBehavior::CustomPayload(_) => {
+                        AdminQueueFaultBehavior::CustomPayload(_) => {
                             panic!(
                                 "bad fault configuration: custom payloads are not applicable to admin submission commands. command: {:?}",
                                 &command
                             );
+                        }
+                        AdminQueueFaultBehavior::Verify(send) => {
+                            // Verify that the command was received.
+                            if let Some(send) = send.take() {
+                                send.send(());
+                            }
                         }
                     }
                 }
@@ -603,8 +653,8 @@ impl AdminHandler {
         // (Ignore namespace change and sq delete complete events for now).
         if let Some(command) = command_processed
             && self.config.fault_configuration.fault_active.get()
-            && let Some(fault) = Self::get_configured_fault_behavior::<nvme_spec::Completion>(
-                &self
+            && let Some(fault) = Self::get_configured_fault_behavior_mut::<nvme_spec::Completion>(
+                &mut self
                     .config
                     .fault_configuration
                     .admin_fault
@@ -613,16 +663,16 @@ impl AdminHandler {
             )
         {
             match fault {
-                QueueFaultBehavior::Update(completion_updated) => {
+                AdminQueueFaultBehavior::Update(completion_updated) => {
                     tracing::info!(
                         "configured fault: admin completion updated in cq. command: {:?},original: {:?},\n new: {:?}",
                         &command,
                         &completion,
-                        &completion_updated
+                        completion_updated
                     );
-                    completion = completion_updated;
+                    completion = completion_updated.clone();
                 }
-                QueueFaultBehavior::Drop => {
+                AdminQueueFaultBehavior::Drop => {
                     tracing::info!(
                         "configured fault: admin completion dropped from cq. command: {:?}, completion: {:?}",
                         &command,
@@ -630,16 +680,16 @@ impl AdminHandler {
                     );
                     return Ok(());
                 }
-                QueueFaultBehavior::Delay(duration) => {
-                    self.timer.sleep(duration).await;
+                AdminQueueFaultBehavior::Delay(duration) => {
+                    self.timer.sleep(*duration).await;
                 }
-                QueueFaultBehavior::Panic(message) => {
+                AdminQueueFaultBehavior::Panic(message) => {
                     panic!(
                         "configured fault: admin completion panic with command: {:?}, completion: {:?} and message: {}",
                         &command, &completion, &message
                     );
                 }
-                QueueFaultBehavior::CustomPayload(payload) => {
+                AdminQueueFaultBehavior::CustomPayload(payload) => {
                     tracing::info!(
                         "configured fault: admin completion custom payload write. completion: {:?}, payload size: {}",
                         &completion,
@@ -649,8 +699,14 @@ impl AdminHandler {
                     // Panic to avoid silent test failures.
                     PrpRange::parse(&self.config.mem, payload.len(), command.dptr)
                         .expect("configured fault failure: failed to parse PRP for custom payload write.")
-                        .write(&self.config.mem, &payload)
+                        .write(&self.config.mem, payload)
                         .expect("configured fault failure: failed to write custom payload");
+                }
+                AdminQueueFaultBehavior::Verify(send) => {
+                    // Verify that the command was received.
+                    if let Some(send) = send.take() {
+                        send.send(());
+                    }
                 }
             }
         }
@@ -957,6 +1013,7 @@ impl AdminHandler {
             cqid,
             interrupt,
             namespaces,
+            self.config.fault_configuration.io_fault.clone(),
         );
         sq.task.insert(&sq.driver, "nvme-io", state);
         sq.task.start();
@@ -1130,15 +1187,15 @@ impl AdminHandler {
         Ok(())
     }
 
-    /// Returns the configured fault behavior for the given command if a fault is configured.
-    fn get_configured_fault_behavior<T: Clone>(
-        fault_configs: &[(CommandMatch, QueueFaultBehavior<T>)],
-        command: &nvme_spec::Command,
-    ) -> Option<QueueFaultBehavior<T>> {
+    /// Returns a mutable reference to the fault behavior for a given command if a fault is configured.
+    fn get_configured_fault_behavior_mut<'a, T: Clone>(
+        fault_configs: &'a mut [(CommandMatch, AdminQueueFaultBehavior<T>)],
+        command: &'a nvme_spec::Command,
+    ) -> Option<&'a mut AdminQueueFaultBehavior<T>> {
         fault_configs
-            .iter()
+            .iter_mut()
             .find(|(pattern, _)| match_command_pattern(pattern, command))
-            .map(|(_, behavior)| behavior.clone())
+            .map(|(_, behavior)| behavior)
     }
 }
 

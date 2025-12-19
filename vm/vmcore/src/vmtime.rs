@@ -29,7 +29,6 @@ use futures_concurrency::future::Race;
 use futures_concurrency::stream::Merge;
 use inspect::Inspect;
 use inspect::InspectMut;
-use inspect::adhoc;
 use mesh::MeshPayload;
 use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
@@ -337,11 +336,15 @@ impl TimerState {
 }
 
 /// A time keeper, which tracks the current time and all waiters.
-#[derive(Debug)]
+#[derive(Debug, InspectMut)]
 pub struct VmTimeKeeper {
+    #[inspect(skip)]
     _task: Task<()>,
+    #[inspect(flatten, send = "KeeperRequest::Inspect")]
     req_send: mesh::Sender<KeeperRequest>,
+    #[inspect(skip)]
     builder: VmTimeSourceBuilder,
+    #[inspect(skip)]
     time: TimeState,
 }
 
@@ -438,12 +441,6 @@ impl TimeState {
                 }
             }
         }
-    }
-}
-
-impl InspectMut for VmTimeKeeper {
-    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        self.req_send.send(KeeperRequest::Inspect(req.defer()));
     }
 }
 
@@ -583,13 +580,14 @@ impl VmTimeSourceBuilder {
 ///
 /// There is one of these per VM time clock (i.e. one per VM).
 #[derive(Inspect)]
-#[inspect(extra = "Self::inspect_extra")]
 struct PrimaryKeeper {
     #[inspect(skip)]
     req_recv: mesh::Receiver<KeeperRequest>,
     #[inspect(skip)]
     new_recv: mesh::Receiver<NewKeeperRequest>,
-    #[inspect(skip)]
+    #[inspect(
+        with = "|x| inspect::iter_by_key(x.iter().map(|(id, sender)| (id, inspect::send(sender, KeeperRequest::Inspect))))"
+    )]
     keepers: Vec<(u64, mesh::Sender<KeeperRequest>)>,
     #[inspect(skip)]
     next_id: u64,
@@ -610,15 +608,6 @@ enum NewKeeperRequest {
 }
 
 impl PrimaryKeeper {
-    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
-        resp.fields(
-            "keepers",
-            self.keepers
-                .iter()
-                .map(|&(id, ref s)| (id, adhoc(|req| s.send(KeeperRequest::Inspect(req.defer()))))),
-        );
-    }
-
     async fn run(&mut self) {
         enum Event {
             New(NewKeeperRequest),

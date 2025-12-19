@@ -8,6 +8,7 @@
 #![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 pub mod afd;
+pub mod affinity;
 pub mod alpc;
 pub mod fs;
 pub mod job;
@@ -83,7 +84,7 @@ use winapi::um::winnt;
 use winapi::um::winsock2;
 
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 pub struct SendSyncRawHandle(pub RawHandle);
 
 unsafe impl Send for SendSyncRawHandle {}
@@ -506,6 +507,11 @@ impl UnicodeString {
 
     pub fn is_empty(&self) -> bool {
         self.0.Buffer.is_null()
+    }
+
+    /// The length of the string in bytes.
+    pub fn length(&self) -> usize {
+        self.0.Length as usize
     }
 
     pub fn as_ptr(&self) -> *const UNICODE_STRING {

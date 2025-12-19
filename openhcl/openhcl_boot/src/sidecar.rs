@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::boot_logger::log;
+use crate::cmdline::SidecarOptions;
 use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::PartitionInfo;
@@ -73,9 +74,18 @@ pub fn start_sidecar<'a>(
         return None;
     }
 
-    if !partition_info.boot_options.sidecar {
-        log!("sidecar: disabled via command line");
-        return None;
+    match partition_info.boot_options.sidecar {
+        SidecarOptions::DisabledCommandLine => {
+            log!("sidecar: disabled via command line");
+            return None;
+        }
+        SidecarOptions::DisabledServicing => {
+            log!("sidecar: disabled because this is a servicing restore");
+            return None;
+        }
+        SidecarOptions::Enabled { enable_logging, .. } => {
+            sidecar_params.enable_logging = enable_logging;
+        }
     }
 
     // Ensure the host didn't provide an out-of-bounds NUMA node.
@@ -124,7 +134,7 @@ pub fn start_sidecar<'a>(
     {
         let SidecarParams {
             hypercall_page,
-            enable_logging,
+            enable_logging: _,
             node_count,
             nodes,
         } = sidecar_params;
@@ -134,7 +144,6 @@ pub fn start_sidecar<'a>(
         {
             *hypercall_page = crate::hypercall::hvcall().hypercall_page();
         }
-        *enable_logging = partition_info.boot_options.sidecar_logging;
 
         let mut base_vp = 0;
         total_ram = 0;

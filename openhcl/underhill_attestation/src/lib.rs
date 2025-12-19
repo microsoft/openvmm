@@ -21,6 +21,7 @@ pub use igvm_attest::IgvmAttestRequestHelper;
 pub use igvm_attest::ak_cert::parse_response as parse_ak_cert_response;
 
 use ::vmgs::EncryptionAlgorithm;
+use ::vmgs::GspType;
 use ::vmgs::Vmgs;
 use cvm_tracing::CVM_ALLOWED;
 use get_protocol::dps_json::GuestStateEncryptionPolicy;
@@ -155,6 +156,14 @@ enum PersistAllKeyProtectorsError {
     WriteKeyProtectorById(#[source] vmgs::WriteToVmgsError),
 }
 
+// Operation types for provisioning telemetry.
+#[derive(Debug)]
+enum LogOpType {
+    BeginDecryptVmgs,
+    DecryptVmgs,
+    ConvertEncryptionType,
+}
+
 /// Label used by `derive_key`
 const VMGS_KEY_DERIVE_LABEL: &[u8; 7] = b"VMGSKEY";
 
@@ -166,6 +175,7 @@ struct Keys {
 }
 
 /// Key protector settings
+#[derive(Clone, Copy)]
 struct KeyProtectorSettings {
     /// Whether to update key protector
     should_write_kp: bool,
@@ -173,6 +183,10 @@ struct KeyProtectorSettings {
     use_gsp_by_id: bool,
     /// Whether hardware key sealing is used
     use_hardware_unlock: bool,
+    /// GSP type used for decryption (for logging)
+    decrypt_gsp_type: GspType,
+    /// GSP type used for encryption (for logging)
+    encrypt_gsp_type: GspType,
 }
 
 /// Helper struct for [`protocol::vmgs::KeyProtectorById`]
@@ -362,7 +376,14 @@ pub async fn initialize_platform_security(
 
     let vmgs_encrypted: bool = vmgs.is_encrypted();
 
-    tracing::info!(tcb_version=?tcb_version, vmgs_encrypted = vmgs_encrypted, "Deriving keys");
+    let start_time = std::time::SystemTime::now();
+    tracing::info!(
+        ?tcb_version,
+        vmgs_encrypted,
+        op_type = ?LogOpType::BeginDecryptVmgs,
+        "Deriving keys"
+    );
+
     let derived_keys_result = get_derived_keys(
         get,
         tee_call,
@@ -379,7 +400,19 @@ pub async fn initialize_platform_security(
         strict_encryption_policy,
     )
     .await
-    .map_err(AttestationErrorInner::GetDerivedKeys)?;
+    .map_err(|e| {
+        tracing::error!(
+            CVM_ALLOWED,
+            op_type = ?LogOpType::DecryptVmgs,
+            success = false,
+            err = &e as &dyn std::error::Error,
+            latency = std::time::SystemTime::now()
+                .duration_since(start_time)
+                .map_or(0, |d| d.as_millis()),
+            "Failed to derive keys"
+        );
+        AttestationErrorInner::GetDerivedKeys(e)
+    })?;
 
     // All Underhill VMs use VMGS encryption
     tracing::info!("Unlocking VMGS");
@@ -394,11 +427,35 @@ pub async fn initialize_platform_security(
     )
     .await
     {
+        tracing::error!(
+            CVM_ALLOWED,
+            op_type = ?LogOpType::DecryptVmgs,
+            success = false,
+            err = &e as &dyn std::error::Error,
+            latency = std::time::SystemTime::now()
+                .duration_since(start_time)
+                .map_or(0, |d| d.as_millis()),
+            "Failed to unlock datastore"
+        );
         get.event_log_fatal(guest_emulation_transport::api::EventLogId::ATTESTATION_FAILED)
             .await;
 
         Err(AttestationErrorInner::UnlockVmgsDataStore(e))?
     }
+
+    tracing::info!(
+        CVM_ALLOWED,
+        op_type = ?LogOpType::DecryptVmgs,
+        success = true,
+        decrypt_gsp_type = ?derived_keys_result
+            .key_protector_settings
+            .decrypt_gsp_type,
+        encrypt_gsp_type = ?derived_keys_result
+            .key_protector_settings
+            .encrypt_gsp_type,
+        latency = std::time::SystemTime::now().duration_since(start_time).map_or(0, |d| d.as_millis()),
+        "Unlocked datastore"
+    );
 
     let state_refresh_request_from_gsp = derived_keys_result
         .gsp_extended_status_flags
@@ -472,7 +529,7 @@ async fn unlock_vmgs_data_store(
             if let Some(key) = old_egress_key {
                 // Key rolling did not complete successfully last time and there's an old
                 // egress key in the VMGS. It may be needed for decryption.
-                tracing::trace!(CVM_ALLOWED, "Old EgressKey found");
+                tracing::info!(CVM_ALLOWED, "Old EgressKey found");
                 vmgs.unlock_with_encryption_key(&key)
                     .await
                     .map_err(UnlockVmgsDataStoreError::VmgsUnlockUsingExistingEgressKey)?;
@@ -583,6 +640,8 @@ async fn get_derived_keys(
         should_write_kp: true,
         use_gsp_by_id: false,
         use_hardware_unlock: false,
+        decrypt_gsp_type: GspType::None,
+        encrypt_gsp_type: GspType::None,
     };
 
     let mut derived_keys = Keys {
@@ -642,6 +701,7 @@ async fn get_derived_keys(
         };
 
     // Handle various sources of Guest State Protection
+    let existing_unencrypted = !vmgs.is_encrypted() && !vmgs.was_provisioned_this_boot();
     let is_gsp_by_id = key_protector_by_id.found_id && key_protector_by_id.inner.ported != 1;
     let is_gsp = key_protector.gsp[ingress_idx].gsp_length != 0;
     tracing::info!(
@@ -655,7 +715,7 @@ async fn get_derived_keys(
     let mut requires_gsp_by_id = is_gsp_by_id;
 
     // Attempt GSP
-    let (gsp_response, no_gsp, requires_gsp) = {
+    let (gsp_response, gsp_available, no_gsp, requires_gsp) = {
         tracing::info!(CVM_ALLOWED, "attempting GSP");
 
         let response = get_gsp_data(get, key_protector).await;
@@ -669,8 +729,18 @@ async fn get_derived_keys(
             "GSP response"
         );
 
-        let no_gsp = response.extended_status_flags.no_rpc_server()
-            || response.encrypted_gsp.length == 0
+        let no_gsp_available =
+            response.extended_status_flags.no_rpc_server() || response.encrypted_gsp.length == 0;
+
+        let no_gsp = no_gsp_available
+            // disable if auto and pre-existing guest state is not encrypted or
+            // encrypted using GspById to prevent encryption changes without
+            // explicit intent
+            || (matches!(
+                guest_state_encryption_policy,
+                GuestStateEncryptionPolicy::Auto
+            ) && (is_gsp_by_id || existing_unencrypted))
+            // disable per encryption policy (first boot only, unless strict)
             || (matches!(
                 guest_state_encryption_policy,
                 GuestStateEncryptionPolicy::GspById | GuestStateEncryptionPolicy::None
@@ -678,10 +748,10 @@ async fn get_derived_keys(
 
         let requires_gsp = is_gsp
             || response.extended_status_flags.requires_rpc_server()
-            || matches!(
+            || (matches!(
                 guest_state_encryption_policy,
                 GuestStateEncryptionPolicy::GspKey
-            );
+            ) && strict_encryption_policy);
 
         // If the VMGS is encrypted, but no key protection data is found,
         // assume GspById encryption is enabled, but no ID file was written.
@@ -689,12 +759,12 @@ async fn get_derived_keys(
             requires_gsp_by_id = true;
         }
 
-        (response, no_gsp, requires_gsp)
+        (response, !no_gsp_available, no_gsp, requires_gsp)
     };
 
     // Attempt GSP By Id protection if GSP is not available, when changing
     // schemes, or as requested
-    let (gsp_response_by_id, no_gsp_by_id) = if no_gsp || requires_gsp_by_id {
+    let (gsp_response_by_id, gsp_by_id_available, no_gsp_by_id) = if no_gsp || requires_gsp_by_id {
         tracing::info!(CVM_ALLOWED, "attempting GSP By Id");
 
         let gsp_response_by_id = get
@@ -702,7 +772,16 @@ async fn get_derived_keys(
             .await
             .map_err(GetDerivedKeysError::FetchGuestStateProtectionById)?;
 
-        let no_gsp_by_id = gsp_response_by_id.extended_status_flags.no_registry_file()
+        let no_gsp_by_id_available = gsp_response_by_id.extended_status_flags.no_registry_file();
+
+        let no_gsp_by_id = no_gsp_by_id_available
+            // disable if auto and pre-existing guest state is unencrypted
+            // to prevent encryption changes without explicit intent
+            || (matches!(
+                guest_state_encryption_policy,
+                GuestStateEncryptionPolicy::Auto
+            ) && existing_unencrypted)
+            // disable per encryption policy (first boot only, unless strict)
             || (matches!(
                 guest_state_encryption_policy,
                 GuestStateEncryptionPolicy::None
@@ -712,9 +791,13 @@ async fn get_derived_keys(
             Err(GetDerivedKeysError::GspByIdRequiredButNotFound)?
         }
 
-        (gsp_response_by_id, no_gsp_by_id)
+        (
+            gsp_response_by_id,
+            Some(!no_gsp_by_id_available),
+            no_gsp_by_id,
+        )
     } else {
-        (GuestStateProtectionById::new_zeroed(), true)
+        (GuestStateProtectionById::new_zeroed(), None, true)
     };
 
     // If sources of encryption used last are missing, attempt to unseal VMGS key with hardware key
@@ -799,7 +882,9 @@ async fn get_derived_keys(
     tracing::info!(
         CVM_ALLOWED,
         kek = !no_kek,
+        gsp_available,
         gsp = !no_gsp,
+        gsp_by_id_available = ?gsp_by_id_available,
         gsp_by_id = !no_gsp_by_id,
         "Encryption sources"
     );
@@ -889,22 +974,27 @@ async fn get_derived_keys(
         if no_kek && no_gsp {
             if matches!(
                 guest_state_encryption_policy,
-                GuestStateEncryptionPolicy::None
+                GuestStateEncryptionPolicy::GspById | GuestStateEncryptionPolicy::Auto
             ) {
+                tracing::info!(CVM_ALLOWED, "Using GspById");
+            } else {
                 // Log a warning here to indicate that the VMGS state is out of
                 // sync with the VM's configuration.
                 //
-                // This should only happen if the VM is configured to
-                // have no encryption, but it already has GspById encryption
-                // and strict encryption policy is disabled.
+                // This should only happen if strict encryption policy is
+                // disabled and one of the following is true:
+                // - The VM is configured to have no encryption, but it already
+                //   has GspById encryption.
+                // - The VM is configured to use GspKey, but GspKey is not
+                //   available and GspById is.
                 tracing::warn!(CVM_ALLOWED, "Allowing GspById");
-            } else {
-                tracing::info!(CVM_ALLOWED, "Using GspById");
-            }
+            };
 
             // Not required for Id protection
             key_protector_settings.should_write_kp = false;
             key_protector_settings.use_gsp_by_id = true;
+            key_protector_settings.decrypt_gsp_type = GspType::GspById;
+            key_protector_settings.encrypt_gsp_type = GspType::GspById;
 
             return Ok(DerivedKeyResult {
                 derived_keys: Some(derived_keys_by_id),
@@ -915,7 +1005,11 @@ async fn get_derived_keys(
 
         derived_keys.ingress = derived_keys_by_id.ingress;
 
-        tracing::info!(CVM_ALLOWED, "Converting GSP method.");
+        tracing::info!(
+            CVM_ALLOWED,
+            op_type = ?LogOpType::ConvertEncryptionType,
+            "Converting GSP method."
+        );
     }
 
     let egress_seed;
@@ -935,9 +1029,12 @@ async fn get_derived_keys(
                     gsp_response_by_id.seed.buffer[..gsp_response_by_id.seed.length as usize]
                         .to_vec(),
                 );
+                key_protector_settings.decrypt_gsp_type = GspType::GspById;
             } else {
                 derived_keys.ingress = ingress_key;
             }
+        } else {
+            key_protector_settings.decrypt_gsp_type = GspType::GspById;
         }
 
         // Choose best available egress seed
@@ -945,9 +1042,11 @@ async fn get_derived_keys(
             egress_seed =
                 gsp_response_by_id.seed.buffer[..gsp_response_by_id.seed.length as usize].to_vec();
             key_protector_settings.use_gsp_by_id = true;
+            key_protector_settings.encrypt_gsp_type = GspType::GspById;
         } else {
             egress_seed =
                 gsp_response.new_gsp.buffer[..gsp_response.new_gsp.length as usize].to_vec();
+            key_protector_settings.encrypt_gsp_type = GspType::GspKey;
         }
     } else {
         // `no_gsp` is false, using `gsp_response`
@@ -955,7 +1054,7 @@ async fn get_derived_keys(
         if gsp_response.decrypted_gsp[ingress_idx].length == 0
             && gsp_response.decrypted_gsp[egress_idx].length == 0
         {
-            tracing::trace!(CVM_ALLOWED, "Applying GSP.");
+            tracing::info!(CVM_ALLOWED, "Applying GSP.");
 
             // VMGS has never had any GSP applied.
             // Leave ingress key untouched, derive egress key with new seed.
@@ -967,8 +1066,10 @@ async fn get_derived_keys(
             if !no_kek {
                 derived_keys.ingress = ingress_key;
             }
+
+            key_protector_settings.encrypt_gsp_type = GspType::GspKey;
         } else {
-            tracing::trace!(CVM_ALLOWED, "Using GSP.");
+            tracing::info!(CVM_ALLOWED, "Using existing GSP.");
 
             ingress_seed = Some(
                 gsp_response.decrypted_gsp[ingress_idx].buffer
@@ -991,6 +1092,9 @@ async fn get_derived_keys(
                 key_protector_settings.should_write_kp = false;
                 decrypt_egress_key = Some(encrypt_egress_key);
             }
+
+            key_protector_settings.decrypt_gsp_type = GspType::GspKey;
+            key_protector_settings.encrypt_gsp_type = GspType::GspKey;
         }
     }
 
@@ -1034,8 +1138,10 @@ async fn get_derived_keys(
 
     if matches!(
         guest_state_encryption_policy,
-        GuestStateEncryptionPolicy::None | GuestStateEncryptionPolicy::GspById
+        GuestStateEncryptionPolicy::GspKey | GuestStateEncryptionPolicy::Auto
     ) {
+        tracing::info!(CVM_ALLOWED, "Using Gsp");
+    } else {
         // Log a warning here to indicate that the VMGS state is out of
         // sync with the VM's configuration.
         //
@@ -1043,8 +1149,6 @@ async fn get_derived_keys(
         // encryption or GspById encryption, but it already has GspKey
         // encryption and strict encryption policy is disabled.
         tracing::warn!(CVM_ALLOWED, "Allowing Gsp");
-    } else {
-        tracing::info!(CVM_ALLOWED, "Using Gsp");
     }
 
     Ok(DerivedKeyResult {
@@ -1462,6 +1566,8 @@ mod tests {
             should_write_kp: false,
             use_gsp_by_id: false,
             use_hardware_unlock: false,
+            decrypt_gsp_type: GspType::None,
+            encrypt_gsp_type: GspType::None,
         };
 
         let bios_guid = Guid::new_random();
@@ -1486,6 +1592,8 @@ mod tests {
             should_write_kp: false,
             use_gsp_by_id: false,
             use_hardware_unlock: false,
+            decrypt_gsp_type: GspType::None,
+            encrypt_gsp_type: GspType::None,
         };
 
         // Even if the VMGS is encrypted, if no derived keys are provided, nothing should happen
@@ -1524,6 +1632,8 @@ mod tests {
             should_write_kp: true,
             use_gsp_by_id: true,
             use_hardware_unlock: false,
+            decrypt_gsp_type: GspType::GspById,
+            encrypt_gsp_type: GspType::GspById,
         };
 
         let bios_guid = Guid::new_random();
@@ -1575,6 +1685,8 @@ mod tests {
             should_write_kp: true,
             use_gsp_by_id: true,
             use_hardware_unlock: false,
+            decrypt_gsp_type: GspType::GspById,
+            encrypt_gsp_type: GspType::GspById,
         };
 
         // Ingress is now the old egress, and we provide a new new egress key
@@ -1646,6 +1758,8 @@ mod tests {
             should_write_kp: true,
             use_gsp_by_id: true,
             use_hardware_unlock: false,
+            decrypt_gsp_type: GspType::GspById,
+            encrypt_gsp_type: GspType::GspById,
         };
 
         let bios_guid = Guid::new_random();
@@ -1718,6 +1832,8 @@ mod tests {
             should_write_kp: true,
             use_gsp_by_id: true,
             use_hardware_unlock: false,
+            decrypt_gsp_type: GspType::GspById,
+            encrypt_gsp_type: GspType::GspById,
         };
 
         let bios_guid = Guid::new_random();
@@ -1795,6 +1911,8 @@ mod tests {
             should_write_kp: true,
             use_gsp_by_id: true,
             use_hardware_unlock: false,
+            decrypt_gsp_type: GspType::GspById,
+            encrypt_gsp_type: GspType::GspById,
         };
 
         let bios_guid = Guid::new_random();
@@ -1847,6 +1965,8 @@ mod tests {
             should_write_kp: true,
             use_gsp_by_id: true,
             use_hardware_unlock: false,
+            decrypt_gsp_type: GspType::GspById,
+            encrypt_gsp_type: GspType::GspById,
         };
 
         let bios_guid = Guid::new_random();
@@ -1936,6 +2056,8 @@ mod tests {
             should_write_kp: true,
             use_gsp_by_id: true,
             use_hardware_unlock: true,
+            decrypt_gsp_type: GspType::GspById,
+            encrypt_gsp_type: GspType::GspById,
         };
         persist_all_key_protectors(
             &mut vmgs,
@@ -1971,6 +2093,8 @@ mod tests {
             should_write_kp: false,
             use_gsp_by_id: true,
             use_hardware_unlock: false,
+            decrypt_gsp_type: GspType::GspById,
+            encrypt_gsp_type: GspType::GspById,
         };
         persist_all_key_protectors(
             &mut vmgs,
@@ -2013,6 +2137,8 @@ mod tests {
             should_write_kp: true,
             use_gsp_by_id: false,
             use_hardware_unlock: false,
+            decrypt_gsp_type: GspType::None,
+            encrypt_gsp_type: GspType::None,
         };
         persist_all_key_protectors(
             &mut vmgs,
@@ -2058,6 +2184,8 @@ mod tests {
             should_write_kp: true,
             use_gsp_by_id: false,
             use_hardware_unlock: true,
+            decrypt_gsp_type: GspType::None,
+            encrypt_gsp_type: GspType::None,
         };
 
         persist_all_key_protectors(

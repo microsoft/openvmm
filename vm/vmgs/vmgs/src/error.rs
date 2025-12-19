@@ -43,9 +43,9 @@ pub enum Error {
     /// Trying to allocate too many blocks.
     #[error("trying to allocate too many blocks")]
     WriteFileBlocks,
-    /// Fatal initialization failures
-    #[error("Fatal initialization error: {0}")]
-    Initialization(String),
+    /// Fatal storage initialization failures
+    #[error("Fatal storage initialization error: {0}")]
+    Initialization(#[source] StorageError),
     /// Invalid VMGS file format.
     #[error("VMGS_INVALID_FORMAT: {0}")]
     InvalidFormat(String),
@@ -67,6 +67,9 @@ pub enum Error {
     /// Datastore keys full, but there is no active key.
     #[error("unable to determine inactive key for removal")]
     NoActiveDatastoreKey,
+    /// VMGS is v1 format
+    #[error("VMGS is v1 format")]
+    V1Format,
 
     /// OpenSSL errors.
     #[cfg(feature = "encryption_ossl")]

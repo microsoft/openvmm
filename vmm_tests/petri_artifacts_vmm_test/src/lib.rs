@@ -7,6 +7,7 @@
 
 /// Artifact declarations
 pub mod artifacts {
+    use petri_artifacts_common::tags::IsVmgsTool;
     use petri_artifacts_core::declare_artifacts;
 
     macro_rules! openvmm_native {
@@ -39,6 +40,18 @@ pub mod artifacts {
         OPENVMM_LINUX_AARCH64,
         /// openvmm macos aarch64 executable
         OPENVMM_MACOS_AARCH64,
+    }
+
+    /// Guest-side tools used by the VMM tests.
+    pub mod guest_tools {
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// Windows x86_64 build of the `tpm_guest_tests` utility.
+            TPM_GUEST_TESTS_WINDOWS_X64,
+            /// Linux x86_64 build of the `tpm_guest_tests` utility.
+            TPM_GUEST_TESTS_LINUX_X64,
+        }
     }
 
     /// Loadable artifacts
@@ -137,8 +150,8 @@ pub mod artifacts {
         declare_artifacts! {
             /// OpenHCL IGVM (standard)
             LATEST_STANDARD_X64,
-            /// OpenHCL IGVM 2505 release (standard)
-            RELEASE_25_05_STANDARD_X64,
+            /// OpenHCL IGVM last release (standard)
+            LATEST_RELEASE_STANDARD_X64,
             /// OpenHCL IGVM (standard, with VTL2 dev kernel)
             LATEST_STANDARD_DEV_KERNEL_X64,
             /// OpenHCL IGVM (for CVM)
@@ -146,11 +159,11 @@ pub mod artifacts {
             /// OpenHCL IGVM (using a linux direct-boot test image instead of UEFI)
             LATEST_LINUX_DIRECT_TEST_X64,
             /// OpenHCL IGVM last release (using a linux direct-boot test image instead of UEFI)
-            RELEASE_25_05_LINUX_DIRECT_X64,
+            LATEST_RELEASE_LINUX_DIRECT_X64,
             /// OpenHCL IGVM (standard AARCH64)
             LATEST_STANDARD_AARCH64,
             /// OpenHCL IGVM last release (standard AARCH64)
-            RELEASE_25_05_STANDARD_AARCH64,
+            LATEST_RELEASE_STANDARD_AARCH64,
             /// OpenHCL IGVM (standard AARCH64, with VTL2 dev kernel)
             LATEST_STANDARD_DEV_KERNEL_AARCH64,
         }
@@ -160,10 +173,10 @@ pub mod artifacts {
         }
         impl IsOpenhclIgvm for LATEST_STANDARD_X64 {}
 
-        impl IsLoadable for RELEASE_25_05_STANDARD_X64 {
+        impl IsLoadable for LATEST_RELEASE_STANDARD_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
         }
-        impl IsOpenhclIgvm for RELEASE_25_05_STANDARD_X64 {}
+        impl IsOpenhclIgvm for LATEST_RELEASE_STANDARD_X64 {}
 
         impl IsLoadable for LATEST_STANDARD_DEV_KERNEL_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
@@ -180,20 +193,20 @@ pub mod artifacts {
         }
         impl IsOpenhclIgvm for LATEST_LINUX_DIRECT_TEST_X64 {}
 
-        impl IsLoadable for RELEASE_25_05_LINUX_DIRECT_X64 {
+        impl IsLoadable for LATEST_RELEASE_LINUX_DIRECT_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
         }
-        impl IsOpenhclIgvm for RELEASE_25_05_LINUX_DIRECT_X64 {}
+        impl IsOpenhclIgvm for LATEST_RELEASE_LINUX_DIRECT_X64 {}
 
         impl IsLoadable for LATEST_STANDARD_AARCH64 {
             const ARCH: MachineArch = MachineArch::Aarch64;
         }
         impl IsOpenhclIgvm for LATEST_STANDARD_AARCH64 {}
 
-        impl IsLoadable for RELEASE_25_05_STANDARD_AARCH64 {
+        impl IsLoadable for LATEST_RELEASE_STANDARD_AARCH64 {
             const ARCH: MachineArch = MachineArch::Aarch64;
         }
-        impl IsOpenhclIgvm for RELEASE_25_05_STANDARD_AARCH64 {}
+        impl IsOpenhclIgvm for LATEST_RELEASE_STANDARD_AARCH64 {}
 
         impl IsLoadable for LATEST_STANDARD_DEV_KERNEL_AARCH64 {
             const ARCH: MachineArch = MachineArch::Aarch64;
@@ -331,29 +344,6 @@ pub mod artifacts {
         }
 
         declare_artifacts! {
-            /// Ubuntu 2204 Server
-            UBUNTU_2204_SERVER_X64
-        }
-
-        impl IsTestVhd for UBUNTU_2204_SERVER_X64 {
-            const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
-            const ARCH: MachineArch = MachineArch::X86_64;
-            fn quirks() -> GuestQuirks {
-                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
-                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                    ..Default::default()
-                });
-                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
-                quirks
-            }
-        }
-
-        impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2204_SERVER_X64 {
-            const FILENAME: &'static str = "ubuntu-22.04-server-cloudimg-amd64.vhd";
-            const SIZE: u64 = 2361655808;
-        }
-
-        declare_artifacts! {
             /// Ubuntu 24.04 Server X64
             UBUNTU_2404_SERVER_X64
         }
@@ -362,17 +352,36 @@ pub mod artifacts {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::X86_64;
             fn quirks() -> GuestQuirks {
-                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                    ..Default::default()
-                });
-                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
-                quirks
+                    initial_reboot: Some(InitialRebootCondition::WithTpm),
+                })
             }
         }
 
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2404_SERVER_X64 {
             const FILENAME: &'static str = "ubuntu-24.04-server-cloudimg-amd64.vhd";
+            const SIZE: u64 = 3758211584;
+        }
+
+        declare_artifacts! {
+            /// Ubuntu 25.04 Server X64
+            UBUNTU_2504_SERVER_X64
+        }
+
+        impl IsTestVhd for UBUNTU_2504_SERVER_X64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
+            const ARCH: MachineArch = MachineArch::X86_64;
+            fn quirks() -> GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    initial_reboot: Some(InitialRebootCondition::WithTpm),
+                })
+            }
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2504_SERVER_X64 {
+            const FILENAME: &'static str = "ubuntu-25.04-server-cloudimg-amd64.vhd";
             const SIZE: u64 = 3758211584;
         }
 
@@ -385,12 +394,10 @@ pub mod artifacts {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::Aarch64;
             fn quirks() -> GuestQuirks {
-                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                    ..Default::default()
-                });
-                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
-                quirks
+                    initial_reboot: Some(InitialRebootCondition::WithTpm),
+                })
             }
         }
 
@@ -420,6 +427,22 @@ pub mod artifacts {
             const FILENAME: &'static str =
                 "windows11preview-arm64-win11-24h2-ent-26100.3775.250406-1.vhdx";
             const SIZE: u64 = 24398266368;
+        }
+
+        // VHDs that are created by pre-preparation automation
+
+        declare_artifacts! {
+            /// Generation 2 windows test image
+            GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED
+        }
+
+        impl IsTestVhd for GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED {
+            const OS_FLAVOR: OsFlavor = GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::OS_FLAVOR;
+            const ARCH: MachineArch = GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::ARCH;
+
+            fn quirks() -> GuestQuirks {
+                GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::quirks()
+            }
         }
     }
 
@@ -521,6 +544,44 @@ pub mod artifacts {
             SIMPLE_TMK_AARCH64,
         }
     }
+
+    macro_rules! vmgstool_native {
+        ($id_ty:ty, $os:literal, $arch:literal) => {
+            /// vmgstool "native" executable (i.e:
+            /// [`VMGSTOOL_WIN_X64`](const@VMGSTOOL_WIN_X64) when compiled on windows x86_64,
+            /// [`VMGSTOOL_LINUX_AARCH64`](const@VMGSTOOL_LINUX_AARCH64) when compiled on linux aarch64,
+            /// etc...)
+            // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
+            #[cfg(all(target_os = $os, target_arch = $arch))]
+            pub const VMGSTOOL_NATIVE: petri_artifacts_core::ArtifactHandle<$id_ty> =
+                petri_artifacts_core::ArtifactHandle::new();
+        };
+    }
+
+    vmgstool_native!(VMGSTOOL_WIN_X64, "windows", "x86_64");
+    vmgstool_native!(VMGSTOOL_LINUX_X64, "linux", "x86_64");
+    vmgstool_native!(VMGSTOOL_WIN_AARCH64, "windows", "aarch64");
+    vmgstool_native!(VMGSTOOL_LINUX_AARCH64, "linux", "aarch64");
+    vmgstool_native!(VMGSTOOL_MACOS_AARCH64, "macos", "aarch64");
+
+    declare_artifacts! {
+        /// vmgstool windows x86_64 executable
+        VMGSTOOL_WIN_X64,
+        /// vmgstool linux x86_64 executable
+        VMGSTOOL_LINUX_X64,
+        /// vmgstool windows aarch64 executable
+        VMGSTOOL_WIN_AARCH64,
+        /// vmgstool linux aarch64 executable
+        VMGSTOOL_LINUX_AARCH64,
+        /// vmgstool linux aarch64 executable
+        VMGSTOOL_MACOS_AARCH64,
+    }
+
+    impl IsVmgsTool for VMGSTOOL_WIN_X64 {}
+    impl IsVmgsTool for VMGSTOOL_LINUX_X64 {}
+    impl IsVmgsTool for VMGSTOOL_WIN_AARCH64 {}
+    impl IsVmgsTool for VMGSTOOL_LINUX_AARCH64 {}
+    impl IsVmgsTool for VMGSTOOL_MACOS_AARCH64 {}
 }
 
 /// Artifact tag trait declarations

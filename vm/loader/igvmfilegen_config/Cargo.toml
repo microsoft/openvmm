@@ -7,10 +7,10 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["std", "derive"] }
 
 [dev-dependencies]
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 
 [lints]
 workspace = true

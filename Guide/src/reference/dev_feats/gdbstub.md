@@ -46,13 +46,13 @@ sudo apt install gdb
 Once `gdb` is installed, run it, and enter the following `gdb` command (swapping
 `9001` for whatever port you specified at the CLI)
 
-```
+```text
 target remote :9001
 ```
 
 If all goes well, you should get output similar to this:
 
-```
+```text
 (gdb) target remote :9001
 Remote debugging using :9001
 warning: No executable has been specified and target does not support
@@ -65,7 +65,7 @@ At this point, you can try some basic GDB commands to make sure things are worki
 
 e.g., start / interrupt the VM's execution using `cont` and `ctrl-c`
 
-```
+```text
 (gdb) cont
 Continuing.
 ^C                                          # <-- hit ctrl-c in the terminal
@@ -76,7 +76,7 @@ Thread 1 received signal SIGINT, Interrupt.
 
 e.g., inspecting register state
 
-```
+```text
 (gdb) info registers
 rax            0x0                 0
 rbx            0x0                 0
@@ -96,14 +96,14 @@ r12            0xffffffff          4294967295
 
 e.g., setting data breakpoints
 
-```
+```text
 (gdb) awatch *0xfffff804683190e0
 Hardware access (read/write) watchpoint 1: *0xfffff804683190e0
 ```
 
 e.g., single stepping
 
-```
+```text
 0xfffff8047a309686 in ?? ()
 (gdb) si
 0xfffff8047a309689 in ?? ()

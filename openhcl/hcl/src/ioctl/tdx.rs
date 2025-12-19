@@ -11,6 +11,7 @@ use super::ProcessorRunner;
 use super::hcl_tdcall;
 use super::mshv_tdcall;
 use crate::GuestVtl;
+use crate::protocol::tdx_l2_tsc_deadline_state;
 use crate::protocol::tdx_tdg_vp_enter_exit_info;
 use crate::protocol::tdx_vp_context;
 use crate::protocol::tdx_vp_state;
@@ -169,6 +170,16 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     /// Gets a mutable reference to the TDX VP entry flags.
     fn tdx_vp_entry_flags_mut(&mut self) -> &mut TdxVmFlags {
         &mut self.tdx_vp_context_mut().entry_rcx
+    }
+
+    /// Gets a reference to the TDX L2 TSC deadline state.
+    pub fn tdx_l2_tsc_deadline_state(&self) -> &tdx_l2_tsc_deadline_state {
+        &self.tdx_vp_context().l2_tsc_deadline
+    }
+
+    /// Gets a mutable reference to the TDX L2 TSC deadline state.
+    pub fn tdx_l2_tsc_deadline_state_mut(&mut self) -> &mut tdx_l2_tsc_deadline_state {
+        &mut self.tdx_vp_context_mut().l2_tsc_deadline
     }
 
     /// Reads the private registers from the kernel's shared run page into

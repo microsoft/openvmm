@@ -39,6 +39,7 @@ guest_watchdog.workspace = true
 ide.workspace = true
 missing_dev.workspace = true
 pci_bus.workspace = true
+pcie.workspace = true
 vga_proxy = { optional = true, workspace = true }
 vga = { optional = true, workspace = true }
 watchdog_core.workspace = true

@@ -11,7 +11,7 @@ aarch64defs.workspace = true
 igvm.workspace = true
 loader_defs.workspace = true
 memory_range.workspace = true
-page_table.workspace = true
+page_table = {workspace = true, features = ["tracing"] }
 hvdef.workspace = true
 vm_topology.workspace = true
 x86defs.workspace = true

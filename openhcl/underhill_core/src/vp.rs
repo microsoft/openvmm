@@ -126,6 +126,7 @@ impl VpSpawner {
         saved_state: Option<vmcore::save_restore::SavedStateBlob>,
         control: Option<&mut IdleControl>,
     ) -> Option<vmcore::save_restore::SavedStateBlob> {
+        #[allow(unreachable_patterns)]
         let r = match self.isolation {
             virt::IsolationType::None | virt::IsolationType::Vbs => {
                 self.run_backed_vp::<virt_mshv_vtl::HypervisorBacked>(saved_state, control)
@@ -141,7 +142,6 @@ impl VpSpawner {
                 self.run_backed_vp::<virt_mshv_vtl::TdxBacked>(saved_state, control)
                     .await
             }
-            #[cfg(guest_arch = "aarch64")]
             _ => unimplemented!(),
         };
         match r {
@@ -194,17 +194,23 @@ impl VpSpawner {
                             // When the target CPU thread gets spawned for any
                             // reason, kick off a task to online the CPU and
                             // restart the VP.
-                            let r = self.tp.driver(self.cpu).set_spawn_notifier(move || {
-                                underhill_threadpool::Thread::current()
-                                    .unwrap()
-                                    .spawn_local(
-                                        "online-sidecar",
-                                        Self::notify_main_vp_thread_start(
-                                            self.cpu, state_recv, canceller,
-                                        ),
-                                    )
-                                    .detach();
-                            });
+                            let r =
+                                self.tp
+                                    .driver(self.cpu)
+                                    .set_spawn_notifier(move |should_cancel| {
+                                        underhill_threadpool::Thread::current()
+                                            .unwrap()
+                                            .spawn_local(
+                                                "online-sidecar",
+                                                Self::notify_main_vp_thread_start(
+                                                    self.cpu,
+                                                    state_recv,
+                                                    canceller,
+                                                    should_cancel,
+                                                ),
+                                            )
+                                            .detach();
+                                    });
 
                             let saved_state = match r {
                                 Ok(()) => {
@@ -224,7 +230,7 @@ impl VpSpawner {
                                     // thread without running the VP.
                                     self.tp
                                         .driver(self.cpu)
-                                        .spawn("spawn-remote", async move { notifier() })
+                                        .spawn("spawn-remote", async move { notifier(false) })
                                         .detach();
                                     None
                                 }
@@ -243,6 +249,7 @@ impl VpSpawner {
         cpu: u32,
         state_recv: mesh::OneshotReceiver<(Self, Option<vmcore::save_restore::SavedStateBlob>)>,
         mut canceller: vmm_core::partition_unit::RunnerCanceller,
+        should_cancel: bool,
     ) {
         tracing::info!(
             CVM_ALLOWED,
@@ -262,8 +269,11 @@ impl VpSpawner {
                 LazyLock::new(|| futures::lock::Mutex::new(()));
             let _lock = ONLINE_LOCK.lock().await;
             // Notify the runner that we are ready for the VP to be stopped and
-            // the saved state to be sent.
-            canceller.cancel();
+            // the saved state to be sent. Only do this if we are requested to
+            // cancel, as the runner may not have even been started yet.
+            if should_cancel {
+                canceller.cancel();
+            }
 
             // Wait for the VP to stop running and get its spawner and saved
             // state.

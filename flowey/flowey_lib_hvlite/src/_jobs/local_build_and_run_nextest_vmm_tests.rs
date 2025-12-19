@@ -6,7 +6,10 @@
 use crate::_jobs::local_build_igvm::non_production_build_igvm_tool_out_name;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetailsLocalOnly;
+use crate::build_openhcl_initrd::OpenhclInitrdExtraParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
+use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonPlatform;
@@ -84,9 +87,9 @@ macro_rules! define_vmm_test_selection_flags {
 }
 
 define_vmm_test_selection_flags! {
-    tdx: false,
-    snp: false,
-    hyperv_vbs: false,
+    tdx: true,
+    snp: true,
+    hyperv_vbs: true,
     windows: true,
     ubuntu: true,
     freebsd: true,
@@ -98,6 +101,7 @@ define_vmm_test_selection_flags! {
     pcat: true,
     tmk: true,
     guest_test_uefi: true,
+    vmgstool: true,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -106,16 +110,21 @@ pub struct BuildSelections {
     pub openvmm: bool,
     pub pipette_windows: bool,
     pub pipette_linux: bool,
+    pub prep_steps: bool,
     pub guest_test_uefi: bool,
     pub tmks: bool,
     pub tmk_vmm_windows: bool,
     pub tmk_vmm_linux: bool,
+    pub vmgstool: bool,
+    pub tpm_guest_tests_windows: bool,
+    pub tpm_guest_tests_linux: bool,
 }
 
 // Build everything we can by default
 impl Default for BuildSelections {
     fn default() -> Self {
         Self {
+            prep_steps: true,
             openhcl: true,
             openvmm: true,
             pipette_windows: true,
@@ -124,6 +133,9 @@ impl Default for BuildSelections {
             tmks: true,
             tmk_vmm_windows: true,
             tmk_vmm_linux: true,
+            vmgstool: true,
+            tpm_guest_tests_windows: true,
+            tpm_guest_tests_linux: true,
         }
     }
 }
@@ -146,6 +158,11 @@ flowey_request! {
         /// Copy extras to output dir (symbols, etc)
         pub copy_extras: bool,
 
+        /// Optional: provide a custom kernel modules cpio or directory for initrd layering
+        pub custom_kernel_modules: Option<PathBuf>,
+        /// Optional: provide a custom kernel image to embed in IGVM (forces UEFI)
+        pub custom_kernel: Option<PathBuf>,
+
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -161,8 +178,10 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<crate::build_openvmm::Node>();
         ctx.import::<crate::build_pipette::Node>();
+        ctx.import::<crate::build_prep_steps::Node>();
         ctx.import::<crate::build_tmks::Node>();
         ctx.import::<crate::build_tmk_vmm::Node>();
+        ctx.import::<crate::build_tpm_guest_tests::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
@@ -172,6 +191,8 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
         ctx.import::<flowey_lib_common::gen_cargo_nextest_run_cmd::Node>();
         ctx.import::<crate::install_vmm_tests_deps::Node>();
+        ctx.import::<crate::run_prep_steps::Node>();
+        ctx.import::<crate::build_vmgstool::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -183,8 +204,13 @@ impl SimpleFlowNode for Node {
             release,
             build_only,
             copy_extras,
+            custom_kernel_modules,
+            custom_kernel,
             done,
         } = request;
+
+        let custom_kernel_modules_abs = custom_kernel_modules.map(|p| p.absolute()).transpose()?;
+        let custom_kernel_abs = custom_kernel.map(|p| p.absolute()).transpose()?;
 
         let target_triple = target.as_triple();
         let arch = target.common_arch().unwrap();
@@ -227,6 +253,7 @@ impl SimpleFlowNode for Node {
                 pcat,
                 tmk,
                 guest_test_uefi,
+                vmgstool,
             }) => {
                 let mut build = BuildSelections::default();
 
@@ -262,12 +289,14 @@ impl SimpleFlowNode for Node {
                 if !windows {
                     filter.push_str(" & !test(windows)");
                     build.pipette_windows = false;
+                    build.tpm_guest_tests_windows = false;
                 }
                 if !freebsd {
                     filter.push_str(" & !test(freebsd)");
                 }
                 if !linux {
                     filter.push_str(" & !test(linux)");
+                    build.tpm_guest_tests_linux = false;
                 }
                 if !linux && !ubuntu {
                     build.pipette_linux = false;
@@ -299,19 +328,25 @@ impl SimpleFlowNode for Node {
                     filter.push_str(" & !test(guest_test_uefi)");
                     build.guest_test_uefi = false;
                 }
+                if !tdx && !snp && !hyperv_vbs {
+                    build.prep_steps = false;
+                }
+                if !vmgstool {
+                    filter.push_str(" & !test(vmgstool)");
+                    build.vmgstool = false;
+                }
 
                 let artifacts = match arch {
                     CommonArch::X86_64 => {
                         let mut artifacts = Vec::new();
 
                         if windows && (tdx || snp || hyperv_vbs) {
+                            artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
                             artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd);
                         }
-                        if ubuntu && (tdx || snp || hyperv_vbs) {
-                            artifacts.push(KnownTestArtifacts::Ubuntu2404ServerX64Vhd);
-                        }
                         if ubuntu {
-                            artifacts.push(KnownTestArtifacts::Ubuntu2204ServerX64Vhd);
+                            artifacts.push(KnownTestArtifacts::Ubuntu2404ServerX64Vhd);
+                            artifacts.push(KnownTestArtifacts::Ubuntu2504ServerX64Vhd);
                         }
                         if windows && uefi {
                             artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
@@ -366,6 +401,7 @@ impl SimpleFlowNode for Node {
             build.openhcl = false;
             build.pipette_linux = false;
             build.tmk_vmm_linux = false;
+            build.tpm_guest_tests_linux = false;
         }
 
         let register_openhcl_igvm_files = build.openhcl.then(|| {
@@ -396,10 +432,40 @@ impl SimpleFlowNode for Node {
                 let (read_built_openhcl_igvm, built_openhcl_igvm) = ctx.new_var();
                 let (read_built_openhcl_boot, built_openhcl_boot) = ctx.new_var();
                 let (read_built_sidecar, built_sidecar) = ctx.new_var();
+                let recipe_to_use =
+                    if custom_kernel_modules_abs.is_some() || custom_kernel_abs.is_some() {
+                        let mut details = recipe.recipe_details(release);
+                        if custom_kernel_abs.is_some() {
+                            details.with_uefi = true;
+                        }
+                        assert!(details.local_only.is_none());
+                        let initrd_extra =
+                            custom_kernel_modules_abs
+                                .clone()
+                                .map(|ckm| OpenhclInitrdExtraParams {
+                                    extra_initrd_layers: vec![],
+                                    extra_initrd_directories: vec![],
+                                    custom_kernel_modules: Some(ckm),
+                                });
+                        details.local_only = Some(OpenhclIgvmRecipeDetailsLocalOnly {
+                            openvmm_hcl_no_strip: false,
+                            openhcl_initrd_extra_params: initrd_extra,
+                            custom_openvmm_hcl: None,
+                            custom_openhcl_boot: None,
+                            custom_uefi: None,
+                            custom_kernel: custom_kernel_abs.clone(),
+                            custom_sidecar: None,
+                            custom_extra_rootfs: vec![],
+                        });
+                        OpenhclIgvmRecipe::LocalOnlyCustom(details)
+                    } else {
+                        recipe.clone()
+                    };
+
                 ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
                     build_profile: openvmm_hcl_profile,
                     release_cfg: release,
-                    recipe: recipe.clone(),
+                    recipe: recipe_to_use,
                     custom_target: None,
                     built_openvmm_hcl,
                     built_openhcl_boot,
@@ -550,6 +616,54 @@ impl SimpleFlowNode for Node {
             output
         });
 
+        let register_tpm_guest_tests_windows = build.tpm_guest_tests_windows.then(|| {
+            let output = ctx.reqv(|v| crate::build_tpm_guest_tests::Request {
+                target: CommonTriple::Common {
+                    arch,
+                    platform: CommonPlatform::WindowsMsvc,
+                },
+                profile: CommonProfile::from_release(release),
+                tpm_guest_tests: v,
+            });
+
+            if copy_extras {
+                copy_to_dir.push((
+                    extras_dir.to_owned(),
+                    output.map(ctx, |x| {
+                        Some(match x {
+                            TpmGuestTestsOutput::WindowsBin { pdb, .. } => pdb.clone(),
+                            TpmGuestTestsOutput::LinuxBin { .. } => unreachable!(),
+                        })
+                    }),
+                ));
+            }
+            output
+        });
+
+        let register_tpm_guest_tests_linux = build.tpm_guest_tests_linux.then(|| {
+            let output = ctx.reqv(|v| crate::build_tpm_guest_tests::Request {
+                target: CommonTriple::Common {
+                    arch,
+                    platform: CommonPlatform::LinuxGnu,
+                },
+                profile: CommonProfile::from_release(release),
+                tpm_guest_tests: v,
+            });
+
+            if copy_extras {
+                copy_to_dir.push((
+                    extras_dir.to_owned(),
+                    output.map(ctx, |x| {
+                        Some(match x {
+                            TpmGuestTestsOutput::LinuxBin { dbg, .. } => dbg.clone(),
+                            TpmGuestTestsOutput::WindowsBin { .. } => unreachable!(),
+                        })
+                    }),
+                ));
+            }
+            output
+        });
+
         let register_tmk_vmm = build.tmk_vmm_windows.then(|| {
             let output = ctx.reqv(|v| crate::build_tmk_vmm::Request {
                 target: CommonTriple::Common {
@@ -591,6 +705,87 @@ impl SimpleFlowNode for Node {
                         Some(match x {
                             crate::build_tmk_vmm::TmkVmmOutput::LinuxBin { bin: _, dbg } => dbg,
                             _ => unreachable!(),
+                        })
+                    }),
+                ));
+            }
+            output
+        });
+
+        let register_prep_steps = build.prep_steps.then(|| {
+            let prep_steps_bin = Path::new(match target_triple.operating_system {
+                target_lexicon::OperatingSystem::Windows => "prep_steps.exe",
+                _ => unreachable!(),
+            });
+
+            let output = ctx.reqv(|v| crate::build_prep_steps::Request {
+                target: CommonTriple::Common {
+                    arch,
+                    platform: CommonPlatform::WindowsMsvc,
+                },
+                profile: CommonProfile::from_release(release),
+                prep_steps: v,
+            });
+
+            copy_to_dir.push((
+                prep_steps_bin.to_owned(),
+                output.map(ctx, |x| {
+                    Some(match x {
+                        crate::build_prep_steps::PrepStepsOutput::WindowsBin { exe, pdb: _ } => exe,
+                        _ => unreachable!(),
+                    })
+                }),
+            ));
+            if copy_extras {
+                copy_to_dir.push((
+                    extras_dir.to_owned(),
+                    output.map(ctx, |x| {
+                        Some(match x {
+                            crate::build_prep_steps::PrepStepsOutput::WindowsBin {
+                                exe: _,
+                                pdb,
+                            } => pdb,
+                            _ => unreachable!(),
+                        })
+                    }),
+                ));
+            }
+
+            let cmd = (
+                format!("$PSScriptRoot\\{}", prep_steps_bin.to_string_lossy()).into(),
+                Vec::new(),
+            );
+
+            let prep_steps_bin = test_content_dir.join(prep_steps_bin);
+            let output = output.map(ctx, |mut output| {
+                let path = match &mut output {
+                    crate::build_prep_steps::PrepStepsOutput::WindowsBin { exe, pdb: _ } => exe,
+                    _ => unreachable!(),
+                };
+                *path = prep_steps_bin;
+                output
+            });
+
+            (output, cmd)
+        });
+
+        let register_vmgstool = build.vmgstool.then(|| {
+            let output = ctx.reqv(|v| crate::build_vmgstool::Request {
+                target: target.clone(),
+                profile: CommonProfile::from_release(release),
+                with_crypto: true,
+                with_test_helpers: true,
+                vmgstool: v,
+            });
+            if copy_extras {
+                copy_to_dir.push((
+                    extras_dir.to_owned(),
+                    output.map(ctx, |x| {
+                        Some(match x {
+                            crate::build_vmgstool::VmgstoolOutput::WindowsBin { exe: _, pdb } => {
+                                pdb
+                            }
+                            crate::build_vmgstool::VmgstoolOutput::LinuxBin { bin: _, dbg } => dbg,
                         })
                     }),
                 ));
@@ -649,15 +844,14 @@ impl SimpleFlowNode for Node {
         copy_to_dir.push((cargo_toml_file.to_owned(), repo_cargo_toml_file_src));
         copy_to_dir.push((crate_cargo_toml_file, crate_cargo_toml_file_src));
 
-        let target = target.as_triple();
-        let nextest_bin = Path::new(match target.operating_system {
+        let nextest_bin = Path::new(match target_triple.operating_system {
             target_lexicon::OperatingSystem::Windows => "cargo-nextest.exe",
             _ => "cargo-nextest",
         });
         let nextest_bin_src = ctx
             .reqv(|v| {
                 flowey_lib_common::download_cargo_nextest::Request::Get(
-                    ReadVar::from_static(target.clone()),
+                    ReadVar::from_static(target_triple.clone()),
                     v,
                 )
             })
@@ -677,7 +871,7 @@ impl SimpleFlowNode for Node {
 
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir: ReadVar::from_static(test_content_dir.clone()),
-            vmm_tests_target: target.clone(),
+            vmm_tests_target: target_triple.clone(),
             register_openvmm,
             register_pipette_windows,
             register_pipette_linux_musl,
@@ -685,6 +879,9 @@ impl SimpleFlowNode for Node {
             register_tmks,
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
+            register_vmgstool,
+            register_tpm_guest_tests_windows,
+            register_tpm_guest_tests_linux,
             disk_images_dir: Some(test_artifacts_dir),
             register_openhcl_igvm_files,
             get_test_log_path: None,
@@ -735,7 +932,7 @@ impl SimpleFlowNode for Node {
                 let dep_install_cmds = rt.read(dep_install_cmds);
 
                 for cmd in &dep_install_cmds {
-                    log::info!("$ {cmd}");
+                    log::info!("{cmd}");
                 }
 
                 if !dep_install_cmds.is_empty() {
@@ -753,7 +950,7 @@ impl SimpleFlowNode for Node {
             run_kind_deps: RunKindDeps::RunFromArchive {
                 archive_file: ReadVar::from_static(nextest_archive_file.clone()),
                 nextest_bin: ReadVar::from_static(nextest_bin.clone()),
-                target: ReadVar::from_static(target.clone()),
+                target: ReadVar::from_static(target_triple.clone()),
             },
             working_dir: ReadVar::from_static(test_content_dir.clone()),
             config_file: ReadVar::from_static(nextest_config_file.clone()),
@@ -763,6 +960,9 @@ impl SimpleFlowNode for Node {
             run_ignored: false,
             fail_fast: None,
             extra_env: Some(extra_env.clone()),
+            extra_commands: register_prep_steps
+                .clone()
+                .map(|(_, cmd)| ReadVar::from_static(vec![cmd])),
             portable: true,
             command: v,
         });
@@ -774,7 +974,7 @@ impl SimpleFlowNode for Node {
             move |rt| {
                 let cmd = rt.read(nextest_run_cmd);
 
-                log::info!("$ {cmd}");
+                log::info!("{cmd}");
 
                 let (script_name, script_contents) = match cmd.shell {
                     CommandShell::Powershell => ("run.ps1", cmd.to_string()),
@@ -789,8 +989,18 @@ impl SimpleFlowNode for Node {
 
         if build_only {
             ctx.emit_side_effect_step(side_effects, [done]);
+            if let Some((prep_steps, _)) = register_prep_steps {
+                prep_steps.claim_unused(ctx);
+            }
         } else {
             side_effects.push(ctx.reqv(crate::install_vmm_tests_deps::Request::Install));
+            if let Some((prep_steps, _)) = register_prep_steps {
+                side_effects.push(ctx.reqv(|done| crate::run_prep_steps::Request {
+                    prep_steps,
+                    env: extra_env.clone(),
+                    done,
+                }));
+            }
 
             let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
                 nextest_archive_file: ReadVar::from_static(NextestVmmTestsArchive {
@@ -801,7 +1011,7 @@ impl SimpleFlowNode for Node {
                 nextest_working_dir: Some(ReadVar::from_static(test_content_dir.clone())),
                 nextest_config_file: Some(ReadVar::from_static(nextest_config_file)),
                 nextest_bin: Some(ReadVar::from_static(nextest_bin)),
-                target: Some(ReadVar::from_static(target)),
+                target: Some(ReadVar::from_static(target_triple)),
                 extra_env,
                 pre_run_deps: side_effects,
                 results: v,

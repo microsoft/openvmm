@@ -90,6 +90,7 @@ pub fn ado_yaml(
             arch,
             cond_param_idx,
             ref ado_pool,
+            timeout_minutes,
             gh_override_if: _,
             gh_global_env: _,
             gh_pool: _,
@@ -158,12 +159,6 @@ pub fn ado_yaml(
                 serde_yaml::from_str(&ado_bootstrap_template)
                     .context("malformed flowey bootstrap template")?;
 
-            ado_steps.push({
-                let mut map = serde_yaml::Mapping::new();
-                map.insert("bash".into(), "echo \"injected!\"".into());
-                map.insert("displayName".into(), "🌼🥾 Bootstrap flowey".into());
-                map.into()
-            });
             ado_steps.extend(bootstrap_steps);
         }
 
@@ -524,6 +519,7 @@ EOF
             job: get_job_id(job_idx.index()),
             display_name: label.clone(),
             pool,
+            timeout_in_minutes: timeout_minutes,
             depends_on: {
                 graph
                     .edges_directed(job_idx, petgraph::Direction::Incoming)

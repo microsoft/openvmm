@@ -50,7 +50,7 @@ impl SimpleMemoryMap for whp::Partition {
         writable: bool,
         exec: bool,
     ) -> anyhow::Result<()> {
-        tracing::debug!(addr, size, ?data, writable, exec, "map range");
+        tracing::trace!(addr, size, ?data, writable, exec, "map range");
         let mut flags = whp::abi::WHvMapGpaRangeFlagRead;
         if writable {
             flags |= whp::abi::WHvMapGpaRangeFlagWrite;
@@ -67,7 +67,7 @@ impl SimpleMemoryMap for whp::Partition {
     }
 
     fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
-        tracing::debug!(addr, size, "unmap range");
+        tracing::trace!(addr, size, "unmap range");
         whp::Partition::unmap_range(self, addr, size).context("whp unmap_range failed")
     }
 }

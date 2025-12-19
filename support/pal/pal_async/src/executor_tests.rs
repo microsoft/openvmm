@@ -202,12 +202,14 @@ pub async fn socket_tests(driver: impl Driver) {
 
 #[cfg(windows)]
 pub mod windows {
+    // UNSAFETY: needed to use `OverlappedFile`.
+    #![expect(unsafe_code)]
+
     //! Windows-specific executor tests.
 
     use crate::driver::Driver;
     use crate::sys::overlapped::OverlappedFile;
     use crate::sys::pipe::NamedPipeServer;
-    use std::fs::File;
     use std::fs::OpenOptions;
     use std::os::windows::prelude::*;
     use unicycle::FuturesUnordered;
@@ -224,7 +226,8 @@ pub mod windows {
                 .attributes(FILE_FLAG_OVERLAPPED)
                 .open(temp_file.path())
                 .unwrap();
-            let file = OverlappedFile::new(&driver, file).unwrap();
+            // SAFETY: file is owned exclusively by the caller.
+            let file = unsafe { OverlappedFile::new(&driver, file).unwrap() };
             file.write_at(0x1000, &b"abcdefg"[..]).await.0.unwrap();
             let b = vec![0u8; 7];
             let (r, b) = file.read_at(0, b).await;
@@ -245,8 +248,50 @@ pub mod windows {
             let mut fut = FuturesUnordered::new();
             fut.push(accept);
             assert!(futures::poll!(fut.next()).is_pending());
-            let _ = File::open(&path).unwrap();
-            fut.next().await.unwrap().unwrap();
+
+            let client_pipe = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .attributes(FILE_FLAG_OVERLAPPED)
+                .open(&path)
+                .unwrap();
+
+            let server_pipe = fut.next().await.unwrap().unwrap();
+
+            // SAFETY: file is owned exclusively by the caller.
+            let client_pipe = unsafe { OverlappedFile::new(&driver, client_pipe).unwrap() };
+            // SAFETY: file is owned exclusively by the caller.
+            let server_pipe = unsafe { OverlappedFile::new(&driver, server_pipe).unwrap() };
+
+            // Drop case.
+            let mut read = server_pipe.read_at(0, vec![0; 256]);
+            assert!(futures::poll!(&mut read).is_pending());
+            drop(read);
+
+            // Cancel case.
+            let mut read = server_pipe.read_at(0, vec![0; 256]);
+            assert!(futures::poll!(&mut read).is_pending());
+            read.cancel();
+            assert_eq!(
+                read.await.0.unwrap_err().raw_os_error(),
+                Some(winapi::shared::winerror::ERROR_OPERATION_ABORTED as i32)
+            );
+
+            // Success case.
+            let mut read = server_pipe.read_at(0, vec![0; 256]);
+            assert!(futures::poll!(&mut read).is_pending());
+
+            let data = b"hello, pipe!".as_slice();
+            assert_eq!(client_pipe.write_at(0, data).await.0.unwrap(), data.len());
+            let (n, buf) = read.await;
+            let n = n.unwrap();
+            assert_eq!(n, data.len());
+            assert_eq!(&buf[..n], data);
+
+            // Drop with pending IO.
+            let mut read = server_pipe.read_at(0, vec![0; 256]);
+            assert!(futures::poll!(&mut read).is_pending());
+            drop(server_pipe);
         }
     }
 }

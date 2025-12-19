@@ -38,6 +38,16 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+#[derive(Clone)]
+pub enum VfioDmaClients {
+    PersistentOnly(Arc<dyn DmaClient>),
+    EphemeralOnly(Arc<dyn DmaClient>),
+    Split {
+        persistent: Arc<dyn DmaClient>,
+        ephemeral: Arc<dyn DmaClient>,
+    },
+}
+
 /// A device backend accessed via VFIO.
 #[derive(Inspect)]
 pub struct VfioDevice {
@@ -56,7 +66,8 @@ pub struct VfioDevice {
     interrupts: Vec<Option<InterruptState>>,
     #[inspect(skip)]
     config_space: vfio_sys::RegionInfo,
-    dma_client: Arc<dyn DmaClient>,
+    #[inspect(skip)]
+    dma_clients: VfioDmaClients,
 }
 
 #[derive(Inspect)]
@@ -68,24 +79,32 @@ struct InterruptState {
     _task: Task<()>,
 }
 
+impl Drop for VfioDevice {
+    fn drop(&mut self) {
+        // Just for tracing ...
+        tracing::trace!(pci_id = ?self.pci_id, "dropping vfio device");
+    }
+}
+
 impl VfioDevice {
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
     pub async fn new(
         driver_source: &VmTaskDriverSource,
-        pci_id: &str,
-        dma_client: Arc<dyn DmaClient>,
+        pci_id: impl AsRef<str>,
+        dma_clients: VfioDmaClients,
     ) -> anyhow::Result<Self> {
-        Self::restore(driver_source, pci_id, false, dma_client).await
+        Self::restore(driver_source, pci_id, false, dma_clients).await
     }
 
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
     /// or creates a device from the saved state if provided.
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
-        pci_id: &str,
+        pci_id: impl AsRef<str>,
         keepalive: bool,
-        dma_client: Arc<dyn DmaClient>,
+        dma_clients: VfioDmaClients,
     ) -> anyhow::Result<Self> {
+        let pci_id = pci_id.as_ref();
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
         // The vfio device attaches asynchronously after the PCI device is added,
@@ -101,6 +120,9 @@ impl VfioDevice {
         // Ignore any errors and always attempt to open.
         let _ = ctx.until_cancelled(wait_for_vfio_device).await;
 
+        tracing::info!(pci_id, keepalive, "device arrived");
+        vfio_sys::print_relevant_params();
+
         let container = vfio_sys::Container::new()?;
         let group_id = vfio_sys::Group::find_group_for_device(&path)?;
         let group = vfio_sys::Group::open_noiommu(group_id)?;
@@ -109,12 +131,14 @@ impl VfioDevice {
             anyhow::bail!("group is not viable");
         }
 
+        let driver = driver_source.simple();
         container.set_iommu(IommuType::NoIommu)?;
         if keepalive {
             // Prevent physical hardware interaction when restoring.
-            group.set_keep_alive(pci_id)?;
+            group.set_keep_alive(pci_id, &driver).await?;
         }
-        let device = group.open_device(pci_id)?;
+        tracing::debug!(pci_id, "about to open device");
+        let device = group.open_device(pci_id, &driver).await?;
         let msix_info = device.irq_info(vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX)?;
         if msix_info.flags.noresize() {
             anyhow::bail!("unsupported: kernel does not support dynamic msix allocation");
@@ -130,12 +154,14 @@ impl VfioDevice {
             config_space,
             driver_source: driver_source.clone(),
             interrupts: Vec::new(),
-            dma_client,
+            dma_clients,
         };
 
+        tracing::debug!(pci_id, "enabling device...");
         // Ensure bus master enable and memory space enable are set, and that
         // INTx is disabled.
-        this.enable_device().context("failed to enable device")?;
+        this.enable_device()
+            .with_context(|| format!("failed to enable device {pci_id}"))?;
         Ok(this)
     }
 
@@ -174,6 +200,7 @@ impl VfioDevice {
             anyhow::bail!("invalid config offset");
         }
 
+        tracing::trace!(pci_id = ?self.pci_id, offset, data, "writing config");
         let buf = data.to_ne_bytes();
         self.device
             .as_ref()
@@ -191,7 +218,7 @@ impl VfioDevice {
         }
         let info = self.device.region_info(n.into())?;
         let mapping = self.device.map(info.offset, info.size as usize, true)?;
-        sparse_mmap::initialize_try_copy();
+        trycopy::initialize_try_copy();
         Ok(MappedRegionWithFallback {
             device: self.device.clone(),
             mapping,
@@ -232,7 +259,44 @@ impl DeviceBacking for VfioDevice {
     }
 
     fn dma_client(&self) -> Arc<dyn DmaClient> {
-        self.dma_client.clone()
+        // Default to the only present client, or if both are available default to the
+        // persistent client.
+        match &self.dma_clients {
+            VfioDmaClients::EphemeralOnly(client) => client.clone(),
+            VfioDmaClients::PersistentOnly(client) => client.clone(),
+            VfioDmaClients::Split {
+                persistent,
+                ephemeral: _,
+            } => persistent.clone(),
+        }
+    }
+
+    fn dma_client_for(&self, pool: crate::DmaPool) -> anyhow::Result<Arc<dyn DmaClient>> {
+        match &self.dma_clients {
+            VfioDmaClients::PersistentOnly(client) => match pool {
+                crate::DmaPool::Persistent => Ok(client.clone()),
+                crate::DmaPool::Ephemeral => {
+                    anyhow::bail!(
+                        "ephemeral dma pool requested but only persistent client available"
+                    )
+                }
+            },
+            VfioDmaClients::EphemeralOnly(client) => match pool {
+                crate::DmaPool::Ephemeral => Ok(client.clone()),
+                crate::DmaPool::Persistent => {
+                    anyhow::bail!(
+                        "persistent dma pool requested but only ephemeral client available"
+                    )
+                }
+            },
+            VfioDmaClients::Split {
+                persistent,
+                ephemeral,
+            } => match pool {
+                crate::DmaPool::Persistent => Ok(persistent.clone()),
+                crate::DmaPool::Ephemeral => Ok(ephemeral.clone()),
+            },
+        }
     }
 
     fn max_interrupt_count(&self) -> u32 {
@@ -306,6 +370,22 @@ impl DeviceBacking for VfioDevice {
         };
 
         Ok(interrupt.insert(new_interrupt).interrupt.clone())
+    }
+
+    fn unmap_all_interrupts(&mut self) -> anyhow::Result<()> {
+        if self.interrupts.is_empty() {
+            return Ok(());
+        }
+
+        let count = self.interrupts.len() as u32;
+        self.device
+            .unmap_msix(0, count)
+            .context("failed to unmap all msix vectors")?;
+
+        // Clear local bookkeeping so re-mapping works correctly later.
+        self.interrupts.clear();
+
+        Ok(())
     }
 }
 
@@ -415,18 +495,18 @@ impl MappedRegionWithFallback {
     fn read_from_mapping<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
         &self,
         offset: usize,
-    ) -> Result<T, sparse_mmap::MemoryError> {
+    ) -> Result<T, trycopy::MemoryError> {
         // SAFETY: the offset is validated to be in bounds and aligned.
-        unsafe { sparse_mmap::try_read_volatile(self.mapping::<T>(offset)) }
+        unsafe { trycopy::try_read_volatile(self.mapping::<T>(offset)) }
     }
 
     fn write_to_mapping<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
         &self,
         offset: usize,
         data: T,
-    ) -> Result<(), sparse_mmap::MemoryError> {
+    ) -> Result<(), trycopy::MemoryError> {
         // SAFETY: the offset is validated to be in bounds and aligned.
-        unsafe { sparse_mmap::try_write_volatile(self.mapping::<T>(offset), &data) }
+        unsafe { trycopy::try_write_volatile(self.mapping::<T>(offset), &data) }
     }
 
     fn read_from_file(&self, offset: usize, buf: &mut [u8]) {

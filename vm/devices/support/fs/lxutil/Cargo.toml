@@ -23,28 +23,10 @@ libc.workspace = true
 [target.'cfg(windows)'.dependencies]
 bitfield-struct.workspace = true
 headervec.workspace = true
-ntapi.workspace = true
 parking_lot.workspace = true
 static_assertions.workspace = true
 widestring.workspace = true
 zerocopy.workspace = true
-[target.'cfg(windows)'.dependencies.winapi]
-workspace = true
-features = [
-    "basetsd",
-    "consoleapi",
-    "handleapi",
-    "memoryapi",
-    "namedpipeapi",
-    "processenv",
-    "realtimeapiset",
-    "synchapi",
-    "winbase",
-    "wincon",
-    "winnls",
-    "winnt",
-    "winsock2",
-]
 
 [target.'cfg(windows)'.dependencies.windows]
 workspace = true
@@ -60,8 +42,10 @@ features = [
     "Win32_System_Ioctl",
     "Win32_System_Kernel",
     "Win32_System_Memory",
+    "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
+    "Win32_System_WindowsProgramming"
 ]
 
 [dev-dependencies]

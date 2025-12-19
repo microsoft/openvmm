@@ -19,5 +19,5 @@ pub struct NvmeSavedDiskConfig {
     #[mesh(1)]
     pub pci_id: String,
     #[mesh(2)]
-    pub driver_state: nvme_driver::NvmeDriverSavedState,
+    pub driver_state: nvme_driver::save_restore::NvmeDriverSavedState,
 }

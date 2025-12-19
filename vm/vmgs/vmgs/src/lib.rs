@@ -7,7 +7,7 @@
 //!
 //! This particular implementation of the VMGS file format began life as a
 //! line-by-line port of the existing C++ VMGS code in Hyper-V. This kind of
-//! rote-porting was fairly common in the early days of the HvLite project (when
+//! rote-porting was fairly common in the early days of the OpenVMM project (when
 //! folks were still getting a feel for Rust), though as time has gone on, most
 //! instances of rote-ported code have been refactored/rewritten to follow
 //! idiomatic Rust patterns.
@@ -29,6 +29,7 @@ mod vmgs_impl;
 pub use error::Error;
 pub use vmgs_format::EncryptionAlgorithm;
 pub use vmgs_format::FileId;
+pub use vmgs_impl::GspType;
 pub use vmgs_impl::Vmgs;
 pub use vmgs_impl::VmgsFileInfo;
 #[cfg(feature = "save_restore")]

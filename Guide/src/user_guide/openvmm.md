@@ -103,5 +103,4 @@ application.
 ```
 
 [^dlls]: though, depending on the platform and compiled-in feature-set, some
-    additional DLLs and/or system libraries may need to be installed (notably:
-    `lxutil.dll` on Windows).
+    additional DLLs and/or system libraries may need to be installed.

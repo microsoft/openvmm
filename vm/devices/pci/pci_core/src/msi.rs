@@ -3,6 +3,7 @@
 
 //! Traits for working with MSI interrupts.
 
+use inspect::Inspect;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -105,14 +106,35 @@ impl RegisterMsi for MsiInterruptSet {
 }
 
 /// A message-signaled interrupt.
+#[derive(Debug, Inspect)]
 pub struct MsiInterrupt {
     state: Arc<Mutex<MsiInterruptState>>,
 }
 
+#[derive(Inspect)]
 struct MsiInterruptState {
     pending: bool,
+    #[inspect(with = "inspect_address_data")]
     address_data: Option<(u64, u32)>,
+    #[inspect(skip)]
     control: Option<Box<dyn MsiControl>>,
+}
+
+fn inspect_address_data(address_data: &Option<(u64, u32)>) -> String {
+    match address_data {
+        Some((address, data)) => format!("address: {:#x}, data: {:#x}", address, data),
+        None => "None".to_string(),
+    }
+}
+
+impl std::fmt::Debug for MsiInterruptState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MsiInterruptState")
+            .field("pending", &self.pending)
+            .field("address_data", &self.address_data)
+            .field("control", &"<MsiControl>")
+            .finish()
+    }
 }
 
 impl MsiInterrupt {

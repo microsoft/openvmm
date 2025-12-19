@@ -68,7 +68,7 @@ Saved state is defined as a `struct` that has `#[derive(Protobuf)]` and
 `#[mesh(package = "package_name")]` attributes. Here is an example, taken from
 the `nvme_driver`:
 
-```rust
+```rust,ignore
 pub mod save_restore {
     use super::*;
 

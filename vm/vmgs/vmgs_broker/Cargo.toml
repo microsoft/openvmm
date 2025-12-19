@@ -17,12 +17,12 @@ encryption_ossl = ["vmgs/encryption_ossl"]
 [dependencies]
 vmgs_format.workspace = true
 vmgs_resources.workspace = true
-vmgs = { workspace = true, features = ["inspect", "save_restore"] }
+vmgs = { workspace = true, features = ["inspect", "save_restore", "mesh"] }
 vm_resource.workspace = true
 vmcore.workspace = true
 
 inspect = { workspace = true, features = ["defer"] }
-mesh_channel.workspace = true
+mesh.workspace = true
 pal_async.workspace = true
 
 async-trait.workspace = true

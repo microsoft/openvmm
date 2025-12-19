@@ -43,10 +43,6 @@ pub(crate) fn page_size() -> usize {
     PAGE_SIZE
 }
 
-pub(crate) const EXCEPTION_EXECUTE_HANDLER: i32 = 1;
-pub(crate) const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
-pub(crate) const _EXCEPTION_CONTINUE_EXECUTION: i32 = -1;
-
 const MEM_REPLACE_PLACEHOLDER: u32 = 0x4000;
 const MEM_RESERVE_PLACEHOLDER: u32 = 0x40000;
 
@@ -292,6 +288,7 @@ impl MappingList {
 impl SparseMapping {
     /// Reserves a sparse mapping range with the given size.
     pub fn new(len: usize) -> Result<Self, Error> {
+        trycopy::initialize_try_copy();
         Self::new_inner(None, None, len)
     }
 
@@ -689,13 +686,12 @@ pub fn alloc_shared_memory(size: usize) -> io::Result<OwnedHandle> {
 mod tests {
     use super::SparseMapping;
     use super::alloc_shared_memory;
-    use crate::initialize_try_copy;
-    use crate::try_copy;
+    use trycopy::try_copy;
     use windows_sys::Win32::System::Memory::PAGE_READWRITE;
 
     #[test]
     fn test_shared_mem_split() {
-        initialize_try_copy();
+        trycopy::initialize_try_copy();
 
         let shmem = alloc_shared_memory(0x100000).unwrap();
         let sparse = SparseMapping::new(0x100000).unwrap();

@@ -35,6 +35,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use thiserror::Error;
 use vmcore::device_state::ChangeDeviceState;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -65,12 +66,63 @@ pub mod standard_x86_io_ports {
 ///
 /// This is also the reason why the read/write methods are fallible: the PCI bus
 /// should be resilient to backing devices unexpectedly going offline.
+///
+/// PCI devices can optionally implement routing functionality (like switches and bridges)
+/// by providing implementations for the forwarding methods.
 pub trait GenericPciBusDevice: 'static + Send {
     /// Dispatch a PCI config space read to the device with the given address.
     fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult>;
 
     /// Dispatch a PCI config space write to the device with the given address.
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult>;
+
+    /// Forward a PCI configuration space read to a downstream device.
+    ///
+    /// Default implementation returns `None`, indicating this device doesn't support routing.
+    /// Routing components like switches and bridges should override this method.
+    ///
+    /// # Parameters
+    /// - `bus`: Target bus number for the downstream device
+    /// - `device_function`: Combined device and function number (device << 3 | function)
+    /// - `offset`: Configuration space offset within the target device
+    /// - `value`: Pointer to receive the read value
+    ///
+    /// # Returns
+    /// `Some(IoResult)` if the routing component handled the forward, `None` if
+    /// the component doesn't support routing or the target is not reachable.
+    fn pci_cfg_read_forward(
+        &mut self,
+        _bus: u8,
+        _device_function: u8,
+        _offset: u16,
+        _value: &mut u32,
+    ) -> Option<IoResult> {
+        None
+    }
+
+    /// Forward a PCI configuration space write to a downstream device.
+    ///
+    /// Default implementation returns `None`, indicating this device doesn't support routing.
+    /// Routing components like switches and bridges should override this method.
+    ///
+    /// # Parameters
+    /// - `bus`: Target bus number for the downstream device
+    /// - `device_function`: Combined device and function number (device << 3 | function)
+    /// - `offset`: Configuration space offset within the target device
+    /// - `value`: Value to write to the target device
+    ///
+    /// # Returns
+    /// `Some(IoResult)` if the routing component handled the forward, `None` if
+    /// the component doesn't support routing or the target is not reachable.
+    fn pci_cfg_write_forward(
+        &mut self,
+        _bus: u8,
+        _device_function: u8,
+        _offset: u16,
+        _value: u32,
+    ) -> Option<IoResult> {
+        None
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Inspect)]
@@ -162,6 +214,16 @@ pub struct GenericPciBus {
     state: GenericPciBusState,
 }
 
+/// Error indicating that a PCI slot is already occupied.
+#[derive(Debug, Error)]
+#[error("PCI slot already occupied by device '{existing_device_name}'")]
+pub struct PciSlotOccupiedError<D> {
+    /// Name of the existing device occupying the slot.
+    pub existing_device_name: Arc<str>,
+    /// The device that was attempted to be added.
+    pub device: D,
+}
+
 impl GenericPciBus {
     /// Create a new [`GenericPciBus`] with the specified (4-byte) IO ports.
     pub fn new(
@@ -187,8 +249,7 @@ impl GenericPciBus {
         }
     }
 
-    /// Try to add a PCI device, returning (device, existing_device_name) if the
-    /// slot is already occupied.
+    /// Try to add a PCI device.
     pub fn add_pci_device<D: GenericPciBusDevice>(
         &mut self,
         bus: u8,
@@ -196,7 +257,7 @@ impl GenericPciBus {
         function: u8,
         name: impl AsRef<str>,
         dev: D,
-    ) -> Result<(), (D, Arc<str>)> {
+    ) -> Result<(), PciSlotOccupiedError<D>> {
         let key = PciAddr {
             bus,
             device,
@@ -204,7 +265,10 @@ impl GenericPciBus {
         };
 
         if let Some((name, _)) = self.pci_devices.get(&key) {
-            return Err((dev, name.clone()));
+            return Err(PciSlotOccupiedError {
+                existing_device_name: name.clone(),
+                device: dev,
+            });
         }
 
         self.pci_devices
@@ -325,6 +389,7 @@ impl GenericPciBus {
             IoError::InvalidRegister => "offset not supported",
             IoError::InvalidAccessSize => "invalid access size",
             IoError::UnalignedAccess => "unaligned access",
+            IoError::NoResponse => "no response",
         };
         tracelimit::warn_ratelimited!(
             address = %self.state.pio_addr_reg.address(),
@@ -332,16 +397,6 @@ impl GenericPciBus {
             "pci config space {} operation error: {}",
             operation,
             error
-        );
-    }
-
-    fn trace_recv_error(&self, e: mesh::RecvError, operation: &'static str) {
-        tracelimit::warn_ratelimited!(
-            address = %self.state.pio_addr_reg.address(),
-            offset = self.state.pio_addr_reg.register(),
-            "pci config space {} operation recv error: {:?}",
-            operation,
-            e,
         );
     }
 }
@@ -552,7 +607,7 @@ impl PollDevice for GenericPciBus {
                         let value = match res {
                             Ok(()) => buf,
                             Err(e) => {
-                                self.trace_recv_error(e, "deferred read");
+                                self.trace_error(e, "deferred read");
                                 0
                             }
                         };
@@ -582,7 +637,7 @@ impl PollDevice for GenericPciBus {
                         let old_value = match res {
                             Ok(()) => buf,
                             Err(e) => {
-                                self.trace_recv_error(e, "deferred read for write");
+                                self.trace_error(e, "deferred read for write");
                                 0
                             }
                         };
@@ -627,7 +682,7 @@ impl PollDevice for GenericPciBus {
                         match res {
                             Ok(()) => {}
                             Err(e) => {
-                                self.trace_recv_error(e, "deferred write");
+                                self.trace_error(e, "deferred write");
                             }
                         }
                         bus_write.complete();
@@ -683,7 +738,6 @@ impl core::fmt::Display for AddressRegister {
 
 mod save_restore {
     use super::*;
-    use thiserror::Error;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
     use vmcore::save_restore::SaveRestore;

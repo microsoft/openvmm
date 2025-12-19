@@ -31,8 +31,8 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<flowey_lib_common::copy_to_artifact_dir::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
+        ctx.import::<crate::_jobs::build_test_results_website::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -44,17 +44,21 @@ impl SimpleFlowNode for Node {
         } = request;
 
         let repo = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
+        let logview_new_build =
+            ctx.reqv(|v| crate::_jobs::build_test_results_website::Request { path: v });
 
         let consolidated_html = ctx.emit_rust_stepv("generate consolidated gh pages html", |ctx| {
             let rendered_guide = rendered_guide.claim(ctx);
             let rustdoc_windows = rustdoc_windows.claim(ctx);
             let rustdoc_linux = rustdoc_linux.claim(ctx);
             let repo = repo.claim(ctx);
+            let logview_new_build = logview_new_build.claim(ctx);
             |rt| {
                 let rendered_guide = rt.read(rendered_guide);
                 let rustdoc_windows = rt.read(rustdoc_windows);
                 let rustdoc_linux = rt.read(rustdoc_linux);
                 let repo = rt.read(repo);
+                let logview_new_build = rt.read(logview_new_build);
 
                 let consolidated_html = std::env::current_dir()?.join("out").absolute()?;
                 fs_err::create_dir(&consolidated_html)?;
@@ -83,9 +87,15 @@ impl SimpleFlowNode for Node {
                     consolidated_html.join("rustdoc/linux"),
                 )?;
 
-                // Make petri logview available under `openvmm.dev/test-results/`
+                // Old logviewer. Keeping this around while the new one is stabilized.
                 flowey_lib_common::_util::copy_dir_all(
                     repo.join("petri/logview"),
+                    consolidated_html.join("test-results-old"),
+                )?;
+
+                // New logviewer (built in CI).
+                flowey_lib_common::_util::copy_dir_all(
+                    logview_new_build,
                     consolidated_html.join("test-results"),
                 )?;
 

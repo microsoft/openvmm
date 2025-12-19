@@ -24,6 +24,7 @@ use crate::protocol::MSHV_APIC_PAGE_OFFSET;
 use crate::protocol::hcl_intr_offload_flags;
 use crate::protocol::hcl_run;
 use bitvec::vec::BitVec;
+use cfg_if::cfg_if;
 use cvm_tracing::CVM_ALLOWED;
 use deferred::RegisteredDeferredActions;
 use deferred::push_deferred_action;
@@ -164,6 +165,8 @@ pub enum Error {
     MissingPrivateMemory,
     #[error("failed to allocate pages for vp")]
     AllocVp(#[source] anyhow::Error),
+    #[error("failed to map or unmap redirected device interrupt")]
+    MapRedirectedDeviceInterrupt(#[source] nix::Error),
 }
 
 /// Error for IOCTL errors specifically.
@@ -394,6 +397,7 @@ mod ioctls {
     const MSHV_INVLPGB: u16 = 0x36;
     const MSHV_TLBSYNC: u16 = 0x37;
     const MSHV_KICKCPUS: u16 = 0x38;
+    const MSHV_MAP_REDIRECTED_DEVICE_INTERRUPT: u16 = 0x39;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -459,6 +463,15 @@ mod ioctls {
         pub r9: u64,
         pub r10_out: u64, // only supported as output
         pub r11_out: u64, // only supported as output
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    pub struct mshv_map_device_int {
+        pub vector: u32,
+        pub apic_id: u32,
+        pub create_mapping: u8,
+        pub padding: [u8; 7],
     }
 
     ioctl_none!(
@@ -574,6 +587,7 @@ mod ioctls {
     pub const HCL_CAP_REGISTER_PAGE: u32 = 1;
     pub const HCL_CAP_VTL_RETURN_ACTION: u32 = 2;
     pub const HCL_CAP_DR6_SHARED: u32 = 3;
+    pub const HCL_CAP_LOWER_VTL_TIMER_VIRT: u32 = 4;
 
     ioctl_write_ptr!(
         /// Check for the presence of an extension capability.
@@ -615,6 +629,14 @@ mod ioctls {
         MSHV_IOCTL,
         MSHV_KICKCPUS,
         protocol::hcl_kick_cpus
+    );
+
+    ioctl_readwrite!(
+        /// Map or unmap VTL0 device interrupt in VTL2.
+        hcl_map_redirected_device_interrupt,
+        MSHV_IOCTL,
+        MSHV_MAP_REDIRECTED_DEVICE_INTERRUPT,
+        mshv_map_device_int
     );
 }
 
@@ -1448,10 +1470,7 @@ impl MshvHvcall {
                         | HvX64RegisterName::VsmVpSecureConfigVtl1
                 ));
             }
-            Some(Vtl::Vtl1) => {
-                todo!("TODO: allowed registers for VTL1");
-            }
-            Some(Vtl::Vtl0) => {
+            Some(Vtl::Vtl1) | Some(Vtl::Vtl0) => {
                 // Only VTL-private registers can go through this path.
                 // VTL-shared registers have to go through the kernel (either
                 // via the CPU context page or via the dedicated ioctl), as
@@ -1491,11 +1510,7 @@ impl MshvHvcall {
                         | HvArm64RegisterName::PrivilegesAndFeaturesInfo
                 ));
             }
-            Some(Vtl::Vtl1) => {
-                // TODO: allowed registers for VTL1
-                todo!();
-            }
-            Some(Vtl::Vtl0) => {
+            Some(Vtl::Vtl1) | Some(Vtl::Vtl0) => {
                 // Only VTL-private registers can go through this path.
                 // VTL-shared registers have to go through the kernel (either
                 // via the CPU context page or via the dedicated ioctl), as
@@ -1607,6 +1622,7 @@ pub struct Hcl {
     supports_vtl_ret_action: bool,
     supports_register_page: bool,
     dr6_shared: bool,
+    supports_lower_vtl_timer_virt: bool,
     isolation: IsolationType,
     snp_register_bitmap: [u8; 64],
     sidecar: Option<SidecarClient>,
@@ -1642,6 +1658,11 @@ impl Hcl {
     /// Returns true if DR6 is a shared register on this processor.
     pub fn dr6_shared(&self) -> bool {
         self.dr6_shared
+    }
+
+    /// Returns true if timer virtualization for lower VTL is supported.
+    pub fn supports_lower_vtl_timer_virt(&self) -> bool {
+        self.supports_lower_vtl_timer_virt
     }
 }
 
@@ -2325,9 +2346,12 @@ impl Hcl {
         let supports_vtl_ret_action = mshv_fd.check_extension(HCL_CAP_VTL_RETURN_ACTION)?;
         let supports_register_page = mshv_fd.check_extension(HCL_CAP_REGISTER_PAGE)?;
         let dr6_shared = mshv_fd.check_extension(HCL_CAP_DR6_SHARED)?;
+        let supports_lower_vtl_timer_virt =
+            mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
         tracing::debug!(
             supports_vtl_ret_action,
             supports_register_page,
+            supports_lower_vtl_timer_virt,
             "HCL capabilities",
         );
 
@@ -2351,6 +2375,7 @@ impl Hcl {
             supports_vtl_ret_action,
             supports_register_page,
             dr6_shared,
+            supports_lower_vtl_timer_virt,
             isolation,
             snp_register_bitmap,
             sidecar,
@@ -2936,16 +2961,14 @@ impl Hcl {
 
         let caps = match self.isolation {
             IsolationType::None | IsolationType::Vbs => caps,
-            // TODO SNP: Return actions may be useful, but with alternate injection many of these need
-            // cannot actually be processed by the hypervisor without returning to VTL2.
-            // Filter them out for now.
             IsolationType::Snp => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available()),
             IsolationType::Tdx => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available())
-                .with_dr6_shared(true),
+                .with_dr6_shared(true)
+                .with_proxy_interrupt_redirect_available(caps.proxy_interrupt_redirect_available()),
         };
 
         assert_eq!(caps.dr6_shared(), self.dr6_shared());
@@ -2993,16 +3016,26 @@ impl Hcl {
         ))
     }
 
-    #[cfg(guest_arch = "aarch64")]
-    /// Get the [`hvdef::HvPartitionPrivilege`] register
+    /// Get the [`hvdef::HvPartitionPrivilege`] info. On x86_64, this uses
+    /// CPUID. On aarch64, it uses get_vp_register.
     pub fn get_privileges_and_features_info(&self) -> Result<hvdef::HvPartitionPrivilege, Error> {
-        Ok(hvdef::HvPartitionPrivilege::from(
-            self.get_vp_register(
-                HvArm64RegisterName::PrivilegesAndFeaturesInfo,
-                HvInputVtl::CURRENT_VTL,
-            )?
-            .as_u64(),
-        ))
+        cfg_if! {
+            if #[cfg(guest_arch = "x86_64")] {
+                let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
+                let num = result.eax as u64 | ((result.ebx as u64) << 32);
+                Ok(hvdef::HvPartitionPrivilege::from(num))
+            } else if #[cfg(guest_arch = "aarch64")] {
+                Ok(hvdef::HvPartitionPrivilege::from(
+                    self.get_vp_register(
+                        HvArm64RegisterName::PrivilegesAndFeaturesInfo,
+                        HvInputVtl::CURRENT_VTL,
+                    )?
+                    .as_u64(),
+                ))
+            } else {
+                compile_error!("unsupported guest_arch configuration");
+            }
+        }
     }
 
     /// Get the [`hvdef::hypercall::HvGuestOsId`] register for the given VTL.
@@ -3236,6 +3269,7 @@ impl Hcl {
         vector: u32,
         multicast: bool,
         target_processors: ProcessorSet<'_>,
+        proxy_redirect: bool,
     ) -> Result<(), HvError> {
         let header = hvdef::hypercall::RetargetDeviceInterrupt {
             partition_id: HV_PARTITION_ID_SELF,
@@ -3246,7 +3280,8 @@ impl Hcl {
                 vector,
                 flags: hvdef::hypercall::HvInterruptTargetFlags::default()
                     .with_multicast(multicast)
-                    .with_processor_set(true),
+                    .with_processor_set(true)
+                    .with_proxy_redirect(proxy_redirect),
                 // Always use a generic processor set to simplify construction. This hypercall is
                 // invoked relatively infrequently, the overhead should be acceptable.
                 mask_or_format: hvdef::hypercall::HV_GENERIC_SET_SPARSE_4K,
@@ -3355,5 +3390,28 @@ impl Hcl {
         unsafe {
             hcl_kickcpus(self.mshv_vtl.file.as_raw_fd(), &data).expect("should always succeed");
         }
+    }
+
+    /// Map or unmap guest device interrupt vector in VTL2 kernel
+    pub fn map_redirected_device_interrupt(
+        &self,
+        vector: u32,
+        apic_id: u32,
+        create_mapping: bool,
+    ) -> Result<u32, Error> {
+        let mut param = mshv_map_device_int {
+            vector,
+            apic_id,
+            create_mapping: create_mapping.into(),
+            padding: [0; 7],
+        };
+
+        // SAFETY: following the IOCTL definition.
+        unsafe {
+            hcl_map_redirected_device_interrupt(self.mshv_vtl.file.as_raw_fd(), &mut param)
+                .map_err(Error::MapRedirectedDeviceInterrupt)?;
+        }
+
+        Ok(param.vector)
     }
 }

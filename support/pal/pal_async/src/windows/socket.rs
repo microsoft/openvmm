@@ -85,7 +85,14 @@ pub struct AfdSocketReady {
 
 pub trait AfdHandle {
     fn handle(&self) -> RawHandle;
+
     fn ref_io(&self) -> RawHandle;
+
+    /// # Safety
+    ///
+    /// Must only be called when an IO operation started with `ref_io` will not
+    /// complete asynchronously (either it has completed synchronously or will
+    /// never be issued).
     unsafe fn deref_io(&self);
 }
 
@@ -102,10 +109,11 @@ struct AfdSocketReadyOp {
 #[derive(Debug)]
 struct KernelBuffer<T>(UnsafeCell<T>);
 
+/// SAFETY: the buffer is `Sync` if the contents are `Sync`.
 unsafe impl<T: Sync> Sync for KernelBuffer<T> {}
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct PollInfoInput {
     header: afd::PollInfo,
     data: afd::PollHandleInfo,
@@ -124,7 +132,7 @@ impl AfdSocketReady {
             op: Arc::new(AfdSocketReadyOp {
                 overlapped: Overlapped::new(),
                 socket,
-                poll_info: KernelBuffer(UnsafeCell::new(unsafe { std::mem::zeroed() })),
+                poll_info: KernelBuffer(UnsafeCell::new(Default::default())),
                 inner: Mutex::new(AfdSocketReadyInner {
                     interests: PollInterestSet::default(),
                     in_flight_events: PollEvents::EMPTY,
@@ -141,8 +149,18 @@ impl AfdSocketReady {
         slot: InterestSlot,
         events: PollEvents,
     ) -> Poll<PollEvents> {
-        loop {
-            let mut inner = self.op.inner.lock();
+        let mut wakers = WakerList::default();
+        // Hold the lock across all issuing and cancelling of IO in order to
+        // synchronize with the IO completion thread. This avoids race
+        // conditions where the IO completion thread tries to issue a poll IO
+        // for a socket that has just been closed (which can cause an invalid
+        // handle access), or where cancelling an IO happens concurrently with
+        // issuing an IO (which can cause a hang).
+        //
+        // There are probably a few cases where a shorter lock hold time is
+        // possible, but it's far from clear that doing so would be a win.
+        let mut inner = self.op.inner.lock();
+        let r = loop {
             match inner.interests.poll_ready(cx, slot, events) {
                 Poll::Ready(events) => break Poll::Ready(events),
                 Poll::Pending => {
@@ -153,12 +171,13 @@ impl AfdSocketReady {
                     } else if inner.in_flight_events.is_empty() {
                         // The IO is not in flight.
                         let events_to_poll = inner.interests.events_to_poll();
-                        inner.in_flight_events = events_to_poll;
-                        drop(inner);
-                        if let Some(op) = self.op.clone().issue_io(afd_handle, events_to_poll) {
-                            let mut wakers = WakerList::default();
-                            op.io_complete(afd_handle, STATUS_SUCCESS, &mut wakers);
-                            wakers.wake();
+                        if self.op.issue_io(&mut inner, afd_handle, events_to_poll) {
+                            self.op.io_complete(
+                                &mut inner,
+                                afd_handle,
+                                STATUS_SUCCESS,
+                                &mut wakers,
+                            );
                         } else {
                             break Poll::Pending;
                         }
@@ -167,12 +186,13 @@ impl AfdSocketReady {
                         // Cancel it--it will be reissued with the right events
                         // when it completes.
                         inner.cancelled = true;
-                        drop(inner);
                         self.op.cancel_io(afd_handle);
                     }
                 }
             }
-        }
+        };
+        wakers.wake();
+        r
     }
 
     pub fn clear_socket_ready(&mut self, slot: InterestSlot) {
@@ -188,23 +208,43 @@ impl AfdSocketReady {
         }
     }
 
+    /// Reports an AFD IO completion.
+    ///
+    /// # Safety
+    /// Must be called only when an IO has completed for `overlapped`, which
+    /// must be a pointer to the `overlapped` field of an `AfdSocketReadyOp`.
+    /// This must have been started with a call to `AfdSocketReadyOp::issue_io`.
     pub unsafe fn io_complete(
         afd_handle: &impl AfdHandle,
         overlapped: *mut OVERLAPPED,
         wakers: &mut WakerList,
     ) {
-        let op = unsafe { Arc::from_raw(overlapped.cast::<AfdSocketReadyOp>()) };
+        let op_ptr = overlapped.cast::<AfdSocketReadyOp>();
+        // SAFETY: caller ensures `overlapped` is a valid pointer to the
+        // `overlapped` field of an `AfdSocketReadyOp` that has completed.
+        let op = unsafe { &*op_ptr };
         let (status, _) = op.overlapped.io_status().expect("io should be done");
-        op.io_complete(afd_handle, status, wakers);
+        let mut inner = op.inner.lock();
+        // SAFETY: Now that the lock is held, the issuer is guaranteed to have
+        // incremented the reference count, so it is safe to take ownership of
+        // the reference.
+        let op = unsafe { Arc::from_raw(op_ptr) };
+        op.io_complete(&mut inner, afd_handle, status, wakers);
     }
 }
 
 impl AfdSocketReadyOp {
+    /// Returns whether the IO completed synchronously.
+    #[must_use]
     fn issue_io(
-        self: Arc<Self>,
+        self: &Arc<Self>,
+        inner: &mut AfdSocketReadyInner,
         afd_handle: &impl AfdHandle,
         events: PollEvents,
-    ) -> Option<Arc<Self>> {
+    ) -> bool {
+        inner.in_flight_events = events;
+        // SAFETY: there is no IO in flight, so we have exclusive access to the
+        // poll info buffer.
         let poll_info = unsafe { &mut *self.poll_info.0.get() };
         *poll_info = PollInfoInput {
             header: afd::PollInfo {
@@ -216,6 +256,8 @@ impl AfdSocketReadyOp {
         };
 
         let len = size_of_val(poll_info);
+        // SAFETY: the buffers are valid and owned for the lifetime of the
+        // operation, and the handles are valid for the lifetime of the call.
         let done = unsafe {
             afd::poll(
                 afd_handle.ref_io(),
@@ -226,30 +268,42 @@ impl AfdSocketReadyOp {
         };
 
         if done {
-            // SAFETY: the IO completed synchronously, so the reference is no longer in use.
+            // SAFETY: the IO completed synchronously, so the IO reference is no
+            // longer in use.
             unsafe { afd_handle.deref_io() };
-            Some(self)
+            true
         } else {
-            // The IO owns this reference.
-            std::mem::forget(self);
-            None
+            // The IO will drop a reference, so increment it here. Note that
+            // this is safe to do even though the IO may complete immediately,
+            // because the IO completion callback takes the inner lock that this
+            // thread currently holds.
+            let _proof = inner;
+            let _ = Arc::into_raw(self.clone());
+            false
         }
     }
 
     fn cancel_io(&self, afd_handle: &impl AfdHandle) {
+        // SAFETY: no safety requirements.
         unsafe {
             CancelIoEx(afd_handle.handle(), self.overlapped.as_ptr());
         }
     }
 
+    /// The inner lock must be held across this call. This is necessary both to
+    /// ensure that the IO can be cancelled by another thread, and to ensure
+    /// that the socket handle is still valid at the time of the call.
     fn io_complete(
-        mut self: Arc<Self>,
+        self: &Arc<Self>,
+        inner: &mut AfdSocketReadyInner,
         afd_handle: &impl AfdHandle,
         mut status: NTSTATUS,
         wakers: &mut WakerList,
     ) {
         loop {
             let revents = if NT_SUCCESS(status) {
+                // SAFETY: there is no IO in flight, so we have exclusive access to the
+                // poll info buffer.
                 let poll_info = unsafe { &mut *self.poll_info.0.get() };
                 assert_eq!(poll_info.header.number_of_handles, 1);
                 parse_poll_handle_info(&poll_info.data)
@@ -263,18 +317,14 @@ impl AfdSocketReadyOp {
                 PollEvents::EMPTY
             };
 
-            let next_events = {
-                let mut inner = self.inner.lock();
-                inner.interests.wake_ready(revents, wakers);
-                inner.in_flight_events = inner.interests.events_to_poll();
-                inner.cancelled = false;
-                inner.in_flight_events
-            };
+            inner.interests.wake_ready(revents, wakers);
+            inner.in_flight_events = PollEvents::EMPTY;
+            inner.cancelled = false;
+            let next_events = inner.interests.events_to_poll();
             if next_events.is_empty() {
                 break;
             }
-            if let Some(op) = self.issue_io(afd_handle, next_events) {
-                self = op;
+            if self.issue_io(inner, afd_handle, next_events) {
                 status = STATUS_SUCCESS;
             } else {
                 break;

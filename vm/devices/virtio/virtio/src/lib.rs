@@ -10,6 +10,7 @@ pub mod queue;
 pub mod resolve;
 pub mod resolver;
 pub mod spec;
+mod tests;
 pub mod transport;
 
 pub use common::*;

@@ -15,7 +15,6 @@ use crate::VENDOR_ID;
 use crate::spec;
 use crate::workers::IoQueueEntrySizes;
 use crate::workers::NvmeWorkers;
-use crate::workers::NvmeWorkersContext;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoError::InvalidRegister;
@@ -32,10 +31,9 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::PciFaultBehavior;
+use nvme_resources::fault::PciFaultConfig;
 use parking_lot::Mutex;
 use pci_core::capabilities::msix::MsixEmulator;
-use pci_core::capabilities::pci_express::FlrHandler;
-use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
@@ -51,32 +49,6 @@ use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
 use vmcore::vm_task::VmTaskDriverSource;
 
-/// FLR handler that signals reset requests.
-#[derive(Inspect)]
-struct NvmeFlrHandler {
-    #[inspect(skip)]
-    reset_requested: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl NvmeFlrHandler {
-    fn new() -> (Self, Arc<std::sync::atomic::AtomicBool>) {
-        let reset_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        (
-            Self {
-                reset_requested: reset_requested.clone(),
-            },
-            reset_requested,
-        )
-    }
-}
-
-impl FlrHandler for NvmeFlrHandler {
-    fn initiate_flr(&self) {
-        self.reset_requested
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
 /// An NVMe controller.
 #[derive(InspectMut)]
 pub struct NvmeFaultController {
@@ -89,9 +61,9 @@ pub struct NvmeFaultController {
     #[inspect(flatten, mut)]
     workers: NvmeWorkers,
     #[inspect(skip)]
-    flr_reset_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
+    pci_fault_config: PciFaultConfig,
     #[inspect(skip)]
-    worker_context: NvmeWorkersContext,
+    fault_active: mesh::Cell<bool>,
 }
 
 #[derive(Inspect)]
@@ -137,8 +109,6 @@ pub struct NvmeFaultControllerCaps {
     /// The subsystem ID, used as part of the subnqn field of the identify
     /// controller response.
     pub subsystem_id: Guid,
-    /// Whether to advertise Function Level Reset (FLR) support.
-    pub flr_support: bool,
 }
 
 impl NvmeFaultController {
@@ -149,7 +119,7 @@ impl NvmeFaultController {
         register_msi: &mut dyn RegisterMsi,
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeFaultControllerCaps,
-        fault_configuration: FaultConfiguration,
+        mut fault_configuration: FaultConfiguration,
     ) -> Self {
         let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, register_msi);
         let bars = DeviceBars::new()
@@ -162,20 +132,6 @@ impl NvmeFaultController {
                 BarMemoryKind::Intercept(register_mmio.new_io_region("msix", msix.bar_len())),
             );
 
-        // Prepare capabilities list
-        let mut capabilities: Vec<Box<dyn pci_core::capabilities::PciCapability>> =
-            vec![Box::new(msix_cap)];
-
-        // Optionally add PCI Express capability with FLR support
-        let flr_reset_requested = if caps.flr_support {
-            let (flr_handler, reset_requested) = NvmeFlrHandler::new();
-            let pcie_cap = PciExpressCapability::new(Some(Arc::new(flr_handler)));
-            capabilities.push(Box::new(pcie_cap));
-            Some(reset_requested)
-        } else {
-            None
-        };
-
         let cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {
                 vendor_id: VENDOR_ID,
@@ -187,7 +143,7 @@ impl NvmeFaultController {
                 type0_sub_vendor_id: 0,
                 type0_sub_system_id: 0,
             },
-            capabilities,
+            vec![Box::new(msix_cap)],
             bars,
         );
 
@@ -195,19 +151,24 @@ impl NvmeFaultController {
             .map(|i| msix.interrupt(i).unwrap())
             .collect();
 
-        let qe_sizes = Arc::new(Default::default());
-        let worker_context = NvmeWorkersContext {
-            driver_source: driver_source.clone(),
-            mem: guest_memory,
-            interrupts,
-            max_sqs: caps.max_io_queues,
-            max_cqs: caps.max_io_queues,
-            qe_sizes: Arc::clone(&qe_sizes),
-            subsystem_id: caps.subsystem_id,
-            fault_configuration,
-        };
+        let pci_fault_config = fault_configuration
+            .pci_fault
+            .take()
+            .unwrap_or(PciFaultConfig::new());
 
-        let admin = NvmeWorkers::new(worker_context.clone());
+        let fault_active = fault_configuration.fault_active.clone();
+
+        let qe_sizes = Arc::new(Default::default());
+        let admin = NvmeWorkers::new(
+            driver_source,
+            guest_memory,
+            interrupts,
+            caps.max_io_queues,
+            caps.max_io_queues,
+            Arc::clone(&qe_sizes),
+            caps.subsystem_id,
+            fault_configuration,
+        );
 
         Self {
             cfg_space,
@@ -215,8 +176,8 @@ impl NvmeFaultController {
             registers: RegState::new(),
             workers: admin,
             qe_sizes,
-            flr_reset_requested,
-            worker_context,
+            pci_fault_config,
+            fault_active,
         }
     }
 
@@ -395,16 +356,18 @@ impl NvmeFaultController {
         if cc.en() != self.registers.cc.en() {
             if cc.en() {
                 // If any fault was configured for cc.en() process it here
-                match self
-                    .worker_context
-                    .fault_configuration
-                    .pci_fault
-                    .controller_management_fault_enable
-                {
-                    PciFaultBehavior::Delay(duration) => {
-                        std::thread::sleep(duration);
+                if self.fault_active.get() {
+                    match &mut self.pci_fault_config.controller_management_fault_enable {
+                        PciFaultBehavior::Delay(duration) => {
+                            std::thread::sleep(*duration);
+                        }
+                        PciFaultBehavior::Default => {}
+                        PciFaultBehavior::Verify(send) => {
+                            if let Some(send) = send.take() {
+                                send.send(());
+                            }
+                        }
                     }
-                    PciFaultBehavior::Default => {}
                 }
 
                 // Some drivers will write zeros to IOSQES and IOCQES, assuming that the defaults will work.
@@ -496,8 +459,8 @@ impl ChangeDeviceState for NvmeFaultController {
             registers,
             qe_sizes,
             workers,
-            flr_reset_requested: _,
-            worker_context: _,
+            pci_fault_config: _,
+            fault_active: _,
         } = self;
         workers.reset().await;
         cfg_space.reset();
@@ -552,23 +515,7 @@ impl PciConfigSpace for NvmeFaultController {
     }
 
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        let result = self.cfg_space.write_u32(offset, value);
-
-        // Check for FLR requests
-        if let Some(flr_requested) = &self.flr_reset_requested {
-            // According to the spec, FLR bit should always read 0, reset it before responding.
-            if flr_requested.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                // FLR entails a state agnostic hard-reset. Instead of just resetting the controller,
-                // create a completely new worker backend to ensure clean state.
-                self.cfg_space.reset();
-                self.registers = RegState::new();
-                *self.qe_sizes.lock() = Default::default();
-
-                self.workers = NvmeWorkers::new(self.worker_context.clone());
-            }
-        }
-
-        result
+        self.cfg_space.write_u32(offset, value)
     }
 }
 

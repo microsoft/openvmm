@@ -23,6 +23,7 @@ vm_resource.workspace = true
 
 inspect.workspace = true
 task_control.workspace = true
+tracelimit.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true

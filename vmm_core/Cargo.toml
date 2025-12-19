@@ -19,6 +19,7 @@ vmm_core_defs.workspace = true
 aarch64defs.workspace = true
 acpi_spec = { workspace = true, features = ["std"] }
 acpi.workspace = true
+chipset_device_resources.workspace = true
 cvm_tracing.workspace = true
 hcl_compat_uefi_nvram_storage.workspace = true
 hvdef.workspace = true
@@ -40,6 +41,7 @@ x86defs.workspace = true
 
 # support/
 cache_topology.workspace = true
+closeable_mutex.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 pal_async.workspace = true

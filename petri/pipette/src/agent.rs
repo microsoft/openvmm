@@ -3,11 +3,9 @@
 
 //! The main pipette agent, which is run when the process starts.
 
-#![cfg(any(target_os = "linux", target_os = "windows"))]
-
 use anyhow::Context;
 use futures::future::FutureExt;
-use futures_concurrency::future::RaceOk;
+use futures_concurrency::future::Race;
 use mesh_remote::PointToPointMesh;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
@@ -37,23 +35,17 @@ pub struct DiagnosticSender(mesh::Sender<DiagnosticFile>);
 impl Agent {
     pub async fn new(driver: DefaultDriver) -> anyhow::Result<Self> {
         let socket = (connect_client(&driver), connect_server(&driver))
-            .race_ok()
-            .await
-            .map_err(|e| {
-                let [e0, e1] = &*e;
-                anyhow::anyhow!(
-                    "failed to connect. client error: {:#} server error: {:#}",
-                    e0,
-                    e1
-                )
-            })?;
+            .race()
+            .await;
 
+        eprintln!("Pipette handshaking with host");
         let (bootstrap_send, bootstrap_recv) = mesh::oneshot::<PipetteBootstrap>();
         let mesh = PointToPointMesh::new(&driver, socket, bootstrap_recv.into());
 
         let (request_send, request_recv) = mesh::channel();
         let (diag_file_send, diag_file_recv) = mesh::channel();
         let (watch_send, watch_recv) = mesh::oneshot();
+        eprintln!("Pipette initializing tracing");
         let log = crate::trace::init_tracing();
 
         bootstrap_send.send(PipetteBootstrap {
@@ -62,6 +54,7 @@ impl Agent {
             watch: watch_recv,
             log,
         });
+        eprintln!("Pipette bootstrap sent to host");
 
         Ok(Self {
             driver,
@@ -96,34 +89,57 @@ impl Agent {
     }
 }
 
-async fn connect_server(driver: &DefaultDriver) -> anyhow::Result<PolledSocket<Socket>> {
-    let mut socket = VmSocket::new()?;
-    socket.bind(VmAddress::vsock_any(pipette_protocol::PIPETTE_VSOCK_PORT))?;
-    let mut socket =
-        PolledSocket::new(driver, socket.into()).context("failed to create polled socket")?;
-    socket.listen(1)?;
-    let socket = socket
-        .accept()
-        .await
-        .context("failed to accept connection")?
-        .0;
-    PolledSocket::new(driver, socket).context("failed to create polled socket")
+async fn connect_server(driver: &DefaultDriver) -> PolledSocket<Socket> {
+    let server_core = async || {
+        let mut socket = VmSocket::new()?;
+        socket.bind(VmAddress::vsock_any(pipette_protocol::PIPETTE_VSOCK_PORT))?;
+        let mut socket =
+            PolledSocket::new(driver, socket.into()).context("failed to create polled socket")?;
+        socket.listen(1)?;
+        let socket = socket
+            .accept()
+            .await
+            .context("failed to accept connection")?
+            .0;
+        PolledSocket::new(driver, socket).context("failed to create polled server socket")
+    };
+
+    match server_core().await {
+        Ok(socket) => socket,
+        Err(err) => {
+            eprintln!("failed to stand up server: {:?}", err);
+            std::future::pending().await
+        }
+    }
 }
 
-async fn connect_client(driver: &DefaultDriver) -> anyhow::Result<PolledSocket<Socket>> {
-    let socket = VmSocket::new()?;
-    // Extend the default timeout of 2 seconds, as tests are often run in
-    // parallel on a host, causing very heavy load on the overall system.
-    socket
-        .set_connect_timeout(Duration::from_secs(5))
-        .context("failed to set socket timeout")?;
-    let mut socket = PolledSocket::new(driver, socket)
-        .context("failed to create polled socket")?
-        .convert();
-    socket
-        .connect(&VmAddress::vsock_host(pipette_protocol::PIPETTE_VSOCK_PORT).into())
-        .await?;
-    Ok(socket)
+async fn connect_client(driver: &DefaultDriver) -> PolledSocket<Socket> {
+    let client_core = async || {
+        let socket = VmSocket::new()?;
+        // Extend the default timeout of 2 seconds, as tests are often run in
+        // parallel on a host, causing very heavy load on the overall system.
+        socket
+            .set_connect_timeout(Duration::from_secs(5))
+            .context("failed to set socket timeout")?;
+        let mut socket = PolledSocket::new(driver, socket)
+            .context("failed to create polled client socket")?
+            .convert();
+        socket
+            .connect(&VmAddress::vsock_host(pipette_protocol::PIPETTE_VSOCK_PORT).into())
+            .await
+            .context("failed to connect")
+            .map(|()| socket)
+    };
+    loop {
+        let mut timer = PolledTimer::new(driver);
+        match client_core().await {
+            Ok(socket) => return socket,
+            Err(err) => {
+                eprintln!("failed to connect to server, retrying: {:?}", err);
+                timer.sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
 }
 
 async fn handle_request(
@@ -141,7 +157,7 @@ async fn handle_request(
                 tracing::info!(shutdown_type = ?request.shutdown_type, "shutdown request");
                 // TODO: handle this inline without waiting. Currently we spawn
                 // a task so that the response is sent before the shutdown
-                // starts, since hvlite fails to notice that the connection is
+                // starts, since OpenVMM fails to notice that the connection is
                 // closed if we power off while a response is pending.
                 let mut timer = PolledTimer::new(driver);
                 driver
@@ -174,6 +190,15 @@ async fn handle_request(
         PipetteRequest::ReadFile(rpc) => rpc.handle_failable(read_file).await,
         PipetteRequest::WriteFile(rpc) => rpc.handle_failable(write_file).await,
         PipetteRequest::GetTime(rpc) => rpc.handle_sync(|()| SystemTime::now().into()),
+        PipetteRequest::Crash(rpc) => rpc.handle_sync(|()| panic!("crash requested")),
+        PipetteRequest::KernelCrash(rpc) => {
+            rpc.handle_failable(async |()| {
+                crate::crash::trigger_kernel_crash()?;
+                std::future::pending::<()>().await;
+                anyhow::Ok(())
+            })
+            .await
+        }
     }
 }
 

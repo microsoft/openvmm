@@ -1,0 +1,10 @@
+/* Copyright (c) Microsoft Corporation. */
+/* Licensed under the MIT License. */
+
+/* Remove default margin and padding from html and body */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}

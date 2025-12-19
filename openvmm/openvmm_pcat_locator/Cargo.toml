@@ -1,0 +1,18 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "openvmm_pcat_locator"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mesh.workspace = true
+
+anyhow.workspace = true
+fs-err.workspace = true
+object = { workspace = true, features = ["pe", "read_core", "std"] }
+tracing.workspace = true
+
+[lints]
+workspace = true

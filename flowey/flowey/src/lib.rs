@@ -14,6 +14,7 @@
 pub mod node {
     pub mod prelude {
         // include all user-facing types in the prelude
+        pub use flowey_core::match_arch;
         pub use flowey_core::node::user_facing::*;
 
         // ...in addition, export various types/traits that node impls are

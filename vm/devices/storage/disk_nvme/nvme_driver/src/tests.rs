@@ -5,17 +5,22 @@ use crate::NvmeDriver;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
+use disk_backend::Disk;
+use disk_prwrap::DiskWithReservations;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::CellUpdater;
 use nvme::NvmeControllerCaps;
+use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
-use nvme_resources::fault::QueueFaultBehavior;
+use nvme_resources::fault::IoQueueFaultBehavior;
+use nvme_resources::fault::IoQueueFaultConfig;
 use nvme_spec::AdminOpcode;
 use nvme_spec::Cap;
 use nvme_spec::Command;
+use nvme_spec::nvm;
 use nvme_spec::nvm::DsmRange;
 use nvme_test::command_match::CommandMatchBuilder;
 use pal_async::DefaultDriver;
@@ -24,11 +29,14 @@ use parking_lot::Mutex;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use test_with_tracing::test;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
+use user_driver_emulated_mock::DeviceTestDmaClientCallbacks;
 use user_driver_emulated_mock::DeviceTestMemory;
 use user_driver_emulated_mock::EmulatedDevice;
 use user_driver_emulated_mock::Mapping;
@@ -39,9 +47,9 @@ use zerocopy::IntoBytes;
 
 #[async_test]
 #[should_panic(expected = "assertion `left == right` failed: cid sequence number mismatch:")]
-async fn test_nvme_command_fault(driver: DefaultDriver) {
+async fn test_nvme_admin_fault_bad_cid(driver: DefaultDriver) {
     let mut output_cmd = Command::new_zeroed();
-    output_cmd.cdw0.set_cid(0);
+    output_cmd.cdw0.set_cid(1); // AER will have cid 0.
 
     test_nvme_fault_injection(
         driver,
@@ -50,7 +58,34 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
                 CommandMatchBuilder::new()
                     .match_cdw0_opcode(AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
                     .build(),
-                QueueFaultBehavior::Update(output_cmd),
+                AdminQueueFaultBehavior::Update(output_cmd),
+            ),
+        ),
+    )
+    .await;
+}
+
+#[async_test]
+async fn test_nvme_io_fault_long_reservation_report(driver: DefaultDriver) {
+    let report_header = nvm::ReservationReportExtended {
+        report: nvm::ReservationReport {
+            generation: 0,
+            rtype: nvm::ReservationType(0),
+            regctl: (128_u16).into(), // Indicates at-least 2 pages worth of data
+            ptpls: 0,
+            ..FromZeros::new_zeroed()
+        },
+        ..FromZeros::new_zeroed()
+    };
+
+    test_nvme_fault_injection(
+        driver,
+        FaultConfiguration::new(CellUpdater::new(true).cell()).with_io_queue_fault(
+            IoQueueFaultConfig::new(CellUpdater::new(true).cell()).with_completion_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvm::NvmOpcode::RESERVATION_REPORT.0)
+                    .build(),
+                IoQueueFaultBehavior::CustomPayload(report_header.as_bytes().to_vec()),
             ),
         ),
     )
@@ -59,17 +94,54 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
 
 #[async_test]
 async fn test_nvme_driver_direct_dma(driver: DefaultDriver) {
-    test_nvme_driver(driver, true).await;
+    test_nvme_driver(
+        driver,
+        NvmeTestConfig {
+            allow_dma: true,
+            fail_at_driver_create: false,
+            fail_at_io_issuer: false,
+        },
+    )
+    .await;
 }
 
 #[async_test]
 async fn test_nvme_driver_bounce_buffer(driver: DefaultDriver) {
-    test_nvme_driver(driver, false).await;
+    test_nvme_driver(
+        driver,
+        NvmeTestConfig {
+            allow_dma: false,
+            fail_at_driver_create: false,
+            fail_at_io_issuer: false,
+        },
+    )
+    .await;
 }
 
 #[async_test]
-async fn test_nvme_save_restore(driver: DefaultDriver) {
-    test_nvme_save_restore_inner(driver).await;
+async fn test_nvme_driver_fails_to_create_dma_alloc_failure(driver: DefaultDriver) {
+    test_nvme_driver(
+        driver,
+        NvmeTestConfig {
+            allow_dma: true,
+            fail_at_driver_create: true,
+            fail_at_io_issuer: false,
+        },
+    )
+    .await;
+}
+
+#[async_test]
+async fn test_nvme_driver_fallback_due_to_dma_alloc_failures(driver: DefaultDriver) {
+    test_nvme_driver(
+        driver,
+        NvmeTestConfig {
+            allow_dma: true,
+            fail_at_driver_create: false,
+            fail_at_io_issuer: true,
+        },
+    )
+    .await;
 }
 
 #[async_test]
@@ -146,16 +218,35 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
     assert!(driver.is_err());
 }
 
-async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
+struct NvmeTestConfig {
+    allow_dma: bool,
+    fail_at_driver_create: bool,
+    fail_at_io_issuer: bool,
+}
+
+async fn test_nvme_driver(driver: DefaultDriver, config: NvmeTestConfig) {
     const MSIX_COUNT: u16 = 2;
     const IO_QUEUE_COUNT: u16 = 64;
     const CPU_COUNT: u32 = 64;
+
+    let NvmeTestConfig {
+        allow_dma,
+        fail_at_driver_create,
+        fail_at_io_issuer,
+    } = config;
 
     // Arrange: Create 8MB of space. First 4MB for the device and second 4MB for the payload.
     let pages = 1024; // 4MB
     let device_test_memory = DeviceTestMemory::new(pages * 2, allow_dma, "test_nvme_driver");
     let guest_mem = device_test_memory.guest_memory(); // Access to 0-8MB
-    let dma_client = device_test_memory.dma_client(); // Access 0-4MB
+
+    let fail_alloc = Arc::new(AtomicBool::new(false));
+    let dma_client = Arc::new(user_driver_emulated_mock::DeviceTestDmaClient::new(
+        device_test_memory.dma_client(),
+        NvmeTestDmaClientCallbacks {
+            fail_alloc: fail_alloc.clone(),
+        },
+    )); // Access 0-4MB
     let payload_mem = device_test_memory.payload_mem(); // Access 4-8MB. This will allow dma if the `allow_dma` flag is set.
 
     // Arrange: Create the NVMe controller and driver.
@@ -178,7 +269,15 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
         .await
         .unwrap();
     let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
+
+    if fail_at_driver_create {
+        fail_alloc.store(true, Ordering::SeqCst);
+        let driver_result = NvmeDriver::new(&driver_source, CPU_COUNT, device, false).await;
+        assert!(driver_result.is_err());
+        return;
+    }
+
+    let mut driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
         .await
         .unwrap();
     let namespace = driver.namespace(1).await.unwrap();
@@ -197,6 +296,11 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
         )
         .await
         .unwrap();
+
+    let fallback_count = driver.fallback_cpu_count();
+    if fail_at_io_issuer {
+        fail_alloc.store(true, Ordering::SeqCst);
+    }
 
     // Act: Read 16384 bytes of data from disk starting at LBA 0.
     namespace
@@ -217,6 +321,13 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     assert_eq!(&v[512..1536], &[0xcc; 1024]);
     assert!(v[1536..].iter().all(|&x| x == 0));
 
+    // Assert: there should be another fallback CPU only if we forced allocation failure.
+    if fail_at_io_issuer {
+        assert_eq!(driver.fallback_cpu_count(), fallback_count + 1); // New CPU
+    } else {
+        assert_eq!(driver.fallback_cpu_count(), fallback_count);
+    }
+
     namespace
         .deallocate(
             0,
@@ -236,107 +347,40 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
         .await
         .unwrap();
 
-    assert_eq!(driver.fallback_cpu_count(), 0);
+    // Test the fallback queue functionality (because of MSI-X limitations). Only do this
+    // if the test didn't already force a fallback due to DMA client allocation failures.
+    if !fail_at_io_issuer {
+        assert_eq!(driver.fallback_cpu_count(), 0);
 
-    // Test the fallback queue functionality.
-    namespace
-        .read(
-            63,
-            0,
-            32,
-            &payload_mem,
-            buf_range.buffer(&guest_mem).range(),
-        )
-        .await
-        .unwrap();
+        namespace
+            .read(
+                63,
+                0,
+                32,
+                &payload_mem,
+                buf_range.buffer(&guest_mem).range(),
+            )
+            .await
+            .unwrap();
 
-    assert_eq!(driver.fallback_cpu_count(), 1);
+        assert_eq!(driver.fallback_cpu_count(), 1);
 
-    let mut v = [0; 4096];
-    payload_mem.read_at(0, &mut v).unwrap();
-    assert_eq!(&v[..512], &[0; 512]);
-    assert_eq!(&v[512..1024], &[0xcc; 512]);
-    assert!(v[1024..].iter().all(|&x| x == 0));
+        let mut v = [0; 4096];
+        payload_mem.read_at(0, &mut v).unwrap();
+        assert_eq!(&v[..512], &[0; 512]);
+        assert_eq!(&v[512..1024], &[0xcc; 512]);
+        assert!(v[1024..].iter().all(|&x| x == 0));
+    }
 
     driver.shutdown().await;
 }
 
-async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
-    const MSIX_COUNT: u16 = 2;
-    const IO_QUEUE_COUNT: u16 = 64;
-    const CPU_COUNT: u32 = 64;
-
-    // Memory setup
-    let pages = 1000;
-    let device_test_memory = DeviceTestMemory::new(pages, false, "test_nvme_save_restore_inner");
-    let guest_mem = device_test_memory.guest_memory();
-    let dma_client = device_test_memory.dma_client();
-
-    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-    let mut msi_x = MsiInterruptSet::new();
-    let nvme_ctrl = nvme::NvmeController::new(
-        &driver_source,
-        guest_mem.clone(),
-        &mut msi_x,
-        &mut ExternallyManagedMmioIntercepts,
-        NvmeControllerCaps {
-            msix_count: MSIX_COUNT,
-            max_io_queues: IO_QUEUE_COUNT,
-            subsystem_id: Guid::new_random(),
-        },
-    );
-
-    // Add a namespace so Identify Namespace command will succeed later.
-    nvme_ctrl
-        .client()
-        .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
-        .await
-        .unwrap();
-
-    let device = NvmeTestEmulatedDevice::new(nvme_ctrl, msi_x, dma_client.clone());
-    let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
-        .await
-        .unwrap();
-    let _ns1 = nvme_driver.namespace(1).await.unwrap();
-    let saved_state = nvme_driver.save().await.unwrap();
-    // As of today we do not save namespace data to avoid possible conflict
-    // when namespace has changed during servicing.
-    // TODO: Review and re-enable in future.
-    assert_eq!(saved_state.namespaces.len(), 0);
-
-    // Create a second set of devices since the ownership has been moved.
-    let mut new_msi_x = MsiInterruptSet::new();
-    let mut new_nvme_ctrl = nvme::NvmeController::new(
-        &driver_source,
-        guest_mem.clone(),
-        &mut new_msi_x,
-        &mut ExternallyManagedMmioIntercepts,
-        NvmeControllerCaps {
-            msix_count: MSIX_COUNT,
-            max_io_queues: IO_QUEUE_COUNT,
-            subsystem_id: Guid::new_random(),
-        },
-    );
-
-    let mut backoff = user_driver::backoff::Backoff::new(&driver);
-
-    // Enable the controller for keep-alive test.
-    let mut dword = 0u32;
-    // Read Register::CC.
-    new_nvme_ctrl.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
-    // Set CC.EN.
-    dword |= 1;
-    new_nvme_ctrl.write_bar0(0x14, dword.as_bytes()).unwrap();
-    // Wait for CSTS.RDY to set.
-    backoff.back_off().await;
-
-    let _new_device = NvmeTestEmulatedDevice::new(new_nvme_ctrl, new_msi_x, dma_client.clone());
-    // TODO: Memory restore is disabled for emulated DMA, uncomment once fixed.
-    // let _new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, new_device, &saved_state)
-    //     .await
-    //     .unwrap();
-}
-
+// This helper function creates a NVMe fault controller with a namespace backed
+// by PRDisk(RamDisk). It then creates and initializes the NVMe driver attached
+// to the fault controller. The fault configuration passed in is applied to the controller.
+// Admin queue is exercised during driver setup and IO queue is exercised by
+// requesting a reservation report for cpu 0 and then performing a write to the
+// namespace.
 async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: FaultConfiguration) {
     const MSIX_COUNT: u16 = 2;
     const IO_QUEUE_COUNT: u16 = 64;
@@ -361,20 +405,26 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
-            flr_support: false,
         },
         fault_configuration,
     );
 
     nvme.client() // 2MB namespace
-        .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
+        .add_namespace(
+            1,
+            Disk::new(DiskWithReservations::new(
+                disklayer_ram::ram_disk(2 << 20, false).unwrap(),
+            ))
+            .unwrap(),
+        )
         .await
         .unwrap();
     let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
+    let mut driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
         .await
         .unwrap();
     let namespace = driver.namespace(1).await.unwrap();
+    let _ = namespace.reservation_report_extended(0).await;
 
     // Act: Write 1024 bytes of data to disk starting at LBA 1.
     let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // 32 blocks
@@ -497,5 +547,32 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
 
     fn write_u64(&self, offset: usize, data: u64) {
         self.mapping.write_u64(offset, data);
+    }
+}
+
+struct NvmeTestDmaClientCallbacks {
+    fail_alloc: Arc<AtomicBool>,
+}
+
+impl DeviceTestDmaClientCallbacks for NvmeTestDmaClientCallbacks {
+    fn allocate_dma_buffer(
+        &self,
+        inner: &page_pool_alloc::PagePoolAllocator,
+        size: usize,
+    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+        match self.fail_alloc.load(Ordering::SeqCst) {
+            true => anyhow::bail!("alloc failed"),
+            false => inner.allocate_dma_buffer(size),
+        }
+    }
+
+    fn attach_pending_buffers(
+        &self,
+        inner: &page_pool_alloc::PagePoolAllocator,
+    ) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
+        match self.fail_alloc.load(Ordering::SeqCst) {
+            true => anyhow::bail!("alloc failed"),
+            false => inner.attach_pending_buffers(),
+        }
     }
 }

@@ -18,6 +18,7 @@ use crate::table::DescribeTable;
 use crate::table::TableEncoder;
 use core::time::Duration;
 use mesh_protobuf::Protobuf;
+#[cfg(feature = "std")]
 use thiserror::Error;
 
 const NANOS_PER_SEC: u32 = 1_000_000_000;
@@ -66,6 +67,7 @@ impl From<std::time::SystemTime> for Timestamp {
     }
 }
 
+#[cfg(feature = "std")]
 #[derive(Debug, Error)]
 #[error("timestamp out of range for system time")]
 pub struct TimestampOutOfRange;

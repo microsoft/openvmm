@@ -165,6 +165,18 @@ pub use initiate::*;
 /// This can also be used to implement helper functions that implement
 /// [`Inspect`] to allow complex types to use the the derive macro.
 ///
+/// ### `send = "expr"`
+///
+/// Sends a deferred request message for the field so that it can be handled by
+/// some remote asynchronous task (potentially on another thread or in another
+/// process). The field must be a `mesh::Sender<T>`, and `expr` must be a
+/// function that maps from a `Deferred` to `T` (the request type of the
+/// sender).
+///
+/// This is shorthand for `with = "|x| inspect::send(x, expr)"`, which in turn
+/// is roughly the same as `with = "|x| inspect::adhoc(|req|
+/// x.send(expr(req.defer())))"`.
+///
 /// #### Examples
 /// The following structure has a field that is not normally inspectable, but we
 /// can use the derive macro with a helper pattern of making a new helper
@@ -463,7 +475,9 @@ use core::fmt;
 use core::fmt::Arguments;
 use core::fmt::Debug;
 use core::fmt::Display;
+use core::mem::ManuallyDrop;
 use core::num::Wrapping;
+use core::ops::Deref;
 
 /// An inspection request.
 pub struct Request<'a> {
@@ -2115,6 +2129,11 @@ impl Inspect for Value {
             req
         };
         req.value(self.kind.clone());
+    }
+}
+impl<T: Inspect + ?Sized> Inspect for ManuallyDrop<T> {
+    fn inspect(&self, req: Request<'_>) {
+        self.deref().inspect(req);
     }
 }
 

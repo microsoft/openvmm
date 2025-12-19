@@ -1477,9 +1477,6 @@ mod x86 {
                         )
                         .unwrap();
 
-                        let mut header = self.new_intercept_header(2, HvInterceptAccessType::WRITE);
-                        header.instruction_length_and_cr8 = 2;
-
                         if self.msr_write(dev, exit, rcx as u32, rax, rdx) {
                             return;
                         }
@@ -1490,9 +1487,6 @@ mod x86 {
                             .current_whp()
                             .get_register(whp::Register64::Rcx)
                             .unwrap();
-
-                        let mut header = self.new_intercept_header(2, HvInterceptAccessType::READ);
-                        header.instruction_length_and_cr8 = 2;
 
                         if self.msr_read(dev, exit, rcx as u32) {
                             return;
@@ -1860,7 +1854,13 @@ mod aarch64 {
             match info.reset_type {
                 hvdef::HvArm64ResetType::POWER_OFF => VpHaltReason::PowerOff,
                 hvdef::HvArm64ResetType::REBOOT => VpHaltReason::Reset,
-                ty => unreachable!("unexpected reset type: {ty:?}",),
+                hvdef::HvArm64ResetType::HIBERNATE => VpHaltReason::Hibernate,
+                hvdef::HvArm64ResetType::SYSTEM_RESET => {
+                    // TODO: What values can it have?
+                    tracing::debug!(reset_code = info.reset_code, "system reset");
+                    VpHaltReason::Reset
+                }
+                ty => unreachable!("unknown reset type: {:#x?}, {:#x}", ty, info.reset_code),
             }
         }
 

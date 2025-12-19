@@ -20,7 +20,7 @@ use pal_async::task::Task;
 /// Given a fully-initialized VMGS instance, return a VMGS broker task +
 /// clonable VmgsClient
 pub fn spawn_vmgs_broker(spawner: impl Spawn, vmgs: vmgs::Vmgs) -> (VmgsClient, Task<()>) {
-    let (control_send, control_recv) = mesh_channel::mpsc_channel();
+    let (control_send, control_recv) = mesh::mpsc_channel();
 
     let process_loop_handle = spawner.spawn("vmgs-broker", async move {
         VmgsBrokerTask::new(vmgs).run(control_recv).await

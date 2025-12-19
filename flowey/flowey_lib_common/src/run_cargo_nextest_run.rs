@@ -6,6 +6,7 @@
 use crate::gen_cargo_nextest_run_cmd::RunKindDeps;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
+
 #[derive(Serialize, Deserialize)]
 pub struct TestResults {
     pub all_tests_passed: bool,
@@ -16,24 +17,9 @@ pub struct TestResults {
 /// Parameters related to building nextest tests
 pub mod build_params {
     use crate::run_cargo_build::CargoBuildProfile;
+    use crate::run_cargo_build::CargoFeatureSet;
     use flowey::node::prelude::*;
     use std::collections::BTreeMap;
-
-    #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Debug)]
-    pub enum PanicAbortTests {
-        /// Assume the current rust toolchain is nightly
-        // FUTURE: current flowey infrastructure doesn't actually have a path for
-        // multi-toolchain drifting
-        UsingNightly,
-        /// Build with `RUSTC_BOOTSTRAP=1` set
-        UsingRustcBootstrap,
-    }
-
-    #[derive(Serialize, Deserialize)]
-    pub enum FeatureSet {
-        All,
-        Specific(Vec<String>),
-    }
 
     /// Types of things that can be documented
     #[derive(Serialize, Deserialize)]
@@ -55,11 +41,9 @@ pub mod build_params {
         /// Packages to test for
         pub packages: ReadVar<TestPackages, C>,
         /// Cargo features to enable when building
-        pub features: FeatureSet,
+        pub features: CargoFeatureSet,
         /// Whether to disable default features
         pub no_default_features: bool,
-        /// Whether to build tests with unstable `-Zpanic-abort-tests` flag
-        pub unstable_panic_abort_tests: Option<PanicAbortTests>,
         /// Build tests for the specified target
         pub target: target_lexicon::Triple,
         /// Build tests with the specified cargo profile
@@ -221,6 +205,7 @@ impl FlowNode for Node {
                 run_ignored,
                 fail_fast,
                 extra_env,
+                extra_commands: None,
                 portable: false,
                 command: v,
             });
@@ -300,7 +285,7 @@ impl FlowNode for Node {
                     #[cfg(not(unix))]
                     let _ = with_rlimit_unlimited_core_size;
 
-                    log::info!("$ {cmd}");
+                    log::info!("{cmd}");
 
                     // nextest has meaningful exit codes that we want to parse.
                     // <https://github.com/nextest-rs/nextest/blob/main/nextest-metadata/src/exit_codes.rs#L12>
@@ -310,14 +295,15 @@ impl FlowNode for Node {
                     // exit code of the process.
                     //
                     // So we have to use the raw process API instead.
-                    let mut command = std::process::Command::new(&cmd.argv0);
+                    assert_eq!(cmd.commands.len(), 1);
+                    let mut command = std::process::Command::new(&cmd.commands[0].0);
                     command
-                        .args(&cmd.args)
+                        .args(&cmd.commands[0].1)
                         .envs(&cmd.env)
                         .current_dir(&working_dir);
 
                     let mut child = command.spawn().with_context(|| {
-                        format!("failed to spawn '{}'", cmd.argv0.to_string_lossy())
+                        format!("failed to spawn '{}'", &cmd.commands[0].0.to_string_lossy())
                     })?;
 
                     let status = child.wait()?;
@@ -404,7 +390,6 @@ impl build_params::NextestBuildParams {
             packages,
             features,
             no_default_features,
-            unstable_panic_abort_tests,
             target,
             profile,
             extra_env,
@@ -414,7 +399,6 @@ impl build_params::NextestBuildParams {
             packages: packages.claim(ctx),
             features,
             no_default_features,
-            unstable_panic_abort_tests,
             target,
             profile,
             extra_env: extra_env.claim(ctx),

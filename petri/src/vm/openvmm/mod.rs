@@ -19,11 +19,17 @@ pub use runtime::PetriVmOpenVmm;
 
 use crate::BootDeviceType;
 use crate::Firmware;
+use crate::OpenHclServicingFlags;
+use crate::OpenvmmLogConfig;
+use crate::PetriDiskType;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
+use crate::PetriVmRuntimeConfig;
+use crate::PetriVmgsDisk;
 use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
+use crate::VmmQuirks;
 use crate::disk_image::AgentImage;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use anyhow::Context;
@@ -33,27 +39,31 @@ use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
-use hvlite_defs::config::Config;
-use hvlite_helpers::disk::open_disk_type;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::Receiver;
 use mesh::Sender;
 use net_backend_resources::mac_address::MacAddress;
+use openvmm_defs::config::Config;
+use openvmm_helpers::disk::open_disk_type;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
-use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_common::tags::GuestQuirksInner;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
+use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+use storvsp_resources::ScsiControllerHandle;
 use tempfile::TempPath;
 use unix_socket::UnixListener;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
+use vmgs_resources::VmgsDisk;
 use vmgs_resources::VmgsResource;
 use vtl2_settings_proto::Vtl2Settings;
 
@@ -96,8 +106,32 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
             && !(firmware.is_pcat() && arch == MachineArch::Aarch64)
     }
 
-    fn select_quirks(quirks: GuestQuirks) -> GuestQuirksInner {
-        quirks.openvmm
+    fn quirks(firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks) {
+        (
+            firmware.quirks().openvmm,
+            VmmQuirks {
+                // Workaround for #1684
+                flaky_boot: firmware.is_pcat().then_some(Duration::from_secs(15)),
+            },
+        )
+    }
+
+    fn default_servicing_flags() -> OpenHclServicingFlags {
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: true,
+            enable_mana_keepalive: true,
+            override_version_checks: false,
+            stop_timeout_hint_secs: None,
+        }
+    }
+
+    fn create_guest_dump_disk() -> anyhow::Result<
+        Option<(
+            Arc<TempPath>,
+            Box<dyn FnOnce() -> anyhow::Result<Box<dyn fatfs::ReadWriteSeek>>>,
+        )>,
+    > {
+        Ok(None) // TODO #2403
     }
 
     fn new(resolver: &ArtifactResolver<'_>) -> Self {
@@ -113,7 +147,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         config: PetriVmConfig,
         modify_vmm_config: Option<impl FnOnce(PetriVmConfigOpenVmm) -> PetriVmConfigOpenVmm + Send>,
         resources: &PetriVmResources,
-    ) -> anyhow::Result<Self::VmRuntime> {
+    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
         let mut config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources)?;
 
         if let Some(f) = modify_vmm_config {
@@ -129,6 +163,7 @@ pub struct PetriVmConfigOpenVmm {
     // Direct configuration related information.
     firmware: Firmware,
     arch: MachineArch,
+    host_log_levels: Option<OpenvmmLogConfig>,
     config: Config,
     boot_device_type: BootDeviceType,
 
@@ -139,8 +174,13 @@ pub struct PetriVmConfigOpenVmm {
     openvmm_log_file: PetriLogFile,
 
     // Resources that are only used during startup.
+    /// Single VMBus SCSI controller shared for all VTL0 disks added by petri.
+    petri_vtl0_scsi: ScsiControllerHandle,
+
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
     framebuffer_view: Option<framebuffer::View>,
+
+    vtl2_settings: Option<Vtl2Settings>,
 }
 /// Various channels and resources used to interact with the VM while it is running.
 struct PetriVmResourcesOpenVmm {
@@ -163,8 +203,6 @@ struct PetriVmResourcesOpenVmm {
     // TempPaths that cannot be dropped until the end.
     vtl2_vsock_path: Option<TempPath>,
     _vmbus_vsock_path: TempPath,
-
-    vtl2_settings: Option<Vtl2Settings>,
 }
 
 impl PetriVmConfigOpenVmm {
@@ -174,10 +212,7 @@ impl PetriVmConfigOpenVmm {
     }
 }
 
-fn memdiff_disk_from_artifact(
-    artifact: &ResolvedArtifact,
-) -> anyhow::Result<Resource<DiskHandleKind>> {
-    let path = artifact.as_ref();
+fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
     let disk = open_disk_type(path, true)
         .with_context(|| format!("failed to open disk: {}", path.display()))?;
     Ok(LayeredDiskHandle {
@@ -189,18 +224,20 @@ fn memdiff_disk_from_artifact(
     .into_resource())
 }
 
-fn memdiff_vmgs_from_artifact(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
-    let convert_disk =
-        |disk: &Option<ResolvedArtifact>| -> anyhow::Result<Resource<DiskHandleKind>> {
-            if let Some(disk) = disk {
-                memdiff_disk_from_artifact(disk)
-            } else {
-                Ok(LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
+    let convert_disk = |disk: &PetriVmgsDisk| -> anyhow::Result<VmgsDisk> {
+        Ok(VmgsDisk {
+            disk: match &disk.disk {
+                PetriDiskType::Memory => LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                     len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
                 })
-                .into_resource())
-            }
-        };
+                .into_resource(),
+                PetriDiskType::Differencing(path) => memdiff_disk(path)?,
+                PetriDiskType::Persistent(path) => open_disk_type(path, false)?,
+            },
+            encryption_policy: disk.encryption_policy,
+        })
+    };
 
     Ok(match vmgs {
         PetriVmgsResource::Disk(disk) => VmgsResource::Disk(convert_disk(disk)?),

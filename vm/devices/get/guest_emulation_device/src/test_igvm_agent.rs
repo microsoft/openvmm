@@ -16,11 +16,14 @@ use crate::test_crypto::TestSha1;
 use crate::test_crypto::aes_key_wrap_with_padding;
 use base64::Engine;
 use get_resources::ged::IgvmAttestTestConfig;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader;
-use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequest;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestDataExt;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmSignal;
@@ -49,6 +52,11 @@ pub(crate) enum Error {
     KeyInitializationFailed(#[source] rsa::Error),
     #[error("keys not initialized")]
     KeysNotInitialized,
+    #[error("invalid igvm attest request version - expected {expected:?}, found {found:?}")]
+    InvalidIgvmAttestRequestVersion {
+        found: IgvmAttestRequestVersion,
+        expected: IgvmAttestRequestVersion,
+    },
     #[error("invalid igvm attest request")]
     InvalidIgvmAttestRequest,
     #[error("failed to generate mock wrapped key response")]
@@ -106,7 +114,7 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
                 VecDeque::from([
-                    IgvmAgentAction::NoResponse,
+                    IgvmAgentAction::RespondFailure,
                     IgvmAgentAction::RespondFailure,
                     IgvmAgentAction::RespondSuccess,
                 ]),
@@ -160,13 +168,22 @@ impl TestIgvmAgent {
     }
 
     pub(crate) fn handle_request(&mut self, request_bytes: &[u8]) -> Result<(Vec<u8>, u32), Error> {
-        let request = IgvmAttestRequest::read_from_prefix(request_bytes)
+        let request = IgvmAttestRequestBase::read_from_prefix(request_bytes)
             .map_err(|_| Error::InvalidIgvmAttestRequest)?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         // Validate and extract runtime claims
-        // The runtime claims are appended after the fixed-size IgvmAttestRequest structure
-        let runtime_claims_start = size_of::<IgvmAttestRequest>();
+        // The version must be the current version to ensure the presence of the extension data structure.
+        if request.request_data.version != IGVM_ATTEST_REQUEST_CURRENT_VERSION {
+            return Err(Error::InvalidIgvmAttestRequestVersion {
+                found: request.request_data.version,
+                expected: IGVM_ATTEST_REQUEST_CURRENT_VERSION,
+            })?;
+        }
+
+        // The runtime claims are appended after the fixed-size IgvmAttestRequestBase and IgvmAttestRequestDataExt structures.
+        let runtime_claims_start =
+            size_of::<IgvmAttestRequestBase>() + size_of::<IgvmAttestRequestDataExt>();
         let runtime_claims_end =
             runtime_claims_start + request.request_data.variable_data_size as usize;
         if request_bytes.len() < runtime_claims_end {
@@ -215,9 +232,7 @@ impl TestIgvmAgent {
                                 self.initialize_keys()?;
                             }
                             let jwt = self
-                                .generate_mock_key_release_response(
-                                    &request_bytes[size_of::<IgvmAttestRequest>()..],
-                                )
+                                .generate_mock_key_release_response(runtime_claims_bytes)
                                 .map_err(Error::KeyReleaseError)?;
                             let data = jwt.as_bytes().to_vec();
                             let header = IgvmAttestKeyReleaseResponseHeader {
@@ -434,7 +449,7 @@ impl TestIgvmAgent {
             .map_err(WrappedKeyError::RsaEncryptionError)?;
 
         let aes_info = cps::AesInfo {
-            ciphertext: encrypted_des.to_vec(),
+            ciphertext: encrypted_des.clone(),
         };
 
         let key_reference = serde_json::json!({

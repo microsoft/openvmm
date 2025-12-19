@@ -35,9 +35,12 @@ nvme.workspace = true
 pci_core.workspace = true
 scsi_buffers.workspace = true
 test_with_tracing.workspace = true
+page_pool_alloc.workspace = true
 user_driver_emulated_mock.workspace = true
 nvme_test.workspace = true
 nvme_resources.workspace = true
+disk_prwrap.workspace = true
+disk_backend.workspace = true
 
 guid.workspace = true
 

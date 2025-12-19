@@ -11,6 +11,7 @@ use super::InterceptMessageOptionalState;
 use super::InterceptMessageState;
 use super::UhEmulationState;
 use super::hardware_cvm;
+use super::hardware_cvm::HardwareIsolatedGuestTimer;
 use super::vp_state;
 use super::vp_state::UhVpStateAccess;
 use crate::BackingShared;
@@ -389,6 +390,16 @@ impl HardwareIsolatedBacking for SnpBacked {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
+
+    fn update_deadline(this: &mut UhProcessor<'_, Self>, ref_time_now: u64, next_ref_time: u64) {
+        this.shared
+            .guest_timer
+            .update_deadline(this, ref_time_now, next_ref_time);
+    }
+
+    fn clear_deadline(this: &mut UhProcessor<'_, Self>) {
+        this.shared.guest_timer.clear_deadline(this);
+    }
 }
 
 /// Partition-wide shared data for SNP VPs.
@@ -400,6 +411,9 @@ pub struct SnpBackedShared {
     tsc_aux_virtualized: bool,
     #[inspect(debug)]
     sev_status: SevStatusMsr,
+    /// Accessor for managing lower VTL timer deadlines.
+    #[inspect(skip)]
+    guest_timer: hardware_cvm::VmTimeGuestTimer,
 }
 
 impl SnpBackedShared {
@@ -428,11 +442,15 @@ impl SnpBackedShared {
             SevStatusMsr::from(msr.read_msr(x86defs::X86X_AMD_MSR_SEV).expect("read msr"));
         tracing::info!(CVM_ALLOWED, ?sev_status, "SEV status");
 
+        // Configure timer interface for lower VTLs.
+        let guest_timer = hardware_cvm::VmTimeGuestTimer;
+
         Ok(Self {
             sev_status,
             invlpgb_count_max,
             tsc_aux_virtualized,
             cvm,
+            guest_timer,
         })
     }
 }
@@ -678,6 +696,8 @@ fn init_vmsa(
     vmsa.reset(sev_status.vmsa_reg_prot());
     vmsa.sev_features_mut()
         .set_snp_btb_isolation(sev_status.snp_btb_isolation());
+    vmsa.sev_features_mut()
+        .set_ibpb_on_entry(sev_status.ibpb_on_entry());
     vmsa.sev_features_mut()
         .set_prevent_host_ibs(sev_status.prevent_host_ibs());
     vmsa.sev_features_mut()
@@ -1299,15 +1319,7 @@ impl UhProcessor<'_, SnpBacked> {
 
         let stat = match sev_error_code {
             SevExitCode::CPUID => {
-                let leaf = vmsa.rax() as u32;
-                let subleaf = vmsa.rcx() as u32;
-                let [eax, ebx, ecx, edx] = self.cvm_cpuid_result(entered_from_vtl, leaf, subleaf);
-                let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
-                vmsa.set_rax(eax.into());
-                vmsa.set_rbx(ebx.into());
-                vmsa.set_rcx(ecx.into());
-                vmsa.set_rdx(edx.into());
-                advance_to_next_instruction(&mut vmsa);
+                self.handle_cpuid(entered_from_vtl);
                 &mut self.backing.exit_stats[entered_from_vtl].cpuid
             }
 
@@ -1668,6 +1680,72 @@ impl UhProcessor<'_, SnpBacked> {
     fn long_mode(&self, vtl: GuestVtl) -> bool {
         let vmsa = self.runner.vmsa(vtl);
         vmsa.cr0() & x86defs::X64_CR0_PE != 0 && vmsa.efer() & x86defs::X64_EFER_LMA != 0
+    }
+
+    fn handle_cpuid(&mut self, vtl: GuestVtl) {
+        let vmsa = self.runner.vmsa(vtl);
+        let leaf = vmsa.rax() as u32;
+        let subleaf = vmsa.rcx() as u32;
+        let [mut eax, mut ebx, mut ecx, mut edx] = self.cvm_cpuid_result(vtl, leaf, subleaf);
+
+        // Apply SNP specific fixups. These must be runtime changes only, for
+        // parts of cpuid that are dynamic (either because it's a function of
+        // the current VP's identity or the current VP or partition state).
+        //
+        // We rely on the cpuid set being accurate during partition startup,
+        // without running through this code, so violations of this principle
+        // may cause the partition to be constructed improperly.
+        match CpuidFunction(leaf) {
+            CpuidFunction::ProcessorTopologyDefinition => {
+                let apic_id = self.inner.vp_info.apic_id;
+                let vps_per_socket = self.cvm_partition().vps_per_socket;
+                eax = x86defs::cpuid::ProcessorTopologyDefinitionEax::from(eax)
+                    .with_extended_apic_id(apic_id)
+                    .into();
+
+                let topology_ebx = x86defs::cpuid::ProcessorTopologyDefinitionEbx::from(ebx);
+                let mut new_unit_id = apic_id & (vps_per_socket - 1);
+
+                if topology_ebx.threads_per_compute_unit() > 0 {
+                    new_unit_id /= 2;
+                }
+
+                ebx = topology_ebx.with_compute_unit_id(new_unit_id as u8).into();
+
+                // TODO SNP: Ideally we would use the actual value of this property from the host, but
+                // we currently have no way of obtaining it. 1 is the default value for all current VMs.
+                let amd_nodes_per_socket = 1u32;
+
+                let node_id = apic_id
+                    >> (vps_per_socket
+                        .trailing_zeros()
+                        .saturating_sub(amd_nodes_per_socket.trailing_zeros()));
+                // TODO: just set this part statically.
+                let nodes_per_processor = amd_nodes_per_socket - 1;
+
+                ecx = x86defs::cpuid::ProcessorTopologyDefinitionEcx::from(ecx)
+                    .with_node_id(node_id as u8)
+                    .with_nodes_per_processor(nodes_per_processor as u8)
+                    .into();
+            }
+            CpuidFunction::ExtendedSevFeatures => {
+                // SEV features are not exposed to lower VTLs at this time, but
+                // we can still query them, so we can't mask them out in the
+                // cached CPUID leaf.
+                eax = 0;
+                ebx = 0;
+                ecx = 0;
+                edx = 0;
+            }
+            _ => {}
+        }
+
+        let mut vmsa = self.runner.vmsa_mut(vtl);
+        vmsa.set_rax(eax.into());
+        vmsa.set_rbx(ebx.into());
+        vmsa.set_rcx(ecx.into());
+        vmsa.set_rdx(edx.into());
+        advance_to_next_instruction(&mut vmsa);
     }
 }
 

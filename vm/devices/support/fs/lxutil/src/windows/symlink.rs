@@ -1,8 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::windows::path;
+use crate::windows::util;
 use pal::windows::UnicodeString;
+use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::OwnedHandle;
 use windows::Wdk::Storage::FileSystem;
+use windows::Win32::Foundation;
 use windows::Win32::System::SystemServices as W32Ss;
 
 // TODO: Remove the need for `unsafe` by enlightening this function of the full
@@ -61,7 +66,7 @@ unsafe fn get_substitute_name(
 fn translate_absolute_target(
     substitute_name: &[u16],
     state: &super::VolumeState,
-) -> lx::Result<String> {
+) -> lx::Result<lx::LxString> {
     if state.options.sandbox || state.options.symlink_root.is_empty() {
         // EPERM is the default return value if no callback is provided
         return Err(lx::Error::EPERM);
@@ -107,7 +112,7 @@ fn translate_absolute_target(
     let name = name.replace('\\', "/");
     let target = format!("{}{}{}", &state.options.symlink_root, drive_letter, name);
 
-    Ok(target)
+    Ok(target.into())
 }
 
 /// Determine the target of an NT symlink. Only relative links are supported.
@@ -115,7 +120,7 @@ fn translate_absolute_target(
 pub unsafe fn read_nt_symlink(
     reparse: &FileSystem::REPARSE_DATA_BUFFER,
     state: &super::VolumeState,
-) -> lx::Result<String> {
+) -> lx::Result<lx::LxString> {
     let (substitute_name, flags) = unsafe { get_substitute_name(reparse)? };
 
     if flags & FileSystem::SYMLINK_FLAG_RELATIVE == 0 {
@@ -123,7 +128,7 @@ pub unsafe fn read_nt_symlink(
     } else {
         let mut name = UnicodeString::new(substitute_name).map_err(|_| lx::Error::EIO)?;
 
-        super::path::unescape_path(name.as_mut_slice())
+        path::unescape_path(name.as_mut_slice())
     }
 }
 
@@ -136,4 +141,41 @@ pub unsafe fn read_nt_symlink_length(
     // The length is just the target's UTF-8 length.
     // SAFETY: The validity of the reparse buffer is guaranteed by the caller.
     Ok(unsafe { read_nt_symlink(reparse, state) }?.len() as _)
+}
+
+pub fn read(link_file: &OwnedHandle) -> lx::Result<lx::LxString> {
+    let standard_info: FileSystem::FILE_STANDARD_INFORMATION =
+        util::query_information_file(link_file)?;
+
+    if standard_info.EndOfFile > i16::MAX as i64 || standard_info.EndOfFile == 0 {
+        return Err(lx::Error::EIO);
+    }
+
+    let mut lx_target = vec![0u8; standard_info.EndOfFile as usize];
+
+    let mut iosb = Default::default();
+    let byte_offset = 0;
+
+    // SAFETY: Calling Win32 API with valid parameters.
+    let status = unsafe {
+        FileSystem::NtReadFile(
+            Foundation::HANDLE(link_file.as_raw_handle()),
+            None,
+            None,
+            None,
+            &mut iosb,
+            lx_target.as_mut_ptr().cast(),
+            lx_target.capacity() as u32,
+            Some(&byte_offset),
+            None,
+        )
+    };
+
+    if status == Foundation::STATUS_INSUFFICIENT_RESOURCES {
+        return Err(lx::Error::ENOMEM);
+    } else if status != Foundation::STATUS_SUCCESS {
+        return Err(lx::Error::EIO);
+    }
+
+    Ok(lx::LxString::from_vec(lx_target))
 }

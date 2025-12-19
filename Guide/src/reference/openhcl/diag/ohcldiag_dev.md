@@ -129,3 +129,14 @@ ohcldiag-dev.exe <vm name> inspect trace/filter -u warn,storvsp=debug
 
 If successful, the new filter will take effect immediately, even if you have an
 open `kmsg` session already.
+
+**Note**: release builds have `trace` level compiled out by default, so
+trace-level events cannot be enabled dynamically. To build a custom release
+build with trace-level events available, you can use the `--max-trace-level`
+parameter to `cargo xflowey build-igvm`:
+
+```bash
+cargo xflowey build-igvm x64 --release --max-trace-level trace
+```
+
+This is not necessary for debug builds.

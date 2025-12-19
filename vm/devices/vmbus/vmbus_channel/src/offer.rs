@@ -122,23 +122,21 @@ impl Offer {
                         .store(true, Ordering::Relaxed);
                     event.signal();
                 }
-                ChannelRequest::Gpadl(rpc) => {
-                    rpc.handle_sync(|gpadl| {
-                        match MultiPagedRangeBuf::new(gpadl.count.into(), gpadl.buf) {
-                            Ok(buf) => {
-                                gpadls.add(gpadl.id, buf);
-                                true
-                            }
-                            Err(err) => {
-                                tracelimit::error_ratelimited!(
-                                    error = &err as &dyn std::error::Error,
-                                    "failed to parse gpadl"
-                                );
-                                false
-                            }
+                ChannelRequest::Gpadl(rpc) => rpc.handle_sync(|gpadl| {
+                    match MultiPagedRangeBuf::from_range_buffer(gpadl.count.into(), gpadl.buf) {
+                        Ok(buf) => {
+                            gpadls.add(gpadl.id, buf);
+                            true
                         }
-                    })
-                }
+                        Err(err) => {
+                            tracelimit::error_ratelimited!(
+                                error = &err as &dyn std::error::Error,
+                                "failed to parse gpadl"
+                            );
+                            false
+                        }
+                    }
+                }),
                 ChannelRequest::TeardownGpadl(rpc) => {
                     let (id, response_send) = rpc.split();
                     if let Some(f) = gpadls.remove(
@@ -156,10 +154,10 @@ impl Offer {
     }
 
     /// Accepts a channel open request from the guest.
-    pub async fn accept(
+    pub async fn wait_for_open(
         &mut self,
         driver: &(impl Driver + ?Sized),
-    ) -> Result<OpenChannelResources, Error> {
+    ) -> Result<OpeningChannel, Error> {
         let message = self.open_recv.next().await.ok_or(Error::Revoked)?;
 
         let (in_ring, out_ring) = make_rings(
@@ -181,14 +179,35 @@ impl Offer {
             channel,
             gpadl_map: self.gpadl_map.clone(),
         };
-        message.response.respond(true);
-        Ok(resources)
+        Ok(OpeningChannel {
+            resources,
+            response: message.response,
+        })
     }
 
     /// Revokes the channel.
     pub async fn revoke(self) {
         drop(self.open_recv);
         self.task.await;
+    }
+}
+
+/// An in-progress channel opening, returned by [`Offer::wait_for_open`].
+pub struct OpeningChannel {
+    resources: OpenChannelResources,
+    response: OpenResponse,
+}
+
+impl OpeningChannel {
+    /// Accepts the channel open request.
+    pub fn accept(self) -> OpenChannelResources {
+        self.response.respond(true);
+        self.resources
+    }
+
+    /// Rejects the channel open request.
+    pub fn reject(self) {
+        self.response.respond(false);
     }
 }
 

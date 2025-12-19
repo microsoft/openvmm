@@ -18,19 +18,18 @@ pub const AZCOPY: &str = "10.27.1-20241113";
 pub const AZURE_CLI: &str = "2.56.0";
 pub const FUZZ: &str = "0.12.0";
 pub const GH_CLI: &str = "2.52.0";
-pub const LXUTIL: &str = "10.0.26100.1-240331-1435.ge-release";
 pub const MDBOOK: &str = "0.4.40";
 pub const MDBOOK_ADMONISH: &str = "1.18.0";
 pub const MDBOOK_MERMAID: &str = "0.14.0";
-pub const RUSTUP_TOOLCHAIN: &str = "1.90.0";
-pub const MU_MSVM: &str = "25.1.5";
+pub const RUSTUP_TOOLCHAIN: &str = "1.91.1";
+pub const MU_MSVM: &str = "25.1.9";
 pub const NEXTEST: &str = "0.9.101";
-pub const NODEJS: &str = "18.x";
+pub const NODEJS: &str = "24.x";
 // N.B. Kernel version numbers for dev and stable branches are not directly
 //      comparable. They originate from separate branches, and the fourth digit
 //      increases with each release from the respective branch.
-pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.12.47.1";
-pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.12.47.1";
+pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.12.52.4";
+pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.12.52.4";
 pub const OPENVMM_DEPS: &str = "0.1.0-20250403.3";
 pub const PROTOC: &str = "27.1";
 
@@ -44,7 +43,6 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::download_lxutil::Node>();
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
         ctx.import::<crate::download_openvmm_deps::Node>();
@@ -64,7 +62,6 @@ impl FlowNode for Node {
 
     #[rustfmt::skip]
     fn emit(_requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        ctx.req(crate::download_lxutil::Request::Version(LXUTIL.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()));
         ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()));

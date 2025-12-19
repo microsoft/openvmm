@@ -32,23 +32,15 @@ use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
-#[derive(Clone)]
-/// An input context for the NvmeWorkers
-pub struct NvmeWorkersContext {
-    pub driver_source: VmTaskDriverSource,
-    pub mem: GuestMemory,
-    pub interrupts: Vec<Interrupt>,
-    pub max_sqs: u16,
-    pub max_cqs: u16,
-    pub qe_sizes: Arc<parking_lot::Mutex<IoQueueEntrySizes>>,
-    pub subsystem_id: Guid,
-    pub fault_configuration: FaultConfiguration,
-}
-
+#[derive(InspectMut)]
 pub struct NvmeWorkers {
+    #[inspect(skip)]
     _task: Task<()>,
+    #[inspect(flatten, send = "CoordinatorRequest::Inspect")]
     send: mesh::Sender<CoordinatorRequest>,
+    #[inspect(skip)]
     doorbells: Arc<RwLock<DoorbellMemory>>,
+    #[inspect(skip)]
     state: EnableState,
 }
 
@@ -60,25 +52,17 @@ enum EnableState {
     Resetting(PendingRpc<()>),
 }
 
-impl InspectMut for NvmeWorkers {
-    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        self.send.send(CoordinatorRequest::Inspect(req.defer()));
-    }
-}
-
 impl NvmeWorkers {
-    pub fn new(context: NvmeWorkersContext) -> Self {
-        let NvmeWorkersContext {
-            driver_source,
-            mem,
-            interrupts,
-            subsystem_id,
-            max_sqs,
-            max_cqs,
-            qe_sizes,
-            fault_configuration,
-        } = context;
-
+    pub fn new(
+        driver_source: &VmTaskDriverSource,
+        mem: GuestMemory,
+        interrupts: Vec<Interrupt>,
+        max_sqs: u16,
+        max_cqs: u16,
+        qe_sizes: Arc<parking_lot::Mutex<IoQueueEntrySizes>>,
+        subsystem_id: Guid,
+        fault_configuration: FaultConfiguration,
+    ) -> Self {
         let num_qids = 2 + max_sqs.max(max_cqs) * 2;
         let doorbells = Arc::new(RwLock::new(DoorbellMemory::new(num_qids)));
 
@@ -86,7 +70,7 @@ impl NvmeWorkers {
         let handler: AdminHandler = AdminHandler::new(
             driver.clone(),
             AdminConfig {
-                driver_source,
+                driver_source: driver_source.clone(),
                 mem,
                 interrupts,
                 doorbells: doorbells.clone(),

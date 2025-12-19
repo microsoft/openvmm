@@ -32,6 +32,8 @@ pub(crate) enum KeyReleaseError {
     GetWrappedKeyFromAkvJwtBody(#[source] AkvKeyReleaseJwtError),
     #[error("error in parsing response header")]
     ParseHeader(#[source] CommonError),
+    #[error("invalid response header version: {0}")]
+    InvalidResponseVersion(u32),
 }
 
 #[derive(Debug, Error)]
@@ -123,9 +125,9 @@ pub fn parse_response(
     response: &[u8],
     rsa_modulus_size: usize,
 ) -> Result<Vec<u8>, KeyReleaseError> {
-    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
 
     // Minimum acceptable payload would look like {"ciphertext":"base64URL wrapped key"}
     const AES_IC_SIZE: usize = 8;
@@ -134,10 +136,10 @@ pub fn parse_response(
     let header = parse_response_header(response).map_err(KeyReleaseError::ParseHeader)?;
 
     // Extract payload as per header version
-    // parse_response_header above has verified the header version already
     let header_size = match header.version {
-        IGVM_ATTEST_RESPONSE_VERSION_1 => size_of::<IgvmAttestCommonResponseHeader>(),
-        _ => size_of::<IgvmAttestKeyReleaseResponseHeader>(),
+        IgvmAttestResponseVersion::VERSION_1 => size_of::<IgvmAttestCommonResponseHeader>(),
+        IgvmAttestResponseVersion::VERSION_2 => size_of::<IgvmAttestKeyReleaseResponseHeader>(),
+        invalid_version => return Err(KeyReleaseError::InvalidResponseVersion(invalid_version.0)),
     };
     let payload = &response[header_size..header.data_size as usize];
     let wrapped_key_size = rsa_modulus_size + rsa_modulus_size + AES_IC_SIZE;

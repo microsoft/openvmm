@@ -319,18 +319,23 @@ async fn launch_workers(
         force_load_vtl0_image: opt.force_load_vtl0_image,
         nvme_vfio: opt.nvme_vfio,
         mcr: opt.mcr,
-        enable_shared_visibility_pool: opt.enable_shared_visibility_pool,
         halt_on_guest_halt: opt.halt_on_guest_halt,
         no_sidecar_hotplug: opt.no_sidecar_hotplug,
         gdbstub: opt.gdbstub,
         hide_isolation: opt.hide_isolation,
         nvme_keep_alive: opt.nvme_keep_alive,
+        mana_keep_alive: opt.mana_keep_alive,
         nvme_always_flr: opt.nvme_always_flr,
         test_configuration: opt.test_configuration,
         disable_uefi_frontpage: opt.disable_uefi_frontpage,
+        default_boot_always_attempt: opt.default_boot_always_attempt,
+        guest_state_lifetime: opt.guest_state_lifetime,
         guest_state_encryption_policy: opt.guest_state_encryption_policy,
+        strict_encryption_policy: opt.strict_encryption_policy,
         attempt_ak_cert_callback: opt.attempt_ak_cert_callback,
         enable_vpci_relay: opt.enable_vpci_relay,
+        disable_proxy_redirect: opt.disable_proxy_redirect,
+        disable_lower_vtl_timer_virt: opt.disable_lower_vtl_timer_virt,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =
@@ -545,8 +550,8 @@ async fn run_control(
                             .sensitivity_child("uhdiag", SensitivityLevel::Safe, |req| {
                                 inspect_internal::inspect_internal_diagnostics(
                                     req,
-                                    diag_reinspect_send.clone(),
-                                    driver.clone(),
+                                    &diag_reinspect_send,
+                                    &driver,
                                 )
                             });
 

@@ -28,8 +28,8 @@ base64.workspace = true
 base64-serde.workspace = true
 getrandom.workspace = true
 openssl.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+serde = { workspace = true, features = ["std"] }
+serde_json = { workspace = true, features = ["std"] }
 static_assertions.workspace = true
 thiserror.workspace = true
 time = { workspace = true, features = ["macros"] }

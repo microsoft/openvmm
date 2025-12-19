@@ -133,3 +133,13 @@ macro_rules! debug_log {
 // lints against it in CI.
 #[expect(unused_imports)]
 pub(crate) use debug_log;
+
+/// Write the current in-memory boot log to serial output, if any.
+/// Useful to capture the in-memory log before switching to a different
+/// environment where the in-memory log may be lost.
+pub fn boot_logger_write_memory_log_to_runtime() {
+    if let Some(buf) = BOOT_LOGGER.in_memory_logger.borrow().as_ref() {
+        let mut logger = BOOT_LOGGER.logger.borrow_mut();
+        let _ = logger.write_str(buf.contents());
+    }
+}

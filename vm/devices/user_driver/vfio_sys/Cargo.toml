@@ -7,6 +7,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(unix)'.dependencies]
+pal_async.workspace = true
+
 anyhow.workspace = true
 bitfield-struct.workspace = true
 libc.workspace = true

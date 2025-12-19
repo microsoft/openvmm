@@ -1,0 +1,56 @@
+/* Copyright (c) Microsoft Corporation. */
+/* Licensed under the MIT License. */
+
+.severity-ERROR td {
+    border-left: 4px solid #d00 !important;
+    color: #900;
+}
+
+.severity-WARN td {
+    border-left: 4px solid #d98e00 !important;
+    color: #a65f00;
+}
+
+.severity-INFO td {
+    border-left: 4px solid #007acc !important;
+    color: #004e7a;
+}
+
+.severity-DEBUG td {
+    border-left: 4px solid #888 !important;
+    color: #555;
+}
+
+.selected {
+    outline: 2px solid #007acc !important;
+    outline-offset: -3px;
+}
+
+/* Darker hover background for selected rows, preserving the border */
+.virtualized-table-row.selected:hover td {
+    background-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+.virtualized-table-row td:nth-child(4) {
+    word-break: break-word;
+}
+
+.logviewer-image-div {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background-color: rgba(0, 0, 0, 0.25);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 9999;
+}
+
+.logviewer-image-content {
+    max-width: 90%;
+    max-height: 90%;
+    box-shadow: 0 0 12px rgba(0, 0, 0, 0.8);
+    border-radius: 6px;
+}

@@ -20,6 +20,7 @@ use pal_async::windows::overlapped::IoBufMut;
 use pal_async::windows::overlapped::OverlappedFile;
 use pal_event::Event;
 use std::mem::zeroed;
+use std::num::NonZeroU32;
 use std::os::windows::prelude::*;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
@@ -93,6 +94,7 @@ pub enum ProxyAction {
         offer: VMBUS_CHANNEL_OFFER,
         incoming_event: Event,
         outgoing_event: Option<Event>,
+        device_order: Option<NonZeroU32>,
     },
     Revoke {
         id: u64,
@@ -128,8 +130,11 @@ unsafe impl<T> IoBufMut for StaticIoctlBuffer<T> {
 
 impl VmbusProxy {
     pub fn new(driver: &dyn Driver, handle: ProxyHandle, ctx: CancelContext) -> Result<Self> {
+        // SAFETY: TODO, analyze whether we are guaranteed to follow the safety
+        // contract.
+        let file = unsafe { OverlappedFile::new(driver, handle.0)? };
         Ok(Self {
-            file: OverlappedFile::new(driver, handle.0)?,
+            file,
             guest_memory: None,
             cancel: ctx,
         })
@@ -146,7 +151,8 @@ impl VmbusProxy {
     {
         // SAFETY: guaranteed by caller.
         let (r, (_, output)) = unsafe { self.file.ioctl(code, input, output).await };
-        r?;
+        let size = r?;
+        assert_eq!(size, output.len(), "ioctl returned unexpected size");
         Ok(output)
     }
 
@@ -185,7 +191,8 @@ impl VmbusProxy {
             }
         };
 
-        r?;
+        let size = r?;
+        assert_eq!(size, output.len(), "ioctl returned unexpected size");
         Ok(output)
     }
 
@@ -237,6 +244,7 @@ impl VmbusProxy {
                     } else {
                         None
                     },
+                    device_order: NonZeroU32::new(output.u.Offer.DeviceOrder),
                 })
             },
             proxyioctl::VmbusProxyActionTypeRevoke => {

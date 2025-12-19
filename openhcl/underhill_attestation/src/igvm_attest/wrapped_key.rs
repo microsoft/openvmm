@@ -21,6 +21,8 @@ pub(crate) enum WrappedKeyError {
     PayloadSizeTooSmall,
     #[error("error in response header)")]
     ParseHeader(#[source] CommonError),
+    #[error("invalid response header version: {0}")]
+    InvalidResponseVersion(u32),
 }
 
 /// Return value of the [`parse_response`].
@@ -36,8 +38,8 @@ pub struct IgvmWrappedKeyParsedResponse {
 /// Returns `Ok(IgvmWrappedKeyParsedResponse)` on successfully extracting a wrapped DiskEncryptionSettings
 /// key from `response`, otherwise returns an error.
 pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, WrappedKeyError> {
-    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
 
     // Minimum acceptable payload would look like {"ciphertext":"base64URL wrapped key"}
@@ -50,8 +52,9 @@ pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, W
 
     // Extract payload as per header version
     let header_size = match header.version {
-        IGVM_ATTEST_RESPONSE_VERSION_1 => size_of::<IgvmAttestCommonResponseHeader>(),
-        _ => size_of::<IgvmAttestWrappedKeyResponseHeader>(),
+        IgvmAttestResponseVersion::VERSION_1 => size_of::<IgvmAttestCommonResponseHeader>(),
+        IgvmAttestResponseVersion::VERSION_2 => size_of::<IgvmAttestWrappedKeyResponseHeader>(),
+        invalid_version => return Err(WrappedKeyError::InvalidResponseVersion(invalid_version.0)),
     };
     let payload = &response[header_size..header.data_size as usize];
 
