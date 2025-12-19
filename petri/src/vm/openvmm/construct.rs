@@ -113,7 +113,6 @@ impl PetriVmConfigOpenVmm {
             proc_topology,
             vmgs,
             tpm: tpm_config,
-            ide_controllers,
             vmbus_storage_controllers,
         } = petri_vm_config;
 
@@ -174,7 +173,7 @@ impl PetriVmConfigOpenVmm {
         let mut vmbus_devices = Vec::new();
 
         // Add IDE storage
-        if let Some(ide_controllers) = &ide_controllers {
+        if let Some(ide_controllers) = firmware.ide_controllers() {
             for (controller_number, controller) in ide_controllers.iter().enumerate() {
                 for (controller_location, drive) in controller.iter().enumerate() {
                     if let Some(drive) = drive {
@@ -237,6 +236,7 @@ impl PetriVmConfigOpenVmm {
                     vmbus_devices.push((
                         match controller.target_vtl {
                             crate::Vtl::Vtl0 => DeviceVtl::Vtl0,
+                            crate::Vtl::Vtl1 => DeviceVtl::Vtl1,
                             crate::Vtl::Vtl2 => DeviceVtl::Vtl2,
                         },
                         ScsiControllerHandle {
@@ -578,14 +578,8 @@ impl PetriVmConfigOpenVmm {
             None
         };
 
-        let vtl2_settings = firmware.into_openhcl_config().and_then(|c| c.vtl2_settings);
-
         Ok(Self {
-            runtime_config: crate::PetriVmRuntimeConfig {
-                vtl2_settings,
-                ide_controllers,
-                vmbus_storage_controllers,
-            },
+            runtime_config: firmware.into_runtime_config(vmbus_storage_controllers),
             arch,
             host_log_levels,
             config,
@@ -741,6 +735,7 @@ impl PetriVmConfigSetupCore<'_> {
                     bios_firmware: firmware,
                     guest: _,         // load_boot_disk
                     svga_firmware: _, // config_video
+                    ide_controllers: _,
                 },
             ) => {
                 let firmware = openvmm_pcat_locator::find_pcat_bios(firmware.get())

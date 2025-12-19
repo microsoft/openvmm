@@ -558,22 +558,20 @@ async fn create_keepalive_test_config(
             })
         })
         // Assign the fault controller to VTL2
-        .with_custom_vtl2_settings(move |v| {
-            v.dynamic.as_mut().unwrap().storage_controllers.push(
-                Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
-                    .with_instance_id(scsi_instance)
-                    .add_lun(
-                        Vtl2LunBuilder::disk()
-                            .with_location(vtl0_nvme_lun)
-                            .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                                ControllerType::Nvme,
-                                NVME_INSTANCE,
-                                KEEPALIVE_VTL2_NSID,
-                            )),
-                    )
-                    .build(),
-            );
-        })
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(scsi_instance)
+                .add_lun(
+                    Vtl2LunBuilder::disk()
+                        .with_location(vtl0_nvme_lun)
+                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                            ControllerType::Nvme,
+                            NVME_INSTANCE,
+                            KEEPALIVE_VTL2_NSID,
+                        )),
+                )
+                .build(),
+        )
         .run()
         .await
 }

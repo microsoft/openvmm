@@ -148,8 +148,6 @@ pub struct PetriVmConfig {
     pub vmgs: PetriVmgsResource,
     /// TPM configuration
     pub tpm: Option<TpmConfig>,
-    /// IDE controllers and associated disks
-    pub ide_controllers: Option<[[Option<Drive>; 2]; 2]>,
     /// Storage controllers and associated disks
     pub vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
 }
@@ -295,9 +293,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => BootDeviceType::Scsi,
         };
 
-        let ide_controllers = matches!(artifacts.firmware, Firmware::Pcat { .. })
-            .then(|| [[None, None], [None, None]]);
-
         Ok(Self {
             backend: artifacts.backend,
             config: PetriVmConfig {
@@ -310,7 +305,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
                 vmgs: PetriVmgsResource::Ephemeral,
                 tpm: None,
-                ide_controllers,
                 vmbus_storage_controllers: HashMap::new(),
             },
             modify_vmm_config: None,
@@ -413,6 +407,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     fn add_agent_disk_inner(self, target_vtl: Vtl) -> Self {
         let (agent_image, controller_id) = match target_vtl {
             Vtl::Vtl0 => (self.agent_image.as_ref(), PETRI_SCSI_VTL0_CONTROLLER),
+            Vtl::Vtl1 => panic!("no VTL1 agent disk"),
             Vtl::Vtl2 => (
                 self.openhcl_agent_image.as_ref(),
                 PETRI_SCSI_VTL2_CONTROLLER,
@@ -1092,14 +1087,17 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         target_vtl: Vtl,
         controller_type: VmbusStorageType,
     ) -> Self {
-        if self.config.vmbus_storage_controllers.contains_key(id) {
-            panic!("storage controller {id} already exists");
+        if self
+            .config
+            .vmbus_storage_controllers
+            .insert(
+                *id,
+                VmbusStorageController::new(target_vtl, controller_type),
+            )
+            .is_some()
+        {
+            panic!("storage controller {id} already existed");
         }
-
-        self.config.vmbus_storage_controllers.insert(
-            *id,
-            VmbusStorageController::new(target_vtl, controller_type),
-        );
         self
     }
 
@@ -1129,8 +1127,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         controller_location: u8,
     ) -> Self {
         self.config
-            .ide_controllers
-            .as_mut()
+            .firmware
+            .ide_controllers_mut()
             .expect("Host IDE requires PCAT with no HCL")[controller_number as usize]
             [controller_location as usize] = Some(drive);
 
@@ -1865,6 +1863,8 @@ pub enum Firmware {
         bios_firmware: ResolvedOptionalArtifact,
         /// The SVGA firmware to use.
         svga_firmware: ResolvedOptionalArtifact,
+        /// IDE controllers and associated disks
+        ide_controllers: [[Option<Drive>; 2]; 2],
     },
     /// Boot a PCAT-based VM with OpenHCL in VTL2.
     OpenhclPcat {
@@ -1987,6 +1987,7 @@ impl Firmware {
             guest,
             bios_firmware: resolver.try_require(PCAT_FIRMWARE_X64).erase(),
             svga_firmware: resolver.try_require(SVGA_FIRMWARE_X64).erase(),
+            ide_controllers: [[None, None], [None, None]],
         }
     }
 
@@ -2174,12 +2175,30 @@ impl Firmware {
         }
     }
 
-    fn into_openhcl_config(self) -> Option<OpenHclConfig> {
+    fn into_runtime_config(
+        self,
+        vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
+    ) -> PetriVmRuntimeConfig {
         match self {
             Firmware::OpenhclLinuxDirect { openhcl_config, .. }
             | Firmware::OpenhclUefi { openhcl_config, .. }
-            | Firmware::OpenhclPcat { openhcl_config, .. } => Some(openhcl_config),
-            Firmware::LinuxDirect { .. } | Firmware::Pcat { .. } | Firmware::Uefi { .. } => None,
+            | Firmware::OpenhclPcat { openhcl_config, .. } => PetriVmRuntimeConfig {
+                vtl2_settings: openhcl_config.vtl2_settings,
+                ide_controllers: None,
+                vmbus_storage_controllers,
+            },
+            Firmware::Pcat {
+                ide_controllers, ..
+            } => PetriVmRuntimeConfig {
+                vtl2_settings: None,
+                ide_controllers: Some(ide_controllers),
+                vmbus_storage_controllers,
+            },
+            Firmware::LinuxDirect { .. } | Firmware::Uefi { .. } => PetriVmRuntimeConfig {
+                vtl2_settings: None,
+                ide_controllers: None,
+                vmbus_storage_controllers,
+            },
         }
     }
 
@@ -2228,6 +2247,24 @@ impl Firmware {
     fn vtl2_settings(&mut self) -> Option<&mut Vtl2Settings> {
         self.openhcl_config_mut()
             .map(|c| c.vtl2_settings.get_or_insert_with(default_vtl2_settings))
+    }
+
+    fn ide_controllers(&self) -> Option<&[[Option<Drive>; 2]; 2]> {
+        match self {
+            Firmware::Pcat {
+                ide_controllers, ..
+            } => Some(ide_controllers),
+            _ => None,
+        }
+    }
+
+    fn ide_controllers_mut(&mut self) -> Option<&mut [[Option<Drive>; 2]; 2]> {
+        match self {
+            Firmware::Pcat {
+                ide_controllers, ..
+            } => Some(ide_controllers),
+            _ => None,
+        }
     }
 }
 
@@ -2575,6 +2612,8 @@ fn default_vtl2_settings() -> Vtl2Settings {
 pub enum Vtl {
     /// VTL 0
     Vtl0 = 0,
+    /// VTL 1
+    Vtl1 = 1,
     /// VTL 2
     Vtl2 = 2,
 }
@@ -2632,12 +2671,7 @@ impl VmbusStorageController {
         drive: Drive,
         allow_modify_existing: bool,
     ) -> u32 {
-        let lun = if let Some(lun) = lun {
-            if !allow_modify_existing && self.drives.contains_key(&lun) {
-                panic!("a disk with lun {lun} already exists on this controller");
-            }
-            lun
-        } else {
+        let lun = lun.unwrap_or_else(|| {
             // find the first available lun
             let mut lun = None;
             for x in 0..u8::MAX as u32 {
@@ -2645,14 +2679,12 @@ impl VmbusStorageController {
                     lun = Some(x)
                 }
             }
-            if let Some(lun) = lun {
-                lun
-            } else {
-                panic!("all locations on this controller are in use")
-            }
-        };
+            lun.expect("all locations on this controller are in use")
+        });
 
-        self.drives.insert(lun, drive);
+        if self.drives.insert(lun, drive).is_some() && !allow_modify_existing {
+            panic!("a disk with lun {lun} already existed on this controller");
+        }
 
         lun
     }

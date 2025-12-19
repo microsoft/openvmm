@@ -174,7 +174,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
             proc_topology,
             vmgs,
             tpm,
-            ide_controllers,
             vmbus_storage_controllers,
         } = config;
 
@@ -187,7 +186,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         let temp_dir = tempfile::tempdir()?;
 
-        let (guest_state_isolation_type, generation, uefi_config, openhcl_config) = match firmware {
+        let (guest_state_isolation_type, generation, uefi_config, openhcl_config) = match &firmware
+        {
             Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => {
                 todo!("linux direct not supported on hyper-v")
             }
@@ -195,6 +195,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 guest: _,
                 bios_firmware: _, // TODO
                 svga_firmware: _, // TODO
+                ide_controllers: _,
             } => (
                 powershell::HyperVGuestStateIsolationType::Disabled,
                 powershell::HyperVGeneration::One,
@@ -348,7 +349,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         }) = uefi_config
         {
             vm.set_secure_boot(
-                secure_boot_enabled,
+                *secure_boot_enabled,
                 secure_boot_template.map(|t| match t {
                     SecureBootTemplate::MicrosoftWindows => {
                         HyperVSecureBootTemplate::MicrosoftWindows
@@ -361,7 +362,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             .await?;
 
             // TODO: Disable frontpage for non-OpenHCL Hyper-V VMs
-            if disable_frontpage && properties.is_openhcl {
+            if *disable_frontpage && properties.is_openhcl {
                 append_cmdline(
                     &mut openhcl_command_line,
                     "OPENHCL_DISABLE_UEFI_FRONTPAGE=1",
@@ -373,12 +374,12 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     &mut openhcl_command_line,
                     format!(
                         "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT={}",
-                        if default_boot_always_attempt { 1 } else { 0 }
+                        if *default_boot_always_attempt { 1 } else { 0 }
                     ),
                 );
             };
 
-            if enable_vpci_boot {
+            if *enable_vpci_boot {
                 todo!("hyperv nvme boot");
             }
         }
@@ -401,7 +402,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             vm.set_imc(&imc_hive).await?;
         }
 
-        let vtl2_settings = if let Some((
+        if let Some((
             src_igvm_file,
             OpenHclConfig {
                 vtl2_nvme_boot: _, // TODO, see #1649.
@@ -440,7 +441,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             vm.set_vm_firmware_command_line(openhcl_command_line.as_ref().unwrap())
                 .await?;
 
-            vm.set_vmbus_redirect(vmbus_redirect).await?;
+            vm.set_vmbus_redirect(*vmbus_redirect).await?;
 
             // Attempt to enable COM3 and use that to get KMSG logs, otherwise
             // fall back to use diag_client.
@@ -497,10 +498,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             if let Some(settings) = &vtl2_settings {
                 vm.set_base_vtl2_settings(settings).await?;
             }
-            vtl2_settings
-        } else {
-            None
-        };
+        }
 
         let serial_pipe_path = vm.set_vm_com_port(1).await?;
         let serial_log_file = log_source.log_file("guest")?;
@@ -510,7 +508,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         ));
 
         // Add IDE storage
-        if let Some(ide_controllers) = &ide_controllers {
+        if let Some(ide_controllers) = firmware.ide_controllers() {
             for (controller_number, controller) in ide_controllers.iter().enumerate() {
                 for (controller_location, disk) in controller.iter().enumerate() {
                     if let Some(disk) = disk {
@@ -590,11 +588,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 driver: driver.clone(),
                 properties,
             },
-            PetriVmRuntimeConfig {
-                vtl2_settings,
-                ide_controllers,
-                vmbus_storage_controllers,
-            },
+            firmware.into_runtime_config(vmbus_storage_controllers),
         ))
     }
 }
