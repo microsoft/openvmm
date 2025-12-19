@@ -244,6 +244,9 @@ pub(crate) const PETRI_SCSI_VTL0_CONTROLLER: Guid =
 /// VTL2 SCSI controller instance guid used by Petri
 pub(crate) const PETRI_SCSI_VTL2_CONTROLLER: Guid =
     guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7c");
+/// SCSI controller instance guid offered to VTL0 by VTL2
+pub(crate) const PETRI_SCSI_VTL0_VIA_VTL2_CONTROLLER: Guid =
+    guid::guid!("6c474f47-ed39-49e6-bbb9-142177a1da6e");
 
 /// The namespace ID used by Petri for the boot disk
 pub(crate) const PETRI_NVME_BOOT_NSID: u32 = 37;
@@ -487,7 +490,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                     )
                     .add_vtl2_storage_controller(
                         Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
-                            .with_instance_id(PETRI_SCSI_VTL0_CONTROLLER)
+                            .with_instance_id(PETRI_SCSI_VTL0_VIA_VTL2_CONTROLLER)
                             .add_lun(
                                 Vtl2LunBuilder::disk()
                                     .with_location(PETRI_SCSI_BOOT_LUN)
@@ -512,7 +515,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                     )
                     .add_vtl2_storage_controller(
                         Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
-                            .with_instance_id(PETRI_SCSI_VTL0_CONTROLLER)
+                            .with_instance_id(PETRI_SCSI_VTL0_VIA_VTL2_CONTROLLER)
                             .add_lun(
                                 Vtl2LunBuilder::disk()
                                     .with_location(PETRI_SCSI_BOOT_LUN)
