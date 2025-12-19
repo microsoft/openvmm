@@ -263,6 +263,12 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     {
         let registers: Vec<HvRegisterAssoc> = values.into_iter().map(Into::into).collect();
 
+        #[cfg(guest_arch = "x86_64")]
+        let per_arch = |name| matches!(name, hvdef::HvX64RegisterName::CrInterceptControl);
+
+        #[cfg(guest_arch = "aarch64")]
+        let per_arch = |_: HvArchRegisterName| false;
+
         assert!(registers.iter().all(
             |HvRegisterAssoc {
                  name,
@@ -279,8 +285,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                     | HvArchRegisterName::VsmVpWaitForTlbLock
                     | HvArchRegisterName::VsmVpSecureConfigVtl0
                     | HvArchRegisterName::VsmVpSecureConfigVtl1
-                    | HvArchRegisterName::CrInterceptControl
-            )
+            ) || per_arch((*name).into())
         ));
         self.hcl
             .mshv_hvcall
@@ -355,7 +360,7 @@ impl Hcl {
         #[cfg(guest_arch = "aarch64")]
         {
             Ok(hvdef::HvPartitionPrivilege::from(
-                self.get_vp_vtl2_register(HvArm64RegisterName::PrivilegesAndFeaturesInfo)?
+                self.get_vp_vtl2_register(HvArchRegisterName::PrivilegesAndFeaturesInfo)?
                     .as_u64(),
             ))
         }
