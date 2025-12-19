@@ -204,8 +204,16 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         I: IntoIterator,
         I::Item: Into<HvRegisterAssoc>,
     {
-        let regs = regs.into_iter().map(Into::into);
+        self.set_regs_nongeneric(vtl, &mut regs.into_iter().map(Into::into))
+    }
 
+    /// Set the given registers on the current VP for the given VTL via
+    /// ioctl/hypercall, as appropriate.
+    fn set_regs_nongeneric(
+        &mut self,
+        vtl: Vtl,
+        regs: &mut dyn Iterator<Item = HvRegisterAssoc>,
+    ) -> Result<(), SetRegError> {
         if let Some(sidecar) = &mut self.sidecar {
             // TODO: Optimize this call to not need the heap?
             let regs: Vec<HvRegisterAssoc> = regs.collect();
