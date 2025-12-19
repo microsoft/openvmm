@@ -142,21 +142,9 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         assert_eq!(names.len(), values.len());
 
         if let Some(sidecar) = &mut self.sidecar {
-            let mut assocs = names
-                .iter()
-                .map(|&name| HvRegisterAssoc {
-                    name: name.into(),
-                    pad: Default::default(),
-                    value: HvRegisterValue::new_zeroed(),
-                })
-                .collect::<Vec<_>>();
-            sidecar
-                .get_vp_registers(vtl.into(), &mut assocs)
-                .map_err(GetRegError::Sidecar)?;
-            for (assoc, value) in assocs.into_iter().zip(values.iter_mut()) {
-                *value = assoc.value;
-            }
-            return Ok(());
+            return sidecar
+                .get_vp_registers(vtl.into(), zerocopy::transmute_ref!(names), values)
+                .map_err(GetRegError::Sidecar);
         }
 
         let mut hv_names = Vec::new();
