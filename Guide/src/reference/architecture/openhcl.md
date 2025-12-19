@@ -7,71 +7,60 @@
 
 * * *
 
-> This page is under construction
-
 ## Overview
 
-The following diagram offers a brief, high-level overview of the OpenHCL
-Architecture.
+OpenHCL is a paravisor execution environment that runs within the guest partition of a virtual machine. It provides virtualization services to the guest OS from within the guest itself, rather than from the host.
+
+The following diagram offers a brief, high-level overview of the OpenHCL Architecture.
 
 ![OpenHCL High Level Overview](./_images/openhcl.png)
 
-## VTLs
+## Virtual Trust Levels (VTLs)
 
-OpenHCL currently relies on Hyper-V's implementation of [Virtual Trust Levels]
-(VTLs) to implement the security boundaries necessary for running OpenVMM as a
-paravisor.
+OpenHCL relies on [Virtual Trust Levels] (VTLs) to establish a security boundary between itself and the guest OS.
 
-VTLs can be backed by:
+- **VTL2:** OpenHCL runs here[^sk]. It has higher privileges and is isolated from VTL0.
+- **VTL0:** The Guest OS (e.g., Windows, Linux) runs here. It cannot access VTL2 memory or resources.
 
-- Hardware-based [TEEs], like Intel [TDX] and AMD [SEV-SNP]
-- Software-based constructs, like Hyper-V [VSM]
+This isolation is enforced by the underlying hypervisor (Hyper-V) and can be backed by:
 
-OpenHCL runs within VTL2[^sk], and provides virtualization services to a Guest OS
-running in VTL0.
+- Hardware [TEEs], like Intel [TDX] and AMD [SEV-SNP].
+- Software-based constructs, like Hyper-V [VSM].
 
-## OpenHCL Linux
+## Scenarios
 
-By building on-top of Linux, OpenHCL is able to leverage the extensive Linux
-software and development ecosystem, and avoid re-implementing various components
-like core OS primitives, device drivers, and software libraries. As a result:
-OpenHCL provides a familiar and productive environment for developers.
+OpenHCL enables several key scenarios by providing a trusted execution environment within the VM:
 
-The OpenHCL Linux Kernel uses a minimal kernel configuration, designed to host a
-single specialized build of OpenVMM in userspace.
+### Azure Boost
 
-In debug configurations, userspace may include additional facilities (such as an
-interactive shell, additional perf and debugging tools, etc). Release
-configurations use a lean, minimal userspace, consisting entirely of OpenHCL
-components.
+OpenHCL acts as a compatibility layer for Azure Boost. It translates legacy synthetic device interfaces (like VMBus networking and storage) used by the guest OS into the hardware-accelerated interfaces (proprietary [Microsoft Azure Network Adapter] (MANA) and NVMe) provided by the Azure Boost infrastructure. This allows unmodified guest images to take advantage of next-generation hardware.
 
-* * *
+The following diagram shows a high level overview of how synthetic networking is supported in OpenHCL over Microsoft Azure Network Adapter (MANA)
 
-## Scenario: Azure Boost Storage/Networking Translation
+![OpenHCL Synthetic Networking](./_images/openhcl-synthetic-nw.png)
 
-Traditionally, Azure VMs have used Hyper-V VMBus-based synthetic networking and
-synthetic storage for I/O. Azure Boost introduces hardware accelerated storage
-and networking. It exposes different interfaces to guest VMs for networking and
-storage. Specifically, it exposes a new proprietary [Microsoft Azure Network
-Adapter] (MANA) and an NVMe interface for storage.
+The following diagram shows a high level overview of how accelerated networking is supported in OpenHCL over MANA
 
-OpenHCL is able to provide a compatibility layer for I/O virtualization on
-Azure Boost enabled systems.
+![OpenHCL Accelerated Networking](./_images/openhcl-accelnet.png)
 
-Specifically, OpenHCL exposes Hyper-V VMBus-based synthetic networking and
-synthetic storage for I/O to the guest OS in a VM. OpenHCL then maps those
-synthetic storage and networking interfaces to the hardware accelerated
-interfaces provided by Azure Boost.
+### Confidential Computing
 
-The following diagram shows a high level overview of how synthetic networking is
-supported in OpenHCL over Microsoft Azure Network Adapter (MANA)
+In Confidential VMs (CVMs), the host is not trusted. OpenHCL runs inside the encrypted VM context (VTL2) and provides necessary services (like device emulation and TPM) that the untrusted host cannot securely provide.
 
-<img src="./_images/openhcl-synthetic-nw.png" height="400" width="600"> <br>
+### Trusted Launch
 
-The following diagram shows a high level overview of how accelerated networking
-is supported in OpenHCL over MANA
+OpenHCL hosts a virtual TPM (vTPM) and enforces Secure Boot policies, ensuring the integrity of the guest boot process.
 
-<img src="./_images/openhcl-accelnet.png" height="400" width="600"> <br> <br>
+## Architecture Components
+
+OpenHCL is built on top of a specialized Linux kernel and consists of several userspace processes that work together to provide these services.
+
+For more details on the internal components and boot process, see:
+
+- [Processes and Components](./openhcl/processes.md)
+- [Boot Flow](./openhcl/boot.md)
+- [Sidecar](./openhcl/sidecar.md)
+- [IGVM Artifact](./openhcl/igvm.md)
 
 [^sk]: Why not VTL1? Windows already uses VTL1 in order to host the [Secure Kernel].
 
