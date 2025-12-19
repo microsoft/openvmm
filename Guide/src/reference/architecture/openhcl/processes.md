@@ -75,7 +75,7 @@ The VM worker process (`underhill_vm`) is responsible for the high-performance d
 **Key Responsibilities:**
 
 - **VP Loop:** Runs the virtual processor loop, handling VM exits.
-- **Device Emulation:** Emulates devices for the guest VM.
+- **Device Emulation:** Coordinates device emulation for the guest VM. Some devices run in-process while others run in separate device worker processes for isolation.
 - **I/O Processing:** Handles high-speed I/O operations.
 
 ## Diagnostics Server (`diag_server`)
@@ -100,3 +100,22 @@ The profiler worker is an on-demand process used for performance analysis.
 
 - **Performance Data Collection:** Collects profiling data (e.g., CPU usage, traces) when requested.
 - **Isolation:** Runs in a separate process to minimize impact on the main workload.
+
+## Device Worker Processes
+
+OpenHCL supports running chipset device emulators in separate, isolated processes using the `chipset_device_worker` framework. This provides security isolation and fault tolerance by sandboxing device emulation logic.
+
+**Source code:** [workers/chipset_device_worker](https://github.com/microsoft/openvmm/tree/main/workers/chipset_device_worker) | **Docs:** [chipset_device_worker rustdoc](https://openvmm.dev/rustdoc/linux/chipset_device_worker/index.html)
+
+**Key Responsibilities:**
+
+- **Device Isolation:** Runs specific device emulators in separate processes to isolate them from the main VM worker.
+- **I/O Proxying:** Forwards device I/O operations (MMIO, PIO, PCI config space) between the VM worker and the device worker.
+- **Memory Access:** Provides proxied access to guest memory for devices that need to read/write VM memory.
+- **State Management:** Handles device save/restore operations across process boundaries.
+
+**Current Use Cases:**
+
+- **TPM Emulation:** The virtual TPM (vTPM) runs in a separate device worker process for enhanced security isolation, protecting sensitive cryptographic operations and state from other components.
+
+This architecture can be extended to isolate other chipset devices as needed for security or reliability requirements.

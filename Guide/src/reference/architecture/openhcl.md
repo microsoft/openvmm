@@ -45,7 +45,7 @@ The following diagram shows a high level overview of how accelerated networking 
 
 ### Confidential Computing
 
-In Confidential VMs (CVMs), the host is not trusted. OpenHCL runs inside the encrypted VM context (VTL2) and provides necessary services (like device emulation and TPM) that the untrusted host cannot securely provide.
+In Confidential VMs (CVMs), the host is not trusted. OpenHCL runs inside the encrypted VM context (VTL2) and provides necessary services (like device emulation and TPM) that the untrusted host cannot securely provide. Security-sensitive devices, such as the virtual TPM, can be further isolated by running them in separate worker processes within VTL2 for defense-in-depth protection.
 
 ### Trusted Launch
 

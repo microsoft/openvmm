@@ -13,6 +13,7 @@ sequenceDiagram
         participant Init as Init<br/>(underhill_init)
         participant HCL as Paravisor<br/>(openvmm_hcl)
         participant Worker as VM Worker<br/>(underhill_vm)
+        participant DeviceWorker as Device Workers<br/>(e.g., TPM)
     end
     
     Host->>Shim: 1. Load IGVM & Transfer Control
@@ -47,9 +48,13 @@ sequenceDiagram
     HCL->>Worker: Spawn Worker
     activate Worker
     
+    Worker->>DeviceWorker: Spawn Device Workers (as needed)
+    activate DeviceWorker
+    
     par 6. VM Execution
         note over HCL: Manage Policy & Host Comm
-        note over Worker: Run VTL0 VP Loop
+        note over Worker: Run VTL0 VP Loop,<br/>Proxy Device I/O
+        note over DeviceWorker: Emulate Isolated Devices
         note over Sidecar: Wait for Commands / Hotplug
     end
 ```
@@ -70,7 +75,7 @@ The host transfers control to the entry point of the **Boot Shim**.
     * **Host Device Tree:** A device tree provided by the host containing topology and resource information.
     * **Command Line:** It parses the kernel command line, which can be supplied via IGVM or the host device tree.
 3. **Device Tree:** It constructs a Device Tree that describes the hardware topology (CPUs, memory) to the Linux kernel.
-4. **Sidecar Setup (x86_64):** The shim determines which CPUs will run Linux (typically just the BSP) and which will run the Sidecar (APs). It sets up control structures and directs Sidecar CPUs to the Sidecar entry point.
+4. **Sidecar Setup (x86_64):** The shim determines which CPUs will run Linux (typically just the Bootstrap Processor (BSP)) and which will run the Sidecar (APs). It sets up control structures and directs Sidecar CPUs to the Sidecar entry point.
     * **Sidecar Entry:** "Sidecar CPUs" jump directly to the Sidecar kernel entry point instead of the Linux kernel.
     * **Dispatch Loop:** These CPUs enter a lightweight dispatch loop, waiting for commands.
 5. **Kernel Handoff:** Finally, the BSP (and any Linux APs) jumps to the Linux kernel entry point, passing the Device Tree and command line arguments.
@@ -104,4 +109,7 @@ The **Paravisor** process (`openvmm_hcl`) starts and initializes the virtualizat
 ## 6. VM Execution
 
 At this point, the OpenHCL environment is fully established.
-The `underhill_vm` process runs the VTL0 guest, handling exits and emulating devices, while `openvmm_hcl` manages the overall policy and communicates with the host.
+
+The `underhill_vm` process runs the VTL0 guest, handling exits and coordinating device emulation. During VM initialization, security-sensitive devices requiring isolation (such as the virtual TPM) are spawned as dedicated **device worker processes** that run the emulation logic in separate, sandboxed processes. The VM worker proxies I/O operations and guest memory accesses between the guest and these isolated device emulators.
+
+Meanwhile, `openvmm_hcl` manages the overall policy and communicates with the host.
