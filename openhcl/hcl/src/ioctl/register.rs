@@ -184,7 +184,8 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                 reg.value = self
                     .hcl
                     .mshv_hvcall
-                    .get_vp_register_hypercall(vtl.into(), reg.name.into())?;
+                    .get_vp_register_hypercall(vtl.into(), reg.name.into())
+                    .map_err(GetRegError::Hypercall)?;
             }
         }
 
@@ -230,7 +231,8 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         if !hypercall.is_empty() {
             self.hcl
                 .mshv_hvcall
-                .set_vp_registers_hypercall(vtl.into(), &hypercall)?;
+                .set_vp_registers_hypercall(vtl.into(), &hypercall)
+                .map_err(SetRegError::Hypercall)?;
         }
 
         Ok(())
@@ -253,7 +255,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     /// registers are supported, and others will cause a panic.
     ///
     /// This function can be used with VTL2 as a target.
-    pub fn set_vp_registers_hvcall<I>(&mut self, vtl: Vtl, values: I) -> Result<(), SetRegError>
+    pub fn set_vp_registers_hvcall<I>(&mut self, vtl: Vtl, values: I) -> Result<(), HvError>
     where
         I: IntoIterator,
         I::Item: Into<HvRegisterAssoc> + Clone,
@@ -454,7 +456,9 @@ impl Hcl {
                     | HvArchRegisterName::VsmVpSecureConfigVtl1
             ) || per_arch
         );
-        self.mshv_hvcall.get_vp_register_hypercall(Vtl::Vtl2, name)
+        self.mshv_hvcall
+            .get_vp_register_hypercall(Vtl::Vtl2, name)
+            .map_err(GetRegError::Hypercall)
     }
 
     /// Set the given register on the current VP for VTL 2 via hypercall.
@@ -478,14 +482,16 @@ impl Hcl {
             ) || per_arch
         );
 
-        self.mshv_hvcall.set_vp_registers_hypercall(
-            Vtl::Vtl2,
-            &[HvRegisterAssoc {
-                name: name.into(),
-                pad: Default::default(),
-                value,
-            }],
-        )
+        self.mshv_hvcall
+            .set_vp_registers_hypercall(
+                Vtl::Vtl2,
+                &[HvRegisterAssoc {
+                    name: name.into(),
+                    pad: Default::default(),
+                    value,
+                }],
+            )
+            .map_err(SetRegError::Hypercall)
     }
 }
 
@@ -499,7 +505,7 @@ impl MshvHvcall {
         &self,
         vtl: Vtl,
         name: HvArchRegisterName,
-    ) -> Result<HvRegisterValue, GetRegError> {
+    ) -> Result<HvRegisterValue, HvError> {
         let header = hvdef::hypercall::GetSetVpRegisters {
             partition_id: HV_PARTITION_ID_SELF,
             vp_index: HV_VP_INDEX_SELF,
@@ -521,7 +527,7 @@ impl MshvHvcall {
         };
 
         // Status must be success with 1 rep completed
-        status.result().map_err(GetRegError::Hypercall)?;
+        status.result()?;
         assert_eq!(status.elements_processed(), 1);
 
         Ok(output[0])
@@ -536,7 +542,7 @@ impl MshvHvcall {
         &self,
         vtl: Vtl,
         registers: &[HvRegisterAssoc],
-    ) -> Result<(), SetRegError> {
+    ) -> Result<(), HvError> {
         let header = hvdef::hypercall::GetSetVpRegisters {
             partition_id: HV_PARTITION_ID_SELF,
             vp_index: HV_VP_INDEX_SELF,
@@ -557,7 +563,7 @@ impl MshvHvcall {
         };
 
         // Status must be success
-        status.result().map_err(SetRegError::Hypercall)?;
+        status.result()?;
         Ok(())
     }
 }
