@@ -2851,6 +2851,7 @@ name = "hcl"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "arrayvec",
  "bitfield-struct 0.11.0",
  "bitvec",
  "build_rs_guest_arch",

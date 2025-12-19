@@ -13,6 +13,7 @@ use super::hcl_get_vp_register;
 use super::hcl_set_vp_register;
 use super::ioctls::mshv_vp_registers;
 use crate::GuestVtl;
+use arrayvec::ArrayVec;
 use hvdef::HV_PARTITION_ID_SELF;
 use hvdef::HV_VP_INDEX_SELF;
 use hvdef::HvError;
@@ -60,7 +61,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         name: HvArchRegisterName,
     ) -> Result<HvRegisterValue, GetRegError> {
         let mut value = [FromZeros::new_zeroed(); 1];
-        self.get_vp_registers(vtl, &[name], &mut value)?;
+        self.get_regs(vtl.into(), &[name], &mut value)?;
         Ok(value[0])
     }
 
@@ -71,7 +72,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         name: HvArchRegisterName,
         value: HvRegisterValue,
     ) -> Result<(), SetRegError> {
-        self.set_vp_registers(vtl, [(name, value)])
+        self.set_regs(vtl.into(), [(name, value)])
     }
 
     /// Get the given registers on the current VP for the given VTL.
@@ -84,30 +85,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         names: &[HvArchRegisterName],
         values: &mut [HvRegisterValue],
     ) -> Result<(), GetRegError> {
-        assert_eq!(names.len(), values.len());
-        let mut assoc = Vec::new();
-        let mut offset = Vec::new();
-
-        // Try the per-backing fast path for each register first.
-        for (i, (&name, value)) in names.iter().zip(values.iter_mut()).enumerate() {
-            if let Some(v) = T::try_get_reg(self, vtl, name.into()) {
-                *value = v;
-            } else {
-                assoc.push(HvRegisterAssoc {
-                    name: name.into(),
-                    pad: Default::default(),
-                    value: FromZeros::new_zeroed(),
-                });
-                offset.push(i);
-            }
-        }
-
-        // Fall back to ioctl/hypercall for the remaining registers.
-        self.get_regs(vtl.into(), &mut assoc)?;
-        for (&i, assoc) in offset.iter().zip(&assoc) {
-            values[i] = assoc.value;
-        }
-        Ok(())
+        self.get_regs(vtl.into(), names, values)
     }
 
     /// Get the given register on the VP for VTL 2 via hypercall.
@@ -123,69 +101,76 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
 
         // Go through get_regs to ensure proper sidecar handling, even though
         // we know this will never end up calling the ioctl.
-        let mut assoc = [HvRegisterAssoc {
-            name: name.into(),
-            pad: Default::default(),
-            value: FromZeros::new_zeroed(),
-        }];
-        self.get_regs(Vtl::Vtl2, &mut assoc)?;
-        Ok(assoc[0].value)
+        let mut value = [FromZeros::new_zeroed(); 1];
+        self.get_regs(Vtl::Vtl2, &[name], &mut value)?;
+        Ok(value[0])
     }
 
     /// Set the given registers on the current VP for the given VTL.
-    pub fn set_vp_registers<I>(&mut self, vtl: GuestVtl, values: I) -> Result<(), SetRegError>
+    pub fn set_vp_registers<I>(&mut self, vtl: GuestVtl, regs: I) -> Result<(), SetRegError>
     where
         I: IntoIterator,
-        I::Item: Into<HvRegisterAssoc> + Clone,
+        I::Item: Into<HvRegisterAssoc>,
     {
-        let mut assoc = Vec::new();
-
-        // Try the per-backing fast path for each register first.
-        for HvRegisterAssoc { name, value, .. } in values.into_iter().map(Into::into) {
-            if !assoc.is_empty() && T::must_flush_regs_on(self, name) {
-                self.set_regs(vtl.into(), &assoc)?;
-                assoc.clear();
-            }
-            if !T::try_set_reg(self, vtl, name, value) {
-                assoc.push(HvRegisterAssoc {
-                    name,
-                    pad: Default::default(),
-                    value,
-                });
-            }
-        }
-        // Fall back to ioctl/hypercall for the remaining registers.
-        self.set_regs(vtl.into(), &assoc)
+        self.set_regs(vtl.into(), regs)
     }
 
     /// Get the given registers on the current VP for the given VTL via
     /// ioctl/hypercall, as appropriate.
-    fn get_regs(&mut self, vtl: Vtl, regs: &mut [HvRegisterAssoc]) -> Result<(), GetRegError> {
-        if regs.is_empty() {
-            return Ok(());
-        }
+    fn get_regs(
+        &mut self,
+        vtl: Vtl,
+        names: &[HvArchRegisterName],
+        values: &mut [HvRegisterValue],
+    ) -> Result<(), GetRegError> {
+        assert_eq!(names.len(), values.len());
 
         if let Some(sidecar) = &mut self.sidecar {
             return sidecar
-                .get_vp_registers(vtl.into(), regs)
+                .get_vp_registers(vtl.into(), zerocopy::transmute_ref!(names), values)
                 .map_err(GetRegError::Sidecar);
         }
 
-        let (kernel, hypercall) =
-            regs.iter_mut()
-                .partition::<Vec<&mut HvRegisterAssoc>, _>(|reg| {
-                    self.is_kernel_managed(reg.name.into())
-                });
+        const MAX_REGS_PER_HVCALL: usize = 32;
+        let mut hv_names: ArrayVec<_, MAX_REGS_PER_HVCALL> = ArrayVec::new();
+        let mut hv_values: ArrayVec<_, MAX_REGS_PER_HVCALL> = ArrayVec::new();
 
-        if !kernel.is_empty() {
-            // TODO: group up to MSHV_VP_MAX_REGISTERS regs. The kernel
-            // currently has a bug where it only supports one register at a
-            // time. Once that's fixed, this code could set a group of
-            // registers in one ioctl.
-            for reg in kernel {
+        let do_hvcall =
+            |hv_names: &mut ArrayVec<_, _>, hv_values: &mut ArrayVec<&mut HvRegisterValue, _>| {
+                let mut values: ArrayVec<_, MAX_REGS_PER_HVCALL> = ArrayVec::from_iter(
+                    std::iter::repeat_n(FromZeros::new_zeroed(), hv_names.len()),
+                );
+                self.hcl
+                    .mshv_hvcall
+                    .get_vp_registers_hypercall(vtl, hv_names, &mut values)
+                    .map_err(GetRegError::Hypercall)?;
+
+                for (dest, value) in hv_values.iter_mut().zip(values.into_iter()) {
+                    **dest = value;
+                }
+                hv_names.clear();
+                hv_values.clear();
+                Ok(())
+            };
+
+        for (&name, value) in names.iter().zip(values.iter_mut()) {
+            if let Ok(vtl) = vtl.try_into()
+                && let Some(v) = T::try_get_reg(self, vtl, name.into())
+            {
+                *value = v;
+            } else if self.is_kernel_managed(name) {
+                // TODO: group up to MSHV_VP_MAX_REGISTERS regs. The kernel
+                // currently has a bug where it only supports one register at a
+                // time. Once that's fixed, this code could get a group of
+                // registers in one ioctl.
+                let mut reg = HvRegisterAssoc {
+                    name: name.into(),
+                    pad: Default::default(),
+                    value: HvRegisterValue::new_zeroed(),
+                };
                 let mut mshv_vp_register_args = mshv_vp_registers {
                     count: 1,
-                    regs: reg,
+                    regs: &mut reg,
                 };
                 // SAFETY: we know that our file is a vCPU fd, we know the kernel will only read the
                 // correct amount of memory from our pointer, and we verify the return result.
@@ -196,18 +181,19 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                     )
                     .map_err(GetRegError::Ioctl)?;
                 }
+                *value = reg.value;
+            } else {
+                hv_names.push(name);
+                hv_values.push(value);
+
+                if hv_names.is_full() {
+                    do_hvcall(&mut hv_names, &mut hv_values)?;
+                }
             }
         }
 
-        if !hypercall.is_empty() {
-            // TODO: Batch?
-            for reg in hypercall {
-                reg.value = self
-                    .hcl
-                    .mshv_hvcall
-                    .get_vp_register_hypercall(vtl, reg.name.into())
-                    .map_err(GetRegError::Hypercall)?;
-            }
+        if !hv_names.is_empty() {
+            do_hvcall(&mut hv_names, &mut hv_values)?;
         }
 
         Ok(())
@@ -215,30 +201,54 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
 
     /// Set the given registers on the current VP for the given VTL via
     /// ioctl/hypercall, as appropriate.
-    fn set_regs(&mut self, vtl: Vtl, regs: &[HvRegisterAssoc]) -> Result<(), SetRegError> {
-        if regs.is_empty() {
-            return Ok(());
-        }
+    fn set_regs<I>(&mut self, vtl: Vtl, regs: I) -> Result<(), SetRegError>
+    where
+        I: IntoIterator,
+        I::Item: Into<HvRegisterAssoc>,
+    {
+        self.set_regs_nongeneric(vtl, &mut regs.into_iter().map(Into::into))
+    }
 
+    /// Set the given registers on the current VP for the given VTL via
+    /// ioctl/hypercall, as appropriate.
+    fn set_regs_nongeneric(
+        &mut self,
+        vtl: Vtl,
+        regs: &mut dyn Iterator<Item = HvRegisterAssoc>,
+    ) -> Result<(), SetRegError> {
         if let Some(sidecar) = &mut self.sidecar {
+            // TODO: Optimize this call to not need the heap?
+            let regs: Vec<HvRegisterAssoc> = regs.collect();
             return sidecar
-                .set_vp_registers(vtl.into(), regs)
+                .set_vp_registers(vtl.into(), &regs)
                 .map_err(SetRegError::Sidecar);
         }
 
-        let (kernel, hypercall) = regs
-            .iter()
-            .partition::<Vec<HvRegisterAssoc>, _>(|reg| self.is_kernel_managed(reg.name.into()));
+        const MAX_REGS_PER_HVCALL: usize = 32;
+        let mut hv_regs: ArrayVec<_, MAX_REGS_PER_HVCALL> = ArrayVec::new();
 
-        if !kernel.is_empty() {
-            // TODO: group up to MSHV_VP_MAX_REGISTERS regs. The kernel
-            // currently has a bug where it only supports one register at a
-            // time. Once that's fixed, this code could set a group of
-            // registers in one ioctl.
-            for reg in &kernel {
+        let do_hvcall = |hv_regs: &mut ArrayVec<_, _>| {
+            self.hcl
+                .mshv_hvcall
+                .set_vp_registers_hypercall(vtl, hv_regs)
+                .map_err(SetRegError::Hypercall)?;
+            hv_regs.clear();
+            Ok(())
+        };
+
+        for reg in regs {
+            if let Ok(vtl) = vtl.try_into()
+                && !T::must_flush_regs_on(self, reg.name)
+                && T::try_set_reg(self, vtl, reg.name, reg.value)
+            {
+            } else if self.is_kernel_managed(reg.name.into()) {
+                // TODO: group up to MSHV_VP_MAX_REGISTERS regs. The kernel
+                // currently has a bug where it only supports one register at a
+                // time. Once that's fixed, this code could set a group of
+                // registers in one ioctl.
                 let mshv_vp_register_args = mshv_vp_registers {
                     count: 1,
-                    regs: std::ptr::from_ref(reg).cast_mut(),
+                    regs: std::ptr::from_ref(&reg).cast_mut(),
                 };
                 // SAFETY: we know that our file is a vCPU fd, we know the kernel will only read the
                 // correct amount of memory from our pointer, and we verify the return result.
@@ -246,14 +256,17 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                     hcl_set_vp_register(self.hcl.mshv_vtl.file.as_raw_fd(), &mshv_vp_register_args)
                         .map_err(SetRegError::Ioctl)?;
                 }
+            } else {
+                hv_regs.push(reg);
+
+                if hv_regs.is_full() {
+                    do_hvcall(&mut hv_regs)?;
+                }
             }
         }
 
-        if !hypercall.is_empty() {
-            self.hcl
-                .mshv_hvcall
-                .set_vp_registers_hypercall(vtl, &hypercall)
-                .map_err(SetRegError::Hypercall)?;
+        if !hv_regs.is_empty() {
+            do_hvcall(&mut hv_regs)?;
         }
 
         Ok(())
@@ -532,13 +545,30 @@ impl MshvHvcall {
         vtl: Vtl,
         name: HvArchRegisterName,
     ) -> Result<HvRegisterValue, HvError> {
+        let mut value = [FromZeros::new_zeroed(); 1];
+        self.get_vp_registers_hypercall(vtl, &[name], &mut value)?;
+        Ok(value[0])
+    }
+
+    /// Get the given registers on the current VP for the given VTL via hypercall.
+    ///
+    /// Only VTL-private registers can go through this path. VTL-shared registers
+    /// have to go through the kernel (either via the CPU context page or via the
+    /// dedicated ioctl), as they may require special handling there.
+    fn get_vp_registers_hypercall(
+        &self,
+        vtl: Vtl,
+        names: &[HvArchRegisterName],
+        values: &mut [HvRegisterValue],
+    ) -> Result<(), HvError> {
+        assert_eq!(names.len(), values.len());
+
         let header = hvdef::hypercall::GetSetVpRegisters {
             partition_id: HV_PARTITION_ID_SELF,
             vp_index: HV_VP_INDEX_SELF,
             target_vtl: vtl.into(),
             rsvd: [0; 3],
         };
-        let mut output = [HvRegisterValue::new_zeroed()];
 
         // SAFETY: The input header and rep slice are the correct types for this hypercall.
         //         The hypercall output is validated right after the hypercall is issued.
@@ -546,17 +576,17 @@ impl MshvHvcall {
             self.hvcall_rep(
                 HypercallCode::HvCallGetVpRegisters,
                 &header,
-                HvcallRepInput::Elements(&[name]),
-                Some(&mut output),
+                HvcallRepInput::Elements(names),
+                Some(values),
             )
             .expect("get_vp_registers hypercall should not fail")
         };
 
-        // Status must be success with 1 rep completed
+        // Status must be success with all elements completed
         status.result()?;
-        assert_eq!(status.elements_processed(), 1);
+        assert_eq!(status.elements_processed(), names.len());
 
-        Ok(output[0])
+        Ok(())
     }
 
     /// Set the given registers on the current VP for the given VTL via hypercall.

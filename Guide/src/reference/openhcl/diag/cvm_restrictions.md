@@ -25,7 +25,7 @@ Tracing statements and spans will still be sent to the host, and therefore will 
 ETW traces and Kusto. However, individual statements may opt out of being logged inside a CVM, as a
 way of protecting guest secrets.
 
-### For Developers:
+### For Developers
 
 This is done by using the `CVM_CONFIDENTIAL` constant provided by the
 `cvm_tracing` crate. `cvm_tracing` also provides a `CVM_ALLOWED` constant, to
