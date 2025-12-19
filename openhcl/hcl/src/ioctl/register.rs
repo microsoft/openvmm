@@ -264,7 +264,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         let registers: Vec<HvRegisterAssoc> = values.into_iter().map(Into::into).collect();
 
         #[cfg(guest_arch = "x86_64")]
-        let per_arch = |name| matches!(name, hvdef::HvX64RegisterName::CrInterceptControl);
+        let per_arch = |name| matches!(name, HvArchRegisterName::CrInterceptControl);
 
         #[cfg(guest_arch = "aarch64")]
         let per_arch = |_: HvArchRegisterName| false;
@@ -450,7 +450,7 @@ impl Hcl {
         let per_arch = false;
 
         #[cfg(guest_arch = "aarch64")]
-        let per_arch = matches!(name, hvdef::HvArm64RegisterName::PrivilegesAndFeaturesInfo);
+        let per_arch = matches!(name, HvArchRegisterName::PrivilegesAndFeaturesInfo);
 
         assert!(
             matches!(
@@ -477,7 +477,7 @@ impl Hcl {
         value: HvRegisterValue,
     ) -> Result<(), SetRegError> {
         #[cfg(guest_arch = "x86_64")]
-        let per_arch = matches!(name, hvdef::HvX64RegisterName::PmTimerAssist);
+        let per_arch = matches!(name, HvArchRegisterName::PmTimerAssist);
 
         #[cfg(guest_arch = "aarch64")]
         let per_arch = false;
