@@ -2,11 +2,11 @@
 
 ## Overview
 
-The DMA Manager (`openhcl_dma_manager`) is a critical component in OpenHCL that manages memory pools for Direct Memory Access (DMA) operations used by device drivers. It provides a centralized system for allocating and managing DMA buffers with appropriate memory visibility and VTL permissions.
+The DMA Manager ([`OpenhclDmaManager`](https://openvmm.dev/rustdoc/linux/openhcl_dma_manager/struct.OpenhclDmaManager.html) in the `openhcl_dma_manager` crate) is a critical component in OpenHCL that manages memory pools for Direct Memory Access (DMA) operations used by device drivers. It provides a centralized system for allocating and managing DMA buffers with appropriate memory visibility and VTL permissions.
 
 ## Architecture
 
-The DMA Manager maintains two types of memory pools:
+The DMA Manager maintains multiple types of memory pools (see [`OpenhclDmaManager`](https://openvmm.dev/rustdoc/linux/openhcl_dma_manager/struct.OpenhclDmaManager.html) for complete details):
 
 ### Shared Pool
 
@@ -33,7 +33,7 @@ The DMA Manager provides clients with different allocation strategies based on t
 
 1. **Shared Allocations**: From the shared pool, automatically accessible to all VTLs
 2. **Private Persistent Allocations**: From the private pool, survives servicing operations
-3. **Private Non-Persistent Allocations**: Using locked memory, doesn't persist across servicing
+3. **Private Non-Persistent Allocations (Locked Memory)**: Uses locked memory from normal VTL2 RAM. This memory is locked (pinned) in physical memory to prevent swapping and ensure stable addresses for DMA operations. Locked memory allocations do not persist across servicing operations.
 4. **VTL Permission Management**: Automatically adjusts VTL0 permissions when required
 
 ### Client Parameters

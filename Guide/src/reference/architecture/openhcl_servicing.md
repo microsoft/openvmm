@@ -17,15 +17,14 @@ sequenceDiagram
     participant Host
     participant OpenHCL
     participant Devices
-    participant Guest VTL0
     
     Note over Host: Preparation Phase<br/>(no blackout)
     Host->>Host: Load new IGVM file into memory
     Host->>Host: Prepare updated binaries
     
-    Note over Host,Guest VTL0: Blackout Begins
+    Note over Host,Devices: Blackout Begins
     Host->>OpenHCL: Send Servicing Request<br/>(correlation ID, timeout, capabilities)
-    OpenHCL->>Guest VTL0: Pause VPs
+    Note over OpenHCL: Pause Guest VTL0 VPs
     
     Note over OpenHCL,Devices: Save Phase
     OpenHCL->>Devices: Save device state
@@ -47,9 +46,9 @@ sequenceDiagram
     OpenHCL->>Devices: Restore device state
     Devices-->>OpenHCL: Restoration complete
     
-    Note over Host,Guest VTL0: Blackout Ends
-    OpenHCL->>Guest VTL0: Resume VPs
-    Note over Guest VTL0: VM continues running
+    Note over Host,Devices: Blackout Ends
+    Note over OpenHCL: Resume Guest VTL0 VPs
+    Note over OpenHCL: VM continues running
 ```
 
 A servicing operation follows these steps:
@@ -99,57 +98,13 @@ During the blackout period:
 
 ### 5. OpenHCL Restart
 
-The host restarts OpenHCL with the new version and provides the saved state as input.
+The host restarts OpenHCL with a new boot flow (see [OpenHCL Boot Process](./openhcl_boot.md)) using the new version and provides the saved state as input.
 
 ### 6. State Restoration
 
 OpenHCL restores components in dependency order. The DMA Manager is restored first to provide memory pools for other components, followed by device-specific managers and state units. For complete details on the restoration process and ordering, see the implementation in `underhill_core`.
 
-## NVMe Keepalive
-
-NVMe keepalive is a key feature that allows NVMe devices to remain operational during servicing:
-
-### Requirements
-
-NVMe keepalive requires:
-
-1. **Private Pool Availability**: The DMA manager must have private pool ranges configured
-2. **Host Support**: The host must support keepalive operations
-3. **Configuration**: `OPENHCL_NVME_KEEP_ALIVE` environment variable must be set appropriately
-
-When all requirements are met, NVMe devices use the private pool for DMA allocations that persist across servicing.
-
-### How It Works
-
-When keepalive is enabled:
-
-1. **Persistent DMA Allocations**: NVMe driver uses the private pool for all DMA buffers (when keepalive is enabled; otherwise uses ephemeral allocations)
-2. **State Preservation**: 
-   - NVMe driver saves queue states, registers, and namespace information
-   - DMA manager saves private pool allocation metadata
-   - VFIO keeps device handles open
-3. **Device Stays Connected**: The NVMe controller remains enabled (CC.EN=1)
-4. **Restoration**:
-   - Private pool allocations are restored
-   - VFIO device is reconnected with persistent DMA clients
-   - NVMe driver restores queue state and resumes I/O operations
-
-### Benefits
-
-- **Minimal Downtime**: No device reset or reinitialization required
-- **No I/O Interruption**: Pending I/O operations can complete
-- **Faster Recovery**: Device is immediately operational after restore
-- **Data Integrity**: No loss of in-flight operations
-
-### Without Keepalive
-
-When keepalive is not enabled or not available:
-
-1. NVMe devices are cleanly shut down
-2. VFIO device handles are closed (triggering FLR - Function Level Reset)
-3. All device state is lost
-4. On restore, devices must be fully reinitialized
-5. Guest OS must handle device reappearance and potential I/O errors
+For details on NVMe keepalive behavior during servicing, see [NVMe Storage Backend](../../backends/storage/nvme.md).
 
 ## Compatibility and Versioning
 
@@ -159,36 +114,29 @@ The servicing state uses Protocol Buffers for serialization. For details on save
 
 ## Configuration
 
-Servicing behavior is controlled by several environment variables and configuration parameters.
+Servicing behavior is controlled by several environment variables and configuration parameters. These parameters are set by the boot shim and passed to the kernel, init, and OpenHCL processes.
 
 ### NVMe Keepalive Configuration
 
-The `OPENHCL_NVME_KEEP_ALIVE` environment variable controls NVMe keepalive behavior:
-
-- `host,privatepool`: Enable keepalive when both host support and private pool are available
-- `nohost,privatepool`: Private pool available but host keepalive disabled
-- `nohost,noprivatepool`: Keepalive fully disabled
+The `OPENHCL_NVME_KEEP_ALIVE` environment variable controls NVMe keepalive behavior. For details on the values and their meanings, see the [KeepAliveConfig rustdocs](https://openvmm.dev/rustdoc/linux/underhill_core/options/enum.KeepAliveConfig.html).
 
 The boot shim (see `openhcl_boot`) infers the configuration based on the detected environment unless explicitly overridden.
 
 ### DMA Pool Configuration
 
-The `OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG` parameter controls the VTL2 GPA pool configuration used for the private pool:
-
-- `debug`: Use debug version of lookup table or device tree
-- `off`: Disable the VTL2 GPA pool
-- `<num_pages>`: Explicitly specify pool size in pages
+The `OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG` parameter controls the VTL2 GPA pool configuration used for the private pool. For details on the parameter values and behavior, see the [Vtl2GpaPoolConfig rustdocs](https://openvmm.dev/rustdoc/linux/openhcl_boot/struct.Vtl2GpaPoolConfig.html).
 
 The boot shim determines pool sizes using heuristics defined in `openhcl_boot` based on the system configuration, unless explicitly overridden.
 
 ### Test Scenarios
 
-For testing servicing behavior:
+For testing servicing behavior, the `OPENHCL_TEST_CONFIG` environment variable can be set to simulate specific conditions:
+
 - `SERVICING_SAVE_STUCK`: Causes save operation to wait indefinitely
 - `SERVICING_SAVE_FAIL`: Forces save operation to fail
 - `SERVICING_RESTORE_STUCK`: Causes restore to wait indefinitely
 
-These help test timeout handling and failure recovery.
+These test scenarios help validate timeout handling and failure recovery. They are specified as values to the `OPENHCL_TEST_CONFIG` environment variable.
 
 ## Error Handling
 
@@ -197,16 +145,16 @@ Servicing operations include comprehensive error handling:
 ### Save Failures
 - Component failures during save are logged with detailed error information
 - Critical state that cannot be saved may prevent servicing from proceeding
-- Timeouts are enforced based on the host-provided deadline
+- The host provides a deadline for the save operation, but the timeout is not enforced within VTL2
 
 ### Restore Failures
 - Critical component failures prevent VM startup with detailed error messages
 - The correlation ID helps trace issues across the servicing operation
 
 ### Timeout Handling
-- The host provides a deadline for the save operation
-- OpenHCL attempts to complete save before the deadline
-- If the deadline is exceeded, the host may force termination
+- The host specifies a timeout deadline when initiating the servicing request
+- OpenHCL attempts to complete the save operation before the deadline
+- If the deadline is exceeded, the host may force termination (timeout enforcement occurs at the host level, not within VTL2)
 
 ## Implementation Details
 
@@ -214,9 +162,8 @@ Servicing operations include comprehensive error handling:
 
 During servicing:
 - Private pool pages remain allocated and mapped across the servicing operation
-- Shared pool is repopulated on restore
-- VTL permissions are preserved and reapplied
-- Physical memory addresses may change but are remapped transparently
+- Shared pool is recreated on demand during the new boot flow (since a new kernel boots, the shared pool allocation is reconstructed as needed)
+- VTL permissions are preserved and reapplied during restoration
 
 ## See Also
 
