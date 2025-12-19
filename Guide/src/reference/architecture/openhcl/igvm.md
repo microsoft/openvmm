@@ -21,7 +21,7 @@ An OpenHCL IGVM package bundles the following artifacts:
 - **Sidecar Kernel (x86_64):** The lightweight kernel for APs.
 - **Initial Ramdisk (initrd):** The root filesystem containing userspace binaries (`underhill_init`, `openvmm_hcl`, etc.).
 - **Memory Layout:** Directives specifying where each component should be loaded in memory.
-- **Configuration:** Boot-time parameters (CPU topology, device settings, etc.).
+- **Configuration:** Boot-time parameters (CPU topology, device settings, etc.) generated at IGVM build time.
 
 ## Build Process
 

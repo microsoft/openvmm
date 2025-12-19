@@ -11,7 +11,7 @@ The boot shim is the first code that executes in VTL2. It is responsible for ear
 **Key Responsibilities:**
 
 - **Hardware Initialization:** Sets up CPU state, enables MMU, and configures initial page tables.
-- **Configuration Parsing:** Receives boot parameters from the host via IGVM.
+- **Configuration Parsing:** Receives boot parameters from the host that were generated at IGVM build time.
 - **Device Tree Construction:** Builds a device tree describing the hardware configuration (CPU topology, memory regions, devices).
 - **Sidecar Initialization:** Sets up control structures for the Sidecar kernel (x86_64 only).
 - **Kernel Handoff:** Transfers control to the Linux kernel.

@@ -2,6 +2,58 @@
 
 This document describes the sequence of events that occur when OpenHCL boots, from the initial loading of the IGVM package to the fully running paravisor environment.
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Host as Host VMM
+    box "VTL2 (OpenHCL)" #f9f9f9
+        participant Shim as Boot Shim<br/>(openhcl_boot)
+        participant Sidecar as Sidecar Kernel
+        participant Kernel as Linux Kernel
+        participant Init as Init<br/>(underhill_init)
+        participant HCL as Paravisor<br/>(openvmm_hcl)
+        participant Worker as VM Worker<br/>(underhill_vm)
+    end
+    
+    Host->>Shim: 1. Load IGVM & Transfer Control
+    activate Shim
+    
+    note over Shim: 2. Boot Shim Execution<br/>Hardware Init, Config Parse, Device Tree
+    
+    par CPU Split
+        Shim->>Sidecar: APs Jump to Sidecar
+        activate Sidecar
+        note over Sidecar: Enter Dispatch Loop
+        
+        Shim->>Kernel: BSP Jumps to Kernel Entry
+        deactivate Shim
+        activate Kernel
+    end
+    
+    note over Kernel: 3. Linux Kernel Boot<br/>Init Subsystems, Load Drivers, Mount initrd
+    
+    Kernel->>Init: Spawn PID 1
+    deactivate Kernel
+    activate Init
+    
+    note over Init: 4. Userspace Initialization<br/>Mount /proc, /sys, /dev
+    
+    Init->>HCL: Exec openvmm_hcl
+    deactivate Init
+    activate HCL
+    
+    note over HCL: 5. Paravisor Startup<br/>Read Device Tree, Init Services
+    
+    HCL->>Worker: Spawn Worker
+    activate Worker
+    
+    par 6. VM Execution
+        note over HCL: Manage Policy & Host Comm
+        note over Worker: Run VTL0 VP Loop
+        note over Sidecar: Wait for Commands / Hotplug
+    end
+```
+
 ## 1. IGVM Loading
 
 The boot process begins when the host VMM loads the OpenHCL IGVM package into VTL2 memory.
@@ -13,14 +65,19 @@ The host places these components at specific physical addresses defined in the I
 The host transfers control to the entry point of the **Boot Shim**.
 
 1. **Hardware Init:** The shim initializes the CPU state and memory management unit (MMU).
-2. **Config Parsing:** It parses the configuration parameters provided by the host via the IGVM.
+2. **Config Parsing:** It parses configuration from multiple sources:
+    * **IGVM Parameters:** Fixed parameters provided by the host that were generated at IGVM build time.
+    * **Host Device Tree:** A device tree provided by the host containing topology and resource information.
+    * **Command Line:** It parses the kernel command line, which can be supplied via IGVM or the host device tree.
 3. **Device Tree:** It constructs a Device Tree that describes the hardware topology (CPUs, memory) to the Linux kernel.
-4. **Sidecar Setup (x86_64):** If configured, it sets up the control structures for the Sidecar kernel and signals which CPUs should boot into the Sidecar.
-5. **Kernel Handoff:** Finally, it jumps to the Linux kernel entry point, passing the Device Tree and command line arguments.
+4. **Sidecar Setup (x86_64):** The shim determines which CPUs will run Linux (typically just the BSP) and which will run the Sidecar (APs). It sets up control structures and directs Sidecar CPUs to the Sidecar entry point.
+    * **Sidecar Entry:** "Sidecar CPUs" jump directly to the Sidecar kernel entry point instead of the Linux kernel.
+    * **Dispatch Loop:** These CPUs enter a lightweight dispatch loop, waiting for commands.
+5. **Kernel Handoff:** Finally, the BSP (and any Linux APs) jumps to the Linux kernel entry point, passing the Device Tree and command line arguments.
 
 ## 3. Linux Kernel Boot
 
-The **Linux Kernel** takes over and initializes the operating system environment.
+The **Linux Kernel** takes over on the BSP and initializes the operating system environment. Sidecar CPUs remain in their dispatch loop until needed (e.g., hot-plugged for Linux tasks).
 
 1. **Kernel Init:** The kernel initializes its subsystems (memory, scheduler, etc.).
 2. **Driver Init:** It loads drivers for the paravisor hardware and standard devices.
@@ -47,15 +104,6 @@ The **Paravisor** process (`openvmm_hcl`) starts and initializes the virtualizat
 
 At this point, the OpenHCL environment is fully established.
 The `underhill_vm` process runs the VTL0 guest, handling exits and emulating devices, while `openvmm_hcl` manages the overall policy and communicates with the host.
-
-## Sidecar Boot Flow (x86_64)
-
-On x86_64 systems using the Sidecar kernel, the boot flow for Application Processors (APs) is different:
-
-1. **Shim Decision:** The Boot Shim determines which CPUs will run Linux and which will run the Sidecar.
-2. **Sidecar Entry:** "Sidecar CPUs" jump directly to the Sidecar kernel entry point instead of the Linux kernel.
-3. **Dispatch Loop:** These CPUs enter a lightweight dispatch loop, waiting for commands.
-4. **On-Demand:** If a Sidecar CPU is needed for a Linux task (e.g., handling an interrupt that requires a Linux driver), it can be "hot-plugged" into the running Linux kernel.
 
 ## Configuration Data Flow
 

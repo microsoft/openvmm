@@ -10,8 +10,6 @@ Booting a full Linux kernel on every CPU is expensive, especially for Virtual Ma
 
 The sidecar kernel solves this by:
 
-- **Fast Boot:** It runs a minimal dispatch loop on most CPUs instead of the full Linux kernel.
-- **Resource Efficiency:** It has a tiny memory footprint compared to a full Linux CPU.
 - **Parallelism:** It allows many VPs to be brought up concurrently without contention on Linux kernel locks.
 - **On-Demand Scaling:** CPUs can be dynamically converted from running in the sidecar to full Linux on demand (this is a one-way transition).
 
