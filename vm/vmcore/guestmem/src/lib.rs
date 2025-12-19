@@ -1903,8 +1903,7 @@ impl GuestMemory {
     /// Check if a given PagedRange is readable or not.
     pub fn probe_gpn_readable_range(&self, range: &PagedRange<'_>) -> Result<(), GuestMemoryError> {
         self.op_range(GuestMemoryOperation::Probe, range, move |addr, _r| {
-            let mut b = [0];
-            self.read_at_inner(addr, &mut b)
+            self.read_plain_inner(addr)
         })
     }
 
