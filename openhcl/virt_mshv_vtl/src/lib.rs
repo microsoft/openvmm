@@ -1937,7 +1937,7 @@ impl<'a> UhProtoPartition<'a> {
 
 impl UhPartition {
     /// Gets the guest OS ID for VTL0.
-    pub fn vtl0_guest_os_id(&self) -> Result<HvGuestOsId, Error> {
+    pub fn vtl0_guest_os_id(&self) -> Result<HvGuestOsId, hcl::ioctl::register::GetRegError> {
         // If Underhill is emulating the hypervisor interfaces, get this value
         // from the emulator. This happens when running under hardware isolation
         // or when configured for testing.
@@ -1945,10 +1945,7 @@ impl UhPartition {
             hv.guest_os_id(Vtl::Vtl0)
         } else {
             // Ask the hypervisor for this value.
-            self.inner
-                .hcl
-                .get_guest_os_id(Vtl::Vtl0)
-                .map_err(Error::Hcl)?
+            self.inner.hcl.get_guest_os_id(GuestVtl::Vtl0)?
         };
         Ok(id)
     }

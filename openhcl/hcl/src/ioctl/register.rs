@@ -361,15 +361,17 @@ impl Hcl {
     }
 
     /// Get the [`hvdef::hypercall::HvGuestOsId`] register for the given VTL.
-    // pub fn get_guest_os_id(
-    //     &self,
-    //     vtl: GuestVtl,
-    // ) -> Result<hvdef::hypercall::HvGuestOsId, GetVpError> {
-    //     Ok(hvdef::hypercall::HvGuestOsId::from(
-    //         self.get_vp_register(vtl, HvArchRegisterName::GuestOsId)?
-    //             .as_u64(),
-    //     ))
-    // }
+    pub fn get_guest_os_id(
+        &self,
+        vtl: GuestVtl,
+    ) -> Result<hvdef::hypercall::HvGuestOsId, GetRegError> {
+        Ok(hvdef::hypercall::HvGuestOsId::from(
+            self.mshv_hvcall
+                .get_vp_register_hypercall(vtl.into(), HvArchRegisterName::GuestOsId)
+                .map_err(GetRegError::Hypercall)?
+                .as_u64(),
+        ))
+    }
 
     /// Set the [`hvdef::HvRegisterVsmPartitionConfig`] register.
     pub fn set_vtl2_vsm_partition_config(
