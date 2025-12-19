@@ -2823,7 +2823,6 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "bitvec",
  "build_rs_guest_arch",
- "cfg-if",
  "cvm_tracing",
  "fs-err",
  "getrandom 0.3.3",
