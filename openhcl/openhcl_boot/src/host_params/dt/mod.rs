@@ -529,11 +529,15 @@ fn topology_from_host_dt(
         .expect("failed to initialize address space manager");
 
     if params.isolation_type == IsolationType::None {
+        let enable_vtl2_gpa_pool = options.enable_vtl2_gpa_pool;
+        let device_dma_page_count = parsed.device_dma_page_count;
+        let vp_count = parsed.cpu_count();
+        let mem_size = vtl2_ram.iter().map(|e| e.range.len()).sum();
         if let Some(vtl2_gpa_pool_size) = pick_private_pool_size(
-            options.enable_vtl2_gpa_pool,
-            parsed.device_dma_page_count,
-            parsed.cpu_count(),
-            vtl2_ram.iter().map(|e| e.range.len()).sum(),
+            enable_vtl2_gpa_pool,
+            device_dma_page_count,
+            vp_count,
+            mem_size,
         ) {
             // Reserve the specified number of pages for the pool. Use the used
             // ranges to figure out which VTL2 memory is free to allocate from.
@@ -555,7 +559,9 @@ fn topology_from_host_dt(
                     log!("allocated VTL2 pool at {:#x?}", pool.range);
                 }
                 None => {
-                    panic!("failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes");
+                    panic!(
+                        "failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes (enable_vtl2_gpa_pool={enable_vtl2_gpa_pool:?}, device_dma_page_count={device_dma_page_count:#x?}, vp_count={vp_count}, mem_size={mem_size:#x})"
+                    );
                 }
             };
         }
