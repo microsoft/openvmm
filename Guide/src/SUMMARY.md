@@ -68,6 +68,7 @@
   - [Logging](./reference/openvmm/logging.md)
 - [OpenHCL Features](./reference/openhcl.md)
   - [Dynamic Configuration]()
+  - [DMA Manager](./reference/openhcl/dma_manager.md)
   - [Diagnostics](./reference/openhcl/diag.md)
     - [Preface: CVM restrictions](./reference/openhcl/diag/cvm_restrictions.md)
     - [Intro to ohcldiag-dev](./reference/openhcl/diag/ohcldiag_dev.md)
@@ -112,6 +113,7 @@
   - [Serial]()
   - [Graphics and Input]()
   - [Storage]()
+    - [NVMe](./reference/backends/storage/nvme.md)
   - [Networking]()
 - [Architecture](./reference/architecture.md)
   - [OpenVMM Architecture](./reference/architecture/openvmm.md)
@@ -120,6 +122,7 @@
   - [OpenHCL Architecture](./reference/architecture/openhcl.md)
     - [IGVM](./reference/architecture/igvm.md)
     - [Boot Process](./reference/architecture/openhcl_boot.md)
+    - [Servicing](./reference/architecture/openhcl_servicing.md)
 
 ---
 
