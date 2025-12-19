@@ -13,6 +13,7 @@ use super::hcl_get_vp_register;
 use super::hcl_set_vp_register;
 use super::ioctls::mshv_vp_registers;
 use crate::GuestVtl;
+use arrayvec::ArrayVec;
 use hvdef::HV_PARTITION_ID_SELF;
 use hvdef::HV_VP_INDEX_SELF;
 use hvdef::HvError;
@@ -147,8 +148,25 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                 .map_err(GetRegError::Sidecar);
         }
 
-        let mut hv_names = Vec::new();
-        let mut hv_values = Vec::new();
+        const MAX_REGS_PER_HVCALL: usize = 32;
+        let mut hv_names: ArrayVec<_, MAX_REGS_PER_HVCALL> = ArrayVec::new();
+        let mut hv_values: ArrayVec<_, MAX_REGS_PER_HVCALL> = ArrayVec::new();
+
+        let do_hvcall =
+            |hv_names: &mut ArrayVec<_, _>, hv_values: &mut ArrayVec<&mut HvRegisterValue, _>| {
+                let mut values: ArrayVec<_, MAX_REGS_PER_HVCALL> = ArrayVec::new();
+                self.hcl
+                    .mshv_hvcall
+                    .get_vp_registers_hypercall(vtl, hv_names, &mut values)
+                    .map_err(GetRegError::Hypercall)?;
+
+                for (dest, value) in hv_values.iter_mut().zip(values.into_iter()) {
+                    **dest = value;
+                }
+                hv_names.clear();
+                hv_values.clear();
+                Ok(())
+            };
 
         for (&name, value) in names.iter().zip(values.iter_mut()) {
             if let Ok(vtl) = vtl.try_into()
@@ -182,19 +200,15 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
             } else {
                 hv_names.push(name);
                 hv_values.push(value);
+
+                if hv_names.is_full() {
+                    do_hvcall(&mut hv_names, &mut hv_values)?;
+                }
             }
         }
 
         if !hv_names.is_empty() {
-            let mut values = vec![FromZeros::new_zeroed(); hv_names.len()];
-            self.hcl
-                .mshv_hvcall
-                .get_vp_registers_hypercall(vtl, &hv_names, &mut values)
-                .map_err(GetRegError::Hypercall)?;
-
-            for (dest, value) in hv_values.into_iter().zip(values.into_iter()) {
-                *dest = value;
-            }
+            do_hvcall(&mut hv_names, &mut hv_values)?;
         }
 
         Ok(())
