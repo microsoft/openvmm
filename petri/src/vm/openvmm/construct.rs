@@ -210,6 +210,11 @@ impl PetriVmConfigOpenVmm {
 
         // Add VMBus storage
         for (instance_id, controller) in &vmbus_storage_controllers {
+            let vtl = match controller.target_vtl {
+                crate::Vtl::Vtl0 => DeviceVtl::Vtl0,
+                crate::Vtl::Vtl1 => DeviceVtl::Vtl1,
+                crate::Vtl::Vtl2 => DeviceVtl::Vtl2,
+            };
             match controller.controller_type {
                 VmbusStorageType::Scsi => {
                     let mut devices = Vec::new();
@@ -234,11 +239,7 @@ impl PetriVmConfigOpenVmm {
                     }
 
                     vmbus_devices.push((
-                        match controller.target_vtl {
-                            crate::Vtl::Vtl0 => DeviceVtl::Vtl0,
-                            crate::Vtl::Vtl1 => DeviceVtl::Vtl1,
-                            crate::Vtl::Vtl2 => DeviceVtl::Vtl2,
-                        },
+                        vtl,
                         ScsiControllerHandle {
                             instance_id: *instance_id,
                             max_sub_channel_count: 1,
@@ -265,7 +266,7 @@ impl PetriVmConfigOpenVmm {
                     }
 
                     vpci_devices.push(VpciDeviceConfig {
-                        vtl: DeviceVtl::Vtl0,
+                        vtl,
                         instance_id: *instance_id,
                         resource: NvmeControllerHandle {
                             subsystem_id: *instance_id,

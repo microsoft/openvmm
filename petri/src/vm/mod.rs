@@ -1687,7 +1687,7 @@ pub struct MemoryConfig {
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            startup_bytes: 0x4000_0000,
+            startup_bytes: 0x1_0000_0000,
             dynamic_memory_range: None,
         }
     }
