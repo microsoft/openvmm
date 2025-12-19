@@ -30,7 +30,6 @@ type HvArchRegisterName = hvdef::HvX64RegisterName;
 #[cfg(guest_arch = "aarch64")]
 type HvArchRegisterName = hvdef::HvArm64RegisterName;
 
-// TODO add register name
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum GetRegError {
@@ -42,7 +41,6 @@ pub enum GetRegError {
     Sidecar(#[source] sidecar_client::SidecarError),
 }
 
-// TODO add register name
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum SetRegError {
