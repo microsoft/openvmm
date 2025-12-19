@@ -103,11 +103,33 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         }
 
         // Fall back to ioctl/hypercall for the remaining registers.
-        self.get_regs(vtl, &mut assoc)?;
+        self.get_regs(vtl.into(), &mut assoc)?;
         for (&i, assoc) in offset.iter().zip(&assoc) {
             values[i] = assoc.value;
         }
         Ok(())
+    }
+
+    /// Get the given register on the VP for VTL 2 via hypercall.
+    /// Only a select set of registers are supported; others will cause a panic.
+    pub fn get_vp_vtl2_register(
+        &mut self,
+        name: HvArchRegisterName,
+    ) -> Result<HvRegisterValue, GetRegError> {
+        assert!(matches!(
+            name,
+            HvArchRegisterName::VsmVpSecureConfigVtl0 | HvArchRegisterName::VsmVpSecureConfigVtl1
+        ));
+
+        // Go through get_regs to ensure proper sidecar handling, even though
+        // we know this will never end up calling the ioctl.
+        let mut assoc = [HvRegisterAssoc {
+            name: name.into(),
+            pad: Default::default(),
+            value: FromZeros::new_zeroed(),
+        }];
+        self.get_regs(Vtl::Vtl2, &mut assoc)?;
+        Ok(assoc[0].value)
     }
 
     /// Set the given registers on the current VP for the given VTL.
@@ -121,7 +143,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         // Try the per-backing fast path for each register first.
         for HvRegisterAssoc { name, value, .. } in values.into_iter().map(Into::into) {
             if !assoc.is_empty() && T::must_flush_regs_on(self, name) {
-                self.set_regs(vtl, &assoc)?;
+                self.set_regs(vtl.into(), &assoc)?;
                 assoc.clear();
             }
             if !T::try_set_reg(self, vtl, name, value) {
@@ -133,12 +155,12 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
             }
         }
         // Fall back to ioctl/hypercall for the remaining registers.
-        self.set_regs(vtl, &assoc)
+        self.set_regs(vtl.into(), &assoc)
     }
 
     /// Get the given registers on the current VP for the given VTL via
     /// ioctl/hypercall, as appropriate.
-    fn get_regs(&mut self, vtl: GuestVtl, regs: &mut [HvRegisterAssoc]) -> Result<(), GetRegError> {
+    fn get_regs(&mut self, vtl: Vtl, regs: &mut [HvRegisterAssoc]) -> Result<(), GetRegError> {
         if regs.is_empty() {
             return Ok(());
         }
@@ -183,7 +205,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                 reg.value = self
                     .hcl
                     .mshv_hvcall
-                    .get_vp_register_hypercall(vtl.into(), reg.name.into())
+                    .get_vp_register_hypercall(vtl, reg.name.into())
                     .map_err(GetRegError::Hypercall)?;
             }
         }
@@ -193,7 +215,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
 
     /// Set the given registers on the current VP for the given VTL via
     /// ioctl/hypercall, as appropriate.
-    fn set_regs(&mut self, vtl: GuestVtl, regs: &[HvRegisterAssoc]) -> Result<(), SetRegError> {
+    fn set_regs(&mut self, vtl: Vtl, regs: &[HvRegisterAssoc]) -> Result<(), SetRegError> {
         if regs.is_empty() {
             return Ok(());
         }
@@ -230,7 +252,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         if !hypercall.is_empty() {
             self.hcl
                 .mshv_hvcall
-                .set_vp_registers_hypercall(vtl.into(), &hypercall)
+                .set_vp_registers_hypercall(vtl, &hypercall)
                 .map_err(SetRegError::Hypercall)?;
         }
 
@@ -295,14 +317,14 @@ impl Hcl {
     /// Gets the current hypervisor reference time.
     pub fn reference_time(&self) -> Result<u64, GetRegError> {
         Ok(self
-            .get_vp_vtl2_register(HvArchRegisterName::TimeRefCount)?
+            .get_partition_vtl2_register(HvArchRegisterName::TimeRefCount)?
             .as_u64())
     }
 
     /// Read the vsm capabilities register for VTL2.
     pub fn get_vsm_capabilities(&self) -> Result<hvdef::HvRegisterVsmCapabilities, GetRegError> {
         let caps = hvdef::HvRegisterVsmCapabilities::from(
-            self.get_vp_vtl2_register(HvArchRegisterName::VsmCapabilities)?
+            self.get_partition_vtl2_register(HvArchRegisterName::VsmCapabilities)?
                 .as_u64(),
         );
 
@@ -328,7 +350,7 @@ impl Hcl {
         &self,
     ) -> Result<hvdef::HvRegisterGuestVsmPartitionConfig, GetRegError> {
         Ok(hvdef::HvRegisterGuestVsmPartitionConfig::from(
-            self.get_vp_vtl2_register(HvArchRegisterName::GuestVsmPartitionConfig)?
+            self.get_partition_vtl2_register(HvArchRegisterName::GuestVsmPartitionConfig)?
                 .as_u64(),
         ))
     }
@@ -338,7 +360,7 @@ impl Hcl {
         &self,
     ) -> Result<hvdef::HvRegisterVsmPartitionStatus, GetRegError> {
         Ok(hvdef::HvRegisterVsmPartitionStatus::from(
-            self.get_vp_vtl2_register(HvArchRegisterName::VsmPartitionStatus)?
+            self.get_partition_vtl2_register(HvArchRegisterName::VsmPartitionStatus)?
                 .as_u64(),
         ))
     }
@@ -382,7 +404,7 @@ impl Hcl {
         &self,
         vsm_config: hvdef::HvRegisterVsmPartitionConfig,
     ) -> Result<(), SetRegError> {
-        self.set_vp_vtl2_register(
+        self.set_partition_vtl2_register(
             HvArchRegisterName::VsmPartitionConfig,
             HvRegisterValue::from(u64::from(vsm_config)),
         )
@@ -404,7 +426,7 @@ impl Hcl {
             unimplemented!("set_guest_vsm_partition_config");
         }
 
-        self.set_vp_vtl2_register(
+        self.set_partition_vtl2_register(
             HvArchRegisterName::GuestVsmPartitionConfig,
             HvRegisterValue::from(u64::from(register_value)),
         )
@@ -428,7 +450,7 @@ impl Hcl {
             None => 0.into(),
         }));
 
-        self.set_vp_vtl2_register(HvArchRegisterName::PmTimerAssist, val)
+        self.set_partition_vtl2_register(HvArchRegisterName::PmTimerAssist, val)
     }
 
     /// Sets the Power Management Timer assist in the hypervisor.
@@ -438,9 +460,9 @@ impl Hcl {
         Err(SetRegError::Hypercall(HvError::UnknownRegisterName))
     }
 
-    /// Get the given register on the current VP for VTL 2 via hypercall.
+    /// Get the given register on the partition for VTL 2 via hypercall.
     /// Only a select set of registers are supported; others will cause a panic.
-    pub fn get_vp_vtl2_register(
+    fn get_partition_vtl2_register(
         &self,
         name: HvArchRegisterName,
     ) -> Result<HvRegisterValue, GetRegError> {
@@ -458,8 +480,6 @@ impl Hcl {
                     | HvArchRegisterName::VsmPartitionStatus
                     | HvArchRegisterName::VsmCapabilities
                     | HvArchRegisterName::TimeRefCount
-                    | HvArchRegisterName::VsmVpSecureConfigVtl0
-                    | HvArchRegisterName::VsmVpSecureConfigVtl1
             ) || per_arch
         );
         self.mshv_hvcall
@@ -467,9 +487,9 @@ impl Hcl {
             .map_err(GetRegError::Hypercall)
     }
 
-    /// Set the given register on the current VP for VTL 2 via hypercall.
+    /// Set the given register on the partition for VTL 2 via hypercall.
     /// Only a select set of registers are supported; others will cause a panic.
-    fn set_vp_vtl2_register(
+    fn set_partition_vtl2_register(
         &self,
         name: HvArchRegisterName,
         value: HvRegisterValue,

@@ -81,8 +81,7 @@ impl UhProcessor<'_, HypervisorBacked> {
             HvAllArchRegisterName::VsmVpSecureConfigVtl0.0 + target_vtl as u32,
         );
         let result = self
-            .partition
-            .hcl
+            .runner
             .get_vp_vtl2_register(name.into())
             .expect("failure is a misconfiguration");
         let config = hvdef::HvRegisterVsmVpSecureVtlConfig::from(result.as_u64());
