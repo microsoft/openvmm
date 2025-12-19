@@ -180,6 +180,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         }
 
         if !hypercall.is_empty() {
+            // TODO: Batch?
             for reg in hypercall {
                 reg.value = self
                     .hcl
@@ -436,7 +437,7 @@ impl Hcl {
 
     /// Get the given register on the current VP for VTL 2 via hypercall.
     /// Only a select set of registers are supported; others will cause a panic.
-    fn get_vp_vtl2_register(
+    pub fn get_vp_vtl2_register(
         &self,
         name: HvArchRegisterName,
     ) -> Result<HvRegisterValue, GetRegError> {
