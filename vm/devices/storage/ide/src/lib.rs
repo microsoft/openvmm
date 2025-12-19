@@ -8,7 +8,6 @@ mod drive;
 mod protocol;
 
 use crate::drive::save_restore::DriveSaveRestore;
-use crate::PAGE_SIZE64;
 use crate::protocol::BusMasterReg;
 use crate::protocol::DeviceControlReg;
 use crate::protocol::IdeCommand;
@@ -51,7 +50,8 @@ use thiserror::Error;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::line_interrupt::LineInterrupt;
 use zerocopy::IntoBytes;
-use guestmem::ranges::PagedRange;
+
+const PAGE_SIZE64: u64 = 4096;
 
 open_enum! {
     pub enum IdeIoPort: u16 {
