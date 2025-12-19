@@ -380,7 +380,7 @@ impl Hcl {
         #[cfg(guest_arch = "aarch64")]
         {
             Ok(hvdef::HvPartitionPrivilege::from(
-                self.get_vp_vtl2_register(HvArchRegisterName::PrivilegesAndFeaturesInfo)?
+                self.get_partition_vtl2_register(HvArchRegisterName::PrivilegesAndFeaturesInfo)?
                     .as_u64(),
             ))
         }
