@@ -155,7 +155,6 @@ unsafe impl GuestMemoryAccess for GuestMemoryRemote {
     }
 
     fn max_address(&self) -> u64 {
-        // TODO: Is this the right value?
         u64::MAX
     }
 

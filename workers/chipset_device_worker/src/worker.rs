@@ -153,14 +153,14 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                 static_regions: m
                     .get_static_regions()
                     .iter()
-                    .map(|(n, r)| ((*n).into(), *r.start(), *r.end()))
+                    .map(|(name, range)| ((*name).into(), *range.start(), *range.end()))
                     .collect(),
             }),
             pio: device.supports_pio().map(|p| PioInit {
                 static_regions: p
                     .get_static_regions()
                     .iter()
-                    .map(|(n, r)| ((*n).into(), *r.start(), *r.end()))
+                    .map(|(name, range)| ((*name).into(), *range.start(), *range.end()))
                     .collect(),
             }),
             pci: device.supports_pci().map(|p| PciInit {

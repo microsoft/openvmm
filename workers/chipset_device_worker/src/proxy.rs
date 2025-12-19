@@ -97,9 +97,9 @@ impl ChipsetDeviceProxy {
         let mmio = mmio.map(|MmioInit { static_regions }| MmioProxy {
             static_regions: static_regions
                 .into_iter()
-                .map(|r| {
-                    let mut region = input.register_mmio.new_io_region(&r.0, r.2 - r.1 + 1);
-                    region.map(r.1);
+                .map(|(name, start, end)| {
+                    let mut region = input.register_mmio.new_io_region(&name, end - start + 1);
+                    region.map(start);
                     region
                 })
                 .collect(),
@@ -108,9 +108,9 @@ impl ChipsetDeviceProxy {
         let pio = pio.map(|PioInit { static_regions }| PioProxy {
             static_regions: static_regions
                 .into_iter()
-                .map(|r| {
-                    let mut region = input.register_pio.new_io_region(&r.0, r.2 - r.1 + 1);
-                    region.map(r.1);
+                .map(|(name, start, end)| {
+                    let mut region = input.register_pio.new_io_region(&name, end - start + 1);
+                    region.map(start);
                     region
                 })
                 .collect(),

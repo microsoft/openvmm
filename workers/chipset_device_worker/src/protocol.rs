@@ -24,6 +24,7 @@ pub(crate) struct DeviceInit {
 #[derive(MeshPayload)]
 pub(crate) struct MmioInit {
     /// The static MMIO regions requested by the device.
+    /// Each entry is a tuple of (name, base port, end port).
     pub static_regions: Vec<(String, u64, u64)>,
 }
 
@@ -31,6 +32,7 @@ pub(crate) struct MmioInit {
 #[derive(MeshPayload)]
 pub(crate) struct PioInit {
     /// The static PIO ports requested by the device.
+    /// Each entry is a tuple of (name, base port, end port).
     pub static_regions: Vec<(String, u16, u16)>,
 }
 
