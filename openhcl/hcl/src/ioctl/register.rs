@@ -170,7 +170,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
             } else if self.is_kernel_managed(name) {
                 // TODO: group up to MSHV_VP_MAX_REGISTERS regs. The kernel
                 // currently has a bug where it only supports one register at a
-                // time. Once that's fixed, this code could set a group of
+                // time. Once that's fixed, this code could get a group of
                 // registers in one ioctl.
                 let mut reg = HvRegisterAssoc {
                     name: name.into(),
