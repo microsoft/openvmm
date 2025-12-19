@@ -72,7 +72,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         name: HvArchRegisterName,
         value: HvRegisterValue,
     ) -> Result<(), SetRegError> {
-        self.set_vp_registers(vtl, [(name, value)])
+        self.set_regs(vtl.into(), [(name, value)])
     }
 
     /// Get the given registers on the current VP for the given VTL.
@@ -107,29 +107,12 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     }
 
     /// Set the given registers on the current VP for the given VTL.
-    pub fn set_vp_registers<I>(&mut self, vtl: GuestVtl, values: I) -> Result<(), SetRegError>
+    pub fn set_vp_registers<I>(&mut self, vtl: GuestVtl, regs: I) -> Result<(), SetRegError>
     where
         I: IntoIterator,
-        I::Item: Into<HvRegisterAssoc> + Clone,
+        I::Item: Into<HvRegisterAssoc>,
     {
-        let mut assoc = Vec::new();
-
-        // Try the per-backing fast path for each register first.
-        for HvRegisterAssoc { name, value, .. } in values.into_iter().map(Into::into) {
-            if !assoc.is_empty() && T::must_flush_regs_on(self, name) {
-                self.set_regs(vtl.into(), &assoc)?;
-                assoc.clear();
-            }
-            if !T::try_set_reg(self, vtl, name, value) {
-                assoc.push(HvRegisterAssoc {
-                    name,
-                    pad: Default::default(),
-                    value,
-                });
-            }
-        }
-        // Fall back to ioctl/hypercall for the remaining registers.
-        self.set_regs(vtl.into(), &assoc)
+        self.set_regs(vtl.into(), regs)
     }
 
     /// Get the given registers on the current VP for the given VTL via
@@ -216,30 +199,46 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
 
     /// Set the given registers on the current VP for the given VTL via
     /// ioctl/hypercall, as appropriate.
-    fn set_regs(&mut self, vtl: Vtl, regs: &[HvRegisterAssoc]) -> Result<(), SetRegError> {
-        if regs.is_empty() {
-            return Ok(());
-        }
+    fn set_regs<I>(&mut self, vtl: Vtl, regs: I) -> Result<(), SetRegError>
+    where
+        I: IntoIterator,
+        I::Item: Into<HvRegisterAssoc>,
+    {
+        let regs = regs.into_iter().map(Into::into);
 
         if let Some(sidecar) = &mut self.sidecar {
+            // TODO: Optimize this call to not need the heap?
+            let regs: Vec<HvRegisterAssoc> = regs.collect();
             return sidecar
-                .set_vp_registers(vtl.into(), regs)
+                .set_vp_registers(vtl.into(), &regs)
                 .map_err(SetRegError::Sidecar);
         }
 
-        let (kernel, hypercall) = regs
-            .iter()
-            .partition::<Vec<HvRegisterAssoc>, _>(|reg| self.is_kernel_managed(reg.name.into()));
+        const MAX_REGS_PER_HVCALL: usize = 32;
+        let mut hv_regs: ArrayVec<_, MAX_REGS_PER_HVCALL> = ArrayVec::new();
 
-        if !kernel.is_empty() {
-            // TODO: group up to MSHV_VP_MAX_REGISTERS regs. The kernel
-            // currently has a bug where it only supports one register at a
-            // time. Once that's fixed, this code could set a group of
-            // registers in one ioctl.
-            for reg in &kernel {
+        let do_hvcall = |hv_regs: &mut ArrayVec<_, _>| {
+            self.hcl
+                .mshv_hvcall
+                .set_vp_registers_hypercall(vtl, hv_regs)
+                .map_err(SetRegError::Hypercall)?;
+            hv_regs.clear();
+            Ok(())
+        };
+
+        for reg in regs {
+            if let Ok(vtl) = vtl.try_into()
+                && !T::must_flush_regs_on(self, reg.name)
+                && T::try_set_reg(self, vtl, reg.name, reg.value)
+            {
+            } else if self.is_kernel_managed(reg.name.into()) {
+                // TODO: group up to MSHV_VP_MAX_REGISTERS regs. The kernel
+                // currently has a bug where it only supports one register at a
+                // time. Once that's fixed, this code could set a group of
+                // registers in one ioctl.
                 let mshv_vp_register_args = mshv_vp_registers {
                     count: 1,
-                    regs: std::ptr::from_ref(reg).cast_mut(),
+                    regs: std::ptr::from_ref(&reg).cast_mut(),
                 };
                 // SAFETY: we know that our file is a vCPU fd, we know the kernel will only read the
                 // correct amount of memory from our pointer, and we verify the return result.
@@ -247,14 +246,17 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                     hcl_set_vp_register(self.hcl.mshv_vtl.file.as_raw_fd(), &mshv_vp_register_args)
                         .map_err(SetRegError::Ioctl)?;
                 }
+            } else {
+                hv_regs.push(reg);
+
+                if hv_regs.is_full() {
+                    do_hvcall(&mut hv_regs)?;
+                }
             }
         }
 
-        if !hypercall.is_empty() {
-            self.hcl
-                .mshv_hvcall
-                .set_vp_registers_hypercall(vtl, &hypercall)
-                .map_err(SetRegError::Hypercall)?;
+        if !hv_regs.is_empty() {
+            do_hvcall(&mut hv_regs)?;
         }
 
         Ok(())
