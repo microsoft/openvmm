@@ -21,9 +21,9 @@ The shared pool contains pages that are:
 The private pool contains pages that are:
 - Mapped with **private visibility** on CVMs
 - Hidden from the host on hardware-isolated platforms
-- Can be made accessible to VTL0 through permission modifications
+- Can be made accessible to VTL0 through permission modifications on software-isolated platforms
 - Used for **persistent allocations** that survive save/restore operations
-- Critical for NVMe keepalive support during servicing
+- Critical for NVMe and MANA keepalive support during servicing
 
 ## Key Features
 
@@ -72,16 +72,9 @@ On Confidential VMs:
 
 ## VTL Permission Management
 
-For software-isolated VMs (non-hardware isolated):
+For software-isolated VMs (non-hardware isolated), the DMA Manager can modify VTL page permissions to make private pool allocations accessible to VTL0 when required.
 
-- The DMA Manager can modify VTL page permissions via `HvCallModifyVtlProtectionMask`
-- Private pool allocations can be made accessible to VTL0 when required
-- This is necessary because private pool pages start as VTL2-only accessible
-
-On hardware-isolated VMs:
-
-- VTL permission modification is not available (host is untrusted)
-- Only shared pool or locked memory can be used for VTL0-accessible allocations
+On hardware-isolated VMs, VTL permission modification is not available (host is untrusted), so only shared pool or locked memory can be used for VTL0-accessible allocations.
 
 ## Configuration
 
@@ -89,8 +82,9 @@ The DMA Manager is initialized during OpenHCL startup based on configuration det
 
 ### Private Pool Configuration
 
-The `OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG` parameter controls the VTL2 GPA pool size used for the private pool:
+The `OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG` parameter controls the VTL2 GPA pool size used for the private pool. Values include:
 
+- `release`: Use release version of lookup table or device tree (default)
 - `debug`: Use debug version of lookup table or device tree
 - `off`: Disable the VTL2 GPA pool
 - `<num_pages>`: Explicitly specify pool size in pages

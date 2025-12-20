@@ -14,7 +14,7 @@ The NVMe driver (`nvme_driver` crate) provides the core functionality for intera
 
 ### NVMe Manager
 
-The NVMe manager coordinates multiple NVMe devices with a multi-threaded architecture. For implementation details, see the [underhill_core::nvme_manager rustdocs](https://openvmm.dev/rustdoc/linux/underhill_core/nvme_manager/index.html).
+The NVMe manager coordinates multiple NVMe devices with a multi-threaded architecture. For implementation details, see the underhill_core nvme_manager module.
 
 ## Configuration
 

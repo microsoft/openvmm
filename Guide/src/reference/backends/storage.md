@@ -14,7 +14,6 @@ In OpenHCL, "relayed storage" refers to storage devices that are:
 This architecture provides several benefits:
 
 - **Compatibility**: Guest OSes continue to use standard VMBus storage drivers without modification
-- **Hardware Acceleration**: Underlying devices (like NVMe on Azure Boost) provide high-performance storage
 - **Security**: OpenHCL mediates all storage access, maintaining security boundaries between VTLs
 - **Flexibility**: The host can assign different types of storage devices transparently
 
@@ -26,7 +25,7 @@ While relayed storage can use any device type that the host can assign to VTL2, 
 
 ## Storage Backend Types
 
-- **[NVMe](./nvme.md)**: High-performance NVMe storage backend using VFIO
+- **[NVMe](./nvme.md)**: NVMe storage backend using VFIO
 
 ## See Also
 

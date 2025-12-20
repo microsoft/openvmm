@@ -118,13 +118,13 @@ Servicing behavior is controlled by several environment variables and configurat
 
 ### NVMe Keepalive Configuration
 
-The `OPENHCL_NVME_KEEP_ALIVE` environment variable controls NVMe keepalive behavior. For details on the values and their meanings, see the [KeepAliveConfig rustdocs](https://openvmm.dev/rustdoc/linux/underhill_core/options/enum.KeepAliveConfig.html).
+The `OPENHCL_NVME_KEEP_ALIVE` environment variable controls NVMe keepalive behavior. For details on the values and their meanings, see the underhill_core options module.
 
 The boot shim (see `openhcl_boot`) infers the configuration based on the detected environment unless explicitly overridden.
 
 ### DMA Pool Configuration
 
-The `OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG` parameter controls the VTL2 GPA pool configuration used for the private pool. For details on the parameter values and behavior, see the [Vtl2GpaPoolConfig rustdocs](https://openvmm.dev/rustdoc/linux/openhcl_boot/struct.Vtl2GpaPoolConfig.html).
+The `OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG` parameter controls the VTL2 GPA pool configuration used for the private pool. For details on the parameter values and behavior, see the openhcl_boot cmdline module.
 
 The boot shim determines pool sizes using heuristics defined in `openhcl_boot` based on the system configuration, unless explicitly overridden.
 
@@ -136,7 +136,11 @@ For testing servicing behavior, the `OPENHCL_TEST_CONFIG` environment variable c
 - `SERVICING_SAVE_FAIL`: Forces save operation to fail
 - `SERVICING_RESTORE_STUCK`: Causes restore to wait indefinitely
 
-These test scenarios help validate timeout handling and failure recovery. They are specified as values to the `OPENHCL_TEST_CONFIG` environment variable.
+These test scenarios help validate timeout handling and failure recovery. 
+
+```admonish note
+These command-line parameters must be sent to the paravisor. The parameters are set by the boot shim and passed via the kernel command line to the init and OpenHCL processes.
+```
 
 ## Error Handling
 
@@ -162,7 +166,7 @@ Servicing operations include comprehensive error handling:
 
 During servicing:
 - Private pool pages remain allocated and mapped across the servicing operation
-- Shared pool is recreated on demand during the new boot flow (since a new kernel boots, the shared pool allocation is reconstructed as needed)
+- Shared pool is recreated on demand during the new boot flow. Since a new kernel boots, locked memory allocations are reconstructed as needed from the normal VTL2 RAM pool.
 - VTL permissions are preserved and reapplied during restoration
 
 ## See Also
