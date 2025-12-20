@@ -12,9 +12,13 @@
 mod crypto;
 mod hardware_key_sealing;
 mod igvm_attest;
+mod jwt;
 mod key_protector;
 mod secure_key_release;
 mod vmgs;
+
+#[cfg(test)]
+mod test_helpers;
 
 pub use igvm_attest::Error as IgvmAttestError;
 pub use igvm_attest::IgvmAttestRequestHelper;
