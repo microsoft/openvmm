@@ -19,6 +19,7 @@ use std::ops::Range;
 use std::path::Path;
 
 /// The description and artifacts needed to build a pipette disk image for a VM.
+#[derive(Debug)]
 pub struct AgentImage {
     os_flavor: OsFlavor,
     pipette: Option<ResolvedArtifact>,

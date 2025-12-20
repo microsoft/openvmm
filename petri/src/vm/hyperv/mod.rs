@@ -12,6 +12,7 @@ use crate::Disk;
 use crate::Drive;
 use crate::Firmware;
 use crate::IsolationType;
+use crate::ModifyFn;
 use crate::NoPetriVmInspector;
 use crate::OpenHclConfig;
 use crate::OpenHclServicingFlags;
@@ -66,6 +67,7 @@ use vmgs_resources::GuestStateEncryptionPolicy;
 use vtl2_settings_proto::Vtl2Settings;
 
 /// The Hyper-V Petri backend
+#[derive(Debug)]
 pub struct HyperVPetriBackend {}
 
 /// Resources needed at runtime for a Hyper-V Petri VM
@@ -161,7 +163,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
     async fn run(
         self,
         config: PetriVmConfig,
-        _modify_vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
+        _modify_vmm_config: Option<ModifyFn<Self::VmmConfig>>,
         resources: &PetriVmResources,
         properties: PetriVmProperties,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {

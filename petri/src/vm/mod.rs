@@ -42,6 +42,7 @@ use pipette_client::PipetteClient;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::path::Path;
@@ -107,7 +108,7 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     /// VM configuration
     config: PetriVmConfig,
     /// Function to modify the VMM-specific configuration
-    modify_vmm_config: Option<Box<dyn FnOnce(T::VmmConfig) -> T::VmmConfig + Send>>,
+    modify_vmm_config: Option<ModifyFn<T::VmmConfig>>,
     /// VMM-agnostic resources
     resources: PetriVmResources,
 
@@ -130,7 +131,26 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     boot_device_type: BootDeviceType,
 }
 
+impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PetriVmBuilder")
+            .field("backend", &self.backend)
+            .field("config", &self.config)
+            .field("modify_vmm_config", &self.modify_vmm_config.is_some())
+            .field("resources", &self.resources)
+            .field("guest_quirks", &self.guest_quirks)
+            .field("vmm_quirks", &self.vmm_quirks)
+            .field("expected_boot_event", &self.expected_boot_event)
+            .field("override_expect_reset", &self.override_expect_reset)
+            .field("agent_image", &self.agent_image)
+            .field("openhcl_agent_image", &self.openhcl_agent_image)
+            .field("boot_device_type", &self.boot_device_type)
+            .finish()
+    }
+}
+
 /// Petri VM configuration
+#[derive(Debug)]
 pub struct PetriVmConfig {
     /// The name of the VM
     pub name: String,
@@ -182,6 +202,7 @@ pub struct PetriVmRuntimeConfig {
 }
 
 /// Resources used by a Petri VM during contruction and runtime
+#[derive(Debug)]
 pub struct PetriVmResources {
     driver: DefaultDriver,
     log_source: PetriLogSource,
@@ -189,7 +210,7 @@ pub struct PetriVmResources {
 
 /// Trait for VMM-specific contruction and runtime resources
 #[async_trait]
-pub trait PetriVmmBackend {
+pub trait PetriVmmBackend: Debug {
     /// VMM-specific configuration
     type VmmConfig;
 
@@ -222,7 +243,7 @@ pub trait PetriVmmBackend {
     async fn run(
         self,
         config: PetriVmConfig,
-        modify_vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
+        modify_vmm_config: Option<ModifyFn<Self::VmmConfig>>,
         resources: &PetriVmResources,
         properties: PetriVmProperties,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)>;
@@ -587,6 +608,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         // Add the boot disk now to allow the test to modify the boot type
         // Add the agent disks now to allow the test to add custom files
         self = self.add_boot_disk().add_agent_disks();
+        tracing::debug!(builder = ?self);
 
         let arch = self.config.arch;
         let expect_reset = self.expect_reset();
@@ -1171,7 +1193,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         if self.modify_vmm_config.is_some() {
             panic!("only one modify_backend allowed");
         }
-        self.modify_vmm_config = Some(Box::new(f));
+        self.modify_vmm_config = Some(ModifyFn(Box::new(f)));
         self
     }
 }
@@ -1677,6 +1699,7 @@ pub enum ApicMode {
 }
 
 /// Common memory configuration information for the VM.
+#[derive(Debug)]
 pub struct MemoryConfig {
     /// Specifies the amount of memory, in bytes, to assign to the
     /// virtual machine.
@@ -2182,7 +2205,11 @@ impl Firmware {
             Firmware::OpenhclLinuxDirect { openhcl_config, .. }
             | Firmware::OpenhclUefi { openhcl_config, .. }
             | Firmware::OpenhclPcat { openhcl_config, .. } => PetriVmRuntimeConfig {
-                vtl2_settings: openhcl_config.vtl2_settings,
+                vtl2_settings: Some(
+                    openhcl_config
+                        .vtl2_settings
+                        .unwrap_or_else(default_vtl2_settings),
+                ),
                 ide_controllers: None,
                 vmbus_storage_controllers,
             },
@@ -2588,9 +2615,9 @@ async fn save_inspect(
 }
 
 /// Wrapper for modification functions with stubbed out debug impl
-pub struct ModifyFn<T>(pub Box<dyn FnOnce(&mut T) + Send + Sync>);
+pub struct ModifyFn<T>(pub Box<dyn FnOnce(T) -> T + Send>);
 
-impl<T> std::fmt::Debug for ModifyFn<T> {
+impl<T> Debug for ModifyFn<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "_")
     }

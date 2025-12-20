@@ -58,10 +58,9 @@ impl PetriVmConfigOpenVmm {
 
         // Add the GED and VTL 2 settings.
         if let Some(mut ged) = ged {
-            ged.vtl2_settings = runtime_config
-                .vtl2_settings
-                .as_ref()
-                .map(prost::Message::encode_to_vec);
+            ged.vtl2_settings = Some(prost::Message::encode_to_vec(
+                runtime_config.vtl2_settings.as_ref().unwrap(),
+            ));
             config
                 .vmbus_devices
                 .push((DeviceVtl::Vtl2, ged.into_resource()));

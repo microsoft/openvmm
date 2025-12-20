@@ -19,6 +19,7 @@ pub use runtime::PetriVmOpenVmm;
 
 use crate::Disk;
 use crate::Firmware;
+use crate::ModifyFn;
 use crate::OpenHclServicingFlags;
 use crate::OpenvmmLogConfig;
 use crate::PetriLogFile;
@@ -70,6 +71,7 @@ const MANA_INSTANCE: Guid = guid::guid!("f9641cf4-d915-4743-a7d8-efa75db7b85a");
 pub const NIC_MAC_ADDRESS: MacAddress = MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]);
 
 /// OpenVMM Petri Backend
+#[derive(Debug)]
 pub struct OpenVmmPetriBackend {
     openvmm_path: ResolvedArtifact,
 }
@@ -124,7 +126,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
     async fn run(
         self,
         config: PetriVmConfig,
-        modify_vmm_config: Option<impl FnOnce(PetriVmConfigOpenVmm) -> PetriVmConfigOpenVmm + Send>,
+        modify_vmm_config: Option<ModifyFn<Self::VmmConfig>>,
         resources: &PetriVmResources,
         properties: PetriVmProperties,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
@@ -132,7 +134,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
             PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources, properties).await?;
 
         if let Some(f) = modify_vmm_config {
-            config = f(config);
+            config = f.0(config);
         }
 
         config.run().await
