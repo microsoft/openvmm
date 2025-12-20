@@ -405,7 +405,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
         if let Some((
             src_igvm_file,
             OpenHclConfig {
-                vtl2_nvme_boot: _, // TODO, see #1649.
                 vmbus_redirect,
                 custom_command_line: _,
                 log_levels: _,

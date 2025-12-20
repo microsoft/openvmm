@@ -793,7 +793,6 @@ impl PetriVmConfigSetupCore<'_> {
                 },
             ) => {
                 let OpenHclConfig {
-                    vtl2_nvme_boot: _, // load_boot_disk
                     vmbus_redirect: _, // config_openhcl_vmbus_devices
                     custom_command_line: _,
                     log_levels: _,

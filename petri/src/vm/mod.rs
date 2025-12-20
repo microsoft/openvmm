@@ -1748,9 +1748,6 @@ pub enum OpenvmmLogConfig {
 /// OpenHCL configuration
 #[derive(Debug)]
 pub struct OpenHclConfig {
-    /// Emulate SCSI via NVME to VTL2, with the provided namespace ID on
-    /// the controller with `BOOT_NVME_INSTANCE`.
-    pub vtl2_nvme_boot: bool,
     /// Whether to enable VMBus redirection
     pub vmbus_redirect: bool,
     /// Test-specified command-line parameters to append to the petri generated
@@ -1814,7 +1811,6 @@ impl OpenHclConfig {
 impl Default for OpenHclConfig {
     fn default() -> Self {
         Self {
-            vtl2_nvme_boot: false,
             vmbus_redirect: false,
             custom_command_line: None,
             log_levels: OpenvmmLogConfig::TestDefault,
