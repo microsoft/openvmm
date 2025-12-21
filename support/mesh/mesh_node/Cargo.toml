@@ -11,8 +11,8 @@ mesh_derive.workspace = true
 mesh_protobuf.workspace = true
 open_enum.workspace = true
 
+async-channel.workspace = true
 bitfield-struct.workspace = true
-futures-channel.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
