@@ -192,7 +192,7 @@ impl LxVolume {
         Ok(())
     }
 
-    pub fn lstat(&self, path: &Path) -> lx::Result<lx::Stat> {
+    pub fn lstat(&self, path: &Path) -> lx::Result<lx::StatEx> {
         assert!(path.is_relative());
 
         // Special-case returning attributes of the root itself to just use the existing handle.
@@ -1088,6 +1088,7 @@ impl LxVolume {
             &self.state.options,
             self.state.block_size,
         )
+        .map(|x| x.into())
     }
 }
 
@@ -1103,7 +1104,7 @@ pub struct LxFile {
 }
 
 impl LxFile {
-    pub fn fstat(&self) -> lx::Result<lx::Stat> {
+    pub fn fstat(&self) -> lx::Result<lx::StatEx> {
         let mut info = self.state.get_attributes_by_handle(&self.handle)?;
         *self.is_app_exec_alias.lock() = info.is_app_execution_alias;
         util::file_info_to_stat(
@@ -1199,9 +1200,9 @@ impl LxFile {
                 && self.kill_priv.swap(false, Ordering::AcqRel)
             {
                 let stat = self.fstat()?;
-                if stat.mode & (lx::S_ISUID | lx::S_ISGID) != 0 {
+                if stat.mode as u32 & (lx::S_ISUID | lx::S_ISGID) != 0 {
                     let mut attr = SetAttributes::default();
-                    attr.mode = Some(stat.mode & !(lx::S_ISUID | lx::S_ISGID));
+                    attr.mode = Some(stat.mode as u32 & !(lx::S_ISUID | lx::S_ISGID));
                     self.set_attr(attr)?;
                 }
             }
