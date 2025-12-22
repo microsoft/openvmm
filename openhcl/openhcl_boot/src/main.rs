@@ -35,7 +35,6 @@ use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_memory_init;
 use crate::boot_logger::boot_logger_runtime_init;
 use crate::boot_logger::boot_logger_write_memory_log_to_runtime;
-use crate::boot_logger::log;
 use crate::hypercall::hvcall;
 use crate::memory::AddressSpaceManager;
 use crate::single_threaded::OffStackRef;
@@ -606,7 +605,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Enable logging ASAP. This is fine even when isolated, as we don't have
     // any access to secrets in the boot shim.
     boot_logger_runtime_init(p.isolation_type, partition_info.com3_serial_available);
-    log!("openhcl_boot: logging enabled");
+    log::info!("openhcl_boot: logging enabled");
     boot_logger_write_memory_log_to_runtime();
 
     // Confidential debug will show up in boot_options only if included in the
@@ -777,7 +776,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     rt::verify_stack_cookie();
 
-    log!("uninitializing hypercalls, about to jump to kernel");
+    log::info!("uninitializing hypercalls, about to jump to kernel");
     hvcall().uninitialize();
 
     cfg_if::cfg_if! {

@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::boot_logger::log;
 use crate::cmdline::SidecarOptions;
 use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_NUMA_NODES;
@@ -70,17 +69,17 @@ pub fn start_sidecar<'a>(
     }
 
     if p.sidecar_size == 0 {
-        log!("sidecar: not present in image");
+        log::info!("sidecar: not present in image");
         return None;
     }
 
     match partition_info.boot_options.sidecar {
         SidecarOptions::DisabledCommandLine => {
-            log!("sidecar: disabled via command line");
+            log::info!("sidecar: disabled via command line");
             return None;
         }
         SidecarOptions::DisabledServicing => {
-            log!("sidecar: disabled because this is a servicing restore");
+            log::info!("sidecar: disabled because this is a servicing restore");
             return None;
         }
         SidecarOptions::Enabled { enable_logging, .. } => {
@@ -98,7 +97,7 @@ pub fn start_sidecar<'a>(
         .unwrap();
 
     if max_vnode >= MAX_NUMA_NODES as u32 {
-        log!("sidecar: NUMA node {max_vnode} too large");
+        log::warn!("sidecar: NUMA node {max_vnode} too large");
         return None;
     }
 
@@ -109,7 +108,7 @@ pub fn start_sidecar<'a>(
     .x2_apic()
     {
         // Currently, sidecar needs x2apic to communicate with the kernel
-        log!("sidecar: x2apic not available; not using sidecar");
+        log::warn!("sidecar: x2apic not available; not using sidecar");
         return None;
     }
 
@@ -125,7 +124,7 @@ pub fn start_sidecar<'a>(
             })
     };
     if cpus_by_node().all(|cpus_by_node| cpus_by_node.len() == 1) {
-        log!("sidecar: all NUMA nodes have one CPU");
+        log::info!("sidecar: all NUMA nodes have one CPU");
         return None;
     }
     let node_count = cpus_by_node().count();
@@ -169,14 +168,14 @@ pub fn start_sidecar<'a>(
                         AllocationPolicy::LowMemory,
                     ) {
                         Some(mem) => {
-                            log!(
+                            log::warn!(
                                 "sidecar: unable to allocate memory for sidecar node on node {local_vnode}, falling back to node {}",
                                 mem.vnode
                             );
                             mem
                         }
                         None => {
-                            log!("sidecar: not enough memory for sidecar");
+                            log::warn!("sidecar: not enough memory for sidecar");
                             return None;
                         }
                     }
@@ -200,7 +199,7 @@ pub fn start_sidecar<'a>(
         unsafe { core::mem::transmute(p.sidecar_entry_address) };
 
     let boot_start_reftime = minimal_rt::reftime::reference_time();
-    log!(
+    log::info!(
         "sidecar starting, {} nodes, {} cpus, {:#x} total bytes",
         node_count,
         partition_info.cpus.len(),

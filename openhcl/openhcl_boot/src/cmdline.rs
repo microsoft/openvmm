@@ -3,7 +3,6 @@
 
 //! Command line arguments and parsing for openhcl_boot.
 
-use crate::boot_logger::log;
 use underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME;
 
 /// Enable the private VTL2 GPA pool for page allocations.
@@ -142,13 +141,13 @@ impl BootCommandLineOptions {
                 if let Some((_, arg)) = arg.split_once('=') {
                     self.enable_vtl2_gpa_pool = Vtl2GpaPoolConfig::from(arg);
                 } else {
-                    log!("WARNING: Missing value for IGVM_VTL2_GPA_POOL_CONFIG argument");
+                    log::warn!("WARNING: Missing value for IGVM_VTL2_GPA_POOL_CONFIG argument");
                 }
             } else if arg.starts_with(ENABLE_VTL2_GPA_POOL) {
                 if let Some((_, arg)) = arg.split_once('=') {
                     override_vtl2_gpa_pool = Some(Vtl2GpaPoolConfig::from(arg));
                 } else {
-                    log!("WARNING: Missing value for ENABLE_VTL2_GPA_POOL argument");
+                    log::warn!("WARNING: Missing value for ENABLE_VTL2_GPA_POOL argument");
                 }
             } else if arg.starts_with(SIDECAR) {
                 if let Some((_, arg)) = arg.split_once('=') {
@@ -181,7 +180,7 @@ impl BootCommandLineOptions {
 
         if let Some(override_config) = override_vtl2_gpa_pool {
             self.enable_vtl2_gpa_pool = override_config;
-            log!(
+            log::info!(
                 "INFO: Overriding VTL2 GPA pool config to {:?} from command line",
                 override_config
             );

@@ -91,12 +91,6 @@ pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_avail
 
 impl Write for &BootLogger {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.write(s)
-    }
-}
-
-impl BootLogger {
-    fn write(&self, s: &str) -> fmt::Result {
         if let Some(buf) = self.in_memory_logger.borrow_mut().as_mut() {
             // Ignore the errors from the in memory logger.
             let _ = buf.append(s);
@@ -117,41 +111,6 @@ impl log::Log for BootLogger {
 
     fn flush(&self) {}
 }
-
-/// Log a message. These messages are always emitted regardless of debug or
-/// release, if a corresponding logger was configured.
-///
-/// If you want to log something just for local debugging, use [`debug_log!`]
-/// instead.
-macro_rules! log {
-    () => {};
-    ($($arg:tt)*) => {
-        {
-            use core::fmt::Write;
-            let _ = writeln!(&$crate::boot_logger::BOOT_LOGGER, $($arg)*);
-        }
-    };
-}
-
-pub(crate) use log;
-
-/// This emits the same as [`log!`], but is intended for local debugging and is
-/// linted against to not pass CI. Use for local development when you just need
-/// debug prints.
-//
-// Expect unused macros for the same reason as unused_imports below, as there
-// should be no usage of this macro normally.
-#[expect(unused_macros)]
-macro_rules! debug_log {
-    ($($arg:tt)*) => {
-        $crate::boot_logger::log!($($arg)*)
-    };
-}
-
-// Expect unused imports because there should be no normal usage in code due to
-// lints against it in CI.
-#[expect(unused_imports)]
-pub(crate) use debug_log;
 
 /// Write the current in-memory boot log to serial output, if any.
 /// Useful to capture the in-memory log before switching to a different
