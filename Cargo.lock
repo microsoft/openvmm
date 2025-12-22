@@ -9352,6 +9352,7 @@ dependencies = [
  "uefi_specs",
  "vmgs",
  "vmgs_format",
+ "winapi",
 ]
 
 [[package]]
