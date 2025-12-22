@@ -1,0 +1,36 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "test_igvm_agent_rpc_server"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+test_igvm_agent_lib.workspace = true
+get_resources.workspace = true
+
+guid.workspace = true
+
+cfg-if.workspace = true
+clap = { workspace = true, features = ["derive"] }
+parking_lot.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[target.'cfg(windows)'.dependencies]
+winapi.workspace = true
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_Rpc",
+    "Win32_System_Console",
+    "Win32_System_Com",
+] }
+
+[build-dependencies]
+cc.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+
+[lints]
+workspace = true

@@ -24,6 +24,54 @@ const AK_CERT_TOTAL_BYTES: usize = 4096;
 const TPM_GUEST_TESTS_LINUX_GUEST_PATH: &str = "/tmp/tpm_guest_tests";
 const TPM_GUEST_TESTS_WINDOWS_GUEST_PATH: &str = "C:\\tpm_guest_tests.exe";
 
+// Utilities for checking if the RPC server is running.
+// In CI, the RPC server is started by flowey before tests run.
+// For local development, the server can be started manually.
+#[cfg(windows)]
+pub mod windows {
+    /// Checks if any process with the given executable name is running.
+    pub fn is_process_running(exe_name: &str) -> bool {
+        use std::process::Command;
+
+        // Use tasklist to check if the process is running
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("IMAGENAME eq {}", exe_name), "/NH"])
+            .output();
+
+        match output {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // tasklist returns "INFO: No tasks are running..." if no match found.
+                // If a process is found, it shows the process info without "INFO: No tasks".
+                !stdout.contains("INFO: No tasks")
+            }
+            Err(e) => {
+                tracing::warn!("failed to run tasklist: {}", e);
+                false
+            }
+        }
+    }
+
+    /// Verifies that the RPC server is running.
+    /// In CI, the server is started by flowey before tests run.
+    /// Returns an error if the server is not running.
+    pub fn ensure_rpc_server_running() -> anyhow::Result<()> {
+        const RPC_SERVER_EXE: &str = "test_igvm_agent_rpc_server.exe";
+
+        if is_process_running(RPC_SERVER_EXE) {
+            tracing::info!(exe = RPC_SERVER_EXE, "RPC server is running");
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "RPC server ({}) is not running. \
+                In CI, the server should be started by flowey. \
+                For local development, start the server manually before running tests.",
+                RPC_SERVER_EXE
+            )
+        }
+    }
+}
+
 fn expected_ak_cert_hex() -> String {
     use std::fmt::Write as _;
 
@@ -440,6 +488,10 @@ async fn tpm_test_platform_hierarchy_disabled(
 // }
 
 /// CVM with guest tpm tests on Hyper-V.
+///
+/// The test requires the test_igvm_agent_rpc_server to be running.
+/// In CI, the server is started by flowey before tests run.
+/// For local development, start the server manually before running tests.
 #[cfg(windows)]
 #[vmm_test(
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
@@ -454,10 +506,13 @@ async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
     extra_deps: (ResolvedArtifact<T>,),
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    // TODO: Add test IGVMAgent RPC server to support the boot-time attestation.
+
+    // Verify the RPC server is running (started by flowey in CI)
+    windows::ensure_rpc_server_running()?;
+
     let config = config
         .with_tpm(true)
-        .with_tpm_state_persistence(false)
+        .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
 
     let (vm, agent) = config.run().await?;
@@ -473,14 +528,16 @@ async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
         TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
             .await?;
 
-    // TODO: Add test IGVMAgent RPC server to support AK Cert
-    // let expected_hex = expected_ak_cert_hex();
-    // let ak_cert_output = tpm_guest_tests.read_ak_cert_with_expected_hex(expected_hex.as_str()).await?;
+    // Verify AK cert with the test IGVM agent RPC server
+    let expected_hex = expected_ak_cert_hex();
+    let ak_cert_output = tpm_guest_tests
+        .read_ak_cert_with_expected_hex(expected_hex.as_str())
+        .await?;
 
-    // ensure!(
-    //     ak_cert_output.contains("AK certificate matches expected value"),
-    //     format!("{ak_cert_output}")
-    // );
+    ensure!(
+        ak_cert_output.contains("AK certificate matches expected value"),
+        format!("{ak_cert_output}")
+    );
 
     let report_output = tpm_guest_tests
         .read_report()
