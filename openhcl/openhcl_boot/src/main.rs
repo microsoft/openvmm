@@ -561,6 +561,12 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Enable the in-memory log.
     boot_logger_memory_init(p.log_buffer);
 
+    log::set_logger(&boot_logger::BOOT_LOGGER).unwrap();
+    log::set_max_level(log::LevelFilter::Trace);
+
+    log::info!("test log");
+    log::trace!("test trace");
+
     let boot_reftime = get_ref_time(p.isolation_type);
 
     // The support code for the fast hypercalls does not set

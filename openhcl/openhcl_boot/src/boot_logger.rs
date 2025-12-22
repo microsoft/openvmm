@@ -91,12 +91,31 @@ pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_avail
 
 impl Write for &BootLogger {
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.write(s)
+    }
+}
+
+impl BootLogger {
+    fn write(&self, s: &str) -> fmt::Result {
         if let Some(buf) = self.in_memory_logger.borrow_mut().as_mut() {
             // Ignore the errors from the in memory logger.
             let _ = buf.append(s);
         }
         self.logger.borrow_mut().write_str(s)
     }
+}
+
+impl log::Log for BootLogger {
+    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+        // TODO: filter level
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        let _ = writeln!(&*self, "{} - {}", record.level(), record.args());
+    }
+
+    fn flush(&self) {}
 }
 
 /// Log a message. These messages are always emitted regardless of debug or

@@ -33,6 +33,8 @@ sha2 = { workspace = true, features = ["force-soft"] }
 thiserror.workspace = true
 zerocopy.workspace = true
 
+log.workspace = true
+
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 page_table.workspace = true
 safe_intrinsics.workspace = true
