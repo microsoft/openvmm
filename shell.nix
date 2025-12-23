@@ -57,5 +57,4 @@ in pkgs.mkShell.override { } {
   # RUSTFLAGS = "--remap-path-prefix =/src";
   SOURCE_DATE_EPOCH = 12345;
   REALGCC = "gcc";
-  USING_NIX = 1;
 }
