@@ -40,10 +40,13 @@ impl FloweyShell {
 
     /// Check if commands should be wrapped in nix-shell.
     fn needs_nix_wrapper(&self) -> bool {
+        // Only wrap in nix-shell if the platform is Nix AND we're not already in a nix-shell
+        // IN_NIX_SHELL is set when we're already inside a nix-shell (scenario 2)
+        // USING_NIX=1 is set when we want to use nix-shell but aren't in one yet (scenario 3)
         matches!(
             self.platform,
             FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
-        )
+        ) && std::env::var("IN_NIX_SHELL").is_err()
     }
 
     /// Run a command with the given arguments and environment variables.
