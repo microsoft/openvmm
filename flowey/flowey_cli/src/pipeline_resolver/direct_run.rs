@@ -379,6 +379,9 @@ fn direct_run_do_work(
                 log::info!(""); // log a newline, for the pretty
             }
         }
+
+        // Leave the last node's working dir so it can be deleted by later steps
+        std::env::set_current_dir(&out_dir)?;
     }
 
     Ok(())

@@ -163,6 +163,9 @@ impl ExecSnippet {
             }
         }
 
+        // Leave the last snippet's working dir so it can be deleted by later steps
+        std::env::set_current_dir(working_dir)?;
+
         Ok(())
     }
 }
