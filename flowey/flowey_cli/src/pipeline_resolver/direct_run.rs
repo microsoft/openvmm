@@ -125,6 +125,7 @@ fn direct_run_do_work(
             (FlowArch::X86_64, FlowArch::X86_64) | (FlowArch::Aarch64, FlowArch::Aarch64) => (),
             _ => {
                 log::error!("mismatch between job arch and local arch. skipping job...");
+                skipped_jobs.insert(idx);
                 continue;
             }
         }
@@ -331,6 +332,7 @@ fn direct_run_do_work(
 
             if !should_run {
                 log::warn!("job condition was false - skipping job...");
+                skipped_jobs.insert(idx);
                 continue;
             }
         }
