@@ -44,69 +44,86 @@ impl FlowNode for Node {
 
         // -- end of req processing -- //
 
-        if !ensure_installed.is_empty() && auto_install {
-            // Add nix profile bin to PATH first
-            let added_to_path = ctx.emit_rust_step("add nix profile to path", |ctx| {
-                let backend = ctx.backend();
-                move |_| {
-                    let nix_profile_bin = home::home_dir()
-                        .context("Unable to get home dir")?
-                        .join(".nix-profile")
-                        .join("bin");
+        if !ensure_installed.is_empty() {
+            if auto_install {
+                // Add nix profile bin to PATH first
+                let added_to_path = ctx.emit_rust_step("add nix profile to path", |ctx| {
+                    let backend = ctx.backend();
+                    move |_| {
+                        let nix_profile_bin = home::home_dir()
+                            .context("Unable to get home dir")?
+                            .join(".nix-profile")
+                            .join("bin");
 
-                    match backend {
-                        FlowBackend::Github => {
-                            let github_path = std::env::var("GITHUB_PATH")?;
-                            let mut github_path =
-                                fs_err::File::options().append(true).open(github_path)?;
-                            github_path
-                                .write_all(nix_profile_bin.as_os_str().as_encoded_bytes())?;
-                            github_path.write_all(b"\n")?;
-                            log::info!("Added {} to PATH (Github)", nix_profile_bin.display());
+                        match backend {
+                            FlowBackend::Github => {
+                                let github_path = std::env::var("GITHUB_PATH")?;
+                                let mut github_path =
+                                    fs_err::File::options().append(true).open(github_path)?;
+                                github_path
+                                    .write_all(nix_profile_bin.as_os_str().as_encoded_bytes())?;
+                                github_path.write_all(b"\n")?;
+                                log::info!("Added {} to PATH (Github)", nix_profile_bin.display());
+                            }
+                            FlowBackend::Ado => {
+                                // ADO uses logging commands to update PATH
+                                println!("##vso[task.prependpath]{}", nix_profile_bin.display());
+                                log::info!("Added {} to PATH (ADO)", nix_profile_bin.display());
+                            }
+                            FlowBackend::Local => {
+                                log::warn!("Cannot automatically add to PATH in local backend");
+                                log::warn!(
+                                    "Please add {} to your PATH manually",
+                                    nix_profile_bin.display()
+                                );
+                            }
                         }
-                        FlowBackend::Ado => {
-                            // ADO uses logging commands to update PATH
-                            println!("##vso[task.prependpath]{}", nix_profile_bin.display());
-                            log::info!("Added {} to PATH (ADO)", nix_profile_bin.display());
+
+                        Ok(())
+                    }
+                });
+
+                ctx.emit_rust_step("install Nix", |ctx| {
+                    ensure_installed.claim(ctx);
+                    added_to_path.claim(ctx);
+
+                    move |_rt: &mut RustRuntimeServices<'_>| {
+                        // Check if nix-shell is already available
+                        if which::which("nix-shell").is_ok() {
+                            log::info!("nix-shell already available on PATH");
+                            return Ok(());
                         }
-                        FlowBackend::Local => {
-                            log::warn!("Cannot automatically add to PATH in local backend");
-                            log::warn!(
-                                "Please add {} to your PATH manually",
-                                nix_profile_bin.display()
+
+                        log::info!("Installing Nix package manager...");
+                        let sh = xshell::Shell::new()?;
+
+                        // Download and run the Nix installer script (single-user mode)
+                        xshell::cmd!(
+                            sh,
+                            "sh -c 'curl --proto =https --tlsv1.2 -L https://nixos.org/nix/install | sh -s -- --no-daemon'"
+                        )
+                        .run()?;
+
+                        log::info!("Nix installed successfully");
+                        Ok(())
+                    }
+                });
+            } else {
+                // When auto_install is false, just verify nix is installed
+                ctx.emit_rust_step("verify Nix is installed", |ctx| {
+                    ensure_installed.claim(ctx);
+
+                    move |_rt: &mut RustRuntimeServices<'_>| {
+                        if which::which("nix-shell").is_err() {
+                            anyhow::bail!(
+                                "nix-shell is not available on PATH. Please install Nix or ensure it's in your PATH."
                             );
                         }
+                        log::info!("nix-shell is available on PATH");
+                        Ok(())
                     }
-
-                    Ok(())
-                }
-            });
-
-            ctx.emit_rust_step("install Nix", |ctx| {
-                ensure_installed.claim(ctx);
-                added_to_path.claim(ctx);
-
-                move |_rt: &mut RustRuntimeServices<'_>| {
-                    // Check if nix-shell is already available
-                    if which::which("nix-shell").is_ok() {
-                        log::info!("nix-shell already available on PATH");
-                        return Ok(());
-                    }
-
-                    log::info!("Installing Nix package manager...");
-                    let sh = xshell::Shell::new()?;
-
-                    // Download and run the Nix installer script (single-user mode)
-                    xshell::cmd!(
-                        sh,
-                        "sh -c 'curl --proto =https --tlsv1.2 -L https://nixos.org/nix/install | sh -s -- --no-daemon'"
-                    )
-                    .run()?;
-
-                    log::info!("Nix installed successfully");
-                    Ok(())
-                }
-            });
+                });
+            }
         }
 
         Ok(())
