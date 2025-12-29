@@ -46,12 +46,17 @@ in pkgs.mkShell.override { } {
   buildInputs = [
     pkgs.openssl.dev
   ];
-  CARGO_BUILD_ARGS = "--use-local-deps --custom-openvmm-deps ${openvmm_deps} --custom-uefi=${uefi_mu_msvm}/MSVM.fd --custom-kernel ${openhcl_kernel}/vmlinux --custom-kernel-modules ${openhcl_kernel}/modules --custom-protoc ${protoc}";
 
+  # Environment variables read by flowey when using --use-nix flag
   NIX_OPENVMM_DEPS = openvmm_deps;
   NIX_PROTOC_PATH = protoc;
   NIX_OPENHCL_KERNEL = openhcl_kernel;
   NIX_UEFI_MU_MSVM = "${uefi_mu_msvm}/MSVM.fd";
+
+  # Legacy: CARGO_BUILD_ARGS is no longer needed with --use-nix flag
+  # Old usage: cargo xflowey build-igvm x64 $CARGO_BUILD_ARGS
+  # New usage: cargo xflowey build-igvm x64 --use-nix
+  CARGO_BUILD_ARGS = "--use-local-deps --custom-openvmm-deps ${openvmm_deps} --custom-uefi=${uefi_mu_msvm}/MSVM.fd --custom-kernel ${openhcl_kernel}/vmlinux --custom-kernel-modules ${openhcl_kernel}/modules --custom-protoc ${protoc}";
   RUST_BACKTRACE = 1;
   # will probably need more than one of these for local source + dependencies.
   # RUSTFLAGS = "--remap-path-prefix =/src";
