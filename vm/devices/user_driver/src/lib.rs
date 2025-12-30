@@ -18,6 +18,7 @@ pub mod lockmem;
 pub mod memory;
 pub mod page_allocator;
 pub mod vfio;
+pub mod dma;
 
 pub enum DmaPool {
     Ephemeral,
