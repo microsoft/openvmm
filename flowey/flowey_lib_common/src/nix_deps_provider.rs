@@ -22,8 +22,8 @@ flowey_request! {
         SetRepoPath(ReadVar<PathBuf>),
         GetOpenvmmDeps(OpenvmmDepsArch, WriteVar<PathBuf>),
         GetProtoc(WriteVar<PathBuf>),
-        GetKernel(WriteVar<PathBuf>),
-        GetUefiMuMsvm(WriteVar<PathBuf>),
+        GetKernel(OpenvmmDepsArch, WriteVar<PathBuf>),
+        GetUefiMuMsvm(OpenvmmDepsArch, WriteVar<PathBuf>),
     }
 }
 
@@ -41,8 +41,10 @@ impl FlowNode for Node {
         let mut openvmm_deps_requests: BTreeMap<OpenvmmDepsArch, Vec<WriteVar<PathBuf>>> =
             BTreeMap::new();
         let mut protoc_requests = Vec::new();
-        let mut openhcl_kernel_requests = Vec::new();
-        let mut uefi_mu_msvm_requests = Vec::new();
+        let mut openhcl_kernel_requests: BTreeMap<OpenvmmDepsArch, Vec<WriteVar<PathBuf>>> =
+            BTreeMap::new();
+        let mut uefi_mu_msvm_requests: BTreeMap<OpenvmmDepsArch, Vec<WriteVar<PathBuf>>> =
+            BTreeMap::new();
 
         let nix_installed = ctx.reqv(crate::install_nix::Request::EnsureInstalled);
 
@@ -56,8 +58,12 @@ impl FlowNode for Node {
                     openvmm_deps_requests.entry(arch).or_default().push(var);
                 }
                 Request::GetProtoc(var) => protoc_requests.push(var),
-                Request::GetKernel(var) => openhcl_kernel_requests.push(var),
-                Request::GetUefiMuMsvm(var) => uefi_mu_msvm_requests.push(var),
+                Request::GetKernel(arch, var) => {
+                    openhcl_kernel_requests.entry(arch).or_default().push(var);
+                }
+                Request::GetUefiMuMsvm(arch, var) => {
+                    uefi_mu_msvm_requests.entry(arch).or_default().push(var);
+                }
             }
         }
 
@@ -112,20 +118,21 @@ impl FlowNode for Node {
                     Ok(value)
                 };
 
-                // Read and write openvmm_deps to all requesting vars
-                if !openvmm_deps_requests.is_empty() {
-                    let openvmm_deps = get_nix_env_var("NIX_OPENVMM_DEPS")?;
+                // Read and write openvmm_deps to all requesting vars (arch-specific)
+                for (arch, vars) in openvmm_deps_requests {
+                    let env_var_name = match arch {
+                        OpenvmmDepsArch::X86_64 => "NIX_OPENVMM_DEPS_X64",
+                        OpenvmmDepsArch::Aarch64 => "NIX_OPENVMM_DEPS_AARCH64",
+                    };
+                    let openvmm_deps = get_nix_env_var(env_var_name)?;
                     let openvmm_deps_path = PathBuf::from(&openvmm_deps);
 
-                    // Note: In Nix, the same package is used for both x64 and aarch64 at build time
-                    for (arch, vars) in openvmm_deps_requests {
-                        log::info!(
-                            "Resolved Nix openvmm_deps for {:?}: {}",
-                            arch,
-                            openvmm_deps_path.display()
-                        );
-                        rt.write_all(vars, &openvmm_deps_path);
-                    }
+                    log::info!(
+                        "Resolved Nix openvmm_deps for {:?}: {}",
+                        arch,
+                        openvmm_deps_path.display()
+                    );
+                    rt.write_all(vars, &openvmm_deps_path);
                 }
 
                 // Read and write protoc path if requested
@@ -137,28 +144,38 @@ impl FlowNode for Node {
                     rt.write_all(protoc_requests, &protoc_path);
                 }
 
-                // Read and write openhcl_kernel vmlinux path if requested
-                if !openhcl_kernel_vmlinux_requests.is_empty() {
-                    let kernel_vmlinux = get_nix_env_var("NIX_OPENHCL_KERNEL")?;
+                // Read and write openhcl_kernel vmlinux path if requested (arch-specific)
+                for (arch, vars) in openhcl_kernel_vmlinux_requests {
+                    let env_var_name = match arch {
+                        OpenvmmDepsArch::X86_64 => "NIX_OPENHCL_KERNEL_X64",
+                        OpenvmmDepsArch::Aarch64 => "NIX_OPENHCL_KERNEL_AARCH64",
+                    };
+                    let kernel_vmlinux = get_nix_env_var(env_var_name)?;
                     let kernel_vmlinux_path = PathBuf::from(&kernel_vmlinux);
 
                     log::info!(
-                        "Resolved Nix openhcl_kernel: {}",
+                        "Resolved Nix openhcl_kernel for {:?}: {}",
+                        arch,
                         kernel_vmlinux_path.display()
                     );
-                    rt.write_all(openhcl_kernel_vmlinux_requests, &kernel_vmlinux_path);
+                    rt.write_all(vars, &kernel_vmlinux_path);
                 }
 
-                // Read and write UEFI firmware path if requested
-                if !uefi_mu_msvm_requests.is_empty() {
-                    let uefi_mu_msvm = get_nix_env_var("NIX_UEFI_MU_MSVM")?;
+                // Read and write UEFI firmware path if requested (arch-specific)
+                for (arch, vars) in uefi_mu_msvm_requests {
+                    let env_var_name = match arch {
+                        OpenvmmDepsArch::X86_64 => "NIX_UEFI_MU_MSVM_X64",
+                        OpenvmmDepsArch::Aarch64 => "NIX_UEFI_MU_MSVM_AARCH64",
+                    };
+                    let uefi_mu_msvm = get_nix_env_var(env_var_name)?;
                     let uefi_mu_msvm_path = PathBuf::from(&uefi_mu_msvm);
 
                     log::info!(
-                        "Resolved Nix UEFI firmware: {}",
+                        "Resolved Nix UEFI firmware for {:?}: {}",
+                        arch,
                         uefi_mu_msvm_path.display()
                     );
-                    rt.write_all(uefi_mu_msvm_requests, &uefi_mu_msvm_path);
+                    rt.write_all(vars, &uefi_mu_msvm_path);
                 }
 
                 Ok(())

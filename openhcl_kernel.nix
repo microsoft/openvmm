@@ -42,6 +42,10 @@ in stdenv.mkDerivation {
     runHook preInstall
     mkdir -p $out/build/native/bin/${arch}
     cp vmlinux* $out/build/native/bin/${arch}/
+    # Copy Image file for aarch64 (required by igvmfilegen)
+    if [ -f Image ]; then
+      cp Image $out/build/native/bin/${arch}/
+    fi
     cp kernel_build_metadata.json $out/build/native/bin/
     cp -r modules $out/build/native/bin/${arch}/
     runHook postInstall

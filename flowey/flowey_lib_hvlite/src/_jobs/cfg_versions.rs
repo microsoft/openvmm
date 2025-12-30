@@ -38,7 +38,7 @@ flowey_request! {
     pub enum Request {
         Download,
         Local(CommonArch, ReadVar<PathBuf>, ReadVar<PathBuf>),
-        NixEnvironment,
+        NixEnvironment(CommonArch),
     }
 }
 
@@ -69,14 +69,15 @@ impl FlowNode for Node {
 
     #[rustfmt::skip]
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        use std::collections::BTreeMap;
+        use std::collections::{BTreeMap, BTreeSet};
 
         let mut has_local_requests = false;
         let mut has_nix_requests = false;
+        let mut nix_architectures: BTreeSet<CommonArch> = BTreeSet::new();
         let mut local_openvmm_deps: BTreeMap<CommonArch, ReadVar<PathBuf>> = BTreeMap::new();
         let mut local_protoc: Option<ReadVar<PathBuf>> = None;
-        let mut local_kernel: Option<ReadVar<PathBuf>> = None;
-        let mut local_uefi: Option<ReadVar<PathBuf>> = None;
+        let mut local_kernel: BTreeMap<CommonArch, ReadVar<PathBuf>> = BTreeMap::new();
+        let mut local_uefi: BTreeMap<CommonArch, ReadVar<PathBuf>> = BTreeMap::new();
 
         for req in requests {
             match req {
@@ -100,8 +101,9 @@ impl FlowNode for Node {
 
                     same_across_all_reqs_backing_var("ProtocPath", &mut local_protoc, protoc_path)?;
                 }
-                Request::NixEnvironment => {
+                Request::NixEnvironment(arch) => {
                     has_nix_requests = true;
+                    nix_architectures.insert(arch);
                 }
             }
         }
@@ -114,21 +116,40 @@ impl FlowNode for Node {
             ));
             ctx.req(flowey_lib_common::nix_deps_provider::Request::SetRepoPath(repo_path));
 
-            let nix_openvmm_deps_x64 = ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetOpenvmmDeps(
-                flowey_lib_common::nix_deps_provider::OpenvmmDepsArch::X86_64,
-                v,
-            ));
-            local_openvmm_deps.insert(CommonArch::X86_64, nix_openvmm_deps_x64);
+            // Request arch-specific dependencies from nix only for requested architectures
+            for &arch in &nix_architectures {
+                let nix_arch = match arch {
+                    CommonArch::X86_64 => flowey_lib_common::nix_deps_provider::OpenvmmDepsArch::X86_64,
+                    CommonArch::Aarch64 => flowey_lib_common::nix_deps_provider::OpenvmmDepsArch::Aarch64,
+                };
+
+                let nix_openvmm_deps = ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetOpenvmmDeps(
+                    nix_arch,
+                    v,
+                ));
+                local_openvmm_deps.insert(arch, nix_openvmm_deps);
+
+                let nix_kernel = ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetKernel(
+                    nix_arch,
+                    v,
+                ));
+                local_kernel.insert(arch, nix_kernel);
+
+                let nix_uefi = ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetUefiMuMsvm(
+                    nix_arch,
+                    v,
+                ));
+                local_uefi.insert(arch, nix_uefi);
+            }
+
             local_protoc = Some(ctx.reqv(flowey_lib_common::nix_deps_provider::Request::GetProtoc));
-            local_kernel = Some(ctx.reqv(flowey_lib_common::nix_deps_provider::Request::GetKernel));
-            local_uefi = Some(ctx.reqv(flowey_lib_common::nix_deps_provider::Request::GetUefiMuMsvm));
         }
 
         // Track whether we have local paths for openvmm_deps and protoc
         let has_local_openvmm_deps = !local_openvmm_deps.is_empty();
         let has_local_protoc = local_protoc.is_some();
-        let has_local_kernel = local_kernel.is_some();
-        let has_local_uefi = local_uefi.is_some();
+        let has_local_kernel = !local_kernel.is_empty();
+        let has_local_uefi = !local_uefi.is_empty();
 
         // If we have local requests, protoc must be provided
         if has_local_requests && local_protoc.is_none() {
@@ -155,12 +176,28 @@ impl FlowNode for Node {
             ));
         }
 
-        if let Some(kernel_path) = local_kernel {
-            ctx.req(crate::download_openhcl_kernel_package::Request::LocalPath(kernel_path));
+        // Set up arch-specific kernel paths if provided
+        for (arch, path) in local_kernel {
+            let kernel_arch = match arch {
+                CommonArch::X86_64 => crate::download_openhcl_kernel_package::OpenhclKernelPackageArch::X86_64,
+                CommonArch::Aarch64 => crate::download_openhcl_kernel_package::OpenhclKernelPackageArch::Aarch64,
+            };
+            ctx.req(crate::download_openhcl_kernel_package::Request::LocalPathForArch(
+                kernel_arch,
+                path,
+            ));
         }
 
-        if let Some(uefi_path) = local_uefi {
-            ctx.req(crate::download_uefi_mu_msvm::Request::LocalPath(uefi_path));
+        // Set up arch-specific UEFI paths if provided
+        for (arch, path) in local_uefi {
+            let uefi_arch = match arch {
+                CommonArch::X86_64 => crate::download_uefi_mu_msvm::MuMsvmArch::X86_64,
+                CommonArch::Aarch64 => crate::download_uefi_mu_msvm::MuMsvmArch::Aarch64,
+            };
+            ctx.req(crate::download_uefi_mu_msvm::Request::LocalPathForArch(
+                uefi_arch,
+                path,
+            ));
         }
 
         // Set up version requests for everything

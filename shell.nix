@@ -11,9 +11,19 @@ let
   protoc = pkgs.callPackage ./protoc.nix { };
 
   lxutil = pkgs.callPackage ./lxutil.nix { };
-  openhcl_kernel = pkgs.callPackage ./openhcl_kernel.nix { };
-  openvmm_deps = pkgs.callPackage ./openvmm_deps.nix { };
-  uefi_mu_msvm = pkgs.callPackage ./uefi_mu_msvm.nix { };
+
+  # Arch-specific packages for cross-compilation support
+  openhcl_kernel_x64 = pkgs.callPackage ./openhcl_kernel_x64.nix { };
+  openhcl_kernel_aarch64 = pkgs.callPackage ./openhcl_kernel_aarch64.nix { };
+  openvmm_deps_x64 = pkgs.callPackage ./openvmm_deps_x64.nix { };
+  openvmm_deps_aarch64 = pkgs.callPackage ./openvmm_deps_aarch64.nix { };
+  uefi_mu_msvm_x64 = pkgs.callPackage ./uefi_mu_msvm_x64.nix { };
+  uefi_mu_msvm_aarch64 = pkgs.callPackage ./uefi_mu_msvm_aarch64.nix { };
+
+  # Legacy single-arch packages (for backward compatibility, default to x64)
+  openhcl_kernel = openhcl_kernel_x64;
+  openvmm_deps = openvmm_deps_x64;
+  uefi_mu_msvm = uefi_mu_msvm_x64;
 
   glibc_2_39_52 = import (fetchTarball
     "https://github.com/NixOS/nixpkgs/archive/ab7b6889ae9d484eed2876868209e33eb262511d.tar.gz")
@@ -26,7 +36,12 @@ let
       "rust-src" # for rust-analyzer
       "rust-analyzer"
     ];
-    targets = [ "x86_64-unknown-linux-musl" "x86_64-unknown-none" ];
+    targets = [
+      "x86_64-unknown-linux-musl"
+      "x86_64-unknown-none"
+      "aarch64-unknown-linux-musl"
+      "aarch64-unknown-none"
+    ];
   };
 in pkgs.mkShell.override { } {
   nativeBuildInputs = [
@@ -42,14 +57,28 @@ in pkgs.mkShell.override { } {
     python3
     rustup
     pkg-config
+    # Cross-compilation toolchain for aarch64
+    pkgsCross.aarch64-multiplatform.stdenv.cc
+    # Native toolchain for x64
+    gcc
+    binutils
   ]);
   buildInputs = [
     pkgs.openssl.dev
   ];
 
   # Environment variables read by flowey when using --use-nix flag
-  NIX_OPENVMM_DEPS = openvmm_deps;
+  # Arch-specific paths for cross-compilation
+  NIX_OPENVMM_DEPS_X64 = openvmm_deps_x64;
+  NIX_OPENVMM_DEPS_AARCH64 = openvmm_deps_aarch64;
+  NIX_OPENHCL_KERNEL_X64 = openhcl_kernel_x64;
+  NIX_OPENHCL_KERNEL_AARCH64 = openhcl_kernel_aarch64;
+  NIX_UEFI_MU_MSVM_X64 = "${uefi_mu_msvm_x64}/MSVM.fd";
+  NIX_UEFI_MU_MSVM_AARCH64 = "${uefi_mu_msvm_aarch64}/MSVM.fd";
   NIX_PROTOC_PATH = protoc;
+
+  # Legacy environment variables (default to x64 for backward compatibility)
+  NIX_OPENVMM_DEPS = openvmm_deps;
   NIX_OPENHCL_KERNEL = openhcl_kernel;
   NIX_UEFI_MU_MSVM = "${uefi_mu_msvm}/MSVM.fd";
 
@@ -61,5 +90,7 @@ in pkgs.mkShell.override { } {
   # will probably need more than one of these for local source + dependencies.
   # RUSTFLAGS = "--remap-path-prefix =/src";
   SOURCE_DATE_EPOCH = 12345;
-  REALGCC = "gcc";
+  # Set compiler name for the aarch64 cross-compiler wrapper script
+  # Nix uses aarch64-unknown-linux-gnu-gcc, while Ubuntu uses aarch64-linux-gnu-gcc
+  AARCH64_GCC = "aarch64-unknown-linux-gnu-gcc";
 }
