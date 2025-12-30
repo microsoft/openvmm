@@ -355,7 +355,9 @@ impl IntoPipeline for BuildIgvmCli {
             // Use nix environment for dependency resolution
             // For local runs, we assume nix is already installed (don't auto-install)
             job.dep_on(|_| flowey_lib_common::install_nix::Request::AutoInstall(false))
-                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::NixEnvironment)
+                .dep_on(move |_| {
+                    flowey_lib_hvlite::_jobs::cfg_versions::Request::NixEnvironment(recipe_arch)
+                })
         } else {
             // Initialize cfg_versions job, this makes sure everything will be downloaded
             // and versions are set up correctly unless overriden by other parameters.

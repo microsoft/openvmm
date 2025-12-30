@@ -889,7 +889,7 @@ jobs:
     - name: resolve nix dependency paths
       run: flowey e 11 flowey_lib_common::nix_deps_provider 0
       shell: bash
-    - name: use local UEFI firmware
+    - name: use local UEFI firmware for X86_64
       run: flowey e 11 flowey_lib_hvlite::download_uefi_mu_msvm 0
       shell: bash
     - name: add default cargo home to path
@@ -6642,7 +6642,7 @@ jobs:
     - name: resolve nix dependency paths
       run: flowey e 9 flowey_lib_common::nix_deps_provider 0
       shell: bash
-    - name: use local UEFI firmware
+    - name: use local UEFI firmware for Aarch64
       run: flowey e 9 flowey_lib_hvlite::download_uefi_mu_msvm 0
       shell: bash
     - name: add default cargo home to path

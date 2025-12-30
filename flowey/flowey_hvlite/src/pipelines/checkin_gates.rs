@@ -758,7 +758,7 @@ impl IntoPipeline for CheckinGatesCli {
 
             all_jobs.push(job.finish());
 
-            // Nix build job is only supported on GitHub
+// Nix build job is only supported on GitHub
             if !matches!(backend_hint, PipelineBackendHint::Ado) {
                 let pub_openhcl_igvm_nix = pub_openhcl_igvm_nix.unwrap();
                 let pub_openhcl_igvm_extras_nix = pub_openhcl_igvm_extras_nix.unwrap();
@@ -773,7 +773,9 @@ impl IntoPipeline for CheckinGatesCli {
                     .dep_on(|ctx| {
                         flowey_lib_common::install_nix::Request::EnsureInstalled(ctx.new_done_handle())
                     })
-                    .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::NixEnvironment)
+                    .dep_on(move |_| {
+                        flowey_lib_hvlite::_jobs::cfg_versions::Request::NixEnvironment(arch)
+                    })
                     .dep_on(|ctx| {
                         flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
                             igvm_files: igvm_recipes
