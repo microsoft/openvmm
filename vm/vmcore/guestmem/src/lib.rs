@@ -1900,6 +1900,22 @@ impl GuestMemory {
         })
     }
 
+    /// Check if a given PagedRange is readable or not.
+    pub fn probe_gpn_readable_range(&self, range: &PagedRange<'_>) -> Result<(), GuestMemoryError> {
+        self.op_range(GuestMemoryOperation::Probe, range, move |addr, _r| {
+            self.read_plain_inner(addr)
+        })
+    }
+
+    /// Check if a given PagedRange is writable or not.
+    pub fn probe_gpn_writable_range(&self, range: &PagedRange<'_>) -> Result<(), GuestMemoryError> {
+        self.op_range(GuestMemoryOperation::Probe, range, move |addr, _r| {
+            self.compare_exchange(addr, 0u8, 0)
+                .map(|_| ())
+                .map_err(|err| GuestMemoryBackingError::other(addr, err))
+        })
+    }
+
     /// Check if a given GPA is readable or not.
     pub fn probe_gpa_readable(&self, gpa: u64) -> Result<(), GuestMemoryErrorKind> {
         let mut b = [0];
