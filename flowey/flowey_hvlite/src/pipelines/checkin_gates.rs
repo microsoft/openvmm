@@ -712,7 +712,7 @@ impl IntoPipeline for CheckinGatesCli {
 
             let job = pipeline
                 .new_job(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix),
                     FlowArch::X86_64,
                     format!("{} with nix", build_openhcl_job_tag(arch_tag)),
                 )

@@ -5,6 +5,7 @@
 
 use crate::run_cargo_build::common::CommonArch;
 use flowey::node::prelude::*;
+use std::collections::BTreeMap;
 
 flowey_request! {
     pub struct Request {
@@ -22,6 +23,7 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
+        ctx.import::<crate::git_checkout_openvmm_repo::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -34,6 +36,7 @@ impl SimpleFlowNode for Node {
 
         let host_arch = ctx.arch();
         let platform = ctx.platform();
+
         let (objcopy_pkg, objcopy_bin) = match arch {
             CommonArch::X86_64 => match platform {
                 FlowPlatform::Linux(linux_distribution) => match linux_distribution {
@@ -51,24 +54,27 @@ impl SimpleFlowNode for Node {
                 },
                 _ => anyhow::bail!("Unsupported platform"),
             },
-            CommonArch::Aarch64 => {
-                let pkg = match platform {
-                    FlowPlatform::Linux(linux_distribution) => match linux_distribution {
-                        FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::Ubuntu => {
-                            "binutils-aarch64-linux-gnu"
-                        }
-                        FlowPlatformLinuxDistro::Arch => {
-                            match_arch!(host_arch, FlowArch::X86_64, "aarch64-linux-gnu-binutils")
-                        }
-                        FlowPlatformLinuxDistro::Nix => "binutils",
-                        FlowPlatformLinuxDistro::Unknown => {
-                            anyhow::bail!("Unknown Linux distribution")
-                        }
-                    },
-                    _ => anyhow::bail!("Unsupported platform"),
-                };
-                (pkg, "aarch64-linux-gnu-objcopy")
-            }
+            CommonArch::Aarch64 => match platform {
+                FlowPlatform::Linux(linux_distribution) => match linux_distribution {
+                    FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::Ubuntu => {
+                        ("binutils-aarch64-linux-gnu", "aarch64-linux-gnu-objcopy")
+                    }
+                    FlowPlatformLinuxDistro::Arch => {
+                        match_arch!(
+                            host_arch,
+                            FlowArch::X86_64,
+                            ("aarch64-linux-gnu-binutils", "aarch64-linux-gnu-objcopy")
+                        )
+                    }
+                    FlowPlatformLinuxDistro::Nix => {
+                        ("binutils", "aarch64-unknown-linux-gnu-objcopy")
+                    }
+                    FlowPlatformLinuxDistro::Unknown => {
+                        anyhow::bail!("Unknown Linux distribution")
+                    }
+                },
+                _ => anyhow::bail!("Unsupported platform"),
+            },
         };
 
         let installed_objcopy =
@@ -79,22 +85,44 @@ impl SimpleFlowNode for Node {
                 },
             );
 
+        // Get the repo path for nix-shell to find shell.nix
+        let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
+
         ctx.emit_rust_step("split debug symbols", |ctx| {
             installed_objcopy.clone().claim(ctx);
+            let platform = ctx.platform();
             let in_bin = in_bin.claim(ctx);
             let out_bin = out_bin.claim(ctx);
             let out_dbg_info = out_dbg_info.claim(ctx);
+            let openvmm_repo_path = openvmm_repo_path.claim(ctx);
             move |rt| {
                 let in_bin = rt.read(in_bin);
+                let openvmm_repo_path = rt.read(openvmm_repo_path);
 
-                let sh = xshell::Shell::new()?;
+                let sh = FloweyShell::new(platform)?;
                 let output = sh.current_dir().join(in_bin.file_name().unwrap());
-                xshell::cmd!(sh, "{objcopy_bin} --only-keep-debug {in_bin} {output}.dbg").run()?;
-                xshell::cmd!(
-                    sh,
-                    "{objcopy_bin} --strip-all --keep-section=.build_info --add-gnu-debuglink={output}.dbg {in_bin} {output}"
-                )
-                .run()?;
+                let output_dbg = format!("{}.dbg", output.display());
+
+                // Change to repo directory so nix-shell can find shell.nix
+                sh.change_dir(&openvmm_repo_path);
+
+                // First command: extract debug info
+                let args1 = vec![
+                    "--only-keep-debug".to_string(),
+                    in_bin.display().to_string(),
+                    output_dbg.clone(),
+                ];
+                sh.run_cmd(objcopy_bin, &args1, &BTreeMap::new())?;
+
+                // Second command: strip debug info and add debug link
+                let args2 = vec![
+                    "--strip-all".to_string(),
+                    "--keep-section=.build_info".to_string(),
+                    format!("--add-gnu-debuglink={}", output_dbg),
+                    in_bin.display().to_string(),
+                    output.display().to_string(),
+                ];
+                sh.run_cmd(objcopy_bin, &args2, &BTreeMap::new())?;
 
                 let output = output.absolute()?;
 
