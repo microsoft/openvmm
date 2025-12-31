@@ -3,7 +3,7 @@
 
 //! Wrapper around `update-rootfs.py`
 
-use crate::download_openvmm_deps::OpenvmmDepsArch;
+use crate::resolve_openvmm_deps::OpenvmmDepsArch;
 use crate::run_cargo_build::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -52,7 +52,7 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
@@ -64,6 +64,7 @@ impl FlowNode for Node {
             FlowPlatform::Linux(linux_distribution) => match linux_distribution {
                 FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::Ubuntu => "python3",
                 FlowPlatformLinuxDistro::Arch => "python",
+                FlowPlatformLinuxDistro::Nix => "python3",
                 FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
             },
             _ => anyhow::bail!("Unsupported platform"),
@@ -102,11 +103,11 @@ impl FlowNode for Node {
 
             let interactive_dep = if interactive {
                 ctx.reqv(|v| {
-                    crate::download_openvmm_deps::Request::GetOpenhclCpioDbgrd(openvmm_deps_arch, v)
+                    crate::resolve_openvmm_deps::Request::GetOpenhclCpioDbgrd(openvmm_deps_arch, v)
                 })
             } else {
                 ctx.reqv(|v| {
-                    crate::download_openvmm_deps::Request::GetOpenhclCpioShell(openvmm_deps_arch, v)
+                    crate::resolve_openvmm_deps::Request::GetOpenhclCpioShell(openvmm_deps_arch, v)
                 })
             };
 
@@ -116,6 +117,7 @@ impl FlowNode for Node {
 
             ctx.emit_rust_step("building openhcl initrd", |ctx| {
                 pydeps.clone().claim(ctx);
+                let platform = ctx.platform();
                 let interactive_dep = interactive_dep.claim(ctx);
                 let rootfs_config = rootfs_config.claim(ctx);
                 let extra_env = extra_env.claim(ctx);
@@ -131,7 +133,7 @@ impl FlowNode for Node {
                     let openvmm_repo_path = rt.read(openvmm_repo_path);
                     let kernel_package_root = rt.read(kernel_package_root);
 
-                    let sh = xshell::Shell::new()?;
+                    let sh = FloweyShell::new(platform)?;
 
                     let initrd_path = sh.current_dir().join("openhcl.cpio.gz");
 

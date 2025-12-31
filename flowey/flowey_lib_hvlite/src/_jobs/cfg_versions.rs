@@ -6,6 +6,7 @@
 //! pipelines.
 
 use crate::download_openhcl_kernel_package::OpenhclKernelPackageKind;
+use crate::run_cargo_build::common::CommonArch;
 use flowey::node::prelude::*;
 
 // FUTURE: instead of hard-coding these values in-code, we might want to make
@@ -34,7 +35,11 @@ pub const OPENVMM_DEPS: &str = "0.1.0-20250403.3";
 pub const PROTOC: &str = "27.1";
 
 flowey_request! {
-    pub struct Request {}
+    pub enum Request {
+        Download,
+        Local(CommonArch, ReadVar<PathBuf>, ReadVar<PathBuf>),
+        NixEnvironment(CommonArch),
+    }
 }
 
 new_flow_node!(struct Node);
@@ -45,8 +50,9 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
+        ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
         ctx.import::<flowey_lib_common::download_cargo_fuzz::Node>();
         ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
@@ -58,16 +64,158 @@ impl FlowNode for Node {
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
         ctx.import::<flowey_lib_common::install_rust::Node>();
+        ctx.import::<flowey_lib_common::nix_deps_provider::Node>();
     }
 
     #[rustfmt::skip]
-    fn emit(_requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
-        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()));
-        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()));
-        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::CvmDev, OPENHCL_KERNEL_DEV_VERSION.into()));
-        ctx.req(crate::download_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
-        ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
+    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let mut has_local_requests = false;
+        let mut has_nix_requests = false;
+        let mut nix_architectures: BTreeSet<CommonArch> = BTreeSet::new();
+        let mut local_openvmm_deps: BTreeMap<CommonArch, ReadVar<PathBuf>> = BTreeMap::new();
+        let mut local_protoc: Option<ReadVar<PathBuf>> = None;
+        let mut local_kernel: BTreeMap<CommonArch, ReadVar<PathBuf>> = BTreeMap::new();
+        let mut local_uefi: BTreeMap<CommonArch, ReadVar<PathBuf>> = BTreeMap::new();
+
+        for req in requests {
+            match req {
+                Request::Download => {
+                    // Download requests are always allowed and coexist with Local/Nix requests
+                }
+                Request::Local(arch, path, protoc_path) => {
+                    has_local_requests = true;
+
+                    // Check that for every arch that shows up, the path is always the same
+                    if let Some(existing_path) = local_openvmm_deps.get(&arch) {
+                        if !existing_path.eq(&path) {
+                            anyhow::bail!(
+                                "OpenvmmDepsPath for {:?} must be consistent across requests",
+                                arch
+                            );
+                        }
+                    } else {
+                        local_openvmm_deps.insert(arch, path);
+                    }
+
+                    same_across_all_reqs_backing_var("ProtocPath", &mut local_protoc, protoc_path)?;
+                }
+                Request::NixEnvironment(arch) => {
+                    has_nix_requests = true;
+                    nix_architectures.insert(arch);
+                }
+            }
+        }
+
+        // If NixEnvironment was requested, get paths from nix_deps_provider
+        if has_nix_requests {
+            // Get the repo path so nix_deps_provider can access shell.nix
+            let repo_path = ctx.reqv(|v| crate::git_checkout_openvmm_repo::Request::GetRepoDir(
+                crate::git_checkout_openvmm_repo::req::GetRepoDir(v)
+            ));
+            ctx.req(flowey_lib_common::nix_deps_provider::Request::SetRepoPath(repo_path));
+
+            // Request arch-specific dependencies from nix only for requested architectures
+            for &arch in &nix_architectures {
+                let nix_arch = match arch {
+                    CommonArch::X86_64 => flowey_lib_common::nix_deps_provider::OpenvmmDepsArch::X86_64,
+                    CommonArch::Aarch64 => flowey_lib_common::nix_deps_provider::OpenvmmDepsArch::Aarch64,
+                };
+
+                let nix_openvmm_deps = ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetOpenvmmDeps(
+                    nix_arch,
+                    v,
+                ));
+                local_openvmm_deps.insert(arch, nix_openvmm_deps);
+
+                let nix_kernel = ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetKernel(
+                    nix_arch,
+                    v,
+                ));
+                local_kernel.insert(arch, nix_kernel);
+
+                let nix_uefi = ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetUefiMuMsvm(
+                    nix_arch,
+                    v,
+                ));
+                local_uefi.insert(arch, nix_uefi);
+            }
+
+            local_protoc = Some(ctx.reqv(flowey_lib_common::nix_deps_provider::Request::GetProtoc));
+        }
+
+        // Track whether we have local paths for openvmm_deps and protoc
+        let has_local_openvmm_deps = !local_openvmm_deps.is_empty();
+        let has_local_protoc = local_protoc.is_some();
+        let has_local_kernel = !local_kernel.is_empty();
+        let has_local_uefi = !local_uefi.is_empty();
+
+        // If we have local requests, protoc must be provided
+        if has_local_requests && local_protoc.is_none() {
+            anyhow::bail!("Local mode requires protoc path to be specified");
+        }
+
+        // Set up local paths for openvmm_deps if provided
+        for (arch, path) in local_openvmm_deps {
+            let openvmm_deps_arch = match arch {
+                CommonArch::X86_64 => crate::resolve_openvmm_deps::OpenvmmDepsArch::X86_64,
+                CommonArch::Aarch64 => crate::resolve_openvmm_deps::OpenvmmDepsArch::Aarch64,
+            };
+
+            ctx.req(crate::resolve_openvmm_deps::Request::LocalPath(
+                openvmm_deps_arch,
+                path,
+            ));
+        }
+
+        // Set up local path for protoc if provided
+        if let Some(protoc_path) = local_protoc {
+            ctx.req(flowey_lib_common::download_protoc::Request::LocalPath(
+                protoc_path,
+            ));
+        }
+
+        // Set up arch-specific kernel paths if provided
+        for (arch, path) in local_kernel {
+            let kernel_arch = match arch {
+                CommonArch::X86_64 => crate::download_openhcl_kernel_package::OpenhclKernelPackageArch::X86_64,
+                CommonArch::Aarch64 => crate::download_openhcl_kernel_package::OpenhclKernelPackageArch::Aarch64,
+            };
+            ctx.req(crate::download_openhcl_kernel_package::Request::LocalPathForArch(
+                kernel_arch,
+                path,
+            ));
+        }
+
+        // Set up arch-specific UEFI paths if provided
+        for (arch, path) in local_uefi {
+            let uefi_arch = match arch {
+                CommonArch::X86_64 => crate::download_uefi_mu_msvm::MuMsvmArch::X86_64,
+                CommonArch::Aarch64 => crate::download_uefi_mu_msvm::MuMsvmArch::Aarch64,
+            };
+            ctx.req(crate::download_uefi_mu_msvm::Request::LocalPathForArch(
+                uefi_arch,
+                path,
+            ));
+        }
+
+        // Set up version requests for everything
+        if !has_local_kernel {
+            ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
+            ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()));
+            ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()));
+            ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::CvmDev, OPENHCL_KERNEL_DEV_VERSION.into()));
+        }
+
+        if !has_local_openvmm_deps {
+            ctx.req(crate::resolve_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
+        }
+
+        if !has_local_uefi {
+            ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
+        }
+
         ctx.req(flowey_lib_common::download_azcopy::Request::Version(AZCOPY.into()));
         ctx.req(flowey_lib_common::download_cargo_fuzz::Request::Version(FUZZ.into()));
         ctx.req(flowey_lib_common::download_cargo_nextest::Request::Version(NEXTEST.into()));
@@ -75,7 +223,9 @@ impl FlowNode for Node {
         ctx.req(flowey_lib_common::download_mdbook::Request::Version(MDBOOK.into()));
         ctx.req(flowey_lib_common::download_mdbook_admonish::Request::Version(MDBOOK_ADMONISH.into()));
         ctx.req(flowey_lib_common::download_mdbook_mermaid::Request::Version(MDBOOK_MERMAID.into()));
-        ctx.req(flowey_lib_common::download_protoc::Request::Version(PROTOC.into()));
+        if !has_local_protoc {
+            ctx.req(flowey_lib_common::download_protoc::Request::Version(PROTOC.into()));
+        }
         ctx.req(flowey_lib_common::install_azure_cli::Request::Version(AZURE_CLI.into()));
         ctx.req(flowey_lib_common::install_nodejs::Request::Version(NODEJS.into()));
         if !matches!(ctx.backend(), FlowBackend::Ado) {

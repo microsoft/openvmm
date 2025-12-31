@@ -1,4 +1,6 @@
 #!/bin/sh
 
 script_dir="$(dirname "$0")"
-MUSL_ARCH=x86_64 MUSL_SYSROOT="$X86_64_SYSROOT" exec "${REALGCC:-x86_64-linux-gnu-gcc}" "$@" -specs "$script_dir/musl-gcc.specs"
+# Use gcc as the default for x86_64, since we're typically building on x86_64 hosts
+# REALGCC or X86_64_GCC can override this
+MUSL_ARCH=x86_64 MUSL_SYSROOT="$X86_64_SYSROOT" exec "${REALGCC:-${X86_64_GCC:-gcc}}" "$@" -specs "$script_dir/musl-gcc.specs"

@@ -39,6 +39,7 @@ pub fn extract_zip_if_new_deps(ctx: &mut NodeCtx<'_>) -> ExtractZipDeps {
                     FlowPlatformLinuxDistro::Fedora => vec!["bsdtar".into()],
                     FlowPlatformLinuxDistro::Ubuntu => vec!["libarchive-tools".into()],
                     FlowPlatformLinuxDistro::Arch => vec!["libarchive".into()],
+                    FlowPlatformLinuxDistro::Nix => vec!["bsdtar".into()],
                     FlowPlatformLinuxDistro::Unknown => vec![],
                 },
                 _ => {
@@ -68,7 +69,7 @@ pub fn extract_zip_if_new(
         bsdtar_installed: _,
     } = deps;
 
-    let sh = xshell::Shell::new()?;
+    let sh = rt.shell()?;
 
     let root_dir = match persistent_dir {
         Some(dir) => rt.read(dir),

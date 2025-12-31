@@ -261,12 +261,15 @@ impl FlowNode for Node {
                         crate_type,
                     } = cmd;
 
-                    let sh = xshell::Shell::new()?;
+                    let sh = rt.shell()?;
 
                     let out_dir = sh.current_dir();
 
                     sh.change_dir(cargo_work_dir);
-                    let mut cmd = xshell::cmd!(sh, "{argv0} {params...}");
+
+                    // Prepare all parameters
+                    let mut all_params = params.clone();
+
                     if !matches!(rt.backend(), FlowBackend::Local) {
                         // if running in CI, no need to waste time with incremental
                         // build artifacts
@@ -275,21 +278,17 @@ impl FlowNode for Node {
                         // if build locally, use per-package target dirs
                         // to avoid rebuilding
                         // TODO: remove this once cargo's caching improves
-                        cmd = cmd
-                            .arg("--target-dir")
-                            .arg(in_folder.join("target").join(&crate_name));
+                        all_params.push("--target-dir".to_owned());
+                        all_params.push(
+                            in_folder
+                                .join("target")
+                                .join(&crate_name)
+                                .to_string_lossy()
+                                .to_string(),
+                        );
                     }
-                    cmd = cmd.envs(&with_env);
 
-                    log::info!(
-                        "$ {}{cmd}",
-                        with_env
-                            .iter()
-                            .map(|(k, v)| format!("{k}={v} "))
-                            .collect::<Vec<_>>()
-                            .concat()
-                    );
-                    let json = cmd.read()?;
+                    let json = sh.read_cmd(&argv0, &all_params, &with_env)?;
                     let messages: Vec<cargo_output::Message> =
                         serde_json::Deserializer::from_str(&json)
                             .into_iter()

@@ -22,6 +22,10 @@ pub enum OpenhclKernelPackageArch {
 
 flowey_request! {
     pub enum Request {
+        /// Use a locally provided kernel package directory (same path for all archs)
+        LocalPath(ReadVar<PathBuf>),
+        /// Use arch-specific locally provided kernel package directories
+        LocalPathForArch(OpenhclKernelPackageArch, ReadVar<PathBuf>),
         /// Specify version string to use for each package kind
         Version(OpenhclKernelPackageKind, String),
         /// Download the specified kernel package
@@ -44,6 +48,9 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+        let mut local_path: Option<ReadVar<PathBuf>> = None;
+        let mut local_paths_per_arch: BTreeMap<OpenhclKernelPackageArch, ReadVar<PathBuf>> =
+            BTreeMap::new();
         let mut versions: BTreeMap<OpenhclKernelPackageKind, String> = BTreeMap::new();
         let mut reqs: BTreeMap<
             (OpenhclKernelPackageKind, OpenhclKernelPackageArch),
@@ -52,6 +59,21 @@ impl FlowNode for Node {
 
         for req in requests {
             match req {
+                Request::LocalPath(path) => {
+                    same_across_all_reqs_backing_var("LocalPath", &mut local_path, path)?
+                }
+                Request::LocalPathForArch(arch, path) => {
+                    if let Some(existing_path) = local_paths_per_arch.get(&arch) {
+                        if !existing_path.eq(&path) {
+                            anyhow::bail!(
+                                "LocalPathForArch for {:?} must be consistent across requests",
+                                arch
+                            );
+                        }
+                    } else {
+                        local_paths_per_arch.insert(arch, path);
+                    }
+                }
                 Request::Version(arch, v) => {
                     let mut old = versions.insert(arch, v.clone());
                     same_across_all_reqs("SetVersion", &mut old, v)?
@@ -62,15 +84,75 @@ impl FlowNode for Node {
             }
         }
 
-        for req_kind in reqs.keys().map(|(k, _)| k) {
-            if !versions.contains_key(req_kind) {
-                anyhow::bail!("missing SetVersion for {:?}", req_kind)
+        let has_local_path = local_path.is_some() || !local_paths_per_arch.is_empty();
+
+        if has_local_path && !versions.is_empty() {
+            anyhow::bail!("Cannot specify both Version and LocalPath/LocalPathForArch");
+        }
+
+        if local_path.is_some() && !local_paths_per_arch.is_empty() {
+            anyhow::bail!("Cannot specify both LocalPath and LocalPathForArch");
+        }
+
+        if !has_local_path {
+            for req_kind in reqs.keys().map(|(k, _)| k) {
+                if !versions.contains_key(req_kind) {
+                    anyhow::bail!("missing SetVersion for {:?}", req_kind)
+                }
             }
         }
 
         // -- end of req processing -- //
 
         if reqs.is_empty() {
+            return Ok(());
+        }
+
+        // If local path provided, use it directly (same path for all archs)
+        if let Some(local_path) = local_path {
+            ctx.emit_rust_step("use local kernel package", |ctx| {
+                let local_path = local_path.claim(ctx);
+                let reqs = reqs.into_values().flatten().collect::<Vec<_>>().claim(ctx);
+
+                move |rt| {
+                    let kernel_pkg_dir = rt.read(local_path);
+                    // For local path, the directory itself is the package root
+                    rt.write_all(reqs, &kernel_pkg_dir);
+                    Ok(())
+                }
+            });
+
+            return Ok(());
+        }
+
+        // If arch-specific local paths provided, use them
+        if !local_paths_per_arch.is_empty() {
+            // Group requests by arch
+            let mut reqs_by_arch: BTreeMap<OpenhclKernelPackageArch, Vec<WriteVar<PathBuf>>> =
+                BTreeMap::new();
+            for ((kind, arch), vars) in reqs {
+                let _ = kind; // kind doesn't matter for local paths
+                reqs_by_arch.entry(arch).or_default().extend(vars);
+            }
+
+            for (arch, out_vars) in reqs_by_arch {
+                let local_path_for_arch = local_paths_per_arch
+                    .get(&arch)
+                    .ok_or_else(|| anyhow::anyhow!("Missing LocalPathForArch for {:?}", arch))?
+                    .clone();
+
+                ctx.emit_rust_step(format!("use local kernel package for {:?}", arch), |ctx| {
+                    let local_path = local_path_for_arch.claim(ctx);
+                    let out_vars = out_vars.claim(ctx);
+
+                    move |rt| {
+                        let kernel_pkg_dir = rt.read(local_path);
+                        rt.write_all(out_vars, &kernel_pkg_dir);
+                        Ok(())
+                    }
+                });
+            }
+
             return Ok(());
         }
 

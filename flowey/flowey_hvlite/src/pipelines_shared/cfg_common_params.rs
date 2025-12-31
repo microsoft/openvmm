@@ -36,6 +36,13 @@ pub struct LocalRunArgs {
     /// installed.
     #[clap(long)]
     external_nuget_auth: bool,
+
+    /// Use nix for dependency resolution and shell command execution.
+    ///
+    /// This wraps all shell commands in `nix-shell --pure --run` and resolves
+    /// dependencies from the nix environment instead of downloading them.
+    #[clap(long)]
+    use_nix: bool,
 }
 
 pub type FulfillCommonRequestsParamsResolver =
@@ -52,6 +59,7 @@ fn get_params_local(
             non_interactive,
             force_nuget_mono,
             external_nuget_auth,
+            use_nix: _,
         } = local_run_args.clone().unwrap_or_default();
 
         flowey_lib_hvlite::_jobs::cfg_common::Params {
