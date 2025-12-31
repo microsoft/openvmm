@@ -88,9 +88,18 @@ impl FloweyShell {
         args: &[String],
         env_vars: &BTreeMap<String, String>,
     ) -> Result<String, xshell::Error> {
+        // Log the command being run (read() doesn't log by default unlike run())
         if self.needs_nix_wrapper() {
+            let full_cmd = build_shell_command(program, args, env_vars);
+            log::info!("$ nix-shell --pure --run {:?}", full_cmd);
             self.read_in_nix_shell(program, args, env_vars)
         } else {
+            let env_prefix = env_vars
+                .iter()
+                .map(|(k, v)| format!("{k}={v} "))
+                .collect::<String>();
+            let args_str = args.join(" ");
+            log::info!("$ {}{} {}", env_prefix, program, args_str);
             let mut cmd = xshell::cmd!(self.inner, "{program} {args...}");
             cmd = cmd.envs(env_vars);
             cmd.read()

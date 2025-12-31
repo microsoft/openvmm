@@ -192,18 +192,5 @@ in pkgs.mkShell {
     ln -sf ${x64CrossGcc}/bin/x86_64-unknown-linux-gnu-objcopy $NIX_CC_WRAPPER_DIR/x86_64-linux-gnu-objcopy
     ''}
     export PATH="$NIX_CC_WRAPPER_DIR:$PATH"
-
-    echo "OpenVMM Nix Shell"
-    echo "================="
-    echo "Host architecture: ${hostArch}"
-    echo ""
-    echo "Build commands:"
-    echo "  cargo xflowey build-igvm x64 \$CARGO_BUILD_ARGS_X64"
-    echo "  cargo xflowey build-igvm x64-cvm \$CARGO_BUILD_ARGS_X64_CVM"
-    echo "  cargo xflowey build-igvm x64-devkern \$CARGO_BUILD_ARGS_X64_DEVKERN"
-    echo "  cargo xflowey build-igvm x64-cvm-devkern \$CARGO_BUILD_ARGS_X64_CVM_DEVKERN"
-    echo "  cargo xflowey build-igvm aarch64 \$CARGO_BUILD_ARGS_AARCH64"
-    echo "  cargo xflowey build-igvm aarch64-devkern \$CARGO_BUILD_ARGS_AARCH64_DEVKERN"
-    echo ""
   '';
 }

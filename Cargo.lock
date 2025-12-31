@@ -1976,6 +1976,7 @@ dependencies = [
  "anyhow",
  "fs-err",
  "linkme",
+ "log",
  "serde",
  "serde_json",
  "serde_yaml",

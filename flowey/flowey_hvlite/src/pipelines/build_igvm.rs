@@ -341,7 +341,7 @@ impl IntoPipeline for BuildIgvmCli {
             OpenhclRecipeCli::Aarch64 | OpenhclRecipeCli::Aarch64Devkern => CommonArch::Aarch64,
         };
 
-// Determine platform: use Nix if --use-nix is set, otherwise detect from host
+        // Determine platform: use Nix if --use-nix is set, otherwise detect from host
         let platform = if use_nix {
             FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
         } else {

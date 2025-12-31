@@ -157,19 +157,6 @@ impl FlowNode for Node {
                     nix_openvmm_deps,
                 ));
 
-                let nix_kernel = ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetKernel(
-                    nix_arch,
-                    v,
-                ));
-                // Store nix kernel paths for resolve_openhcl_kernel_package
-                ctx.req(crate::download_openhcl_kernel_package::Request::LocalPathForArch(
-                    match arch {
-                        CommonArch::X86_64 => crate::download_openhcl_kernel_package::OpenhclKernelPackageArch::X86_64,
-                        CommonArch::Aarch64 => crate::download_openhcl_kernel_package::OpenhclKernelPackageArch::Aarch64,
-                    },
-                    nix_kernel,
-                ));
-
                 let nix_uefi = ctx.reqv(|v| flowey_lib_common::nix_deps_provider::Request::GetUefiMuMsvm(
                     nix_arch,
                     v,

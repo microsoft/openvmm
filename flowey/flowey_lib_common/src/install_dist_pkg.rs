@@ -208,11 +208,16 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        // Explicitly fail on installation requests in Nix environments.
+        // For Nix environments: if there are no packages to install, just emit a no-op.
+        // If there ARE packages requested, fail since Nix manages deps differently.
         if matches!(
             ctx.platform(),
             FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
         ) {
+            if packages.is_empty() {
+                ctx.emit_side_effect_step([], did_install);
+                return Ok(());
+            }
             anyhow::bail!(
                 "Nix environments cannot install packages. Dependencies should be managed by Nix. Attempted to install {:?}",
                 packages

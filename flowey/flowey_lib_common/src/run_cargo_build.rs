@@ -288,17 +288,6 @@ impl FlowNode for Node {
                         );
                     }
 
-                    log::info!(
-                        "$ {}{} {}",
-                        with_env
-                            .iter()
-                            .map(|(k, v)| format!("{k}={v} "))
-                            .collect::<Vec<_>>()
-                            .concat(),
-                        argv0,
-                        all_params.join(" ")
-                    );
-
                     let json = sh.read_cmd(&argv0, &all_params, &with_env)?;
                     let messages: Vec<cargo_output::Message> =
                         serde_json::Deserializer::from_str(&json)

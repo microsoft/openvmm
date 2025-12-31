@@ -938,12 +938,6 @@ jobs:
         flowey e 11 flowey_lib_common::run_cargo_build 3
         flowey e 11 flowey_lib_hvlite::run_cargo_build 9
       shell: bash
-    - name: checking if packages need to be installed
-      run: flowey e 11 flowey_lib_common::install_dist_pkg 0
-      shell: bash
-    - name: installing packages
-      run: flowey e 11 flowey_lib_common::install_dist_pkg 1
-      shell: bash
     - name: split debug symbols
       run: |-
         flowey e 11 flowey_lib_hvlite::run_split_debug_info 6
@@ -6714,12 +6708,6 @@ jobs:
       run: |-
         flowey e 9 flowey_lib_common::run_cargo_build 1
         flowey e 9 flowey_lib_hvlite::run_cargo_build 4
-      shell: bash
-    - name: checking if packages need to be installed
-      run: flowey e 9 flowey_lib_common::install_dist_pkg 0
-      shell: bash
-    - name: installing packages
-      run: flowey e 9 flowey_lib_common::install_dist_pkg 1
       shell: bash
     - name: split debug symbols
       run: |-

@@ -641,8 +641,10 @@ impl IntoPipeline for CheckinGatesCli {
             // Nix artifacts are only needed for GitHub backend
             let (pub_openhcl_igvm_nix, pub_openhcl_igvm_extras_nix) =
                 if !matches!(backend_hint, PipelineBackendHint::Ado) {
-                    let (pub_igvm, _) = pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-nix"));
-                    let (pub_extras, _) = pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras-nix"));
+                    let (pub_igvm, _) =
+                        pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-nix"));
+                    let (pub_extras, _) =
+                        pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras-nix"));
                     (Some(pub_igvm), Some(pub_extras))
                 } else {
                     (None, None)
@@ -758,13 +760,13 @@ impl IntoPipeline for CheckinGatesCli {
 
             all_jobs.push(job.finish());
 
-// Nix build job is only supported on GitHub
+            // Nix build job is only supported on GitHub
             if !matches!(backend_hint, PipelineBackendHint::Ado) {
                 let pub_openhcl_igvm_nix = pub_openhcl_igvm_nix.unwrap();
                 let pub_openhcl_igvm_extras_nix = pub_openhcl_igvm_extras_nix.unwrap();
                 let job = pipeline
                     .new_job(
-                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix),
                         FlowArch::X86_64,
                         format!("{} with nix", build_openhcl_job_tag(arch_tag)),
                     )
