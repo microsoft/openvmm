@@ -9,7 +9,7 @@
 
 ## Overview
 
-OpenHCL is a paravisor execution environment that runs within the guest partition of a virtual machine. It provides virtualization services to the guest OS from within the guest itself, rather than from the host.
+OpenHCL is a paravisor execution environment that runs within the guest partition of a virtual machine. It provides virtualization services to the guest OS from within the guest partition itself, rather than from the host as is traditionally done.
 
 The following diagram offers a brief, high-level overview of the OpenHCL Architecture.
 
@@ -20,9 +20,9 @@ The following diagram offers a brief, high-level overview of the OpenHCL Archite
 OpenHCL relies on [Virtual Trust Levels] (VTLs) to establish a security boundary between itself and the guest OS.
 
 - **VTL2:** OpenHCL runs here[^sk]. It has higher privileges and is isolated from VTL0.
-- **VTL0:** The Guest OS (e.g., Windows, Linux) runs here. It cannot access VTL2 memory or resources.
+- **VTL0 (and sometimes VTL1):** The Guest OS (e.g., Windows, Linux) runs here. It cannot access VTL2 memory or resources.
 
-This isolation is enforced by the underlying hypervisor (Hyper-V) and can be backed by:
+This isolation is enforced by the system configured by the underlying virtual machine monitor (Hyper-V) and can be backed by:
 
 - Hardware [TEEs], like Intel [TDX] and AMD [SEV-SNP].
 - Software-based constructs, like Hyper-V [VSM].
@@ -33,7 +33,7 @@ OpenHCL enables several key scenarios by providing a trusted execution environme
 
 ### Azure Boost
 
-OpenHCL acts as a compatibility layer for Azure Boost. It translates legacy synthetic device interfaces (like VMBus networking and storage) used by the guest OS into the hardware-accelerated interfaces (proprietary [Microsoft Azure Network Adapter] (MANA) and NVMe) provided by the Azure Boost infrastructure. This allows unmodified guest images to take advantage of next-generation hardware.
+OpenHCL acts as a compatibility layer for Azure Boost. It translates legacy synthetic device interfaces (like VMBus networking and storage) used by the guest OS into the hardware-accelerated interfaces (proprietary [Microsoft Azure Network Adapter] (MANA) and NVMe) provided by the Azure Boost infrastructure. This allows unmodified guests to take advantage of next-generation hardware.
 
 The following diagram shows a high level overview of how synthetic networking is supported in OpenHCL over Microsoft Azure Network Adapter (MANA)
 

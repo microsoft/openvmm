@@ -11,7 +11,7 @@ The boot shim is the first code that executes in VTL2. It is responsible for ear
 **Key Responsibilities:**
 
 - **Hardware Initialization:** Sets up CPU state, enables MMU, and configures initial page tables.
-- **Configuration Parsing:** Receives boot parameters from the host that were generated at IGVM build time.
+- **Configuration Parsing:** Receives boot parameters from the host that were generated at IGVM build time. In the case of isolated VMs, `openhcl_boot` will also filter this host-provided configuration to remove elements that can weaken the isolated VM guarantees (such as exposing debugging interfaces).
 - **Device Tree Construction:** Builds a device tree describing the hardware configuration (CPU topology, memory regions, devices).
 - **Sidecar Initialization:** Sets up control structures for the Sidecar kernel (x86_64 only).
 - **Kernel Handoff:** Transfers control to the Linux kernel.
@@ -29,7 +29,7 @@ OpenHCL runs on top of a minimal, specialized Linux kernel. This kernel provides
 
 ## Sidecar Kernel (x86_64)
 
-On x86_64 systems, OpenHCL includes a "sidecar" kernel—a lightweight, bare-metal kernel that runs on a subset of CPUs to improve boot performance and reduce resource usage.
+On x86_64 systems, OpenHCL includes a "sidecar" kernel — a lightweight, bare-metal kernel that runs on a subset of CPUs to improve boot performance and reduce resource usage.
 
 For more details, see the [Sidecar Architecture](./sidecar.md) page.
 
@@ -39,7 +39,7 @@ For more details, see the [Sidecar Architecture](./sidecar.md) page.
 
 - **Fast Boot:** Allows secondary CPUs (APs) to boot quickly without initializing the full Linux kernel.
 - **Dispatch Loop:** Runs a minimal loop waiting for commands from the host or the main kernel.
-- **On-Demand Conversion:** Can be converted to a full Linux CPU if required.
+- **On-Demand Conversion:** Can be converted to a full Linux CPU when required.
 
 ## Init Process (`underhill_init`)
 
@@ -92,7 +92,7 @@ The diagnostics server provides an interface for debugging and monitoring the Op
 
 ## Profiler Worker (`profiler_worker`)
 
-The profiler worker is an on-demand process used for performance analysis.
+The profiler worker is an on-demand process used for performance analysis (only works if an Microsoft internal-only binary is located at a known location).
 
 **Source code:** [openhcl/profiler_worker](https://github.com/microsoft/openvmm/tree/main/openhcl/profiler_worker) | **Docs:** [profiler_worker rustdoc](https://openvmm.dev/rustdoc/linux/profiler_worker/index.html)
 
