@@ -22,6 +22,7 @@ use core::hint::spin_loop;
 use core::mem::MaybeUninit;
 use core::ptr::addr_of;
 use core::ptr::addr_of_mut;
+use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU32;
 use core::sync::atomic::Ordering::Acquire;
 use core::sync::atomic::Ordering::Relaxed;
@@ -185,6 +186,7 @@ fn init(
         enable_logging,
         node_count,
         ref nodes,
+        ref initial_state,
     } = params;
 
     ENABLE_LOG.store(enable_logging, Relaxed);
@@ -318,9 +320,31 @@ fn init(
             *response_vector = 0.into();
             *needs_attention = 0.into();
             reserved.fill(0);
+
+            // Default: the base VP is REMOVED (meaning the kernel will start it), the
+            // next `vp_count - 1` VPs are RUN, and any remaining VPs are REMOVED.
             cpu_status[0] = CpuStatus::REMOVED.0.into();
             cpu_status[1..vp_count as usize].fill_with(|| CpuStatus::RUN.0.into());
             cpu_status[vp_count as usize..].fill_with(|| CpuStatus::REMOVED.0.into());
+
+            // Override with the initial state from openhcl_boot.
+            if initial_state.per_cpu_state_specified {
+                for (i, &should_start) in initial_state
+                    .sidecar_starts_cpu
+                    .iter()
+                    .skip(base_vp as usize)
+                    .enumerate()
+                    .take(vp_count as usize)
+                {
+                    // Pragmatically, any CPU that has `RUN` should already match
+                    // the default above, but set it anyway for clarity.
+                    cpu_status[i] = if should_start {
+                        CpuStatus::RUN.0.into()
+                    } else {
+                        CpuStatus::REMOVED.0.into()
+                    };
+                }
+            }
         }
 
         node_init.push(NodeInit {
@@ -340,7 +364,8 @@ fn init(
     //
     // SAFETY: no concurrent mutators.
     let node_init = unsafe { &*addr_of!(NODE_INIT) };
-    start_aps(node_init, mapper);
+    let cpu_status: [AtomicU8; 1] = [0.into()]; // TODO: get the cpu_status for the BSP node
+    start_aps(node_init, mapper, &cpu_status);
 
     // Wait for all the APs to finish starting.
     {
@@ -366,7 +391,7 @@ struct NodeInit {
 
 static mut NODE_INIT: ArrayVec<NodeInit, { sidecar_defs::MAX_NODES }> = ArrayVec::new_const();
 
-fn start_aps(node_init: &[NodeInit], mapper: &mut temporary_map::Mapper) {
+fn start_aps(node_init: &[NodeInit], mapper: &mut temporary_map::Mapper, cpu_status: &[AtomicU8]) {
     for node in node_init {
         loop {
             let node_cpu_index = node.next_vp.fetch_add(1, Relaxed);
@@ -374,6 +399,20 @@ fn start_aps(node_init: &[NodeInit], mapper: &mut temporary_map::Mapper) {
             if node_cpu_index >= node.node.vp_count {
                 break;
             }
+
+            // See the init function for where we set the initial CPU status for why we can end up here with a REMOVED CPU.
+            // todo: map the control page PA for this node rather than relying on the passed in cpu_status slice (since that is only for
+            // the node that's actually starting something).
+            if cpu_status[node_cpu_index as usize].load(Relaxed) == CpuStatus::REMOVED.0.into() {
+                log!(
+                    "skipping VP {} (node base {}, node idx {}) as REMOVED",
+                    node.node.base_vp + node_cpu_index,
+                    node.node.base_vp,
+                    node_cpu_index
+                );
+                continue;
+            }
+
             match node.node.start(mapper, node_cpu_index) {
                 Ok(()) => {}
                 Err(err) => {
@@ -392,12 +431,14 @@ fn start_aps(node_init: &[NodeInit], mapper: &mut temporary_map::Mapper) {
 /// Must be called as an AP entry point.
 unsafe fn ap_init() -> ! {
     // Start any other pending APs.
+    // mattkur: I'm confused why this works ... start_aps will start at node 0, just like the BSP.
+    // what's stopping each node from trampling over each other?
     {
         // SAFETY: `NODE_INIT` is set before this routine is called.
         let node_init = unsafe { &*addr_of!(NODE_INIT) };
         // SAFETY: nothing else on this CPU is using the temporary map.
         let mut mapper = unsafe { temporary_map::Mapper::new(0) };
-        start_aps(node_init, &mut mapper)
+        start_aps(node_init, &mut mapper, &super::vp::control().cpu_status); // see todo in start_aps for why cpu_status is wrong here.
     }
     // SAFETY: this is an entry point.
     unsafe { super::vp::ap_entry() }
