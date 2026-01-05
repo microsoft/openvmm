@@ -14,7 +14,7 @@ use flowey::node::prelude::*;
 //
 // This would require nodes that currently accept a `Version(String)` to accept
 // a `Version(ReadVar<String>)`, but that shouldn't be a serious blocker.
-pub const AZCOPY: &str = "10.27.1-20241113";
+pub const AZCOPY: &str = "v10.27.1";
 pub const AZURE_CLI: &str = "2.56.0";
 pub const FUZZ: &str = "0.12.0";
 pub const GH_CLI: &str = "2.52.0";
