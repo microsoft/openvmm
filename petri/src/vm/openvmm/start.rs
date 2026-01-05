@@ -8,21 +8,24 @@ use super::PetriVmOpenVmm;
 use super::PetriVmResourcesOpenVmm;
 use crate::BootDeviceType;
 use crate::Firmware;
+use crate::OpenvmmLogConfig;
 use crate::PetriLogFile;
 use crate::PetriVmRuntimeConfig;
 use crate::worker::Worker;
 use anyhow::Context;
 use disk_backend_resources::FileDiskHandle;
 use guid::Guid;
-use hvlite_defs::config::DeviceVtl;
 use mesh_process::Mesh;
 use mesh_process::ProcessConfig;
 use mesh_worker::WorkerHost;
+use openvmm_defs::config::DeviceVtl;
 use pal_async::pipe::PolledPipe;
 use pal_async::task::Spawn;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use scsidisk_resources::SimpleScsiDiskHandle;
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::io::Write;
 use std::sync::Arc;
 use storvsp_resources::ScsiControllerHandle;
@@ -35,8 +38,11 @@ impl PetriVmConfigOpenVmm {
         let Self {
             firmware,
             arch,
+            host_log_levels,
             mut config,
             boot_device_type,
+
+            mesh,
 
             mut resources,
 
@@ -131,9 +137,19 @@ impl PetriVmConfigOpenVmm {
 
         tracing::debug!(?config, "OpenVMM config");
 
-        let mesh = Mesh::new("petri_mesh".to_string())?;
+        let log_env = match host_log_levels {
+            None | Some(OpenvmmLogConfig::TestDefault) => BTreeMap::<OsString, OsString>::from([
+                ("OPENVMM_LOG".into(), "debug".into()),
+                ("OPENVMM_SHOW_SPANS".into(), "true".into()),
+            ]),
+            Some(OpenvmmLogConfig::BuiltInDefault) => BTreeMap::new(),
+            Some(OpenvmmLogConfig::Custom(levels)) => levels
+                .iter()
+                .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+                .collect::<BTreeMap<OsString, OsString>>(),
+        };
 
-        let host = Self::openvmm_host(&mut resources, &mesh, openvmm_log_file)
+        let host = Self::openvmm_host(&mut resources, &mesh, openvmm_log_file, log_env)
             .await
             .context("failed to create host process")?;
         let (worker, halt_notif) = Worker::launch(&host, config)
@@ -226,6 +242,7 @@ impl PetriVmConfigOpenVmm {
         resources: &mut PetriVmResourcesOpenVmm,
         mesh: &Mesh,
         log_file: PetriLogFile,
+        vmm_env: BTreeMap<OsString, OsString>,
     ) -> anyhow::Result<WorkerHost> {
         // Copy the child's stderr to this process's, since internally this is
         // wrapped by the test harness.
@@ -245,8 +262,9 @@ impl PetriVmConfigOpenVmm {
         mesh.launch_host(
             ProcessConfig::new("vmm")
                 .process_name(&resources.openvmm_path)
-                .stderr(Some(stderr_write)),
-            hvlite_defs::entrypoint::MeshHostParams { runner },
+                .stderr(Some(stderr_write))
+                .env(vmm_env.into_iter()),
+            openvmm_defs::entrypoint::MeshHostParams { runner },
         )
         .await?;
         Ok(host)

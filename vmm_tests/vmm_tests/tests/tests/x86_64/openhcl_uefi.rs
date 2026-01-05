@@ -6,6 +6,7 @@
 use anyhow::Context;
 use futures::StreamExt;
 use petri::MemoryConfig;
+use petri::OpenvmmLogConfig;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
@@ -25,7 +26,7 @@ struct ExpectedNvmeDeviceProperties {
 struct NvmeRelayTestParams {
     openhcl_cmdline: &'static str,
     processor_topology: Option<ProcessorTopology>,
-    vtl2_base_address_type: Option<hvlite_defs::config::Vtl2BaseAddressType>,
+    vtl2_base_address_type: Option<openvmm_defs::config::Vtl2BaseAddressType>,
     expected_props: Option<ExpectedNvmeDeviceProperties>,
 }
 
@@ -51,6 +52,13 @@ async fn nvme_relay_test_core(
     } = params;
 
     let (vm, agent) = config
+        .with_host_log_levels(OpenvmmLogConfig::Custom(
+            [
+                ("OPENVMM_LOG".to_owned(), "debug,vpci=trace".to_owned()),
+                ("OPENVMM_SHOW_SPANS".to_owned(), "true".to_owned()),
+            ]
+            .into(),
+        ))
         .with_openhcl_command_line(openhcl_cmdline)
         .with_vmbus_redirect(true)
         .with_processor_topology(processor_topology.unwrap_or(ProcessorTopology {
@@ -58,7 +66,7 @@ async fn nvme_relay_test_core(
             ..Default::default()
         }))
         .with_vtl2_base_address_type(vtl2_base_address_type.unwrap_or(
-            hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(512 * 1024 * 1024), // 512MB to be more than what is defined in the dev manifest json
             },
         ))
@@ -215,7 +223,7 @@ async fn nvme_relay_heuristic_debug_16vp_768mb_heavy(
                 vp_count: 16,
                 ..Default::default()
             }),
-            vtl2_base_address_type: Some(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(768 * 1024 * 1024),
             }),
             expected_props: Some(ExpectedNvmeDeviceProperties {
@@ -246,7 +254,7 @@ async fn nvme_relay_heuristic_release_16vp_256mb_heavy(
                 vp_count: 16,
                 ..Default::default()
             }),
-            vtl2_base_address_type: Some(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(256 * 1024 * 1024),
             }),
             expected_props: Some(ExpectedNvmeDeviceProperties {
@@ -280,7 +288,7 @@ async fn nvme_relay_heuristic_release_32vp_500mb_very_heavy(
                 vp_count: 32,
                 ..Default::default()
             }),
-            vtl2_base_address_type: Some(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(500 * 1024 * 1024),
             }),
             expected_props: Some(ExpectedNvmeDeviceProperties {
@@ -313,7 +321,7 @@ async fn nvme_relay_32vp_768mb_very_heavy(
                 vp_count: 32,
                 ..Default::default()
             }),
-            vtl2_base_address_type: Some(hvlite_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
+            vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(768 * 1024 * 1024),
             }),
             expected_props: Some(ExpectedNvmeDeviceProperties {
@@ -327,12 +335,12 @@ async fn nvme_relay_32vp_768mb_very_heavy(
 }
 
 /// Boot the UEFI firmware, with a VTL2 range automatically configured by
-/// hvlite.
+/// OpenVMM.
 #[openvmm_test_no_agent(openhcl_uefi_x64(none))]
 async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     let vm = config
         .modify_backend(|b| {
-            b.with_vtl2_relocation_mode(hvlite_defs::config::Vtl2BaseAddressType::MemoryLayout {
+            b.with_vtl2_relocation_mode(openvmm_defs::config::Vtl2BaseAddressType::MemoryLayout {
                 size: None,
             })
         })

@@ -77,7 +77,8 @@ use mesh::payload::encoding::ImpossibleField;
 use mesh::payload::message::ProtobufAny;
 use mesh::payload::protofile::MessageDescription;
 
-/// Implemented by objects which can be saved/restored
+/// Implemented by objects which can be saved/restored with an associated
+/// type that can be serialized as a protobuf message.
 pub trait SaveRestore {
     /// The concrete saved state type.
     type SavedState;
@@ -105,8 +106,7 @@ impl SavedStateRoot for SavedStateNotSupported {
 #[mesh(package = "save_restore")]
 pub struct NoSavedState;
 
-/// Trait implemented by objects that implement `SaveRestore` with an associated
-/// type that can be serialized as a protobuf message.
+/// Trait implemented by objects that implement `SaveRestore`
 pub trait ProtobufSaveRestore {
     /// Save the object.
     fn save(&mut self) -> Result<SavedStateBlob, SaveError>;

@@ -9,7 +9,6 @@ rust-version.workspace = true
 [target.'cfg(windows)'.dependencies]
 guestmem.workspace = true
 guid.workspace = true
-headervec.workspace = true
 vmbus_core.workspace = true
 mesh.workspace = true
 pal.workspace = true

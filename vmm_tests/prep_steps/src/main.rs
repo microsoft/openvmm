@@ -101,7 +101,7 @@ fn run(
     let drop_guard = DeleteFileOnDrop(result_disk.clone());
     std::fs::copy(source_disk, &result_disk)?;
     tracing::info!("Copied source disk successfully.");
-    let result_disk = hvlite_helpers::disk::open_disk_type(&result_disk, false)?;
+    let result_disk = openvmm_helpers::disk::open_disk_type(&result_disk, false)?;
 
     DefaultPool::run_with(async move |driver| {
         let (vm, agent) = PetriVmBuilder::new(
@@ -120,7 +120,7 @@ fn run(
         .modify_backend(|v| {
             v.with_custom_config(|c| {
                 c.vmbus_devices.push((
-                    hvlite_defs::config::DeviceVtl::Vtl0,
+                    openvmm_defs::config::DeviceVtl::Vtl0,
                     storvsp_resources::ScsiControllerHandle {
                         instance_id: guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48aff"),
                         max_sub_channel_count: 1,

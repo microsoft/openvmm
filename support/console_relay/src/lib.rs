@@ -136,7 +136,7 @@ fn choose_terminal_apps(app: Option<&Path>) -> Vec<App<'_>> {
 }
 
 /// Launches the terminal application `app` (or the system default), and launch
-/// hvlite as a child of that to relay the data in the pipe/socket referred to
+/// OpenVMM as a child of that to relay the data in the pipe/socket referred to
 /// by `path`. Additional launch options can be specified with `launch_options`.
 pub fn launch_console(
     app: Option<&Path>,

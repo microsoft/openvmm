@@ -20,6 +20,7 @@ pub use runtime::PetriVmOpenVmm;
 use crate::BootDeviceType;
 use crate::Firmware;
 use crate::OpenHclServicingFlags;
+use crate::OpenvmmLogConfig;
 use crate::PetriDiskType;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
@@ -38,12 +39,12 @@ use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
-use hvlite_defs::config::Config;
-use hvlite_helpers::disk::open_disk_type;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::Receiver;
 use mesh::Sender;
 use net_backend_resources::mac_address::MacAddress;
+use openvmm_defs::config::Config;
+use openvmm_helpers::disk::open_disk_type;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
@@ -147,7 +148,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         modify_vmm_config: Option<impl FnOnce(PetriVmConfigOpenVmm) -> PetriVmConfigOpenVmm + Send>,
         resources: &PetriVmResources,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
-        let mut config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources)?;
+        let mut config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources).await?;
 
         if let Some(f) = modify_vmm_config {
             config = f(config);
@@ -162,8 +163,12 @@ pub struct PetriVmConfigOpenVmm {
     // Direct configuration related information.
     firmware: Firmware,
     arch: MachineArch,
+    host_log_levels: Option<OpenvmmLogConfig>,
     config: Config,
     boot_device_type: BootDeviceType,
+
+    // Mesh host
+    mesh: mesh_process::Mesh,
 
     // Runtime resources
     resources: PetriVmResourcesOpenVmm,

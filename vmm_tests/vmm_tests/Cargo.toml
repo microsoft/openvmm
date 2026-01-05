@@ -24,7 +24,7 @@ petri_artifacts_common.workspace = true
 petri.workspace = true
 
 get_resources.workspace = true
-hvlite_defs.workspace = true
+openvmm_defs.workspace = true
 disk_backend_resources.workspace = true
 hyperv_ic_resources.workspace = true
 net_backend_resources.workspace = true
@@ -52,7 +52,7 @@ tracing.workspace = true
 zerocopy.workspace = true
 static_assertions.workspace = true
 
-hvlite_ttrpc_vmservice.workspace = true
+openvmm_ttrpc_vmservice.workspace = true
 
 mesh_rpc.workspace = true
 
