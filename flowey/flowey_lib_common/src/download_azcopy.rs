@@ -63,9 +63,6 @@ impl FlowNode for Node {
             done: v,
         });
 
-        // Extract version number without 'v' prefix for file name (e.g., "v10.31.0" -> "10.31.0")
-        let version_number = version.strip_prefix('v').unwrap_or(&version);
-
         // Determine file name at emit time based on platform/arch
         let (file_name, is_tar) = {
             let arch = match ctx.arch() {
@@ -75,13 +72,13 @@ impl FlowNode for Node {
             };
             match ctx.platform() {
                 FlowPlatform::Windows => {
-                    (format!("azcopy_windows_{arch}_{version_number}.zip"), false)
+                    (format!("azcopy_windows_{arch}_{version}.zip"), false)
                 }
                 FlowPlatform::Linux(_) => {
-                    (format!("azcopy_linux_{arch}_{version_number}.tar.gz"), true)
+                    (format!("azcopy_linux_{arch}_{version}.tar.gz"), true)
                 }
                 FlowPlatform::MacOs => {
-                    (format!("azcopy_darwin_{arch}_{version_number}.zip"), false)
+                    (format!("azcopy_darwin_{arch}_{version}.zip"), false)
                 }
                 _ => unreachable!("unsupported platform"),
             }
@@ -91,7 +88,7 @@ impl FlowNode for Node {
             repo_owner: "Azure".to_string(),
             repo_name: "azure-storage-azcopy".to_string(),
             needs_auth: false,
-            tag: version.clone(),
+            tag: format!("v{version}"),
             file_name,
             path: v,
         });
