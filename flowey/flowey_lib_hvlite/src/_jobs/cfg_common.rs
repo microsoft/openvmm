@@ -98,6 +98,10 @@ impl SimpleFlowNode for Node {
             ctx.req(flowey_lib_common::install_azure_cli::Request::AutoInstall(
                 true,
             ));
+            ctx.req(flowey_lib_common::install_rust::Request::AutoInstall(true));
+            ctx.req(flowey_lib_common::install_rust::Request::IgnoreVersion(
+                false,
+            ));
         } else if matches!(ctx.backend(), FlowBackend::Local) {
             let local_only =
                 local_only.ok_or(anyhow::anyhow!("missing essential request: local_only"))?;
