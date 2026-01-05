@@ -75,6 +75,9 @@ pub fn boot_logger_memory_init(buffer: MemoryRange) {
 }
 
 /// Initialize the runtime boot logger, for logging to serial or other outputs.
+///
+/// If a runtime logger was initialized, emit any in-memory log to the
+/// configured runtime output.
 pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_available: bool) {
     let mut logger = BOOT_LOGGER.logger.borrow_mut();
 
@@ -87,6 +90,11 @@ pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_avail
         (IsolationType::Tdx, true) => Logger::TdxSerial(Serial::init(TdxIoAccess)),
         _ => Logger::None,
     };
+
+    // Emit any in-memory log to the runtime logger.
+    if let Some(buf) = BOOT_LOGGER.in_memory_logger.borrow_mut().as_mut() {
+        let _ = logger.write_str(buf.contents());
+    }
 }
 
 impl Write for &BootLogger {
@@ -110,14 +118,4 @@ impl log::Log for BootLogger {
     }
 
     fn flush(&self) {}
-}
-
-/// Write the current in-memory boot log to serial output, if any.
-/// Useful to capture the in-memory log before switching to a different
-/// environment where the in-memory log may be lost.
-pub fn boot_logger_write_memory_log_to_runtime() {
-    if let Some(buf) = BOOT_LOGGER.in_memory_logger.borrow().as_ref() {
-        let mut logger = BOOT_LOGGER.logger.borrow_mut();
-        let _ = logger.write_str(buf.contents());
-    }
 }
