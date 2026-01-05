@@ -100,7 +100,6 @@ impl FlowNode for Node {
             bsdtar_installed.claim(ctx);
             let get_azcopy = get_azcopy.claim(ctx);
             let azcopy_archive = azcopy_archive.claim(ctx);
-            let is_tar = is_tar;
             let azcopy_bin = azcopy_bin.clone();
             move |rt| {
                 let azcopy_archive = rt.read(azcopy_archive);
