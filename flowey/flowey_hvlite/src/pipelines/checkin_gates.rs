@@ -102,9 +102,13 @@ impl IntoPipeline for CheckinGatesCli {
         }
 
         let openvmm_repo_source = match backend_hint {
-            PipelineBackendHint::Local => RepoSource::ExistingClone(ReadVar::from_static(crate::repo_root())),
+            PipelineBackendHint::Local => {
+                RepoSource::ExistingClone(ReadVar::from_static(crate::repo_root()))
+            }
             PipelineBackendHint::Github => RepoSource::GithubSelf,
-            PipelineBackendHint::Ado => RepoSource::AdoResource(AdoResourcesRepositoryId::new_self()),
+            PipelineBackendHint::Ado => {
+                RepoSource::AdoResource(AdoResourcesRepositoryId::new_self())
+            }
         };
 
         if let RepoSource::GithubSelf = &openvmm_repo_source {
@@ -729,7 +733,9 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(job.finish());
 
             // TODO: Once we have a few runs of the openvmm-mirror PR pipeline, this job can be re-worked to use ADO artifacts instead of GH artifacts.
-            if matches!(config, PipelineConfig::Pr) && !matches!(backend_hint, PipelineBackendHint::Ado) {
+            if matches!(config, PipelineConfig::Pr)
+                && !matches!(backend_hint, PipelineBackendHint::Ado)
+            {
                 let job = pipeline
                     .new_job(
                         FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -1159,21 +1165,20 @@ impl IntoPipeline for CheckinGatesCli {
             }
 
             vmm_tests_run_job = vmm_tests_run_job.dep_on(|ctx| {
-                    flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::Params {
-                        junit_test_label: test_label,
-                        nextest_vmm_tests_archive: ctx.use_typed_artifact(use_vmm_tests_archive),
-                        target: target.as_triple(),
-                        nextest_profile:
-                            flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
-                        nextest_filter_expr: Some(nextest_filter_expr),
-                        dep_artifact_dirs: resolve_vmm_tests_artifacts(ctx),
-                        test_artifacts,
-                        fail_job_on_test_fail: true,
-                        artifact_dir: pub_vmm_tests_results.map(|x| ctx.publish_artifact(x)),
-                        needs_prep_run,
-                        done: ctx.new_done_handle(),
-                    }
-                });
+                flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::Params {
+                    junit_test_label: test_label,
+                    nextest_vmm_tests_archive: ctx.use_typed_artifact(use_vmm_tests_archive),
+                    target: target.as_triple(),
+                    nextest_profile: flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
+                    nextest_filter_expr: Some(nextest_filter_expr),
+                    dep_artifact_dirs: resolve_vmm_tests_artifacts(ctx),
+                    test_artifacts,
+                    fail_job_on_test_fail: true,
+                    artifact_dir: pub_vmm_tests_results.map(|x| ctx.publish_artifact(x)),
+                    needs_prep_run,
+                    done: ctx.new_done_handle(),
+                }
+            });
 
             if let Some(vmm_tests_disk_cache_dir) = vmm_tests_disk_cache_dir.clone() {
                 vmm_tests_run_job = vmm_tests_run_job.dep_on(|_| {
@@ -1207,7 +1212,9 @@ impl IntoPipeline for CheckinGatesCli {
             }
         }
 
-        if matches!(config, PipelineConfig::Pr) && matches!(backend_hint, PipelineBackendHint::Github)  {
+        if matches!(config, PipelineConfig::Pr)
+            && matches!(backend_hint, PipelineBackendHint::Github)
+        {
             // Add a job that depends on all others as a workaround for
             // https://github.com/orgs/community/discussions/12395.
             //

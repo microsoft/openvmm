@@ -183,7 +183,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
             get_env: v,
-            release_igvm_files: release_igvm_files,
+            release_igvm_files,
             use_relative_paths: false,
         });
 
