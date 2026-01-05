@@ -161,7 +161,7 @@ fn direct_run_do_work(
             let (mut output_graph, _, err_unreachable_nodes) =
                 crate::flow_resolver::stage1_dag::stage1_dag(
                     FlowBackend::Local,
-                    platform,
+                    flow_platform,
                     flow_arch,
                     patches.clone(),
                     root_nodes
