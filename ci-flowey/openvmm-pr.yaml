@@ -53,8 +53,8 @@ jobs:
     displayName: Build flowey
   - bash: |
       mkdir ./flowey_bootstrap_temp
-      mv ./.ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./.ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
       mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
     workingDirectory: ../flowey_bootstrap
     displayName: Stage flowey artifact
@@ -82,7 +82,7 @@ jobs:
       $(FLOWEY_TEMP_DIR)
       EOF
       )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
     displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
@@ -298,8 +298,8 @@ jobs:
     displayName: Build flowey
   - bash: |
       mkdir ./flowey_bootstrap_temp
-      mv ./.ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./.ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
       mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
     workingDirectory: ../flowey_bootstrap
     displayName: Stage flowey artifact
@@ -327,7 +327,7 @@ jobs:
       $(FLOWEY_TEMP_DIR)
       EOF
       )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
     displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
@@ -557,8 +557,8 @@ jobs:
     displayName: Build flowey
   - bash: |
       mkdir ./flowey_bootstrap_temp
-      mv ./.ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./.ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
       mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
     workingDirectory: ../flowey_bootstrap
     displayName: Stage flowey artifact
@@ -586,7 +586,7 @@ jobs:
       $(FLOWEY_TEMP_DIR)
       EOF
       )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
     displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
@@ -782,8 +782,8 @@ jobs:
     displayName: Build flowey
   - bash: |
       mkdir ./flowey_bootstrap_temp
-      mv ./.ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./.ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
       mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
     workingDirectory: ../flowey_bootstrap
     displayName: Stage flowey artifact
@@ -811,7 +811,7 @@ jobs:
       $(FLOWEY_TEMP_DIR)
       EOF
       )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
     displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
@@ -1182,8 +1182,8 @@ jobs:
     displayName: Build flowey
   - bash: |
       mkdir ./flowey_bootstrap_temp
-      mv ./.ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./.ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
       mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
     workingDirectory: ../flowey_bootstrap
     displayName: Stage flowey artifact
@@ -1211,7 +1211,7 @@ jobs:
       $(FLOWEY_TEMP_DIR)
       EOF
       )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
     displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
@@ -1481,8 +1481,8 @@ jobs:
     displayName: Build flowey
   - bash: |
       mkdir ./flowey_bootstrap_temp
-      mv ./.ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./.ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
       mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
     workingDirectory: ../flowey_bootstrap
     displayName: Stage flowey artifact
@@ -1510,7 +1510,7 @@ jobs:
       $(FLOWEY_TEMP_DIR)
       EOF
       )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
     displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
@@ -1817,8 +1817,8 @@ jobs:
     displayName: Build flowey
   - bash: |
       mkdir ./flowey_bootstrap_temp
-      mv ./.ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./.ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
       mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
     workingDirectory: ../flowey_bootstrap
     displayName: Stage flowey artifact
@@ -1846,7 +1846,7 @@ jobs:
       $(FLOWEY_TEMP_DIR)
       EOF
       )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
     displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
@@ -2101,8 +2101,8 @@ jobs:
     displayName: Build flowey
   - bash: |
       mkdir ./flowey_bootstrap_temp
-      mv ./.ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./.ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
       mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
     workingDirectory: ../flowey_bootstrap
     displayName: Stage flowey artifact
@@ -2130,7 +2130,7 @@ jobs:
       $(FLOWEY_TEMP_DIR)
       EOF
       )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
     displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
@@ -3163,8 +3163,8 @@ jobs:
     displayName: Build flowey
   - bash: |
       mkdir ./flowey_bootstrap_temp
-      mv ./.ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./.ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
       mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
     workingDirectory: ../flowey_bootstrap
     displayName: Stage flowey artifact
@@ -3192,7 +3192,7 @@ jobs:
       $(FLOWEY_TEMP_DIR)
       EOF
       )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
     displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
@@ -3360,8 +3360,8 @@ jobs:
     displayName: Build flowey
   - bash: |
       mkdir ./flowey_bootstrap_temp
-      mv ./.ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./.ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
       mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
     workingDirectory: ../flowey_bootstrap
     displayName: Stage flowey artifact
@@ -3389,7 +3389,7 @@ jobs:
       $(FLOWEY_TEMP_DIR)
       EOF
       )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
     displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
@@ -3628,8 +3628,8 @@ jobs:
     displayName: Build flowey
   - bash: |
       mkdir ./flowey_bootstrap_temp
-      mv ./.ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./.ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
       mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
     workingDirectory: ../flowey_bootstrap
     displayName: Stage flowey artifact
@@ -3657,7 +3657,7 @@ jobs:
       $(FLOWEY_TEMP_DIR)
       EOF
       )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
     displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
@@ -3821,8 +3821,8 @@ jobs:
     displayName: Build flowey
   - bash: |
       mkdir ./flowey_bootstrap_temp
-      mv ./.ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./.ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
       mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
     workingDirectory: ../flowey_bootstrap
     displayName: Stage flowey artifact
@@ -3850,7 +3850,7 @@ jobs:
       $(FLOWEY_TEMP_DIR)
       EOF
       )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
     displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
@@ -3980,8 +3980,8 @@ jobs:
     displayName: Build flowey
   - bash: |
       mkdir ./flowey_bootstrap_temp
-      mv ./.ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./.ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
+      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
+      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
       mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
     workingDirectory: ../flowey_bootstrap
     displayName: Stage flowey artifact
@@ -4009,7 +4009,7 @@ jobs:
       $(FLOWEY_TEMP_DIR)
       EOF
       )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
+      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
     displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
