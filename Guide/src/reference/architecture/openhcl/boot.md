@@ -1,6 +1,6 @@
 # OpenHCL Boot Flow
 
-This document describes the sequence of events that occur when OpenHCL boots, from the initial loading of the IGVM package to the fully running paravisor environment.
+This document describes the sequence of events that occur when OpenHCL boots, from the initial loading of the IGVM image to the fully running paravisor environment.
 
 ```mermaid
 sequenceDiagram
@@ -61,9 +61,9 @@ sequenceDiagram
 
 ## 1. IGVM Loading
 
-The boot process begins when the host VMM loads the OpenHCL IGVM package into VTL2 memory.
-The IGVM package contains the initial code and data required to start the paravisor, including the boot shim, kernel, and initial ramdisk.
-The host places these components at specific physical addresses defined in the IGVM header and carries the configuration blob (parameters and optional host device tree) into VTL2.
+The boot process begins when the host VMM loads the OpenHCL IGVM image into VTL2 memory.
+The IGVM image contains the initial code and data required to start the paravisor, including the boot shim, kernel, and initial ramdisk.
+The host places sections of the IGVM image at headers described by the IGVM format, which includes runtime dynamic data such as the device tree and other configuration values.
 
 ## 2. Boot Shim Execution (`openhcl_boot`)
 
@@ -71,10 +71,10 @@ The host transfers control to the entry point of the **Boot Shim**.
 
 1. **Hardware Init:** The shim initializes the CPU state and memory management unit (MMU).
 2. **Config Parsing:** It parses configuration from multiple sources:
-    * **IGVM Parameters:** Fixed parameters provided by the host that were generated at IGVM build time.
+    * **IGVM Parameters:** Fixed parameters encoded into the measured section of the IGVM image, loaded by the host.
     * **Host Device Tree:** A device tree provided by the host containing topology and resource information.
     * **Command Line:** It parses the kernel command line, which can be supplied via IGVM or the host device tree.
-3. **Device Tree:** It constructs a Device Tree that describes the hardware topology (CPUs, memory) to the Linux kernel.
+3. **New Device Tree:** It constructs a Device Tree that describes the hardware topology (CPUs, memory) to the Linux kernel.
 4. **Sidecar Setup (x86_64):** The shim determines which CPUs will run Linux (typically just the Bootstrap Processor (BSP)) and which will run the Sidecar (APs). It sets up control structures and directs Sidecar CPUs to the Sidecar entry point.
     * **Sidecar Entry:** "Sidecar CPUs" jump directly to the Sidecar kernel entry point instead of the Linux kernel.
     * **Dispatch Loop:** These CPUs enter a lightweight dispatch loop, waiting for commands.
@@ -87,7 +87,6 @@ The **Linux Kernel** takes over on the BSP and initializes the operating system 
 1. **Kernel Init:** The kernel initializes its subsystems (memory, scheduler, etc.).
 2. **Driver Init:** It loads drivers for the paravisor hardware and standard devices.
 3. **Root FS:** It mounts the initial ramdisk (initrd) as the root filesystem.
-4. **Expose DT:** It exposes the boot-time Device Tree to userspace (e.g., under `/proc/device-tree`) for early consumers.
 4. **User Space:** It spawns the first userspace process, `underhill_init` (PID 1).
 
 ## 4. Userspace Initialization (`underhill_init`)
