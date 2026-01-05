@@ -559,12 +559,10 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Enable the in-memory log.
     boot_logger_memory_init(p.log_buffer);
 
-    // Enable global logger.
+    // Enable global log crate.
     log::set_logger(&boot_logger::BOOT_LOGGER).unwrap();
+    // TODO: allow overriding filter at runtime
     log::set_max_level(log::LevelFilter::Info);
-
-    log::info!("test log");
-    log::trace!("test trace");
 
     let boot_reftime = get_ref_time(p.isolation_type);
 

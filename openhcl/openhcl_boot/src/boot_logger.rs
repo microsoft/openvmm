@@ -114,7 +114,7 @@ impl log::Log for BootLogger {
     }
 
     fn log(&self, record: &log::Record<'_>) {
-        let _ = writeln!(&*self, "{} - {}", record.level(), record.args());
+        let _ = writeln!(&*self, "[{}] {}", record.level(), record.args());
     }
 
     fn flush(&self) {}
