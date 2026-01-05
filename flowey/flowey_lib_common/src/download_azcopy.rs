@@ -71,15 +71,9 @@ impl FlowNode for Node {
                 _ => unreachable!("unsupported arch"),
             };
             match ctx.platform() {
-                FlowPlatform::Windows => {
-                    (format!("azcopy_windows_{arch}_{version}.zip"), false)
-                }
-                FlowPlatform::Linux(_) => {
-                    (format!("azcopy_linux_{arch}_{version}.tar.gz"), true)
-                }
-                FlowPlatform::MacOs => {
-                    (format!("azcopy_darwin_{arch}_{version}.zip"), false)
-                }
+                FlowPlatform::Windows => (format!("azcopy_windows_{arch}_{version}.zip"), false),
+                FlowPlatform::Linux(_) => (format!("azcopy_linux_{arch}_{version}.tar.gz"), true),
+                FlowPlatform::MacOs => (format!("azcopy_darwin_{arch}_{version}.zip"), false),
                 _ => unreachable!("unsupported platform"),
             }
         };
