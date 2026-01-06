@@ -554,6 +554,18 @@ impl AddressSpaceManager {
         })
     }
 
+    /// Returns an iterator for all the free ranges for the given numa node.
+    /// This is used for diagnostics and debugging purposes.
+    pub fn free_ranges(&self, vnode: u32) -> impl Iterator<Item = MemoryRange> + use<'_> {
+        self.address_space.iter().filter_map(move |r| {
+            if r.usage == AddressUsage::Free && r.vnode == vnode {
+                Some(r.range)
+            } else {
+                None
+            }
+        })
+    }
+
     /// Returns true if there are VTL2 pool allocations.
     pub fn has_vtl2_pool(&self) -> bool {
         self.vtl2_pool
