@@ -30,7 +30,7 @@ const TPM_GUEST_TESTS_WINDOWS_GUEST_PATH: &str = "C:\\tpm_guest_tests.exe";
 
 #[cfg(windows)]
 fn ensure_rpc_server_running(rpc_server_path: &Path) -> anyhow::Result<()> {
-    use vmm_test_igvm_agent::RPC_SERVER_EXE;
+    // use vmm_test_igvm_agent::RPC_SERVER_EXE;
 
     // if igvm_agent_rpc_server::is_process_running(RPC_SERVER_EXE) {
     //     tracing::info!(exe = RPC_SERVER_EXE, "RPC server is running");
@@ -493,7 +493,7 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 
     // Verify (or start) the RPC server. Flowey handles CI; local nextest can start it here.
     let rpc_server_path = rpc_server_artifact.get();
-    ensure_rpc_server_running(rpc_server_path.as_ref())?;
+    ensure_rpc_server_running(rpc_server_path)?;
 
     let config = config
         .with_tpm(true)
