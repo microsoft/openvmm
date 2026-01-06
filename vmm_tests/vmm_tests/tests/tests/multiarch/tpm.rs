@@ -29,30 +29,18 @@ const TPM_GUEST_TESTS_LINUX_GUEST_PATH: &str = "/tmp/tpm_guest_tests";
 const TPM_GUEST_TESTS_WINDOWS_GUEST_PATH: &str = "C:\\tpm_guest_tests.exe";
 
 #[cfg(windows)]
-fn ensure_rpc_server_running(rpc_server_path: &Path) -> anyhow::Result<()> {
-    // use vmm_test_igvm_agent::RPC_SERVER_EXE;
+fn ensure_rpc_server_running(
+    rpc_server_path: &Path,
+) -> anyhow::Result<Option<igvm_agent_rpc_server::RpcServerGuard>> {
+    // If it's already running (e.g., CI), do nothing.
+    if igvm_agent_rpc_server::ensure_rpc_server_running().is_ok() {
+        return Ok(None);
+    }
 
-    // if igvm_agent_rpc_server::is_process_running(RPC_SERVER_EXE) {
-    //     tracing::info!(exe = RPC_SERVER_EXE, "RPC server is running");
-    //     return Ok(());
-    // }
-
-    let log_dir = rpc_server_path
-        .parent()
-        .context("test_igvm_agent_rpc_server path has no parent directory")?;
-    std::fs::create_dir_all(log_dir)
-        .with_context(|| format!("failed to create log directory {}", log_dir.display()))?;
-    let log_file_path = log_dir.join("test_igvm_agent_rpc_server.log");
-
-    tracing::info!(
-        exe = %rpc_server_path.display(),
-        log = %log_file_path.display(),
-        "starting test_igvm_agent_rpc_server for local run"
-    );
-    igvm_agent_rpc_server::start_rpc_server_with_logs(rpc_server_path, &log_file_path)
-        .context("failed to start test_igvm_agent_rpc_server")?;
-
-    igvm_agent_rpc_server::ensure_rpc_server_running()
+    // Otherwise start locally and keep the guard alive so the server is terminated when the test ends.
+    igvm_agent_rpc_server::start_rpc_server(rpc_server_path)
+        .map(Some)
+        .context("failed to start test_igvm_agent_rpc_server")
 }
 
 fn expected_ak_cert_hex() -> String {
@@ -493,7 +481,7 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 
     // Verify (or start) the RPC server. Flowey handles CI; local nextest can start it here.
     let rpc_server_path = rpc_server_artifact.get();
-    ensure_rpc_server_running(rpc_server_path)?;
+    let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
 
     let config = config
         .with_tpm(true)

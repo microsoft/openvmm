@@ -7,15 +7,13 @@
 #![cfg(windows)]
 #![forbid(unsafe_code)]
 
-use std::path::Path;
-
-use anyhow::Context;
-use std::fs::File;
 use std::io::Read;
 use std::os::windows::process::CommandExt;
-use std::process::Command;
-use std::process::Stdio;
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
 use std::thread;
+
+use anyhow::Context;
 
 /// Name of the RPC server executable.
 pub const RPC_SERVER_EXE: &str = "test_igvm_agent_rpc_server.exe";
@@ -41,6 +39,7 @@ pub fn is_process_running(exe_name: &str) -> bool {
 }
 
 /// Ensures the RPC server process is running.
+/// Returns Ok(()) if running, or an error if not.
 pub fn ensure_rpc_server_running() -> anyhow::Result<()> {
     if is_process_running(RPC_SERVER_EXE) {
         tracing::info!(exe = RPC_SERVER_EXE, "RPC server is running");
@@ -53,19 +52,33 @@ pub fn ensure_rpc_server_running() -> anyhow::Result<()> {
     }
 }
 
-/// Starts the RPC server with stderr redirected to `log_file_path`.
-/// Uses stdout EOF as a readiness signal (the server closes stdout once ready).
-/// If the server exits immediately (e.g., endpoint already in use), this returns Ok(()).
-pub fn start_rpc_server_with_logs(
-    rpc_server_path: &Path,
-    log_file_path: &Path,
-) -> anyhow::Result<()> {
-    let stderr_file = File::create(log_file_path)?;
+/// Guard that terminates the RPC server child process on drop.
+pub struct RpcServerGuard(Child);
 
+impl Drop for RpcServerGuard {
+    fn drop(&mut self) {
+        // If the process is still running, try to terminate it.
+        match self.0.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                if let Err(e) = self.0.kill() {
+                    tracing::debug!("failed to kill RPC server child: {}", e);
+                }
+            }
+            Err(e) => tracing::debug!("failed to query RPC server child: {}", e),
+        }
+    }
+}
+
+/// Starts the RPC server and returns a guard that will kill it when dropped.
+/// Uses stdout EOF as a readiness signal (the server closes stdout once ready).
+/// If the server exits immediately (e.g., endpoint already in use), this returns Ok(())
+/// with a guard that will observe the exited process.
+pub fn start_rpc_server(rpc_server_path: &Path) -> anyhow::Result<RpcServerGuard> {
     let mut child = Command::new(rpc_server_path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(stderr_file)
+        .stderr(Stdio::inherit())
         .creation_flags(CREATE_NEW_PROCESS_GROUP)
         .spawn()
         .with_context(|| format!("failed to spawn {}", rpc_server_path.display()))?;
@@ -96,17 +109,11 @@ pub fn start_rpc_server_with_logs(
                 exit_code = ?status.code(),
                 "RPC server exited immediately (likely already running elsewhere)"
             );
-            Ok(())
         }
         None => {
-            tracing::info!(
-                pid = child.id(),
-                log = %log_file_path.display(),
-                "RPC server started and running"
-            );
-            // Drop the handle so the server keeps running even if caller exits.
-            drop(child);
-            Ok(())
+            tracing::info!(pid = child.id(), "RPC server started and running");
         }
     }
+
+    Ok(RpcServerGuard(child))
 }
