@@ -877,7 +877,7 @@ impl IntoPipeline for CheckinGatesCli {
                 )),
             },
         ] {
-            // Skip ARM jobs entirely for ADO backend (no ARM pool support in ADO)
+            // Skip ARM64 jobs entirely for ADO backend (there is no native ARM64 pool ADO)
             if matches!(arch, FlowArch::Aarch64) && matches!(backend_hint, PipelineBackendHint::Ado)
             {
                 continue;
@@ -1129,7 +1129,7 @@ impl IntoPipeline for CheckinGatesCli {
                 needs_prep_run: false,
             },
         ] {
-            // Skip ARM/CVM jobs entirely for ADO backend (no ARM/CVM pools in ADO)
+            // Skip ARM64/CVM jobs entirely for ADO backend (no native ARM64/CVM pools in ADO)
             if matches!(backend_hint, PipelineBackendHint::Ado) {
                 if matches!(arch, FlowArch::Aarch64)
                     || label.contains("tdx")
