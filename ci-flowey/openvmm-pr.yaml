@@ -9,6 +9,8 @@ pr:
   branches:
     include:
     - main
+    - release/*
+    - embargo/*
 parameters:
 - name: verbose
   displayName: Run with verbose output

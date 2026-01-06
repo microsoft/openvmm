@@ -85,7 +85,7 @@ impl IntoPipeline for CheckinGatesCli {
                         })
                         .gh_set_name("OpenVMM PR")
                         .ado_set_pr_triggers(AdoPrTriggers {
-                            branches: vec!["main".into()],
+                            branches: vec!["main".into(), "release/*".into(), "embargo/*".into()],
                             ..Default::default()
                         });
                 }
@@ -915,7 +915,7 @@ impl IntoPipeline for CheckinGatesCli {
                             FlowPlatformLinuxDistro::Ubuntu,
                         ))
                     }
-                    _ => unreachable!(),
+                    _ => anyhow::bail!("unsupported platform"),
                 });
 
             if let Some((_, targets)) = clippy_targets {
@@ -1015,7 +1015,15 @@ impl IntoPipeline for CheckinGatesCli {
         // on non-self-hosted runners. This saves several minutes of CI time
         // that would be used for very few tests. We need to run prep_steps
         // on CVM runners anyways, so we might as well run those tests there.
-        let standard_filter = "all() & !test(very_heavy) & !test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs) & !test(servicing)".to_string();
+        let standard_filter = match backend_hint {
+            PipelineBackendHint::Github | PipelineBackendHint::Local => "all() & !test(very_heavy) & !test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)".to_string(),
+            // Currently, we don't have a good way for ADO runners to authenticate in GitHub 
+            // (that don't involve PATs) which is a requirement to download GH Workflow Artifacts 
+            // required by the servicing tests. For now, we will exclude servicing tests from running 
+            // in the internal mirror.
+            PipelineBackendHint::Ado => "all() & !test(very_heavy) & !test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs) & !test(servicing)".to_string(),
+        };
+
         let standard_x64_test_artifacts = vec![
             KnownTestArtifacts::FreeBsd13_2X64Vhd,
             KnownTestArtifacts::FreeBsd13_2X64Iso,
@@ -1160,7 +1168,7 @@ impl IntoPipeline for CheckinGatesCli {
                             FlowPlatformLinuxDistro::Ubuntu,
                         ))
                     }
-                    _ => unreachable!(),
+                    _ => anyhow::bail!("unsupported platform"),
                 });
             }
 
