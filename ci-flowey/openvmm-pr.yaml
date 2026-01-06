@@ -2425,22 +2425,22 @@ jobs:
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar5
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar6
+      $(FLOWEY_BIN) e 15 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar4
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar6)
-      path: $(floweyvar5)
+      key: $(floweyvar4)
+      path: $(floweyvar3)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
-      $(FLOWEY_BIN) e 15 flowey_lib_common::cache 6
+      $(FLOWEY_BIN) e 15 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::download_cargo_nextest 4
     displayName: downloading cargo-nextest
@@ -2472,33 +2472,35 @@ jobs:
     displayName: report cloned repo directories
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
     displayName: creating new test content dir
-  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::download_azcopy 0
-    displayName: create azcopy cache dir
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar4
-    displayName: Pre-processing cache vars
-  - task: Cache@2
-    inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
-      cacheHitVar: FLOWEY_CACHE_HITVAR
-    displayName: 'Restore cache: azcopy'
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
-      $(FLOWEY_CACHE_HITVAR)
-      EOF
-      $(FLOWEY_BIN) e 15 flowey_lib_common::cache 2
-    displayName: map ADO hitvar to flowey
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::install_dist_pkg 0
     displayName: checking if packages need to be installed
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::install_dist_pkg 1
     displayName: installing packages
-  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::download_azcopy 1
-    displayName: installing azcopy
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::download_gh_release 0
+    displayName: create gh-release-download cache dir
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_common::cache 4
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar6
+    displayName: Pre-processing cache vars
+  - task: Cache@2
+    inputs:
+      key: $(floweyvar6)
+      path: $(floweyvar5)
+      cacheHitVar: FLOWEY_CACHE_HITVAR
+    displayName: 'Restore cache: gh-release-download'
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $(FLOWEY_CACHE_HITVAR)
+      EOF
+      $(FLOWEY_BIN) e 15 flowey_lib_common::cache 6
+    displayName: map ADO hitvar to flowey
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::download_gh_release 1
+    displayName: download artifacts from github releases
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::download_azcopy 0
+    displayName: extract azcopy from archive
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
     displayName: calculating required VMM tests disk images
   - bash: |-
@@ -2506,29 +2508,6 @@ jobs:
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
     displayName: downloading VMM test disk images
-  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::download_gh_release 0
-    displayName: create gh-release-download cache dir
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_common::cache 8
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:15:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar7
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:16:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar8
-    displayName: Pre-processing cache vars
-  - task: Cache@2
-    inputs:
-      key: $(floweyvar8)
-      path: $(floweyvar7)
-      cacheHitVar: FLOWEY_CACHE_HITVAR
-    displayName: 'Restore cache: gh-release-download'
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
-      $(FLOWEY_CACHE_HITVAR)
-      EOF
-      $(FLOWEY_BIN) e 15 flowey_lib_common::cache 10
-    displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::download_gh_release 1
-    displayName: download artifacts from github releases
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::download_openvmm_deps 0
     displayName: unpack openvmm-deps archive
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -2570,10 +2549,8 @@ jobs:
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::cache 3
-    displayName: 'validate cache entry: azcopy'
-  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::cache 7
     displayName: 'validate cache entry: cargo-nextest'
-  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::cache 11
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::cache 7
     displayName: 'validate cache entry: gh-release-download'
 - job: job14
   displayName: run vmm-tests [x64-windows-amd]
@@ -2698,22 +2675,22 @@ jobs:
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 14 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar5
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar6
+      $(FLOWEY_BIN) e 14 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar4
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar6)
-      path: $(floweyvar5)
+      key: $(floweyvar4)
+      path: $(floweyvar3)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
-      $(FLOWEY_BIN) e 14 flowey_lib_common::cache 6
+      $(FLOWEY_BIN) e 14 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
   - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::download_cargo_nextest 4
     displayName: downloading cargo-nextest
@@ -2751,29 +2728,31 @@ jobs:
     displayName: creating new test content dir
   - bash: $(FLOWEY_BIN) e 14 flowey_lib_hvlite::artifact_openhcl_igvm_from_recipe::resolve 0
     displayName: resolve OpenHCL igvm artifact
-  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::download_azcopy 0
-    displayName: create azcopy cache dir
+  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::download_gh_release 0
+    displayName: create gh-release-download cache dir
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 14 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar4
+      $(FLOWEY_BIN) e 14 flowey_lib_common::cache 4
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar6
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
+      key: $(floweyvar6)
+      path: $(floweyvar5)
       cacheHitVar: FLOWEY_CACHE_HITVAR
-    displayName: 'Restore cache: azcopy'
+    displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
-      $(FLOWEY_BIN) e 14 flowey_lib_common::cache 2
+      $(FLOWEY_BIN) e 14 flowey_lib_common::cache 6
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::download_azcopy 1
-    displayName: installing azcopy
+  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::download_gh_release 1
+    displayName: download artifacts from github releases
+  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::download_azcopy 0
+    displayName: extract azcopy from archive
   - bash: $(FLOWEY_BIN) e 14 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
     displayName: calculating required VMM tests disk images
   - bash: |-
@@ -2781,29 +2760,6 @@ jobs:
       $(FLOWEY_BIN) e 14 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
       $(FLOWEY_BIN) e 14 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
     displayName: downloading VMM test disk images
-  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::download_gh_release 0
-    displayName: create gh-release-download cache dir
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 14 flowey_lib_common::cache 8
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:15:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar7
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:16:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar8
-    displayName: Pre-processing cache vars
-  - task: Cache@2
-    inputs:
-      key: $(floweyvar8)
-      path: $(floweyvar7)
-      cacheHitVar: FLOWEY_CACHE_HITVAR
-    displayName: 'Restore cache: gh-release-download'
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
-      $(FLOWEY_CACHE_HITVAR)
-      EOF
-      $(FLOWEY_BIN) e 14 flowey_lib_common::cache 10
-    displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::download_gh_release 1
-    displayName: download artifacts from github releases
   - bash: $(FLOWEY_BIN) e 14 flowey_lib_hvlite::download_openvmm_deps 0
     displayName: unpack openvmm-deps archive
   - bash: $(FLOWEY_BIN) e 14 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -2845,10 +2801,8 @@ jobs:
       $(FLOWEY_BIN) e 14 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::cache 3
-    displayName: 'validate cache entry: azcopy'
-  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::cache 7
     displayName: 'validate cache entry: cargo-nextest'
-  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::cache 11
+  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::cache 7
     displayName: 'validate cache entry: gh-release-download'
 - job: job13
   displayName: run vmm-tests [x64-windows-intel]
@@ -2973,22 +2927,22 @@ jobs:
     displayName: create cargo-nextest cache dir
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 13 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 13 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar5
-      $FLOWEY_BIN v 13 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar6
+      $(FLOWEY_BIN) e 13 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 13 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar3
+      $FLOWEY_BIN v 13 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar4
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar6)
-      path: $(floweyvar5)
+      key: $(floweyvar4)
+      path: $(floweyvar3)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 13 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 13 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
-      $(FLOWEY_BIN) e 13 flowey_lib_common::cache 6
+      $(FLOWEY_BIN) e 13 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
   - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::download_cargo_nextest 4
     displayName: downloading cargo-nextest
@@ -3026,29 +2980,31 @@ jobs:
     displayName: creating new test content dir
   - bash: $(FLOWEY_BIN) e 13 flowey_lib_hvlite::artifact_openhcl_igvm_from_recipe::resolve 0
     displayName: resolve OpenHCL igvm artifact
-  - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::download_azcopy 0
-    displayName: create azcopy cache dir
+  - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::download_gh_release 0
+    displayName: create gh-release-download cache dir
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 13 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 13 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 13 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar4
+      $(FLOWEY_BIN) e 13 flowey_lib_common::cache 4
+      $FLOWEY_BIN v 13 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 13 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar6
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
+      key: $(floweyvar6)
+      path: $(floweyvar5)
       cacheHitVar: FLOWEY_CACHE_HITVAR
-    displayName: 'Restore cache: azcopy'
+    displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 13 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 13 'flowey_lib_common::cache:11:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
-      $(FLOWEY_BIN) e 13 flowey_lib_common::cache 2
+      $(FLOWEY_BIN) e 13 flowey_lib_common::cache 6
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::download_azcopy 1
-    displayName: installing azcopy
+  - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::download_gh_release 1
+    displayName: download artifacts from github releases
+  - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::download_azcopy 0
+    displayName: extract azcopy from archive
   - bash: $(FLOWEY_BIN) e 13 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
     displayName: calculating required VMM tests disk images
   - bash: |-
@@ -3056,29 +3012,6 @@ jobs:
       $(FLOWEY_BIN) e 13 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
       $(FLOWEY_BIN) e 13 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
     displayName: downloading VMM test disk images
-  - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::download_gh_release 0
-    displayName: create gh-release-download cache dir
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 13 flowey_lib_common::cache 8
-      $FLOWEY_BIN v 13 'flowey_lib_common::cache:15:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar7
-      $FLOWEY_BIN v 13 'flowey_lib_common::cache:16:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar8
-    displayName: Pre-processing cache vars
-  - task: Cache@2
-    inputs:
-      key: $(floweyvar8)
-      path: $(floweyvar7)
-      cacheHitVar: FLOWEY_CACHE_HITVAR
-    displayName: 'Restore cache: gh-release-download'
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 13 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
-      $(FLOWEY_CACHE_HITVAR)
-      EOF
-      $(FLOWEY_BIN) e 13 flowey_lib_common::cache 10
-    displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::download_gh_release 1
-    displayName: download artifacts from github releases
   - bash: $(FLOWEY_BIN) e 13 flowey_lib_hvlite::download_openvmm_deps 0
     displayName: unpack openvmm-deps archive
   - bash: $(FLOWEY_BIN) e 13 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -3120,10 +3053,8 @@ jobs:
       $(FLOWEY_BIN) e 13 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::cache 3
-    displayName: 'validate cache entry: azcopy'
-  - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::cache 7
     displayName: 'validate cache entry: cargo-nextest'
-  - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::cache 11
+  - bash: $(FLOWEY_BIN) e 13 flowey_lib_common::cache 7
     displayName: 'validate cache entry: gh-release-download'
 - job: job4
   displayName: build artifacts (not for VMM tests) [x64-windows]
