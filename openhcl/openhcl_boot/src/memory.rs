@@ -657,6 +657,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x12000..0x13000));
+
+        let free_ranges: Vec<MemoryRange> = address_space.free_ranges(0).collect();
+        assert_eq!(free_ranges, vec![MemoryRange::new(0x13000..0x1D000)]);
     }
 
     #[test]
