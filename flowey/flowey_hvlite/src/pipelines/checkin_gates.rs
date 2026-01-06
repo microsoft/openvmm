@@ -968,7 +968,10 @@ impl IntoPipeline for CheckinGatesCli {
         // on non-self-hosted runners. This saves several minutes of CI time
         // that would be used for very few tests. We need to run prep_steps
         // on CVM runners anyways, so we might as well run those tests there.
-        let standard_filter = "all() & !test(very_heavy) & !test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)".to_string();
+        //
+        // Our standard runners need to be updated to support Hyper-V OpenHCL
+        // PCAT, so run those tests on the CVM runners for now.
+        let standard_filter = "all() & !test(very_heavy) & !test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs) & !test(hyperv_openhcl_pcat)".to_string();
         let standard_x64_test_artifacts = vec![
             KnownTestArtifacts::FreeBsd13_2X64Vhd,
             KnownTestArtifacts::FreeBsd13_2X64Iso,
@@ -982,10 +985,11 @@ impl IntoPipeline for CheckinGatesCli {
 
         let cvm_filter = |arch| {
             format!(
-                "test({arch}) + (test(vbs) & test(hyperv)) + test(very_heavy) + test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)"
+                "test({arch}) + (test(vbs) & test(hyperv)) + test(very_heavy) + test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs) + test(hyperv_openhcl_pcat)"
             )
         };
         let cvm_x64_test_artifacts = vec![
+            KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
             KnownTestArtifacts::Ubuntu2504ServerX64Vhd,
