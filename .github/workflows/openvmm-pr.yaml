@@ -546,7 +546,7 @@ jobs:
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 30
       shell: bash
     - name: unpack openvmm-deps archive
-      run: flowey e 10 flowey_lib_hvlite::download_openvmm_deps 0
+      run: flowey e 10 flowey_lib_hvlite::resolve_openvmm_deps 0
       shell: bash
     - name: extract X64 sysroot.tar.gz
       run: |-
@@ -917,7 +917,7 @@ jobs:
         flowey e 11 flowey_lib_common::download_gh_release 1
       shell: bash
     - name: unpack openvmm-deps archive
-      run: flowey e 11 flowey_lib_hvlite::download_openvmm_deps 0
+      run: flowey e 11 flowey_lib_hvlite::resolve_openvmm_deps 0
       shell: bash
     - name: extract X64 sysroot.tar.gz
       run: flowey e 11 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
@@ -1671,7 +1671,7 @@ jobs:
         flowey e 14 flowey_lib_common::download_gh_release 1
       shell: bash
     - name: unpack openvmm-deps archive
-      run: flowey e 14 flowey_lib_hvlite::download_openvmm_deps 0
+      run: flowey e 14 flowey_lib_hvlite::resolve_openvmm_deps 0
       shell: bash
     - name: extract X64 sysroot.tar.gz
       run: flowey e 14 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
@@ -2425,7 +2425,7 @@ jobs:
         flowey e 17 flowey_lib_common::download_gh_release 1
       shell: bash
     - name: unpack openvmm-deps archive
-      run: flowey e 17 flowey_lib_hvlite::download_openvmm_deps 0
+      run: flowey e 17 flowey_lib_hvlite::resolve_openvmm_deps 0
       shell: bash
     - name: extract Aarch64 sysroot.tar.gz
       run: flowey e 17 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
@@ -2691,7 +2691,7 @@ jobs:
       run: flowey.exe e 18 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
     - name: unpack openvmm-deps archive
-      run: flowey.exe e 18 flowey_lib_hvlite::download_openvmm_deps 0
+      run: flowey.exe e 18 flowey_lib_hvlite::resolve_openvmm_deps 0
       shell: bash
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 18 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -2946,7 +2946,7 @@ jobs:
       run: flowey.exe e 19 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
     - name: unpack openvmm-deps archive
-      run: flowey.exe e 19 flowey_lib_hvlite::download_openvmm_deps 0
+      run: flowey.exe e 19 flowey_lib_hvlite::resolve_openvmm_deps 0
       shell: bash
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 19 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -3418,7 +3418,7 @@ jobs:
       run: flowey.exe e 20 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
     - name: unpack openvmm-deps archive
-      run: flowey.exe e 20 flowey_lib_hvlite::download_openvmm_deps 0
+      run: flowey.exe e 20 flowey_lib_hvlite::resolve_openvmm_deps 0
       shell: bash
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 20 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -3673,7 +3673,7 @@ jobs:
       run: flowey.exe e 21 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
     - name: unpack openvmm-deps archive
-      run: flowey.exe e 21 flowey_lib_hvlite::download_openvmm_deps 0
+      run: flowey.exe e 21 flowey_lib_hvlite::resolve_openvmm_deps 0
       shell: bash
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 21 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -3924,7 +3924,7 @@ jobs:
       run: flowey e 22 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
     - name: unpack openvmm-deps archive
-      run: flowey e 22 flowey_lib_hvlite::download_openvmm_deps 0
+      run: flowey e 22 flowey_lib_hvlite::resolve_openvmm_deps 0
       shell: bash
     - name: unpack mu_msvm package (x64)
       run: flowey e 22 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -4225,7 +4225,7 @@ jobs:
       run: flowey.exe e 23 flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve 0
       shell: bash
     - name: unpack openvmm-deps archive
-      run: flowey.exe e 23 flowey_lib_hvlite::download_openvmm_deps 0
+      run: flowey.exe e 23 flowey_lib_hvlite::resolve_openvmm_deps 0
       shell: bash
     - name: unpack mu_msvm package (aarch64)
       run: flowey.exe e 23 flowey_lib_hvlite::download_uefi_mu_msvm 0
@@ -6210,7 +6210,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 18
       shell: bash
     - name: unpack openvmm-deps archive
-      run: flowey e 8 flowey_lib_hvlite::download_openvmm_deps 0
+      run: flowey e 8 flowey_lib_hvlite::resolve_openvmm_deps 0
       shell: bash
     - name: extract Aarch64 sysroot.tar.gz
       run: |-
@@ -6491,7 +6491,7 @@ jobs:
         flowey e 9 flowey_lib_common::download_gh_release 1
       shell: bash
     - name: unpack openvmm-deps archive
-      run: flowey e 9 flowey_lib_hvlite::download_openvmm_deps 0
+      run: flowey e 9 flowey_lib_hvlite::resolve_openvmm_deps 0
       shell: bash
     - name: extract Aarch64 sysroot.tar.gz
       run: flowey e 9 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
