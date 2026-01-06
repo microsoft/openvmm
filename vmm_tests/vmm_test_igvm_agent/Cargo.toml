@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 anyhow.workspace = true
+pal.workspace = true
 tracing.workspace = true
 
 [lints]

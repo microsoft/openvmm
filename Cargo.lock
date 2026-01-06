@@ -9458,6 +9458,7 @@ name = "vmm_test_igvm_agent"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "pal",
  "tracing",
 ]
 

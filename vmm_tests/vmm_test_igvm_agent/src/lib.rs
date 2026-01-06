@@ -7,13 +7,14 @@
 #![cfg(windows)]
 #![forbid(unsafe_code)]
 
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 
 use anyhow::Context;
+use pal::pipe_pair;
 
 /// Name of the RPC server executable.
 pub const RPC_SERVER_EXE: &str = "test_igvm_agent_rpc_server.exe";
@@ -75,10 +76,12 @@ impl Drop for RpcServerGuard {
 /// If the server exits immediately (e.g., endpoint already in use), this returns Ok(())
 /// with a guard that will observe the exited process.
 pub fn start_rpc_server(rpc_server_path: &Path) -> anyhow::Result<RpcServerGuard> {
+    let (stderr_read, stderr_write) = pipe_pair()?;
+
     let mut child = Command::new(rpc_server_path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(stderr_write)
         .creation_flags(CREATE_NEW_PROCESS_GROUP)
         .spawn()
         .with_context(|| format!("failed to spawn {}", rpc_server_path.display()))?;
@@ -114,6 +117,23 @@ pub fn start_rpc_server(rpc_server_path: &Path) -> anyhow::Result<RpcServerGuard
             tracing::info!(pid = child.id(), "RPC server started and running");
         }
     }
+
+    // Forward stderr to tracing so it shows up with test output.
+    thread::Builder::new()
+        .name("igvm-agent-rpc-stderr".to_string())
+        .spawn(move || {
+            let reader = BufReader::new(stderr_read);
+            for line in reader.lines() {
+                match line {
+                    Ok(line) => tracing::info!(target: "test_igvm_agent_rpc_server", "{}", line),
+                    Err(err) => {
+                        tracing::debug!("RPC server stderr closed: {}", err);
+                        break;
+                    }
+                }
+            }
+        })
+        .expect("failed to spawn stderr forwarder thread");
 
     Ok(RpcServerGuard(child))
 }
