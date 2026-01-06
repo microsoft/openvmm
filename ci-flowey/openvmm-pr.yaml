@@ -149,7 +149,7 @@ jobs:
     displayName: map ADO hitvar to flowey
   - bash: $(FLOWEY_BIN) e 12 flowey_lib_common::download_gh_release 1
     displayName: download artifacts from github releases
-  - bash: $(FLOWEY_BIN) e 12 flowey_lib_hvlite::download_openvmm_deps 0
+  - bash: $(FLOWEY_BIN) e 12 flowey_lib_hvlite::resolve_openvmm_deps 0
     displayName: unpack openvmm-deps archive
   - bash: $(FLOWEY_BIN) e 12 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
     displayName: extract X64 sysroot.tar.gz
@@ -931,7 +931,7 @@ jobs:
       $(FLOWEY_BIN) e 9 flowey_lib_hvlite::download_openhcl_kernel_package 2
       $(FLOWEY_BIN) e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 30
     displayName: unpack kernel package
-  - bash: $(FLOWEY_BIN) e 9 flowey_lib_hvlite::download_openvmm_deps 0
+  - bash: $(FLOWEY_BIN) e 9 flowey_lib_hvlite::resolve_openvmm_deps 0
     displayName: unpack openvmm-deps archive
   - bash: |-
       set -e
@@ -1317,7 +1317,7 @@ jobs:
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::download_openhcl_kernel_package 1
       $(FLOWEY_BIN) e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 18
     displayName: unpack kernel package
-  - bash: $(FLOWEY_BIN) e 8 flowey_lib_hvlite::download_openvmm_deps 0
+  - bash: $(FLOWEY_BIN) e 8 flowey_lib_hvlite::resolve_openvmm_deps 0
     displayName: unpack openvmm-deps archive
   - bash: |-
       set -e
@@ -2510,7 +2510,7 @@ jobs:
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
       $(FLOWEY_BIN) e 15 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
     displayName: downloading VMM test disk images
-  - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::download_openvmm_deps 0
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::resolve_openvmm_deps 0
     displayName: unpack openvmm-deps archive
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_hvlite::download_uefi_mu_msvm 0
     displayName: unpack mu_msvm package (x64)
@@ -2762,7 +2762,7 @@ jobs:
       $(FLOWEY_BIN) e 14 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
       $(FLOWEY_BIN) e 14 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
     displayName: downloading VMM test disk images
-  - bash: $(FLOWEY_BIN) e 14 flowey_lib_hvlite::download_openvmm_deps 0
+  - bash: $(FLOWEY_BIN) e 14 flowey_lib_hvlite::resolve_openvmm_deps 0
     displayName: unpack openvmm-deps archive
   - bash: $(FLOWEY_BIN) e 14 flowey_lib_hvlite::download_uefi_mu_msvm 0
     displayName: unpack mu_msvm package (x64)
@@ -3014,7 +3014,7 @@ jobs:
       $(FLOWEY_BIN) e 13 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
       $(FLOWEY_BIN) e 13 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
     displayName: downloading VMM test disk images
-  - bash: $(FLOWEY_BIN) e 13 flowey_lib_hvlite::download_openvmm_deps 0
+  - bash: $(FLOWEY_BIN) e 13 flowey_lib_hvlite::resolve_openvmm_deps 0
     displayName: unpack openvmm-deps archive
   - bash: $(FLOWEY_BIN) e 13 flowey_lib_hvlite::download_uefi_mu_msvm 0
     displayName: unpack mu_msvm package (x64)
