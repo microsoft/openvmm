@@ -13,8 +13,12 @@ use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64;
+#[cfg(windows)]
+use petri_artifacts_vmm_test::artifacts::host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64;
 use pipette_client::PipetteClient;
 use std::path::Path;
+#[cfg(windows)]
+use vmm_test_igvm_agent as igvm_agent_rpc_server;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 
@@ -24,52 +28,31 @@ const AK_CERT_TOTAL_BYTES: usize = 4096;
 const TPM_GUEST_TESTS_LINUX_GUEST_PATH: &str = "/tmp/tpm_guest_tests";
 const TPM_GUEST_TESTS_WINDOWS_GUEST_PATH: &str = "C:\\tpm_guest_tests.exe";
 
-// Utilities for checking if the RPC server is running.
-// In CI, the RPC server is started by flowey before tests run.
-// For local development, the server can be started manually.
 #[cfg(windows)]
-pub mod windows {
-    /// Checks if any process with the given executable name is running.
-    pub fn is_process_running(exe_name: &str) -> bool {
-        use std::process::Command;
+fn ensure_rpc_server_running(rpc_server_path: &Path) -> anyhow::Result<()> {
+    use vmm_test_igvm_agent::RPC_SERVER_EXE;
 
-        // Use tasklist to check if the process is running
-        let output = Command::new("tasklist")
-            .args(["/FI", &format!("IMAGENAME eq {}", exe_name), "/NH"])
-            .output();
+    // if igvm_agent_rpc_server::is_process_running(RPC_SERVER_EXE) {
+    //     tracing::info!(exe = RPC_SERVER_EXE, "RPC server is running");
+    //     return Ok(());
+    // }
 
-        match output {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                // tasklist returns "INFO: No tasks are running..." if no match found.
-                // If a process is found, it shows the process info without "INFO: No tasks".
-                !stdout.contains("INFO: No tasks")
-            }
-            Err(e) => {
-                tracing::warn!("failed to run tasklist: {}", e);
-                false
-            }
-        }
-    }
+    let log_dir = rpc_server_path
+        .parent()
+        .context("test_igvm_agent_rpc_server path has no parent directory")?;
+    std::fs::create_dir_all(log_dir)
+        .with_context(|| format!("failed to create log directory {}", log_dir.display()))?;
+    let log_file_path = log_dir.join("test_igvm_agent_rpc_server.log");
 
-    /// Verifies that the RPC server is running.
-    /// In CI, the server is started by flowey before tests run.
-    /// Returns an error if the server is not running.
-    pub fn ensure_rpc_server_running() -> anyhow::Result<()> {
-        const RPC_SERVER_EXE: &str = "test_igvm_agent_rpc_server.exe";
+    tracing::info!(
+        exe = %rpc_server_path.display(),
+        log = %log_file_path.display(),
+        "starting test_igvm_agent_rpc_server for local run"
+    );
+    igvm_agent_rpc_server::start_rpc_server_with_logs(rpc_server_path, &log_file_path)
+        .context("failed to start test_igvm_agent_rpc_server")?;
 
-        if is_process_running(RPC_SERVER_EXE) {
-            tracing::info!(exe = RPC_SERVER_EXE, "RPC server is running");
-            Ok(())
-        } else {
-            anyhow::bail!(
-                "RPC server ({}) is not running. \
-                In CI, the server should be started by flowey. \
-                For local development, start the server manually before running tests.",
-                RPC_SERVER_EXE
-            )
-        }
-    }
+    igvm_agent_rpc_server::ensure_rpc_server_running()
 }
 
 fn expected_ak_cert_hex() -> String {
@@ -494,21 +477,23 @@ async fn tpm_test_platform_hierarchy_disabled(
 /// For local development, start the server manually before running tests.
 #[cfg(windows)]
 #[vmm_test(
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 )]
-async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
+async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
-    extra_deps: (ResolvedArtifact<T>,),
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
+    let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
 
-    // Verify the RPC server is running (started by flowey in CI)
-    windows::ensure_rpc_server_running()?;
+    // Verify (or start) the RPC server. Flowey handles CI; local nextest can start it here.
+    let rpc_server_path = rpc_server_artifact.get();
+    ensure_rpc_server_running(rpc_server_path.as_ref())?;
 
     let config = config
         .with_tpm(true)
@@ -522,8 +507,7 @@ async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
         OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
         _ => unreachable!(),
     };
-    let (artifact,) = extra_deps;
-    let host_binary_path = artifact.get();
+    let host_binary_path = tpm_guest_tests_artifact.get();
     let tpm_guest_tests =
         TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
             .await?;

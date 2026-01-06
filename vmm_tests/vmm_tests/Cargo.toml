@@ -18,6 +18,7 @@ harness = false
 petri_artifact_resolver_openvmm_known_paths.workspace = true
 petri_artifacts_vmm_test.workspace = true
 vmm_test_macros.workspace = true
+vmm_test_igvm_agent.workspace = true
 tmk_tests.workspace = true
 
 petri_artifacts_common.workspace = true

@@ -21,6 +21,7 @@ members = [
   "tmk/simple_tmk",
   # VMM tests
   "vmm_tests/prep_steps",
+  "vmm_tests/vmm_test_igvm_agent",
   "vmm_tests/vmm_tests",
   # hyper-v tooling
   "hyperv/tools/hypestv",
@@ -82,6 +83,7 @@ membacking = { path = "openvmm/membacking" }
 
 petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact_resolver_openvmm_known_paths" }
 petri_artifacts_vmm_test = { path = "vmm_tests/petri_artifacts_vmm_test" }
+vmm_test_igvm_agent = { path = "vmm_tests/vmm_test_igvm_agent" }
 vmm_test_images = { path = "vmm_tests/vmm_test_images" }
 vmm_test_macros = { path = "vmm_tests/vmm_test_macros" }
 

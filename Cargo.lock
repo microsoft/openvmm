@@ -9454,6 +9454,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vmm_test_igvm_agent"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "tracing",
+]
+
+[[package]]
 name = "vmm_test_images"
 version = "0.0.0"
 dependencies = [
@@ -9513,6 +9521,7 @@ dependencies = [
  "virtio_resources",
  "vm_resource",
  "vmgs_resources",
+ "vmm_test_igvm_agent",
  "vmm_test_macros",
  "zerocopy 0.8.27",
 ]
