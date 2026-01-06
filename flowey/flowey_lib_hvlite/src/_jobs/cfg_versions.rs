@@ -78,9 +78,7 @@ impl FlowNode for Node {
         ctx.req(flowey_lib_common::download_protoc::Request::Version(PROTOC.into()));
         ctx.req(flowey_lib_common::install_azure_cli::Request::Version(AZURE_CLI.into()));
         ctx.req(flowey_lib_common::install_nodejs::Request::Version(NODEJS.into()));
-        if !matches!(ctx.backend(), FlowBackend::Ado) {
-            ctx.req(flowey_lib_common::install_rust::Request::Version(RUSTUP_TOOLCHAIN.into()));
-        }
+        ctx.req(flowey_lib_common::install_rust::Request::Version(RUSTUP_TOOLCHAIN.into()));
         Ok(())
     }
 }
