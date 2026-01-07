@@ -701,4 +701,282 @@ mod tests {
         let data = [2, 0, 0]; // level=Info, msg_len=0
         assert!(StringBuffer::validate_entries(&data).is_ok());
     }
+
+    #[test]
+    fn test_append_log_buffer_full() {
+        let mut storage = [0u8; TEST_BUFFER_SIZE];
+        let mut buffer = StringBuffer::new(&mut storage).unwrap();
+
+        // Fill the buffer by writing a large message
+        let large_msg = "x".repeat(buffer.remaining_capacity() - ENTRY_HEADER_SIZE);
+        assert!(matches!(
+            buffer.append_log(Level::Info, &format_args!("{}", large_msg)),
+            Ok(true)
+        ));
+
+        // Buffer should now be full (no space for another entry)
+        assert!(buffer.remaining_capacity() < ENTRY_HEADER_SIZE + 1);
+
+        // Try to append another message - should be dropped
+        assert!(matches!(
+            buffer.append_log(Level::Error, &format_args!("should drop")),
+            Ok(false)
+        ));
+        assert_eq!(buffer.dropped_messages(), 1);
+    }
+
+    #[test]
+    fn test_append_log_multiple_drops() {
+        let mut storage = [0u8; TEST_BUFFER_SIZE];
+        let mut buffer = StringBuffer::new(&mut storage).unwrap();
+
+        // Fill the buffer
+        let large_msg = "x".repeat(buffer.remaining_capacity() - ENTRY_HEADER_SIZE);
+        assert!(matches!(
+            buffer.append_log(Level::Info, &format_args!("{}", large_msg)),
+            Ok(true)
+        ));
+
+        // Multiple failed appends should increment dropped counter each time
+        assert!(matches!(
+            buffer.append_log(Level::Error, &format_args!("a")),
+            Ok(false)
+        ));
+        assert_eq!(buffer.dropped_messages(), 1);
+
+        assert!(matches!(
+            buffer.append_log(Level::Warn, &format_args!("b")),
+            Ok(false)
+        ));
+        assert_eq!(buffer.dropped_messages(), 2);
+
+        assert!(matches!(
+            buffer.append_log(Level::Debug, &format_args!("c")),
+            Ok(false)
+        ));
+        assert_eq!(buffer.dropped_messages(), 3);
+    }
+
+    #[test]
+    fn test_append_log_utf8_strings() {
+        let mut storage = [0u8; TEST_BUFFER_SIZE];
+        let mut buffer = StringBuffer::new(&mut storage).unwrap();
+
+        // Test various UTF-8 strings via format_args
+        assert!(
+            buffer
+                .append_log(Level::Info, &format_args!("héllo"))
+                .is_ok()
+        );
+        assert!(
+            buffer
+                .append_log(Level::Info, &format_args!("über"))
+                .is_ok()
+        );
+        assert!(
+            buffer
+                .append_log(Level::Info, &format_args!("数据"))
+                .is_ok()
+        );
+        assert!(
+            buffer
+                .append_log(Level::Info, &format_args!("emoji 😊"))
+                .is_ok()
+        );
+
+        let messages = collect_messages(&buffer);
+        assert_eq!(messages, vec!["héllo", "über", "数据", "emoji 😊"]);
+    }
+
+    #[test]
+    fn test_multi_page_buffer() {
+        // Test with 8K (2 pages) buffer
+        let mut storage = [0u8; PAGE_SIZE_4K * 2];
+        let mut buffer = StringBuffer::new(&mut storage).unwrap();
+
+        let header_size = size_of::<Header>();
+        let expected_capacity = PAGE_SIZE_4K * 2 - header_size;
+        assert_eq!(buffer.remaining_capacity(), expected_capacity);
+
+        // Write some entries
+        assert!(
+            buffer
+                .append_log(Level::Info, &format_args!("test1"))
+                .is_ok()
+        );
+        assert!(
+            buffer
+                .append_log(Level::Error, &format_args!("test2"))
+                .is_ok()
+        );
+
+        let entries = collect_entries(&buffer);
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn test_max_page_buffer() {
+        // Test with 60K (15 pages) - maximum allowed
+        let mut storage = vec![0u8; PAGE_SIZE_4K * 15];
+        let mut buffer = StringBuffer::new(&mut storage).unwrap();
+
+        let header_size = size_of::<Header>();
+        let expected_capacity = PAGE_SIZE_4K * 15 - header_size;
+        assert_eq!(buffer.remaining_capacity(), expected_capacity);
+
+        assert!(
+            buffer
+                .append_log(Level::Debug, &format_args!("large buffer test"))
+                .is_ok()
+        );
+        assert_eq!(collect_messages(&buffer), vec!["large buffer test"]);
+    }
+
+    #[test]
+    fn test_append_log_exactly_fills_buffer() {
+        let mut storage = [0u8; TEST_BUFFER_SIZE];
+        let mut buffer = StringBuffer::new(&mut storage).unwrap();
+
+        // Calculate exact size needed to fill the buffer
+        let remaining = buffer.remaining_capacity();
+        let msg_size = remaining - ENTRY_HEADER_SIZE;
+        let exact_msg = "x".repeat(msg_size);
+
+        assert!(matches!(
+            buffer.append_log(Level::Info, &format_args!("{}", exact_msg)),
+            Ok(true)
+        ));
+
+        // Buffer should be exactly full
+        assert_eq!(buffer.remaining_capacity(), 0);
+        assert_eq!(buffer.dropped_messages(), 0);
+
+        // Any further append should fail
+        assert!(matches!(
+            buffer.append_log(Level::Info, &format_args!("x")),
+            Ok(false)
+        ));
+        assert_eq!(buffer.dropped_messages(), 1);
+    }
+
+    #[test]
+    fn test_from_existing_roundtrip_append_log() {
+        let mut storage = [0u8; TEST_BUFFER_SIZE];
+
+        // Write entries using append_log
+        {
+            let mut buffer = StringBuffer::new(&mut storage).unwrap();
+            assert!(
+                buffer
+                    .append_log(Level::Error, &format_args!("error message"))
+                    .is_ok()
+            );
+            assert!(
+                buffer
+                    .append_log(Level::Warn, &format_args!("warning: {}", 42))
+                    .is_ok()
+            );
+            assert!(
+                buffer
+                    .append_log(Level::Info, &format_args!("info"))
+                    .is_ok()
+            );
+        }
+
+        // Reopen and verify
+        let buffer = StringBuffer::from_existing(&mut storage).unwrap();
+        let entries = collect_entries(&buffer);
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            entries[0],
+            LogEntry {
+                level: Level::Error,
+                message: "error message"
+            }
+        );
+        assert_eq!(
+            entries[1],
+            LogEntry {
+                level: Level::Warn,
+                message: "warning: 42"
+            }
+        );
+        assert_eq!(
+            entries[2],
+            LogEntry {
+                level: Level::Info,
+                message: "info"
+            }
+        );
+    }
+
+    #[test]
+    fn test_entries_iterator_many() {
+        let mut storage = [0u8; TEST_BUFFER_SIZE];
+        let mut buffer = StringBuffer::new(&mut storage).unwrap();
+
+        // Add many entries
+        let levels = [
+            Level::Error,
+            Level::Warn,
+            Level::Info,
+            Level::Debug,
+            Level::Trace,
+        ];
+        for i in 0..20 {
+            let level = levels[i % levels.len()];
+            assert!(
+                buffer
+                    .append_log(level, &format_args!("message {}", i))
+                    .is_ok()
+            );
+        }
+
+        let entries = collect_entries(&buffer);
+        assert_eq!(entries.len(), 20);
+
+        for (i, entry) in entries.iter().enumerate() {
+            assert_eq!(entry.level, levels[i % levels.len()]);
+            assert_eq!(entry.message, alloc::format!("message {}", i));
+        }
+    }
+
+    #[test]
+    fn test_dropped_messages_starts_at_zero() {
+        let mut storage = [0u8; TEST_BUFFER_SIZE];
+        let buffer = StringBuffer::new(&mut storage).unwrap();
+        assert_eq!(buffer.dropped_messages(), 0);
+    }
+
+    #[test]
+    fn test_dropped_messages_preserved_in_from_existing() {
+        let mut storage = [0u8; TEST_BUFFER_SIZE];
+
+        // Fill buffer and cause drops
+        {
+            let mut buffer = StringBuffer::new(&mut storage).unwrap();
+            let large_msg = "x".repeat(buffer.remaining_capacity() - ENTRY_HEADER_SIZE);
+            assert!(
+                buffer
+                    .append_log(Level::Info, &format_args!("{}", large_msg))
+                    .is_ok()
+            );
+
+            // Cause some drops
+            assert!(matches!(
+                buffer.append_log(Level::Info, &format_args!("drop1")),
+                Ok(false)
+            ));
+            assert!(matches!(
+                buffer.append_log(Level::Info, &format_args!("drop2")),
+                Ok(false)
+            ));
+            assert_eq!(buffer.dropped_messages(), 2);
+        }
+
+        // Reopen and verify dropped count is preserved
+        let buffer = StringBuffer::from_existing(&mut storage).unwrap();
+        assert_eq!(buffer.dropped_messages(), 2);
+    }
 }
