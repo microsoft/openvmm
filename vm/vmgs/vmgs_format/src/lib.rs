@@ -34,6 +34,7 @@ open_enum! {
     #[cfg_attr(feature = "inspect", inspect(debug))]
     pub enum FileId: u32 {
         FILE_TABLE     = 0,
+
         BIOS_NVRAM     = 1,
         TPM_PPI        = 2,
         TPM_NVRAM      = 3,
@@ -90,7 +91,11 @@ pub struct VmgsFileEntry {
     pub nonce: VmgsNonce,
     pub authentication_tag: VmgsAuthTag,
 
-    pub reserved: [u8; 20],
+    // Store a copy of the extended attributes here so we can check if a FileId
+    // is encrypted without unlocking the VMGS.
+    pub attributes: FileAttribute,
+
+    pub reserved: [u8; 16],
 }
 
 const_assert!(size_of::<VmgsFileEntry>() == 64);
