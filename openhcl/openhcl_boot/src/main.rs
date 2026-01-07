@@ -34,8 +34,6 @@ use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_memory_init;
 use crate::boot_logger::boot_logger_runtime_init;
-use crate::boot_logger::boot_logger_write_memory_log_to_runtime;
-use crate::boot_logger::log;
 use crate::hypercall::hvcall;
 use crate::memory::AddressSpaceManager;
 use crate::single_threaded::OffStackRef;
@@ -561,6 +559,11 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Enable the in-memory log.
     boot_logger_memory_init(p.log_buffer);
 
+    // Enable global log crate.
+    log::set_logger(&boot_logger::BOOT_LOGGER).unwrap();
+    // TODO: allow overriding filter at runtime
+    log::set_max_level(log::LevelFilter::Info);
+
     let boot_reftime = get_ref_time(p.isolation_type);
 
     // The support code for the fast hypercalls does not set
@@ -600,8 +603,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Enable logging ASAP. This is fine even when isolated, as we don't have
     // any access to secrets in the boot shim.
     boot_logger_runtime_init(p.isolation_type, partition_info.com3_serial_available);
-    log!("openhcl_boot: logging enabled");
-    boot_logger_write_memory_log_to_runtime();
+    log::info!("openhcl_boot: logging enabled");
 
     // Confidential debug will show up in boot_options only if included in the
     // static command line, or if can_trust_host is true (so the dynamic command
@@ -771,7 +773,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     rt::verify_stack_cookie();
 
-    log!("uninitializing hypercalls, about to jump to kernel");
+    log::info!("uninitializing hypercalls, about to jump to kernel");
     hvcall().uninitialize();
 
     cfg_if::cfg_if! {

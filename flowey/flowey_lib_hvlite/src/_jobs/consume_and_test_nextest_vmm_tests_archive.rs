@@ -153,15 +153,18 @@ impl SimpleFlowNode for Node {
             }
             a => anyhow::bail!("unsupported target architecture: {a}"),
         };
-        let release_igvm_files =
-            ctx.reqv(
+        let release_igvm_files = if !matches!(ctx.backend(), FlowBackend::Ado) {
+            Some(ctx.reqv(
                 |v| crate::download_release_igvm_files_from_gh::resolve::Request {
                     arch,
                     release_igvm_files: v,
                     release_version:
                         crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest(),
                 },
-            );
+            ))
+        } else {
+            None
+        };
 
         let mut pre_run_deps = vec![ctx.reqv(crate::install_vmm_tests_deps::Request::Install)];
 
@@ -185,7 +188,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
             get_env: v,
-            release_igvm_files: Some(release_igvm_files),
+            release_igvm_files,
             use_relative_paths: false,
         });
 

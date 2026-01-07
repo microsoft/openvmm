@@ -4878,6 +4878,7 @@ dependencies = [
  "hvdef",
  "igvm_defs",
  "loader_defs",
+ "log",
  "memory_range",
  "mesh_protobuf",
  "minimal_rt",

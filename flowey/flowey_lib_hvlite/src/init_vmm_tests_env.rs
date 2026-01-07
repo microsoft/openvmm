@@ -7,9 +7,9 @@
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
-use crate::download_openvmm_deps::OpenvmmDepsArch;
 use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
+use crate::resolve_openvmm_deps::OpenvmmDepsArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -75,7 +75,7 @@ impl SimpleFlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
     }
@@ -110,10 +110,10 @@ impl SimpleFlowNode for Node {
         };
 
         let test_linux_initrd = ctx.reqv(|v| {
-            crate::download_openvmm_deps::Request::GetLinuxTestInitrd(openvmm_deps_arch, v)
+            crate::resolve_openvmm_deps::Request::GetLinuxTestInitrd(openvmm_deps_arch, v)
         });
         let test_linux_kernel = ctx.reqv(|v| {
-            crate::download_openvmm_deps::Request::GetLinuxTestKernel(openvmm_deps_arch, v)
+            crate::resolve_openvmm_deps::Request::GetLinuxTestKernel(openvmm_deps_arch, v)
         });
 
         let mu_msvm_arch = match vmm_tests_target.architecture {
