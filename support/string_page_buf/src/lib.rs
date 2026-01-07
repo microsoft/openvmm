@@ -11,7 +11,6 @@ use core::fmt;
 use core::fmt::Write;
 use core::str;
 use core::str::Utf8Error;
-use log::Level;
 use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -19,6 +18,9 @@ use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 use zerocopy::Unaligned;
 use zerocopy::little_endian::U16 as U16Le;
+
+// Re-export log::Level for consumers who need it for LogEntry
+pub use log::Level;
 
 const PAGE_SIZE_4K: usize = 4096;
 
