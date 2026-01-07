@@ -1255,13 +1255,25 @@ impl VmbusDevice for Nic {
             // The coordinator will restart any stopped workers.
             self.coordinator.start();
         }
+        if let Err(err) = &r {
+            tracing::error!(
+                error = err as &dyn std::error::Error,
+                channel_idx,
+                instance_id = %self.instance_id,
+                "vmbus channel open failed"
+            );
+        }
         r?;
         Ok(())
     }
 
     async fn close(&mut self, channel_idx: u16) {
         if !self.coordinator.has_state() {
-            tracing::error!("Close called while vmbus channel is already closed");
+            tracing::error!(
+                channel_idx,
+                instance_id = %self.instance_id,
+                "Close called while vmbus channel is already closed"
+            );
             return;
         }
 
@@ -1363,7 +1375,11 @@ impl SaveRestoreVmbusDevice for Nic {
     ) -> Result<(), RestoreError> {
         let state: saved_state::SavedState = state.parse()?;
         if let Err(err) = self.restore_state(control, state).await {
-            tracing::error!(err = &err as &dyn std::error::Error, instance_id = %self.instance_id, "Failed restoring network vmbus state");
+            tracing::error!(
+                error = &err as &dyn std::error::Error,
+                instance_id = %self.instance_id,
+                "Failed restoring network vmbus state"
+            );
             Err(err.into())
         } else {
             Ok(())
@@ -2577,7 +2593,7 @@ impl<T: RingMem> NetChannel<T> {
             tracing::info!(
                 available = serial_number.is_some(),
                 serial_number,
-                "sending VF association message."
+                "sending VF association message"
             );
             // N.B. MIN_CONTROL_RING_SIZE reserves room to send this packet.
             let message = {
@@ -2603,7 +2619,13 @@ impl<T: RingMem> NetChannel<T> {
                         tracing::error!(len, "failed to write vf association message");
                         WorkerError::OutOfSpace
                     }
-                    queue::TryWriteError::Queue(err) => WorkerError::Queue(err),
+                    queue::TryWriteError::Queue(err) => {
+                        tracing::error!(
+                            error = &err as &dyn std::error::Error,
+                            "failed to notify guest about the vf association"
+                        );
+                        WorkerError::Queue(err)
+                    }
                 })?;
             Ok(true)
         } else {
@@ -2669,7 +2691,10 @@ impl<T: RingMem> NetChannel<T> {
                 queue::TryWriteError::Queue(err) => WorkerError::Queue(err),
             });
         if let Err(err) = result {
-            tracing::error!(err = %err, "Failed to notify guest about the send indirection table");
+            tracing::error!(
+                error = &err as &dyn std::error::Error,
+                "Failed to notify guest about the send indirection table"
+            );
         }
     }
 
@@ -2693,16 +2718,16 @@ impl<T: RingMem> NetChannel<T> {
             })
             .map_err(|err| match err {
                 queue::TryWriteError::Full(len) => {
-                    tracing::error!(
-                        len,
-                        "failed to write MESSAGE4_TYPE_SWITCH_DATA_PATH message"
-                    );
+                    tracing::error!(len, "failed to write switch data path message");
                     WorkerError::OutOfSpace
                 }
                 queue::TryWriteError::Queue(err) => WorkerError::Queue(err),
             });
         if let Err(err) = result {
-            tracing::error!(err = %err, "Failed to notify guest that data path is now synthetic");
+            tracing::error!(
+                error = &err as &dyn std::error::Error,
+                "Failed to notify guest that data path is now synthetic"
+            );
         }
     }
 
@@ -2775,16 +2800,16 @@ impl<T: RingMem> NetChannel<T> {
                     let result = result.expect("DataPathSwitchPending should have been processed");
                     // Complete the data path switch request.
                     self.send_completion(id, None)?;
-                    if result {
-                        if to_guest {
-                            PrimaryChannelGuestVfState::DataPathSwitched
-                        } else {
-                            PrimaryChannelGuestVfState::Ready
-                        }
-                    } else {
-                        if to_guest {
-                            PrimaryChannelGuestVfState::DataPathSynthetic
-                        } else {
+
+                    match (to_guest, result) {
+                        // Switching to guest VF successful.
+                        (true, true) => PrimaryChannelGuestVfState::DataPathSwitched,
+                        // Switching to guest VF failed, stay synthetic.
+                        (true, false) => PrimaryChannelGuestVfState::DataPathSynthetic,
+                        // Switching to synthetic successful.
+                        (false, true) => PrimaryChannelGuestVfState::Ready,
+                        // Switching to synthetic failed, assume VF remains active.
+                        (false, false) => {
                             tracing::error!(
                                 "Failure when guest requested switch back to synthetic"
                             );
@@ -2930,7 +2955,11 @@ impl<T: RingMem> NetChannel<T> {
                         rndisprot::STATUS_SUCCESS
                     }
                     Err(err) => {
-                        tracelimit::warn_ratelimited!(oid = ?request.oid, error = &err as &dyn std::error::Error, "oid failure");
+                        tracelimit::warn_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            oid = ?request.oid,
+                            "oid set failure"
+                        );
                         err.as_status()
                     }
                 };
@@ -4567,8 +4596,8 @@ impl<T: RingMem + 'static + Sync> AsyncRun<Worker<T>> for NetQueue {
             Err(WorkerError::Cancelled(cancelled)) => return Err(cancelled),
             Err(err) => {
                 tracing::error!(
-                    channel_idx = worker.channel_idx,
                     error = &err as &dyn std::error::Error,
+                    channel_idx = worker.channel_idx,
                     "netvsp error"
                 );
             }
@@ -5368,7 +5397,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         }
                         Err(err) => {
                             tracelimit::error_ratelimited!(
-                                err = &err as &dyn std::error::Error,
+                                error = &err as &dyn std::error::Error,
                                 "failed to handle RNDIS packet"
                             );
                             self.complete_tx_packet(state, id, protocol::Status::FAILURE)?;
