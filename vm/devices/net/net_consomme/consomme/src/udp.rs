@@ -199,7 +199,6 @@ impl<T: Client> Access<'_, T> {
             &addresses.dst_addr.into(),
             &checksum.caps(),
         )?;
-
         if addresses.dst_addr == self.inner.state.params.gateway_ip
             || addresses.dst_addr.is_broadcast()
         {

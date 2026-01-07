@@ -102,7 +102,7 @@ impl DnsBackend for WindowsDnsResolverBackend {
     ) -> Result<(), DropReason> {
         // Only support UDP protocol on Windows
         if request.flow.protocol != IpProtocol::Udp {
-            tracing::warn!(
+            tracelimit::warn_ratelimited!(
                 "TCP DNS queries not supported on Windows backend, only UDP is supported"
             );
             return Err(DropReason::Packet(smoltcp::wire::Error));
@@ -177,7 +177,7 @@ impl DnsBackend for WindowsDnsResolverBackend {
             Ok(())
         } else {
             // Query failed immediately
-            tracing::error!("DnsQueryRaw failed with error code: {}", result);
+            tracelimit::warn_ratelimited!("DnsQueryRaw failed with error code: {}", result);
 
             // Clean up context
             // SAFETY: We're reclaiming ownership of the context we just created
@@ -211,7 +211,7 @@ impl DnsBackend for WindowsDnsResolverBackend {
             unsafe {
                 let result = cancel_fn(&tracked.cancel_handle);
                 if result != NO_ERROR as i32 {
-                    tracing::warn!(
+                    tracelimit::warn_ratelimited!(
                         "Failed to cancel DNS request {}: error code {}",
                         request_id,
                         result
@@ -247,7 +247,7 @@ unsafe extern "system" fn dns_query_raw_callback(
 ) {
     // Validate inputs
     if query_context.is_null() {
-        tracing::error!("DNS callback received null context");
+        tracelimit::warn_ratelimited!("DNS callback received null context");
         return;
     }
 
@@ -262,7 +262,7 @@ unsafe extern "system" fn dns_query_raw_callback(
     };
 
     let Some(tracked) = tracked else {
-        tracing::warn!("DNS callback for unknown request ID: {}", request_id);
+        tracelimit::warn_ratelimited!("DNS callback for unknown request ID: {}", request_id);
         return;
     };
 
@@ -292,7 +292,7 @@ unsafe extern "system" fn dns_query_raw_callback(
                 });
             } else {
                 // Query succeeded but no data returned
-                tracing::error!("DNS query succeeded but returned no data, returning SERVFAIL");
+                tracelimit::warn_ratelimited!("DNS query succeeded but returned no data, returning SERVFAIL");
                 let response = build_servfail_response(&tracked.request.query);
                 tracked.request.accessor.push(DnsResponse {
                     flow: tracked.request.flow,
@@ -300,10 +300,9 @@ unsafe extern "system" fn dns_query_raw_callback(
                 });
             }
         } else {
-            // Query failed, return SERVFAIL
-            tracing::error!(
-                "DNS query failed with status {}, returning SERVFAIL",
-                results.queryStatus
+            tracelimit::warn_ratelimited!(
+                status = results.queryStatus,
+                "DNS query failed, returning SERVFAIL"
             );
             let response = build_servfail_response(&tracked.request.query);
             tracked.request.accessor.push(DnsResponse {
@@ -319,11 +318,11 @@ unsafe extern "system" fn dns_query_raw_callback(
                 free_fn(query_results as *mut DNS_QUERY_RAW_RESULT);
             }
         } else {
-            tracing::error!("Failed to get DnsQueryRawResultFree function");
+            tracelimit::warn_ratelimited!("Failed to get DnsQueryRawResultFree function");
         }
     } else {
         // No results provided, return SERVFAIL
-        tracing::error!("DNS callback received null results, returning SERVFAIL");
+        tracelimit::warn_ratelimited!("DNS callback received null results, returning SERVFAIL");
         let response = build_servfail_response(&tracked.request.query);
         tracked.request.accessor.push(DnsResponse {
             flow: tracked.request.flow,

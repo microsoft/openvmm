@@ -778,6 +778,7 @@ dependencies = [
  "smoltcp",
  "socket2",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "windows-sys 0.61.0",
 ]
