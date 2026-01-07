@@ -25,6 +25,7 @@ use crate::memory::AllocationType;
 use crate::single_threaded::OffStackRef;
 use crate::single_threaded::off_stack;
 use alloc::vec::Vec;
+use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use bump_alloc::ALLOCATOR;
 use core::cmp::max;
@@ -550,8 +551,9 @@ fn topology_from_host_dt(
             // usage gets bigger, as otherwise the used_range by the bootshim
             // could overlap the pool range chosen, when servicing to a new
             // image.
+            let vnode = 0;
             match address_space.allocate(
-                Some(0),
+                Some(vnode),
                 pool_size_bytes,
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
@@ -560,8 +562,23 @@ fn topology_from_host_dt(
                     log::info!("allocated VTL2 pool at {:#x?}", pool.range);
                 }
                 None => {
+                    // Build a compact string representation of the free ranges
+                    // for diagnostics. Keep the string relatively small, as the
+                    // enlightened panic message can only contain 1 page (4096)
+                    // bytes of output.
+                    let mut free_ranges = off_stack!(ArrayString<2048>, ArrayString::new_const());
+                    for range in address_space.free_ranges(vnode) {
+                        if write!(free_ranges, "[{:#x?}, {:#x?}) ", range.start(), range.end())
+                            .is_err()
+                        {
+                            let _ = write!(free_ranges, "...");
+                            break;
+                        }
+                    }
+                    let highest_numa_node = vtl2_ram.iter().map(|e| e.vnode).max().unwrap_or(0);
                     panic!(
-                        "failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes (enable_vtl2_gpa_pool={enable_vtl2_gpa_pool:?}, device_dma_page_count={device_dma_page_count:#x?}, vp_count={vp_count}, mem_size={mem_size:#x})"
+                        "failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes (enable_vtl2_gpa_pool={enable_vtl2_gpa_pool:?}, device_dma_page_count={device_dma_page_count:#x?}, vp_count={vp_count}, mem_size={mem_size:#x}), highest_numa_node={highest_numa_node}, free_ranges=[ {}]",
+                        free_ranges.as_str()
                     );
                 }
             };
