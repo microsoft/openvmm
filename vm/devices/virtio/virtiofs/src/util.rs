@@ -30,6 +30,41 @@ pub fn stat_to_fuse_attr(stat: &lx::Stat) -> fuse_attr {
     }
 }
 
+pub fn statex_timestamp_to_fuse_sx_time(ts: &lx::StatExTimestamp) -> fuse_sx_time {
+    fuse_sx_time {
+        sec: ts.seconds,
+        nsec: ts.nanoseconds,
+        _rsvd: 0,
+    }
+}
+
+/// Convert a Linux stat struct to FUSE extended attributes.
+pub fn statx_to_fuse_statx(stat: &lx::StatEx) -> fuse_statx {
+    fuse_statx {
+        mask: stat.mask.into_bits(),
+        blksize: stat.block_size,
+        attributes: stat.attributes.into_bits(),
+        nlink: stat.link_count,
+        uid: stat.uid,
+        gid: stat.gid,
+        mode: stat.mode,
+        ino: stat.inode_id,
+        size: stat.file_size,
+        blocks: stat.block_count,
+        attributes_mask: stat.attributes_mask.into_bits(),
+        atime: statex_timestamp_to_fuse_sx_time(&stat.access_time),
+        btime: statex_timestamp_to_fuse_sx_time(&stat.creation_time),
+        mtime: statex_timestamp_to_fuse_sx_time(&stat.write_time),
+        ctime: statex_timestamp_to_fuse_sx_time(&stat.change_time),
+        rdev_major: stat.rdev_major,
+        rdev_minor: stat.rdev_minor,
+        dev_major: stat.dev_major,
+        dev_minor: stat.dev_minor,
+        _rsvd1: 0,
+        _rsvd2: [0; 14],
+    }
+}
+
 /// Convert a FUSE setattr message to a lxutil `SetAttributes` struct.
 pub fn fuse_set_attr_to_lxutil(
     arg: &fuse_setattr_in,

@@ -75,6 +75,28 @@ impl Fuse for VirtioFs {
         Ok(fuse_attr_out::new(ATTRIBUTE_TIMEOUT, attr))
     }
 
+    fn get_statx(
+        &self,
+        request: &Request,
+        fh: u64,
+        getattr_flags: u32,
+        flags: StatxFlags,
+        _mask: lx::StatExMask,
+    ) -> lx::Result<fuse_statx_out> {
+        let node_id = request.node_id();
+        // If a file handle is specified, get the attributes from the open file. This is faster on
+        // Windows and works if the file was deleted.
+        let statx = if getattr_flags & FUSE_GETATTR_FH != 0 {
+            let file = self.get_file(fh)?;
+            file.get_statx()?
+        } else {
+            let inode = self.get_inode(node_id)?;
+            inode.get_statx()?
+        };
+
+        Ok(fuse_statx_out::new(ATTRIBUTE_TIMEOUT, flags, statx))
+    }
+
     fn set_attr(&self, request: &Request, arg: &fuse_setattr_in) -> lx::Result<fuse_attr_out> {
         let node_id = request.node_id();
 
