@@ -105,7 +105,7 @@ async fn many_nvme_devices_servicing_very_heavy(
             ("OPENVMM_SHOW_SPANS".to_owned(), "true".to_owned()),
         ].into()))
         .with_openhcl_command_line(
-            "OPENHCL_ENABLE_VTL2_GPA_POOL=16384 dyndbg=\"module vfio_pci +p; module pci_hyperv +p\" udev.log_priority=debug",
+            "OPENHCL_ENABLE_VTL2_GPA_POOL=16384 dyndbg=\"module vfio_pci +p; module pci_hyperv +p\" udev.log_priority=debug OPENHCL_CONFIG_TIMEOUT_IN_SECONDS=30",
         ) // 64MB of private pool for VTL2 NVMe devices, debug logging for vfio-pci driver.
         .with_memory(MemoryConfig {
             startup_bytes: 8 * 1024 * 1024 * 1024, // 8GB
