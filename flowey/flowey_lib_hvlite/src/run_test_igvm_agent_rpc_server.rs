@@ -60,8 +60,7 @@ impl SimpleFlowNode for Node {
 
                     let exe = Path::new(test_content_dir).join("test_igvm_agent_rpc_server.exe");
 
-                    // if !exe.exists() {
-                    if exe.exists() {
+                    if !exe.exists() {
                         log::info!(
                             "test_igvm_agent_rpc_server.exe not found at {}, skipping",
                             exe.display()

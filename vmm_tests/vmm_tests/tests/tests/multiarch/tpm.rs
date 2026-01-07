@@ -32,6 +32,7 @@ const TPM_GUEST_TESTS_WINDOWS_GUEST_PATH: &str = "C:\\tpm_guest_tests.exe";
 fn ensure_rpc_server_running(
     rpc_server_path: &Path,
 ) -> anyhow::Result<Option<igvm_agent_rpc_server::RpcServerGuard>> {
+    // For local single-test runs we start and own the server (see vmm_test_igvm_agent/README.md).
     // If it's already running (e.g., CI), do nothing.
     if igvm_agent_rpc_server::ensure_rpc_server_running().is_ok() {
         return Ok(None);
