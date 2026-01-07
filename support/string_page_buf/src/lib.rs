@@ -351,7 +351,7 @@ impl<'a> StringBuffer<'a> {
     pub fn append_log(
         &mut self,
         level: Level,
-        args: fmt::Arguments<'_>,
+        args: &fmt::Arguments<'_>,
     ) -> Result<bool, StringBufferError> {
         // Check if we have at least space for the entry header
         if self.remaining_capacity() < ENTRY_HEADER_SIZE {
@@ -650,27 +650,27 @@ mod tests {
         // Test append_log with different levels
         assert!(
             buffer
-                .append_log(Level::Error, format_args!("error msg"))
+                .append_log(Level::Error, &format_args!("error msg"))
                 .is_ok()
         );
         assert!(
             buffer
-                .append_log(Level::Warn, format_args!("warn msg"))
+                .append_log(Level::Warn, &format_args!("warn msg"))
                 .is_ok()
         );
         assert!(
             buffer
-                .append_log(Level::Info, format_args!("info msg"))
+                .append_log(Level::Info, &format_args!("info msg"))
                 .is_ok()
         );
         assert!(
             buffer
-                .append_log(Level::Debug, format_args!("debug msg"))
+                .append_log(Level::Debug, &format_args!("debug msg"))
                 .is_ok()
         );
         assert!(
             buffer
-                .append_log(Level::Trace, format_args!("trace msg"))
+                .append_log(Level::Trace, &format_args!("trace msg"))
                 .is_ok()
         );
 
@@ -722,7 +722,7 @@ mod tests {
         let name = "test";
         assert!(
             buffer
-                .append_log(Level::Info, format_args!("value={}, name={}", value, name))
+                .append_log(Level::Info, &format_args!("value={}, name={}", value, name))
                 .is_ok()
         );
 
@@ -738,7 +738,7 @@ mod tests {
         let mut buffer = StringBuffer::new(&mut storage).unwrap();
 
         // Empty format should succeed but not store anything
-        assert!(buffer.append_log(Level::Info, format_args!("")).is_ok());
+        assert!(buffer.append_log(Level::Info, &format_args!("")).is_ok());
         assert_eq!(collect_entries(&buffer).len(), 0);
     }
 
