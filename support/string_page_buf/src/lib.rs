@@ -272,70 +272,6 @@ impl<'a> StringBuffer<'a> {
         Ok(())
     }
 
-    /// Appends a string to the buffer with the specified log level.
-    ///
-    /// The entry is stored as a 3-byte header (level + u16 length) followed by
-    /// the UTF-8 string bytes.
-    ///
-    /// # Arguments
-    /// * `level` - The log level for this entry
-    /// * `s` - The string to append
-    ///
-    /// # Returns
-    /// `Ok(true)` if the string was successfully added. `Ok(false)` if the
-    /// string is valid to add, but was dropped due to not enough space
-    /// remaining.
-    fn append_with_level(&mut self, level: Level, s: &str) -> Result<bool, StringBufferError> {
-        if s.is_empty() {
-            // Do not store empty strings.
-            return Ok(true);
-        }
-
-        if s.len() > u16::MAX as usize {
-            return Err(StringBufferError::StringTooLong);
-        }
-
-        // Total length includes entry header (level + length) + string bytes
-        let total_len = ENTRY_HEADER_SIZE + s.len();
-        if total_len > self.remaining_capacity() {
-            self.header.dropped = self.header.dropped.saturating_add(1);
-            return Ok(false);
-        }
-
-        let start = self.header.next_insert as usize;
-
-        let entry_header = EntryHeader {
-            level: level_to_byte(level),
-            msg_len: U16Le::new(s.len() as u16),
-        };
-        self.data[start..start + ENTRY_HEADER_SIZE].copy_from_slice(entry_header.as_bytes());
-
-        // Write string data
-        let str_start = start + ENTRY_HEADER_SIZE;
-        let str_end = str_start + s.len();
-        self.data[str_start..str_end].copy_from_slice(s.as_bytes());
-
-        self.header.next_insert += total_len as u16;
-
-        Ok(true)
-    }
-
-    /// Appends a string to the buffer with `Info` log level.
-    ///
-    /// The entry is stored as a 3-byte header (Info level + u16 length)
-    /// followed by the UTF-8 string bytes.
-    ///
-    /// # Arguments
-    /// * `s` - The string to append
-    ///
-    /// # Returns
-    /// `Ok(true)` if the string was successfully added. `Ok(false)` if the
-    /// string is valid to add, but was dropped due to not enough space
-    /// remaining.
-    pub fn append(&mut self, s: &str) -> Result<bool, StringBufferError> {
-        self.append_with_level(Level::Info, s)
-    }
-
     /// Appends a formatted log message to the buffer.
     ///
     /// This method accepts `fmt::Arguments` directly, allowing efficient
@@ -477,51 +413,6 @@ mod tests {
     }
 
     #[test]
-    fn test_append_string() {
-        let mut storage = [0u8; TEST_BUFFER_SIZE];
-        let mut buffer = StringBuffer::new(&mut storage).unwrap();
-        let test_string = "Hello, World!";
-        assert!(buffer.append(test_string).is_ok());
-        let entries = collect_entries(&buffer);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].message, test_string);
-        assert_eq!(entries[0].level, Level::Info);
-    }
-
-    #[test]
-    fn test_append_multiple_strings() {
-        let mut storage = [0u8; TEST_BUFFER_SIZE];
-        let mut buffer = StringBuffer::new(&mut storage).unwrap();
-        let strings = ["Hello", "World", "Test", "String"];
-        for s in &strings {
-            assert!(buffer.append(s).is_ok());
-        }
-        let messages = collect_messages(&buffer);
-        assert_eq!(messages, strings);
-    }
-
-    #[test]
-    fn test_buffer_full() {
-        let mut storage = [0u8; TEST_BUFFER_SIZE];
-        let mut buffer = StringBuffer::new(&mut storage).unwrap();
-        // Try to create a string that's larger than u16::MAX
-        let large_string = "x".repeat(70000);
-        let result = buffer.append(&large_string);
-        assert!(matches!(result, Err(StringBufferError::StringTooLong)));
-        // Fill remaining capacity (accounting for entry header)
-        let space = buffer.remaining_capacity();
-        // Each entry needs ENTRY_HEADER_SIZE (3) bytes for the header
-        let max_string = "x".repeat(space - ENTRY_HEADER_SIZE);
-        assert!(matches!(buffer.append(&max_string), Ok(true)));
-        // Now there's only ENTRY_HEADER_SIZE-1 bytes left, not enough for any entry
-        assert!(buffer.remaining_capacity() < ENTRY_HEADER_SIZE + 1);
-        // Try to append another string (should be dropped, Ok(false))
-        let result = buffer.append("test");
-        assert!(matches!(result, Ok(false)));
-        assert_eq!(buffer.dropped_messages(), 1);
-    }
-
-    #[test]
     fn test_from_existing_empty() {
         let mut storage = [0u8; TEST_BUFFER_SIZE];
         {
@@ -536,7 +427,10 @@ mod tests {
     fn test_from_existing_with_data() {
         let mut storage = [0u8; TEST_BUFFER_SIZE];
         let mut buffer = StringBuffer::new(&mut storage).unwrap();
-        assert!(matches!(buffer.append("Hello"), Ok(true)));
+        assert!(matches!(
+            buffer.append_log(Level::Info, &format_args!("Hello")),
+            Ok(true)
+        ));
         // Reconstruct using from_existing
         let buffer2 = StringBuffer::from_existing(&mut storage).unwrap();
         let messages = collect_messages(&buffer2);
@@ -611,37 +505,6 @@ mod tests {
         storage[header_size + 3] = 0xFF; // invalid UTF-8 message byte
         let res = StringBuffer::from_existing(&mut storage);
         assert!(matches!(res, Err(StringBufferError::InvalidUtf8(_))));
-    }
-
-    #[test]
-    fn test_append_multiple_drops_increment() {
-        let mut storage = [0u8; TEST_BUFFER_SIZE];
-        let mut buffer = StringBuffer::new(&mut storage).unwrap();
-        // Fill the buffer completely (accounting for entry header)
-        let space = buffer.remaining_capacity();
-        let filler = "x".repeat(space - ENTRY_HEADER_SIZE);
-        assert!(matches!(buffer.append(&filler), Ok(true)));
-        // Buffer is now full (only has 0 bytes left, not enough for any entry)
-        assert!(buffer.remaining_capacity() < ENTRY_HEADER_SIZE + 1);
-        // Multiple failed appends increment dropped each time
-        assert!(matches!(buffer.append("a"), Ok(false)));
-        assert_eq!(buffer.dropped_messages(), 1);
-        assert!(matches!(buffer.append("b"), Ok(false)));
-        assert_eq!(buffer.dropped_messages(), 2);
-        assert!(matches!(buffer.append("c"), Ok(false)));
-        assert_eq!(buffer.dropped_messages(), 3);
-    }
-
-    #[test]
-    fn test_append_utf8_strings() {
-        let mut storage = [0u8; TEST_BUFFER_SIZE];
-        let mut buffer = StringBuffer::new(&mut storage).unwrap();
-        let strings = ["hé", "über", "数据", "emoji 😊"];
-        for s in &strings {
-            assert!(matches!(buffer.append(s), Ok(true)));
-        }
-        let messages = collect_messages(&buffer);
-        assert_eq!(messages, strings);
     }
 
     #[test]
@@ -742,19 +605,6 @@ mod tests {
         // Empty format should succeed but not store anything
         assert!(buffer.append_log(Level::Info, &format_args!("")).is_ok());
         assert_eq!(collect_entries(&buffer).len(), 0);
-    }
-
-    #[test]
-    fn test_raw_append_uses_info_level() {
-        let mut storage = [0u8; TEST_BUFFER_SIZE];
-        let mut buffer = StringBuffer::new(&mut storage).unwrap();
-
-        assert!(buffer.append("raw string").is_ok());
-
-        let entries = collect_entries(&buffer);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].level, Level::Info);
-        assert_eq!(entries[0].message, "raw string");
     }
 
     #[test]
