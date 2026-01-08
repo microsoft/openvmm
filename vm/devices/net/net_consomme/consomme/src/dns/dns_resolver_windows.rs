@@ -292,7 +292,9 @@ unsafe extern "system" fn dns_query_raw_callback(
                 });
             } else {
                 // Query succeeded but no data returned
-                tracelimit::warn_ratelimited!("DNS query succeeded but returned no data, returning SERVFAIL");
+                tracelimit::warn_ratelimited!(
+                    "DNS query succeeded but returned no data, returning SERVFAIL"
+                );
                 let response = build_servfail_response(&tracked.request.query);
                 tracked.request.accessor.push(DnsResponse {
                     flow: tracked.request.flow,

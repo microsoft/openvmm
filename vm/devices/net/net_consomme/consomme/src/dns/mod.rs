@@ -6,14 +6,20 @@ use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Address;
 use std::sync::Arc;
+use std::task::Context;
+use std::task::Waker;
 
 use crate::DropReason;
 
-#[cfg_attr(unix, path = "dns_resolver_unix.rs")]
-#[cfg_attr(windows, path = "dns_resolver_windows.rs")]
+#[cfg(unix)]
+#[path = "dns_resolver_unix.rs"]
 mod resolver;
 
-#[cfg(target_os = "windows")]
+#[cfg(windows)]
+#[path = "dns_resolver_windows.rs"]
+mod resolver_raw;
+
+#[cfg(windows)]
 mod delay_load;
 
 static DNS_HEADER_SIZE: usize = 12;
@@ -42,10 +48,21 @@ pub struct DnsResponse {
     pub response_data: Vec<u8>,
 }
 
-#[derive(Debug)]
 struct DnsResponseQueues {
     udp: Mutex<Vec<DnsResponse>>,
     tcp: Mutex<Vec<DnsResponse>>,
+    waker: Mutex<Option<Waker>>,
+}
+
+// Manual Debug implementation since Waker doesn't implement Debug
+impl std::fmt::Debug for DnsResponseQueues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DnsResponseQueues")
+            .field("udp", &self.udp)
+            .field("tcp", &self.tcp)
+            .field("waker", &self.waker.lock().is_some())
+            .finish()
+    }
 }
 
 /// Thread-safe accessor that allows backends to enqueue responses without
@@ -61,6 +78,10 @@ impl DnsResponseAccessor {
             IpProtocol::Udp => self.queues.udp.lock().push(response),
             IpProtocol::Tcp => todo!("Not yet implemented"),
             _ => panic!("Unexpected protocol for DNS Response"),
+        }
+        // Wake the async executor to process the response
+        if let Some(waker) = self.queues.waker.lock().take() {
+            waker.wake();
         }
     }
 }
@@ -83,13 +104,15 @@ pub struct DnsResolver {
 impl DnsResolver {
     #[cfg(target_os = "windows")]
     pub fn new() -> Result<Self, std::io::Error> {
-        use crate::dns_resolver::resolver::WindowsDnsResolverBackend;
+        use crate::dns_resolver::delay_load::is_dns_raw_apis_supported;
+        use crate::dns_resolver::dns_resolver_windows_fallback::WindowsDnsResolverFallbackBackend;
+        use crate::dns_resolver::resolver_raw::WindowsDnsResolverBackend;
 
         let queues = Arc::new(DnsResponseQueues {
             udp: Mutex::new(Vec::new()),
             tcp: Mutex::new(Vec::new()),
+            waker: Mutex::new(None),
         });
-
         Ok(Self {
             backend: Box::new(WindowsDnsResolverBackend::new()?),
             queues,
@@ -103,6 +126,7 @@ impl DnsResolver {
         let queues = Arc::new(DnsResponseQueues {
             udp: Mutex::new(Vec::new()),
             tcp: Mutex::new(Vec::new()),
+            waker: Mutex::new(None),
         });
 
         Ok(Self {
@@ -123,7 +147,14 @@ impl DnsResolver {
         self.backend.query(request, accessor)
     }
 
-    pub fn poll_responses(&mut self, protocol: IpProtocol) -> Vec<DnsResponse> {
+    pub fn poll_responses(
+        &mut self,
+        cx: &mut Context<'_>,
+        protocol: IpProtocol,
+    ) -> Vec<DnsResponse> {
+        // Register the waker so we get notified when new responses arrive
+        *self.queues.waker.lock() = Some(cx.waker().clone());
+
         match protocol {
             IpProtocol::Udp => self.queues.udp.lock().drain(..).collect(),
             IpProtocol::Tcp => self.queues.tcp.lock().drain(..).collect(),

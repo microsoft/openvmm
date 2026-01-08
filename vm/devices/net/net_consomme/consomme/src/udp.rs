@@ -156,7 +156,7 @@ impl<T: Client> Access<'_, T> {
                 .dns
                 .as_mut()
                 .unwrap()
-                .poll_responses(IpProtocol::Udp);
+                .poll_responses(cx, IpProtocol::Udp);
 
             for response in responses {
                 if let Err(e) = self.send_dns_response(&response) {
