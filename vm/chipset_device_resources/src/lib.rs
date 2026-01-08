@@ -173,6 +173,10 @@ impl ChipsetDevice for ErasedChipsetDevice {
     ) -> Option<&mut dyn chipset_device::interrupt::AcknowledgePicInterrupt> {
         self.0.supports_acknowledge_pic_interrupt()
     }
+
+    fn is_firmware_managed(&mut self) -> bool {
+        self.0.is_firmware_managed()
+    }
 }
 
 impl ProtobufSaveRestore for ErasedChipsetDevice {
