@@ -55,7 +55,7 @@ rustflags = [
   # Set up the CRT: use ucrtbase.dll but statically link the VC runtime.
   "-C", "link-args=/nodefaultlib onecore_apiset.lib ucrt.lib libvcruntime.lib libcmt.lib",
   # Enable CFG
-  "-Ccontrol-flow-guard"
+  "-Ccontrol-flow-guard",
 ]
 
 [target.aarch64-apple-darwin]
@@ -89,6 +89,9 @@ rustflags = [
   "-Ctarget-feature=+crt-static",
   # Use RELR relocation format, which is considerably smaller.
   "-Clink-arg=-Wl,-z,pack-relative-relocs",
+  # Disable unwind tables to reduce binary size.
+  # TODO: It would be nice to have this enabled for debug builds
+  "-Cforce-unwind-tables=no",
 ]
 
 [target.'cfg(all(target_arch = "aarch64", target_env = "musl"))']
