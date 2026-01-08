@@ -102,11 +102,17 @@ pub struct DnsResolver {
 }
 
 impl DnsResolver {
-    #[cfg(target_os = "windows")]
+    #[cfg(windows)]
     pub fn new() -> Result<Self, std::io::Error> {
         use crate::dns_resolver::delay_load::is_dns_raw_apis_supported;
-        use crate::dns_resolver::dns_resolver_windows_fallback::WindowsDnsResolverFallbackBackend;
         use crate::dns_resolver::resolver_raw::WindowsDnsResolverBackend;
+
+        if !is_dns_raw_apis_supported() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Windows DNS Raw APIs are not supported on this version of Windows",
+            ));
+        }
 
         let queues = Arc::new(DnsResponseQueues {
             udp: Mutex::new(Vec::new()),
