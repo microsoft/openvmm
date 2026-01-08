@@ -73,6 +73,22 @@ pub enum MediumErrorDetails {
     WriteFault,
 }
 
+/// Atomic write parameters for DiskIo.
+#[derive(Copy, Clone, Debug, Inspect)]
+pub struct AtomicParameters {
+    /// The maximum transfer length supported for atomic writes, if non-zero. Zero indicates atomic writes unsupported.
+    pub maximum_atomic_transfer_length: u32,
+    /// Any required alignment of LBA for atomic writes.
+    pub atomic_alignment: u32,
+    /// Required granularity of atomic writes, if any. If non-zero, write sizes must be a multiple of this.
+    pub atomic_transfer_length_granularity: u32,
+    /// Maximum transfer length of atomic IOs when atomic boundary set, if any.
+    pub maximum_atomic_transfer_length_with_atomic_boundary: u32,
+    /// The maximum size of atomic writes when performing multiple atomic IOs in a single request, if non-zero.
+    /// If None and atomic IOs are enabled, only one atomic IO supported per request.
+    pub maximum_atomic_boundary_size: u32,
+}
+
 /// Disk metadata and IO operations.
 pub trait DiskIo: 'static + Send + Sync + Inspect {
     /// Returns the disk type name as a string.
@@ -125,6 +141,18 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
     /// Returns the optimal granularity for unmaps, in sectors.
     fn optimal_unmap_sectors(&self) -> u32 {
         1
+    }
+
+    /// Atomic write parameters for the disk.
+    fn atomic_parameters(&self) -> AtomicParameters {
+        // By default, no atomic writes supported.
+        AtomicParameters {
+            maximum_atomic_transfer_length: 0,
+            atomic_alignment: 0,
+            atomic_transfer_length_granularity: 0,
+            maximum_atomic_transfer_length_with_atomic_boundary: 0,
+            maximum_atomic_boundary_size: 0,
+        }
     }
 
     /// Optionally returns a trait object to issue persistent reservation
@@ -204,6 +232,7 @@ struct DiskInner<T: ?Sized = dyn DynDisk> {
     is_read_only: bool,
     unmap_behavior: UnmapBehavior,
     optimal_unmap_sectors: u32,
+    atomic_parameters: AtomicParameters,
     disk: T,
 }
 
@@ -242,6 +271,7 @@ impl Disk {
             is_read_only: disk.is_read_only(),
             optimal_unmap_sectors: disk.optimal_unmap_sectors(),
             unmap_behavior: disk.unmap_behavior(),
+            atomic_parameters: disk.atomic_parameters(),
             disk,
         })))
     }
@@ -362,6 +392,11 @@ impl Disk {
     /// Waits for the disk sector size to be different than the specified value.
     pub fn wait_resize(&self, sector_count: u64) -> impl use<'_> + Future<Output = u64> {
         self.0.disk.wait_resize(sector_count)
+    }
+
+    /// Atomic write parameters for the disk.
+    pub fn atomic_parameters(&self) -> AtomicParameters {
+        self.0.atomic_parameters
     }
 }
 
