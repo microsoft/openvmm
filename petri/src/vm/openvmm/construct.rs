@@ -23,6 +23,7 @@ use crate::UefiConfig;
 use crate::VmbusStorageType;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 
+use crate::VmbusStorageController;
 use crate::openvmm::memdiff_vmgs;
 use crate::openvmm::petri_disk_to_openvmm;
 use crate::vm::PetriVmProperties;
@@ -73,6 +74,7 @@ use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use serial_socket::net::OpenSocketSerialConfig;
 use sparse_mmap::alloc_shared_memory;
+use std::collections::HashMap;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
@@ -168,117 +170,9 @@ impl PetriVmConfigOpenVmm {
             None => (None, None, None),
         };
 
-        let mut ide_disks = Vec::new();
-        let mut vpci_devices = Vec::new();
-        let mut vmbus_devices = Vec::new();
-
-        // Add IDE storage
-        if let Some(ide_controllers) = firmware.ide_controllers() {
-            for (controller_number, controller) in ide_controllers.iter().enumerate() {
-                for (controller_location, drive) in controller.iter().enumerate() {
-                    if let Some(drive) = drive {
-                        if let Some(disk) = &drive.disk {
-                            let disk = petri_disk_to_openvmm(disk)?;
-                            let guest_media = if drive.is_dvd {
-                                GuestMedia::Dvd(
-                                    SimpleScsiDvdHandle {
-                                        media: Some(disk),
-                                        requests: None,
-                                    }
-                                    .into_resource(),
-                                )
-                            } else {
-                                GuestMedia::Disk {
-                                    disk_type: disk,
-                                    read_only: false,
-                                    disk_parameters: None,
-                                }
-                            };
-
-                            ide_disks.push(IdeDeviceConfig {
-                                path: ide_resources::IdePath {
-                                    channel: controller_number as u8,
-                                    drive: controller_location as u8,
-                                },
-                                guest_media,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        // Add VMBus storage
-        for (instance_id, controller) in &vmbus_storage_controllers {
-            let vtl = match controller.target_vtl {
-                crate::Vtl::Vtl0 => DeviceVtl::Vtl0,
-                crate::Vtl::Vtl1 => DeviceVtl::Vtl1,
-                crate::Vtl::Vtl2 => DeviceVtl::Vtl2,
-            };
-            match controller.controller_type {
-                VmbusStorageType::Scsi => {
-                    let mut devices = Vec::new();
-                    for (lun, Drive { disk, is_dvd }) in &controller.drives {
-                        if !*is_dvd && let Some(disk) = disk {
-                            devices.push(ScsiDeviceAndPath {
-                                path: ScsiPath {
-                                    path: 0,
-                                    target: 0,
-                                    lun: (*lun).try_into().expect("invalid scsi lun"),
-                                },
-                                device: SimpleScsiDiskHandle {
-                                    disk: petri_disk_to_openvmm(disk)?,
-                                    read_only: false,
-                                    parameters: Default::default(),
-                                }
-                                .into_resource(),
-                            });
-                        } else {
-                            todo!("dvd ({}) or empty ({})", *is_dvd, disk.is_none())
-                        }
-                    }
-
-                    vmbus_devices.push((
-                        vtl,
-                        ScsiControllerHandle {
-                            instance_id: *instance_id,
-                            max_sub_channel_count: 1,
-                            io_queue_depth: None,
-                            devices,
-                            requests: None,
-                            poll_mode_queue_depth: None,
-                        }
-                        .into_resource(),
-                    ));
-                }
-                VmbusStorageType::Nvme => {
-                    let mut namespaces = Vec::new();
-                    for (nsid, Drive { disk, is_dvd }) in &controller.drives {
-                        if !*is_dvd && let Some(disk) = disk {
-                            namespaces.push(NamespaceDefinition {
-                                nsid: *nsid,
-                                read_only: false,
-                                disk: petri_disk_to_openvmm(disk)?,
-                            });
-                        } else {
-                            todo!("dvd ({}) or empty ({})", *is_dvd, disk.is_none())
-                        }
-                    }
-
-                    vpci_devices.push(VpciDeviceConfig {
-                        vtl,
-                        instance_id: *instance_id,
-                        resource: NvmeControllerHandle {
-                            subsystem_id: *instance_id,
-                            max_io_queues: 64,
-                            msix_count: 64,
-                            namespaces,
-                        }
-                        .into_resource(),
-                    });
-                }
-            }
-        }
+        let ide_disks = ide_controllers_to_openvmm(firmware.ide_controllers())?;
+        let (mut vmbus_devices, vpci_devices) =
+            vmbus_storage_controllers_to_openvmm(&vmbus_storage_controllers)?;
 
         let (firmware_event_send, firmware_event_recv) = mesh::mpsc_channel();
 
@@ -1100,4 +994,133 @@ fn spawn_dump_handler(driver: &DefaultDriver, logger: &PetriLogSource) -> GuestC
         })
         .detach();
     handle
+}
+
+/// Convert the generic IDE configuration to OpenVMM IDE disks.
+fn ide_controllers_to_openvmm(
+    ide_controllers: Option<&[[Option<Drive>; 2]; 2]>,
+) -> anyhow::Result<Vec<IdeDeviceConfig>> {
+    let mut ide_disks = Vec::new();
+
+    if let Some(ide_controllers) = ide_controllers {
+        for (controller_number, controller) in ide_controllers.iter().enumerate() {
+            for (controller_location, drive) in controller.iter().enumerate() {
+                if let Some(drive) = drive {
+                    if let Some(disk) = &drive.disk {
+                        let disk = petri_disk_to_openvmm(disk)?;
+                        let guest_media = if drive.is_dvd {
+                            GuestMedia::Dvd(
+                                SimpleScsiDvdHandle {
+                                    media: Some(disk),
+                                    requests: None,
+                                }
+                                .into_resource(),
+                            )
+                        } else {
+                            GuestMedia::Disk {
+                                disk_type: disk,
+                                read_only: false,
+                                disk_parameters: None,
+                            }
+                        };
+
+                        ide_disks.push(IdeDeviceConfig {
+                            path: ide_resources::IdePath {
+                                channel: controller_number as u8,
+                                drive: controller_location as u8,
+                            },
+                            guest_media,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(ide_disks)
+}
+
+/// Convert the generic VMBUS storage configuration to OpenVMM VMBUS and VPCI devices.
+fn vmbus_storage_controllers_to_openvmm(
+    vmbus_storage_controllers: &HashMap<Guid, VmbusStorageController>,
+) -> anyhow::Result<(
+    Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
+    Vec<VpciDeviceConfig>,
+)> {
+    let mut vmbus_devices = Vec::new();
+    let mut vpci_devices = Vec::new();
+
+    // Add VMBus storage
+    for (instance_id, controller) in vmbus_storage_controllers {
+        let vtl = match controller.target_vtl {
+            crate::Vtl::Vtl0 => DeviceVtl::Vtl0,
+            crate::Vtl::Vtl1 => DeviceVtl::Vtl1,
+            crate::Vtl::Vtl2 => DeviceVtl::Vtl2,
+        };
+        match controller.controller_type {
+            VmbusStorageType::Scsi => {
+                let mut devices = Vec::new();
+                for (lun, Drive { disk, is_dvd }) in &controller.drives {
+                    if !*is_dvd && let Some(disk) = disk {
+                        devices.push(ScsiDeviceAndPath {
+                            path: ScsiPath {
+                                path: 0,
+                                target: 0,
+                                lun: (*lun).try_into().expect("invalid scsi lun"),
+                            },
+                            device: SimpleScsiDiskHandle {
+                                disk: petri_disk_to_openvmm(disk)?,
+                                read_only: false,
+                                parameters: Default::default(),
+                            }
+                            .into_resource(),
+                        });
+                    } else {
+                        todo!("dvd ({}) or empty ({})", *is_dvd, disk.is_none())
+                    }
+                }
+
+                vmbus_devices.push((
+                    vtl,
+                    ScsiControllerHandle {
+                        instance_id: *instance_id,
+                        max_sub_channel_count: 1,
+                        io_queue_depth: None,
+                        devices,
+                        requests: None,
+                        poll_mode_queue_depth: None,
+                    }
+                    .into_resource(),
+                ));
+            }
+            VmbusStorageType::Nvme => {
+                let mut namespaces = Vec::new();
+                for (nsid, Drive { disk, is_dvd }) in &controller.drives {
+                    if !*is_dvd && let Some(disk) = disk {
+                        namespaces.push(NamespaceDefinition {
+                            nsid: *nsid,
+                            read_only: false,
+                            disk: petri_disk_to_openvmm(disk)?,
+                        });
+                    } else {
+                        todo!("dvd ({}) or empty ({})", *is_dvd, disk.is_none())
+                    }
+                }
+
+                vpci_devices.push(VpciDeviceConfig {
+                    vtl,
+                    instance_id: *instance_id,
+                    resource: NvmeControllerHandle {
+                        subsystem_id: *instance_id,
+                        max_io_queues: 64,
+                        msix_count: 64,
+                        namespaces,
+                    }
+                    .into_resource(),
+                });
+            }
+        }
+    }
+
+    Ok((vmbus_devices, vpci_devices))
 }

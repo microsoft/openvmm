@@ -2702,7 +2702,8 @@ impl VmbusStorageController {
             let mut lun = None;
             for x in 0..u8::MAX as u32 {
                 if !self.drives.contains_key(&x) {
-                    lun = Some(x)
+                    lun = Some(x);
+                    break;
                 }
             }
             lun.expect("all locations on this controller are in use")
@@ -2719,6 +2720,10 @@ impl VmbusStorageController {
 #[cfg(test)]
 mod tests {
     use super::make_vm_safe_name;
+    use crate::Drive;
+    use crate::VmbusStorageController;
+    use crate::VmbusStorageType;
+    use crate::Vtl;
 
     #[test]
     fn test_short_names_unchanged() {
@@ -2775,5 +2780,30 @@ mod tests {
         // Should have different suffixes since the full names are different
         assert_ne!(result1, result2);
         assert_ne!(&result1[96..], &result2[96..]);
+    }
+
+    #[test]
+    fn test_vmbus_storage_controller() {
+        let mut controller = VmbusStorageController::new(Vtl::Vtl0, VmbusStorageType::Scsi);
+        assert_eq!(
+            controller.set_drive(Some(1), Drive::new(None, false), false),
+            1
+        );
+        assert!(controller.drives.get(&1).is_some());
+        assert_eq!(
+            controller.set_drive(None, Drive::new(None, false), false),
+            0
+        );
+        assert!(controller.drives.get(&0).is_some());
+        assert_eq!(
+            controller.set_drive(None, Drive::new(None, false), false),
+            2
+        );
+        assert!(controller.drives.get(&2).is_some());
+        assert_eq!(
+            controller.set_drive(Some(0), Drive::new(None, false), true),
+            0
+        );
+        assert!(controller.drives.get(&0).is_some());
     }
 }

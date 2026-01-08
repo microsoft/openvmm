@@ -538,7 +538,7 @@ function Set-VmDrive
     # check if the drive already exists
     $drive = $Vm | Get-VmRasd | Where-Object {
         (($_.ResourceSubType -eq $HARD_DRIVE_TYPE) -or ($_.ResourceSubType -eq $DVD_DRIVE_TYPE)) -and
-        ($_.AddressOnParent -eq $lun) -and
+        ($_.AddressOnParent -eq $Lun) -and
         ($_.Parent -eq $controllerPath)
     }
 
@@ -553,7 +553,7 @@ function Set-VmDrive
         }
 
         $driveTemplate = Get-DefaultRasd $driveType
-        $driveConfig = Copy-CimInstanceWithNewProperties $driveTemplate @{ "AddressOnParent" = $lun; "Parent" = $controllerPath }
+        $driveConfig = Copy-CimInstanceWithNewProperties $driveTemplate @{ "AddressOnParent" = $Lun; "Parent" = $controllerPath }
         $driveAddResult = $Vm | Add-VmResourceSettings -Rasd $driveConfig
         $drive = $driveAddResult.ResultingResourceSettings[0]
         Write-Host "added drive:" $drive.InstanceId
