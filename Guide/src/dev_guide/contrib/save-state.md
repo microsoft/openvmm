@@ -5,6 +5,8 @@ be used for various VM operations, but a key use case is for updating OpenHCL at
 runtime (a.k.a. "Servicing"). This save state can be stored in memory or on
 durable media, read back at a later time.
 
+For details on how save state is used during servicing operations, see [OpenHCL Servicing](../../reference/architecture/openhcl_servicing.md).
+
 ## Save State First Principles
 
 Here are the principles you must maintain when adding new save & restore code:
