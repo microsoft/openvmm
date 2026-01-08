@@ -282,7 +282,7 @@ pub struct HyperVAddVMHardDiskDriveArgs<'a> {
     /// hard disk drive is to be added. If not specified, the first available
     /// location in the controller specified with the ControllerNumber parameter
     /// is used.
-    pub controller_location: Option<u32>,
+    pub controller_location: Option<u8>,
     /// Specifies the number of the controller to which the hard disk drive is
     /// to be added. If not specified, this parameter assumes the value of the
     /// first available controller at the location specified in the
@@ -1196,4 +1196,36 @@ pub async fn run_set_guest_state_isolation_mode(
     .await
     .map(|_| ())
     .context("set_guest_state_isolation_mode")
+}
+
+/// Runs Enable-VMTPM
+pub async fn run_enable_vmtpm(vmid: &Guid) -> anyhow::Result<()> {
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Enable-VMTPM")
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("run_enable_vmtpm")
+}
+
+/// Runs Disable-VMTPM
+pub async fn run_disable_vmtpm(vmid: &Guid) -> anyhow::Result<()> {
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Disable-VMTPM")
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("run_disable_vmtpm")
 }

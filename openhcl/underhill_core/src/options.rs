@@ -7,6 +7,7 @@
 
 use anyhow::Context;
 use anyhow::bail;
+use inspect::Inspect;
 use mesh::MeshPayload;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -75,6 +76,33 @@ impl FromStr for GuestStateEncryptionPolicyCli {
             "GSP_KEY" | "3" => Ok(GuestStateEncryptionPolicyCli::GspKey),
             _ => Err(anyhow::anyhow!("Invalid encryption policy: {}", s)),
         }
+    }
+}
+
+#[derive(Clone, Debug, MeshPayload, Inspect)]
+pub enum KeepAliveConfig {
+    EnabledHostAndPrivatePoolPresent,
+    DisabledHostAndPrivatePoolPresent,
+    Disabled,
+}
+
+impl FromStr for KeepAliveConfig {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<KeepAliveConfig, anyhow::Error> {
+        match s.to_lowercase().as_str() {
+            "host,privatepool" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolPresent),
+            "nohost,privatepool" => Ok(KeepAliveConfig::DisabledHostAndPrivatePoolPresent),
+            "nohost,noprivatepool" => Ok(KeepAliveConfig::Disabled),
+            x if x.starts_with("disabled,") => Ok(KeepAliveConfig::Disabled),
+            _ => Err(anyhow::anyhow!("Invalid keepalive config: {}", s)),
+        }
+    }
+}
+
+impl KeepAliveConfig {
+    pub fn is_enabled(&self) -> bool {
+        matches!(self, KeepAliveConfig::EnabledHostAndPrivatePoolPresent)
     }
 }
 
@@ -180,8 +208,24 @@ pub struct Options {
     /// hit exits.
     pub no_sidecar_hotplug: bool,
 
-    /// (OPENHCL_NVME_KEEP_ALIVE=1) Enable nvme keep alive when servicing.
-    pub nvme_keep_alive: bool,
+    /// (OPENHCL_NVME_KEEP_ALIVE=\<KeepaliveConfig\>)
+    /// Configure NVMe keep alive behavior when servicing.
+    /// Options are:
+    ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
+    ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
+    ///  - "nohost,noprivatepool" - Keepalive is disabled.
+    ///  - "disabled, X, X" - Keepalive is disabled due to manual
+    ///    override. Host and private pool options are ignored.
+    pub nvme_keep_alive: KeepAliveConfig,
+
+    /// (OPENHCL_MANA_KEEP_ALIVE=\<KeepAliveConfig\>)
+    /// Configure MANA keep alive behavior when servicing.
+    /// Options are:
+    ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
+    ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
+    ///  - "nohost,noprivatepool" - Keepalive is disabled.
+    ///  - "disabled, X, X" - TODO: This needs to be implemented for mana.
+    pub mana_keep_alive: KeepAliveConfig,
 
     /// (OPENHCL_NVME_ALWAYS_FLR=1)
     /// Always use the FLR (Function Level Reset) path for NVMe devices,
@@ -219,6 +263,17 @@ pub struct Options {
 
     /// (OPENHCL_ENABLE_VPCI_RELAY=1) Enable the VPCI relay.
     pub enable_vpci_relay: Option<bool>,
+
+    /// (OPENHCL_DISABLE_PROXY_REDIRECT=1) Disable proxy interrupt redirection.
+    pub disable_proxy_redirect: bool,
+
+    /// (OPENHCL_DISABLE_LOWER_VTL_TIMER_VIRT=1) Disable lower VTL timer virtualization.
+    pub disable_lower_vtl_timer_virt: bool,
+
+    /// (OPENHCL_CONFIG_TIMEOUT_IN_SECONDS=\<number\>) (default: 5)
+    /// Timeout in seconds for VM configuration operations, both initial
+    /// configuration and subsequent modifications.
+    pub config_timeout_in_seconds: u64,
 }
 
 impl Options {
@@ -328,7 +383,34 @@ impl Options {
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
         let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
         let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
-        let nvme_keep_alive = parse_env_bool("OPENHCL_NVME_KEEP_ALIVE");
+        let nvme_keep_alive = read_env("OPENHCL_NVME_KEEP_ALIVE")
+                    .map(|x| {
+                        let s = x.to_string_lossy();
+                        match s.parse::<KeepAliveConfig>() {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "failed to parse OPENHCL_NVME_KEEP_ALIVE ('{s}'): {e}. Nvme keepalive will be disabled."
+                                );
+                                KeepAliveConfig::Disabled
+                            }
+                        }
+                    })
+                    .unwrap_or(KeepAliveConfig::Disabled);
+        let mana_keep_alive = read_env("OPENHCL_MANA_KEEP_ALIVE")
+                    .map(|x| {
+                        let s = x.to_string_lossy();
+                        match s.parse::<KeepAliveConfig>() {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "failed to parse OPENHCL_MANA_KEEP_ALIVE ('{s}'): {e}. Mana keepalive will be disabled."
+                                );
+                                KeepAliveConfig::Disabled
+                            }
+                        }
+                    })
+                    .unwrap_or(KeepAliveConfig::Disabled);
         let nvme_always_flr = parse_env_bool("OPENHCL_NVME_ALWAYS_FLR");
         let test_configuration = read_env("OPENHCL_TEST_CONFIG").and_then(|x| {
             x.to_string_lossy()
@@ -362,6 +444,10 @@ impl Options {
         let strict_encryption_policy = parse_env_bool_opt("HCL_STRICT_ENCRYPTION_POLICY");
         let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK");
         let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY");
+        let disable_proxy_redirect = parse_env_bool("OPENHCL_DISABLE_PROXY_REDIRECT");
+        let disable_lower_vtl_timer_virt = parse_env_bool("OPENHCL_DISABLE_LOWER_VTL_TIMER_VIRT");
+        let config_timeout_in_seconds =
+            parse_legacy_env_number("OPENHCL_CONFIG_TIMEOUT_IN_SECONDS")?.unwrap_or(5);
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -415,6 +501,7 @@ impl Options {
             halt_on_guest_halt,
             no_sidecar_hotplug,
             nvme_keep_alive,
+            mana_keep_alive,
             nvme_always_flr,
             test_configuration,
             disable_uefi_frontpage,
@@ -424,6 +511,9 @@ impl Options {
             strict_encryption_policy,
             attempt_ak_cert_callback,
             enable_vpci_relay,
+            disable_proxy_redirect,
+            disable_lower_vtl_timer_virt,
+            config_timeout_in_seconds,
         })
     }
 

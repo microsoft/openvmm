@@ -50,7 +50,7 @@ enum Error {
     #[error("invalid disk")]
     InvalidDisk(#[source] disk_backend::InvalidDisk),
     #[error("VMGS format")]
-    Vmgs(#[from] vmgs::Error),
+    Vmgs(#[source] vmgs::Error),
     #[error("VMGS file already exists")]
     FileExists,
     #[cfg(with_encryption)]
@@ -96,6 +96,16 @@ enum Error {
     EncryptionUnknown,
 }
 
+impl From<vmgs::Error> for Error {
+    fn from(value: vmgs::Error) -> Self {
+        match value {
+            vmgs::Error::EmptyFile => Error::EmptyFile,
+            vmgs::Error::V1Format => Error::V1Format,
+            e => Error::Vmgs(e),
+        }
+    }
+}
+
 /// Automation requires certain exit codes to be guaranteed
 /// main matches Error enum to ExitCode
 ///
@@ -112,6 +122,7 @@ enum ExitCode {
     ErrorNotFound = 4,
     ErrorV1 = 5,
     ErrorGspById = 6,
+    ErrorGspUnknown = 7,
 }
 
 #[derive(Args)]
@@ -349,6 +360,7 @@ fn main() {
                 Error::Vmgs(VmgsError::FileInfoNotAllocated) => ExitCode::ErrorNotFound,
                 Error::V1Format => ExitCode::ErrorV1,
                 Error::GspByIdEncryption => ExitCode::ErrorGspById,
+                Error::GspUnknown => ExitCode::ErrorGspUnknown,
                 _ => ExitCode::Error,
             };
 
@@ -561,7 +573,7 @@ fn vhdfiledisk_create(
         .map_err(Error::VmgsFile)?
         .flatten();
     let needs_resize =
-        !exists || existing_size.is_some_and(|existing_size| file_size != existing_size);
+        !exists || existing_size.is_none_or(|existing_size| file_size != existing_size);
 
     // resize the file if necessary
     let default_label = if file_size == VMGS_DEFAULT_CAPACITY {
@@ -759,19 +771,18 @@ async fn vmgs_read(vmgs: &mut Vmgs, file_id: FileId, decrypt: bool) -> Result<Ve
 
 async fn vmgs_file_dump_headers(file_path: impl AsRef<Path>) -> Result<(), Error> {
     let file = File::open(file_path.as_ref()).map_err(Error::VmgsFile)?;
-    let validate_result = vmgs_file_validate(&file);
-    let disk = Disk::new(Vhd1Disk::open_fixed(file.into(), true).map_err(Error::Vhd1)?)
-        .map_err(Error::InvalidDisk)?;
+    let disk = vhdfiledisk_open(file, OpenMode::ReadOnly)?;
 
-    let headers_result = match read_headers(disk).await {
-        Ok((header1, header2)) => vmgs_dump_headers(&header1, &header2),
-        Err(e) => Err(e.into()),
+    let (headers, res0) = match read_headers(disk).await {
+        Ok(headers) => (Some(headers), Ok(())),
+        Err((e, headers)) => (headers, Err(e.into())),
     };
 
-    if validate_result.is_err() {
-        validate_result
+    if let Some(headers) = headers {
+        let res1 = vmgs_dump_headers(&headers.0, &headers.1);
+        if res0.is_err() { res0 } else { res1 }
     } else {
-        headers_result
+        res0
     }
 }
 
@@ -957,12 +968,8 @@ async fn vmgs_file_open(
         .open(file_path.as_ref())
         .map_err(Error::VmgsFile)?;
 
-    vmgs_file_validate(&file)?;
+    let disk = vhdfiledisk_open(file, open_mode)?;
 
-    let disk = Disk::new(
-        Vhd1Disk::open_fixed(file.into(), open_mode == OpenMode::ReadOnly).map_err(Error::Vhd1)?,
-    )
-    .map_err(Error::InvalidDisk)?;
     let encryption_key = key_path.map(read_key_path).transpose()?;
 
     let res = vmgs_open(disk, encryption_key.as_deref()).await;
@@ -1081,21 +1088,20 @@ fn vmgs_get_gsp_type(vmgs: &Vmgs) -> GspType {
     }
 }
 
-fn vmgs_file_validate(file: &File) -> Result<(), Error> {
-    vmgs_file_validate_not_empty(file)?;
-    vmgs_file_validate_not_v1(file)?;
-    Ok(())
+fn vhdfiledisk_open(file: File, open_mode: OpenMode) -> Result<Disk, Error> {
+    let file_size = file.metadata().map_err(Error::VmgsFile)?.len();
+    validate_size(file_size)?;
+
+    let disk = Disk::new(
+        Vhd1Disk::open_fixed(file.into(), open_mode == OpenMode::ReadOnly).map_err(Error::Vhd1)?,
+    )
+    .map_err(Error::InvalidDisk)?;
+
+    Ok(disk)
 }
 
-/// Validate if the VMGS file is empty. This is a special case for Azure and
-/// we want to return an error code (ERROR_EMPTY) instead of ERROR_FILE_CORRUPT.
-/// A file can be empty in the following 2 cases:
-///     1) the size is zero
-///     2) the size is non-zero but there is no content inside the file except the footer.
-fn vmgs_file_validate_not_empty(mut file: &File) -> Result<(), Error> {
+fn validate_size(file_size: u64) -> Result<(), Error> {
     const MAX_VMGS_FILE_SIZE: u64 = 4 * ONE_GIGA_BYTE;
-
-    let file_size = file.metadata().map_err(Error::VmgsFile)?.len();
 
     if file_size > MAX_VMGS_FILE_SIZE {
         return Err(Error::InvalidVmgsFileSize(
@@ -1108,56 +1114,11 @@ fn vmgs_file_validate_not_empty(mut file: &File) -> Result<(), Error> {
         return Err(Error::ZeroSize);
     }
 
-    // Special case - check that the file has a non zero size but the contents are empty
-    // except for the file footer which is ignored.
-    // This is to differentiate between a file without any content for an Azure scenario.
-    // The VMGS file received by the HostAgent team from DiskRP contains a footer that
-    // should be ignored during the empty file comparison.
     if file_size < VHD_DISK_FOOTER_PACKED_SIZE {
         return Err(Error::InvalidVmgsFileSize(
             file_size,
             format!("Must be greater than {}", VHD_DISK_FOOTER_PACKED_SIZE),
         ));
-    }
-
-    let bytes_to_compare = file_size - VHD_DISK_FOOTER_PACKED_SIZE;
-    let mut bytes_read = 0;
-    let mut empty_file = true;
-    let mut buf = vec![0; 32 * ONE_MEGA_BYTE as usize];
-
-    // Fragment reads to 32 MB when checking that file contents are 0
-    while bytes_read < bytes_to_compare {
-        let bytes_to_read =
-            std::cmp::min(32 * ONE_MEGA_BYTE, bytes_to_compare - bytes_read) as usize;
-
-        file.read(&mut buf[..bytes_to_read])
-            .map_err(Error::VmgsFile)?;
-
-        if !buf[..bytes_to_read].iter().all(|&x| x == 0) {
-            empty_file = false;
-            break;
-        }
-
-        bytes_read += buf.len() as u64;
-    }
-
-    if empty_file {
-        return Err(Error::EmptyFile);
-    }
-
-    Ok(())
-}
-
-/// Validate that this is not a VMGSv1 file
-fn vmgs_file_validate_not_v1(mut file: &File) -> Result<(), Error> {
-    const EFI_SIGNATURE: &[u8] = b"EFI PART";
-    let mut maybe_efi_signature = [0; EFI_SIGNATURE.len()];
-    file.seek(std::io::SeekFrom::Start(512))
-        .map_err(Error::VmgsFile)?;
-    file.read(&mut maybe_efi_signature)
-        .map_err(Error::VmgsFile)?;
-    if maybe_efi_signature == EFI_SIGNATURE {
-        return Err(Error::V1Format);
     }
 
     Ok(())
@@ -1190,12 +1151,7 @@ mod tests {
             .write(open_mode == OpenMode::ReadWrite)
             .open(path.as_ref())
             .map_err(Error::VmgsFile)?;
-        vmgs_file_validate(&file)?;
-        let disk = Disk::new(
-            Vhd1Disk::open_fixed(file.into(), open_mode == OpenMode::ReadOnly)
-                .map_err(Error::Vhd1)?,
-        )
-        .unwrap();
+        let disk = vhdfiledisk_open(file, open_mode)?;
         let vmgs = vmgs_open(disk, encryption_key).await?;
         Ok(vmgs)
     }
@@ -1466,21 +1422,60 @@ mod tests {
         let buf: Vec<u8> = (0..255).collect();
         let (_dir, path) = new_path();
 
-        test_vmgs_create(&path, None, false, None).await.unwrap();
+        // create an empty (zero-length) file
+        {
+            fs_err::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+        }
 
-        let mut file = fs_err::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)
-            .unwrap();
+        // verify the file is zero size
+        {
+            let result = test_vmgs_open(&path, OpenMode::ReadOnly, None).await;
+            assert!(matches!(result, Err(Error::ZeroSize)));
+        }
 
-        let result = vmgs_file_validate_not_empty(&file);
-        matches!(result, Err(Error::ZeroSize));
+        // create an empty vhd of default size
+        {
+            vhdfiledisk_create(&path, None, true).unwrap();
+        }
 
-        file.seek(std::io::SeekFrom::Start(1024)).unwrap();
-        file.write_all(&buf).unwrap();
-        let result = vmgs_file_validate_not_empty(&file);
-        matches!(result, Err(Error::VmgsFile(_)));
+        // verify the file is empty (with non-zero size)
+        {
+            let result = test_vmgs_open(&path, OpenMode::ReadOnly, None).await;
+            assert!(matches!(result, Err(Error::EmptyFile)));
+        }
+
+        // write some invalid data to the file
+        {
+            let mut file = fs_err::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            file.seek(std::io::SeekFrom::Start(1024)).unwrap();
+            file.write_all(&buf).unwrap();
+        }
+
+        // verify the vmgs is identified as corrupted
+        {
+            let result = test_vmgs_open(&path, OpenMode::ReadOnly, None).await;
+            matches!(result, Err(Error::Vmgs(vmgs::Error::CorruptFormat(_))));
+        }
+
+        // create a valid vmgs
+        {
+            test_vmgs_create(&path, None, true, None).await.unwrap();
+        }
+
+        // sanity check that the positive case works
+        {
+            test_vmgs_open(&path, OpenMode::ReadOnly, None)
+                .await
+                .unwrap();
+        }
     }
 
     #[async_test]

@@ -165,7 +165,7 @@ pub mod hwid {
             MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME = 0x02,
 
             // Ethernet Controller (Class code: 0x02, Subclass: 0x00)
-            NETWORK_CONTROLLER_ETHERNET_GDMA = 0x01,
+            NETWORK_CONTROLLER_ETHERNET_GDMA = 0x00,
         }
     }
 
@@ -193,6 +193,29 @@ pub mod cfg_space {
     use zerocopy::Immutable;
     use zerocopy::IntoBytes;
     use zerocopy::KnownLayout;
+
+    open_enum::open_enum! {
+        /// Common configuration space header registers shared between Type 0 and Type 1 headers.
+        ///
+        /// These registers appear at the same offsets in both header types and have the same
+        /// meaning and format.
+        ///
+        /// | Offset | Bits 31-24     | Bits 23-16  | Bits 15-8   | Bits 7-0             |
+        /// |--------|----------------|-------------|-------------|----------------------|
+        /// | 0x0    | Device ID      |             | Vendor ID   |                      |
+        /// | 0x4    | Status         |             | Command     |                      |
+        /// | 0x8    | Class code     |             |             | Revision ID          |
+        /// | 0x34   | Reserved       |             |             | Capabilities Pointer |
+        pub enum CommonHeader: u16 {
+            DEVICE_VENDOR       = 0x00,
+            STATUS_COMMAND      = 0x04,
+            CLASS_REVISION      = 0x08,
+            RESERVED_CAP_PTR    = 0x34,
+        }
+    }
+
+    /// Size of the common header portion shared by all PCI header types.
+    pub const COMMON_HEADER_SIZE: u16 = 0x10;
 
     open_enum::open_enum! {
         /// Offsets into the type 00h configuration space header.
@@ -385,9 +408,38 @@ pub mod caps {
         /// variants on an as-needed basis!
         pub enum CapabilityId: u8 {
             #![expect(missing_docs)] // self explanatory variants
+            MSI             = 0x05,
             VENDOR_SPECIFIC = 0x09,
             PCI_EXPRESS     = 0x10,
             MSIX            = 0x11,
+        }
+    }
+
+    /// MSI
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod msi {
+        open_enum::open_enum! {
+            /// Offsets into the MSI Capability Header
+            ///
+            /// Based on PCI Local Bus Specification Rev 3.0, Section 6.8.1
+            ///
+            /// | Offset    | Bits 31-24    | Bits 23-16    | Bits 15-8     | Bits 7-0              |
+            /// |-----------|---------------|---------------|---------------|-----------------------|
+            /// | Cap + 0x0 | Message Control               | Next Pointer  | Capability ID (0x05)  |
+            /// | Cap + 0x4 | Message Address (32-bit or lower 32-bit of 64-bit)                    |
+            /// | Cap + 0x8 | Message Address Upper 32-bit (64-bit capable only)                    |
+            /// | Cap + 0xC | Message Data  |               |               |                       |
+            /// | Cap + 0x10| Mask Bits (Per-vector masking capable only)                           |
+            /// | Cap + 0x14| Pending Bits (Per-vector masking capable only)                        |
+            pub enum MsiCapabilityHeader: u16 {
+                CONTROL_CAPS = 0x00,
+                MSG_ADDR_LO  = 0x04,
+                MSG_ADDR_HI  = 0x08,
+                MSG_DATA_32  = 0x08,  // For 32-bit address capable
+                MSG_DATA_64  = 0x0C,  // For 64-bit address capable
+                MASK_BITS    = 0x10,  // 64-bit + per-vector masking
+                PENDING_BITS = 0x14,  // 64-bit + per-vector masking
+            }
         }
     }
 
@@ -431,6 +483,123 @@ pub mod caps {
         use zerocopy::Immutable;
         use zerocopy::IntoBytes;
         use zerocopy::KnownLayout;
+
+        /// PCIe Link Speed encoding values for use in Link Capabilities and other registers.
+        ///
+        /// Values are defined in PCIe Base Specification for the Max Link Speed field
+        /// in Link Capabilities Register and similar fields.
+        #[derive(Debug)]
+        #[repr(u32)]
+        pub enum LinkSpeed {
+            /// 2.5 GT/s link speed
+            Speed2_5GtS = 0b0001,
+            /// 5.0 GT/s link speed
+            Speed5_0GtS = 0b0010,
+            /// 8.0 GT/s link speed
+            Speed8_0GtS = 0b0011,
+            /// 16.0 GT/s link speed
+            Speed16_0GtS = 0b0100,
+            /// 32.0 GT/s link speed
+            Speed32_0GtS = 0b0101,
+            /// 64.0 GT/s link speed
+            Speed64_0GtS = 0b0110,
+            // All other encodings are reserved
+        }
+
+        impl LinkSpeed {
+            pub const fn from_bits(bits: u32) -> Self {
+                match bits {
+                    0b0001 => LinkSpeed::Speed2_5GtS,
+                    0b0010 => LinkSpeed::Speed5_0GtS,
+                    0b0011 => LinkSpeed::Speed8_0GtS,
+                    0b0100 => LinkSpeed::Speed16_0GtS,
+                    0b0101 => LinkSpeed::Speed32_0GtS,
+                    0b0110 => LinkSpeed::Speed64_0GtS,
+                    _ => unreachable!(),
+                }
+            }
+
+            pub const fn into_bits(self) -> u32 {
+                self as u32
+            }
+        }
+
+        /// PCIe Supported Link Speeds Vector encoding values for use in Link Capabilities 2 register.
+        ///
+        /// Values are defined in PCIe Base Specification for the Supported Link Speeds Vector field
+        /// in Link Capabilities 2 Register. Each bit represents support for a specific generation.
+        #[derive(Debug)]
+        #[repr(u32)]
+        pub enum SupportedLinkSpeedsVector {
+            /// Support up to Gen 1 (2.5 GT/s)
+            UpToGen1 = 0b0000001,
+            /// Support up to Gen 2 (5.0 GT/s)
+            UpToGen2 = 0b0000011,
+            /// Support up to Gen 3 (8.0 GT/s)
+            UpToGen3 = 0b0000111,
+            /// Support up to Gen 4 (16.0 GT/s)
+            UpToGen4 = 0b0001111,
+            /// Support up to Gen 5 (32.0 GT/s)
+            UpToGen5 = 0b0011111,
+            /// Support up to Gen 6 (64.0 GT/s)
+            UpToGen6 = 0b0111111,
+            // All other encodings are reserved
+        }
+
+        impl SupportedLinkSpeedsVector {
+            pub const fn from_bits(bits: u32) -> Self {
+                match bits {
+                    0b0000001 => SupportedLinkSpeedsVector::UpToGen1,
+                    0b0000011 => SupportedLinkSpeedsVector::UpToGen2,
+                    0b0000111 => SupportedLinkSpeedsVector::UpToGen3,
+                    0b0001111 => SupportedLinkSpeedsVector::UpToGen4,
+                    0b0011111 => SupportedLinkSpeedsVector::UpToGen5,
+                    0b0111111 => SupportedLinkSpeedsVector::UpToGen6,
+                    _ => unreachable!(),
+                }
+            }
+
+            pub const fn into_bits(self) -> u32 {
+                self as u32
+            }
+        }
+
+        /// PCIe Link Width encoding values for use in Link Capabilities and other registers.
+        ///
+        /// Values are defined in PCIe Base Specification for the Max Link Width field
+        /// in Link Capabilities Register and similar fields.
+        #[derive(Debug)]
+        #[repr(u32)]
+        pub enum LinkWidth {
+            /// x1 link width
+            X1 = 0b000001,
+            /// x2 link width
+            X2 = 0b000010,
+            /// x4 link width
+            X4 = 0b000100,
+            /// x8 link width
+            X8 = 0b001000,
+            /// x16 link width
+            X16 = 0b010000,
+            // All other encodings are reserved
+        }
+
+        impl LinkWidth {
+            pub const fn from_bits(bits: u32) -> Self {
+                match bits {
+                    0b000001 => LinkWidth::X1,
+                    0b000010 => LinkWidth::X2,
+                    0b000100 => LinkWidth::X4,
+                    0b001000 => LinkWidth::X8,
+                    0b010000 => LinkWidth::X16,
+                    _ => unreachable!(),
+                }
+            }
+
+            pub const fn into_bits(self) -> u32 {
+                self as u32
+            }
+        }
 
         open_enum::open_enum! {
             /// Offsets into the PCI Express Capability Header

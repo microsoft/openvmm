@@ -25,6 +25,7 @@ use gdma_defs::GDMA_EQE_HWC_INIT_DATA;
 use gdma_defs::GDMA_EQE_HWC_INIT_DONE;
 use gdma_defs::GDMA_EQE_HWC_INIT_EQ_ID_DB;
 use gdma_defs::GDMA_EQE_HWC_RECONFIG_DATA;
+use gdma_defs::GDMA_EQE_HWC_RECONFIG_VF;
 use gdma_defs::GDMA_EQE_TEST_EVENT;
 use gdma_defs::GDMA_MESSAGE_V1;
 use gdma_defs::GDMA_PAGE_TYPE_4K;
@@ -72,6 +73,7 @@ use gdma_defs::SmcProtoHdr;
 use inspect::Inspect;
 use pal_async::driver::Driver;
 use std::collections::HashMap;
+use std::mem;
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::time::Duration;
@@ -160,6 +162,7 @@ pub struct GdmaDriver<T: DeviceBacking> {
     hwc_failure: bool,
     db_id: u32,
     state_saved: bool,
+    vf_reconfiguration_pending: bool,
 }
 
 const EQ_PAGE: usize = 0;
@@ -490,6 +493,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_failure: false,
             state_saved: false,
             db_id,
+            vf_reconfiguration_pending: false,
         };
 
         this.push_rqe();
@@ -514,8 +518,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(this)
     }
 
-    #[allow(dead_code)]
-    pub async fn save(mut self) -> anyhow::Result<GdmaDriverSavedState> {
+    pub async fn save(&mut self) -> anyhow::Result<GdmaDriverSavedState> {
         if self.hwc_failure {
             anyhow::bail!("cannot save/restore after HWC failure");
         }
@@ -540,6 +543,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             num_msix: self.num_msix,
             min_queue_avail: self.min_queue_avail,
             link_toggle: self.link_toggle.clone(),
+            vf_reconfiguration_pending: self.vf_reconfiguration_pending,
         })
     }
 
@@ -594,7 +598,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok((bar0_mapping, map))
     }
 
-    #[allow(dead_code)]
     pub async fn restore(
         saved_state: GdmaDriverSavedState,
         mut device: T,
@@ -666,6 +669,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_failure: false,
             state_saved: false,
             db_id: db_id as u32,
+            vf_reconfiguration_pending: saved_state.vf_reconfiguration_pending,
         };
 
         this.eq.arm();
@@ -774,6 +778,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         self.link_toggle.drain(..).collect()
     }
 
+    pub fn get_vf_reconfiguration_pending(&mut self) -> bool {
+        mem::take(&mut self.vf_reconfiguration_pending)
+    }
+
     pub fn device(&self) -> &T {
         self.device.as_ref().unwrap()
     }
@@ -802,14 +810,12 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let n = self
             .rq
             .push(
-                &(),
+                (),
                 [Sge {
                     address: self.dma_buffer.pfns()[RESPONSE_PAGE] * PAGE_SIZE64,
                     mem_key: self.gpa_mkey,
                     size: PAGE_SIZE as u32,
                 }],
-                None,
-                0,
             )
             .expect("rq is not full");
         assert_eq!(n, RWQE_SIZE);
@@ -871,14 +877,12 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             let sqe_len = self
                 .sq
                 .push(
-                    &oob,
+                    oob,
                     [Sge {
                         address: self.dma_buffer.pfns()[REQUEST_PAGE] * PAGE_SIZE64,
                         mem_key: self.gpa_mkey,
                         size: (size_of_val(&hdr) + size_of_val(&req)) as u32,
                     }],
-                    None,
-                    0,
                 )
                 .expect("send queue should not be full");
 
@@ -1007,6 +1011,11 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                         }
                         unknown => tracing::error!(unknown, "unknown reconfig data type"),
                     }
+                }
+                GDMA_EQE_HWC_RECONFIG_VF => {
+                    // No data is supplied for VF reconfiguration events.
+                    tracing::info!("HWC VF reconfiguration event");
+                    self.vf_reconfiguration_pending = true;
                 }
                 ty => tracing::error!(ty, "unknown eq event"),
             }
@@ -1192,6 +1201,20 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 )
             })?;
         }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    #[tracing::instrument(skip(self), level = "debug", err)]
+    pub async fn generate_reconfig_vf_event(&mut self) -> anyhow::Result<()> {
+        self.request::<_, ()>(
+            GdmaRequestType::GDMA_GENERATE_RECONFIG_VF_EVENT.0,
+            HWC_DEV_ID,
+            GdmaGenerateTestEventReq {
+                queue_index: self.eq.id(),
+            },
+        )
+        .await?;
         Ok(())
     }
 

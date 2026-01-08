@@ -1892,7 +1892,6 @@ macro_rules! os_resource {
 
 #[cfg(all(feature = "std", windows))]
 mod windows {
-    use crate::os_resource;
     use std::os::windows::prelude::*;
 
     os_resource!(OwnedHandle, OwnedHandle);
@@ -1909,7 +1908,6 @@ mod windows {
 
 #[cfg(all(feature = "std", unix))]
 mod unix {
-    use crate::os_resource;
     use std::os::unix::prelude::*;
 
     os_resource!(OwnedFd, OwnedFd);

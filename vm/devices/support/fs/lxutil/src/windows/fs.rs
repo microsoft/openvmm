@@ -307,6 +307,7 @@ pub fn delete_read_only_file(fs_context: &FsContext, file_handle: &OwnedHandle) 
     if info.FileAttributes & W32Fs::FILE_ATTRIBUTE_READONLY.0 == 0 {
         Err(lx::Error::from_lx(lx::EIO))
     } else {
+        util::set_readonly_attribute(file_handle, info.FileAttributes, false)?;
         delete_file_core(fs_context, file_handle)
     }
 }
@@ -528,7 +529,7 @@ pub fn validate_lx_attributes(info: &mut FileSystem::FILE_STAT_LX_INFORMATION) {
         info.LxFlags &= !FileSystem::LX_FILE_METADATA_HAS_UID;
     }
 
-    if (info.LxFlags & FileSystem::LX_FILE_METADATA_HAS_GID != 0) && (info.LxUid == lx::GID_INVALID)
+    if (info.LxFlags & FileSystem::LX_FILE_METADATA_HAS_GID != 0) && (info.LxGid == lx::GID_INVALID)
     {
         info.LxFlags &= !FileSystem::LX_FILE_METADATA_HAS_GID;
     }
@@ -829,7 +830,7 @@ pub fn read_link_length(file_handle: &OwnedHandle, state: &VolumeState) -> lx::R
 pub fn read_reparse_link(
     file_handle: &OwnedHandle,
     state: &VolumeState,
-) -> lx::Result<Option<String>> {
+) -> lx::Result<Option<lx::LxString>> {
     let (iosb, reparse_buffer) = query_reparse_data(file_handle)?;
 
     // SAFETY: Accessing union field of type returned from Win32 API
@@ -863,15 +864,14 @@ pub fn read_reparse_link(
                         } else {
                             // SAFETY: The section of memory used to construct the string is guaranteed to
                             // be valid by the Win32 API due to the previous checks
-                            let str = std::str::from_utf8(unsafe {
+                            let target_slice = unsafe {
                                 std::slice::from_raw_parts(
                                     reparse_buffer.head.data.symlink.target.as_ptr(),
                                     path_length as usize,
                                 )
-                            })
-                            .map_err(|_| lx::Error::EIO)?;
+                            };
 
-                            Ok(Some(str.to_string()))
+                            Ok(Some(lx::LxString::from_vec(target_slice.to_vec())))
                         }
                     }
                 }

@@ -869,8 +869,10 @@ impl Worker {
         let idx = work.descriptor_index();
         segments[0].ty = TxSegmentType::Head(TxMetadata {
             id: TxId(idx.into()),
-            segment_count: segments.len(),
-            len: work.get_payload_length(false) as usize - header_size(),
+            segment_count: segments.len().try_into().unwrap(),
+            len: (work.get_payload_length(false) as usize - header_size())
+                .try_into()
+                .unwrap(),
             ..Default::default()
         });
         let state = &mut self.active_state;

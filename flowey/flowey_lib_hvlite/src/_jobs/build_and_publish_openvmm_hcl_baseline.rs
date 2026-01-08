@@ -37,17 +37,19 @@ impl SimpleFlowNode for Node {
             artifact_dir,
         } = request;
 
+        let recipe = match target.common_arch().unwrap() {
+            CommonArch::X86_64 => OpenhclIgvmRecipe::X64,
+            CommonArch::Aarch64 => OpenhclIgvmRecipe::Aarch64,
+        }
+        .recipe_details(true);
+
         let baseline_hcl_build = ctx.reqv(|v| build_openvmm_hcl::Request {
             build_params: OpenvmmHclBuildParams {
-                target: target.clone(),
+                target,
                 profile: OpenvmmHclBuildProfile::OpenvmmHclShip,
-                features: (match target.common_arch().unwrap() {
-                    CommonArch::X86_64 => OpenhclIgvmRecipe::X64,
-                    CommonArch::Aarch64 => OpenhclIgvmRecipe::Aarch64,
-                })
-                .recipe_details(true)
-                .openvmm_hcl_features,
+                features: recipe.openvmm_hcl_features,
                 no_split_dbg_info: false,
+                max_trace_level: recipe.max_trace_level,
             },
             openvmm_hcl_output: v,
         });

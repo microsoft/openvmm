@@ -19,10 +19,13 @@ pub use runtime::PetriVmOpenVmm;
 
 use crate::BootDeviceType;
 use crate::Firmware;
+use crate::OpenHclServicingFlags;
+use crate::OpenvmmLogConfig;
 use crate::PetriDiskType;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
+use crate::PetriVmRuntimeConfig;
 use crate::PetriVmgsDisk;
 use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
@@ -36,12 +39,12 @@ use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
-use hvlite_defs::config::Config;
-use hvlite_helpers::disk::open_disk_type;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::Receiver;
 use mesh::Sender;
 use net_backend_resources::mac_address::MacAddress;
+use openvmm_defs::config::Config;
+use openvmm_helpers::disk::open_disk_type;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
@@ -52,7 +55,9 @@ use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
+use storvsp_resources::ScsiControllerHandle;
 use tempfile::TempPath;
 use unix_socket::UnixListener;
 use vm_resource::IntoResource;
@@ -111,6 +116,24 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         )
     }
 
+    fn default_servicing_flags() -> OpenHclServicingFlags {
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: true,
+            enable_mana_keepalive: true,
+            override_version_checks: false,
+            stop_timeout_hint_secs: None,
+        }
+    }
+
+    fn create_guest_dump_disk() -> anyhow::Result<
+        Option<(
+            Arc<TempPath>,
+            Box<dyn FnOnce() -> anyhow::Result<Box<dyn fatfs::ReadWriteSeek>>>,
+        )>,
+    > {
+        Ok(None) // TODO #2403
+    }
+
     fn new(resolver: &ArtifactResolver<'_>) -> Self {
         OpenVmmPetriBackend {
             openvmm_path: resolver
@@ -124,8 +147,8 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         config: PetriVmConfig,
         modify_vmm_config: Option<impl FnOnce(PetriVmConfigOpenVmm) -> PetriVmConfigOpenVmm + Send>,
         resources: &PetriVmResources,
-    ) -> anyhow::Result<Self::VmRuntime> {
-        let mut config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources)?;
+    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
+        let mut config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources).await?;
 
         if let Some(f) = modify_vmm_config {
             config = f(config);
@@ -140,8 +163,12 @@ pub struct PetriVmConfigOpenVmm {
     // Direct configuration related information.
     firmware: Firmware,
     arch: MachineArch,
+    host_log_levels: Option<OpenvmmLogConfig>,
     config: Config,
     boot_device_type: BootDeviceType,
+
+    // Mesh host
+    mesh: mesh_process::Mesh,
 
     // Runtime resources
     resources: PetriVmResourcesOpenVmm,
@@ -150,8 +177,13 @@ pub struct PetriVmConfigOpenVmm {
     openvmm_log_file: PetriLogFile,
 
     // Resources that are only used during startup.
+    /// Single VMBus SCSI controller shared for all VTL0 disks added by petri.
+    petri_vtl0_scsi: ScsiControllerHandle,
+
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
     framebuffer_view: Option<framebuffer::View>,
+
+    vtl2_settings: Option<Vtl2Settings>,
 }
 /// Various channels and resources used to interact with the VM while it is running.
 struct PetriVmResourcesOpenVmm {
@@ -174,8 +206,6 @@ struct PetriVmResourcesOpenVmm {
     // TempPaths that cannot be dropped until the end.
     vtl2_vsock_path: Option<TempPath>,
     _vmbus_vsock_path: TempPath,
-
-    vtl2_settings: Option<Vtl2Settings>,
 }
 
 impl PetriVmConfigOpenVmm {

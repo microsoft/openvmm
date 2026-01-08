@@ -35,6 +35,13 @@
     - [Running Fuzzers](./dev_guide/tests/fuzzing/running.md)
     - [Writing Fuzzers](./dev_guide/tests/fuzzing/writing.md)
 - [Developer Tools / Utilities](./dev_guide/dev_tools.md)
+  - [`flowey`](./dev_guide/dev_tools/flowey.md)
+    - [`Flowey Fundamentals`](./dev_guide/dev_tools/flowey/flowey_fundamentals.md)
+    - [`Steps`](./dev_guide/dev_tools/flowey/steps.md)
+    - [`Variables`](./dev_guide/dev_tools/flowey/variables.md)
+    - [`Nodes`](./dev_guide/dev_tools/flowey/nodes.md)
+    - [`Artifacts`](./dev_guide/dev_tools/flowey/artifacts.md)
+    - [`Pipelines`](./dev_guide/dev_tools/flowey/pipelines.md)
   - [`cargo xtask`](./dev_guide/dev_tools/xtask.md)
   - [`cargo xflowey`](./dev_guide/dev_tools/xflowey.md)
   - [VmgsTool](./dev_guide/dev_tools/vmgstool.md)
@@ -111,6 +118,8 @@
     - [mesh]()
     - [inspect]()
   - [OpenHCL Architecture](./reference/architecture/openhcl.md)
+    - [IGVM](./reference/architecture/igvm.md)
+    - [Boot Process](./reference/architecture/openhcl_boot.md)
 
 ---
 

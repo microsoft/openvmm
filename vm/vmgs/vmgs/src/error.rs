@@ -67,6 +67,9 @@ pub enum Error {
     /// Datastore keys full, but there is no active key.
     #[error("unable to determine inactive key for removal")]
     NoActiveDatastoreKey,
+    /// VMGS is v1 format
+    #[error("VMGS is v1 format")]
+    V1Format,
 
     /// OpenSSL errors.
     #[cfg(feature = "encryption_ossl")]

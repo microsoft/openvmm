@@ -41,12 +41,27 @@ export function createColumns(
         },
         {
             id: 'message',
-            accessorFn: (row) => row.messageText, // Use text for sorting/filtering
+            accessorFn: (row) => row.logMessage, // Use text for sorting/filtering
             header: 'Message',
             cell: (info) => (
-                <div dangerouslySetInnerHTML={{ __html: info.row.original.messageHtml }} />
+                <>
+                    <div>{info.row.original.logMessage.message}</div>
+                    {info.row.original.logMessage.links?.map((link, idx) => (
+                        <a
+                            key={idx}
+                            href={link.url}
+                            className="attachment"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            data-inspect={link.inspect}
+                            style={{ marginLeft: 8 }}
+                        >
+                            {link.text}
+                        </a>
+                    ))}
+                </>
             ),
-            enableSorting: false, // Disable sorting for complex HTML content
+            enableSorting: false, // Sorting by full message text is not useful
         },
         {
             id: 'screenshot',

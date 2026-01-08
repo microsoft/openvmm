@@ -57,7 +57,7 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.90"
+rust-version = "1.91"
 edition = "2024"
 
 [workspace.dependencies]
@@ -70,13 +70,13 @@ flowey_lib_common = { path = "flowey/flowey_lib_common" }
 flowey_lib_hvlite = { path = "flowey/flowey_lib_hvlite" }
 schema_ado_yaml = { path = "flowey/schema_ado_yaml" }
 
-hvlite_core = { path = "openvmm/hvlite_core" }
-hvlite_defs = { path = "openvmm/hvlite_defs" }
+openvmm_core = { path = "openvmm/openvmm_core" }
+openvmm_defs = { path = "openvmm/openvmm_defs" }
 openvmm_entry = { path = "openvmm/openvmm_entry" }
-hvlite_helpers = { path = "openvmm/hvlite_helpers" }
-hvlite_pcat_locator = { path = "openvmm/hvlite_pcat_locator" }
+openvmm_helpers = { path = "openvmm/openvmm_helpers" }
+openvmm_pcat_locator = { path = "openvmm/openvmm_pcat_locator" }
 openvmm_resources = { path = "openvmm/openvmm_resources" }
-hvlite_ttrpc_vmservice = { path = "openvmm/hvlite_ttrpc_vmservice" }
+openvmm_ttrpc_vmservice = { path = "openvmm/openvmm_ttrpc_vmservice" }
 membacking = { path = "openvmm/membacking" }
 
 petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact_resolver_openvmm_known_paths" }
@@ -103,6 +103,7 @@ console_relay = { path = "support/console_relay" }
 safe_intrinsics = { path = "support/safe_intrinsics" }
 debug_ptr = { path = "support/debug_ptr" }
 user_driver_emulated_mock = { path = "vm/devices/user_driver_emulated_mock" }
+fast_memcpy = { path = "support/fast_memcpy" }
 fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }
@@ -153,6 +154,7 @@ test_with_tracing = { path = "support/test_with_tracing" }
 test_with_tracing_macro = { path = "support/test_with_tracing/test_with_tracing_macro" }
 tracelimit = { path = "support/tracelimit" }
 tracing_helpers = { path = "support/tracing_helpers" }
+trycopy = { path = "support/trycopy" }
 ucs2 = { path = "support/ucs2" }
 uevent = { path = "support/uevent" }
 unix_socket = { path = "support/unix_socket" }
@@ -396,6 +398,8 @@ vmm_core_defs = { path = "vmm_core/vmm_core_defs" }
 vmotherboard = { path = "vmm_core/vmotherboard" }
 
 # workers
+chipset_device_worker = { path = "workers/chipset_device_worker" }
+chipset_device_worker_defs = { path = "workers/chipset_device_worker_defs" }
 debug_worker = { path = "workers/debug_worker" }
 debug_worker_defs = { path = "workers/debug_worker_defs" }
 vnc_worker = { path = "workers/vnc_worker" }
@@ -418,7 +422,6 @@ bitvec = { version = "1.1", default-features = false }
 blocking = "1.2"
 caps = "0.5"
 cargo_toml = "0.22"
-cc = "1.0"
 cfg-if = "1"
 clap = "4.2"
 crc32fast = { version = "1.3.2", default-features = false }
@@ -483,7 +486,6 @@ linkme = "0.3.9"
 log = "0.4"
 loom = "0.7.2"
 macaddr = "1.0"
-mbrman = "0.6"
 mimalloc = { version = "0.1.39", default-features = false }
 ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
 mshv-bindings = "0.6.0"
@@ -510,7 +512,7 @@ range_map_vec = "0.2.0"
 rayon = "1.5"
 resolv-conf = "0.7"
 rlimit = "0.10.1"
-rsa = "0.9.8"
+rsa = "0.9.10"
 rusqlite = "0.37"
 rustc-hash = "2.1.1"
 rustyline = "17"
@@ -547,7 +549,8 @@ walkdir = "2.3"
 wchar = "0.11"
 which = "8"
 widestring = "1.0"
-win_etw_tracing = "0.1.3"
+win_etw_provider = "0.1.11"
+win_etw_tracing = "0.1.4"
 winapi = "0.3"
 windows = "0.62"
 windows-service = "0.8"
@@ -615,6 +618,11 @@ opt-level = 3
 [profile.dev.package.generator]
 opt-level = 3
 
+# memcpy needs to be optimized heavily regardless of the build profile
+[profile.dev.package.fast_memcpy]
+opt-level = 3
+overflow-checks = false
+
 [patch.crates-io]
 # Pending <https://github.com/ferrilab/bitvec/pull/273>
 bitvec = { git = "https://github.com/smalis-msft/bitvec", branch = "set-aliased-previous-val" }
@@ -641,6 +649,7 @@ dbg_macro = "warn"
 debug_assert_with_mut_call = "warn"
 filter_map_next = "warn"
 fn_params_excessive_bools = "warn"
+implicit_clone = "warn"
 imprecise_flops = "warn"
 inefficient_to_string = "warn"
 linkedlist = "warn"
@@ -652,7 +661,6 @@ ptr_cast_constness = "warn"
 ref_as_ptr = "warn"
 ref_option_ref = "warn"
 rest_pat_in_fully_bound_structs = "warn"
-string_to_string = "warn"
 suboptimal_flops = "warn"
 undocumented_unsafe_blocks = "warn"
 unnecessary_box_returns = "warn"

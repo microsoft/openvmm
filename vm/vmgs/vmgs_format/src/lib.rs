@@ -47,6 +47,8 @@ open_enum! {
         HW_KEY_PROTECTOR = 11,
         GUEST_SECRET_KEY = 13,
         HIBERNATION_FIRMWARE = 14,
+        PLATFORM_SEED = 15,
+        PROVENANCE_DOC = 16,
 
         EXTENDED_FILE_TABLE = 63,
     }
@@ -220,5 +222,5 @@ open_enum! {
 pub struct VmgsMarkers {
     pub reprovisioned: bool,
     #[bits(15)]
-    _reserved: u32,
+    _reserved: u16,
 }

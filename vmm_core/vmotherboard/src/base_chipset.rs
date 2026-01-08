@@ -71,7 +71,7 @@ pub struct BaseChipsetBuilderOutput<'a> {
 /// semi-standardized devices.
 ///
 /// i.e: we'd rather not maintain two nearly-identical codepaths to instantiate
-/// these devices in both HvLite and Underhill.
+/// these devices in both OpenVMM and Underhill.
 pub struct BaseChipsetBuilder<'a> {
     foundation: options::BaseChipsetFoundation<'a>,
     devices: options::BaseChipsetDevices,

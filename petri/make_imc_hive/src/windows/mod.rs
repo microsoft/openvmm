@@ -35,6 +35,19 @@ pub(crate) fn main() -> anyhow::Result<()> {
     )?;
     vmbus_key.set_dword("AllowAllDevicesWhenIsolated", 1)?;
 
+    // Enable kernel mode crash dump and info
+    let crash_control_key = create_subkeys(
+        &hive,
+        &["SYSTEM", "CurrentControlSet", "Control", "CrashControl"],
+    )?;
+    crash_control_key.set_dword("AutoReboot", 1)?;
+    crash_control_key.set_dword("AlwaysKeepMemoryDump", 1)?;
+    crash_control_key.set_dword("CrashDumpEnabled", 2)?; // kernel memory dump
+    crash_control_key.set_sz("DedicatedDumpFile", "E:\\dumpfile.dmp")?;
+    crash_control_key.set_expand_sz("DumpFile", "E:\\memory.dmp")?;
+    // Set the size to the largest possible size FAT32 lets us have
+    crash_control_key.set_dword("DumpFileSize", 4095)?; // in MB
+
     // Windows defaults to 1, so we need to set it to 2 to cause Windows to
     // apply the IMC changes on first boot.
     hive.set_dword("Sequence", 2)?;

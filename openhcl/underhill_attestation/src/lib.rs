@@ -12,9 +12,13 @@
 mod crypto;
 mod hardware_key_sealing;
 mod igvm_attest;
+mod jwt;
 mod key_protector;
 mod secure_key_release;
 mod vmgs;
+
+#[cfg(test)]
+mod test_helpers;
 
 pub use igvm_attest::Error as IgvmAttestError;
 pub use igvm_attest::IgvmAttestRequestHelper;
@@ -701,6 +705,7 @@ async fn get_derived_keys(
         };
 
     // Handle various sources of Guest State Protection
+    let existing_unencrypted = !vmgs.is_encrypted() && !vmgs.was_provisioned_this_boot();
     let is_gsp_by_id = key_protector_by_id.found_id && key_protector_by_id.inner.ported != 1;
     let is_gsp = key_protector.gsp[ingress_idx].gsp_length != 0;
     tracing::info!(
@@ -714,7 +719,7 @@ async fn get_derived_keys(
     let mut requires_gsp_by_id = is_gsp_by_id;
 
     // Attempt GSP
-    let (gsp_response, no_gsp, requires_gsp) = {
+    let (gsp_response, gsp_available, no_gsp, requires_gsp) = {
         tracing::info!(CVM_ALLOWED, "attempting GSP");
 
         let response = get_gsp_data(get, key_protector).await;
@@ -728,8 +733,18 @@ async fn get_derived_keys(
             "GSP response"
         );
 
-        let no_gsp = response.extended_status_flags.no_rpc_server()
-            || response.encrypted_gsp.length == 0
+        let no_gsp_available =
+            response.extended_status_flags.no_rpc_server() || response.encrypted_gsp.length == 0;
+
+        let no_gsp = no_gsp_available
+            // disable if auto and pre-existing guest state is not encrypted or
+            // encrypted using GspById to prevent encryption changes without
+            // explicit intent
+            || (matches!(
+                guest_state_encryption_policy,
+                GuestStateEncryptionPolicy::Auto
+            ) && (is_gsp_by_id || existing_unencrypted))
+            // disable per encryption policy (first boot only, unless strict)
             || (matches!(
                 guest_state_encryption_policy,
                 GuestStateEncryptionPolicy::GspById | GuestStateEncryptionPolicy::None
@@ -748,12 +763,12 @@ async fn get_derived_keys(
             requires_gsp_by_id = true;
         }
 
-        (response, no_gsp, requires_gsp)
+        (response, !no_gsp_available, no_gsp, requires_gsp)
     };
 
     // Attempt GSP By Id protection if GSP is not available, when changing
     // schemes, or as requested
-    let (gsp_response_by_id, no_gsp_by_id) = if no_gsp || requires_gsp_by_id {
+    let (gsp_response_by_id, gsp_by_id_available, no_gsp_by_id) = if no_gsp || requires_gsp_by_id {
         tracing::info!(CVM_ALLOWED, "attempting GSP By Id");
 
         let gsp_response_by_id = get
@@ -761,7 +776,16 @@ async fn get_derived_keys(
             .await
             .map_err(GetDerivedKeysError::FetchGuestStateProtectionById)?;
 
-        let no_gsp_by_id = gsp_response_by_id.extended_status_flags.no_registry_file()
+        let no_gsp_by_id_available = gsp_response_by_id.extended_status_flags.no_registry_file();
+
+        let no_gsp_by_id = no_gsp_by_id_available
+            // disable if auto and pre-existing guest state is unencrypted
+            // to prevent encryption changes without explicit intent
+            || (matches!(
+                guest_state_encryption_policy,
+                GuestStateEncryptionPolicy::Auto
+            ) && existing_unencrypted)
+            // disable per encryption policy (first boot only, unless strict)
             || (matches!(
                 guest_state_encryption_policy,
                 GuestStateEncryptionPolicy::None
@@ -771,9 +795,13 @@ async fn get_derived_keys(
             Err(GetDerivedKeysError::GspByIdRequiredButNotFound)?
         }
 
-        (gsp_response_by_id, no_gsp_by_id)
+        (
+            gsp_response_by_id,
+            Some(!no_gsp_by_id_available),
+            no_gsp_by_id,
+        )
     } else {
-        (GuestStateProtectionById::new_zeroed(), true)
+        (GuestStateProtectionById::new_zeroed(), None, true)
     };
 
     // If sources of encryption used last are missing, attempt to unseal VMGS key with hardware key
@@ -858,7 +886,9 @@ async fn get_derived_keys(
     tracing::info!(
         CVM_ALLOWED,
         kek = !no_kek,
+        gsp_available,
         gsp = !no_gsp,
+        gsp_by_id_available = ?gsp_by_id_available,
         gsp_by_id = !no_gsp_by_id,
         "Encryption sources"
     );

@@ -7,3 +7,6 @@ release_2411:
 
 release_2505:
  - base-branch: 'release/2505'
+
+release_1.7.2511:
+ - base-branch: 'release/1.7.2511'

@@ -65,6 +65,64 @@ use x86defs::cpuid::CpuidFunction;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
+/// Error type for proxy interrupt redirection failures.
+#[derive(Debug, thiserror::Error)]
+enum ProxyInterruptRedirectionError {
+    /// Multicast is not supported for proxy interrupt redirection.
+    #[error("multicast not supported")]
+    MulticastNotSupported,
+    /// Processor set operation failed.
+    #[error("processor set operation failed")]
+    ProcessorSetError,
+    /// Failed to map the redirected device interrupt in VTL2 kernel.
+    #[error("failed to map redirected device interrupt in VTL2 kernel: {0}")]
+    MapInterruptFailed(#[source] hcl::ioctl::Error),
+    /// HvCallRetargetDeviceInterrupt hypercall failed in hypervisor.
+    #[error("HvCallRetargetDeviceInterrupt with proxy redirect failed in hypervisor: {0}")]
+    RetargetDeviceInterruptFailed(HvError),
+}
+
+/// Manages redirected interrupt vector mapping in VTL2 for proxy interrupt redirection.
+struct RedirectedVectorMapping<'a> {
+    hcl: &'a hcl::ioctl::Hcl,
+    apic_id: u32,
+    redirected_vector: u32,
+}
+
+impl<'a> RedirectedVectorMapping<'a> {
+    /// Creates a new mapping in VTL2 kernel for proxy interrupt redirection. This will be automatically
+    /// unmapped when the guard is dropped unless explicitly disarmed.
+    fn new(hcl: &'a hcl::ioctl::Hcl, vector: u32, apic_id: u32) -> Result<Self, hcl::ioctl::Error> {
+        let redirected_vector = hcl.map_redirected_device_interrupt(vector, apic_id, true)?;
+        Ok(Self {
+            hcl,
+            apic_id,
+            redirected_vector,
+        })
+    }
+
+    /// Returns the redirected vector value returned by the VTL2 kernel.
+    fn redirected_vector(&self) -> u32 {
+        self.redirected_vector
+    }
+}
+
+impl Drop for RedirectedVectorMapping<'_> {
+    /// Drop guard to unmap the interrupt vector in VTL2 kernel.
+    fn drop(&mut self) {
+        match self
+            .hcl
+            .map_redirected_device_interrupt(self.redirected_vector, self.apic_id, false)
+        {
+            Ok(_) => {}
+            Err(err) => panic!(
+                "failed to unmap VTL2 vector for proxy device interrupt: redirected_vector={}, apic_id={}, error={:?}",
+                self.redirected_vector, self.apic_id, err
+            ),
+        }
+    }
+}
+
 impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     fn validate_register_access(
         &mut self,
@@ -867,6 +925,12 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         multicast: bool,
         target_processors: ProcessorSet<'_>,
     ) -> HvResult<()> {
+        let entry = hvdef::hypercall::InterruptEntry {
+            source: hvdef::hypercall::HvInterruptSource::MSI,
+            rsvd: 0,
+            data: [address as u32, data],
+        };
+
         // Before dispatching retarget_device_interrupt, add the device vector
         // to partition global device vector table and issue `proxy_irr_blocked`
         // filter wake request to other VPs
@@ -879,17 +943,121 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         // Update `proxy_irr_blocked` for this VP itself
         self.vp.update_proxy_irr_filter(self.intercepted_vtl);
 
+        if self.vp.cvm_partition().proxy_interrupt_redirect {
+            // Try proxy interrupt redirection. Fall back to normal proxy delivery upon any error.
+            match self.try_proxy_interrupt_redirection(
+                device_id,
+                entry,
+                vector,
+                multicast,
+                &target_processors,
+            ) {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        error = %err,
+                        "proxy interrupt redirection failed, using normal proxy delivery"
+                    );
+                }
+            }
+        }
+
         self.vp.partition.hcl.retarget_device_interrupt(
             device_id,
-            hvdef::hypercall::InterruptEntry {
-                source: hvdef::hypercall::HvInterruptSource::MSI,
-                rsvd: 0,
-                data: [address as u32, data],
-            },
+            entry,
             vector,
             multicast,
             target_processors,
+            false,
         )
+    }
+
+    /// Request redirection of interrupts from VTL0 owned devices to VTL2 via posted interrupt mechanism.
+    /// This is useful performance optimization when VTL0 doesn't have posted interrupt support.
+    fn try_proxy_interrupt_redirection(
+        &mut self,
+        device_id: u64,
+        entry: hvdef::hypercall::InterruptEntry,
+        vector: u32,
+        multicast: bool,
+        target_processors: &ProcessorSet<'_>,
+    ) -> Result<(), ProxyInterruptRedirectionError> {
+        // Proxy interrupt redirection doesn't support multicast.
+        if multicast {
+            return Err(ProxyInterruptRedirectionError::MulticastNotSupported);
+        }
+
+        // Register the interrupt handler in VTL2 for only the first processor in the target set.
+        // This is safe because we expose only this single processor in the target processor set
+        // when forwarding the hypercall to the hypervisor.
+
+        // Get the first processor from the target processor set.
+        let first_processor_index = target_processors
+            .iter()
+            .next()
+            .ok_or(ProxyInterruptRedirectionError::ProcessorSetError)?;
+        let first_apic_id = self
+            .vp
+            .partition
+            .vps
+            .get(first_processor_index as usize)
+            .ok_or(ProxyInterruptRedirectionError::ProcessorSetError)?
+            .vp_info
+            .apic_id;
+
+        // Map the interrupt vector in VTL2 and create guard for automatic cleanup.
+        let guard = RedirectedVectorMapping::new(&self.vp.partition.hcl, vector, first_apic_id)
+            .map_err(ProxyInterruptRedirectionError::MapInterruptFailed)?;
+
+        // Create new sparse ProcessorSet containing only the first processor.
+        let mask_index = first_processor_index / 64;
+        let processor_mask = 1u64 << (first_processor_index % 64);
+        let masks = [processor_mask];
+        let redirected_processor = ProcessorSet::from_processor_masks(1u64 << mask_index, &masks)
+            .ok_or(ProxyInterruptRedirectionError::ProcessorSetError)?;
+        let redirected_vector = guard.redirected_vector();
+
+        // Issue HvCallRetargetDeviceInterrupt hypercall with posted interrupt redirection enabled
+        self.vp
+            .partition
+            .hcl
+            .retarget_device_interrupt(
+                device_id,
+                entry,
+                redirected_vector,
+                multicast,
+                redirected_processor,
+                true,
+            )
+            .map_err(ProxyInterruptRedirectionError::RetargetDeviceInterruptFailed)?;
+
+        // Disarm the guard upon success to prevent unmapping.
+        std::mem::forget(guard);
+
+        // Record the redirection for debugging/inspection purposes.
+        let mut proxy_redirect_interrupts = self
+            .vp
+            .cvm_partition()
+            .vp_inner(first_processor_index)
+            .proxy_redirect_interrupts
+            .lock();
+        proxy_redirect_interrupts.insert(
+            redirected_vector,
+            crate::ProxyRedirectVectorInfo {
+                device_id,
+                original_vector: vector,
+            },
+        );
+        tracelimit::info_ratelimited!(
+            CVM_ALLOWED,
+            device_id,
+            target_vp_index = first_processor_index,
+            original_vector = vector,
+            redirected_vector,
+            "proxy interrupt redirection successfully mapped"
+        );
+        Ok(())
     }
 
     pub(crate) fn hcvm_validate_flush_inputs(
@@ -2307,6 +2475,9 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         first_scan_irr: &mut bool,
         dev: &impl CpuIo,
     ) -> bool {
+        // Cancel any existing deadline before processing interrupts.
+        B::clear_deadline(self);
+
         self.cvm_handle_exit_activity();
 
         if self.backing.untrusted_synic_mut().is_some() {
@@ -2325,11 +2496,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     }
 
     fn update_synic(&mut self, vtl: GuestVtl, untrusted_synic: bool) {
-        fn duration_from_100ns(n: u64) -> std::time::Duration {
-            const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
-            std::time::Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
-        }
-
         loop {
             let hv = &mut self.backing.cvm_state_mut().hv[vtl];
 
@@ -2347,14 +2513,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
             );
             if let Some(next_ref_time) = next_ref_time {
-                // Convert from reference timer basis to vmtime basis via
-                // difference of programmed timer and current reference time.
-                let ref_diff = next_ref_time.saturating_sub(ref_time_now);
-                let timeout = self
-                    .vmtime
-                    .now()
-                    .wrapping_add(duration_from_100ns(ref_diff));
-                self.vmtime.set_timeout_if_before(timeout);
+                B::update_deadline(self, ref_time_now, next_ref_time);
             }
             if ready_sints == 0 {
                 break;
@@ -2779,5 +2938,63 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::AssertVirtualInterrupt
         );
 
         Ok(())
+    }
+}
+
+/// Trait for managing lower VTL timer deadline in hardware-isolated partitions.
+///
+/// Note that this interface is currently used only for synic timer emulation in VTL2
+/// and not for APIC timers. APIC timer emulation uses [`VmTime`] directly for managing
+/// its timer deadlines. In practice, VTL0 guest kernels typically prefer Hyper-V
+/// synthetic timers over APIC timers, so this should not be a concern. This can be
+/// revisited in the future if APIC timer emulation performance becomes a priority.
+pub(super) trait HardwareIsolatedGuestTimer<T: HardwareIsolatedBacking>:
+    Send + Sync
+{
+    /// Returns true if the implementation uses hardware virtualized timer service.
+    fn is_hardware_virtualized(&self) -> bool;
+
+    /// Update timer deadline.
+    fn update_deadline(&self, vp: &mut UhProcessor<'_, T>, ref_time_now: u64, ref_time_next: u64);
+
+    /// Clear any pending deadline.
+    fn clear_deadline(&self, vp: &mut UhProcessor<'_, T>);
+
+    /// Synchronize armed deadline state for hardware virtualized timers.
+    fn sync_deadline_state(&self, vp: &mut UhProcessor<'_, T>);
+}
+
+/// Interface for managing lower VTL timer deadlines via [`VmTime`].
+/// This is the default interface used when a hardware-isolated backing doesn't support
+/// timer virtualization.
+pub(super) struct VmTimeGuestTimer;
+
+impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTimer {
+    fn is_hardware_virtualized(&self) -> bool {
+        false
+    }
+
+    /// Update timer deadline.
+    fn update_deadline(&self, vp: &mut UhProcessor<'_, T>, ref_time_now: u64, ref_time_next: u64) {
+        /// Convert reference time in 100ns units to Duration.
+        fn duration_from_100ns(n: u64) -> std::time::Duration {
+            const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
+            std::time::Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
+        }
+
+        // Convert from reference timer basis to [`VmTime`] basis via
+        // difference of programmed timer and current reference time.
+        let ref_diff = ref_time_next.saturating_sub(ref_time_now);
+        let timeout = vp.vmtime.now().wrapping_add(duration_from_100ns(ref_diff));
+        vp.vmtime.set_timeout_if_before(timeout);
+    }
+
+    /// Clear any pending deadline.
+    fn clear_deadline(&self, vp: &mut UhProcessor<'_, T>) {
+        vp.vmtime.cancel_timeout();
+    }
+
+    fn sync_deadline_state(&self, _vp: &mut UhProcessor<'_, T>) {
+        // No-op for software timers
     }
 }

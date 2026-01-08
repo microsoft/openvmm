@@ -7,7 +7,7 @@ use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::IsolationType;
 use petri::MemoryConfig;
-use petri::OpenHclLogConfig;
+use petri::OpenvmmLogConfig;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
@@ -404,7 +404,7 @@ async fn idle_test<T: PetriVmmBackend>(
                 dynamic_memory_range: None,
             }
         })
-        .with_openhcl_log_levels(OpenHclLogConfig::BuiltInDefault)
+        .with_openhcl_log_levels(OpenvmmLogConfig::BuiltInDefault)
         .run()
         .await;
 
@@ -461,7 +461,6 @@ async fn memory_validation_release_small<T: PetriVmmBackend>(
         WaitPeriodSec::ShortWait,
         driver,
         "release",
-        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
         false,
     )
     .await
@@ -488,7 +487,6 @@ async fn memory_validation_debug_small<T: PetriVmmBackend>(
         WaitPeriodSec::ShortWait,
         driver,
         "debug",
-        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
         false,
     )
     .await
@@ -511,7 +509,6 @@ async fn memory_validation_release_very_heavy<T: PetriVmmBackend>(
         WaitPeriodSec::LongWait,
         driver,
         "release",
-        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
         false,
     )
     .await
@@ -538,7 +535,6 @@ async fn memory_validation_debug_very_heavy<T: PetriVmmBackend>(
         WaitPeriodSec::LongWait,
         driver,
         "debug",
-        // Disabling test for now to investigate higher memory usage on intel GP and intel TDX tests
         false,
     )
     .await

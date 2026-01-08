@@ -51,12 +51,14 @@
 
 use async_trait::async_trait;
 use inspect::Inspect;
+use std::sync::Arc;
 use thiserror::Error;
 use vmcore::vm_task::VmTaskDriverSource;
 
 pub mod device;
 pub mod manager;
 pub mod save_restore;
+pub mod save_restore_helpers;
 
 #[derive(Debug, Error)]
 #[error("nvme device {pci_id} error")]
@@ -91,10 +93,10 @@ pub enum NvmeSpawnerError {
 #[async_trait]
 pub trait NvmeDevice: Inspect + Send + Sync {
     async fn namespace(
-        &self,
+        &mut self,
         nsid: u32,
-    ) -> Result<nvme_driver::Namespace, nvme_driver::NamespaceError>;
-    async fn save(&mut self) -> anyhow::Result<nvme_driver::NvmeDriverSavedState>;
+    ) -> Result<Arc<nvme_driver::Namespace>, nvme_driver::NamespaceError>;
+    async fn save(&mut self) -> anyhow::Result<nvme_driver::save_restore::NvmeDriverSavedState>;
     async fn shutdown(mut self: Box<Self>);
     fn update_servicing_flags(&mut self, keep_alive: bool);
 }
@@ -107,6 +109,6 @@ pub trait CreateNvmeDriver: Inspect + Send + Sync {
         pci_id: &str,
         vp_count: u32,
         save_restore_supported: bool,
-        saved_state: Option<&nvme_driver::NvmeDriverSavedState>,
+        saved_state: Option<&nvme_driver::save_restore::NvmeDriverSavedState>,
     ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError>;
 }

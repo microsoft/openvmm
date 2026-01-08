@@ -375,7 +375,7 @@ impl<T: CpuIo> hv1_hypercall::InstallIntercept for WhpHypercallExit<'_, '_, T> {
                 HvInterceptType::HvInterceptTypeException => {
                     // This intercept currently enables capturing VTL0 debugging exceptions for
                     // Hyper-V created and gdbstub enabled VMs. Implementing this would enable
-                    // hardware debugging capabilities for HvLite managed VMs.
+                    // hardware debugging capabilities for OpenVMM managed VMs.
                     tracing::error!("HvInterceptTypeException not implemented");
                 }
                 _ => {
@@ -485,7 +485,7 @@ impl<T: CpuIo> hv1_hypercall::ModifyVtlProtectionMask for WhpHypercallExit<'_, '
             }
 
             // TODO: Note that this implementation of VTL protections is more
-            //       permissive than it should be. Today, hvlite only supports a
+            //       permissive than it should be. Today, OpenVMM only supports a
             //       single GuestMemory struct which contains the VTL2 ranges,
             //       which means that devices can still do DMA on behalf of VTL0
             //       targeting VTL2 protected memory. This requires a rethink

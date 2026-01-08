@@ -162,6 +162,11 @@ impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + Send + DmaClie
         self.dma_client.clone()
     }
 
+    fn dma_client_for(&self, _pool: user_driver::DmaPool) -> anyhow::Result<Arc<dyn DmaClient>> {
+        // In the emulated device, we only have one dma client.
+        Ok(self.dma_client.clone())
+    }
+
     fn max_interrupt_count(&self) -> u32 {
         self.controller.events.len() as u32
     }

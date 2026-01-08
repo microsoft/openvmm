@@ -622,7 +622,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                         ),
                         correlation_id: Guid::ZERO,
                         capabilities_flags: SaveGuestVtl2StateFlags::new()
-                            .with_enable_nvme_keepalive(rpc.input().nvme_keepalive),
+                            .with_enable_nvme_keepalive(rpc.input().nvme_keepalive)
+                            .with_enable_mana_keepalive(rpc.input().mana_keepalive),
                         timeout_hint_secs: 60,
                     };
 

@@ -1092,11 +1092,12 @@ pub struct SetAttributes {
 }
 
 /// Supplies the value to set a time attribute to.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub enum SetTime {
     /// Don't change the time.
+    #[default]
     Omit,
-    /// Set the time to the specified vale.
+    /// Set the time to the specified value.
     Set(std::time::Duration),
     /// Set the time to the current time.
     Now,
@@ -1106,12 +1107,6 @@ impl SetTime {
     /// Checks whether the value matches the `Omit` variant.
     pub fn is_omit(&self) -> bool {
         matches!(self, SetTime::Omit)
-    }
-}
-
-impl Default for SetTime {
-    fn default() -> Self {
-        Self::Omit
     }
 }
 

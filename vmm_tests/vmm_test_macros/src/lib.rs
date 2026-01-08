@@ -162,7 +162,7 @@ impl ToTokens for PcatGuest {
 impl UefiGuest {
     fn name_prefix(&self) -> Option<String> {
         match self {
-            UefiGuest::Vhd(known_vhd) => Some(known_vhd.name_prefix.to_owned()),
+            UefiGuest::Vhd(known_vhd) => Some(known_vhd.name_prefix.clone()),
             UefiGuest::GuestTestUefi(arch) => Some(format!("guest_test_{}", arch_to_str(*arch))),
             UefiGuest::None => None,
         }
@@ -718,7 +718,7 @@ fn make_vmm_test(
             ),
         };
 
-        let petri_vm_config = quote!(#petri_vm_config::new(&params, artifacts, &driver)?);
+        let petri_vm_config = quote!(#petri_vm_config::new(params, artifacts, &driver)?);
 
         let test = quote! {
             #cfg_conditions

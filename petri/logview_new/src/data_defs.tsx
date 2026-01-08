@@ -55,11 +55,36 @@ export interface LogEntry {
   relative: string;
   severity: string;
   source: string;
-  messageHtml: string; // sanitized HTML with ANSI styling & attachment links
-  messageText: string; // plain lowercase text for filtering
+  logMessage: LogMessage; // message with attachment links
   screenshot: string | null;
+}
+
+export interface LogMessage {
+  message: string;
+  link_string: string;  // This is a space-separated string of link texts for searching/sorting
+  links: LogLink[];
+}
+
+export interface LogLink {
+  text: string;
+  url: string;
+  inspect: boolean;
 }
 
 // Concurrency settings when fetching test results
 export const CONCURRENCY_FOREGROUND = 15;
 export const CONCURRENCY_BACKGROUND = 5;
+
+export type InspectPrimitive =
+  | { type: "string"; value: string }
+  | { type: "bytes"; value: string }
+  | { type: "unevaluated" }
+  | { type: "boolean"; value: boolean }
+  | { type: "error"; value: string }
+  | { type: "number"; value: string };
+
+export interface InspectObject {
+  type: "object";
+  children: { key: string; value: InspectNode }[];
+}
+export type InspectNode = InspectPrimitive | InspectObject;

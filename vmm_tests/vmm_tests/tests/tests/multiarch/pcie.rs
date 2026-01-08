@@ -3,9 +3,9 @@
 
 use crate::multiarch::OsFlavor;
 use crate::multiarch::cmd;
-use hvlite_defs::config::PcieRootComplexConfig;
-use hvlite_defs::config::PcieRootPortConfig;
 use memory_range::MemoryRange;
+use openvmm_defs::config::PcieRootComplexConfig;
+use openvmm_defs::config::PcieRootPortConfig;
 use petri::PetriVmBuilder;
 use petri::openvmm::OpenVmmPetriBackend;
 use pipette_client::PipetteClient;
@@ -134,10 +134,22 @@ async fn pcie_root_emulation(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
                     low_mmio: pcie_low,
                     high_mmio: pcie_high,
                     ports: vec![
-                        PcieRootPortConfig { name: "rp0".into() },
-                        PcieRootPortConfig { name: "rp1".into() },
-                        PcieRootPortConfig { name: "rp2".into() },
-                        PcieRootPortConfig { name: "rp3".into() },
+                        PcieRootPortConfig {
+                            name: "rp0".into(),
+                            hotplug: false,
+                        },
+                        PcieRootPortConfig {
+                            name: "rp1".into(),
+                            hotplug: false,
+                        },
+                        PcieRootPortConfig {
+                            name: "rp2".into(),
+                            hotplug: false,
+                        },
+                        PcieRootPortConfig {
+                            name: "rp3".into(),
+                            hotplug: false,
+                        },
                     ],
                 })
             })

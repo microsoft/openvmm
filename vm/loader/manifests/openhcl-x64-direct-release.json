@@ -7,7 +7,7 @@
             "isolation_type": "none",
             "image": {
                 "openhcl": {
-                    "command_line": "OPENHCL_FORCE_LOAD_VTL0_IMAGE=linux OPENHCL_BOOT_LOG=com3",
+                    "command_line": "OPENHCL_FORCE_LOAD_VTL0_IMAGE=linux OPENHCL_BOOT_LOG=com3 OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG=debug",
                     "memory_page_count": 245760,
                     "linux": {
                         "command_line": "panic=-1 root=/dev/sda3 debug console=ttyS0,115200 nokasrl",

@@ -72,31 +72,17 @@ pub struct VmgsDisk {
 }
 
 /// Guest state encryption policy
+///
+/// See detailed comments in `get_protocol`
 #[derive(MeshPayload, Debug, Clone, Copy)]
 pub enum GuestStateEncryptionPolicy {
     /// Use the best encryption available, allowing fallback.
-    ///
-    /// VMs will be created as or migrated to the best encryption available,
-    /// attempting GspKey, then GspById, and finally leaving the data
-    /// unencrypted if neither are available.
     Auto,
     /// Prefer (or require, if strict) no encryption.
-    ///
-    /// Do not encrypt the guest state unless it is already encrypted and
-    /// strict encryption policy is disabled.
     None(bool),
     /// Prefer (or require, if strict) GspById.
-    ///
-    /// This prevents a VM from being created as or migrated to GspKey even
-    /// if it is available. Exisiting GspKey encryption will be used unless
-    /// strict encryption policy is enabled. Fails if the data cannot be
-    /// encrypted.
     GspById(bool),
     /// Prefer (or require, if strict) GspKey.
-    ///
-    /// VMs will be created as or migrated to GspKey. GspById encryption will
-    /// be used if GspKey is unavailable unless strict encryption policy is
-    /// enabled. Fails if the data cannot be encrypted.
     GspKey(bool),
 }
 

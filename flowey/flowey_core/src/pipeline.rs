@@ -1272,6 +1272,90 @@ pub enum PipelineBackendHint {
     Github,
 }
 
+/// Trait for types that can be converted into a [`Pipeline`].
+///
+/// This is the primary entry point for defining flowey pipelines. Implement this trait
+/// to create a pipeline definition that can be executed locally or converted to CI YAML.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use flowey_core::pipeline::{IntoPipeline, Pipeline, PipelineBackendHint};
+/// use flowey_core::node::{FlowPlatform, FlowPlatformLinuxDistro, FlowArch};
+///
+/// struct MyPipeline;
+///
+/// impl IntoPipeline for MyPipeline {
+///     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
+///         let mut pipeline = Pipeline::new();
+///         
+///         // Define a job that runs on Linux x86_64
+///         let _job = pipeline
+///             .new_job(
+///                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+///                 FlowArch::X86_64,
+///                 "build"
+///             )
+///             .finish();
+///         
+///         Ok(pipeline)
+///     }
+/// }
+/// ```
+///
+/// # Complex Example with Parameters and Artifacts
+///
+/// ```rust,ignore
+/// use flowey_core::pipeline::{IntoPipeline, Pipeline, PipelineBackendHint, ParameterKind};
+/// use flowey_core::node::{FlowPlatform, FlowPlatformLinuxDistro, FlowArch};
+///
+/// struct BuildPipeline;
+///
+/// impl IntoPipeline for BuildPipeline {
+///     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
+///         let mut pipeline = Pipeline::new();
+///         
+///         // Define a runtime parameter
+///         let enable_tests = pipeline.new_parameter_bool(
+///             "enable_tests",
+///             "Whether to run tests",
+///             ParameterKind::Stable,
+///             Some(true) // default value
+///         );
+///         
+///         // Create an artifact for passing data between jobs
+///         let (publish_build, use_build) = pipeline.new_artifact("build-output");
+///         
+///         // Job 1: Build
+///         let build_job = pipeline
+///             .new_job(
+///                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+///                 FlowArch::X86_64,
+///                 "build"
+///             )
+///             .with_timeout_in_minutes(30)
+///             .dep_on(|ctx| flowey_lib_hvlite::_jobs::example_node::Request {
+///                 output_dir: ctx.publish_artifact(publish_build),
+///             })
+///             .finish();
+///         
+///         // Job 2: Test (conditionally run based on parameter)
+///         let _test_job = pipeline
+///             .new_job(
+///                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+///                 FlowArch::X86_64,
+///                 "test"
+///             )
+///             .with_condition(enable_tests)
+///             .dep_on(|ctx| flowey_lib_hvlite::_jobs::example_node2::Request {
+///                 input_dir: ctx.use_artifact(&use_build),
+///             })
+///             .finish();
+///         
+///         Ok(pipeline)
+///     }
+/// }
+/// ```
 pub trait IntoPipeline {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline>;
 }

@@ -501,10 +501,10 @@ EOF
                 GhRunnerOsLabel::Windows11Arm => github_yaml_defs::RunnerOsLabel::Windows11Arm,
                 GhRunnerOsLabel::Custom(s) => github_yaml_defs::RunnerOsLabel::Custom(s.into()),
             }),
-            GhRunner::SelfHosted(v) => github_yaml_defs::Runner::SelfHosted(v.to_vec()),
+            GhRunner::SelfHosted(v) => github_yaml_defs::Runner::SelfHosted(v.clone()),
             GhRunner::RunnerGroup { group, labels } => github_yaml_defs::Runner::Group {
                 group: group.into(),
-                labels: labels.to_vec(),
+                labels: labels.clone(),
             },
         };
 

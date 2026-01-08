@@ -75,6 +75,9 @@ pub fn boot_logger_memory_init(buffer: MemoryRange) {
 }
 
 /// Initialize the runtime boot logger, for logging to serial or other outputs.
+///
+/// If a runtime logger was initialized, emit any in-memory log to the
+/// configured runtime output.
 pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_available: bool) {
     let mut logger = BOOT_LOGGER.logger.borrow_mut();
 
@@ -87,6 +90,11 @@ pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_avail
         (IsolationType::Tdx, true) => Logger::TdxSerial(Serial::init(TdxIoAccess)),
         _ => Logger::None,
     };
+
+    // Emit any in-memory log to the runtime logger.
+    if let Some(buf) = BOOT_LOGGER.in_memory_logger.borrow_mut().as_mut() {
+        let _ = logger.write_str(buf.contents());
+    }
 }
 
 impl Write for &BootLogger {
@@ -99,37 +107,15 @@ impl Write for &BootLogger {
     }
 }
 
-/// Log a message. These messages are always emitted regardless of debug or
-/// release, if a corresponding logger was configured.
-///
-/// If you want to log something just for local debugging, use [`debug_log!`]
-/// instead.
-macro_rules! log {
-    () => {};
-    ($($arg:tt)*) => {
-        {
-            use core::fmt::Write;
-            let _ = writeln!(&$crate::boot_logger::BOOT_LOGGER, $($arg)*);
-        }
-    };
+impl log::Log for BootLogger {
+    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+        // TODO: filter level
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        let _ = writeln!(&*self, "[{}] {}", record.level(), record.args());
+    }
+
+    fn flush(&self) {}
 }
-
-pub(crate) use log;
-
-/// This emits the same as [`log!`], but is intended for local debugging and is
-/// linted against to not pass CI. Use for local development when you just need
-/// debug prints.
-//
-// Expect unused macros for the same reason as unused_imports below, as there
-// should be no usage of this macro normally.
-#[expect(unused_macros)]
-macro_rules! debug_log {
-    ($($arg:tt)*) => {
-        $crate::boot_logger::log!($($arg)*)
-    };
-}
-
-// Expect unused imports because there should be no normal usage in code due to
-// lints against it in CI.
-#[expect(unused_imports)]
-pub(crate) use debug_log;

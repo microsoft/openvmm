@@ -150,8 +150,8 @@ pub mod artifacts {
         declare_artifacts! {
             /// OpenHCL IGVM (standard)
             LATEST_STANDARD_X64,
-            /// OpenHCL IGVM 2505 release (standard)
-            RELEASE_25_05_STANDARD_X64,
+            /// OpenHCL IGVM last release (standard)
+            LATEST_RELEASE_STANDARD_X64,
             /// OpenHCL IGVM (standard, with VTL2 dev kernel)
             LATEST_STANDARD_DEV_KERNEL_X64,
             /// OpenHCL IGVM (for CVM)
@@ -159,11 +159,11 @@ pub mod artifacts {
             /// OpenHCL IGVM (using a linux direct-boot test image instead of UEFI)
             LATEST_LINUX_DIRECT_TEST_X64,
             /// OpenHCL IGVM last release (using a linux direct-boot test image instead of UEFI)
-            RELEASE_25_05_LINUX_DIRECT_X64,
+            LATEST_RELEASE_LINUX_DIRECT_X64,
             /// OpenHCL IGVM (standard AARCH64)
             LATEST_STANDARD_AARCH64,
             /// OpenHCL IGVM last release (standard AARCH64)
-            RELEASE_25_05_STANDARD_AARCH64,
+            LATEST_RELEASE_STANDARD_AARCH64,
             /// OpenHCL IGVM (standard AARCH64, with VTL2 dev kernel)
             LATEST_STANDARD_DEV_KERNEL_AARCH64,
         }
@@ -173,10 +173,10 @@ pub mod artifacts {
         }
         impl IsOpenhclIgvm for LATEST_STANDARD_X64 {}
 
-        impl IsLoadable for RELEASE_25_05_STANDARD_X64 {
+        impl IsLoadable for LATEST_RELEASE_STANDARD_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
         }
-        impl IsOpenhclIgvm for RELEASE_25_05_STANDARD_X64 {}
+        impl IsOpenhclIgvm for LATEST_RELEASE_STANDARD_X64 {}
 
         impl IsLoadable for LATEST_STANDARD_DEV_KERNEL_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
@@ -193,20 +193,20 @@ pub mod artifacts {
         }
         impl IsOpenhclIgvm for LATEST_LINUX_DIRECT_TEST_X64 {}
 
-        impl IsLoadable for RELEASE_25_05_LINUX_DIRECT_X64 {
+        impl IsLoadable for LATEST_RELEASE_LINUX_DIRECT_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
         }
-        impl IsOpenhclIgvm for RELEASE_25_05_LINUX_DIRECT_X64 {}
+        impl IsOpenhclIgvm for LATEST_RELEASE_LINUX_DIRECT_X64 {}
 
         impl IsLoadable for LATEST_STANDARD_AARCH64 {
             const ARCH: MachineArch = MachineArch::Aarch64;
         }
         impl IsOpenhclIgvm for LATEST_STANDARD_AARCH64 {}
 
-        impl IsLoadable for RELEASE_25_05_STANDARD_AARCH64 {
+        impl IsLoadable for LATEST_RELEASE_STANDARD_AARCH64 {
             const ARCH: MachineArch = MachineArch::Aarch64;
         }
-        impl IsOpenhclIgvm for RELEASE_25_05_STANDARD_AARCH64 {}
+        impl IsOpenhclIgvm for LATEST_RELEASE_STANDARD_AARCH64 {}
 
         impl IsLoadable for LATEST_STANDARD_DEV_KERNEL_AARCH64 {
             const ARCH: MachineArch = MachineArch::Aarch64;
@@ -352,12 +352,10 @@ pub mod artifacts {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::X86_64;
             fn quirks() -> GuestQuirks {
-                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                    ..Default::default()
-                });
-                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
-                quirks
+                    initial_reboot: Some(InitialRebootCondition::WithTpm),
+                })
             }
         }
 
@@ -375,12 +373,10 @@ pub mod artifacts {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::X86_64;
             fn quirks() -> GuestQuirks {
-                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                    ..Default::default()
-                });
-                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
-                quirks
+                    initial_reboot: Some(InitialRebootCondition::WithTpm),
+                })
             }
         }
 
@@ -398,12 +394,10 @@ pub mod artifacts {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::Aarch64;
             fn quirks() -> GuestQuirks {
-                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                    ..Default::default()
-                });
-                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
-                quirks
+                    initial_reboot: Some(InitialRebootCondition::WithTpm),
+                })
             }
         }
 

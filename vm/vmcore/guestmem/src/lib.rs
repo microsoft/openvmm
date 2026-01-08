@@ -389,9 +389,9 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     ///
     /// Bitmap checks are performed under the [`rcu()`] RCU domain, with relaxed
     /// accesses. After a thread updates the bitmap to be more restrictive, it
-    /// must call [`minircu::global().synchronize()`] to ensure that all threads
-    /// see the update before taking any action that depends on the bitmap
-    /// update being visible.
+    /// must call [minircu::RcuDomain::synchronize()] on [`minircu::global()`]
+    /// to ensure that all threads see the update before taking any action that
+    /// depends on the bitmap update being visible.
     #[cfg(feature = "bitmap")]
     fn access_bitmap(&self) -> Option<BitmapInfo> {
         None
@@ -1235,7 +1235,7 @@ impl GuestMemory {
         // Skip this on miri even when there is a mapping, since the mapping may
         // never be accessed by the code under test.
         if imp.mapping().is_some() && !cfg!(miri) {
-            sparse_mmap::initialize_try_copy();
+            trycopy::initialize_try_copy();
         }
         Self::new_inner(debug_name.into(), imp, false)
     }
@@ -1277,8 +1277,8 @@ impl GuestMemory {
         region_size: u64,
         mut imps: Vec<Option<impl GuestMemoryAccess>>,
     ) -> Result<Self, MultiRegionError> {
-        // Install signal handlers on unix.
-        sparse_mmap::initialize_try_copy();
+        // Install signal handlers.
+        trycopy::initialize_try_copy();
 
         if !region_size.is_power_of_two() {
             return Err(MultiRegionError::NotPowerOfTwo(region_size));
@@ -1532,7 +1532,7 @@ impl GuestMemory {
         gpa: u64,
         len: usize,
         mut param: P,
-        mut f: impl FnMut(&mut P, *mut u8) -> Result<T, sparse_mmap::MemoryError>,
+        mut f: impl FnMut(&mut P, *mut u8) -> Result<T, trycopy::MemoryError>,
         fallback: impl FnOnce(&mut P) -> Result<T, GuestMemoryBackingError>,
     ) -> Result<T, GuestMemoryBackingError> {
         let op = || {
@@ -1595,7 +1595,7 @@ impl GuestMemory {
                 // SAFETY: dest..dest+len is guaranteed to point to a reserved VA
                 // range, and src..src+len is guaranteed by the caller to be a valid
                 // buffer for reads.
-                unsafe { sparse_mmap::try_copy(src, dest, len) }
+                unsafe { trycopy::try_copy(src, dest, len) }
             },
             |()| {
                 // SAFETY: src..src+len is guaranteed by the caller to point to a valid
@@ -1649,7 +1649,7 @@ impl GuestMemory {
             (),
             |(), dest| {
                 // SAFETY: dest..dest+len is guaranteed to point to a reserved VA range.
-                unsafe { sparse_mmap::try_write_bytes(dest, val, len) }
+                unsafe { trycopy::try_write_bytes(dest, val, len) }
             },
             |()| self.inner.imp.fill_fallback(gpa, val, len),
         )
@@ -1677,7 +1677,7 @@ impl GuestMemory {
                 // SAFETY: src..src+len is guaranteed to point to a reserved VA
                 // range, and dest..dest+len is guaranteed by the caller to be a
                 // valid buffer for writes.
-                unsafe { sparse_mmap::try_copy(src, dest, len) }
+                unsafe { trycopy::try_copy(src, dest, len) }
             },
             |()| {
                 // SAFETY: dest..dest+len is guaranteed by the caller to point to a
@@ -1738,7 +1738,7 @@ impl GuestMemory {
                 |(), dest| {
                     // SAFETY: dest..dest+len is guaranteed to point to
                     // a reserved VA range.
-                    unsafe { sparse_mmap::try_write_volatile(dest.cast(), b) }
+                    unsafe { trycopy::try_write_volatile(dest.cast(), b) }
                 },
                 |()| {
                     // SAFETY: b is a valid buffer for reads.
@@ -1777,7 +1777,7 @@ impl GuestMemory {
                     |(), dest| {
                         // SAFETY: dest..dest+len is guaranteed by the caller to be a valid
                         // buffer for writes.
-                        unsafe { sparse_mmap::try_compare_exchange(dest.cast(), current, new) }
+                        unsafe { trycopy::try_compare_exchange(dest.cast(), current, new) }
                     },
                     |()| {
                         let mut current = current;
@@ -1829,7 +1829,7 @@ impl GuestMemory {
             |(), src| {
                 // SAFETY: src..src+len is guaranteed to point to a reserved VA
                 // range.
-                unsafe { sparse_mmap::try_read_volatile(src.cast::<T>()) }
+                unsafe { trycopy::try_read_volatile(src.cast::<T>()) }
             },
             |()| {
                 let mut obj = std::mem::MaybeUninit::<T>::zeroed();

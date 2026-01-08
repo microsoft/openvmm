@@ -7,7 +7,7 @@ members = ["xsync"]
 resolver = "2"
 
 [workspace.package]
-rust-version = "1.90"
+rust-version = "1.91"
 edition = "2024"
 
 [workspace.dependencies]
@@ -53,6 +53,7 @@ debug_assert_with_mut_call = "warn"
 filter_map_next = "warn"
 fn_params_excessive_bools = "warn"
 imprecise_flops = "warn"
+implicit_clone = "warn"
 inefficient_to_string = "warn"
 linkedlist = "warn"
 lossy_float_literal = "warn"
@@ -64,7 +65,6 @@ ptr_cast_constness = "warn"
 ref_as_ptr = "warn"
 ref_option_ref = "warn"
 rest_pat_in_fully_bound_structs = "warn"
-string_to_string = "warn"
 suboptimal_flops = "warn"
 undocumented_unsafe_blocks = "warn"
 unnecessary_box_returns = "warn"
