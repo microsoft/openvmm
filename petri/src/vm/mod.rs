@@ -2789,21 +2789,21 @@ mod tests {
             controller.set_drive(Some(1), Drive::new(None, false), false),
             1
         );
-        assert!(controller.drives.get(&1).is_some());
+        assert!(controller.drives.contains_key(&1));
         assert_eq!(
             controller.set_drive(None, Drive::new(None, false), false),
             0
         );
-        assert!(controller.drives.get(&0).is_some());
+        assert!(controller.drives.contains_key(&0));
         assert_eq!(
             controller.set_drive(None, Drive::new(None, false), false),
             2
         );
-        assert!(controller.drives.get(&2).is_some());
+        assert!(controller.drives.contains_key(&2));
         assert_eq!(
             controller.set_drive(Some(0), Drive::new(None, false), true),
             0
         );
-        assert!(controller.drives.get(&0).is_some());
+        assert!(controller.drives.contains_key(&0));
     }
 }
