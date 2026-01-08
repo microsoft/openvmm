@@ -17,58 +17,16 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 // FFI declarations for libc resolver functions.
-//
-// Note: We use the thread-safe versions where available. The resolver
-// state `_res` is thread-local on modern systems, so concurrent calls
-// from different threads are safe.
-
 #[cfg(target_os = "linux")]
 mod ffi {
     use libc::c_int;
 
-    // Resolver option flags from resolv.h
-    pub const RES_USEVC: c_int = 0x00000002; // Use TCP connections for queries
-
-    // Opaque type for the resolver state structure
-    #[repr(C)]
-    pub struct __res_state {
-        _private: [u8; 0],
-    }
-
-    // On Linux, res_init and res_send are in libresolv.
-    // The resolver state (_res) is thread-local.
     unsafe extern "C" {
-        /// Initialize the resolver state.
-        /// Reads /etc/resolv.conf and populates the thread-local _res structure.
-        /// Returns 0 on success, -1 on error.
-        ///
-        /// # Safety
-        /// This function initializes thread-local resolver state by reading
-        /// /etc/resolv.conf. It is safe to call concurrently from different
-        /// threads since the resolver state (_res) is thread-local on modern systems.
+
+        #[link_name = "__res_init"]
         pub fn res_init() -> c_int;
 
-        /// Send a pre-formatted DNS query and receive the response.
-        ///
-        /// # Arguments
-        /// * `msg` - Pointer to the DNS query message in wire format
-        /// * `msglen` - Length of the query message
-        /// * `answer` - Buffer to receive the DNS response
-        /// * `anslen` - Size of the answer buffer
-        ///
-        /// # Returns
-        /// The length of the response on success, or -1 on error.
         pub fn res_send(msg: *const u8, msglen: c_int, answer: *mut u8, anslen: c_int) -> c_int;
-
-        /// Access the thread-local resolver state.
-        #[link_name = "__res_state"]
-        pub fn res_state() -> *mut __res_state;
-
-        /// Get the resolver options field.
-        pub fn res_getoptions(statp: *mut __res_state) -> c_int;
-
-        /// Set the resolver options field.
-        pub fn res_setoptions(statp: *mut __res_state, options: c_int);
     }
 }
 
@@ -76,14 +34,11 @@ mod ffi {
 mod ffi {
     use libc::c_int;
     // On macOS, resolver functions are in libSystem.
-    // We use res_9_init and res_9_send which are the modern variants.
-    // The older res_init/res_send are deprecated.
+    // We use res_9_init and res_9_send.
     unsafe extern "C" {
-        /// Initialize the resolver state (macOS variant).
         #[link_name = "res_9_init"]
         pub fn res_init() -> c_int;
 
-        /// Send a pre-formatted DNS query and receive the response (macOS variant).
         #[link_name = "res_9_send"]
         pub fn res_send(msg: *const u8, msglen: c_int, answer: *mut u8, anslen: c_int) -> c_int;
     }
@@ -105,7 +60,7 @@ pub fn init_resolver() -> Result<(), std::io::Error> {
 }
 
 pub struct UnixDnsResolverBackend {
-    worker_thread: Option<std::thread::JoinHandle<()>>,
+    worker: Option<std::thread::JoinHandle<()>>,
     request_tx: Option<std::sync::mpsc::Sender<DnsRequestInternal>>,
     shutdown: Arc<AtomicBool>,
 }
@@ -154,7 +109,7 @@ impl UnixDnsResolverBackend {
         let shutdown_clone = shutdown.clone();
 
         // Create a dedicated blocking worker thread for DNS resolution
-        let worker_thread = std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name("dns-worker".to_string())
             .spawn(move || {
                 // Initialize the resolver once at thread startup
@@ -178,7 +133,7 @@ impl UnixDnsResolverBackend {
             })?;
 
         Ok(Self {
-            worker_thread: Some(worker_thread),
+            worker: Some(worker),
             request_tx: Some(request_tx),
             shutdown,
         })
@@ -190,32 +145,6 @@ impl UnixDnsResolverBackend {
 /// This function is called sequentially by the worker thread.
 /// The resolver state has already been initialized via res_init() at thread startup.
 fn handle_dns_query(req: DnsRequestInternal) {
-    #[cfg(target_os = "linux")]
-    let saved_options = {
-        let use_tcp = req.flow.protocol == smoltcp::wire::IpProtocol::Tcp;
-
-        // Save current resolver options and set RES_USEVC flag if TCP is requested
-        if use_tcp {
-            // SAFETY: res_state() returns a pointer to thread-local resolver state.
-            // res_getoptions and res_setoptions are safe to call on a valid state pointer.
-            // We verify the pointer is non-null before dereferencing.
-            unsafe {
-                let state = ffi::res_state();
-                if !state.is_null() {
-                    let current_options = ffi::res_getoptions(state);
-                    ffi::res_setoptions(state, current_options | ffi::RES_USEVC);
-                    Some(current_options)
-                } else {
-                    tracing::warn!("res_state() returned null, cannot set TCP flag");
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    };
-
-    #[cfg(target_os = "macos")]
     if req.flow.protocol == smoltcp::wire::IpProtocol::Tcp {
         tracing::debug!(
             "TCP mode requested but cannot force on macOS; resolver will use UDP with automatic TCP fallback"
@@ -237,19 +166,6 @@ fn handle_dns_query(req: DnsRequestInternal) {
             answer.len() as libc::c_int,
         )
     };
-
-    // Restore the previous resolver options if we modified them (Linux only)
-    #[cfg(target_os = "linux")]
-    if let Some(previous_options) = saved_options {
-        // SAFETY: res_state() returns a pointer to thread-local resolver state.
-        // We're restoring the options we saved earlier.
-        unsafe {
-            let state = ffi::res_state();
-            if !state.is_null() {
-                ffi::res_setoptions(state, previous_options);
-            }
-        }
-    }
 
     if answer_len > 0 {
         answer.truncate(answer_len as usize);
@@ -274,7 +190,7 @@ impl Drop for UnixDnsResolverBackend {
 
         // Wait for the worker thread to finish
         // The thread will exit when the channel is closed and all tasks complete
-        if let Some(handle) = self.worker_thread.take() {
+        if let Some(handle) = self.worker.take() {
             let _ = handle.join();
         }
     }
