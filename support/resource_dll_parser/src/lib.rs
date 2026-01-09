@@ -6,7 +6,7 @@
 //! Package to agnostically parse a resource dll for a given ID.
 //!
 //! # Example
-//! ```
+//! ```no_run
 //! use resource_dll_parser::{DllResourceDescriptor, try_find_resource_from_dll};
 //! use fs_err::File;
 //!
