@@ -12,8 +12,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
-mod resource_dll_parser;
-
 #[derive(Debug, MeshPayload)]
 /// The location of discovered ROM data.
 pub struct RomFileLocation {
@@ -24,6 +22,8 @@ pub struct RomFileLocation {
     /// The length of the data.
     pub len: usize,
 }
+
+type DllResourceDescriptor = resource_dll_parser::DllResourceDescriptor;
 
 /// Returns path to the "Windows\System32" directory.
 fn system32_path() -> String {
