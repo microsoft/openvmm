@@ -317,13 +317,19 @@ struct Ipv4Addresses {
 impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(mut params: ConsommeParams) -> Self {
-        let dns = dns_resolver::DnsResolver::new().ok();
-
-        params.nameservers = dns
-            .as_ref()
-            .map(|_| vec![Ipv4Address::from_octets([10, 0, 0, 1])])
-            .unwrap_or(params.nameservers);
-
+        let dns = match dns_resolver::DnsResolver::new() {
+            Ok(dns) => {
+                // When the DNS resolver is available, use the default internal nameserver.
+                params.nameservers = vec![Ipv4Address::from_octets([10, 0, 0, 1])];
+                Some(dns)
+            }
+            Err(_) => {
+                tracelimit::warn_ratelimited!(
+                    "failed to initialize DNS resolver, falling back to using host DNS settings"
+                );
+                None
+            }
+        };
         let timeout = params.udp_timeout;
         Self {
             state: ConsommeState {
