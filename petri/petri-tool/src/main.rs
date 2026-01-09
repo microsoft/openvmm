@@ -59,7 +59,7 @@ fn main() -> anyhow::Result<()> {
             })?;
 
             let disk = image
-                .build()
+                .build(petri::disk_image::ImageType::Raw)
                 .context("failed to build disk image")?
                 .context("no files for the this platform")?;
             disk.persist(output)
