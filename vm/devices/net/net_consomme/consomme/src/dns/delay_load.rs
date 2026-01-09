@@ -31,7 +31,7 @@ const FN_NOT_FOUND_SENTINEL: usize = 1;
 pub fn get_module() -> Result<isize, WIN32_ERROR> {
     static MODULE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
 
-    let mut module = MODULE.load(Ordering::Relaxed);
+    let mut module = MODULE.load(Ordering::Acquire);
     if module.is_null() {
         // SAFETY: FFI call to load dnsapi.dll
         module = unsafe { LoadLibraryA(c"dnsapi.dll".as_ptr().cast()).cast::<core::ffi::c_void>() };
@@ -51,7 +51,7 @@ pub fn get_module() -> Result<isize, WIN32_ERROR> {
 /// - `FN_NOT_FOUND_SENTINEL`: Function was looked up but not found in the DLL
 /// - Any other value: The actual function pointer address
 fn get_proc_address(name: &[u8], cache: &AtomicUsize) -> Result<usize, WIN32_ERROR> {
-    let mut fnval = cache.load(Ordering::Relaxed);
+    let mut fnval = cache.load(Ordering::Acquire);
     if fnval == 0 {
         let module = get_module()?;
         // SAFETY: FFI call to get function address from module

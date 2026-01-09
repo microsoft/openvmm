@@ -147,8 +147,9 @@ impl UnixDnsResolverBackend {
 fn handle_dns_query(req: DnsRequestInternal) {
     if req.flow.protocol == smoltcp::wire::IpProtocol::Tcp {
         tracing::debug!(
-            "TCP mode requested but cannot force on macOS; resolver will use UDP with automatic TCP fallback"
+            "DNS over TCP is not yet supported."
         );
+        return;
     }
 
     // DNS UDP responses are typically <= 512 bytes without EDNS0, but allow
