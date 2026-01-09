@@ -1033,6 +1033,7 @@ impl UhProcessor<'_, SnpBacked> {
                         r#"
                          Invalid ghcb message.
                          usage {usage:?}
+                         flags {flags:?}
                          ghcb_msr {ghcb_msr:?}
                          sw_exit_code {sw_exit_code:?}
                          sw_exit_info1 {sw_exit_info1:?}
