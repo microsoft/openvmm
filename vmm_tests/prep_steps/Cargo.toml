@@ -7,8 +7,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-hvlite_defs.workspace = true
-hvlite_helpers.workspace = true
+openvmm_defs.workspace = true
+openvmm_helpers.workspace = true
 petri.workspace = true
 petri_artifacts_common.workspace = true
 petri_artifacts_vmm_test.workspace = true

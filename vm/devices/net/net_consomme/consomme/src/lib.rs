@@ -45,6 +45,7 @@ use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Packet;
 use std::task::Context;
+use std::time::Duration;
 use thiserror::Error;
 
 /// A consomme instance.
@@ -104,6 +105,9 @@ pub struct ConsommeParams {
     /// This field is learned from incoming IPv6 traffic from the guest.
     #[inspect(with = "Option::is_some")]
     pub client_ip_ipv6: Option<Ipv6Address>,
+    /// Idle timeout for UDP connections.
+    #[inspect(debug)]
+    pub udp_timeout: Duration,
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -132,6 +136,8 @@ impl ConsommeParams {
             gateway_mac_ipv6,
             gateway_link_local_ipv6: Self::compute_link_local_address(gateway_mac_ipv6),
             client_ip_ipv6: None,
+            // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
+            udp_timeout: Duration::from_secs(300),
         })
     }
 
@@ -384,13 +390,14 @@ impl IpAddresses {
 impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(params: ConsommeParams) -> Self {
+        let timeout = params.udp_timeout;
         Self {
             state: ConsommeState {
                 params,
                 buffer: Box::new([0; 65536]),
             },
             tcp: tcp::Tcp::new(),
-            udp: udp::Udp::new(),
+            udp: udp::Udp::new(timeout),
             icmp: icmp::Icmp::new(),
         }
     }

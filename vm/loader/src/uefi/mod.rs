@@ -268,7 +268,6 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
         let new_file_offset = (file_offset + 3) & !3;
         if new_file_offset > file_offset {
             image_offset += new_file_offset - file_offset;
-            volume_offset += new_file_offset - file_offset;
             file_offset += new_file_offset - file_offset;
         }
 
@@ -283,7 +282,6 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
             break;
         }
         image_offset += expand_3byte_integer(sh.size);
-        volume_offset += expand_3byte_integer(sh.size);
         file_offset += expand_3byte_integer(sh.size);
     }
 

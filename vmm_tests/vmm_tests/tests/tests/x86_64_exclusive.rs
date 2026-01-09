@@ -3,10 +3,10 @@
 
 //! Integration tests for x86_64 guests.
 
-use hvlite_defs::config::ArchTopologyConfig;
-use hvlite_defs::config::ProcessorTopologyConfig;
-use hvlite_defs::config::X2ApicConfig;
-use hvlite_defs::config::X86TopologyConfig;
+use openvmm_defs::config::ArchTopologyConfig;
+use openvmm_defs::config::ProcessorTopologyConfig;
+use openvmm_defs::config::X2ApicConfig;
+use openvmm_defs::config::X86TopologyConfig;
 use petri::PetriVmBuilder;
 use petri::openvmm::OpenVmmPetriBackend;
 use pipette_client::cmd;

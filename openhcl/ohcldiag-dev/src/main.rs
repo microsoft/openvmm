@@ -290,7 +290,7 @@ pub struct VmArg {
 
     This can be one of:
 
-    * vsock:PATH - A path to a hybrid vsock Unix socket for a VM, as used by HvLite
+    * vsock:PATH - A path to a hybrid vsock Unix socket for a VM, as used by OpenVMM
 
     * unix:PATH - A path to a Unix socket for connecting to the control plane
 
@@ -330,7 +330,7 @@ impl FromStr for VmId {
             } else if !pal::windows::fs::is_unix_socket(s.as_ref()).unwrap_or(false) {
                 return Ok(Self::HyperV(s.to_owned()));
             }
-            // Default to hybrid vsock since this is what HvLite supports for
+            // Default to hybrid vsock since this is what OpenVMM supports for
             // Underhill.
             Ok(Self::HybridVsock(Path::new(s).to_owned()))
         }

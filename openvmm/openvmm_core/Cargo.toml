@@ -1,0 +1,119 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "openvmm_core"
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+gdb = ["vmm_core/gdb"]
+
+unstable_whp = ["virt_whp/unstable_whp"]
+
+[dependencies]
+openvmm_defs.workspace = true
+openvmm_pcat_locator.workspace = true
+membacking.workspace = true
+
+# vmcore
+memory_range = { workspace = true, features = ["mesh"] }
+vm_topology = { workspace = true, features = ["mesh"] }
+guestmem.workspace = true
+vmcore.workspace = true
+vm_resource.workspace = true
+vmgs_resources.workspace = true
+
+aarch64defs.workspace = true
+acpi.workspace = true
+floppy_resources.workspace = true
+hvdef.workspace = true
+ide_resources.workspace = true
+igvm.workspace = true
+igvm_defs.workspace = true
+loader.workspace = true
+page_table.workspace = true
+virt.workspace = true
+vm_loader.workspace = true
+vmgs.workspace = true
+vmgs_broker.workspace = true
+vmm_core.workspace = true
+vmm_core_defs.workspace = true
+state_unit.workspace = true
+
+vmotherboard = { workspace = true, features = [
+    "dev_hyperv_vga",
+    "dev_generic_isa_floppy",
+    "dev_winbond_super_io_and_floppy_full",
+] }
+chipset_legacy.workspace = true
+chipset_device_resources.workspace = true
+chipset_device_worker.workspace = true
+disk_backend.workspace = true
+firmware_pcat.workspace = true
+firmware_uefi_custom_vars.workspace = true
+firmware_uefi.workspace = true
+uefi_nvram_storage = { workspace = true, features = ["save_restore"] }
+framebuffer.workspace = true
+get_resources.workspace = true
+hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect", "save_restore"] }
+ide.workspace = true
+floppy.workspace = true
+input_core.workspace = true
+missing_dev.workspace = true
+pci_bus.workspace = true
+pci_core.workspace = true
+pcie.workspace = true
+scsi_core.workspace = true
+scsidisk.workspace = true
+serial_16550_resources.workspace = true
+storvsp.workspace = true
+virtio.workspace = true
+virtio_serial.workspace = true
+vmbus_channel.workspace = true
+vmbus_core.workspace = true
+vmbus_server.workspace = true
+vpci.workspace = true
+watchdog_core.workspace = true
+
+cache_topology.workspace = true
+debug_ptr.workspace = true
+fdt.workspace = true
+guid.workspace = true
+inspect.workspace = true
+local_clock.workspace = true
+mesh_worker.workspace = true
+mesh.workspace = true
+pal_async.workspace = true
+pal.workspace = true
+range_map_vec.workspace = true
+sparse_mmap.workspace = true
+tracing_helpers.workspace = true
+
+anyhow.workspace = true
+async-trait.workspace = true
+cfg-if.workspace = true
+futures.workspace = true
+futures-concurrency.workspace = true
+getrandom.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zerocopy.workspace = true
+[target.'cfg(windows)'.dependencies]
+virt_whp = { workspace = true, optional = true }
+vmswitch.workspace = true
+vmgs_broker = { workspace = true, features = ["encryption_win"] }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+virt_hvf = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+virt_kvm = { workspace = true, optional = true }
+virt_mshv = { workspace = true, optional = true }
+vmgs_broker = { workspace = true, features = ["encryption_ossl"] }
+
+[build-dependencies]
+build_rs_guest_arch.workspace = true
+
+[lints]
+workspace = true

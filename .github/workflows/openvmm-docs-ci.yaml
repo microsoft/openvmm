@@ -300,7 +300,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey.exe e 1 flowey_lib_common::download_protoc 0
+        flowey.exe e 1 flowey_lib_common::resolve_protoc 0
         flowey.exe e 1 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -465,7 +465,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey e 2 flowey_lib_common::download_protoc 0
+        flowey e 2 flowey_lib_common::resolve_protoc 0
         flowey e 2 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -572,7 +572,7 @@ jobs:
     - id: flowey_lib_common__install_nodejs__0
       uses: actions/setup-node@v4
       with:
-        node-version: 18.x
+        node-version: 24.x
       name: Install nodejs
     - name: build test-results website
       run: flowey e 3 flowey_lib_hvlite::_jobs::build_test_results_website 0

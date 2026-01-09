@@ -13,6 +13,7 @@ VTL2/VTL0 fails to boot is when either VTL2 or VTL0 has crashed. When the crash 
 First, check `Hyper-V worker  events` at `Applications and Services Logs -> Microsoft -> Windows -> Hyper-V-Worker-Admin`
 
 Alternatively, some queries you can use to get Hyper-V-Worker logs:
+
 - Display the `{n}` most recent events -  `wevtutil qe Microsoft-Windows-Hyper-V-Worker-Admin /c:{n} /rd:true /f:text`
 - Export events to file - `wevtutil epl Microsoft-Windows-Hyper-V-Worker-Admin C:\vtl2_0_crash.evtx`
 
@@ -30,9 +31,9 @@ See [OpenHCL Tracing](../../reference/openhcl/diag/tracing.md) for more details 
 uhdiag-dev.exe linux-uhvm00 file --file-path "/sys/firmware/fdt" > uh.dtb
 ```
 
-2. Install the DeviceTree compiler and convert the blob to the textual representation:
+1. Install the DeviceTree compiler and convert the blob to the textual representation:
 
-```sh 
+```sh
 sudo apt-get install dtc
 dtc -I dtb -o uh.dts uh.dtb
 ```

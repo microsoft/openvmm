@@ -71,7 +71,6 @@ cargo xtask fuzz run fuzz_ide -- -- -help=1
 ```
 
 [cli-opts]: https://www.llvm.org/docs/LibFuzzer.html#options
-[toolchain-overrides-url]: https://rust-lang.github.io/rustup/overrides.html
 
 ## Other Fuzzing Commands
 

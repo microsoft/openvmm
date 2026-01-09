@@ -60,6 +60,7 @@ use crate::wrapped_partition::WrappedPartition;
 use anyhow::Context;
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
+use chipset_device_worker_defs::RemoteChipsetDeviceHandle;
 use closeable_mutex::CloseableMutex;
 use cvm_tracing::CVM_ALLOWED;
 use debug_ptr::DebugPtr;
@@ -309,6 +310,11 @@ pub struct UnderhillEnvCfg {
     pub enable_vpci_relay: Option<bool>,
     /// Disable proxy interrupt redirection
     pub disable_proxy_redirect: bool,
+    /// Disable lower VTL timer virtualization
+    pub disable_lower_vtl_timer_virt: bool,
+    /// The timeout in seconds for VM config operations, both the initial configuration
+    /// and then subsequent modifications.
+    pub config_timeout_in_seconds: u64,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1792,6 +1798,7 @@ async fn new_underhill_vm(
         intercept_debug_exceptions: env_cfg.gdbstub,
         hide_isolation,
         disable_proxy_redirect: env_cfg.disable_proxy_redirect,
+        disable_lower_vtl_timer_virt: env_cfg.disable_lower_vtl_timer_virt,
     };
 
     let proto_partition = UhProtoPartition::new(params, |cpu| tp.driver(cpu).clone())
@@ -1928,20 +1935,7 @@ async fn new_underhill_vm(
     // `agent_data` and `guest_secret_key` may also be used by vTPM
     // initialization.
     let platform_attestation_data = {
-        if is_restoring || vmgs.is_none() {
-            // TODO CVM: Save and restore last returned data when live servicing is supported.
-            // We also need to revisit what states should be saved and restored.
-            //
-            // If this is an Underhill restart, the VMGS has already been
-            // restored in its unlocked state.
-            underhill_attestation::PlatformAttestationData {
-                host_attestation_settings: underhill_attestation::HostAttestationSettings {
-                    refresh_tpm_seeds: false,
-                },
-                agent_data: None,
-                guest_secret_key: None,
-            }
-        } else {
+        if !is_restoring && let Some(vmgs) = vmgs.as_mut() {
             // Perform attestation by calling `initialize_platform_security`. This
             // will unlock the VMGS file internally.
             // Note that the routine will make callouts to the host via GET and receive
@@ -1956,7 +1950,7 @@ async fn new_underhill_vm(
                 &get_client,
                 dps.general.bios_guid,
                 &attestation_vm_config,
-                &mut vmgs.as_mut().unwrap().1,
+                &mut vmgs.1,
                 tee_call.as_deref(),
                 suppress_attestation,
                 early_init_driver,
@@ -1971,6 +1965,19 @@ async fn new_underhill_vm(
             ))
             .await
             .context("failed to initialize platform security")?
+        } else {
+            // TODO CVM: Save and restore last returned data when live servicing is supported.
+            // We also need to revisit what states should be saved and restored.
+            //
+            // If this is an Underhill restart, the VMGS has already been
+            // restored in its unlocked state.
+            underhill_attestation::PlatformAttestationData {
+                host_attestation_settings: underhill_attestation::HostAttestationSettings {
+                    refresh_tpm_seeds: false,
+                },
+                agent_data: None,
+                guest_secret_key: None,
+            }
         }
     };
 
@@ -1989,6 +1996,16 @@ async fn new_underhill_vm(
     } else {
         (None, None)
     };
+
+    // Enable remote chipset devices.
+    resolver.add_async_resolver(
+        chipset_device_worker::resolver::RemoteChipsetDeviceResolver(
+            OpenHclRemoteDynamicResolvers {
+                get: get_client.clone(),
+                vmgs: vmgs.as_ref().map(|(client, _, _)| client.clone()),
+            },
+        ),
+    );
 
     // Read measured config from VTL0 memory. When restoring, it is already gone.
     let (firmware_type, measured_vtl0_info, load_kind) = {
@@ -2104,6 +2121,7 @@ async fn new_underhill_vm(
         env_cfg.nvme_vfio,
         is_restoring,
         default_io_queue_depth,
+        env_cfg.config_timeout_in_seconds,
     )
     .instrument(tracing::info_span!("new_initial_controllers", CVM_ALLOWED))
     .await
@@ -2858,18 +2876,24 @@ async fn new_underhill_vm(
 
         chipset_devices.push(ChipsetDeviceHandle {
             name: "tpm".to_owned(),
-            resource: TpmDeviceHandle {
-                ppi_store,
-                nvram_store,
-                refresh_tpm_seeds: platform_attestation_data
-                    .host_attestation_settings
-                    .refresh_tpm_seeds,
-                ak_cert_type,
-                register_layout,
-                guest_secret_key: platform_attestation_data.guest_secret_key,
-                logger: Some(GetTpmLoggerHandle.into_resource()),
-                is_confidential_vm: isolation.is_isolated(),
-                bios_guid: dps.general.bios_guid,
+            resource: RemoteChipsetDeviceHandle {
+                device: TpmDeviceHandle {
+                    ppi_store,
+                    nvram_store,
+                    refresh_tpm_seeds: platform_attestation_data
+                        .host_attestation_settings
+                        .refresh_tpm_seeds,
+                    ak_cert_type,
+                    register_layout,
+                    guest_secret_key: platform_attestation_data.guest_secret_key,
+                    logger: Some(GetTpmLoggerHandle.into_resource()),
+                    is_confidential_vm: isolation.is_isolated(),
+                    bios_guid: dps.general.bios_guid,
+                }
+                .into_resource(),
+                worker_host: control_send
+                    .call_failable(ControlRequest::MakeWorker, "tpm".into())
+                    .await?,
             }
             .into_resource(),
         });
@@ -3544,6 +3568,7 @@ async fn new_underhill_vm(
         mana_keep_alive: env_cfg.mana_keep_alive,
         test_configuration: env_cfg.test_configuration,
         dma_manager,
+        config_timeout_in_seconds: env_cfg.config_timeout_in_seconds,
     };
 
     Ok(loaded_vm)
@@ -3926,4 +3951,31 @@ impl WatchdogCallback for WatchdogTimeoutReset {
             watchdog_send.send(());
         }
     }
+}
+
+#[derive(MeshPayload, Clone)]
+pub struct OpenHclRemoteDynamicResolvers {
+    /// GET client
+    pub get: GuestEmulationTransportClient,
+    /// VMGS client
+    pub vmgs: Option<vmgs_broker::VmgsClient>,
+}
+
+impl chipset_device_worker::RemoteDynamicResolvers for OpenHclRemoteDynamicResolvers {
+    const WORKER_ID_STR: &str = "openhcl_remote_chipset_worker";
+
+    async fn register_remote_dynamic_resolvers(
+        self,
+        resolver: &mut ResourceResolver,
+    ) -> anyhow::Result<()> {
+        resolver.add_resolver(self.get);
+        if let Some(vmgs) = self.vmgs {
+            resolver.add_resolver(vmgs);
+        }
+        Ok(())
+    }
+}
+
+mesh_worker::register_workers! {
+    chipset_device_worker::worker::RemoteChipsetDeviceWorker<OpenHclRemoteDynamicResolvers>
 }

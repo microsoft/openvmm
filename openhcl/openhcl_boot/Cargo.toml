@@ -25,6 +25,7 @@ mesh_protobuf.workspace = true
 arrayvec.workspace = true
 cfg-if.workspace = true
 crc32fast.workspace = true
+log.workspace = true
 # By default the sha2 crate uses cpu feature detection which on x86_64 uses the
 # cpuid instruction. Executing cpuid in an SNP CVM would require implementing an
 # exception handler. Using the force-soft feature flag enables a software

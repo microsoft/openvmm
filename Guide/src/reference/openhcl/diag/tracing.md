@@ -17,7 +17,6 @@ For examples on how to enable `OPENVMM_LOG`, see [OpenVMM Logging](../../openvmm
 
 ## \[Hyper-V\] Saving traces to the Windows event log
 
-
 The OpenHCL traces can be saved to the Windows event log on the host. That is
 not meant to be a production scenario due to resource consumption concerns. By
 default, only ETW is emitted.

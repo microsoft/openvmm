@@ -17,15 +17,15 @@ mod init_from_template;
 mod onefuzz_schema;
 mod parse_fuzz_crate_toml;
 
-/// Xtask to interact with with fuzzing infrastructure in the HvLite repo.
+/// Xtask to interact with with fuzzing infrastructure in the OpenVMM repo.
 #[derive(Parser)]
 #[clap(
-    about = "Superset of `cargo fuzz` features, tailored to the HvLite repo",
+    about = "Superset of `cargo fuzz` features, tailored to the OpenVMM repo",
     disable_help_subcommand = true
 )]
 #[clap(after_help = r#"ADDITIONAL NOTES:
 
-    Fuzzers in the HvLite repo are required to include a
+    Fuzzers in the OpenVMM repo are required to include a
     [package.metadata.xtask.fuzz.onefuzz-allowlist] section in their Cargo.toml.
 
     Allowlists are used by OneFuzz to limit which files are considered when
@@ -301,7 +301,7 @@ impl Xtask for Fuzz {
 
                 if let Err(e) = res {
                     log::warn!(
-                        "Reminder: Make sure you swap `cargo fuzz` with `cargo xtask fuzz` when repro-ing / minimizing failures in the HvLite repo!"
+                        "Reminder: Make sure you swap `cargo fuzz` with `cargo xtask fuzz` when repro-ing / minimizing failures in the OpenVMM repo!"
                     );
                     return Err(e);
                 }
@@ -354,7 +354,7 @@ impl Xtask for Fuzz {
 
                 if let Err(e) = res {
                     log::warn!(
-                        "Reminder: Make sure you swap `cargo fuzz` with `cargo xtask fuzz` when repro-ing / minimizing failures in the HvLite repo!"
+                        "Reminder: Make sure you swap `cargo fuzz` with `cargo xtask fuzz` when repro-ing / minimizing failures in the OpenVMM repo!"
                     );
                     return Err(e);
                 }
@@ -429,7 +429,7 @@ impl Xtask for Fuzz {
                             // Ok to throw away `std::path::StripPrefixError`,
                             // it doesn't contain any additional context
                             anyhow::bail!(
-                                "allowlist for '{name}' references file(s) outside of the HvLite directory"
+                                "allowlist for '{name}' references file(s) outside of the OpenVMM directory"
                             )
                         };
                         // add in "*/" to appease the OneFuzz allowlist syntax

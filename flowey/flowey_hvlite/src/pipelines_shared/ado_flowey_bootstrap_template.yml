@@ -1,0 +1,70 @@
+
+# Known additional prerequisites on Windows:
+#   - Git and bash, both added to path
+#   - For running VMM tests, Hyper-V and WHP must be enabled
+#   - Visual Studio Build Tools
+#     - Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+#     - Microsoft.VisualStudio.Component.VC.Tools.ARM64
+#     - Microsoft.VisualStudio.Component.Windows11SDK.22621
+#     - Microsoft.VisualStudio.Component.VC.Llvm.Clang (added to path)
+
+#### Flowey Build Dependencies
+
+# On Linux, install gcc and rust to build flowey.
+# The apt-get retries below avoid failures in CI that can be
+# intermittently caused by other processes temporarily holding
+# the necessary dpkg or apt locks.
+- bash: |
+    set -x
+    i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+    sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+    curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain={{RUSTUP_TOOLCHAIN}} -y
+    . "$HOME/.cargo/env"
+    echo '##vso[task.prependpath]$(HOME)/.cargo/bin'
+  condition: eq(variables['Agent.OS'], 'Linux')
+  displayName: rustup (Linux)
+
+# Building flowey on Windows requires MSVC from Visual Studio Build Tools,
+# but that currently needs to be preinstalled on the actions runner.
+- bash: |
+    set -x
+    curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
+    ./rustup-init.exe -y --default-toolchain={{RUSTUP_TOOLCHAIN}}
+    echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
+  condition: eq(variables['Agent.OS'], 'Windows_NT')
+  displayName: rustup (Windows X64)
+
+- bash: |
+    set -x
+    rustup show
+  displayName: Verify rustup installation
+
+- checkout: self
+  fetchTags: false
+  fetchDepth: 1
+  path: flowey_bootstrap
+
+# - CARGO_INCREMENTAL=0 - no need to waste time on incremental artifacts in CI
+# - RUSTC_BOOTSTRAP=1 + RUSTFLAGS="-Z threads=8" - use of the unstable parallel
+#   frontend to go f a s t
+- bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p {{FLOWEY_CRATE}} --target {{FLOWEY_TARGET}} --profile flowey-ci
+  workingDirectory: ../flowey_bootstrap
+  displayName: Build flowey
+
+- bash: |
+    mkdir ./flowey_bootstrap_temp
+    mv ./{{FLOWEY_PIPELINE_PATH}}.yaml ./flowey_bootstrap_temp/pipeline.yaml
+    mv ./{{FLOWEY_PIPELINE_PATH}}.json ./flowey_bootstrap_temp/pipeline.json
+    mv target/{{FLOWEY_TARGET}}/flowey-ci/{{FLOWEY_CRATE}}{{FLOWEY_BIN_EXTENSION}} ./flowey_bootstrap_temp/flowey{{FLOWEY_BIN_EXTENSION}}
+  workingDirectory: ../flowey_bootstrap
+  displayName: Stage flowey artifact
+
+- task: CopyFiles@2
+  displayName: 'Copy flowey artifact'
+  inputs:
+    SourceFolder: '../flowey_bootstrap/flowey_bootstrap_temp'
+    TargetFolder: {{FLOWEY_OUTDIR}}
+
+- bash: rm -rf ./flowey_bootstrap_temp
+  workingDirectory: ../flowey_bootstrap
+  displayName: Cleanup staged flowey artifact
