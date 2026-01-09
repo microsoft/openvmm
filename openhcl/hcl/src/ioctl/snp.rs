@@ -190,8 +190,8 @@ impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
         _vtl: GuestVtl,
         _name: HvRegisterName,
         _value: HvRegisterValue,
-    ) -> Result<bool, super::Error> {
-        Ok(false)
+    ) -> bool {
+        false
     }
 
     fn must_flush_regs_on(_runner: &ProcessorRunner<'a, Self>, _name: HvRegisterName) -> bool {
@@ -202,8 +202,8 @@ impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
         _runner: &ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         _name: HvRegisterName,
-    ) -> Result<Option<HvRegisterValue>, super::Error> {
-        Ok(None)
+    ) -> Option<HvRegisterValue> {
+        None
     }
 
     fn flush_register_page(_runner: &mut ProcessorRunner<'a, Self>) {}

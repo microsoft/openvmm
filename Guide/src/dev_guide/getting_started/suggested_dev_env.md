@@ -224,7 +224,7 @@ seconds to run locally. That's far better than waiting ~20+ minutes only
 for CI to fail on your pull request.
 ```
 
-# \[WSL2] Cross Compiling from WSL2 to Windows
+## \[WSL2] Cross Compiling from WSL2 to Windows
 
 You may also want to [set up cross compiling in WSL2](./cross_compile.md)
 to you can build for both Windows and Linux in one dev environemnt.

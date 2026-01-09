@@ -389,6 +389,7 @@ impl GenericPciBus {
             IoError::InvalidRegister => "offset not supported",
             IoError::InvalidAccessSize => "invalid access size",
             IoError::UnalignedAccess => "unaligned access",
+            IoError::NoResponse => "no response",
         };
         tracelimit::warn_ratelimited!(
             address = %self.state.pio_addr_reg.address(),
@@ -396,16 +397,6 @@ impl GenericPciBus {
             "pci config space {} operation error: {}",
             operation,
             error
-        );
-    }
-
-    fn trace_recv_error(&self, e: mesh::RecvError, operation: &'static str) {
-        tracelimit::warn_ratelimited!(
-            address = %self.state.pio_addr_reg.address(),
-            offset = self.state.pio_addr_reg.register(),
-            "pci config space {} operation recv error: {:?}",
-            operation,
-            e,
         );
     }
 }
@@ -616,7 +607,7 @@ impl PollDevice for GenericPciBus {
                         let value = match res {
                             Ok(()) => buf,
                             Err(e) => {
-                                self.trace_recv_error(e, "deferred read");
+                                self.trace_error(e, "deferred read");
                                 0
                             }
                         };
@@ -646,7 +637,7 @@ impl PollDevice for GenericPciBus {
                         let old_value = match res {
                             Ok(()) => buf,
                             Err(e) => {
-                                self.trace_recv_error(e, "deferred read for write");
+                                self.trace_error(e, "deferred read for write");
                                 0
                             }
                         };
@@ -691,7 +682,7 @@ impl PollDevice for GenericPciBus {
                         match res {
                             Ok(()) => {}
                             Err(e) => {
-                                self.trace_recv_error(e, "deferred write");
+                                self.trace_error(e, "deferred write");
                             }
                         }
                         bus_write.complete();

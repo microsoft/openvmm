@@ -5,7 +5,7 @@
 //!
 //! The GEL is the host side of a communication channel that uses VMBUS to
 //! send logs from the guest to the host. This is an implementation to support
-//! better integration testing within the HvLite CI.
+//! better integration testing within the OpenVMM CI.
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]

@@ -17,10 +17,11 @@ additional flag `--net consomme`:
 - **With OpenHCL:** Ensure "UEFI Boot" and "VTL2 VMBus Support" are active
 
 ### Known Issues with KDNET on WHP
+
 - KDNET currently only works with the `consomme` networking option in OpenVMM,
   however `consomme` will create a new network adapter in the guest every time
   OpenVMM is restarted. This can be safely ignored.
-    - KDNET will also connect with `--net vmnic:<ethernet switch id>`, but hangs
+  - KDNET will also connect with `--net vmnic:<ethernet switch id>`, but hangs
       immediately after due to a yet undiagnosed bug in vmbusproxy.
 - Quitting OpenVMM without shutting down the VM first will prevent the same
   debugger instance from reconnecting to the guest on next boot. Relauch the

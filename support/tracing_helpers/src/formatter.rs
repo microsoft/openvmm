@@ -89,7 +89,7 @@ impl Visit for FieldFormatterVisitor<'_> {
 ///
 /// 1. Displays the full error source chain, not just the first error.
 /// 2. Displays unsigned values as hex instead of decimal, improving readability
-///    for values that we tend to log in HvLite.
+///    for values that we tend to log in OpenVMM.
 pub struct FieldFormatter;
 
 impl FormatFields<'_> for FieldFormatter {

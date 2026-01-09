@@ -6,7 +6,6 @@
 //! Note that we only allow allocations in a small window for supporting
 //! mesh_protobuf. Any other attempts to allocate will result in a panic.
 
-use crate::boot_logger::log;
 use crate::single_threaded::SingleThreaded;
 use core::alloc::GlobalAlloc;
 use core::alloc::Layout;
@@ -115,7 +114,7 @@ impl BumpAllocator {
             )
         };
 
-        log!(
+        log::info!(
             "Bump allocator: allocated {} bytes in {} allocations ({} bytes free)",
             allocated,
             inner.alloc_count,

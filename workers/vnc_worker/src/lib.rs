@@ -182,7 +182,7 @@ impl<T: Listener> Server<T> {
                         unreachable!()
                     };
 
-                    let mut vncserver = vnc::Server::new("HvLite VM".into(), socket, view, input);
+                    let mut vncserver = vnc::Server::new("OpenVMM VM".into(), socket, view, input);
                     let mut timer = PolledTimer::new(driver);
 
                     let (abort_send, abort_recv) = mesh::oneshot();

@@ -17,7 +17,6 @@ use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoBuildProfile;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use flowey_lib_common::run_cargo_nextest_run::TestResults;
-use flowey_lib_common::run_cargo_nextest_run::build_params::PanicAbortTests;
 use flowey_lib_common::run_cargo_nextest_run::build_params::TestPackages;
 
 /// Type-safe wrapper around a built nextest archive containing unit tests
@@ -47,8 +46,6 @@ flowey_request! {
         pub target: target_lexicon::Triple,
         /// Build and run unit tests with the specified cargo profile
         pub profile: CommonProfile,
-        /// Whether to build tests with unstable `-Zpanic-abort-tests` flag
-        pub unstable_panic_abort_tests: Option<PanicAbortTests>,
         /// Build mode to use when building the nextest unit tests
         pub build_mode: BuildNextestUnitTestMode,
     }
@@ -154,7 +151,6 @@ impl FlowNode for Node {
         for Request {
             target,
             profile,
-            unstable_panic_abort_tests,
             build_mode,
         } in requests
         {
@@ -207,7 +203,6 @@ impl FlowNode for Node {
                     packages: test_packages.clone(),
                     features,
                     no_default_features: false,
-                    unstable_panic_abort_tests,
                     target: target.clone(),
                     profile: match profile {
                         CommonProfile::Release => CargoBuildProfile::Release,
