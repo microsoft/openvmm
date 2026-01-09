@@ -38,6 +38,13 @@ fn ensure_rpc_server_running(
         return Ok(None);
     }
 
+    if !igvm_agent_rpc_server::local_autostart_enabled() {
+        anyhow::bail!(
+            "test_igvm_agent_rpc_server is not running. Flowey should start it in CI; for local single-test runs set {}=1 to opt-in to auto-starting it.",
+            igvm_agent_rpc_server::LOCAL_AUTOSTART_ENV
+        );
+    }
+
     // Otherwise start locally and keep the guard alive so the server is terminated when the test ends.
     igvm_agent_rpc_server::start_rpc_server(rpc_server_path)
         .map(Some)
@@ -463,7 +470,8 @@ async fn tpm_test_platform_hierarchy_disabled(
 ///
 /// The test requires the test_igvm_agent_rpc_server to be running.
 /// In CI, the server is started by flowey before tests run.
-/// For local development, start the server manually before running tests.
+/// For local development, either start the server manually or set
+/// `VMM_TEST_IGVM_AGENT_LOCAL_AUTOSTART=1` to let the test spin it up.
 #[cfg(windows)]
 #[vmm_test(
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],

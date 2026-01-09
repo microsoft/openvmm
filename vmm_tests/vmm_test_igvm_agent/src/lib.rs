@@ -7,6 +7,7 @@
 #![cfg(windows)]
 #![forbid(unsafe_code)]
 
+use std::env;
 use std::io::{BufRead, BufReader, Read};
 use std::os::windows::process::CommandExt;
 use std::path::Path;
@@ -18,6 +19,9 @@ use pal::pipe_pair;
 
 /// Name of the RPC server executable.
 pub const RPC_SERVER_EXE: &str = "test_igvm_agent_rpc_server.exe";
+
+/// Environment variable that opts local runs into auto-starting the RPC server.
+pub const LOCAL_AUTOSTART_ENV: &str = "VMM_TEST_IGVM_AGENT_LOCAL_AUTOSTART";
 
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
@@ -37,6 +41,14 @@ pub fn is_process_running(exe_name: &str) -> bool {
             false
         }
     }
+}
+
+/// Returns true when local auto-starting has been explicitly enabled.
+pub fn local_autostart_enabled() -> bool {
+    env::var(LOCAL_AUTOSTART_ENV)
+        .ok()
+        .map(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
 }
 
 /// Ensures the RPC server process is running.
