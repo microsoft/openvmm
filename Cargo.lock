@@ -772,6 +772,7 @@ dependencies = [
  "inspect_counters",
  "libc",
  "pal_async",
+ "parking_lot",
  "resolv-conf",
  "smoltcp",
  "socket2",
