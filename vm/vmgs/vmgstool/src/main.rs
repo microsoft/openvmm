@@ -1241,8 +1241,9 @@ async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Resul
         .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to open DLL file: {}", e)))?;
 
     // Try to find the resource in the DLL
+    let descriptor = resource_dll_parser::DllResourceDescriptor::new(b"VMFW", resource_code as u32);
     let (start, len) =
-        openvmm_pcat_locator::try_find_resource_from_dll(&file, b"VMFW", resource_code as u32)
+        resource_dll_parser::try_find_resource_from_dll(&file, &descriptor)
             .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to parse DLL: {}", e)))?
             .ok_or_else(|| {
                 Error::UnableToReadIgvmFile(

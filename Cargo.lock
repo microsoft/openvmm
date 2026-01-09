@@ -6251,6 +6251,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95325155c684b1c89f7765e30bc1c42e4a6da51ca513615660cb8a62ef9a88e3"
 
 [[package]]
+name = "resource_dll_parser"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "fs-err",
+ "object 0.37.3",
+]
+
+[[package]]
 name = "rlimit"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9342,8 +9351,8 @@ dependencies = [
  "guid",
  "hcl_compat_uefi_nvram_storage",
  "hex",
- "openvmm_pcat_locator",
  "pal_async",
+ "resource_dll_parser",
  "serde",
  "serde_json",
  "tempfile",
