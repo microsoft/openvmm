@@ -4,15 +4,19 @@
 #![forbid(unsafe_code)]
 
 //! Package to agnostically parse a resource dll for a given ID.
-/// # Example
-/// ```
-/// use resource_dll_parser::{DllResourceDescriptor, try_find_resource_from_dll};
-/// use fs_err::File;
-///
-/// let file = File::open("vmfirmware.dll")?;
-/// let descriptor = DllResourceDescriptor::new(b"VMFW", 13515);
-/// let resource = try_find_resource_from_dll(&file, &descriptor)?;
-/// ```
+//!
+//! # Example
+//! ```
+//! use resource_dll_parser::{DllResourceDescriptor, try_find_resource_from_dll};
+//! use fs_err::File;
+//!
+//! # fn main() -> anyhow::Result<()> {
+//! let file = File::open("vmfirmware.dll")?;
+//! let descriptor = DllResourceDescriptor::new(b"VMFW", 13515);
+//! let resource = try_find_resource_from_dll(&file, &descriptor)?;
+//! # Ok(())
+//! # }
+//! ```
 
 use anyhow::Context;
 use anyhow::bail;
