@@ -203,3 +203,40 @@ async fn test_gdma_save_restore(driver: DefaultDriver) {
     // Validate that the new driver still works after restoration.
     new_gdma.test_eq().await.unwrap();
 }
+
+#[async_test]
+async fn test_gdma_reconfig_vf(driver: DefaultDriver) {
+    let mem = DeviceTestMemory::new(128, false, "test_gdma");
+    let mut msi_set = MsiInterruptSet::new();
+    let device = gdma::GdmaDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        mem.guest_memory(),
+        &mut msi_set,
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(NullEndpoint::new()),
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+    );
+    let dma_client = mem.dma_client();
+    let device = EmulatedDevice::new(device, msi_set, dma_client);
+    let dma_client = device.dma_client();
+    let buffer = dma_client.allocate_dma_buffer(6 * PAGE_SIZE).unwrap();
+
+    let mut gdma = GdmaDriver::new(&driver, device, 1, Some(buffer))
+        .await
+        .unwrap();
+
+    assert!(
+        !gdma.get_vf_reconfiguration_pending(),
+        "vf_reconfiguration_pending should be false"
+    );
+
+    // Trigger the reconfig event
+    gdma.generate_reconfig_vf_event().await.unwrap();
+    gdma.process_all_eqs();
+    assert!(
+        gdma.get_vf_reconfiguration_pending(),
+        "vf_reconfiguration_pending should be true after reconfig event"
+    );
+}
