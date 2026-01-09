@@ -11,7 +11,6 @@ mesh.workspace = true
 
 anyhow.workspace = true
 fs-err.workspace = true
-object = { workspace = true, features = ["pe", "read_core", "std"] }
 tracing.workspace = true
 resource_dll_parser.workspace = true
 

@@ -1242,14 +1242,13 @@ async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Resul
 
     // Try to find the resource in the DLL
     let descriptor = resource_dll_parser::DllResourceDescriptor::new(b"VMFW", resource_code as u32);
-    let (start, len) =
-        resource_dll_parser::try_find_resource_from_dll(&file, &descriptor)
-            .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to parse DLL: {}", e)))?
-            .ok_or_else(|| {
-                Error::UnableToReadIgvmFile(
-                    "File is not a valid PE DLL or resource not found".to_string(),
-                )
-            })?;
+    let (start, len) = resource_dll_parser::try_find_resource_from_dll(&file, &descriptor)
+        .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to parse DLL: {}", e)))?
+        .ok_or_else(|| {
+            Error::UnableToReadIgvmFile(
+                "File is not a valid PE DLL or resource not found".to_string(),
+            )
+        })?;
     // Read the resource data
     let mut file = file;
     file.seek(SeekFrom::Start(start))

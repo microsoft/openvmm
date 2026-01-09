@@ -5285,7 +5285,6 @@ dependencies = [
  "anyhow",
  "fs-err",
  "mesh",
- "object 0.37.3",
  "resource_dll_parser",
  "tracing",
 ]

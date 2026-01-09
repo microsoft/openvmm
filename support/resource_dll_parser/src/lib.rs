@@ -59,7 +59,6 @@ pub fn try_find_resource_from_dll(
             .table()
             .context("id entry not a table")?;
 
-
         if id_match.entries.len() != 1 {
             bail!(
                 "id table doesn't contain exactly 1 entry, contains {}",
