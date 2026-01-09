@@ -18,7 +18,6 @@ use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationV
 use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
-use pal_async::local::LocalDriver;
 use tee_call::TeeCall;
 use thiserror::Error;
 use vmgs::Vmgs;
@@ -58,8 +57,6 @@ pub(crate) enum RequestVmgsEncryptionKeysError {
     ParseIgvmAttestKeyReleaseResponse(#[source] igvm_attest::key_release::KeyReleaseError),
     #[error("PKCS11 RSA AES key unwrap failed")]
     Pkcs11RsaAesKeyUnwrap(#[source] crypto::Pkcs11RsaAesKeyUnwrapError),
-    #[error("maximum number of attempts reached")]
-    MaximumAttemptsReached,
 }
 
 /// The return values of [`make_igvm_attest_requests`].
@@ -89,15 +86,16 @@ pub async fn request_vmgs_encryption_keys(
     vmgs: &Vmgs,
     attestation_vm_config: &AttestationVmConfig,
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
-    driver: LocalDriver,
-) -> Result<VmgsEncryptionKeys, RequestVmgsEncryptionKeysError> {
+) -> Result<VmgsEncryptionKeys, (RequestVmgsEncryptionKeysError, bool)> {
     const TRANSFER_RSA_KEY_BITS: u32 = 2048;
-    const MAXIMUM_RETRY_COUNT: usize = 10;
-    const NO_RETRY_COUNT: usize = 1;
 
     // Generate an ephemeral transfer key
-    let transfer_key = Rsa::generate(TRANSFER_RSA_KEY_BITS)
-        .map_err(RequestVmgsEncryptionKeysError::GenerateTransferKey)?;
+    let transfer_key = Rsa::generate(TRANSFER_RSA_KEY_BITS).map_err(|e| {
+        (
+            RequestVmgsEncryptionKeysError::GenerateTransferKey(e),
+            false,
+        )
+    })?;
 
     let exponent = transfer_key.e().to_vec();
     let modulus = transfer_key.n().to_vec();
@@ -111,118 +109,96 @@ pub async fn request_vmgs_encryption_keys(
         attestation_vm_config,
     );
 
-    // Retry attestation call-out if necessary (if VMGS encrypted).
-    // The IGVm Agent could be down for servicing, or the TDX service VM might not be ready, or a dynamic firmware
-    // update could mean that the report was not verifiable.
     let vmgs_encrypted = vmgs.is_encrypted();
-    let max_retry = if vmgs_encrypted {
-        MAXIMUM_RETRY_COUNT
-    } else {
-        NO_RETRY_COUNT
-    };
 
-    let mut timer = pal_async::timer::PolledTimer::new(&driver);
+    tracing::info!(CVM_ALLOWED, "attempt to get VMGS key-encryption key");
 
-    for i in 0..max_retry {
-        tracing::info!(
-            CVM_ALLOWED,
-            attempt = i,
-            "attempt to get VMGS key-encryption key"
-        );
+    // Get attestation report each time this function is called. Failures here are fatal.
+    let result = tee_call
+        .get_attestation_report(igvm_attest_request_helper.get_runtime_claims_hash())
+        .map_err(|e| {
+            (
+                RequestVmgsEncryptionKeysError::GetAttestationReport(e),
+                false,
+            )
+        })?;
 
-        // Get attestation report on each iteration. Failures here are fatal.
-        let result = tee_call
-            .get_attestation_report(igvm_attest_request_helper.get_runtime_claims_hash())
-            .map_err(RequestVmgsEncryptionKeysError::GetAttestationReport)?;
+    // Get tenant keys based on attestation results, this might fail.
+    match make_igvm_attest_requests(
+        get,
+        &transfer_key,
+        &mut igvm_attest_request_helper,
+        &result.report,
+        agent_data,
+        vmgs_encrypted,
+    )
+    .await
+    {
+        Ok(WrappedKeyVmgsEncryptionKeys {
+            rsa_aes_wrapped_key,
+            wrapped_des_key,
+        }) => {
+            let ingress_rsa_kek =
+                    crypto::pkcs11_rsa_aes_key_unwrap(&transfer_key, &rsa_aes_wrapped_key)
+                        .map_err(|e| {(RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap(e), false)})?;
 
-        // Get tenant keys based on attestation results, this might fail.
-        match make_igvm_attest_requests(
-            get,
-            &transfer_key,
-            &mut igvm_attest_request_helper,
-            &result.report,
-            agent_data,
-            vmgs_encrypted,
-        )
-        .await
-        {
-            Ok(WrappedKeyVmgsEncryptionKeys {
-                rsa_aes_wrapped_key,
+            Ok(VmgsEncryptionKeys {
+                ingress_rsa_kek: Some(ingress_rsa_kek),
                 wrapped_des_key,
-            }) => {
-                let ingress_rsa_kek =
-                        crypto::pkcs11_rsa_aes_key_unwrap(&transfer_key, &rsa_aes_wrapped_key)
-                            .map_err(RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap)?;
-
-                return Ok(VmgsEncryptionKeys {
-                    ingress_rsa_kek: Some(ingress_rsa_kek),
-                    wrapped_des_key,
-                    tcb_version: result.tcb_version,
-                });
-            }
-            Err(
-                wrapped_key_attest_error @ RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(
-                    igvm_attest::wrapped_key::WrappedKeyError::ParseHeader(
-                        igvm_attest::Error::Attestation {
-                            igvm_error_code,
-                            http_status_code,
-                            retry_signal,
-                        },
-                    ),
-                ),
-            ) => {
-                tracing::error!(
-                    CVM_ALLOWED,
-                    retry = i,
-                    igvm_error_code = &igvm_error_code,
-                    igvm_http_status_code = &http_status_code,
-                    retry_signal = &retry_signal,
-                    error = &wrapped_key_attest_error as &dyn std::error::Error,
-                    "VMGS key-encryption failed due to igvm attest error"
-                );
-                if !retry_signal || i == (max_retry - 1) {
-                    return Err(wrapped_key_attest_error);
-                }
-            }
-            Err(
-                key_release_attest_error @ RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(
-                    igvm_attest::key_release::KeyReleaseError::ParseHeader(
-                        igvm_attest::Error::Attestation {
-                            igvm_error_code,
-                            http_status_code,
-                            retry_signal,
-                        },
-                    ),
-                ),
-            ) => {
-                tracing::error!(
-                    CVM_ALLOWED,
-                    retry = i,
-                    igvm_error_code = &igvm_error_code,
-                    igvm_http_status_code = &http_status_code,
-                    retry_signal = &retry_signal,
-                    error = &key_release_attest_error as &dyn std::error::Error,
-                    "VMGS key-encryption failed due to igvm attest error"
-                );
-                if !retry_signal || i == (max_retry - 1) {
-                    return Err(key_release_attest_error);
-                }
-            }
-            Err(e) => {
-                tracing::error!(
-                    CVM_ALLOWED,
-                    retry = i,
-                    error = &e as &dyn std::error::Error,
-                    "VMGS key-encryption key request failed due to error",
-                )
-            }
+                tcb_version: result.tcb_version,
+            })
         }
-
-        // Stall on retries
-        timer.sleep(std::time::Duration::new(1, 0)).await;
+        Err(
+            wrapped_key_attest_error @ RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(
+                igvm_attest::wrapped_key::WrappedKeyError::ParseHeader(
+                    igvm_attest::Error::Attestation {
+                        igvm_error_code,
+                        http_status_code,
+                        retry_signal,
+                    },
+                ),
+            ),
+        ) => {
+            tracing::error!(
+                CVM_ALLOWED,
+                igvm_error_code = &igvm_error_code,
+                igvm_http_status_code = &http_status_code,
+                retry_signal = &retry_signal,
+                error = &wrapped_key_attest_error as &dyn std::error::Error,
+                "VMGS key-encryption failed due to igvm attest error"
+            );
+            Err((wrapped_key_attest_error, retry_signal))
+        }
+        Err(
+            key_release_attest_error @ RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(
+                igvm_attest::key_release::KeyReleaseError::ParseHeader(
+                    igvm_attest::Error::Attestation {
+                        igvm_error_code,
+                        http_status_code,
+                        retry_signal,
+                    },
+                ),
+            ),
+        ) => {
+            tracing::error!(
+                CVM_ALLOWED,
+                igvm_error_code = &igvm_error_code,
+                igvm_http_status_code = &http_status_code,
+                retry_signal = &retry_signal,
+                error = &key_release_attest_error as &dyn std::error::Error,
+                "VMGS key-encryption failed due to igvm attest error"
+            );
+            Err((key_release_attest_error, retry_signal))
+        }
+        Err(e) => {
+            tracing::error!(
+                CVM_ALLOWED,
+                error = &e as &dyn std::error::Error,
+                "VMGS key-encryption key request failed due to error",
+            );
+            Err((e, true))
+        }
     }
-
-    Err(RequestVmgsEncryptionKeysError::MaximumAttemptsReached)
 }
 
 /// Get windows epoch from host via GET and covert it into unix epoch.
