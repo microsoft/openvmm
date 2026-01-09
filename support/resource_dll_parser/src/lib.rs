@@ -102,7 +102,6 @@ pub struct DllResourceDescriptor {
     id: u32,
 }
 
-
 impl DllResourceDescriptor {
     /// Creates a new DLL resource descriptor with the given resource type and ID.
     ///
