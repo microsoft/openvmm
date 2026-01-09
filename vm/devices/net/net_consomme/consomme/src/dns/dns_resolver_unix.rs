@@ -146,9 +146,7 @@ impl UnixDnsResolverBackend {
 /// The resolver state has already been initialized via res_init() at thread startup.
 fn handle_dns_query(req: DnsRequestInternal) {
     if req.flow.protocol == smoltcp::wire::IpProtocol::Tcp {
-        tracing::debug!(
-            "DNS over TCP is not yet supported."
-        );
+        tracing::debug!("DNS over TCP is not yet supported.");
         return;
     }
 

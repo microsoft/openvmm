@@ -500,7 +500,7 @@ mod tests {
             self.rx_mtu
         }
     }
-    
+
     fn create_consomme_with_timeout(timeout: Duration) -> Consomme {
         let mut params = ConsommeParams::new().expect("Failed to create params");
         params.udp_timeout = timeout;
@@ -520,7 +520,8 @@ mod tests {
 
         // Create a buffer and place the payload at the correct offset
         let payload = b"test";
-        let mut buffer = vec![0u8; ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN + payload.len()];
+        let mut buffer =
+            vec![0u8; ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN + payload.len()];
         buffer[ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN..].copy_from_slice(payload);
 
         let mut eth_frame = EthernetFrame::new_unchecked(&mut buffer[..]);

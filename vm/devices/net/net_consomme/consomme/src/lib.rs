@@ -323,7 +323,7 @@ impl Consomme {
             .as_ref()
             .map(|_| vec![Ipv4Address::from_octets([10, 0, 0, 1])])
             .unwrap_or(params.nameservers);
-        
+
         let timeout = params.udp_timeout;
         Self {
             state: ConsommeState {
