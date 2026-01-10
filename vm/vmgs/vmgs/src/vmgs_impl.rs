@@ -148,6 +148,7 @@ impl ResolvedFileControlBlock {
             file_entry
                 .authentication_tag
                 .copy_from_slice(&self.authentication_tag);
+            file_entry.attributes = self.attributes;
         }
     }
 
@@ -159,8 +160,12 @@ impl ResolvedFileControlBlock {
     }
 
     fn from_file_entry(version: u32, file_entry: &VmgsFileEntry) -> Self {
-        let (nonce, authentication_tag) = if version >= VMGS_VERSION_3_0 {
-            (file_entry.nonce, file_entry.authentication_tag)
+        let (nonce, authentication_tag, attributes) = if version >= VMGS_VERSION_3_0 {
+            (
+                file_entry.nonce,
+                file_entry.authentication_tag,
+                file_entry.attributes,
+            )
         } else {
             Default::default()
         };
@@ -173,7 +178,7 @@ impl ResolvedFileControlBlock {
             nonce,
             authentication_tag,
 
-            attributes: FileAttribute::new(),
+            attributes,
             encryption_key: VmgsDatastoreKey::new_zeroed(),
         }
     }
@@ -764,8 +769,29 @@ impl Vmgs {
             );
         }
 
-        // allocate space for the files
-        let mut files = self.allocate_space(files)?;
+        // allocate space for the files and encypt if necessary
+        let mut files = self
+            .allocate_space(files)?
+            .into_iter()
+            .map(Self::maybe_encrypt)
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+
+        {
+            let (temp_fcbs, mut temp_data): (BTreeMap<_, _>, BTreeMap<_, _>) = files
+                .iter_mut()
+                .map(|(file_id, (fcb, buf))| ((file_id, &*fcb), (file_id, buf)))
+                .unzip();
+            if let Some(buf) = temp_data.get_mut(&FileId::EXTENDED_FILE_TABLE) {
+                self.fill_extended_file_table(
+                    temp_fcbs,
+                    VmgsExtendedFileTable::mut_from_bytes(buf.as_mut()).unwrap(),
+                )?;
+            }
+        }
+
+        if let Some((fcb, buf)) = files.get_mut(&FileId::EXTENDED_FILE_TABLE) {
+            Self::encrypt(fcb, buf)?;
+        }
 
         // extract the new key and generate the file tables
         let (temp_fcbs, mut temp_data): (BTreeMap<_, _>, BTreeMap<_, _>) = files
@@ -779,23 +805,16 @@ impl Vmgs {
             VmgsFileTable::mut_from_bytes(temp_data.get_mut(&FileId::FILE_TABLE).unwrap().as_mut())
                 .unwrap();
         self.fill_file_table(temp_fcbs.clone(), new_file_table)?;
-        if let Some(new_extended_file_table) = temp_data.get_mut(&FileId::EXTENDED_FILE_TABLE) {
-            self.fill_extended_file_table(
-                temp_fcbs,
-                VmgsExtendedFileTable::mut_from_bytes(new_extended_file_table.as_mut()).unwrap(),
-            )?
-        }
 
         // write the files
         for (_, (fcb, buf)) in files.iter_mut() {
-            if let Some(auth_tag) = self.write_file_internal(fcb, buf.as_ref()).await? {
-                fcb.authentication_tag = auth_tag;
-            }
+            self.write_file_internal(fcb, buf.as_ref()).await?;
         }
 
         // update the cache if successful
         self.fcbs
             .extend(files.into_iter().map(|(file_id, (fcb, _))| (file_id, fcb)));
+
         if let Some(new_metadata_key) = new_metadata_key {
             self.metadata_key = new_metadata_key;
         }
@@ -803,40 +822,44 @@ impl Vmgs {
         Ok(())
     }
 
+    fn maybe_encrypt<'a>(
+        file: (FileId, (ResolvedFileControlBlock, RefOrOwned<'a>)),
+    ) -> Result<(FileId, (ResolvedFileControlBlock, RefOrOwned<'a>)), Error> {
+        let (file_id, (mut fcb, mut buf)) = file;
+        // encrypt the data if necessary
+        if fcb.is_encrypted() && file_id != FileId::EXTENDED_FILE_TABLE {
+            Self::encrypt(&mut fcb, &mut buf)?
+        }
+        Ok((file_id, (fcb, buf)))
+    }
+
+    fn encrypt<'a>(
+        fcb: &mut ResolvedFileControlBlock,
+        buf: &mut RefOrOwned<'a>,
+    ) -> Result<(), Error> {
+        #[cfg(not(with_encryption))]
+        unreachable!("Encryption requires the encryption feature");
+        #[cfg(with_encryption)]
+        {
+            let encrypted_data = crate::encrypt::vmgs_encrypt(
+                &fcb.encryption_key,
+                &fcb.nonce,
+                buf.as_ref(),
+                &mut fcb.authentication_tag,
+            )?;
+
+            *buf = RefOrOwned::Owned(encrypted_data);
+        }
+        Ok(())
+    }
+
     /// Writes `buf` to the block offset specified in the file control block.
     /// Encrypts the data and returns the auth tag if applicable.
-    async fn write_file_internal(
+    async fn write_file_internal<'a>(
         &mut self,
-        fcb: &ResolvedFileControlBlock,
+        fcb: &mut ResolvedFileControlBlock,
         buf: &[u8],
-    ) -> Result<Option<VmgsAuthTag>, Error> {
-        // encrypt the data if necessary
-        let (auth_tag, encrypted_data) = if fcb.is_encrypted() {
-            #[cfg(not(with_encryption))]
-            unreachable!("Encryption requires the encryption feature");
-            #[cfg(with_encryption)]
-            {
-                let mut auth_tag = VmgsAuthTag::new_zeroed();
-
-                let encrypted_data = crate::encrypt::vmgs_encrypt(
-                    &fcb.encryption_key,
-                    &fcb.nonce,
-                    buf,
-                    &mut auth_tag,
-                )?;
-
-                Some((auth_tag, encrypted_data))
-            }
-        } else {
-            None
-        }
-        .unzip();
-
-        let buf = encrypted_data
-            .as_ref()
-            .map_or(buf, |x: &Vec<u8>| x.as_slice());
-
-        // write the data
+    ) -> Result<(), Error> {
         if let Err(e) = self
             .storage
             .write_block(block_count_to_byte_count(fcb.block_offset), buf)
@@ -849,7 +872,7 @@ impl Vmgs {
             return Err(Error::WriteDisk(e));
         }
 
-        Ok(auth_tag)
+        Ok(())
     }
 
     /// Copies current file metadata to a file table structure.
@@ -885,7 +908,7 @@ impl Vmgs {
     /// Initializes a new VMGS header populated using the current in-memory state
     fn prepare_new_header(&self) -> VmgsHeader {
         let file_table_fcb = self.fcbs.get(&FileId::FILE_TABLE).unwrap();
-        VmgsHeader {
+        let mut header = VmgsHeader {
             signature: VMGS_SIGNATURE,
             version: self.version,
             header_size: size_of::<VmgsHeader>() as u32,
@@ -893,9 +916,13 @@ impl Vmgs {
             file_table_size: file_table_fcb.allocated_blocks.get(),
             encryption_algorithm: self.encryption_algorithm,
             markers: VmgsMarkers::new().with_reprovisioned(self.reprovisioned),
-            metadata_keys: self.encrypted_metadata_keys,
+
             ..VmgsHeader::new_zeroed()
-        }
+        };
+        header
+            .metadata_keys
+            .copy_from_slice(&self.encrypted_metadata_keys);
+        header
     }
 
     /// Calculate the sequence and checksum and write the new header to disk.
@@ -919,6 +946,10 @@ impl Vmgs {
         header: &VmgsHeader,
         index: usize,
     ) -> Result<(), Error> {
+        eprintln!(
+            "write header seqnum {} table {}",
+            header.sequence, header.file_table_offset
+        );
         assert!(index < 2);
         self.storage
             .write_block(
@@ -1023,12 +1054,21 @@ impl Vmgs {
                     return Err(Error::InvalidFormat("encrypted data is all-zeros".into()));
                 }
 
-                let decrypted = crate::encrypt::vmgs_decrypt(
+                let decrypted = match crate::encrypt::vmgs_decrypt(
                     &fcb.encryption_key,
                     &fcb.nonce,
                     &buf,
                     &fcb.authentication_tag,
-                )?;
+                ) {
+                    Err(e) => {
+                        self.logger
+                            .log_event_fatal(VmgsLogEvent::AccessFailed)
+                            .await;
+
+                        return Err(e.into());
+                    }
+                    Ok(b) => b,
+                };
 
                 if decrypted.len() as u64 != fcb.valid_bytes {
                     return Err(Error::Other(anyhow!(
@@ -1106,7 +1146,10 @@ impl Vmgs {
             match result {
                 Ok(metadata_key) => {
                     self.metadata_key.copy_from_slice(&metadata_key);
+                    let eft = self.fcbs.get_mut(&FileId::EXTENDED_FILE_TABLE).unwrap();
+                    eft.encryption_key.copy_from_slice(&metadata_key);
                     valid_index = Some(i);
+
                     break;
                 }
                 Err(err) => {
@@ -1134,6 +1177,9 @@ impl Vmgs {
             }
         };
 
+        self.datastore_keys[valid_index].copy_from_slice(encryption_key);
+        self.active_datastore_key_index = Some(valid_index);
+
         // Read and decrypt the extended file table
         let extended_file_table_buffer = self
             .read_file_internal(FileId::EXTENDED_FILE_TABLE, true)
@@ -1148,9 +1194,6 @@ impl Vmgs {
         for (file_id, fcb) in self.fcbs.iter_mut() {
             fcb.update_extended_data(&extended_file_table.entries[*file_id]);
         }
-
-        self.datastore_keys[valid_index].copy_from_slice(encryption_key);
-        self.active_datastore_key_index = Some(valid_index);
 
         Ok(())
     }
@@ -2328,7 +2371,7 @@ mod tests {
         assert_eq!(buf, read_buf.as_bytes());
         let info = vmgs.get_file_info(FileId::TPM_PPI).unwrap();
         assert_eq!(info.valid_bytes as usize, buf_1.len());
-        let read_buf = vmgs.read_file(FileId::TPM_PPI).await.unwrap();
+        let read_buf = vmgs.read_file_raw(FileId::TPM_PPI).await.unwrap();
         assert_ne!(buf_1, read_buf.as_bytes());
 
         // Unlock datastore
