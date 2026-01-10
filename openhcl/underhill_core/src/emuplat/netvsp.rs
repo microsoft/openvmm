@@ -239,6 +239,24 @@ enum Vtl0Bus {
     HiddenNotPresent,
     HiddenPresent(HclVpciBusControl),
 }
+impl std::fmt::Display for Vtl0Bus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Vtl0Bus::NotPresent => write!(f, "NotPresent"),
+            Vtl0Bus::Present(bus_control) => {
+                write!(f, "Present(vtl0_vfid={})", bus_control.instance_id().data1)
+            }
+            Vtl0Bus::HiddenNotPresent => write!(f, "HiddenNotPresent"),
+            Vtl0Bus::HiddenPresent(bus_control) => {
+                write!(
+                    f,
+                    "HiddenPresent(vtl0_vfid={})",
+                    bus_control.instance_id().data1
+                )
+            }
+        }
+    }
+}
 
 #[derive(Inspect)]
 struct HclNetworkVFManagerWorker {
@@ -394,6 +412,9 @@ impl HclNetworkVFManagerWorker {
             return;
         }
 
+        let span = tracing::info_span!("revoking vtl0 vf", vtl0_bus = %bus_control);
+        let _enter = span.enter();
+
         // Make removal request a no-op by setting offered to false. The actual removal will be done at the end of this
         // method.
         *self.guest_state.offered_to_guest.lock().await = false;
@@ -464,6 +485,8 @@ impl HclNetworkVFManagerWorker {
     }
 
     pub async fn shutdown_vtl2_device(&mut self, keep_vf_alive: bool) {
+        let span = tracing::info_span!("shutdown vtl2 device", keep_vf_alive);
+        let _enter = span.enter();
         self.disconnect_all_endpoints().await;
         if let Some(device) = self.mana_device.take() {
             let (result, device) = device.shutdown().await;
@@ -499,10 +522,11 @@ impl HclNetworkVFManagerWorker {
     async fn remove_vtl0_vf(&mut self) {
         if self.guest_state.is_offered_to_guest().await {
             *self.guest_state.offered_to_guest.lock().await = false;
-            tracing::info!(
-                vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control),
-                "Removing VF from VTL0"
+            let span = tracing::info_span!(
+                "Removing VF from VTL0",
+                vtl0_bus = %self.vtl0_bus_control
             );
+            let _enter = span.enter();
             if let Vtl0Bus::Present(vtl0_bus_control) = &self.vtl0_bus_control {
                 match vtl0_bus_control.revoke_device().await {
                     Ok(_) => (),
@@ -518,6 +542,11 @@ impl HclNetworkVFManagerWorker {
     }
 
     async fn disconnect_all_endpoints(&mut self) {
+        let span = tracing::info_span!(
+            "disconnecting all endpoints",
+            num_endpoints = self.endpoint_controls.len()
+        );
+        let _enter = span.enter();
         futures::future::join_all(self.endpoint_controls.iter_mut().map(async |control| {
             match control.disconnect().await {
                 Ok(Some(mut endpoint)) => {
@@ -536,7 +565,17 @@ impl HclNetworkVFManagerWorker {
         .await;
     }
 
+    async fn update_vtl2_device_bind_state(&self, is_bound: bool) -> anyhow::Result<()> {
+        let span = tracing::info_span!("update vtl2 device bind state", is_bound);
+        let _enter = span.enter();
+        self.vtl2_bus_control
+            .update_vtl2_device_bind_state(is_bound)
+            .await
+    }
+
     async fn startup_vtl2_device(&mut self, update_vtl2_device_bind_state: bool) -> bool {
+        let span = tracing::info_span!("startup vtl2 device");
+        let _enter = span.enter();
         let mut vtl2_device_present = false;
         let device_bound = match create_mana_device(
             &self.driver_source,
@@ -567,11 +606,7 @@ impl HclNetworkVFManagerWorker {
         };
 
         if update_vtl2_device_bind_state {
-            if let Err(err) = self
-                .vtl2_bus_control
-                .update_vtl2_device_bind_state(device_bound)
-                .await
-            {
+            if let Err(err) = self.update_vtl2_device_bind_state(device_bound).await {
                 tracing::error!(
                     err = err.as_ref() as &dyn std::error::Error,
                     "Failed to report new binding state to host"
@@ -824,6 +859,7 @@ impl HclNetworkVFManagerWorker {
                     assert!(self.is_shutdown_active);
                     drop(self.messages.take().unwrap());
                     rpc.handle(async |_| {
+                        tracing::info!("saving state");
                         self.disconnect_all_endpoints().await;
 
                         if let Some(device) = self.mana_device.take() {
@@ -993,11 +1029,7 @@ impl HclNetworkVFManagerWorker {
                     // If the device is being removed, remove outstanding vf reconfiguration.
                     vf_reconfig_backoff = None;
 
-                    if let Err(err) = self
-                        .vtl2_bus_control
-                        .update_vtl2_device_bind_state(false)
-                        .await
-                    {
+                    if let Err(err) = self.update_vtl2_device_bind_state(false).await {
                         tracing::error!(
                             err = err.as_ref() as &dyn std::error::Error,
                             "Failed to report new binding state to host"
