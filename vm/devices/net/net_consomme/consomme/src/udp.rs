@@ -515,8 +515,8 @@ mod tests {
 
         let guest_mac = consomme.params_mut().client_mac;
         let gateway_mac = consomme.params_mut().gateway_mac;
-        let guest_ip: Ipv4Address = consomme.params_mut().client_ip.into();
-        let target_ip: Ipv4Address = Ipv4Addr::LOCALHOST.into();
+        let guest_ip: Ipv4Address = consomme.params_mut().client_ip;
+        let target_ip: Ipv4Address = Ipv4Addr::LOCALHOST;
 
         // Create a buffer and place the payload at the correct offset
         let payload = b"test";
