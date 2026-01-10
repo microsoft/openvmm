@@ -8,14 +8,14 @@
 
 //! NOTE: This is a test implementation and should not be used in production.
 
-use crate::IgvmAgentAction;
-use crate::IgvmAgentTestPlan;
-use crate::IgvmAgentTestSetting;
+mod test_crypto;
+
 use crate::test_crypto::DummyRng;
 use crate::test_crypto::TestSha1;
 use crate::test_crypto::aes_key_wrap_with_padding;
 use base64::Engine;
 use get_resources::ged::IgvmAttestTestConfig;
+use inspect::Inspect;
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
@@ -35,17 +35,15 @@ use rsa::rand_core::OsRng;
 use rsa::rand_core::RngCore;
 use rsa::rand_core::SeedableRng;
 use sha2::Sha256;
+use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::sync::Once;
 use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
-// Support one-time initialization for `install_plan_from_setting`.
-static INIT: Once = Once::new();
-
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
-pub(crate) enum Error {
+pub enum Error {
     #[error("unsupported igvm attest request type: {0:?}")]
     UnsupportedIgvmAttestRequestType(u32),
     #[error("failed to initialize keys for attestation")]
@@ -65,8 +63,9 @@ pub(crate) enum Error {
     KeyReleaseError(#[source] KeyReleaseError),
 }
 
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
-pub(crate) enum WrappedKeyError {
+pub enum WrappedKeyError {
     #[error("RSA encryption error")]
     RsaEncryptionError(#[source] rsa::Error),
     #[error("JSON serialization error")]
@@ -77,8 +76,9 @@ pub(crate) enum WrappedKeyError {
     SecretKeyNotInitialized,
 }
 
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
-pub(crate) enum KeyReleaseError {
+pub enum KeyReleaseError {
     #[error("invalid runtime claims")]
     InvalidRuntimeClaims,
     #[error("missing transfer key in runtime claims")]
@@ -97,13 +97,53 @@ pub(crate) enum KeyReleaseError {
 
 /// Test IGVM agent includes states that need to be persisted.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct TestIgvmAgent {
+pub struct TestIgvmAgent {
     /// Optional RSA private key used for attestation.
     secret_key: Option<RsaPrivateKey>,
     /// Optional DES key
     des_key: Option<[u8; 32]>,
     /// Optional scripted actions per request type for tests.
     plan: Option<IgvmAgentTestPlan>,
+    /// Track whether the plan has been installed to prevent multiple installations.
+    plan_installed: bool,
+}
+
+/// Possible actions for the IGVM agent to take in response to a request.
+#[derive(Debug, Clone)]
+pub enum IgvmAgentAction {
+    /// Emit a successful response payload.
+    RespondSuccess,
+    /// Emit a response that indicates a protocol error.
+    RespondFailure,
+    /// Skip responding to simulate a timeout.
+    NoResponse,
+}
+
+/// IGVM Agent test plan specifying scripted actions for a request type.
+pub type IgvmAgentTestPlan = HashMap<IgvmAttestRequestType, VecDeque<IgvmAgentAction>>;
+
+/// Settings used to configure the IGVM agent for tests.
+#[derive(Debug, Clone)]
+pub enum IgvmAgentTestSetting {
+    /// Use a pre-defined test configuration that maps to a plan.
+    TestConfig(IgvmAttestTestConfig),
+    /// Use a manually provided plan.
+    TestPlan(IgvmAgentTestPlan),
+}
+
+impl Inspect for IgvmAgentTestSetting {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        let mut resp = req.respond();
+        match self {
+            Self::TestConfig(cfg) => {
+                resp.field("TestConfig", cfg);
+            }
+            Self::TestPlan(plan) => {
+                let len = plan.len();
+                resp.field("TestPlan len", len);
+            }
+        }
+    }
 }
 
 fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan {
@@ -133,32 +173,39 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
 
 impl TestIgvmAgent {
     /// Create an instance.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             secret_key: None,
             des_key: None,
             plan: None,
+            plan_installed: false,
         }
     }
 
-    /// Install a scripted plan used by tests based on the setting (one-time only). Allow to be called multiple times.
+    /// Install a scripted plan used by tests based on the setting.
+    /// Can be called multiple times but will only install the plan once per instance.
     pub fn install_plan_from_setting(&mut self, setting: &IgvmAgentTestSetting) {
-        INIT.call_once(|| {
-            tracing::info!("install the scripted plan for test IGVM Agent");
+        // Only install the plan once per agent instance
+        if self.plan_installed {
+            return;
+        }
 
-            match setting {
-                IgvmAgentTestSetting::TestPlan(plan) => {
-                    self.plan = Some(plan.clone());
-                }
-                IgvmAgentTestSetting::TestConfig(config) => {
-                    self.plan = Some(test_config_to_plan(config));
-                }
+        tracing::info!("install the scripted plan for test IGVM Agent");
+
+        match setting {
+            IgvmAgentTestSetting::TestPlan(plan) => {
+                self.plan = Some(plan.clone());
             }
-        });
+            IgvmAgentTestSetting::TestConfig(config) => {
+                self.plan = Some(test_config_to_plan(config));
+            }
+        }
+
+        self.plan_installed = true;
     }
 
     /// Take the next scripted action for the given request type, if any.
-    pub(crate) fn take_next_action(
+    pub fn take_next_action(
         &mut self,
         request_type: IgvmAttestRequestType,
     ) -> Option<IgvmAgentAction> {
@@ -167,7 +214,8 @@ impl TestIgvmAgent {
         plan.get_mut(&request_type)?.pop_front()
     }
 
-    pub(crate) fn handle_request(&mut self, request_bytes: &[u8]) -> Result<(Vec<u8>, u32), Error> {
+    /// Request handler.
+    pub fn handle_request(&mut self, request_bytes: &[u8]) -> Result<(Vec<u8>, u32), Error> {
         let request = IgvmAttestRequestBase::read_from_prefix(request_bytes)
             .map_err(|_| Error::InvalidIgvmAttestRequest)?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
@@ -400,7 +448,7 @@ impl TestIgvmAgent {
         Ok((response, length))
     }
 
-    pub(crate) fn initialize_keys(&mut self) -> Result<(), Error> {
+    fn initialize_keys(&mut self) -> Result<(), Error> {
         if self.secret_key.is_some() && self.des_key.is_some() {
             // Keys are already initialized, nothing to do.
             return Ok(());
@@ -425,7 +473,7 @@ impl TestIgvmAgent {
         Ok(())
     }
 
-    pub(crate) fn generate_mock_wrapped_key_response(&self) -> Result<Vec<u8>, WrappedKeyError> {
+    fn generate_mock_wrapped_key_response(&self) -> Result<Vec<u8>, WrappedKeyError> {
         use openhcl_attestation_protocol::igvm_attest::cps;
 
         // Ensure DES key is available
@@ -483,7 +531,7 @@ impl TestIgvmAgent {
     }
 
     /// Generate a mock JWT response for testing KEY_RELEASE_REQUEST
-    pub(crate) fn generate_mock_key_release_response(
+    fn generate_mock_key_release_response(
         &self,
         runtime_claims_bytes: &[u8],
     ) -> Result<String, KeyReleaseError> {
@@ -527,7 +575,7 @@ impl TestIgvmAgent {
     }
 
     /// Generate a mock JWT response for testing KEY_RELEASE_REQUEST
-    pub(crate) fn generate_jwt_with_rsa_key(
+    fn generate_jwt_with_rsa_key(
         &self,
         public_key: RsaPublicKey,
     ) -> Result<String, KeyReleaseError> {
