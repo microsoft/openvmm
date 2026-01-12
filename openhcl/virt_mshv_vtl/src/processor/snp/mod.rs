@@ -956,6 +956,10 @@ impl UhProcessor<'_, SnpBacked> {
             .as_message::<hvdef::HvX64VmgexitInterceptMessage>();
 
         let ghcb_msr = x86defs::snp::GhcbMsr::from(message.ghcb_msr);
+        let flags = message.flags;
+        let sw_exit_code = message.ghcb_page.standard.sw_exit_code;
+        let sw_exit_info1 = message.ghcb_page.standard.sw_exit_info1;
+        let sw_exit_info2 = message.ghcb_page.standard.sw_exit_info2;
         tracing::trace!(?ghcb_msr, "vmgexit intercept");
 
         match x86defs::snp::GhcbInfo(ghcb_msr.info()) {
@@ -1025,7 +1029,17 @@ impl UhProcessor<'_, SnpBacked> {
                             )
                             .map_err(SnpGhcbError::GhcbPageAccess)?;
                     }
-                    usage => unimplemented!("ghcb usage {usage:?}"),
+                    usage => unimplemented!(
+                        r#"
+                        Invalid ghcb message.
+                        usage {usage:?}
+                        flags {flags:?}
+                        ghcb_msr {ghcb_msr:?}
+                        sw_exit_code {sw_exit_code:?}
+                        sw_exit_info1 {sw_exit_info1:?}
+                        sw_exit_info2 {sw_exit_info2:?}
+                    "#
+                    ),
                 }
             }
             info => unimplemented!("ghcb info {info:?}"),
