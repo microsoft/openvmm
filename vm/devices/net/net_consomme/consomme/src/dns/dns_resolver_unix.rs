@@ -17,7 +17,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 // FFI declarations for libc resolver functions.
-#[cfg(target_os = "linux")]
+// Only available on glibc-based Linux (musl doesn't have libresolv).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod ffi {
     use libc::c_int;
 
@@ -46,6 +47,8 @@ mod ffi {
 /// Initialize the libc resolver.
 ///
 /// This must be called once before using `res_send()`.
+/// Only available on glibc Linux and macOS (musl doesn't have libresolv).
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub fn init_resolver() -> Result<(), std::io::Error> {
     // SAFETY: res_init() initializes thread-local resolver state by reading
     // /etc/resolv.conf. It is safe to call concurrently from different threads
@@ -103,6 +106,12 @@ impl DnsBackend for UnixDnsResolverBackend {
 }
 
 impl UnixDnsResolverBackend {
+    /// Create a new DNS resolver backend.
+    ///
+    /// On glibc Linux and macOS, this uses the system's libresolv library.
+    /// On musl Linux, libresolv is not available, so this returns an error
+    /// and the caller should fall back to DHCP-based DNS settings.
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     pub fn new() -> Result<Self, std::io::Error> {
         let (request_tx, request_rx) = std::sync::mpsc::channel();
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -138,12 +147,27 @@ impl UnixDnsResolverBackend {
             shutdown,
         })
     }
+
+    /// On musl Linux, libresolv is not available.
+    /// Return an error so the caller falls back to DHCP-based DNS settings.
+    #[cfg(all(target_os = "linux", not(target_env = "gnu")))]
+    pub fn new() -> Result<Self, std::io::Error> {
+        tracing::info!(
+            "libresolv not available on musl; DNS interception disabled, \
+             falling back to DHCP-based DNS settings for guest"
+        );
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "DNS resolver backend not supported on musl libc (libresolv not available)",
+        ))
+    }
 }
 
 /// Handle a single DNS query using the blocking res_send() function.
 ///
 /// This function is called sequentially by the worker thread.
 /// The resolver state has already been initialized via res_init() at thread startup.
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 fn handle_dns_query(req: DnsRequestInternal) {
     if req.flow.protocol == smoltcp::wire::IpProtocol::Tcp {
         tracing::debug!(
@@ -197,6 +221,7 @@ impl Drop for UnixDnsResolverBackend {
 }
 
 #[cfg(test)]
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod tests {
     use super::*;
     use crate::dns_resolver::{DnsFlow, DnsResponse};
@@ -273,6 +298,7 @@ mod tests {
             let _ = init_resolver();
 
             let mut answer = vec![0u8; 4096];
+            // SAFETY: res_send is called with valid query buffer and answer buffer.
             let answer_len = unsafe {
                 ffi::res_send(
                     query_for_thread.as_ptr(),
