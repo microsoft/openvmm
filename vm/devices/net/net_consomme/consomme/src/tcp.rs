@@ -1238,7 +1238,8 @@ impl TcpListener {
         let socket = match sender.ft.src {
             SocketAddr::V4(_) => Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)),
             SocketAddr::V6(_) => Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP)),
-        }.map_err(DropReason::Io)?;
+        }
+        .map_err(DropReason::Io)?;
 
         let socket = PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?;
         if let Err(err) = socket.get().bind(&sender.ft.src.into()) {

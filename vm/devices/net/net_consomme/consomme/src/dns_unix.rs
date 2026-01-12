@@ -24,7 +24,14 @@ pub fn nameservers() -> Result<Vec<IpAddress>, Error> {
         .filter_map(|ns| match ns {
             ScopedIp::V4(addr) => Some(IpAddress::Ipv4(Ipv4Address::from(*addr))),
             ScopedIp::V6(addr, None) => Some(IpAddress::Ipv6(Ipv6Address::from(*addr))),
-            ScopedIp::V6(_, Some(_)) => None,
+            ScopedIp::V6(addr, Some(scope)) => {
+                tracelimit::warn_ratelimited!(
+                    %addr,
+                    scope,
+                    "ignoring scoped IPv6 nameserver"
+                );
+                None
+            }
         })
         .collect())
 }

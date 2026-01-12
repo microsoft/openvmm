@@ -120,7 +120,8 @@ impl ConsommeParams {
     ///     IP address: 10.0.0.2 / 24
     ///     gateway: 10.0.0.1 with MAC address 52-55-10-0-0-1
     ///     IPv6 address: is not assigned by us, we expect the guest to assign it via SLAAC
-    ///     gateway ipv6 link local address: fe80::5055:aff:fe00:102 with MAC address 52-55-0A-00-01-02
+    ///     gateway IPv6 link-local address: fe80::5055:aff:fe00:102 (EUI-64 derived from
+    ///     gateway MAC address 52-55-0A-00-01-02)
     pub fn new() -> Result<Self, Error> {
         let nameservers = dns::nameservers()?;
         let gateway_mac_ipv6 = EthernetAddress([0x52, 0x55, 0x0A, 0x00, 0x01, 0x02]);
@@ -554,7 +555,6 @@ impl<T: Client> Access<'_, T> {
             return Err(DropReason::MalformedPacket);
         }
 
-        //TODO: Walk extension headers.
         let next_header = ipv6.next_header();
         let inner = &payload[smoltcp::wire::IPV6_HEADER_LEN..];
         let addresses = Ipv6Addresses {
