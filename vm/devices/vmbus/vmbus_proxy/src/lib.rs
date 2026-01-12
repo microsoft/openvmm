@@ -142,8 +142,8 @@ unsafe impl<T> IoBufMut for StaticIoctlBuffer<T> {
 
 impl VmbusProxy {
     pub fn new(driver: &dyn Driver, handle: ProxyHandle, ctx: CancelContext) -> Result<Self> {
-        // SAFETY: While the handle is cloned from the vdev, VmbusProxy is the only place where
-        // async IO is performed using this file object.
+        // SAFETY: This handle is duplicated and can be shared with other devices, so safety depends
+        // on this being the only user of the handle for overlapped IO.
         let file = unsafe { OverlappedFile::new(driver, handle.0)? };
         Ok(Self {
             file: ManuallyDrop::new(file),
