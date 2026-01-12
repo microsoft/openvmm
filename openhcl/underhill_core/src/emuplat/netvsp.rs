@@ -914,7 +914,7 @@ impl HclNetworkVFManagerWorker {
                         continue;
                     }
 
-                    tracing::info!("reconfiguring VF");
+                    tracing::info!("VTL2 VF reconfiguration requested");
                     // Remove VTL0 VF if present
                     *self.guest_state.vtl0_vfid.lock().await = None;
                     if self.guest_state.is_offered_to_guest().await {
@@ -992,6 +992,7 @@ impl HclNetworkVFManagerWorker {
                         vf_reconfig_backoff.is_none(),
                         "device arrival should only occur after device removal and not vf reconfiguration"
                     );
+                    tracing::info!("VTL2 VF arrived");
                     let mut ctx =
                         mesh::CancelContext::new().with_timeout(std::time::Duration::from_secs(1));
                     // Ignore error here for waiting for the PCI path and continue to create the MANA device.
@@ -1002,8 +1003,6 @@ impl HclNetworkVFManagerWorker {
                     {
                         let pci_path = Path::new("/sys/bus/pci/devices").join(&self.vtl2_pci_id);
                         tracing::error!(?pci_path, "Timed out waiting for MANA PCI path");
-                    } else {
-                        tracing::info!("VTL2 VF arrived");
                     }
 
                     let update_vtl2_device_bind_state = true;
