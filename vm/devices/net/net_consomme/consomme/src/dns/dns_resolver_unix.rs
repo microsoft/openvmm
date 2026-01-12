@@ -170,9 +170,8 @@ impl UnixDnsResolverBackend {
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 fn handle_dns_query(req: DnsRequestInternal) {
     if req.flow.protocol == smoltcp::wire::IpProtocol::Tcp {
-        tracing::debug!(
-            "TCP mode requested but cannot force on macOS; resolver will use UDP with automatic TCP fallback"
-        );
+        tracing::debug!("DNS over TCP is not yet supported.");
+        return;
     }
 
     // DNS UDP responses are typically <= 512 bytes without EDNS0, but allow
@@ -224,30 +223,12 @@ impl Drop for UnixDnsResolverBackend {
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod tests {
     use super::*;
-    use crate::dns_resolver::{DnsFlow, DnsResponse};
-    use parking_lot::Mutex;
-    use smoltcp::wire::{EthernetAddress, IpProtocol, Ipv4Address};
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    #[derive(Debug)]
-    struct TestDnsResponseQueues {
-        udp: Mutex<Vec<DnsResponse>>,
-        tcp: Mutex<Vec<DnsResponse>>,
-    }
-
-    impl TestDnsResponseQueues {
-        fn push(&self, response: DnsResponse) {
-            match response.flow.protocol {
-                IpProtocol::Udp => self.udp.lock().push(response),
-                IpProtocol::Tcp => self.tcp.lock().push(response),
-                _ => panic!("Unexpected protocol for DNS Response"),
-            }
-        }
-    }
 
     #[test]
-    fn test_query_with_custom_buffer() {
+    fn test_init_resolver_and_res_send_callable() {
+        // Test that init_resolver() is callable without failure
+        init_resolver().expect("init_resolver() should succeed");
+
         // Example DNS query buffer for google.com A record
         // This is a minimal DNS query packet in wire format
         let dns_query: Vec<u8> = vec![
@@ -265,95 +246,22 @@ mod tests {
             0x00, 0x01, // Class: IN
         ];
 
-        // Create the backend
-        let mut backend = UnixDnsResolverBackend::new().expect("Failed to create backend");
+        let mut answer = vec![0u8; 4096];
 
-        // Set up response queues and accessor
-        let queues = Arc::new(TestDnsResponseQueues {
-            udp: Mutex::new(Vec::new()),
-            tcp: Mutex::new(Vec::new()),
-        });
-
-        let test_queues_clone = queues.clone();
-
-        // Create a test DNS flow
-        let flow = DnsFlow {
-            src_addr: Ipv4Address::new(192, 168, 1, 100),
-            dst_addr: Ipv4Address::new(8, 8, 8, 8),
-            src_port: 12345,
-            dst_port: 53,
-            gateway_mac: EthernetAddress([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]),
-            client_mac: EthernetAddress([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]),
-            protocol: IpProtocol::Udp,
+        // Test that ffi::res_send is callable without crashing.
+        // The return value may be negative if there's no network connectivity,
+        // but the function should not panic or cause undefined behavior.
+        // SAFETY: res_send is called with valid query buffer and answer buffer.
+        let _answer_len = unsafe {
+            ffi::res_send(
+                dns_query.as_ptr(),
+                dns_query.len() as libc::c_int,
+                answer.as_mut_ptr(),
+                answer.len() as libc::c_int,
+            )
         };
 
-        // Use the backend properly through its query() method
-        // We need to manually handle the response by wrapping the accessor
-        let flow_for_thread = flow.clone();
-        let query_for_thread = dns_query.clone();
-
-        // Spawn a thread to manually call res_send and push to our test queues
-        let handle = std::thread::spawn(move || {
-            // Initialize resolver in this thread
-            let _ = init_resolver();
-
-            let mut answer = vec![0u8; 4096];
-            // SAFETY: res_send is called with valid query buffer and answer buffer.
-            let answer_len = unsafe {
-                ffi::res_send(
-                    query_for_thread.as_ptr(),
-                    query_for_thread.len() as libc::c_int,
-                    answer.as_mut_ptr(),
-                    answer.len() as libc::c_int,
-                )
-            };
-
-            if answer_len > 0 {
-                answer.truncate(answer_len as usize);
-                test_queues_clone.push(DnsResponse {
-                    flow: flow_for_thread,
-                    response_data: answer,
-                });
-            }
-        });
-
-        // Wait for the thread to complete with a timeout
-        let _ = handle.join();
-
-        // Give a small buffer for any async operations
-        std::thread::sleep(Duration::from_millis(100));
-
-        // Check if we received a response
-        let responses = queues.udp.lock();
-
-        // Note: This test may fail if there's no network connectivity or DNS server
-        // In a production test, you might want to mock the res_send call
-        if !responses.is_empty() {
-            println!("Received {} DNS response(s)", responses.len());
-            let response = &responses[0];
-            println!("Response data length: {}", response.response_data.len());
-            assert!(
-                !response.response_data.is_empty(),
-                "Response data should not be empty"
-            );
-            println!(
-                "{}",
-                response
-                    .response_data
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            );
-        } else {
-            println!(
-                "Warning: No DNS response received (this may be expected in test environments)"
-            );
-        }
-
-        // Properly shut down the backend
-        backend.cancel_all().unwrap();
-        // Drop will join the worker thread
-        drop(backend);
+        // We don't assert on the result since it depends on network connectivity.
+        // The test passes as long as the functions are callable without panicking.
     }
 }

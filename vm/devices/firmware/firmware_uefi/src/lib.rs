@@ -43,7 +43,7 @@
 //! must be implemented by the "platform" hosting the UEFI device.
 //!
 //! This layer of abstraction allows the re-using the same UEFI emulator between
-//! multiple VMMs (HvLite, Underhill, etc...), without tying the emulator to any
+//! multiple VMMs (OpenVMM, Underhill, etc...), without tying the emulator to any
 //! VMM specific infrastructure (via some kind of compile-time feature flag
 //! infrastructure).
 

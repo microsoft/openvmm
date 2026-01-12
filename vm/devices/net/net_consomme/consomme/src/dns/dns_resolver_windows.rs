@@ -38,10 +38,9 @@ use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULT;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULTS_VERSION1;
 
 /// Wrapper for raw pointer that implements Send
+struct SendPtr(*mut RawCallbackContext);
 /// SAFETY: The context pointer is managed carefully and only accessed from
 /// the callback or during cleanup while holding the mutex.
-struct SendPtr(*mut RawCallbackContext);
-
 unsafe impl Send for SendPtr {}
 
 impl SendPtr {
@@ -135,7 +134,7 @@ impl DnsBackend for WindowsDnsResolverBackend {
             version: DNS_QUERY_RAW_REQUEST_VERSION1,
             resultsVersion: DNS_QUERY_RAW_RESULTS_VERSION1,
             dnsQueryRawSize: internal_request.query.len() as u32,
-            dnsQueryRaw: internal_request.query.as_ptr() as *mut u8,
+            dnsQueryRaw: internal_request.query.as_ptr().cast_mut(),
             dnsQueryName: null_mut(),
             dnsQueryType: 0,
             queryOptions: DNS_QUERY_NO_MULTICAST as u64
@@ -166,7 +165,7 @@ impl DnsBackend for WindowsDnsResolverBackend {
             dns_query_raw(&dns_request, &mut cancel_handle)
         };
 
-        if result == DNS_REQUEST_PENDING as i32 {
+        if result == DNS_REQUEST_PENDING {
             // Query is pending, store tracking information
             let tracked = TrackedRequest {
                 cancel_handle,
@@ -200,6 +199,7 @@ impl DnsBackend for WindowsDnsResolverBackend {
         let mut pending = self.pending_requests.lock();
 
         // Get the cancel function
+        // SAFETY: Callers call this with a valid cancel handle
         let cancel_fn = unsafe {
             get_dns_cancel_query_raw_fn()
                 .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?
@@ -316,8 +316,9 @@ unsafe extern "system" fn dns_query_raw_callback(
         // Free the Windows-allocated result structure
         // SAFETY: We're calling the Windows API to free memory it allocated
         if let Ok(free_fn) = unsafe { get_dns_query_raw_result_free_fn() } {
+            // SAFETY: Calling free with a valid result structure
             unsafe {
-                free_fn(query_results as *mut DNS_QUERY_RAW_RESULT);
+                free_fn(query_results.cast_mut());
             }
         } else {
             tracelimit::warn_ratelimited!("Failed to get DnsQueryRawResultFree function");

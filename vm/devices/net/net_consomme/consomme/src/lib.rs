@@ -45,6 +45,7 @@ use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
 use std::net::SocketAddrV4;
 use std::task::Context;
+use std::time::Duration;
 use thiserror::Error;
 
 /// A consomme instance.
@@ -88,6 +89,9 @@ pub struct ConsommeParams {
     /// Current list of DNS resolvers.
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
     pub nameservers: Vec<Ipv4Address>,
+    /// Idle timeout for UDP connections.
+    #[inspect(debug)]
+    pub udp_timeout: Duration,
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -110,6 +114,8 @@ impl ConsommeParams {
             client_mac: EthernetAddress([0x0, 0x0, 0x0, 0x0, 0x1, 0x0]),
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
+            // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
+            udp_timeout: Duration::from_secs(300),
         })
     }
 
@@ -311,20 +317,27 @@ struct Ipv4Addresses {
 impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(mut params: ConsommeParams) -> Self {
-        let dns = dns_resolver::DnsResolver::new().ok();
-
-        params.nameservers = dns
-            .as_ref()
-            .map(|_| vec![Ipv4Address::from_octets([10, 0, 0, 1])])
-            .unwrap_or(params.nameservers);
-
+        let dns = match dns_resolver::DnsResolver::new() {
+            Ok(dns) => {
+                // When the DNS resolver is available, use the default internal nameserver.
+                params.nameservers = vec![Ipv4Address::from_octets([10, 0, 0, 1])];
+                Some(dns)
+            }
+            Err(_) => {
+                tracelimit::warn_ratelimited!(
+                    "failed to initialize DNS resolver, falling back to using host DNS settings"
+                );
+                None
+            }
+        };
+        let timeout = params.udp_timeout;
         Self {
             state: ConsommeState {
                 params,
                 buffer: Box::new([0; 65536]),
             },
             tcp: tcp::Tcp::new(),
-            udp: udp::Udp::new(),
+            udp: udp::Udp::new(timeout),
             icmp: icmp::Icmp::new(),
             dns,
         }

@@ -31,7 +31,7 @@ const FN_NOT_FOUND_SENTINEL: usize = 1;
 pub fn get_module() -> Result<isize, WIN32_ERROR> {
     static MODULE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(null_mut());
 
-    let mut module = MODULE.load(Ordering::Relaxed);
+    let mut module = MODULE.load(Ordering::Acquire);
     if module.is_null() {
         // SAFETY: FFI call to load dnsapi.dll
         module = unsafe { LoadLibraryA(c"dnsapi.dll".as_ptr().cast()).cast::<core::ffi::c_void>() };
@@ -39,7 +39,16 @@ pub fn get_module() -> Result<isize, WIN32_ERROR> {
             // SAFETY: FFI call to get last error code
             return Err(unsafe { GetLastError() });
         }
-        MODULE.store(module, Ordering::Relaxed);
+        // Use compare_exchange to prevent duplicate loading and ensure proper synchronization.
+        // Release ordering ensures LoadLibraryA completes before other threads see the pointer.
+        if let Err(current) =
+            MODULE.compare_exchange(null_mut(), module, Ordering::Release, Ordering::Acquire)
+        {
+            // Another thread already loaded the module, use their handle.
+            // Note: We could call FreeLibrary on our duplicate handle, but Windows
+            // reference-counts library handles, so this small leak is harmless.
+            module = current;
+        }
     }
     Ok(module as isize)
 }
@@ -51,7 +60,7 @@ pub fn get_module() -> Result<isize, WIN32_ERROR> {
 /// - `FN_NOT_FOUND_SENTINEL`: Function was looked up but not found in the DLL
 /// - Any other value: The actual function pointer address
 fn get_proc_address(name: &[u8], cache: &AtomicUsize) -> Result<usize, WIN32_ERROR> {
-    let mut fnval = cache.load(Ordering::Relaxed);
+    let mut fnval = cache.load(Ordering::Acquire);
     if fnval == 0 {
         let module = get_module()?;
         // SAFETY: FFI call to get function address from module
@@ -59,14 +68,19 @@ fn get_proc_address(name: &[u8], cache: &AtomicUsize) -> Result<usize, WIN32_ERR
             .map(|f| f as usize)
             .unwrap_or(0);
         // Store sentinel for "not found" to distinguish from "not yet loaded"
-        cache.store(
-            if fnval == 0 {
-                FN_NOT_FOUND_SENTINEL
-            } else {
-                fnval
-            },
-            Ordering::Relaxed,
-        );
+        let store_val = if fnval == 0 {
+            FN_NOT_FOUND_SENTINEL
+        } else {
+            fnval
+        };
+        // Use compare_exchange to prevent duplicate loading and ensure proper synchronization.
+        // Release ordering ensures GetProcAddress completes before other threads see the value.
+        if let Err(current) =
+            cache.compare_exchange(0, store_val, Ordering::Release, Ordering::Acquire)
+        {
+            // Another thread already cached the value, use theirs
+            fnval = current;
+        }
     }
     if fnval == FN_NOT_FOUND_SENTINEL {
         Err(ERROR_PROC_NOT_FOUND)

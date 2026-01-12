@@ -176,6 +176,10 @@ pub enum Error {
     AllocateTlbFlushPage(#[source] anyhow::Error),
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[error("failed to get register")]
+    GetReg(#[source] hcl::ioctl::register::GetRegError),
+    #[error("failed to set register")]
+    SetReg(#[source] hcl::ioctl::register::SetRegError),
 }
 
 /// Error revoking guest VSM.
@@ -183,7 +187,7 @@ pub enum Error {
 #[expect(missing_docs)]
 pub enum RevokeGuestVsmError {
     #[error("failed to set vsm config")]
-    SetGuestVsmConfig(#[source] hcl::ioctl::SetGuestVsmConfigError),
+    SetGuestVsmConfig(#[source] hcl::ioctl::register::SetRegError),
     #[error("VTL 1 is already enabled")]
     Vtl1AlreadyEnabled,
 }
@@ -965,7 +969,9 @@ impl UhPartitionInner {
 
     // TODO VBS GUEST VSM: enable for aarch64
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    fn vsm_status(&self) -> Result<HvRegisterVsmPartitionStatus, hcl::ioctl::Error> {
+    fn vsm_status(
+        &self,
+    ) -> Result<HvRegisterVsmPartitionStatus, hcl::ioctl::register::GetRegError> {
         // TODO: It might be possible to cache VsmPartitionStatus.
         self.hcl.get_vsm_partition_status()
     }
@@ -1346,7 +1352,7 @@ impl IoApicRouting for UhPartitionInner {
 /// values used by underhill.
 fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
     // Read available capabilities to determine what to enable.
-    let caps = hcl.get_vsm_capabilities().map_err(Error::Hcl)?;
+    let caps = hcl.get_vsm_capabilities().map_err(Error::GetReg)?;
     let hardware_isolated = hcl.isolation().is_hardware_isolated();
     let isolated = hcl.isolation().is_isolated();
 
@@ -1363,7 +1369,7 @@ fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
         .with_intercept_system_reset(caps.intercept_system_reset_available());
 
     hcl.set_vtl2_vsm_partition_config(config)
-        .map_err(Error::VsmPartitionConfig)
+        .map_err(Error::SetReg)
 }
 
 /// Configuration parameters supplied to [`UhProtoPartition::new`].
@@ -1401,6 +1407,8 @@ pub struct UhPartitionNewParams<'a> {
     pub intercept_debug_exceptions: bool,
     /// Disable proxy interrupt redirection.
     pub disable_proxy_redirect: bool,
+    /// Disable lower VTL timer virtualization.
+    pub disable_lower_vtl_timer_virt: bool,
 }
 
 /// Parameters to [`UhProtoPartition::build`].
@@ -1609,7 +1617,9 @@ impl<'a> UhProtoPartition<'a> {
 
         set_vtl2_vsm_partition_config(&hcl)?;
 
-        let privs = hcl.get_privileges_and_features_info().map_err(Error::Hcl)?;
+        let privs = hcl
+            .get_privileges_and_features_info()
+            .map_err(Error::GetReg)?;
         let guest_vsm_available = Self::check_guest_vsm_support(privs, &hcl)?;
 
         #[cfg(guest_arch = "x86_64")]
@@ -1832,13 +1842,11 @@ impl<'a> UhProtoPartition<'a> {
         }
 
         #[cfg(guest_arch = "x86_64")]
-        let vsm_caps = hcl.get_vsm_capabilities().map_err(Error::Hcl)?;
-        #[cfg(guest_arch = "x86_64")]
-        let proxy_interrupt_redirect_available =
-            vsm_caps.proxy_interrupt_redirect_available() && !params.disable_proxy_redirect;
-
-        #[cfg(guest_arch = "x86_64")]
         let cvm_state = if is_hardware_isolated {
+            let vsm_caps = hcl.get_vsm_capabilities().map_err(Error::GetReg)?;
+            let proxy_interrupt_redirect_available =
+                vsm_caps.proxy_interrupt_redirect_available() && !params.disable_proxy_redirect;
+
             Some(Self::construct_cvm_state(
                 &params,
                 late_params.cvm_params.unwrap(),
@@ -1852,6 +1860,9 @@ impl<'a> UhProtoPartition<'a> {
         #[cfg(guest_arch = "aarch64")]
         let cvm_state = None;
 
+        let lower_vtl_timer_virt_available =
+            hcl.supports_lower_vtl_timer_virt() && !params.disable_lower_vtl_timer_virt;
+
         let backing_shared = BackingShared::new(
             isolation,
             &params,
@@ -1861,6 +1872,7 @@ impl<'a> UhProtoPartition<'a> {
                 cpuid: &cpuid,
                 hcl: &hcl,
                 guest_vsm_available,
+                lower_vtl_timer_virt_available,
             },
         )?;
 
@@ -1925,7 +1937,7 @@ impl<'a> UhProtoPartition<'a> {
 
 impl UhPartition {
     /// Gets the guest OS ID for VTL0.
-    pub fn vtl0_guest_os_id(&self) -> Result<HvGuestOsId, Error> {
+    pub fn vtl0_guest_os_id(&self) -> Result<HvGuestOsId, hcl::ioctl::register::GetRegError> {
         // If Underhill is emulating the hypervisor interfaces, get this value
         // from the emulator. This happens when running under hardware isolation
         // or when configured for testing.
@@ -1933,10 +1945,7 @@ impl UhPartition {
             hv.guest_os_id(Vtl::Vtl0)
         } else {
             // Ask the hypervisor for this value.
-            self.inner
-                .hcl
-                .get_guest_os_id(Vtl::Vtl0)
-                .map_err(Error::Hcl)?
+            self.inner.hcl.get_guest_os_id(GuestVtl::Vtl0)?
         };
         Ok(id)
     }
@@ -1980,7 +1989,10 @@ impl UhPartition {
     }
 
     /// Enables or disables the PM timer assist.
-    pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), HvError> {
+    pub fn set_pm_timer_assist(
+        &self,
+        port: Option<u16>,
+    ) -> Result<(), hcl::ioctl::register::SetRegError> {
         self.inner.hcl.set_pm_timer_assist(port)
     }
 
@@ -2083,7 +2095,9 @@ impl UhProtoPartition<'_> {
             return Ok(false);
         }
 
-        let guest_vsm_config = hcl.get_guest_vsm_partition_config().map_err(Error::Hcl)?;
+        let guest_vsm_config = hcl
+            .get_guest_vsm_partition_config()
+            .map_err(Error::GetReg)?;
         Ok(guest_vsm_config.maximum_vtl() >= u8::from(GuestVtl::Vtl1))
     }
 

@@ -76,7 +76,7 @@ impl DnsResponseAccessor {
     pub fn push(&self, response: DnsResponse) {
         match response.flow.protocol {
             IpProtocol::Udp => self.queues.udp.lock().push(response),
-            IpProtocol::Tcp => todo!("Not yet implemented"),
+            IpProtocol::Tcp => unreachable!("Not yet implemented"),
             _ => panic!("Unexpected protocol for DNS Response"),
         }
         // Wake the async executor to process the response
@@ -108,10 +108,7 @@ impl DnsResolver {
         use crate::dns_resolver::resolver_raw::WindowsDnsResolverBackend;
 
         if !is_dns_raw_apis_supported() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Windows DNS Raw APIs are not supported on this version of Windows",
-            ));
+            return Err(std::io::ErrorKind::Unsupported.into());
         }
 
         let queues = Arc::new(DnsResponseQueues {
@@ -164,7 +161,7 @@ impl DnsResolver {
         match protocol {
             IpProtocol::Udp => self.queues.udp.lock().drain(..).collect(),
             IpProtocol::Tcp => self.queues.tcp.lock().drain(..).collect(),
-            _ => panic!("Unexpected IpProtocol passed in"),
+            _ => unreachable!("Unexpected IpProtocol passed in"),
         }
     }
 

@@ -175,7 +175,7 @@ pub(crate) struct LoadedVm {
     )>,
 
     pub vmgs: Option<(
-        vmgs_broker::VmgsThinClient,
+        vmgs_broker::VmgsClient,
         disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
         Task<()>,
     )>,
@@ -197,6 +197,7 @@ pub(crate) struct LoadedVm {
     pub mana_keep_alive: KeepAliveConfig,
     pub test_configuration: Option<TestScenarioConfig>,
     pub dma_manager: OpenhclDmaManager,
+    pub config_timeout_in_seconds: u64,
 }
 
 pub struct LoadedVmState<T> {
@@ -235,6 +236,7 @@ impl LoadedVm {
                 device_config_send,
                 self.get_client.clone(),
                 self.device_interfaces.take().unwrap(),
+                self.config_timeout_in_seconds,
             );
 
             threadpool.spawn("VTL2 settings services", {

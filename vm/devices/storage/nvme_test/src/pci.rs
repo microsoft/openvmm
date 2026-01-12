@@ -62,6 +62,8 @@ pub struct NvmeFaultController {
     workers: NvmeWorkers,
     #[inspect(skip)]
     pci_fault_config: PciFaultConfig,
+    #[inspect(skip)]
+    fault_active: mesh::Cell<bool>,
 }
 
 #[derive(Inspect)]
@@ -117,7 +119,7 @@ impl NvmeFaultController {
         register_msi: &mut dyn RegisterMsi,
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeFaultControllerCaps,
-        fault_configuration: FaultConfiguration,
+        mut fault_configuration: FaultConfiguration,
     ) -> Self {
         let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, register_msi);
         let bars = DeviceBars::new()
@@ -149,8 +151,12 @@ impl NvmeFaultController {
             .map(|i| msix.interrupt(i).unwrap())
             .collect();
 
-        // Extract the PCI fault config
-        let pci_fault_config = fault_configuration.pci_fault.clone();
+        let pci_fault_config = fault_configuration
+            .pci_fault
+            .take()
+            .unwrap_or(PciFaultConfig::new());
+
+        let fault_active = fault_configuration.fault_active.clone();
 
         let qe_sizes = Arc::new(Default::default());
         let admin = NvmeWorkers::new(
@@ -171,6 +177,7 @@ impl NvmeFaultController {
             workers: admin,
             qe_sizes,
             pci_fault_config,
+            fault_active,
         }
     }
 
@@ -349,11 +356,18 @@ impl NvmeFaultController {
         if cc.en() != self.registers.cc.en() {
             if cc.en() {
                 // If any fault was configured for cc.en() process it here
-                match self.pci_fault_config.controller_management_fault_enable {
-                    PciFaultBehavior::Delay(duration) => {
-                        std::thread::sleep(duration);
+                if self.fault_active.get() {
+                    match &mut self.pci_fault_config.controller_management_fault_enable {
+                        PciFaultBehavior::Delay(duration) => {
+                            std::thread::sleep(*duration);
+                        }
+                        PciFaultBehavior::Default => {}
+                        PciFaultBehavior::Verify(send) => {
+                            if let Some(send) = send.take() {
+                                send.send(());
+                            }
+                        }
                     }
-                    PciFaultBehavior::Default => {}
                 }
 
                 // Some drivers will write zeros to IOSQES and IOCQES, assuming that the defaults will work.
@@ -446,6 +460,7 @@ impl ChangeDeviceState for NvmeFaultController {
             qe_sizes,
             workers,
             pci_fault_config: _,
+            fault_active: _,
         } = self;
         workers.reset().await;
         cfg_space.reset();

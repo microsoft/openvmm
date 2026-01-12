@@ -325,7 +325,6 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::Guid;
-    use super::guid;
 
     #[test]
     fn test_display_guid() {

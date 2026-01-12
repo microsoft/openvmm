@@ -39,17 +39,21 @@ use std::net::Ipv4Addr;
 use std::net::UdpSocket;
 use std::task::Context;
 use std::task::Poll;
+use std::time::Duration;
+use std::time::Instant;
 
 pub const DNS_PORT: u16 = 53;
 
 pub(crate) struct Udp {
     connections: HashMap<SocketAddress, UdpConnection>,
+    timeout: Duration,
 }
 
 impl Udp {
-    pub fn new() -> Self {
+    pub fn new(timeout: Duration) -> Self {
         Self {
             connections: HashMap::new(),
+            timeout,
         }
     }
 }
@@ -72,6 +76,8 @@ struct UdpConnection {
     stats: Stats,
     #[inspect(mut)]
     recycle: bool,
+    #[inspect(debug)]
+    last_activity: Instant,
 }
 
 #[derive(Inspect, Default)]
@@ -134,6 +140,7 @@ impl UdpConnection {
 
                     client.recv(&eth.as_ref()[..len], &ChecksumState::UDP4);
                     self.stats.rx_packets.increment();
+                    self.last_activity = Instant::now();
                 }
                 Poll::Ready(Err(err)) => {
                     tracing::error!(error = &err as &dyn std::error::Error, "recv error");
@@ -147,7 +154,19 @@ impl UdpConnection {
 
 impl<T: Client> Access<'_, T> {
     pub(crate) fn poll_udp(&mut self, cx: &mut Context<'_>) {
+        let timeout = self.inner.udp.timeout;
+        let now = Instant::now();
+
         self.inner.udp.connections.retain(|dst_addr, conn| {
+            // Check if connection has timed out
+            if now.duration_since(conn.last_activity) > timeout {
+                tracing::warn!(
+                    addr = %format!("{}:{}", dst_addr.ip, dst_addr.port),
+                    "UDP connection timed out"
+                );
+                return false;
+            }
+
             conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
         });
         if self.inner.dns.is_some() {
@@ -223,6 +242,7 @@ impl<T: Client> Access<'_, T> {
         {
             Ok(_) => {
                 conn.stats.tx_packets.increment();
+                conn.last_activity = Instant::now();
                 Ok(())
             }
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
@@ -255,6 +275,7 @@ impl<T: Client> Access<'_, T> {
                     guest_mac: guest_mac.unwrap_or(self.inner.state.params.client_mac),
                     stats: Default::default(),
                     recycle: false,
+                    last_activity: Instant::now(),
                 };
                 Ok(e.insert(conn))
             }
@@ -388,6 +409,12 @@ impl<T: Client> Access<'_, T> {
 
         Ok(())
     }
+
+    #[cfg(test)]
+    /// Returns the current number of active UDP connections.
+    pub fn udp_connection_count(&self) -> usize {
+        self.inner.udp.connections.len()
+    }
 }
 
 /// Helper function to build a complete UDP packet in an Ethernet frame.
@@ -431,4 +458,110 @@ fn build_udp_packet<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized>(
 
     // Return total frame length
     ETHERNET_HEADER_LEN + ipv4_packet.total_len() as usize
+}
+
+#[cfg(all(unix, test))]
+mod tests {
+    use super::*;
+    use crate::Consomme;
+    use crate::ConsommeParams;
+    use pal_async::DefaultDriver;
+    use parking_lot::Mutex;
+    use smoltcp::wire::Ipv4Address;
+    use std::sync::Arc;
+
+    /// Mock test client that captures received packets
+    struct TestClient {
+        driver: Arc<DefaultDriver>,
+        received_packets: Arc<Mutex<Vec<Vec<u8>>>>,
+        rx_mtu: usize,
+    }
+
+    impl TestClient {
+        fn new(driver: Arc<DefaultDriver>) -> Self {
+            Self {
+                driver,
+                received_packets: Arc::new(Mutex::new(Vec::new())),
+                rx_mtu: 1514, // Standard Ethernet MTU
+            }
+        }
+    }
+
+    impl Client for TestClient {
+        fn driver(&self) -> &dyn pal_async::driver::Driver {
+            &*self.driver
+        }
+
+        fn recv(&mut self, data: &[u8], _checksum: &ChecksumState) {
+            self.received_packets.lock().push(data.to_vec());
+        }
+
+        fn rx_mtu(&mut self) -> usize {
+            self.rx_mtu
+        }
+    }
+
+    fn create_consomme_with_timeout(timeout: Duration) -> Consomme {
+        let mut params = ConsommeParams::new().expect("Failed to create params");
+        params.udp_timeout = timeout;
+        Consomme::new(params)
+    }
+
+    #[pal_async::async_test]
+    async fn test_udp_connection_timeout(driver: DefaultDriver) {
+        let driver = Arc::new(driver);
+        let mut consomme = create_consomme_with_timeout(Duration::from_millis(100));
+        let mut client = TestClient::new(driver);
+
+        let guest_mac = consomme.params_mut().client_mac;
+        let gateway_mac = consomme.params_mut().gateway_mac;
+        let guest_ip: Ipv4Address = consomme.params_mut().client_ip;
+        let target_ip: Ipv4Address = Ipv4Addr::LOCALHOST;
+
+        // Create a buffer and place the payload at the correct offset
+        let payload = b"test";
+        let mut buffer =
+            vec![0u8; ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN + payload.len()];
+        buffer[ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN..].copy_from_slice(payload);
+
+        let mut eth_frame = EthernetFrame::new_unchecked(&mut buffer[..]);
+        let packet_len = build_udp_packet(
+            &mut eth_frame,
+            guest_ip,
+            target_ip,
+            12345,
+            54321,
+            payload.len(),
+            guest_mac,
+            gateway_mac,
+        );
+
+        let mut access = consomme.access(&mut client);
+        let _ = access.send(&buffer[..packet_len], &ChecksumState::NONE);
+
+        #[allow(clippy::disallowed_methods)]
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        access.poll(&mut cx);
+
+        assert_eq!(
+            access.udp_connection_count(),
+            1,
+            "Connection should be created"
+        );
+
+        // Manually update the last_activity to simulate timeout
+        for conn in access.inner.udp.connections.values_mut() {
+            conn.last_activity = Instant::now() - Duration::from_millis(150);
+        }
+
+        // Poll should remove timed out connections
+        access.poll(&mut cx);
+
+        assert_eq!(
+            access.udp_connection_count(),
+            0,
+            "Connection should be removed after timeout"
+        );
+    }
 }

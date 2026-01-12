@@ -9,7 +9,7 @@
 //! [`Framebuffer`], which is used to map an area of memory for the guest to
 //! write to, and [`FramebufferAccess`], which is transformed into a [`View`]
 //! to allow the VNC server to read from that memory.
-//! In HvLite, the Framebuffer is used to create a [`FramebufferDevice`]
+//! In OpenVMM, the Framebuffer is used to create a [`FramebufferDevice`]
 //! and a [`FramebufferLocalControl`] which share state using an inner mutex.
 //! The latter implements [`FramebufferControl`] which provides the necessary
 //! interfaces for a video device to control the framebuffer.
@@ -66,13 +66,13 @@ pub const FRAMEBUFFER_SIZE: usize = 8 * 1024 * 1024; // 8 MB
 /// The framebuffer should be allocated prior to calling this function.
 ///
 /// * `vram`:   [`Mappable`] (`OwnedFd`/`OwnedHandle`) that can be mapped into guest memory
-///   and a `SparseMapping` for the VNC server to read from. In HvLite, this
+///   and a `SparseMapping` for the VNC server to read from. In OpenVMM, this
 ///   is created by `alloc_shared_memory`. In Underhill, this is `/dev/mshv_vtl_low`.
 ///
 /// * `len`:    The amount of memory that was allocated for the framebuffer.
 ///
 /// * `offset`: The `file_offset` that should be used when reading the framebuffer.
-///   In HvLite, this should be 0. In Underhill, this is the GPA of the
+///   In OpenVMM, this should be 0. In Underhill, this is the GPA of the
 ///   VTL2 framebuffer mapping.
 pub fn framebuffer(
     vram: Mappable,

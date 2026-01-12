@@ -20,3 +20,7 @@ cmd = ["ci", "build-docs", "--config=ci"]
 [[pipeline.flowey_hvlite.github]]
 file = ".github/workflows/openvmm-docs-pr.yaml"
 cmd = ["ci", "build-docs", "--config=pr"]
+
+[[pipeline.flowey_hvlite.ado]]
+file = "ci-flowey/openvmm-pr.yaml"
+cmd = ["ci", "checkin-gates", "--config=pr"]

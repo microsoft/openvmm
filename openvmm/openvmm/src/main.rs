@@ -9,5 +9,5 @@
 extern crate openvmm_resources as _;
 
 fn main() {
-    openvmm_entry::hvlite_main()
+    openvmm_entry::openvmm_main()
 }

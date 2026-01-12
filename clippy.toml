@@ -13,7 +13,6 @@ disallowed-macros = [
     { path = "futures::pin_mut", reason = "use std::pin::pin" },
     { path = "futures::ready", reason = "use std::task::ready" },
     { path = "tracing::enabled", reason = "https://github.com/tokio-rs/tracing/issues/2519" },
-    { path = "openhcl_boot::boot_logger::debug_log", reason = "only use in local debugging, use log! if you want a production log message"},
 ]
 
 disallowed-methods = [

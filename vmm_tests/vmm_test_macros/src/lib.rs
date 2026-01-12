@@ -45,7 +45,6 @@ enum Firmware {
 
 #[derive(Default)]
 struct OpenhclUefiOptions {
-    nvme: bool,
     isolation: Option<IsolationType>,
 }
 
@@ -206,12 +205,12 @@ impl ToTokens for FirmwareAndArch {
             Firmware::OpenhclLinuxDirect => {
                 quote!(::petri::Firmware::openhcl_linux_direct(resolver, #arch))
             }
-            Firmware::OpenhclUefi(OpenhclUefiOptions { nvme, isolation }, guest) => {
+            Firmware::OpenhclUefi(OpenhclUefiOptions { isolation }, guest) => {
                 let isolation = match isolation {
                     Some(i) => quote!(Some(#i)),
                     None => quote!(None),
                 };
-                quote!(::petri::Firmware::openhcl_uefi(resolver, #arch, #guest, #isolation, #nvme))
+                quote!(::petri::Firmware::openhcl_uefi(resolver, #arch, #guest, #isolation))
             }
         })
     }
@@ -457,13 +456,6 @@ impl OpenhclUefiOptions {
                 IsolationType::Tdx => "tdx",
             });
         }
-        if self.nvme {
-            if !prefix.is_empty() {
-                prefix.push('_');
-            }
-            prefix.push_str("nvme");
-        }
-
         if prefix.is_empty() {
             None
         } else {
@@ -479,9 +471,6 @@ impl Parse for OpenhclUefiOptions {
         let words = input.parse_terminated(|stream| stream.parse::<Ident>(), Token![,])?;
         for word in words {
             match &*word.to_string() {
-                "nvme" => {
-                    options.nvme = true;
-                }
                 "vbs" => {
                     if options.isolation.is_some() {
                         return Err(Error::new(word.span(), "isolation type already specified"));
@@ -758,7 +747,6 @@ fn build_requirements(firmware: &Firmware, name: &str, resolved_vmm: Vmm) -> Opt
     if let Firmware::OpenhclUefi(
         OpenhclUefiOptions {
             isolation: Some(isolation),
-            ..
         },
         _,
     ) = firmware

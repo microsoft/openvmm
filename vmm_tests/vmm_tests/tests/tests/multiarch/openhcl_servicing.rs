@@ -9,8 +9,6 @@
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use guid::Guid;
-use hvlite_defs::config::DeviceVtl;
-use hvlite_defs::config::VpciDeviceConfig;
 use mesh::CancelContext;
 use mesh::CellUpdater;
 use mesh::rpc::RpcSend;
@@ -21,9 +19,14 @@ use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::NamespaceChange;
 use nvme_resources::fault::NamespaceFaultConfig;
+use nvme_resources::fault::PciFaultBehavior;
+use nvme_resources::fault::PciFaultConfig;
 use nvme_test::command_match::CommandMatchBuilder;
+use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::VpciDeviceConfig;
 use petri::OpenHclServicingFlags;
 use petri::PetriGuestStateLifetime;
+use petri::PetriVm;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
@@ -106,6 +109,33 @@ async fn basic_servicing<T: PetriVmmBackend>(
     openhcl_servicing_core(config, "", igvm_file, flags, DEFAULT_SERVICING_COUNT).await
 }
 
+/// Test servicing an OpenHCL VM from the current version to itself, with a tpm.
+///
+/// N.B. These Hyper-V tests fail in CI for x64. Tracked by #1652.
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
+    //hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64]
+)]
+async fn tpm_servicing<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> anyhow::Result<()> {
+    let mut flags = config.default_servicing_flags();
+    flags.override_version_checks = true;
+    openhcl_servicing_core(
+        config
+            .with_tpm(true)
+            .with_tpm_state_persistence(true)
+            .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
+        "",
+        igvm_file,
+        flags,
+        DEFAULT_SERVICING_COUNT,
+    )
+    .await
+}
+
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support and no vmbus redirect.
 #[openvmm_test(openhcl_linux_direct_x64[LATEST_LINUX_DIRECT_TEST_X64])]
@@ -126,14 +156,16 @@ async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
 
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64])]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64])]
 async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
     let flags = config.default_servicing_flags();
     openhcl_servicing_core(
-        config.with_vmbus_redirect(true), // Need this to attach the NVMe device
+        config
+            .with_boot_device_type(petri::BootDeviceType::ScsiViaNvme)
+            .with_vmbus_redirect(true), // Need this to attach the NVMe device
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         igvm_file,
         flags,
@@ -309,17 +341,19 @@ async fn servicing_keepalive_with_namespace_update(
         .await?;
     vm.restore_openhcl().await?;
 
-    let _ = CancelContext::new()
-        .with_timeout(Duration::from_secs(10))
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
         .until_cancelled(aer_verify_recv)
         .await
-        .expect("AER command was not observed within 10 seconds of vm restore after servicing with namespace change");
+        .expect("AER command was not observed within 60 seconds of vm restore after servicing with namespace change")
+        .expect("AER verification failed");
 
-    let _ = CancelContext::new()
-        .with_timeout(Duration::from_secs(10))
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
         .until_cancelled(log_verify_recv)
         .await
-        .expect("GET_LOG_PAGE command was not observed within 10 seconds of vm restore after servicing with namespace change");
+        .expect("GET_LOG_PAGE command was not observed within 60 seconds of vm restore after servicing with namespace change")
+        .expect("GET_LOG_PAGE verification failed");
 
     fault_start_updater.set(false).await;
     agent.ping().await?;
@@ -344,7 +378,16 @@ async fn servicing_keepalive_with_nvme_fault(
             ),
         );
 
-    apply_fault_with_keepalive(config, fault_configuration, fault_start_updater, igvm_file).await
+    let _vm = apply_fault_with_keepalive(
+        config,
+        fault_configuration,
+        fault_start_updater,
+        igvm_file,
+        None,
+    )
+    .await?;
+
+    Ok(())
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself
@@ -365,7 +408,16 @@ async fn servicing_keepalive_fault_if_identify(
             ),
         );
 
-    apply_fault_with_keepalive(config, fault_configuration, fault_start_updater, igvm_file).await
+    let _vm = apply_fault_with_keepalive(
+        config,
+        fault_configuration,
+        fault_start_updater,
+        igvm_file,
+        None,
+    )
+    .await?;
+
+    Ok(())
 }
 
 /// Verifies that the driver awaits an existing AER instead of issuing a new one after servicing.
@@ -384,7 +436,16 @@ async fn servicing_keepalive_verify_no_duplicate_aers(
             )
         );
 
-    apply_fault_with_keepalive(config, fault_configuration, fault_start_updater, igvm_file).await
+    let _vm = apply_fault_with_keepalive(
+        config,
+        fault_configuration,
+        fault_start_updater,
+        igvm_file,
+        None,
+    )
+    .await?;
+
+    Ok(())
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself with NVMe keepalive support
@@ -418,7 +479,16 @@ async fn servicing_keepalive_with_nvme_identify_fault(
             ),
         );
 
-    apply_fault_with_keepalive(config, fault_configuration, fault_start_updater, igvm_file).await
+    let _vm = apply_fault_with_keepalive(
+        config,
+        fault_configuration,
+        fault_start_updater,
+        igvm_file,
+        None,
+    )
+    .await?;
+
+    Ok(())
 }
 
 async fn apply_fault_with_keepalive(
@@ -426,7 +496,8 @@ async fn apply_fault_with_keepalive(
     fault_configuration: FaultConfiguration,
     mut fault_start_updater: CellUpdater<bool>,
     igvm_file: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
-) -> Result<(), anyhow::Error> {
+    new_cmdline: Option<&str>,
+) -> Result<PetriVm<OpenVmmPetriBackend>, anyhow::Error> {
     let mut flags = config.default_servicing_flags();
     flags.enable_nvme_keepalive = true;
     let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
@@ -438,18 +509,23 @@ async fn apply_fault_with_keepalive(
     cmd!(sh, "ls /dev/sda").run().await?;
 
     fault_start_updater.set(true).await;
+
+    if let Some(cmdline) = new_cmdline {
+        vm.update_command_line(cmdline).await?;
+    }
+
     vm.restart_openhcl(igvm_file.clone(), flags).await?;
 
     fault_start_updater.set(false).await;
     agent.ping().await?;
 
-    Ok(())
+    Ok(vm)
 }
 
 async fn create_keepalive_test_config(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     fault_configuration: FaultConfiguration,
-) -> Result<(petri::PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
+) -> Result<(PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
     let vtl0_nvme_lun = 1;
     let scsi_instance = Guid::new_random();
@@ -480,24 +556,22 @@ async fn create_keepalive_test_config(
                     .into_resource(),
                 })
             })
-            // Assign the fault controller to VTL2
-            .with_custom_vtl2_settings(|v| {
-                v.dynamic.as_mut().unwrap().storage_controllers.push(
-                    Vtl2StorageControllerBuilder::scsi()
-                        .with_instance_id(scsi_instance)
-                        .add_lun(
-                            Vtl2LunBuilder::disk()
-                                .with_location(vtl0_nvme_lun)
-                                .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                                    ControllerType::Nvme,
-                                    NVME_INSTANCE,
-                                    KEEPALIVE_VTL2_NSID,
-                                )),
-                        )
-                        .build(),
-                );
-            })
         })
+        // Assign the fault controller to VTL2
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(scsi_instance)
+                .add_lun(
+                    Vtl2LunBuilder::disk()
+                        .with_location(vtl0_nvme_lun)
+                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                            ControllerType::Nvme,
+                            NVME_INSTANCE,
+                            KEEPALIVE_VTL2_NSID,
+                        )),
+                )
+                .build(),
+        )
         .run()
         .await
 }
@@ -577,6 +651,41 @@ async fn mana_nic_servicing_keepalive(
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Test servicing an OpenHCL VM when NVME keepalive is enabled but then
+/// disabled after servicing.
+/// It verifies that the controller is reset during the restore process.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_with_keepalive_disabled_after_servicing(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let mut fault_start_updater = CellUpdater::new(false);
+    let (cc_enable_verify_send, cc_enable_verify_recv) = mesh::oneshot::<()>();
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell()).with_pci_fault(
+        PciFaultConfig::new()
+            .with_cc_enable_fault(PciFaultBehavior::Verify(Some(cc_enable_verify_send))),
+    );
+
+    let _vm = apply_fault_with_keepalive(
+        config,
+        fault_configuration,
+        fault_start_updater,
+        igvm_file,
+        Some("OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_DISABLE_NVME_KEEP_ALIVE=1"),
+    )
+    .await?;
+
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(cc_enable_verify_recv)
+        .await
+        .expect("Controller Enable PCI command was not observed within 60 seconds of vm restore indicating that the controller was not reset, even though it should have been.")
+        .expect("Failed to receive completion for CC Enable PCI command verification");
 
     Ok(())
 }

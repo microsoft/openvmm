@@ -288,7 +288,7 @@ impl Fid for File {
     // Create a new file.
     fn create(&self, name: &lx::LxStr, flags: u32, mode: u32, gid: u32) -> lx::Result<Qid> {
         // On Unix, the specified gid, as well as the uid from Tattach, are currently ignored. All
-        // operations are done as the user that's running hvlite.
+        // operations are done as the user that's running OpenVMM.
         self.state
             .write()
             .create(name, flags, LxCreateOptions::new(mode, self.uid, gid))
@@ -315,7 +315,7 @@ impl Fid for File {
     // Create a directory.
     fn mkdir(&self, name: &lx::LxStr, mode: u32, gid: u32) -> lx::Result<Qid> {
         // On Unix, the specified gid, as well as the uid from Tattach, are currently ignored. All
-        // operations are done as the user that's running hvlite.
+        // operations are done as the user that's running OpenVMM.
         let state = self.state.read();
         let child_path = state.child_path(name)?;
         let stat = state

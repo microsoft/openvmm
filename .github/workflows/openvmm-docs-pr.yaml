@@ -64,7 +64,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-docs-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -222,7 +222,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-docs-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -308,7 +308,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey.exe e 1 flowey_lib_common::download_protoc 0
+        flowey.exe e 1 flowey_lib_common::resolve_protoc 0
         flowey.exe e 1 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -381,7 +381,7 @@ jobs:
     - name: Build flowey
       run: |
         set -x
-        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         mkdir -p "$OutDirNormal"
         mv ./.github/workflows/openvmm-docs-pr.yaml "$OutDirNormal/pipeline.yaml"
@@ -473,7 +473,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey e 2 flowey_lib_common::download_protoc 0
+        flowey e 2 flowey_lib_common::resolve_protoc 0
         flowey e 2 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
