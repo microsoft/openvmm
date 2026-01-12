@@ -241,7 +241,25 @@ impl<T: Client> Access<'_, T> {
                             }
                         }
 
-                        let ft = FourTuple { dst: SocketAddr::V4(other_addr), src: SocketAddr::V4(SocketAddrV4::new(self.inner.state.params.client_ip.into(), *port)) };
+                        let ft = match other_addr {
+                            SocketAddr::V4(_) => FourTuple {
+                                dst: other_addr,
+                                src: SocketAddr::V4(SocketAddrV4::new(self.inner.state.params.client_ip.into(), *port)),
+                            },
+                            SocketAddr::V6(_) => {
+                                let client_ipv6 = match self.inner.state.params.client_ip_ipv6 {
+                                    Some(ip) => ip.into(),
+                                    None => {
+                                        tracing::warn!("Received IPv6 connection but client IPv6 address is not known");
+                                        return true;
+                                    }
+                                };
+                                FourTuple {
+                                    dst: other_addr,
+                                    src: SocketAddr::V6(SocketAddrV6::new(client_ipv6, *port, 0, 0)),
+                                }
+                            }
+                        };
 
                         match self.inner.tcp.connections.entry(ft) {
                             hash_map::Entry::Vacant(e) => {
@@ -1217,8 +1235,10 @@ impl TcpConnection {
 
 impl TcpListener {
     pub fn new(sender: &mut Sender<'_, impl Client>) -> Result<Self, DropReason> {
-        let socket =
-            Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).map_err(DropReason::Io)?;
+        let socket = match sender.ft.src {
+            SocketAddr::V4(_) => Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)),
+            SocketAddr::V6(_) => Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP)),
+        }.map_err(DropReason::Io)?;
 
         let socket = PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?;
         if let Err(err) = socket.get().bind(&sender.ft.src.into()) {
@@ -1242,20 +1262,11 @@ impl TcpListener {
     fn poll_listener(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Result<Option<(Socket, SocketAddrV4)>, DropReason> {
+    ) -> Result<Option<(Socket, SocketAddr)>, DropReason> {
         match self.socket.poll_accept(cx) {
             Poll::Ready(r) => match r {
                 Ok((socket, address)) => match address.as_socket() {
-                    Some(addr) => match address.as_socket_ipv4() {
-                        Some(src_address) => Ok(Some((
-                            socket,
-                            SocketAddrV4::new(*src_address.ip(), addr.port()),
-                        ))),
-                        None => {
-                            tracing::warn!(?address, "Not an IPv4 address from accept");
-                            Ok(None)
-                        }
-                    },
+                    Some(addr) => Ok(Some((socket, addr))),
                     None => {
                         tracing::warn!(?address, "Unknown address from accept");
                         Ok(None)
