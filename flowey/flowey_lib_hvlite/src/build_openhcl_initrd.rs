@@ -62,19 +62,26 @@ impl FlowNode for Node {
         let platform = ctx.platform();
         let python_pkg = match platform {
             FlowPlatform::Linux(linux_distribution) => match linux_distribution {
-                FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::Ubuntu => "python3",
+                FlowPlatformLinuxDistro::Fedora
+                | FlowPlatformLinuxDistro::Ubuntu
+                | FlowPlatformLinuxDistro::Nix => "python3",
                 FlowPlatformLinuxDistro::Arch => "python",
                 FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
             },
             _ => anyhow::bail!("Unsupported platform"),
         };
-        let pydeps =
-            ctx.reqv(
+
+        // Don't install python when using Nix
+        let pydeps = if !matches!(platform, FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)) {
+            Some(ctx.reqv(
                 |side_effect| flowey_lib_common::install_dist_pkg::Request::Install {
                     package_names: [python_pkg].map(Into::into).into(),
                     done: side_effect,
                 },
-            );
+            ))
+        } else {
+            None
+        };
 
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 

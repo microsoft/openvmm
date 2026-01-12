@@ -178,7 +178,7 @@ pub struct BuildIgvmCliCustomizations {
 
     /// (experimental) Only use local dependencies to build. Keeps flowey from
     /// downloading any dependencies from the internet.
-    #[clap(long, requires_all = ["custom_openvmm_deps", "custom_protoc"])]
+    #[clap(long, requires_all = ["custom_openvmm_deps", "custom_protoc", "custom_kernel", "custom_kernel_modules", "custom_uefi"])]
     pub use_local_deps: bool,
 
     /// Use a custom openvmm_deps directory.
