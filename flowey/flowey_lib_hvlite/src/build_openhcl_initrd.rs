@@ -159,13 +159,23 @@ impl FlowNode for Node {
                         v
                     };
 
-                    let kernel_modules =
-                        custom_kernel_modules.unwrap_or(kernel_package_root.join("."));
-
                     let rootfs_py_arch = match arch {
                         CommonArch::X86_64 => "x86_64",
                         CommonArch::Aarch64 => "aarch64",
                     };
+
+                    // Kernel modules use a different arch naming convention
+                    let kernel_modules_arch = match arch {
+                        CommonArch::X86_64 => "x64",
+                        CommonArch::Aarch64 => "arm64",
+                    };
+
+                    let kernel_modules = custom_kernel_modules.unwrap_or_else(|| {
+                        kernel_package_root
+                            .join("build/native/bin")
+                            .join(kernel_modules_arch)
+                            .join("modules")
+                    });
 
                     // FUTURE: to avoid making big changes to update-roots as
                     // part of the initial OSS workstream, stage the
