@@ -187,6 +187,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::run_test_igvm_agent_rpc_server::Node>();
+        ctx.import::<crate::stop_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
@@ -1051,11 +1052,27 @@ impl SimpleFlowNode for Node {
                 nextest_working_dir: Some(ReadVar::from_static(test_content_dir.clone())),
                 nextest_config_file: Some(ReadVar::from_static(nextest_config_file)),
                 nextest_bin: Some(ReadVar::from_static(nextest_bin)),
-                target: Some(ReadVar::from_static(target_triple)),
+                target: Some(ReadVar::from_static(target_triple.clone())),
                 extra_env,
                 pre_run_deps: side_effects,
                 results: v,
             });
+
+            // Stop the test_igvm_agent_rpc_server after tests complete (Windows only).
+            let rpc_server_stopped = if matches!(
+                target_triple.operating_system,
+                target_lexicon::OperatingSystem::Windows
+            ) {
+                let after_tests = results.map(ctx, |_| ());
+                Some(
+                    ctx.reqv(|done| crate::stop_test_igvm_agent_rpc_server::Request {
+                        after_tests,
+                        done,
+                    }),
+                )
+            } else {
+                None
+            };
 
             let junit_xml = results.map(ctx, |r| r.junit_xml);
             let published_results =
@@ -1069,6 +1086,9 @@ impl SimpleFlowNode for Node {
 
             ctx.emit_rust_step("report test results", |ctx| {
                 published_results.claim(ctx);
+                if let Some(rpc_server_stopped) = rpc_server_stopped {
+                    rpc_server_stopped.claim(ctx);
+                }
                 done.claim(ctx);
 
                 let results = results.clone().claim(ctx);

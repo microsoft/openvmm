@@ -9,6 +9,8 @@
 //!
 //! This node starts the server from the test content directory (where
 //! init_vmm_tests_env copies the binary) and redirects output to a log file.
+//!
+//! See also: stop_test_igvm_agent_rpc_server for cleanup after tests complete.
 
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -122,8 +124,8 @@ impl SimpleFlowNode for Node {
                     }
 
                     // Don't wait on the child - let it run in the background.
-                    // The process will be cleaned up when the CI job ends.
-                    // We intentionally drop the Child handle without waiting.
+                    // The process will be cleaned up by stop_test_igvm_agent_rpc_server
+                    // after tests complete. We intentionally drop the Child handle.
                     drop(child);
 
                     Ok(())

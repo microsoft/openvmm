@@ -78,6 +78,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_vmm_tests_env::Node>();
         ctx.import::<crate::run_prep_steps::Node>();
         ctx.import::<crate::run_test_igvm_agent_rpc_server::Node>();
+        ctx.import::<crate::stop_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
@@ -231,6 +232,23 @@ impl SimpleFlowNode for Node {
             results: v,
         });
 
+        // Stop the test_igvm_agent_rpc_server after tests complete (Windows only).
+        // This ensures we clean up the background process.
+        let rpc_server_stopped = if matches!(
+            target.operating_system,
+            target_lexicon::OperatingSystem::Windows
+        ) {
+            let after_tests = results.map(ctx, |_| ());
+            Some(
+                ctx.reqv(|done| crate::stop_test_igvm_agent_rpc_server::Request {
+                    after_tests,
+                    done,
+                }),
+            )
+        } else {
+            None
+        };
+
         // Bind the externally generated output paths together with the results
         // to create a dependency on the VMM tests having actually run.
         let test_log_path = test_log_path.depending_on(ctx, &results);
@@ -246,6 +264,9 @@ impl SimpleFlowNode for Node {
 
         ctx.emit_rust_step("report test results to overall pipeline status", |ctx| {
             reported_results.claim(ctx);
+            if let Some(rpc_server_stopped) = rpc_server_stopped {
+                rpc_server_stopped.claim(ctx);
+            }
             done.claim(ctx);
 
             let results = results.clone().claim(ctx);
