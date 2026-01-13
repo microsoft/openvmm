@@ -70,13 +70,13 @@ flowey_lib_common = { path = "flowey/flowey_lib_common" }
 flowey_lib_hvlite = { path = "flowey/flowey_lib_hvlite" }
 schema_ado_yaml = { path = "flowey/schema_ado_yaml" }
 
-hvlite_core = { path = "openvmm/hvlite_core" }
-hvlite_defs = { path = "openvmm/hvlite_defs" }
+openvmm_core = { path = "openvmm/openvmm_core" }
+openvmm_defs = { path = "openvmm/openvmm_defs" }
 openvmm_entry = { path = "openvmm/openvmm_entry" }
-hvlite_helpers = { path = "openvmm/hvlite_helpers" }
-hvlite_pcat_locator = { path = "openvmm/hvlite_pcat_locator" }
+openvmm_helpers = { path = "openvmm/openvmm_helpers" }
+openvmm_pcat_locator = { path = "openvmm/openvmm_pcat_locator" }
 openvmm_resources = { path = "openvmm/openvmm_resources" }
-hvlite_ttrpc_vmservice = { path = "openvmm/hvlite_ttrpc_vmservice" }
+openvmm_ttrpc_vmservice = { path = "openvmm/openvmm_ttrpc_vmservice" }
 membacking = { path = "openvmm/membacking" }
 
 petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact_resolver_openvmm_known_paths" }
@@ -398,6 +398,8 @@ vmm_core_defs = { path = "vmm_core/vmm_core_defs" }
 vmotherboard = { path = "vmm_core/vmotherboard" }
 
 # workers
+chipset_device_worker = { path = "workers/chipset_device_worker" }
+chipset_device_worker_defs = { path = "workers/chipset_device_worker_defs" }
 debug_worker = { path = "workers/debug_worker" }
 debug_worker_defs = { path = "workers/debug_worker_defs" }
 vnc_worker = { path = "workers/vnc_worker" }
@@ -510,7 +512,7 @@ range_map_vec = "0.2.0"
 rayon = "1.5"
 resolv-conf = "0.7"
 rlimit = "0.10.1"
-rsa = "0.9.8"
+rsa = "0.9.10"
 rusqlite = "0.37"
 rustc-hash = "2.1.1"
 rustyline = "17"

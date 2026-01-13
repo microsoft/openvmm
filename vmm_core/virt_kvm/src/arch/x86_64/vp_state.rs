@@ -475,15 +475,15 @@ impl AccessVpState for KvmVpStateAccess<'_> {
     }
 
     fn cet_ss(&mut self) -> Result<vp::CetSs, Self::Error> {
-        // KVM does not appear to support CET_SS and in particular does not have
+        // TODO: KVM does not appear to support CET_SS and in particular does not have
         // an API to get the SSP register yet.
-        unimplemented!()
+        Ok(Default::default())
     }
 
     fn set_cet_ss(&mut self, _value: &vp::CetSs) -> Result<(), Self::Error> {
-        // KVM does not appear to support CET_SS and in particular does not have
+        // TODO: KVM does not appear to support CET_SS and in particular does not have
         // an API to get the SSP register yet.
-        unimplemented!()
+        Ok(())
     }
 
     fn tsc_aux(&mut self) -> Result<vp::TscAux, Self::Error> {

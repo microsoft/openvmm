@@ -26,13 +26,13 @@ choices of these dates.
 
 Releases naturally fall into several phases:
 
-| Phase             | Meaning                                                                 |
-|-------------------|-------------------------------------------------------------------------|
-| Active Development| Regular development phase where new features and fixes are added.       |
-| Stabilization     | Phase focused on stabilizing the release by fixing bugs.                |
-| Ask Mode          | Only critical fixes are allowed; changes are scrutinized. No new features. This is the last phase before a release is closed. |
-| Servicing         | Only essential fixes are made to support the release (a.k.a. maintenance mode). |
-| Out of service    | A previous release which is no longer receiving updates. |
+| Phase              | Meaning                                                                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| Active Development | Regular development phase where new features and fixes are added.                                                              |
+| Stabilization      | Phase focused on stabilizing the release by fixing bugs.                                                                       |
+| Ask Mode           | Only critical fixes are allowed; changes are scrutinized. No new features. This is the last phase before a release is closed.  |
+| Servicing          | Only essential fixes are made to support the release (a.k.a. maintenance mode).                                                |
+| Out of service     | A previous release which is no longer receiving updates.                                                                       |
 
 ### Release branch process
 
@@ -67,12 +67,12 @@ When creating a backport PR to a release branch:
   
 ## Existing Release Branches
 
-| Release | Phase | Notes |
-|--------|-------|-------|
-| release/2411 | Out of service | |
-| release/2505 | Servicing | Supports runtime servicing from release/2411. |
-| release/1.7.2511 | Stabilization | Supports runtime servicing from release/2411 and release/2505. |
-| _tbd, in main_ | Active Development | Supports runtime servicing from release/2411 and release/2505. |
+| Release          | Phase              | Notes                                                                |
+| ---------------- | ------------------ | -------------------------------------------------------------------- |
+| release/2411     | Out of service     |                                                                      |
+| release/2505     | Servicing          | Supports runtime servicing from release/2411.                        |
+| release/1.7.2511 | Stabilization      | Supports runtime servicing from release/2411 and release/2505.       |
+| _tbd, in main_   | Active Development | Supports runtime servicing from release/2411 and release/2505.       |
 
 ## Taking a Dependency on a Release
 

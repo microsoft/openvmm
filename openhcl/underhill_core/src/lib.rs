@@ -336,6 +336,7 @@ async fn launch_workers(
         enable_vpci_relay: opt.enable_vpci_relay,
         disable_proxy_redirect: opt.disable_proxy_redirect,
         disable_lower_vtl_timer_virt: opt.disable_lower_vtl_timer_virt,
+        config_timeout_in_seconds: opt.config_timeout_in_seconds,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =
@@ -448,6 +449,7 @@ enum ControlState {
 #[derive(MeshPayload)]
 pub enum ControlRequest {
     FlushLogs(Rpc<CancelContext, Result<(), CancelReason>>),
+    MakeWorker(Rpc<String, Result<WorkerHost, RemoteError>>),
 }
 
 async fn run_control(
@@ -751,6 +753,12 @@ async fn run_control(
                         tracing::info!(CVM_ALLOWED, "flushing logs");
                         ctx.until_cancelled(tracing.flush()).await?;
                         Ok(())
+                    })
+                    .await
+                }
+                ControlRequest::MakeWorker(rpc) => {
+                    rpc.handle_failable(async |name| {
+                        launch_mesh_host(mesh, &name, Some(tracing.tracer())).await
                     })
                     .await
                 }

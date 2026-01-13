@@ -19,7 +19,6 @@ use framebuffer::View;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use get_resources::ged::FirmwareEvent;
-use hvlite_defs::rpc::PulseSaveRestoreError;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::CancelContext;
 use mesh::Receiver;
@@ -27,6 +26,7 @@ use mesh::RecvError;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh_process::Mesh;
+use openvmm_defs::rpc::PulseSaveRestoreError;
 use pal_async::socket::PolledSocket;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
@@ -167,6 +167,15 @@ impl PetriVmRuntime for PetriVmOpenVmm {
 
     async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()> {
         Self::set_vtl2_settings(self, settings).await
+    }
+
+    async fn set_vmbus_drive(
+        &mut self,
+        _disk: &crate::Drive,
+        _controller_id: &guid::Guid,
+        _controller_location: u32,
+    ) -> anyhow::Result<()> {
+        todo!("openvmm set vmbus drive")
     }
 }
 
@@ -460,12 +469,7 @@ impl PetriVmInner {
         if let Some(agent) = self.resources.linux_direct_serial_agent.as_mut() {
             agent.reset();
 
-            if self
-                .resources
-                .agent_image
-                .as_ref()
-                .is_some_and(|x| x.contains_pipette())
-            {
+            if self.resources.properties.using_vtl0_pipette {
                 self.launch_linux_direct_pipette().await?;
             }
         }

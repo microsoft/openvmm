@@ -9,8 +9,6 @@
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use guid::Guid;
-use hvlite_defs::config::DeviceVtl;
-use hvlite_defs::config::VpciDeviceConfig;
 use mesh::CancelContext;
 use mesh::CellUpdater;
 use mesh::rpc::RpcSend;
@@ -24,6 +22,8 @@ use nvme_resources::fault::NamespaceFaultConfig;
 use nvme_resources::fault::PciFaultBehavior;
 use nvme_resources::fault::PciFaultConfig;
 use nvme_test::command_match::CommandMatchBuilder;
+use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::VpciDeviceConfig;
 use petri::OpenHclServicingFlags;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVm;
@@ -156,14 +156,16 @@ async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
 
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64])]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64])]
 async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
     let flags = config.default_servicing_flags();
     openhcl_servicing_core(
-        config.with_vmbus_redirect(true), // Need this to attach the NVMe device
+        config
+            .with_boot_device_type(petri::BootDeviceType::ScsiViaNvme)
+            .with_vmbus_redirect(true), // Need this to attach the NVMe device
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         igvm_file,
         flags,
@@ -556,22 +558,20 @@ async fn create_keepalive_test_config(
             })
         })
         // Assign the fault controller to VTL2
-        .with_custom_vtl2_settings(move |v| {
-            v.dynamic.as_mut().unwrap().storage_controllers.push(
-                Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
-                    .with_instance_id(scsi_instance)
-                    .add_lun(
-                        Vtl2LunBuilder::disk()
-                            .with_location(vtl0_nvme_lun)
-                            .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                                ControllerType::Nvme,
-                                NVME_INSTANCE,
-                                KEEPALIVE_VTL2_NSID,
-                            )),
-                    )
-                    .build(),
-            );
-        })
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(scsi_instance)
+                .add_lun(
+                    Vtl2LunBuilder::disk()
+                        .with_location(vtl0_nvme_lun)
+                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                            ControllerType::Nvme,
+                            NVME_INSTANCE,
+                            KEEPALIVE_VTL2_NSID,
+                        )),
+                )
+                .build(),
+        )
         .run()
         .await
 }

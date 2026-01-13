@@ -125,6 +125,7 @@ fn direct_run_do_work(
             (FlowArch::X86_64, FlowArch::X86_64) | (FlowArch::Aarch64, FlowArch::Aarch64) => (),
             _ => {
                 log::error!("mismatch between job arch and local arch. skipping job...");
+                skipped_jobs.insert(idx);
                 continue;
             }
         }
@@ -160,7 +161,7 @@ fn direct_run_do_work(
             let (mut output_graph, _, err_unreachable_nodes) =
                 crate::flow_resolver::stage1_dag::stage1_dag(
                     FlowBackend::Local,
-                    platform,
+                    flow_platform,
                     flow_arch,
                     patches.clone(),
                     root_nodes
@@ -331,6 +332,7 @@ fn direct_run_do_work(
 
             if !should_run {
                 log::warn!("job condition was false - skipping job...");
+                skipped_jobs.insert(idx);
                 continue;
             }
         }
@@ -379,6 +381,9 @@ fn direct_run_do_work(
                 log::info!(""); // log a newline, for the pretty
             }
         }
+
+        // Leave the last node's working dir so it can be deleted by later steps
+        std::env::set_current_dir(&out_dir)?;
     }
 
     Ok(())
