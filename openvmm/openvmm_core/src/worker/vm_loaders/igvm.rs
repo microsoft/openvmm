@@ -205,7 +205,8 @@ pub fn vtl2_memory_range(
     physical_address_size: u8,
     mem_size: u64,
     mmio_gaps: &[MemoryRange],
-    device_reserved_gaps: &[MemoryRange],
+    pci_ecam_gaps: &[MemoryRange],
+    pci_mmio_gaps: &[MemoryRange],
     igvm_file: &IgvmFile,
     vtl2_size: Option<u64>,
 ) -> Result<MemoryRange, Error> {
@@ -254,7 +255,7 @@ pub fn vtl2_memory_range(
     let physical_address_size = physical_address_size - 1;
 
     // Create an initial memory layout to determine the highest used address.
-    let dummy_layout = MemoryLayout::new(mem_size, mmio_gaps, device_reserved_gaps, None)
+    let dummy_layout = MemoryLayout::new(mem_size, mmio_gaps, pci_ecam_gaps, pci_mmio_gaps, None)
         .map_err(Error::MemoryConfig)?;
 
     // TODO: Underhill kernel panics if loaded at 32TB or higher. Restrict the

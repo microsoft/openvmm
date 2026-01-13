@@ -727,10 +727,13 @@ async fn vm_config_from_command_line(
         (false, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86.into(),
         (false, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64.into(),
     };
-    let mut device_reserved_gaps = Vec::new();
+
+    let mut pci_ecam_gaps = Vec::new();
+    let mut pci_mmio_gaps = Vec::new();
 
     let mut low_mmio_start = mmio_gaps.first().context("expected mmio gap")?.start();
     let mut high_mmio_end = mmio_gaps.last().context("expected second mmio gap")?.end();
+    let mut ecam_end = DEFAULT_PCIE_ECAM_BASE;
 
     let mut pcie_root_complexes = Vec::new();
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
@@ -750,19 +753,25 @@ async fn vm_config_from_command_line(
             .high_mmio
             .checked_next_multiple_of(ONE_MB)
             .context("high mmio rounding error")?;
+        let ecam_size = (((rc_cli.end_bus - rc_cli.start_bus) as u64) + 1) * 256 * 4096;
 
         low_mmio_start = low_mmio_start
             .checked_sub(low_mmio_size)
-            .context("low mmio underflow")?;
+            .context("pci low mmio underflow")?;
         high_mmio_end = high_mmio_end
             .checked_add(high_mmio_size)
-            .context("high mmio overflow")?;
+            .context("pci high mmio overflow")?;
+        ecam_end = ecam_end
+            .checked_add(ecam_size)
+            .context("pci ecam overflow")?;
 
+        let ecam_range = MemoryRange::new(ecam_end - ecam_size..ecam_end);
         let low_mmio = MemoryRange::new(low_mmio_start..low_mmio_start + low_mmio_size);
         let high_mmio = MemoryRange::new(high_mmio_end - high_mmio_size..high_mmio_end);
 
-        device_reserved_gaps.push(low_mmio);
-        device_reserved_gaps.push(high_mmio);
+        pci_ecam_gaps.push(ecam_range);
+        pci_mmio_gaps.push(low_mmio);
+        pci_mmio_gaps.push(high_mmio);
 
         pcie_root_complexes.push(PcieRootComplexConfig {
             index: i as u32,
@@ -770,13 +779,16 @@ async fn vm_config_from_command_line(
             segment: rc_cli.segment,
             start_bus: rc_cli.start_bus,
             end_bus: rc_cli.end_bus,
+            ecam_range,
             low_mmio,
             high_mmio,
             ports,
         });
     }
 
-    device_reserved_gaps.sort();
+    pci_ecam_gaps.sort();
+    pci_mmio_gaps.sort();
+
     let pcie_switches = build_switch_list(&opt.pcie_switch);
 
     #[cfg(windows)]
@@ -1404,9 +1416,9 @@ async fn vm_config_from_command_line(
         memory: MemoryConfig {
             mem_size: opt.memory,
             mmio_gaps,
-            device_reserved_gaps,
+            pci_ecam_gaps,
+            pci_mmio_gaps,
             prefetch_memory: opt.prefetch,
-            pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
         },
         processor_topology: ProcessorTopologyConfig {
             proc_count: opt.processors,

@@ -178,6 +178,7 @@ pub struct PcieRootComplexConfig {
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
+    pub ecam_range: MemoryRange,
     pub low_mmio: MemoryRange,
     pub high_mmio: MemoryRange,
     pub ports: Vec<PcieRootPortConfig>,
@@ -272,9 +273,9 @@ pub enum ArchTopologyConfig {
 pub struct MemoryConfig {
     pub mem_size: u64,
     pub mmio_gaps: Vec<MemoryRange>,
-    pub device_reserved_gaps: Vec<MemoryRange>,
+    pub pci_ecam_gaps: Vec<MemoryRange>,
+    pub pci_mmio_gaps: Vec<MemoryRange>,
     pub prefetch_memory: bool,
-    pub pcie_ecam_base: u64,
 }
 
 #[derive(Debug, MeshPayload, Default)]

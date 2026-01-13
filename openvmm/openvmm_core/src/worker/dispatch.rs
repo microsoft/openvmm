@@ -113,7 +113,6 @@ use vm_resource::kind::KeyboardInputHandleKind;
 use vm_resource::kind::MouseInputHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
-use vm_topology::memory::AddressType;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::pcie::PcieHostBridge;
 use vm_topology::processor::ArchTopology;
@@ -871,7 +870,8 @@ impl InitializedVm {
                         physical_address_size,
                         cfg.memory.mem_size,
                         &cfg.memory.mmio_gaps,
-                        &cfg.memory.device_reserved_gaps,
+                        &cfg.memory.pci_ecam_gaps,
+                        &cfg.memory.pci_mmio_gaps,
                         igvm_file
                             .as_ref()
                             .expect("igvm file should be already parsed"),
@@ -891,7 +891,8 @@ impl InitializedVm {
         let mem_layout = MemoryLayout::new(
             cfg.memory.mem_size,
             &cfg.memory.mmio_gaps,
-            &cfg.memory.device_reserved_gaps,
+            &cfg.memory.pci_ecam_gaps,
+            &cfg.memory.pci_mmio_gaps,
             vtl2_range,
         )
         .context("invalid memory configuration")?;
@@ -1779,31 +1780,7 @@ impl InitializedVm {
         let pcie_host_bridges = {
             let mut pcie_host_bridges = Vec::new();
 
-            // ECAM allocation starts at the configured base and grows upwards.
-            let mut ecam_address = cfg.memory.pcie_ecam_base;
-
             for rc in cfg.pcie_root_complexes {
-                // Low and high MMIO allocations should already be setup by the control process
-                // and reserved in the memory layout.
-                if mem_layout
-                    .probe_address(rc.low_mmio.start())
-                    .is_none_or(|t| t != AddressType::DeviceReserved)
-                {
-                    anyhow::bail!(
-                        "low MMIO for pcie {} not reserved in memory layout",
-                        rc.name
-                    );
-                }
-                if mem_layout
-                    .probe_address(rc.high_mmio.start())
-                    .is_none_or(|t| t != AddressType::DeviceReserved)
-                {
-                    anyhow::bail!(
-                        "high MMIO for pcie {} not reserved in memory layout",
-                        rc.name
-                    );
-                }
-
                 let device_name = format!("pcie-root:{}", rc.name);
                 let root_complex =
                     chipset_builder
@@ -1822,27 +1799,23 @@ impl InitializedVm {
                                 &mut services.register_mmio(),
                                 rc.start_bus,
                                 rc.end_bus,
-                                ecam_address,
+                                rc.ecam_range,
                                 root_port_definitions,
                             )
                         })?;
-
-                let ecam_size = root_complex.lock().ecam_size();
 
                 pcie_host_bridges.push(PcieHostBridge {
                     index: rc.index,
                     segment: rc.segment,
                     start_bus: rc.start_bus,
                     end_bus: rc.end_bus,
-                    ecam_range: MemoryRange::new(ecam_address..ecam_address + ecam_size),
+                    ecam_range: rc.ecam_range,
                     low_mmio: rc.low_mmio,
                     high_mmio: rc.high_mmio,
                 });
 
                 let bus_id = vmotherboard::BusId::new(&rc.name);
                 chipset_builder.register_weak_mutex_pcie_enumerator(bus_id, Box::new(root_complex));
-
-                ecam_address += ecam_size;
             }
 
             pcie_host_bridges
