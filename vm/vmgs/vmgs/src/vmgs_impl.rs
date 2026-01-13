@@ -649,8 +649,8 @@ impl Vmgs {
         // populate the allocation list with any existing files
         let mut allocation_list = self
             .fcbs
-            .iter()
-            .map(|(_, fcb)| AllocationBlock {
+            .values()
+            .map(|fcb| AllocationBlock {
                 block_offset: fcb.block_offset,
                 allocated_blocks: fcb.allocated_blocks.get(),
             })
@@ -839,7 +839,7 @@ impl Vmgs {
 
     /// Writes `buf` to the block offset specified in the file control block.
     /// Encrypts the data and returns the auth tag if applicable.
-    async fn write_file_internal<'a>(
+    async fn write_file_internal(
         &mut self,
         fcb: &ResolvedFileControlBlock,
         buf: &[u8],
@@ -1044,7 +1044,7 @@ impl Vmgs {
                             .log_event_fatal(VmgsLogEvent::AccessFailed)
                             .await;
 
-                        return Err(e.into());
+                        return Err(e);
                     }
                     Ok(b) => b,
                 };
@@ -1060,7 +1060,7 @@ impl Vmgs {
                 Ok(decrypted)
             }
         } else if fcb.is_encrypted() && decrypt {
-            return Err(Error::ReadEncrypted);
+            Err(Error::ReadEncrypted)
         } else {
             Ok(buf)
         }
@@ -1692,7 +1692,7 @@ struct AllocationBlock {
 /// maps out the used/unused space in the file and finds the smallest
 /// unused space to allocate new data.
 fn allocate_helper(
-    allocation_list: &mut Vec<AllocationBlock>,
+    allocation_list: &mut [AllocationBlock],
     block_count: u32,
     block_capacity: u32,
 ) -> Result<u32, Error> {
