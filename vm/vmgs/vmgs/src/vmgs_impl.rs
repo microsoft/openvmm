@@ -221,6 +221,7 @@ impl<'a> RefOrOwned<'a> {
         }
     }
 
+    #[cfg_attr(not(with_encryption), expect(dead_code))]
     fn replace(&mut self, new_value: Self) {
         assert_eq!(self.len(), new_value.len());
         *self = new_value;
@@ -290,8 +291,8 @@ impl<'a> AllocResult<'a> {
             )?;
 
             self.data.replace(RefOrOwned::Owned(encrypted_data));
+            Ok(())
         }
-        Ok(())
     }
 }
 
@@ -318,7 +319,7 @@ pub struct Vmgs {
     #[cfg_attr(feature = "inspect", inspect(with = "vmgs_inspect::fcbs"))]
     fcbs: HashMap<FileId, ResolvedFileControlBlock>,
     encryption_algorithm: EncryptionAlgorithm,
-    #[cfg_attr(with_encryption, allow(dead_code))]
+    #[cfg_attr(not(with_encryption), expect(dead_code))]
     datastore_key_count: u8,
     active_datastore_key_index: Option<usize>,
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
@@ -564,57 +565,14 @@ impl Vmgs {
             logger,
         };
 
-        vmgs.initialize_file_metadata().await?;
+        let file_table_buffer = vmgs.read_file_internal(FileId::FILE_TABLE, false).await?;
+        vmgs.fcbs = initialize_file_metadata(
+            VmgsFileTable::ref_from_bytes(&file_table_buffer).unwrap(),
+            version,
+            vmgs.storage.block_capacity(),
+        )?;
 
         Ok(vmgs)
-    }
-
-    /// Initializes cached file metadata from the specified header. (File control blocks)
-    async fn initialize_file_metadata(&mut self) -> Result<(), Error> {
-        let file_table_buffer = self.read_file_internal(FileId::FILE_TABLE, false).await?;
-        let file_table = VmgsFileTable::ref_from_bytes(&file_table_buffer).unwrap();
-        let file_entries = file_table.entries;
-
-        for (file_id, file_entry) in file_entries.iter().enumerate() {
-            let file_id = FileId(file_id as u32);
-
-            // Check if the file is allocated.
-            if file_entry.allocation_size == 0 {
-                continue;
-            };
-
-            // Validate the file offset.
-            if file_entry.offset < VMGS_MIN_FILE_BLOCK_OFFSET
-                || file_entry.offset >= self.storage.block_capacity()
-            {
-                return Err(Error::CorruptFormat(format!(
-                    "Invalid file offset {} for file_id {:?} \n{:?}",
-                    file_entry.offset, file_id, file_entry
-                )));
-            }
-
-            // The file must entirely fit in the available space.
-            let file_allocation_end_block = file_entry.offset + file_entry.allocation_size;
-            if file_allocation_end_block > self.storage.block_capacity() {
-                return Err(Error::CorruptFormat(String::from(
-                    "Invalid file allocation end block",
-                )));
-            }
-
-            // Validate the valid data size.
-            let file_allocation_size_bytes = block_count_to_byte_count(file_entry.allocation_size);
-            if file_entry.valid_data_size > file_allocation_size_bytes {
-                return Err(Error::CorruptFormat(String::from("Invalid data size")));
-            }
-
-            // Initialize the file control block for this file ID
-            self.fcbs.insert(
-                file_id,
-                ResolvedFileControlBlock::from_file_entry(self.version, file_entry),
-            );
-        }
-
-        Ok(())
     }
 
     fn new(storage: VmgsStorage, version: u32, logger: Option<Arc<dyn VmgsLogger>>) -> Vmgs {
@@ -1580,6 +1538,54 @@ pub fn validate_header(header: &VmgsHeader) -> Result<&VmgsHeader, Error> {
     Ok(header)
 }
 
+/// Initializes cached file metadata from the specified header. (File control blocks)
+fn initialize_file_metadata(
+    file_table: &VmgsFileTable,
+    version: u32,
+    block_capacity: u32,
+) -> Result<HashMap<FileId, ResolvedFileControlBlock>, Error> {
+    let mut fcbs = HashMap::new();
+
+    for (file_id, file_entry) in file_table.entries.iter().enumerate() {
+        let file_id = FileId(file_id as u32);
+
+        // Check if the file is allocated.
+        if file_entry.allocation_size == 0 {
+            continue;
+        };
+
+        // Validate the file offset.
+        if file_entry.offset < VMGS_MIN_FILE_BLOCK_OFFSET || file_entry.offset >= block_capacity {
+            return Err(Error::CorruptFormat(format!(
+                "Invalid file offset {} for file_id {:?} \n{:?}",
+                file_entry.offset, file_id, file_entry
+            )));
+        }
+
+        // The file must entirely fit in the available space.
+        let file_allocation_end_block = file_entry.offset + file_entry.allocation_size;
+        if file_allocation_end_block > block_capacity {
+            return Err(Error::CorruptFormat(String::from(
+                "Invalid file allocation end block",
+            )));
+        }
+
+        // Validate the valid data size.
+        let file_allocation_size_bytes = block_count_to_byte_count(file_entry.allocation_size);
+        if file_entry.valid_data_size > file_allocation_size_bytes {
+            return Err(Error::CorruptFormat(String::from("Invalid data size")));
+        }
+
+        // Initialize the file control block for this file ID
+        fcbs.insert(
+            file_id,
+            ResolvedFileControlBlock::from_file_entry(version, file_entry),
+        );
+    }
+
+    Ok(fcbs)
+}
+
 /// Convert block count to byte count.
 fn block_count_to_byte_count(block_count: u32) -> u64 {
     block_count as u64 * VMGS_BYTES_PER_BLOCK as u64
@@ -2302,32 +2308,32 @@ mod tests {
         };
     }
 
-    // #[test]
-    // fn test_initialize_file_metadata() {
-    //     let mut file_table = VmgsFileTable::new_zeroed();
+    #[test]
+    fn test_initialize_file_metadata() {
+        let mut file_table = VmgsFileTable::new_zeroed();
 
-    //     file_table.entries[0].offset = 6;
-    //     file_table.entries[0].allocation_size = 1;
-    //     file_table.entries[1].offset = 2;
-    //     file_table.entries[1].allocation_size = 1;
-    //     file_table.entries[2].offset = 4;
-    //     file_table.entries[2].allocation_size = 5;
-    //     file_table.entries[3].offset = 3;
-    //     file_table.entries[3].allocation_size = 3;
+        file_table.entries[0].offset = 6;
+        file_table.entries[0].allocation_size = 1;
+        file_table.entries[1].offset = 2;
+        file_table.entries[1].allocation_size = 1;
+        file_table.entries[2].offset = 4;
+        file_table.entries[2].allocation_size = 5;
+        file_table.entries[3].offset = 3;
+        file_table.entries[3].allocation_size = 3;
 
-    //     let block_capacity = 1000;
+        let block_capacity = 1000;
 
-    //     let fcbs = initialize_file_metadata(&file_table, VMGS_VERSION_3_0, block_capacity).unwrap();
-    //     // assert VmgsFileEntry correctly converted to FileControlBlock
-    //     assert!(fcbs[&FileId(0)].block_offset == 6);
-    //     assert!(fcbs[&FileId(0)].allocated_blocks.get() == 1);
-    //     assert!(fcbs[&FileId(1)].block_offset == 2);
-    //     assert!(fcbs[&FileId(1)].allocated_blocks.get() == 1);
-    //     assert!(fcbs[&FileId(2)].block_offset == 4);
-    //     assert!(fcbs[&FileId(2)].allocated_blocks.get() == 5);
-    //     assert!(fcbs[&FileId(3)].block_offset == 3);
-    //     assert!(fcbs[&FileId(3)].allocated_blocks.get() == 3);
-    // }
+        let fcbs = initialize_file_metadata(&file_table, VMGS_VERSION_3_0, block_capacity).unwrap();
+        // assert VmgsFileEntry correctly converted to FileControlBlock
+        assert!(fcbs[&FileId(0)].block_offset == 6);
+        assert!(fcbs[&FileId(0)].allocated_blocks.get() == 1);
+        assert!(fcbs[&FileId(1)].block_offset == 2);
+        assert!(fcbs[&FileId(1)].allocated_blocks.get() == 1);
+        assert!(fcbs[&FileId(2)].block_offset == 4);
+        assert!(fcbs[&FileId(2)].allocated_blocks.get() == 5);
+        assert!(fcbs[&FileId(3)].block_offset == 3);
+        assert!(fcbs[&FileId(3)].allocated_blocks.get() == 3);
+    }
 
     #[test]
     fn test_round_up_count() {
