@@ -72,7 +72,7 @@ impl CommonState {
 
         let ram_size = 0x400000;
         let memory_layout =
-            MemoryLayout::new(ram_size, &[], &[], None).context("bad memory layout")?;
+            MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
 
         Ok(Self {
             driver,
