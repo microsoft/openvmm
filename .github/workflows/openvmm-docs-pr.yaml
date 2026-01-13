@@ -308,7 +308,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey.exe e 1 flowey_lib_common::download_protoc 0
+        flowey.exe e 1 flowey_lib_common::resolve_protoc 0
         flowey.exe e 1 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc
@@ -473,7 +473,7 @@ jobs:
       shell: bash
     - name: unpack protoc
       run: |-
-        flowey e 2 flowey_lib_common::download_protoc 0
+        flowey e 2 flowey_lib_common::resolve_protoc 0
         flowey e 2 flowey_lib_hvlite::cfg_openvmm_magicpath 0
       shell: bash
     - name: symlink protoc

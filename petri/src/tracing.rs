@@ -26,9 +26,10 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 /// A source of [`PetriLogFile`] log files for test output.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PetriLogSource(Arc<LogSourceInner>);
 
+#[derive(Debug)]
 struct LogSourceInner {
     root_path: PathBuf,
     json_log: JsonLog,
@@ -156,7 +157,7 @@ impl PetriLogSource {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct JsonLog(Arc<File>);
 
 impl JsonLog {
@@ -199,6 +200,7 @@ impl JsonLog {
     }
 }
 
+#[derive(Debug)]
 struct LogFileInner {
     file: File,
     json_log: JsonLog,
@@ -242,7 +244,7 @@ impl std::io::Write for LogWriter<'_> {
 /// Generally, you should use [`tracing`] for test-generated logging. This type
 /// is for writing fully-formed text entries that come from an external source,
 /// such as another process or a guest serial port.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PetriLogFile(Arc<LogFileInner>);
 
 impl PetriLogFile {

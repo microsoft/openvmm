@@ -53,7 +53,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
         ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
         ctx.import::<flowey_lib_common::download_nuget_exe::Node>();
-        ctx.import::<flowey_lib_common::download_protoc::Node>();
+        ctx.import::<flowey_lib_common::resolve_protoc::Node>();
         ctx.import::<flowey_lib_common::git_checkout::Node>();
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();

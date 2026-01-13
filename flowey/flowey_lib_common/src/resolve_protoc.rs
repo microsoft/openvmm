@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Download a copy of `protoc` for the current platform
+//! Download a copy of `protoc` for the current platform or use a local copy.
 
 use flowey::node::prelude::*;
 
@@ -11,8 +11,52 @@ pub struct ProtocPackage {
     pub include_dir: PathBuf,
 }
 
+/// Resolve protoc paths from a base directory and validate that they exist.
+/// If make_executable is true, this function will attempt to make the protoc binary executable.
+fn resolve_protoc_from_dir(
+    rt: &mut RustRuntimeServices<'_>,
+    base_dir: &Path,
+    make_executable: bool,
+) -> anyhow::Result<ProtocPackage> {
+    let protoc_bin = base_dir
+        .join("bin")
+        .join(rt.platform().binary("protoc"))
+        .absolute()?;
+
+    if !protoc_bin.exists() {
+        anyhow::bail!("protoc binary not found at {}", protoc_bin.display())
+    }
+
+    let protoc_bin_executable = protoc_bin.is_executable()?;
+    if !protoc_bin_executable && !make_executable {
+        anyhow::bail!(
+            "protoc binary at {} is not executable",
+            protoc_bin.display()
+        );
+    }
+
+    if make_executable {
+        protoc_bin.make_executable()?;
+    }
+
+    let include_dir = base_dir.join("include").absolute()?;
+    if !include_dir.exists() {
+        anyhow::bail!(
+            "protoc include directory not found at {}",
+            include_dir.display()
+        )
+    }
+
+    Ok(ProtocPackage {
+        protoc_bin,
+        include_dir,
+    })
+}
+
 flowey_request! {
     pub enum Request {
+        /// Use a locally downloaded protoc
+        LocalPath(PathBuf),
         /// What version to download (e.g: 27.1)
         Version(String),
         /// Return paths to items in the protoc package
@@ -33,22 +77,53 @@ impl FlowNode for Node {
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let mut version = None;
+        let mut local_path = None;
         let mut get_reqs = Vec::new();
 
         for req in requests {
             match req {
+                Request::LocalPath(path) => {
+                    same_across_all_reqs("LocalPath", &mut local_path, path)?
+                }
                 Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
                 Request::Get(v) => get_reqs.push(v),
             }
         }
 
-        let version = version.ok_or(anyhow::anyhow!("Missing essential request: Version"))?;
+        if version.is_some() && local_path.is_some() {
+            anyhow::bail!("Cannot specify both Version and LocalPath requests");
+        }
+
+        if version.is_none() && local_path.is_none() {
+            anyhow::bail!("Must specify a Version or LocalPath request");
+        }
 
         // -- end of req processing -- //
 
         if get_reqs.is_empty() {
             return Ok(());
         }
+
+        if let Some(local_path) = local_path {
+            ctx.emit_rust_step("use local protoc", |ctx| {
+                let get_reqs = get_reqs.claim(ctx);
+                let local_path = local_path.clone();
+                move |rt| {
+                    log::info!("using protoc from base path {}", local_path.display());
+
+                    // If a local path is specified, assume protoc is already executable. This is necessary because a
+                    // nix-shell is unable to change file permissions but the file will be executable.
+                    let pkg = resolve_protoc_from_dir(rt, &local_path, false)?;
+                    rt.write_all(get_reqs, &pkg);
+
+                    Ok(())
+                }
+            });
+
+            return Ok(());
+        }
+
+        let version = version.expect("local requests handled above");
 
         let tag = format!("v{version}");
         let file_name = format!(
@@ -90,23 +165,7 @@ impl FlowNode for Node {
                     &tag,
                 )?;
 
-                let protoc_bin = extract_dir
-                    .join("bin")
-                    .join(rt.platform().binary("protoc"))
-                    .absolute()?;
-
-                assert!(protoc_bin.exists());
-
-                protoc_bin.make_executable()?;
-
-                let protoc_includes = extract_dir.join("include").absolute()?;
-                assert!(protoc_includes.exists());
-
-                let pkg = ProtocPackage {
-                    protoc_bin,
-                    include_dir: protoc_includes,
-                };
-
+                let pkg = resolve_protoc_from_dir(rt, &extract_dir, true)?;
                 rt.write_all(get_reqs, &pkg);
 
                 Ok(())

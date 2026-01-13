@@ -178,12 +178,16 @@ pub struct BuildIgvmCliCustomizations {
 
     /// (experimental) Only use local dependencies to build. Keeps flowey from
     /// downloading any dependencies from the internet.
-    #[clap(long, requires_all = ["custom_openvmm_deps"])]
+    #[clap(long, requires_all = ["custom_openvmm_deps", "custom_protoc"])]
     pub use_local_deps: bool,
 
     /// Use a custom openvmm_deps directory.
     #[clap(long)]
     pub custom_openvmm_deps: Option<PathBuf>,
+
+    /// Use a custom protoc directory.
+    #[clap(long)]
+    pub custom_protoc: Option<PathBuf>,
 }
 
 #[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
@@ -304,7 +308,8 @@ impl IntoPipeline for BuildIgvmCli {
                     mut custom_extra_rootfs,
                     max_trace_level,
                     custom_openvmm_deps,
-                    use_local_deps,
+                    custom_protoc,
+                    use_local_deps: _, // Clap already validated that all required fields are present
                 },
         } = self;
 
@@ -333,17 +338,26 @@ impl IntoPipeline for BuildIgvmCli {
             "build-igvm",
         );
 
-        job = if use_local_deps {
-            let openvmm_deps_path = custom_openvmm_deps.unwrap();
-            job.dep_on(move |_| {
-                flowey_lib_hvlite::_jobs::cfg_versions::Request::Local(
+        // Initialize cfg_versions job, this makes sure everything will be downloaded
+        // and versions are set up correctly unless overriden by other parameters.
+        job = job.dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init);
+
+        // Override openvmm_deps with a local path if specified
+        if let Some(openvmm_deps_path) = custom_openvmm_deps {
+            job = job.dep_on(move |_| {
+                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalOpenvmmDeps(
                     recipe_arch,
                     openvmm_deps_path,
                 )
-            })
-        } else {
-            job.dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Download)
-        };
+            });
+        }
+
+        // Override protoc with a local path if specified
+        if let Some(protoc_path) = custom_protoc {
+            job = job.dep_on(move |_| {
+                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalProtoc(protoc_path)
+            });
+        }
 
         job.dep_on(
             |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {

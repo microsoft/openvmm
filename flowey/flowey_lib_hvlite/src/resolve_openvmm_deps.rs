@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Download various pre-built `openvmm-deps` dependencies.
+//! Download various pre-built `openvmm-deps` dependencies, or use a local path if specified.
 
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
