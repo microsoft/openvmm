@@ -57,7 +57,6 @@ use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
 use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
 use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
-use openvmm_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
@@ -344,9 +343,9 @@ impl PetriVmConfigOpenVmm {
                     (false, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86.into(),
                     (false, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64.into(),
                 },
-                device_reserved_gaps: vec![],
+                pci_ecam_gaps: vec![],
+                pci_mmio_gaps: vec![],
                 prefetch_memory: false,
-                pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
             }
         };
 
