@@ -196,6 +196,10 @@ enum RefOrOwned<'a> {
 }
 
 impl<'a> RefOrOwned<'a> {
+    fn placeholder<T>() -> Self {
+        RefOrOwned::Owned(vec![0; size_of::<T>()])
+    }
+
     fn len(&self) -> usize {
         match self {
             RefOrOwned::Ref(x) => x.len(),
@@ -203,27 +207,100 @@ impl<'a> RefOrOwned<'a> {
         }
     }
 
-    fn as_mut(&mut self) -> &mut [u8] {
+    fn copy_from_slice(&mut self, src: &[u8]) {
         match self {
-            RefOrOwned::Ref(_) => panic!("can only modify owned value"),
-            RefOrOwned::Owned(x) => x,
+            RefOrOwned::Ref(_) => panic!("cannot modify ref"),
+            RefOrOwned::Owned(x) => x.copy_from_slice(src),
         }
     }
 
-    fn as_ref(&self) -> &[u8] {
+    fn get(&self) -> &[u8] {
         match self {
             RefOrOwned::Ref(x) => x,
             RefOrOwned::Owned(x) => x,
         }
     }
+
+    fn replace(&mut self, new_value: Self) {
+        assert_eq!(self.len(), new_value.len());
+        *self = new_value;
+    }
+}
+
+struct AllocRequest<'a> {
+    data: RefOrOwned<'a>,
+    encrypt: bool,
+}
+
+impl<'a> AllocRequest<'a> {
+    fn new(data: RefOrOwned<'a>, encrypt: bool) -> Self {
+        Self { data, encrypt }
+    }
+
+    fn allocate(
+        self,
+        allocation_list: &mut Vec<AllocationBlock>,
+        block_capacity: u32,
+    ) -> Result<AllocResult<'a>, Error> {
+        let valid_bytes = self.data.len();
+
+        let mut block_count = (round_up_count(valid_bytes, VMGS_BYTES_PER_BLOCK)
+            / VMGS_BYTES_PER_BLOCK as u64) as u32;
+        // Always allocate at least one block, to allow for zero sized data buffers
+        if block_count == 0 {
+            block_count = 1;
+        }
+        if block_count as u64 > vmgs_format::VMGS_MAX_FILE_SIZE_BLOCKS {
+            return Err(Error::WriteFileBlocks);
+        }
+
+        let block_offset = allocate_helper(allocation_list, block_count, block_capacity)?;
+
+        allocation_list.push(AllocationBlock {
+            block_offset,
+            allocated_blocks: block_count,
+        });
+
+        let fcb =
+            ResolvedFileControlBlock::new(block_offset, block_count, valid_bytes, self.encrypt);
+
+        Ok(AllocResult {
+            fcb,
+            data: self.data,
+        })
+    }
+}
+
+struct AllocResult<'a> {
+    fcb: ResolvedFileControlBlock,
+    data: RefOrOwned<'a>,
+}
+
+impl<'a> AllocResult<'a> {
+    fn encrypt(&mut self) -> Result<(), Error> {
+        #[cfg(not(with_encryption))]
+        unreachable!("Encryption requires the encryption feature");
+        #[cfg(with_encryption)]
+        {
+            let encrypted_data = crate::encrypt::vmgs_encrypt(
+                &self.fcb.encryption_key,
+                &self.fcb.nonce,
+                self.data.get(),
+                &mut self.fcb.authentication_tag,
+            )?;
+
+            self.data.replace(RefOrOwned::Owned(encrypted_data));
+        }
+        Ok(())
+    }
 }
 
 #[derive(PartialEq, Eq)]
-enum ExtendedFileTableUpdate {
-    OnlyIfOtherEncrypted,
+enum UpdateExtendedFileTable {
+    IfWritingEncrypted,
     AlwaysEmptyUnencrypted,
     #[cfg(with_encryption)]
-    AlwaysEncrypted,
+    AlwaysEmptyEncrypted,
 }
 
 /// Implementation of the VMGS file format, backed by a generic [`Disk`]
@@ -241,7 +318,7 @@ pub struct Vmgs {
     #[cfg_attr(feature = "inspect", inspect(with = "vmgs_inspect::fcbs"))]
     fcbs: HashMap<FileId, ResolvedFileControlBlock>,
     encryption_algorithm: EncryptionAlgorithm,
-    #[allow(dead_code)]
+    #[cfg_attr(with_encryption, allow(dead_code))]
     datastore_key_count: u8,
     active_datastore_key_index: Option<usize>,
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
@@ -581,7 +658,7 @@ impl Vmgs {
         // write a blank file table
         vmgs.write_files_internal(
             BTreeMap::new(),
-            ExtendedFileTableUpdate::AlwaysEmptyUnencrypted,
+            UpdateExtendedFileTable::AlwaysEmptyUnencrypted,
         )
         .await?;
 
@@ -609,8 +686,8 @@ impl Vmgs {
     /// unused space to allocate new data.
     fn allocate_space<'a>(
         &self,
-        files_to_allocate: BTreeMap<FileId, (RefOrOwned<'a>, bool)>,
-    ) -> Result<BTreeMap<FileId, (ResolvedFileControlBlock, RefOrOwned<'a>)>, Error> {
+        files_to_allocate: BTreeMap<FileId, AllocRequest<'a>>,
+    ) -> Result<BTreeMap<FileId, AllocResult<'a>>, Error> {
         // populate the allocation list with any existing files
         let mut allocation_list = self
             .fcbs
@@ -624,48 +701,13 @@ impl Vmgs {
         // allocate space for the new files
         files_to_allocate
             .into_iter()
-            .map(|(file_id, (buf, encrypt))| {
+            .map(|(file_id, req)| {
                 Ok((
                     file_id,
-                    (
-                        self.allocate_space_inner(&mut allocation_list, buf.len(), encrypt)?,
-                        buf,
-                    ),
+                    req.allocate(&mut allocation_list, self.storage.block_capacity())?,
                 ))
             })
             .collect()
-    }
-
-    fn allocate_space_inner(
-        &self,
-        allocation_list: &mut Vec<AllocationBlock>,
-        valid_bytes: usize,
-        encrypt: bool,
-    ) -> Result<ResolvedFileControlBlock, Error> {
-        let mut block_count = (round_up_count(valid_bytes, VMGS_BYTES_PER_BLOCK)
-            / VMGS_BYTES_PER_BLOCK as u64) as u32;
-        // Always allocate at least one block, to allow for zero sized data buffers
-        if block_count == 0 {
-            block_count = 1;
-        }
-        if block_count as u64 > vmgs_format::VMGS_MAX_FILE_SIZE_BLOCKS {
-            return Err(Error::WriteFileBlocks);
-        }
-
-        let block_offset =
-            allocate_helper(allocation_list, block_count, self.storage.block_capacity())?;
-
-        allocation_list.push(AllocationBlock {
-            block_offset,
-            allocated_blocks: block_count,
-        });
-
-        Ok(ResolvedFileControlBlock::new(
-            block_offset,
-            block_count,
-            valid_bytes,
-            encrypt,
-        ))
     }
 
     /// Writes `buf` to a file_id, optionally encrypting or overwriting
@@ -716,8 +758,8 @@ impl Vmgs {
         }
 
         self.write_files_internal(
-            [(file_id, (RefOrOwned::Ref(buf), encrypt))].into(),
-            ExtendedFileTableUpdate::OnlyIfOtherEncrypted,
+            [(file_id, AllocRequest::new(RefOrOwned::Ref(buf), encrypt))].into(),
+            UpdateExtendedFileTable::IfWritingEncrypted,
         )
         .await?;
 
@@ -746,75 +788,90 @@ impl Vmgs {
     /// Write a set of files and update the in-memory FCBs if all are successful
     async fn write_files_internal<'a>(
         &mut self,
-        mut files: BTreeMap<FileId, (RefOrOwned<'a>, bool)>,
-        extended_file_table_update: ExtendedFileTableUpdate,
+        mut files: BTreeMap<FileId, AllocRequest<'a>>,
+        update_extended_file_table: UpdateExtendedFileTable,
     ) -> Result<(), Error> {
         // ensure the necessary file tables are in the allocation list
         files.insert(
             FileId::FILE_TABLE,
-            (
-                RefOrOwned::Owned(vec![0; size_of::<VmgsFileTable>()]),
-                false,
-            ),
+            AllocRequest::new(RefOrOwned::placeholder::<VmgsFileTable>(), false),
         );
-        if extended_file_table_update != ExtendedFileTableUpdate::OnlyIfOtherEncrypted
-            || files.iter().any(|(_, (_, encrypt))| *encrypt)
-        {
+
+        let encrypt = files.iter().any(|(_, req)| req.encrypt);
+        if update_extended_file_table != UpdateExtendedFileTable::IfWritingEncrypted || encrypt {
             files.insert(
                 FileId::EXTENDED_FILE_TABLE,
-                (
-                    RefOrOwned::Owned(vec![0; size_of::<VmgsExtendedFileTable>()]),
-                    extended_file_table_update != ExtendedFileTableUpdate::AlwaysEmptyUnencrypted,
+                AllocRequest::new(
+                    RefOrOwned::placeholder::<VmgsExtendedFileTable>(),
+                    update_extended_file_table != UpdateExtendedFileTable::AlwaysEmptyUnencrypted,
                 ),
             );
         }
 
-        // allocate space for the files and encypt if necessary
-        let mut files = self
-            .allocate_space(files)?
-            .into_iter()
-            .map(Self::maybe_encrypt)
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        // allocate space for the files
+        let mut files = self.allocate_space(files)?;
 
-        {
-            let (temp_fcbs, mut temp_data): (BTreeMap<_, _>, BTreeMap<_, _>) = files
-                .iter_mut()
-                .map(|(file_id, (fcb, buf))| ((file_id, &*fcb), (file_id, buf)))
-                .unzip();
-            if let Some(buf) = temp_data.get_mut(&FileId::EXTENDED_FILE_TABLE) {
-                self.fill_extended_file_table(
-                    temp_fcbs,
-                    VmgsExtendedFileTable::mut_from_bytes(buf.as_mut()).unwrap(),
-                )?;
+        // encrypt anything that needs to be encrypted except the extended file
+        // table, which hasn't been generated yet.
+        for (file_id, res) in files.iter_mut() {
+            if *file_id != FileId::EXTENDED_FILE_TABLE && res.fcb.is_encrypted() {
+                res.encrypt()?;
             }
         }
 
-        if let Some((fcb, buf)) = files.get_mut(&FileId::EXTENDED_FILE_TABLE) {
-            Self::encrypt(fcb, buf)?;
-        }
+        // generate the extended file table
+        let new_extended_file_table =
+            (update_extended_file_table == UpdateExtendedFileTable::IfWritingEncrypted && encrypt)
+                .then(|| {
+                    self.make_extended_file_table(
+                        files.iter().map(|(file_id, res)| (file_id, &res.fcb)),
+                    )
+                })
+                .transpose()?;
 
-        // extract the new key and generate the file tables
-        let (temp_fcbs, mut temp_data): (BTreeMap<_, _>, BTreeMap<_, _>) = files
-            .iter_mut()
-            .map(|(file_id, (fcb, buf))| ((file_id, &*fcb), (file_id, buf)))
-            .unzip();
-        let new_metadata_key = temp_fcbs
-            .get(&FileId::EXTENDED_FILE_TABLE)
-            .map(|fcb: &&ResolvedFileControlBlock| fcb.encryption_key);
+        // insert and encrypt the extended file table, extracting the new
+        // metadata key
+        let new_metadata_key = if update_extended_file_table
+            != UpdateExtendedFileTable::AlwaysEmptyUnencrypted
+        {
+            files
+                .get_mut(&FileId::EXTENDED_FILE_TABLE)
+                .map(|res| -> Result<Option<VmgsDatastoreKey>, Error> {
+                    if let Some(eft) = new_extended_file_table.as_ref() {
+                        res.data.copy_from_slice(eft.as_bytes());
+                    }
+                    if update_extended_file_table == UpdateExtendedFileTable::AlwaysEmptyUnencrypted
+                    {
+                        Ok(None)
+                    } else {
+                        res.encrypt()?;
+                        Ok(Some(res.fcb.encryption_key))
+                    }
+                })
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+
+        // generate the file table now that all of the nonces and auth tags
+        // are in the temporary fcbs
         let new_file_table =
-            VmgsFileTable::mut_from_bytes(temp_data.get_mut(&FileId::FILE_TABLE).unwrap().as_mut())
-                .unwrap();
-        self.fill_file_table(temp_fcbs.clone(), new_file_table)?;
+            self.make_file_table(files.iter().map(|(file_id, res)| (file_id, &res.fcb)))?;
+        files
+            .get_mut(&FileId::FILE_TABLE)
+            .unwrap()
+            .data
+            .copy_from_slice(new_file_table.as_bytes());
 
         // write the files
-        for (_, (fcb, buf)) in files.iter_mut() {
-            self.write_file_internal(fcb, buf.as_ref()).await?;
+        for (_, res) in files.iter() {
+            self.write_file_internal(&res.fcb, res.data.get()).await?;
         }
 
-        // update the cache if successful
+        // update the fcb and metadata key cache if successful
         self.fcbs
-            .extend(files.into_iter().map(|(file_id, (fcb, _))| (file_id, fcb)));
-
+            .extend(files.into_iter().map(|(file_id, res)| (file_id, res.fcb)));
         if let Some(new_metadata_key) = new_metadata_key {
             self.metadata_key = new_metadata_key;
         }
@@ -822,42 +879,11 @@ impl Vmgs {
         Ok(())
     }
 
-    fn maybe_encrypt<'a>(
-        file: (FileId, (ResolvedFileControlBlock, RefOrOwned<'a>)),
-    ) -> Result<(FileId, (ResolvedFileControlBlock, RefOrOwned<'a>)), Error> {
-        let (file_id, (mut fcb, mut buf)) = file;
-        // encrypt the data if necessary
-        if fcb.is_encrypted() && file_id != FileId::EXTENDED_FILE_TABLE {
-            Self::encrypt(&mut fcb, &mut buf)?
-        }
-        Ok((file_id, (fcb, buf)))
-    }
-
-    fn encrypt<'a>(
-        fcb: &mut ResolvedFileControlBlock,
-        buf: &mut RefOrOwned<'a>,
-    ) -> Result<(), Error> {
-        #[cfg(not(with_encryption))]
-        unreachable!("Encryption requires the encryption feature");
-        #[cfg(with_encryption)]
-        {
-            let encrypted_data = crate::encrypt::vmgs_encrypt(
-                &fcb.encryption_key,
-                &fcb.nonce,
-                buf.as_ref(),
-                &mut fcb.authentication_tag,
-            )?;
-
-            *buf = RefOrOwned::Owned(encrypted_data);
-        }
-        Ok(())
-    }
-
     /// Writes `buf` to the block offset specified in the file control block.
     /// Encrypts the data and returns the auth tag if applicable.
     async fn write_file_internal<'a>(
         &mut self,
-        fcb: &mut ResolvedFileControlBlock,
+        fcb: &ResolvedFileControlBlock,
         buf: &[u8],
     ) -> Result<(), Error> {
         if let Err(e) = self
@@ -876,27 +902,27 @@ impl Vmgs {
     }
 
     /// Copies current file metadata to a file table structure.
-    fn fill_file_table<'a>(
+    fn make_file_table<'a>(
         &'a self,
         temp_fcbs: impl IntoIterator<Item = (&'a FileId, &'a ResolvedFileControlBlock)>,
-        new_file_table: &mut VmgsFileTable,
-    ) -> Result<(), Error> {
+    ) -> Result<VmgsFileTable, Error> {
+        let mut new_file_table = VmgsFileTable::new_zeroed();
         for (file_id, fcb) in self.fcbs.iter().chain(temp_fcbs.into_iter()) {
             fcb.fill_file_entry(self.version, &mut new_file_table.entries[*file_id]);
         }
-        Ok(())
+        Ok(new_file_table)
     }
 
     /// Copies current file metadata to an extended file table structure.
-    fn fill_extended_file_table<'a>(
+    fn make_extended_file_table<'a>(
         &'a self,
         temp_fcbs: impl IntoIterator<Item = (&'a FileId, &'a ResolvedFileControlBlock)>,
-        new_extended_file_table: &mut VmgsExtendedFileTable,
-    ) -> Result<(), Error> {
+    ) -> Result<VmgsExtendedFileTable, Error> {
+        let mut new_extended_file_table = VmgsExtendedFileTable::new_zeroed();
         for (file_id, fcb) in self.fcbs.iter().chain(temp_fcbs.into_iter()) {
             fcb.fill_extended_file_entry(&mut new_extended_file_table.entries[*file_id]);
         }
-        Ok(())
+        Ok(new_extended_file_table)
     }
 
     /// Update and write new header to storage device.
@@ -916,7 +942,6 @@ impl Vmgs {
             file_table_size: file_table_fcb.allocated_blocks.get(),
             encryption_algorithm: self.encryption_algorithm,
             markers: VmgsMarkers::new().with_reprovisioned(self.reprovisioned),
-
             ..VmgsHeader::new_zeroed()
         };
         header
@@ -946,10 +971,6 @@ impl Vmgs {
         header: &VmgsHeader,
         index: usize,
     ) -> Result<(), Error> {
-        eprintln!(
-            "write header seqnum {} table {}",
-            header.sequence, header.file_table_offset
-        );
         assert!(index < 2);
         self.storage
             .write_block(
@@ -1286,8 +1307,11 @@ impl Vmgs {
 
         // Allocate and write the new file tables
         if write_extended_file_table {
-            self.write_files_internal(BTreeMap::new(), ExtendedFileTableUpdate::AlwaysEncrypted)
-                .await?;
+            self.write_files_internal(
+                BTreeMap::new(),
+                UpdateExtendedFileTable::AlwaysEmptyEncrypted,
+            )
+            .await?;
         }
 
         self.encrypt_metadata_key(true)?;
