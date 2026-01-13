@@ -125,7 +125,8 @@ async fn pcie_root_emulation(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
                 let high_mmio_end = c.memory.mmio_gaps[1].end();
                 let pcie_low = MemoryRange::new(low_mmio_start - LOW_MMIO_SIZE..low_mmio_start);
                 let pcie_high = MemoryRange::new(high_mmio_end..high_mmio_end + HIGH_MMIO_SIZE);
-                let ecam_range = MemoryRange::new(DEFAULT_PCIE_ECAM_BASE..DEFAULT_PCIE_ECAM_BASE + ECAM_SIZE);
+                let ecam_range =
+                    MemoryRange::new(DEFAULT_PCIE_ECAM_BASE..DEFAULT_PCIE_ECAM_BASE + ECAM_SIZE);
                 c.memory.pci_ecam_gaps.push(ecam_range);
                 c.memory.pci_mmio_gaps.push(pcie_low);
                 c.memory.pci_mmio_gaps.push(pcie_high);

@@ -500,7 +500,8 @@ mod tests {
             .collect();
 
         let mut register_mmio = TestPcieMmioRegistration {};
-        GenericPcieRootComplex::new(&mut register_mmio, start_bus, end_bus, 0, port_defs)
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
+        GenericPcieRootComplex::new(&mut register_mmio, start_bus, end_bus, ecam, port_defs)
     }
 
     #[test]
