@@ -30,6 +30,7 @@ use object::read::pe::PeFile64;
 /// file, but the given resource can not be found or loaded this function
 /// returns Err(...). On success the return value contains the starting offset
 /// into the file and its length.
+/// TODO: change the return types to a proper enum with variants like 'NotPeFile, NotFound, Ok(u64, usize)'
 pub fn try_find_resource_from_dll(
     file: &File,
     descriptor: &DllResourceDescriptor,
