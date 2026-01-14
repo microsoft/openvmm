@@ -673,10 +673,11 @@ impl AdminHandler {
         Ok(())
     }
 
+    // Returns an updated completion if a fault was configured, or None if the completion is to be dropped.
     async fn apply_completion_queue_fault(
         &mut self,
         command: &spec::Command,
-        completion: &spec::Completion, // Required just for logging purposes.
+        completion: &spec::Completion,
     ) -> Option<spec::Completion> {
         let mut updated_completion = Some(completion.clone());
         if self.config.fault_configuration.fault_active.get()
