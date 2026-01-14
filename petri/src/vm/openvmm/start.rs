@@ -43,8 +43,6 @@ impl PetriVmConfigOpenVmm {
             framebuffer_view,
         } = self;
 
-        let has_pcie = !config.pcie_root_complexes.is_empty();
-
         // TODO: OpenHCL needs virt_whp support
         // TODO: PCAT needs vga device support
         // TODO: arm64 is broken?
