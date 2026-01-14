@@ -836,11 +836,7 @@ impl Vmgs {
             .copy_from_slice(new_file_table.as_bytes());
 
         // write the files
-        for (file_id, res) in files.iter() {
-            eprintln!(
-                "DEBUG: write {} {:?} {:?} {:?}",
-                file_id.0, res.fcb.encryption_key, res.fcb.authentication_tag, res.fcb.nonce
-            );
+        for (_, res) in files.iter() {
             self.write_file_internal(&res.fcb, res.data.get()).await?;
         }
 
@@ -936,11 +932,6 @@ impl Vmgs {
             .fcbs
             .get(&file_id)
             .ok_or(Error::FileInfoNotAllocated)?;
-
-        eprintln!(
-            "DEBUG: read {} {:?} {:?} {:?}",
-            file_id.0, fcb.encryption_key, fcb.authentication_tag, fcb.nonce
-        );
 
         // read the file
         let buf = {
@@ -1402,10 +1393,6 @@ impl VmgsState {
     fn make_file_table(&self) -> Result<VmgsFileTable, Error> {
         let mut new_file_table = VmgsFileTable::new_zeroed();
         for (file_id, fcb) in self.fcbs.iter() {
-            eprintln!(
-                "DEBUG: ft write {} {:?} {:?}",
-                file_id.0, fcb.authentication_tag, fcb.nonce
-            );
             fcb.fill_file_entry(self.version, &mut new_file_table.entries[*file_id]);
         }
         Ok(new_file_table)
@@ -1415,12 +1402,6 @@ impl VmgsState {
     fn make_extended_file_table(&self) -> Result<VmgsExtendedFileTable, Error> {
         let mut new_extended_file_table = VmgsExtendedFileTable::new_zeroed();
         for (file_id, fcb) in self.fcbs.iter() {
-            eprintln!(
-                "DEBUG: eft write {} {} {:?}",
-                file_id.0,
-                fcb.is_encrypted(),
-                fcb.encryption_key
-            );
             fcb.fill_extended_file_entry(&mut new_extended_file_table.entries[*file_id]);
         }
         Ok(new_extended_file_table)
