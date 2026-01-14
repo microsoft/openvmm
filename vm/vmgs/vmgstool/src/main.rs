@@ -1439,7 +1439,9 @@ mod tests {
             .await
             .unwrap();
 
-        let buf = read_igvmfile(data_path.clone(), ResourceCode::Snp).await.unwrap();
+        let buf = read_igvmfile(data_path.clone(), ResourceCode::Snp)
+            .await
+            .unwrap();
 
         write_igvmfile(&mut vmgs, false, false, data_path, ResourceCode::Snp)
             .await
@@ -1558,7 +1560,9 @@ mod tests {
             .await
             .unwrap();
 
-        let buf = read_igvmfile(data_path.clone(), ResourceCode::Snp).await.unwrap();
+        let buf = read_igvmfile(data_path.clone(), ResourceCode::Snp)
+            .await
+            .unwrap();
 
         write_igvmfile(&mut vmgs, true, false, data_path, ResourceCode::Snp)
             .await
