@@ -554,6 +554,7 @@ async fn test_vport_with_query_filter_state(driver: DefaultDriver) {
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(LoopbackEndpoint::new()),
+            queue_pairs: 1,
         }],
         &mut ExternallyManagedMmioIntercepts,
     );
@@ -717,6 +718,7 @@ async fn test_endpoint(
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(LoopbackEndpoint::new()),
+            queue_pairs: 1,
         }],
         &mut ExternallyManagedMmioIntercepts,
     );
