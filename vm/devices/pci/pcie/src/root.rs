@@ -460,22 +460,111 @@ impl RootPort {
 
 mod save_restore {
     use super::*;
+    use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
     use vmcore::save_restore::SaveRestore;
-    use vmcore::save_restore::SavedStateNotSupported;
+
+    mod state {
+        use mesh_protobuf::Protobuf;
+        use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
+        use vmcore::save_restore::SaveRestore;
+        use vmcore::save_restore::SavedStateRoot;
+
+        /// Saved state for the GenericPcieRootComplex.
+        #[derive(Protobuf, SavedStateRoot)]
+        #[mesh(package = "pcie.root")]
+        pub struct SavedState {
+            /// The lowest valid bus number under the root complex.
+            #[mesh(1)]
+            pub start_bus: u8,
+            /// The highest valid bus number under the root complex.
+            #[mesh(2)]
+            pub end_bus: u8,
+            /// The root port configuration space states, ordered by port number (index = port number / 8).
+            #[mesh(3)]
+            pub root_ports: Vec<<ConfigSpaceType1Emulator as SaveRestore>::SavedState>,
+        }
+    }
 
     impl SaveRestore for GenericPcieRootComplex {
-        type SavedState = SavedStateNotSupported;
+        type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            Err(SaveError::NotSupported)
+            // Save all root ports in order by port number
+            let port_count = self.ports.len();
+            let mut root_ports = Vec::with_capacity(port_count);
+
+            // Get all port numbers and sort them for consistent ordering
+            let mut port_numbers: Vec<u8> = self.ports.keys().copied().collect();
+            port_numbers.sort();
+
+            for port_number in port_numbers {
+                if let Some((_, root_port)) = self.ports.get_mut(&port_number) {
+                    root_ports.push(root_port.port.cfg_space.save()?);
+                } else {
+                    return Err(SaveError::Other(anyhow::anyhow!(
+                        "root port {} not found during save",
+                        port_number
+                    )));
+                }
+            }
+
+            Ok(state::SavedState {
+                start_bus: self.start_bus,
+                end_bus: self.end_bus,
+                root_ports,
+            })
         }
 
-        fn restore(
-            &mut self,
-            state: Self::SavedState,
-        ) -> Result<(), vmcore::save_restore::RestoreError> {
-            match state {}
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            let state::SavedState {
+                start_bus,
+                end_bus,
+                root_ports,
+            } = state;
+
+            // Validate that bus numbers match
+            if start_bus != self.start_bus || end_bus != self.end_bus {
+                return Err(RestoreError::InvalidSavedState(
+                    anyhow::anyhow!(
+                        "bus number mismatch: saved ({}-{}), current ({}-{})",
+                        start_bus,
+                        end_bus,
+                        self.start_bus,
+                        self.end_bus
+                    )
+                    .into(),
+                ));
+            }
+
+            // Get all port numbers and sort them for consistent ordering
+            let mut port_numbers: Vec<u8> = self.ports.keys().copied().collect();
+            port_numbers.sort();
+
+            // Validate port count matches
+            if root_ports.len() != port_numbers.len() {
+                return Err(RestoreError::InvalidSavedState(
+                    anyhow::anyhow!(
+                        "root port count mismatch: saved {}, current {}",
+                        root_ports.len(),
+                        port_numbers.len()
+                    )
+                    .into(),
+                ));
+            }
+
+            // Restore all root ports (index corresponds to sorted port numbers)
+            for (cfg_space, port_number) in root_ports.into_iter().zip(port_numbers.iter()) {
+                if let Some((_, root_port)) = self.ports.get_mut(port_number) {
+                    root_port.port.cfg_space.restore(cfg_space)?;
+                } else {
+                    return Err(RestoreError::InvalidSavedState(
+                        anyhow::anyhow!("root port {} not found", port_number).into(),
+                    ));
+                }
+            }
+
+            Ok(())
         }
     }
 }
@@ -790,5 +879,142 @@ mod tests {
             .port
             .forward_cfg_write_with_routing(&1, &0, 0x0, value);
         assert!(matches!(result, IoResult::Ok));
+    }
+
+    #[test]
+    fn test_save_restore_basic() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut rc = instantiate_root_complex(0, 255, 4);
+
+        // Save the initial state
+        let saved_state = rc.save().expect("save should succeed");
+
+        // Verify the saved state has the correct values
+        assert_eq!(saved_state.start_bus, 0);
+        assert_eq!(saved_state.end_bus, 255);
+        assert_eq!(saved_state.root_ports.len(), 4);
+
+        // Restore the state to a new root complex
+        let mut rc2 = instantiate_root_complex(0, 255, 4);
+        rc2.restore(saved_state).expect("restore should succeed");
+    }
+
+    #[test]
+    fn test_save_restore_with_bus_configuration() {
+        use vmcore::save_restore::SaveRestore;
+        use zerocopy::IntoBytes;
+
+        const SECONDARY_BUS_NUM_REG: u64 = 0x19;
+        const SUBORDINATE_BUS_NUM_REG: u64 = 0x1A;
+
+        let mut rc = instantiate_root_complex(0, 255, 2);
+
+        // Configure bus numbers on port 0
+        rc.mmio_write(SECONDARY_BUS_NUM_REG, &[1]).unwrap();
+        rc.mmio_write(SUBORDINATE_BUS_NUM_REG, &[10]).unwrap();
+
+        // Configure bus numbers on port 1 (at device 1, so offset by 8*4096)
+        const PORT1_ECAM: u64 = (1 << 3) * 4096;
+        rc.mmio_write(PORT1_ECAM + SECONDARY_BUS_NUM_REG, &[11])
+            .unwrap();
+        rc.mmio_write(PORT1_ECAM + SUBORDINATE_BUS_NUM_REG, &[20])
+            .unwrap();
+
+        // Verify the bus numbers are set
+        let mut bus_number: u8 = 0;
+        rc.mmio_read(SECONDARY_BUS_NUM_REG, bus_number.as_mut_bytes())
+            .unwrap();
+        assert_eq!(bus_number, 1);
+        rc.mmio_read(SUBORDINATE_BUS_NUM_REG, bus_number.as_mut_bytes())
+            .unwrap();
+        assert_eq!(bus_number, 10);
+
+        rc.mmio_read(
+            PORT1_ECAM + SECONDARY_BUS_NUM_REG,
+            bus_number.as_mut_bytes(),
+        )
+        .unwrap();
+        assert_eq!(bus_number, 11);
+        rc.mmio_read(
+            PORT1_ECAM + SUBORDINATE_BUS_NUM_REG,
+            bus_number.as_mut_bytes(),
+        )
+        .unwrap();
+        assert_eq!(bus_number, 20);
+
+        // Save the state
+        let saved_state = rc.save().expect("save should succeed");
+
+        // Create a new root complex and restore the state
+        let mut rc2 = instantiate_root_complex(0, 255, 2);
+
+        // Verify the new root complex has default bus numbers before restore
+        let mut default_bus: u8 = 0xFF;
+        rc2.mmio_read(SECONDARY_BUS_NUM_REG, default_bus.as_mut_bytes())
+            .unwrap();
+        assert_eq!(default_bus, 0);
+
+        // Restore the state
+        rc2.restore(saved_state).expect("restore should succeed");
+
+        // Verify the bus numbers are restored
+        let mut restored_bus: u8 = 0;
+        rc2.mmio_read(SECONDARY_BUS_NUM_REG, restored_bus.as_mut_bytes())
+            .unwrap();
+        assert_eq!(restored_bus, 1);
+        rc2.mmio_read(SUBORDINATE_BUS_NUM_REG, restored_bus.as_mut_bytes())
+            .unwrap();
+        assert_eq!(restored_bus, 10);
+
+        rc2.mmio_read(
+            PORT1_ECAM + SECONDARY_BUS_NUM_REG,
+            restored_bus.as_mut_bytes(),
+        )
+        .unwrap();
+        assert_eq!(restored_bus, 11);
+        rc2.mmio_read(
+            PORT1_ECAM + SUBORDINATE_BUS_NUM_REG,
+            restored_bus.as_mut_bytes(),
+        )
+        .unwrap();
+        assert_eq!(restored_bus, 20);
+    }
+
+    #[test]
+    fn test_save_restore_bus_number_mismatch_error() {
+        use vmcore::save_restore::SaveRestore;
+
+        // Create a root complex with specific bus range
+        let mut rc = instantiate_root_complex(0, 255, 2);
+
+        // Save the state
+        let saved_state = rc.save().expect("save should succeed");
+
+        // Create a new root complex with different bus range
+        let mut rc2 = instantiate_root_complex(0, 127, 2);
+
+        // Restore should fail because bus numbers don't match
+        let result = rc2.restore(saved_state);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_save_restore_port_count_mismatch_error() {
+        use vmcore::save_restore::SaveRestore;
+
+        // Create a root complex with 4 ports
+        let mut rc = instantiate_root_complex(0, 255, 4);
+
+        // Save the state
+        let saved_state = rc.save().expect("save should succeed");
+        assert_eq!(saved_state.root_ports.len(), 4);
+
+        // Create a new root complex with only 2 ports
+        let mut rc2 = instantiate_root_complex(0, 255, 2);
+
+        // Restore should fail because port counts don't match
+        let result = rc2.restore(saved_state);
+        assert!(result.is_err());
     }
 }
