@@ -5616,6 +5616,7 @@ dependencies = [
  "anyhow",
  "chipset_device",
  "inspect",
+ "mesh_protobuf",
  "pal_async",
  "pci_bus",
  "pci_core",

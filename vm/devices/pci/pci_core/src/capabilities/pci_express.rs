@@ -583,7 +583,29 @@ mod save_restore {
             #[mesh(2)]
             pub device_status: u16,
             #[mesh(3)]
-            pub flr_handler: u16,
+            pub link_control: u16,
+            #[mesh(4)]
+            pub link_status: u16,
+            #[mesh(5)]
+            pub slot_control: u16,
+            #[mesh(6)]
+            pub slot_status: u16,
+            #[mesh(7)]
+            pub root_control: u16,
+            #[mesh(8)]
+            pub root_status: u32,
+            #[mesh(9)]
+            pub device_control_2: u16,
+            #[mesh(10)]
+            pub device_status_2: u16,
+            #[mesh(11)]
+            pub link_control_2: u16,
+            #[mesh(12)]
+            pub link_status_2: u16,
+            #[mesh(13)]
+            pub slot_control_2: u16,
+            #[mesh(14)]
+            pub slot_status_2: u16,
         }
     }
 
@@ -591,11 +613,42 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            Err(SaveError::NotSupported)
+            let state = self.state.lock();
+            Ok(state::SavedState {
+                device_control: state.device_control.into_bits(),
+                device_status: state.device_status.into_bits(),
+                link_control: state.link_control.into_bits(),
+                link_status: state.link_status.into_bits(),
+                slot_control: state.slot_control.into_bits(),
+                slot_status: state.slot_status.into_bits(),
+                root_control: state.root_control.into_bits(),
+                root_status: state.root_status.into_bits(),
+                device_control_2: state.device_control_2.into_bits(),
+                device_status_2: state.device_status_2.into_bits(),
+                link_control_2: state.link_control_2.into_bits(),
+                link_status_2: state.link_status_2.into_bits(),
+                slot_control_2: state.slot_control_2.into_bits(),
+                slot_status_2: state.slot_status_2.into_bits(),
+            })
         }
 
-        fn restore(&mut self, _: Self::SavedState) -> Result<(), RestoreError> {
-            Err(RestoreError::SavedStateNotSupported)
+        fn restore(&mut self, saved: Self::SavedState) -> Result<(), RestoreError> {
+            let mut state = self.state.lock();
+            state.device_control = pci_express::DeviceControl::from_bits(saved.device_control);
+            state.device_status = pci_express::DeviceStatus::from_bits(saved.device_status);
+            state.link_control = pci_express::LinkControl::from_bits(saved.link_control);
+            state.link_status = pci_express::LinkStatus::from_bits(saved.link_status);
+            state.slot_control = pci_express::SlotControl::from_bits(saved.slot_control);
+            state.slot_status = pci_express::SlotStatus::from_bits(saved.slot_status);
+            state.root_control = pci_express::RootControl::from_bits(saved.root_control);
+            state.root_status = pci_express::RootStatus::from_bits(saved.root_status);
+            state.device_control_2 = pci_express::DeviceControl2::from_bits(saved.device_control_2);
+            state.device_status_2 = pci_express::DeviceStatus2::from_bits(saved.device_status_2);
+            state.link_control_2 = pci_express::LinkControl2::from_bits(saved.link_control_2);
+            state.link_status_2 = pci_express::LinkStatus2::from_bits(saved.link_status_2);
+            state.slot_control_2 = pci_express::SlotControl2::from_bits(saved.slot_control_2);
+            state.slot_status_2 = pci_express::SlotStatus2::from_bits(saved.slot_status_2);
+            Ok(())
         }
     }
 }
