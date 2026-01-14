@@ -2805,7 +2805,12 @@ impl<T: RingMem> NetChannel<T> {
                         // Switching to guest VF successful.
                         (true, true) => PrimaryChannelGuestVfState::DataPathSwitched,
                         // Switching to guest VF failed, stay synthetic.
-                        (true, false) => PrimaryChannelGuestVfState::DataPathSynthetic,
+                        (true, false) => {
+                            tracing::error!(
+                                "Failure switching to guest VF, remaining on synthetic"
+                            );
+                            PrimaryChannelGuestVfState::DataPathSynthetic
+                        }
                         // Switching to synthetic successful.
                         (false, true) => PrimaryChannelGuestVfState::Ready,
                         // Switching to synthetic failed, assume VF remains active.
