@@ -687,7 +687,7 @@ impl AdminHandler {
                     .fault_configuration
                     .admin_fault
                     .admin_completion_queue_faults,
-                &command,
+                command,
             )
         {
             match fault {
