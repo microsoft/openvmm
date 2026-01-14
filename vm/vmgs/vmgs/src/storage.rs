@@ -82,7 +82,7 @@ impl VmgsStorage {
     /// The beginning of the read must be sector aligned, but the end need not
     /// be.
     pub async fn read_block(
-        &mut self,
+        &self,
         mut byte_offset: u64,
         buf: &mut [u8],
     ) -> Result<(), StorageError> {
