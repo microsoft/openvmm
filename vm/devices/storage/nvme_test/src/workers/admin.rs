@@ -1110,7 +1110,7 @@ impl AdminHandler {
         if state.asynchronous_event_requests.len() >= MAX_ASYNC_EVENT_REQUESTS as usize {
             return Err(spec::Status::ASYNCHRONOUS_EVENT_REQUEST_LIMIT_EXCEEDED.into());
         }
-        state.asynchronous_event_requests.push(command.clone());
+        state.asynchronous_event_requests.push(*command);
         Ok(None)
     }
 
