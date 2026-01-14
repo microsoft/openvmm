@@ -1199,17 +1199,9 @@ async fn write_igvmfile(
     data_path: impl AsRef<Path>,
     resource_code: ResourceCode,
 ) -> Result<(), Error> {
-    use std::os::windows::ffi::OsStrExt;
     eprintln!("Reading IGVMfile from: {}", data_path.as_ref().display());
 
-    // Convert the path to a wide string (UTF-16) for Windows API
-    let dll_path = data_path
-        .as_ref()
-        .as_os_str()
-        .encode_wide()
-        .collect::<Vec<u16>>();
-
-    let bytes = read_igvmfile(dll_path, resource_code).await?;
+    let bytes = read_igvmfile(data_path.as_ref().to_path_buf(), resource_code).await?;
 
     vmgs_write(
         vmgs,
@@ -1223,16 +1215,13 @@ async fn write_igvmfile(
     Ok(())
 }
 
-async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
-    use std::ffi::OsString;
+async fn read_igvmfile(dll_path: PathBuf, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
     use std::io::{Read, Seek, SeekFrom};
-    use std::os::windows::ffi::OsStringExt;
 
     eprintln!("Reading IGVMfile from DLL");
     // Convert the wide string back to a PathBuf
-    let path = PathBuf::from(OsString::from_wide(&dll_path));
 
-    let file = File::open(&path)
+    let file = File::open(dll_path)
         .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to open DLL file: {}", e)))?;
 
     // Try to find the resource in the DLL
@@ -1439,10 +1428,8 @@ mod tests {
     #[cfg(all(windows, guest_arch = "x86_64"))]
     #[async_test]
     async fn read_write_igvmfile() {
-        use std::os::windows::ffi::OsStrExt;
         let (_dir, path) = new_path();
         let data_path = PathBuf::from("C:\\Windows\\System32\\vmfirmwarehcl.dll");
-        let dll_path: Vec<u16> = data_path.as_os_str().encode_wide().collect();
 
         test_vmgs_create(&path, Some(ONE_MEGA_BYTE * 8), false, None)
             .await
@@ -1452,7 +1439,7 @@ mod tests {
             .await
             .unwrap();
 
-        let buf = read_igvmfile(dll_path, ResourceCode::Snp).await.unwrap();
+        let buf = read_igvmfile(data_path.clone(), ResourceCode::Snp).await.unwrap();
 
         write_igvmfile(&mut vmgs, false, false, data_path, ResourceCode::Snp)
             .await
@@ -1553,11 +1540,9 @@ mod tests {
     #[cfg(all(windows, with_encryption, guest_arch = "x86_64"))]
     #[async_test]
     async fn read_write_igvmfile_encrypted() {
-        use std::os::windows::ffi::OsStrExt;
         // Should be able to read and write IGVMfile to an encrypted VMGS
         let (_dir, path) = new_path();
         let data_path = PathBuf::from("C:\\Windows\\System32\\vmfirmwarehcl.dll");
-        let dll_path: Vec<u16> = data_path.as_os_str().encode_wide().collect();
         let encryption_key = vec![5; 32];
 
         test_vmgs_create(
@@ -1573,7 +1558,7 @@ mod tests {
             .await
             .unwrap();
 
-        let buf = read_igvmfile(dll_path, ResourceCode::Snp).await.unwrap();
+        let buf = read_igvmfile(data_path.clone(), ResourceCode::Snp).await.unwrap();
 
         write_igvmfile(&mut vmgs, true, false, data_path, ResourceCode::Snp)
             .await
