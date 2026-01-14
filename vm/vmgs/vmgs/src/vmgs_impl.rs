@@ -244,6 +244,12 @@ impl ResolvedFileControlBlock {
             Ok(decrypted)
         }
     }
+
+    fn clear_encryption(&mut self) {
+        self.nonce.zero();
+        self.authentication_tag.zero();
+        self.encryption_key.zero();
+    }
 }
 
 enum RefOrOwned<'a> {
@@ -696,35 +702,6 @@ impl Vmgs {
             .file_info())
     }
 
-    /// maps out the used/unused space in the file and finds the smallest
-    /// unused space to allocate new data.
-    fn allocate_space<'a>(
-        &self,
-        files_to_allocate: BTreeMap<FileId, AllocRequest<'a>>,
-    ) -> Result<BTreeMap<FileId, AllocResult<'a>>, Error> {
-        // populate the allocation list with any existing files
-        let mut allocation_list = self
-            .state
-            .fcbs
-            .values()
-            .map(|fcb| AllocationBlock {
-                block_offset: fcb.block_offset,
-                allocated_blocks: fcb.allocated_blocks.get(),
-            })
-            .collect();
-
-        // allocate space for the new files
-        files_to_allocate
-            .into_iter()
-            .map(|(file_id, req)| {
-                Ok((
-                    file_id,
-                    req.allocate(&mut allocation_list, self.storage.block_capacity())?,
-                ))
-            })
-            .collect()
-    }
-
     /// Writes `buf` to a file_id, optionally encrypting or overwriting
     /// encrypted data with plaintext. Updates file tables as appropriate.
     async fn write_file_inner(
@@ -807,7 +784,7 @@ impl Vmgs {
         mut files: BTreeMap<FileId, AllocRequest<'a>>,
         temp_state: Option<&mut VmgsState>,
     ) -> Result<(), Error> {
-        let state = temp_state.as_deref().unwrap_or(&self.state);
+        let state = temp_state.unwrap_or(&mut self.state);
 
         // ensure the necessary file tables are in the allocation list
         files.insert(
@@ -822,30 +799,36 @@ impl Vmgs {
         }
 
         // allocate space for the files
-        let mut files = self.allocate_space(files)?;
+        let mut files = state.allocate_space(files, self.storage.block_capacity())?;
 
         // encrypt anything that needs to be encrypted except the extended file
         // table, which hasn't been generated yet.
         for (file_id, res) in files.iter_mut() {
-            if *file_id != FileId::EXTENDED_FILE_TABLE && res.fcb.is_encrypted() {
-                res.encrypt()?;
+            if *file_id != FileId::EXTENDED_FILE_TABLE {
+                if res.fcb.is_encrypted() {
+                    res.encrypt()?;
+                }
+                state.fcbs.insert(*file_id, res.fcb.clone());
             }
         }
 
         // generate and encrypt the extended file table
-        if state.is_encrypted_and_unlocked() {
-            let new_extended_file_table = state
-                .make_extended_file_table(files.iter().map(|(file_id, res)| (file_id, &res.fcb)))?;
-            files
-                .get_mut(&FileId::EXTENDED_FILE_TABLE)
-                .unwrap()
-                .encrypt_from(new_extended_file_table.as_bytes())?;
+        if let Some(res) = files.get_mut(&FileId::EXTENDED_FILE_TABLE) {
+            if state.is_encrypted_and_unlocked() {
+                // clear encryption key so we don't try to decrypt with the old key
+                res.fcb.clear_encryption();
+                let new_extended_file_table = state.make_extended_file_table()?;
+                res.encrypt_from(new_extended_file_table.as_bytes())?;
+            }
+            // add the blank table if specified, even if not encrypted
+            state
+                .fcbs
+                .insert(FileId::EXTENDED_FILE_TABLE, res.fcb.clone());
         }
 
         // generate the file table now that all of the nonces and auth tags
         // are in the temporary fcbs
-        let new_file_table =
-            state.make_file_table(files.iter().map(|(file_id, res)| (file_id, &res.fcb)))?;
+        let new_file_table = state.make_file_table()?;
         files
             .get_mut(&FileId::FILE_TABLE)
             .unwrap()
@@ -853,14 +836,13 @@ impl Vmgs {
             .copy_from_slice(new_file_table.as_bytes());
 
         // write the files
-        for (_, res) in files.iter() {
+        for (file_id, res) in files.iter() {
+            eprintln!(
+                "DEBUG: write {} {:?} {:?} {:?}",
+                file_id.0, res.fcb.encryption_key, res.fcb.authentication_tag, res.fcb.nonce
+            );
             self.write_file_internal(&res.fcb, res.data.get()).await?;
         }
-
-        temp_state
-            .unwrap_or(&mut self.state)
-            .fcbs
-            .extend(files.into_iter().map(|(file_id, res)| (file_id, res.fcb)));
 
         Ok(())
     }
@@ -954,6 +936,11 @@ impl Vmgs {
             .fcbs
             .get(&file_id)
             .ok_or(Error::FileInfoNotAllocated)?;
+
+        eprintln!(
+            "DEBUG: read {} {:?} {:?} {:?}",
+            file_id.0, fcb.encryption_key, fcb.authentication_tag, fcb.nonce
+        );
 
         // read the file
         let buf = {
@@ -1412,27 +1399,57 @@ impl VmgsState {
     }
 
     /// Copies current file metadata to a file table structure.
-    fn make_file_table<'a>(
-        &'a self,
-        temp_fcbs: impl IntoIterator<Item = (&'a FileId, &'a ResolvedFileControlBlock)>,
-    ) -> Result<VmgsFileTable, Error> {
+    fn make_file_table(&self) -> Result<VmgsFileTable, Error> {
         let mut new_file_table = VmgsFileTable::new_zeroed();
-        for (file_id, fcb) in self.fcbs.iter().chain(temp_fcbs.into_iter()) {
+        for (file_id, fcb) in self.fcbs.iter() {
+            eprintln!(
+                "DEBUG: ft write {} {:?} {:?}",
+                file_id.0, fcb.authentication_tag, fcb.nonce
+            );
             fcb.fill_file_entry(self.version, &mut new_file_table.entries[*file_id]);
         }
         Ok(new_file_table)
     }
 
     /// Copies current file metadata to an extended file table structure.
-    fn make_extended_file_table<'a>(
-        &'a self,
-        temp_fcbs: impl IntoIterator<Item = (&'a FileId, &'a ResolvedFileControlBlock)>,
-    ) -> Result<VmgsExtendedFileTable, Error> {
+    fn make_extended_file_table(&self) -> Result<VmgsExtendedFileTable, Error> {
         let mut new_extended_file_table = VmgsExtendedFileTable::new_zeroed();
-        for (file_id, fcb) in self.fcbs.iter().chain(temp_fcbs.into_iter()) {
+        for (file_id, fcb) in self.fcbs.iter() {
+            eprintln!(
+                "DEBUG: eft write {} {} {:?}",
+                file_id.0,
+                fcb.is_encrypted(),
+                fcb.encryption_key
+            );
             fcb.fill_extended_file_entry(&mut new_extended_file_table.entries[*file_id]);
         }
         Ok(new_extended_file_table)
+    }
+
+    /// maps out the used/unused space in the file and finds the smallest
+    /// unused space to allocate new data.
+    fn allocate_space<'a>(
+        &self,
+        files_to_allocate: BTreeMap<FileId, AllocRequest<'a>>,
+        block_capacity: u32,
+    ) -> Result<BTreeMap<FileId, AllocResult<'a>>, Error> {
+        // populate the allocation list with any existing files
+        let mut allocation_list = self
+            .fcbs
+            .values()
+            .map(|fcb| AllocationBlock {
+                block_offset: fcb.block_offset,
+                allocated_blocks: fcb.allocated_blocks.get(),
+            })
+            .collect();
+
+        // allocate space for the new files
+        files_to_allocate
+            .into_iter()
+            .map(|(file_id, req)| {
+                Ok((file_id, req.allocate(&mut allocation_list, block_capacity)?))
+            })
+            .collect()
     }
 }
 
