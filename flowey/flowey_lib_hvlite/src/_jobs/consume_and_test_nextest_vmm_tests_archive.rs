@@ -196,11 +196,7 @@ impl SimpleFlowNode for Node {
         // Start the test_igvm_agent_rpc_server before running tests (Windows only).
         // This must happen after init_vmm_tests_env which copies the binary.
         // The server runs in the background for the duration of the test run.
-        // The node itself handles the platform check at runtime.
-        if matches!(
-            target.operating_system,
-            target_lexicon::OperatingSystem::Windows
-        ) {
+        if matches!(ctx.platform(), FlowPlatform::Windows) {
             pre_run_deps.push(
                 ctx.reqv(|done| crate::run_test_igvm_agent_rpc_server::Request {
                     env: extra_env.clone(),
@@ -234,10 +230,7 @@ impl SimpleFlowNode for Node {
 
         // Stop the test_igvm_agent_rpc_server after tests complete (Windows only).
         // This ensures we clean up the background process.
-        let rpc_server_stopped = if matches!(
-            target.operating_system,
-            target_lexicon::OperatingSystem::Windows
-        ) {
+        let rpc_server_stopped = if matches!(ctx.platform(), FlowPlatform::Windows) {
             let after_tests = results.map(ctx, |_| ());
             Some(
                 ctx.reqv(|done| crate::stop_test_igvm_agent_rpc_server::Request {

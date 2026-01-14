@@ -1023,10 +1023,7 @@ impl SimpleFlowNode for Node {
             side_effects.push(ctx.reqv(crate::install_vmm_tests_deps::Request::Install));
 
             // Start the test_igvm_agent_rpc_server before running tests (Windows only).
-            if matches!(
-                target_triple.operating_system,
-                target_lexicon::OperatingSystem::Windows
-            ) {
+            if matches!(ctx.platform(), FlowPlatform::Windows) {
                 side_effects.push(ctx.reqv(|done| {
                     crate::run_test_igvm_agent_rpc_server::Request {
                         env: extra_env.clone(),
@@ -1059,10 +1056,7 @@ impl SimpleFlowNode for Node {
             });
 
             // Stop the test_igvm_agent_rpc_server after tests complete (Windows only).
-            let rpc_server_stopped = if matches!(
-                target_triple.operating_system,
-                target_lexicon::OperatingSystem::Windows
-            ) {
+            let rpc_server_stopped = if matches!(ctx.platform(), FlowPlatform::Windows) {
                 let after_tests = results.map(ctx, |_| ());
                 Some(
                     ctx.reqv(|done| crate::stop_test_igvm_agent_rpc_server::Request {
