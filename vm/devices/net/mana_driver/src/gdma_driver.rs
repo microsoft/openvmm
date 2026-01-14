@@ -231,6 +231,29 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
             return;
         }
 
+        // Wait for ownership of the shared memory.
+        let max_wait_time =
+            std::time::Instant::now() + Duration::from_millis(HWC_POLL_TIMEOUT_IN_MS);
+        loop {
+            let data = self
+                .bar0
+                .mem
+                .read_u32(self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28);
+            if data == u32::MAX {
+                tracing::error!("Device no longer present");
+                return;
+            }
+            let header = SmcProtoHdr::from(data);
+            if !header.owner_is_pf() {
+                break;
+            }
+            if std::time::Instant::now() > max_wait_time {
+                tracing::error!("MANA request timed out waiting for shared memory possession bit to clear; SMC_MSG_TYPE_DESTROY_HWC");
+                return;
+            }
+            std::hint::spin_loop();
+        }
+
         let hdr = SmcProtoHdr::new()
             .with_msg_type(SmcMessageType::SMC_MSG_TYPE_DESTROY_HWC.0)
             .with_msg_version(SMC_MSG_TYPE_DESTROY_HWC_VERSION);
@@ -303,6 +326,27 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         };
 
         let pages = dma_buffer.pfns();
+
+        // Wait for ownership of the shared memory.
+        let mut backoff = Backoff::new(driver);
+        let mut ctx =
+            mesh::CancelContext::new().with_timeout(Duration::from_millis(HWC_POLL_TIMEOUT_IN_MS));
+        let mut hw_failure = false;
+        loop {
+            let header = SmcProtoHdr::from(
+                bar0_mapping.read_u32(map.vf_gdma_sriov_shared_reg_start as usize + 28),
+            );
+            if !header.owner_is_pf() {
+                break;
+            }
+            if hw_failure {
+                anyhow::bail!("MANA request timed out waiting for shared memory possession bit to clear; SMC_MSG_TYPE_ESTABLISH_HWC");
+            }
+            hw_failure = matches!(
+                ctx.until_cancelled(backoff.back_off()).await,
+                Err(mesh::CancelReason::DeadlineExceeded)
+            );
+        }
 
         // Write the shared memory.
         fn low(n: u64) -> [u8; 6] {
