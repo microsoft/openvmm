@@ -203,7 +203,6 @@ struct KeyProtectorById {
 }
 
 /// Host attestation settings obtained via the GET GSP call-out.
-#[derive(Debug)]
 pub struct HostAttestationSettings {
     /// Whether refreshing tpm seeds is needed.
     pub refresh_tpm_seeds: bool,
@@ -220,7 +219,6 @@ struct DerivedKeyResult {
 }
 
 /// The return values of [`initialize_platform_security`].
-#[derive(Debug)]
 pub struct PlatformAttestationData {
     /// The instance of [`HostAttestationSettings`].
     pub host_attestation_settings: HostAttestationSettings,
@@ -2648,7 +2646,7 @@ mod tests {
             true,
         )
         .await;
-        eprintln!("res {:?}", result);
+
         assert!(result.is_err());
     }
 }
