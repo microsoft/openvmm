@@ -657,7 +657,8 @@ impl AdminHandler {
         };
 
         // Apply a completion queue fault only to synchronously processed admin commands
-        // (Ignore namespace change and sq delete complete events for now).
+        // (Ignore sq delete complete events for now. Namespace change events
+        // will eventually be handled by the AEN response flow.).
         if let Some(command) = command_processed {
             let Some(updated_completion) = self
                 .apply_completion_queue_fault(&command, &completion)
