@@ -113,9 +113,9 @@ async fn parse_guest_pci_devices(
     // uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 async fn pcie_root_emulation(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
-    const ECAM_SIZE: u64 = 256 * 1024 * 1024;
-    const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024;
-    const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024;
+    const ECAM_SIZE: u64 = 256 * 1024 * 1024; // 256 MB
+    const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
+    const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024; // 1 GB
 
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
