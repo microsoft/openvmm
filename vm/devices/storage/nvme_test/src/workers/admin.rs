@@ -738,7 +738,7 @@ impl AdminHandler {
                 }
             }
         }
-        return updated_completion;
+        updated_completion
     }
 
     fn handle_identify(
