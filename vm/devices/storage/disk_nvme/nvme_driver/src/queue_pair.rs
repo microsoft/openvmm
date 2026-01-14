@@ -19,6 +19,7 @@ use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use guestmem::ranges::PagedRange;
 use inspect::Inspect;
+use inspect::Request;
 use inspect_counters::Counter;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
@@ -713,7 +714,7 @@ impl Issuer {
             .alloc
             .alloc_bytes(data.len())
             .await
-            .expect("pool cap is insufficient");
+            .context("pool cap is insufficient")?;
 
         let prp = self
             .make_prp(0, (0..mem.page_count()).map(|i| mem.physical_address(i)))
