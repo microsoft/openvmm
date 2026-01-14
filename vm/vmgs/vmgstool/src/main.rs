@@ -93,7 +93,6 @@ enum Error {
     GspUnknown,
     #[error("VMGS file is using an unknown encryption algorithm")]
     EncryptionUnknown,
-    #[cfg(windows)]
     #[error("Unable to read IGVM file with Error: {0}")]
     UnableToReadIgvmFile(String),
 }
@@ -129,7 +128,6 @@ enum ExitCode {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(i32)]
-#[cfg(windows)]
 enum ResourceCode {
     NonConfidential = 13510,
     Snp = 13515,
@@ -294,7 +292,6 @@ enum Options {
     /// Copy the IGVM file from a dll into file ID 8 of the VMGS file.
     ///
     /// The proper key file must be specified to write encrypted data.
-    #[cfg(windows)]
     CopyIgvmfile {
         /// VMGS file path
         #[command(flatten)]
@@ -343,7 +340,6 @@ fn parse_encryption_algorithm(algorithm: &str) -> Result<EncryptionAlgorithm, &'
     }
 }
 
-#[cfg(windows)]
 fn parse_resource_code(resource_code: &str) -> Result<ResourceCode, &'static str> {
     match resource_code {
         "nonconfidential" => Ok(ResourceCode::NonConfidential),
@@ -523,7 +519,6 @@ async fn do_main() -> Result<(), Error> {
         Options::UefiNvram { operation } => uefi_nvram::do_command(operation).await,
         #[cfg(feature = "test_helpers")]
         Options::Test { operation } => test::do_command(operation).await,
-        #[cfg(windows)]
         Options::CopyIgvmfile {
             file_path,
             data_path,
@@ -1173,7 +1168,6 @@ fn vhdfiledisk_open(file: File, open_mode: OpenMode) -> Result<Disk, Error> {
     Ok(disk)
 }
 
-#[cfg(windows)]
 async fn vmgs_file_copy_igvmfile(
     file_path: impl AsRef<Path>,
     data_path: impl AsRef<Path>,
@@ -1198,7 +1192,6 @@ async fn vmgs_file_copy_igvmfile(
     Ok(())
 }
 
-#[cfg(windows)]
 async fn write_igvmfile(
     vmgs: &mut Vmgs,
     encrypt: bool,
@@ -1230,7 +1223,6 @@ async fn write_igvmfile(
     Ok(())
 }
 
-#[cfg(windows)]
 async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
     use std::ffi::OsString;
     use std::io::{Read, Seek, SeekFrom};
