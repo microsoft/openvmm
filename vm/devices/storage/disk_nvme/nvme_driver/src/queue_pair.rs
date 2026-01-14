@@ -19,7 +19,6 @@ use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use guestmem::ranges::PagedRange;
 use inspect::Inspect;
-use inspect::Request;
 use inspect_counters::Counter;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
