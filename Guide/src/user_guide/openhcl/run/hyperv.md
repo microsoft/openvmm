@@ -138,6 +138,7 @@ Import-Module \\wsl.localhost\Ubuntu\$($repoDir)\petri\src\vm\hyperv\hyperv.psm1
 # (1) Create a VM with OpenHCL isolation mode
 $vm = New-VM $VmName -generation 2 -GuestStateIsolationType OpenHCL -VHDPath $vmOsDisk -BootDevice VHD
 Set-VM -VM $vm -AutomaticCheckpointsEnabled $false
+Set-VMFirmware -VM $vm -EnableSecureBoot Off # your guest image might need this, for example
 Set-OpenHCLFirmware -Vm $vm -IgvmFile $firmwareFile
 
 # (2) Use the built-in Hyper-V powershell cmdlets to create a new SCSI Controller for your VM
