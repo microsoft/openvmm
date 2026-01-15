@@ -127,7 +127,8 @@ async fn vmgs_file_dump_nvram(
     key_path: Option<impl AsRef<Path>>,
     truncate: bool,
 ) -> Result<(), Error> {
-    let mut nvram_storage = vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadOnly).await?;
+    let mut nvram_storage =
+        vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadOnlyWarn).await?;
 
     let mut out: Box<dyn Write + Send> = if let Some(path) = output_path {
         Box::new(File::create(path.as_ref()).map_err(Error::DataFile)?)
@@ -363,7 +364,8 @@ async fn vmgs_file_remove_boot_entries(
     key_path: Option<impl AsRef<Path>>,
     dry_run: bool,
 ) -> Result<(), Error> {
-    let mut nvram_storage = vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadWrite).await?;
+    let mut nvram_storage =
+        vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadWriteIgnore).await?;
 
     if dry_run {
         eprintln!("Printing Boot Entries (Dry-run)");
@@ -419,7 +421,8 @@ async fn vmgs_file_remove_nvram_entry(
     name: String,
     vendor: String,
 ) -> Result<(), Error> {
-    let mut nvram_storage = vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadWrite).await?;
+    let mut nvram_storage =
+        vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadWriteIgnore).await?;
 
     eprintln!("Removing variable with name {name} and vendor {vendor}");
 
