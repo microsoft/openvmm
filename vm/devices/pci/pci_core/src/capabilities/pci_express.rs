@@ -1536,4 +1536,261 @@ mod tests {
         cap.set_presence_detect_state(true);
         cap.set_presence_detect_state(false);
     }
+
+    #[test]
+    fn test_save_restore_default_state() {
+        use vmcore::save_restore::SaveRestore;
+
+        // Create a capability with default state
+        let mut cap = PciExpressCapability::new(DevicePortType::Endpoint, None);
+
+        // Save the default state
+        let saved = cap.save().expect("save should succeed");
+
+        // Verify default state values
+        assert_eq!(saved.device_control, 0);
+        assert_eq!(saved.device_status, 0);
+        assert_eq!(saved.link_control, 0);
+        // Link status has default values for speed and width
+        let expected_link_status = (LinkSpeed::Speed32_0GtS.into_bits() as u16)
+            | ((LinkWidth::X16.into_bits() as u16) << 4);
+        assert_eq!(saved.link_status, expected_link_status);
+        assert_eq!(saved.slot_control, 0);
+        assert_eq!(saved.slot_status, 0);
+        assert_eq!(saved.root_control, 0);
+        assert_eq!(saved.root_status, 0);
+        assert_eq!(saved.device_control_2, 0);
+        assert_eq!(saved.device_status_2, 0);
+        // Link control 2 has default target_link_speed
+        let expected_link_control_2 = LinkSpeed::Speed32_0GtS.into_bits() as u16;
+        assert_eq!(saved.link_control_2, expected_link_control_2);
+        assert_eq!(saved.link_status_2, 0);
+        assert_eq!(saved.slot_control_2, 0);
+        assert_eq!(saved.slot_status_2, 0);
+    }
+
+    #[test]
+    fn test_save_restore_modified_state() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut cap = PciExpressCapability::new(DevicePortType::Endpoint, None);
+
+        // Modify state by writing to registers
+        // Write to Device Control (offset 0x08, lower 16 bits)
+        cap.write_u32(0x08, 0x0005); // Set some device control bits
+
+        // Write to Link Control (offset 0x10, lower 16 bits)
+        cap.write_u32(0x10, 0x0003); // Set ASPM control bits
+
+        // Write to Device Control 2 (offset 0x28, lower 16 bits)
+        cap.write_u32(0x28, 0x0010); // Set some device control 2 bits
+
+        // Save the modified state
+        let saved = cap.save().expect("save should succeed");
+
+        // Verify the saved state reflects the modifications
+        assert_eq!(saved.device_control, 0x0005);
+        assert_eq!(saved.link_control, 0x0003);
+        assert_eq!(saved.device_control_2, 0x0010);
+    }
+
+    #[test]
+    fn test_save_restore_roundtrip() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+
+        // Modify various state registers
+        cap.write_u32(0x08, 0x000F); // Device Control
+        cap.write_u32(0x10, 0x0007); // Link Control
+        cap.write_u32(0x28, 0x0020); // Device Control 2
+        cap.write_u32(0x30, 0x0004); // Link Control 2 (target speed = 4)
+
+        // Save the state
+        let saved = cap.save().expect("save should succeed");
+
+        // Create a new capability and restore the saved state
+        let mut cap2 = PciExpressCapability::new(DevicePortType::RootPort, None);
+        cap2.restore(saved).expect("restore should succeed");
+
+        // Verify restored state by reading registers
+        let device_ctl_sts = cap2.read_u32(0x08);
+        assert_eq!(
+            device_ctl_sts & 0xFFFF,
+            0x000F,
+            "Device control should be restored"
+        );
+
+        let link_ctl_sts = cap2.read_u32(0x10);
+        assert_eq!(
+            link_ctl_sts & 0xFFFF,
+            0x0007,
+            "Link control should be restored"
+        );
+
+        let device_ctl_sts_2 = cap2.read_u32(0x28);
+        assert_eq!(
+            device_ctl_sts_2 & 0xFFFF,
+            0x0020,
+            "Device control 2 should be restored"
+        );
+
+        let link_ctl_sts_2 = cap2.read_u32(0x30);
+        assert_eq!(
+            link_ctl_sts_2 & 0xFFFF,
+            0x0004,
+            "Link control 2 should be restored"
+        );
+    }
+
+    #[test]
+    fn test_save_restore_with_status_bits() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+        cap = cap.with_hotplug_support(1);
+
+        // Manually set some status bits that would normally be set by hardware
+        {
+            let mut state = cap.state.lock();
+            state.device_status.set_correctable_error_detected(true);
+            state.device_status.set_non_fatal_error_detected(true);
+            state.slot_status.set_presence_detect_changed(true);
+            state.slot_status.set_presence_detect_state(1);
+        }
+
+        // Save the state
+        let saved = cap.save().expect("save should succeed");
+
+        // Verify status bits are in saved state
+        let device_status = pci_express::DeviceStatus::from_bits(saved.device_status);
+        assert!(device_status.correctable_error_detected());
+        assert!(device_status.non_fatal_error_detected());
+
+        let slot_status = pci_express::SlotStatus::from_bits(saved.slot_status);
+        assert!(slot_status.presence_detect_changed());
+        assert_eq!(slot_status.presence_detect_state(), 1);
+
+        // Restore to a new capability and verify
+        let mut cap2 = PciExpressCapability::new(DevicePortType::RootPort, None);
+        cap2 = cap2.with_hotplug_support(1);
+        cap2.restore(saved).expect("restore should succeed");
+
+        // Read back and verify status bits were restored
+        let device_ctl_sts = cap2.read_u32(0x08);
+        let restored_device_status =
+            pci_express::DeviceStatus::from_bits((device_ctl_sts >> 16) as u16);
+        assert!(
+            restored_device_status.correctable_error_detected(),
+            "Device status should be restored"
+        );
+        assert!(
+            restored_device_status.non_fatal_error_detected(),
+            "Device status should be restored"
+        );
+
+        let slot_ctl_sts = cap2.read_u32(0x18);
+        let restored_slot_status = pci_express::SlotStatus::from_bits((slot_ctl_sts >> 16) as u16);
+        assert!(
+            restored_slot_status.presence_detect_changed(),
+            "Slot status should be restored"
+        );
+        assert_eq!(
+            restored_slot_status.presence_detect_state(),
+            1,
+            "Presence detect state should be restored"
+        );
+    }
+
+    #[test]
+    fn test_save_restore_all_fields() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+
+        // Set all state fields to non-zero values
+        {
+            let mut state = cap.state.lock();
+            state.device_control = pci_express::DeviceControl::from_bits(0x1111);
+            state.device_status = pci_express::DeviceStatus::from_bits(0x2222);
+            state.link_control = pci_express::LinkControl::from_bits(0x3333);
+            state.link_status = pci_express::LinkStatus::from_bits(0x4444);
+            state.slot_control = pci_express::SlotControl::from_bits(0x5555);
+            state.slot_status = pci_express::SlotStatus::from_bits(0x6666);
+            state.root_control = pci_express::RootControl::from_bits(0x7777);
+            state.root_status = pci_express::RootStatus::from_bits(0x88888888);
+            state.device_control_2 = pci_express::DeviceControl2::from_bits(0x9999);
+            state.device_status_2 = pci_express::DeviceStatus2::from_bits(0xAAAA);
+            state.link_control_2 = pci_express::LinkControl2::from_bits(0xBBBB);
+            state.link_status_2 = pci_express::LinkStatus2::from_bits(0xCCCC);
+            state.slot_control_2 = pci_express::SlotControl2::from_bits(0xDDDD);
+            state.slot_status_2 = pci_express::SlotStatus2::from_bits(0xEEEE);
+        }
+
+        // Save the state
+        let saved = cap.save().expect("save should succeed");
+
+        // Verify all fields in saved state
+        assert_eq!(saved.device_control, 0x1111);
+        assert_eq!(saved.device_status, 0x2222);
+        assert_eq!(saved.link_control, 0x3333);
+        assert_eq!(saved.link_status, 0x4444);
+        assert_eq!(saved.slot_control, 0x5555);
+        assert_eq!(saved.slot_status, 0x6666);
+        assert_eq!(saved.root_control, 0x7777);
+        assert_eq!(saved.root_status, 0x88888888);
+        assert_eq!(saved.device_control_2, 0x9999);
+        assert_eq!(saved.device_status_2, 0xAAAA);
+        assert_eq!(saved.link_control_2, 0xBBBB);
+        assert_eq!(saved.link_status_2, 0xCCCC);
+        assert_eq!(saved.slot_control_2, 0xDDDD);
+        assert_eq!(saved.slot_status_2, 0xEEEE);
+
+        // Restore to a new capability
+        let mut cap2 = PciExpressCapability::new(DevicePortType::RootPort, None);
+        cap2.restore(saved).expect("restore should succeed");
+
+        // Save again and verify it matches
+        let saved2 = cap2.save().expect("second save should succeed");
+        assert_eq!(saved2.device_control, 0x1111);
+        assert_eq!(saved2.device_status, 0x2222);
+        assert_eq!(saved2.link_control, 0x3333);
+        assert_eq!(saved2.link_status, 0x4444);
+        assert_eq!(saved2.slot_control, 0x5555);
+        assert_eq!(saved2.slot_status, 0x6666);
+        assert_eq!(saved2.root_control, 0x7777);
+        assert_eq!(saved2.root_status, 0x88888888);
+        assert_eq!(saved2.device_control_2, 0x9999);
+        assert_eq!(saved2.device_status_2, 0xAAAA);
+        assert_eq!(saved2.link_control_2, 0xBBBB);
+        assert_eq!(saved2.link_status_2, 0xCCCC);
+        assert_eq!(saved2.slot_control_2, 0xDDDD);
+        assert_eq!(saved2.slot_status_2, 0xEEEE);
+    }
+
+    #[test]
+    fn test_save_after_reset() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut cap = PciExpressCapability::new(DevicePortType::Endpoint, None);
+
+        // Modify state
+        cap.write_u32(0x08, 0x00FF);
+        cap.write_u32(0x10, 0x00FF);
+
+        // Reset
+        cap.reset();
+
+        // Save after reset
+        let saved = cap.save().expect("save should succeed");
+
+        // Verify state is back to defaults
+        assert_eq!(saved.device_control, 0);
+        assert_eq!(saved.device_status, 0);
+        assert_eq!(saved.link_control, 0);
+        // Link status has default speed and width
+        let expected_link_status = (LinkSpeed::Speed32_0GtS.into_bits() as u16)
+            | ((LinkWidth::X16.into_bits() as u16) << 4);
+        assert_eq!(saved.link_status, expected_link_status);
+    }
 }

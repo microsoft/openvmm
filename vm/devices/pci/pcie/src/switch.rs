@@ -503,6 +503,15 @@ mod save_restore {
                 downstream_ports,
             } = state;
 
+            // Validate that the number of downstream ports matches
+            if downstream_ports.len() != self.downstream_ports.len() {
+                return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                    "downstream port count mismatch: saved {}, current {}",
+                    downstream_ports.len(),
+                    self.downstream_ports.len()
+                )));
+            }
+
             // Restore the upstream port configuration space
             self.upstream_port
                 .cfg_space
