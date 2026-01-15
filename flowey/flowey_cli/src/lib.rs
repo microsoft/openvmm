@@ -25,7 +25,8 @@ pub fn flowey_main<ProjectPipelines: clap::Subcommand + IntoPipeline>(
     }
 }
 
-fn running_in_wsl() -> bool {
+/// Check if we're running inside WSL (Windows Subsystem for Linux).
+pub fn running_in_wsl() -> bool {
     let Ok(output) = std::process::Command::new("wslpath")
         .args(["-aw", "/"])
         .output()
