@@ -71,9 +71,10 @@ The host transfers control to the entry point of the **Boot Shim**.
 
 1. **Hardware Init:** The shim initializes the CPU state and memory management unit (MMU).
 2. **Config Parsing:** It parses configuration from multiple sources:
-    * **IGVM Parameters:** Fixed parameters encoded into the measured section of the IGVM image, loaded by the host.
-    * **Host Device Tree:** A device tree provided by the host containing topology and resource information.
+    * **Contents of the IGVM image**, including:
+      * **Measured parameters** Fixed parameters encoded into the measured section of the IGVM image, loaded by the host.
     * **Command Line:** It parses the kernel command line, which can be supplied via IGVM or the host device tree.
+    * **Host Device Tree:** A device tree provided by the host containing topology and resource information.
 3. **New Device Tree:** It constructs a Device Tree that describes the hardware topology (CPUs, memory) to the Linux kernel.
 4. **Sidecar Setup (x86_64):** The shim determines which CPUs will run Linux (typically just the Bootstrap Processor (BSP)) and which will run the Sidecar (APs). It sets up control structures and directs Sidecar CPUs to the Sidecar entry point.
     * **Sidecar Entry:** "Sidecar CPUs" jump directly to the Sidecar kernel entry point instead of the Linux kernel.
