@@ -539,7 +539,7 @@ impl GuestEmulationTransportClient {
                 // Currently known host timeouts:
                 // Vdev/VF removal: 1 minute
                 mesh::CancelContext::new()
-                    .with_timeout(std::time::Duration::from_mins(2))
+                    .with_timeout(std::time::Duration::from_secs(120))
                     .until_cancelled(std::future::pending::<()>())
                     .await
                     .unwrap_or_else(|_| {
