@@ -119,19 +119,32 @@ While these steps guide you to create a second SCSI controller, your generation 
 ```
 
 ```powershell
-# $VmName = "OpenHCLTestVM"
-# $vm = new-vm $VmName -generation 2 -GuestStateIsolationType OpenHCL
+# Names, directories, etc.
+# cargo xflowey will do some heavy lifting for you. You can run `cargo xflowey vmm-tests --build-only --dir /mnt/q/win-vmm-tests ...` from your WSL to get images, compiled OpenHCL, etc.
+$repoDir = "home\<your-wsl-username-for-example>\openvmm" # for prereqs below, the path relative to the root of your WSL file system where you have cloned the openvmm repo
 
-# (1) Use the built-in Hyper-V powershell cmdlets to create a new SCSI Controller for your VM
+$VmName = "OpenHCLTestVM"
+$vmOsDisk = " Q:\win-vmm-tests\osdisk.vhdx" # for step (1), the location of the OS disk for the VM. E.g. Convert-VHD Q:\win-vmm-tests\images\ubuntu-25.04-server-cloudimg-amd64.vhd -DestinationPath "Q:\win-vmm-tests\osdisk.vhdx"
+$firmwareFile = "Q:\win-vmm-tests\openhcl-x64.bin" # for step (1), the location of your built OpenHCL firmware.
+$hostLun = 5 # for step (6) and (7), LUN on the controller presented to VTL2 from the host
+$vhdPath = "Q:\win-vmm-tests\foo.vhdx" # for step (6), the path to whatever VHD is added
+$guestLun = 15 # for step (7), guest visible LUN and controller ID
+$guestControllerId = [guid]::NewGuid()
+
+# Import the `hyperv.psm1` module that's used by petri, e.g.
+Set-ExecutionPolicy Bypass -Scope Process # See about_Execution_Policies at https://go.microsoft.com/fwlink/?LinkID=135170.
+Import-Module \\wsl.localhost\Ubuntu\$($repoDir)\petri\src\vm\hyperv\hyperv.psm1
+
+# (1) Create a VM with OpenHCL isolation mode
+$vm = New-VM $VmName -generation 2 -GuestStateIsolationType OpenHCL -VHDPath $vmOsDisk -BootDevice VHD
+Set-VM -VM $vm -AutomaticCheckpointsEnabled $false
+Set-OpenHCLFirmware -Vm $vm -IgvmFile $firmwareFile
+
+# (2) Use the built-in Hyper-V powershell cmdlets to create a new SCSI Controller for your VM
 #
 # Uses the $vm that you created above
 # N.B.: Adding -Passthru is required for the cmdlet to return the controller object.
 $controller = Add-VMScsiController -VM $vm -Passthru
-
-# (2) Import the `hyperv.psm1` module that's used by petri, e.g.
-Set-ExecutionPolicy Bypass -Scope Process # See about_Execution_Policies at https://go.microsoft.com/fwlink/?LinkID=135170.
-$repoDir = "<your-linux-username>\openvmm"
-Import-Module \\wsl.localhost\Ubuntu\home\$($repoDir)\petri\src\vm\hyperv\hyperv.psm1
 
 # (3) Turn on "VMBUS Redirect", required for storage relay
 Set-VMBusRedirect -Vm $vm -Enable $true
@@ -146,21 +159,16 @@ if (-not $controllerId) {
 }
 
 # (6) Attach a VHD to the host
-$lun = 5
-$vhdPath = "..."
 # e.g., New-VHD -Path $vhdPath -SizeBytes 1gb -Dynamic
-Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -ControllerNumber $controller.ControllerNumber -ControllerLocation $lun -Path $vhdPath
+Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -ControllerNumber $controller.ControllerNumber -ControllerLocation $hostLun -Path $vhdPath
 
 # (7) Craft settings
-# Pick a guest-visible LUN and controller instance id (required below).
-$guestLun = 15
-$guestControllerId = [guid]::NewGuid()
 
 # Build Base-namespace VTL2 settings (JSON) with:
 # * 1 SCSI controller (guest-visible instance id: $guestControllerId)
 # * 1 disk at guest LUN $guestLun
 #   * Backed by a single PhysicalDevice of type vscsi with vsid $controllerId
-#     and sub_device_path (host LUN) $lun
+#     and sub_device_path (host LUN) $hostLun
 $settings = @{
     version = "V1"
     dynamic = @{
@@ -182,7 +190,7 @@ $settings = @{
                             device = @{
                                 device_type = "vscsi"
                                 device_path = $controllerId.ToString()
-                                sub_device_path = [uint32]$lun
+                                sub_device_path = [uint32]$hostLun
                             }
                         }
                         is_dvd = $false
@@ -199,4 +207,7 @@ $settings | ConvertTo-Json -Depth 10 | Set-Content -Path $settingsFile -Encoding
 
 # (8) Set settings
 Set-Vtl2Settings -VmId $vm.Id -Namespace "Base" -SettingsFile $settingsFile
+
+# (9) start your VM
+Start-VM -VM $vm
 ```
