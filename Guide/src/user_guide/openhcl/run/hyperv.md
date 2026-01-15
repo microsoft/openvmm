@@ -139,7 +139,10 @@ Set-VMBusRedirect -Vm $vm -Enable $true
 Set-VmScsiControllerTargetVtl -Vm $vm -ControllerNumber $controller.ControllerNumber -TargetVtl 2
 
 # (5) Get the Controller ID, this is how OpenHCL can reference this particular controller:
-$controllerId = Get-VmScsiControllerIdByNumber -Vm $vm -ControllerNumber $controller.ControllerNumber
+$controllerId = [guid](Get-VmScsiControllerIdByNumber -Vm $vm -ControllerNumber $controller.ControllerNumber)
+if (-not $controllerId) {
+    throw "Failed to resolve SCSI controller ID; ensure the controller exists and the HyperV module is imported."
+}
 
 # (6) Attach a VHD to the host
 $lun = 5
@@ -147,14 +150,55 @@ $vhdPath = "..."
 # e.g., New-VHD -Path $vhdPath -SizeBytes 1gb -Dynamic
 Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -ControllerNumber $controller.ControllerNumber -ControllerLocation $lun -Path $vhdPath
 
-# (6) Craft settings
+# (7) Craft settings
+# Pick a guest-visible LUN and controller instance id (required below).
 $guestLun = 15
-# TODO: Create an object in PowerShell that matches the Vtl2Settings expected in the Base namespace:
-# * 1 SCSI controller, with an arbitrary guest-visible instance ID
-# * 1 disk in that SCSI controller, shown as $guestLun (other identifying info is arbitrary)
-#   * This disk is backed by a single PhysicalDisk of vscsi type. The vsid is $controllerId above, and sub path is the host lun ($lun).
-# Write this out in a way that `Set-Vtl2Settings` can consume it.
+$guestControllerId = [guid]::NewGuid()
+if (-not $guestControllerId) {
+    throw "Failed to generate guest controller ID."
+}
 
-# (7) Set settings
-# TODO: Use `Set-Vtl2Settings` to set this.
+# Build Base-namespace VTL2 settings (JSON) with:
+# * 1 SCSI controller (guest-visible instance id: $guestControllerId)
+# * 1 disk at guest LUN $guestLun
+#   * Backed by a single PhysicalDevice of type vscsi with vsid $controllerId
+#     and sub_device_path (host LUN) $lun
+$settings = @{
+    version = "V1"
+    dynamic = @{
+        storage_controllers = @(
+            @{
+                instance_id = $guestControllerId.ToString()
+                protocol = "SCSI"
+                luns = @(
+                    @{
+                        location = [uint32]$guestLun
+                        device_id = ([guid]::NewGuid()).ToString()
+                        vendor_id = "OpenVMM"
+                        product_id = "Disk"
+                        product_revision_level = "1.0"
+                        serial_number = "0"
+                        model_number = "1"
+                        physical_devices = @{
+                            type = "single"
+                            device = @{
+                                device_type = "vscsi"
+                                device_path = $controllerId.ToString()
+                                sub_device_path = [uint32]$lun
+                            }
+                        }
+                        is_dvd = $false
+                        chunk_size_in_kb = 0
+                    }
+                )
+            }
+        )
+    }
+}
+
+$settingsFile = Join-Path $env:TEMP "vtl2settings.json"
+$settings | ConvertTo-Json -Depth 10 | Set-Content -Path $settingsFile -Encoding UTF8
+
+# (8) Set settings
+Set-Vtl2Settings -VmId $vm.Id -Namespace "Base" -SettingsFile $settingsFile
 ```
