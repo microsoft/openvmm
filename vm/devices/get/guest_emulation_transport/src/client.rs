@@ -534,10 +534,13 @@ impl GuestEmulationTransportClient {
 
             if let Some(error_msg) = error_msg {
                 // If we sent an error to the host, Underhill expects to be
-                // terminated/halted. If this doesn't occur in 30 seconds, then
-                // surface a panic to force a guest crash.
+                // terminated/halted. If this doesn't occur in 2 minutes, then
+                // surface a panic to force a guest crash. Make sure our timeout
+                // is longer than any host-side timeouts to avoid false positives.
+                // Currently known host timeouts:
+                // Vdev/VF removal: 1 minute
                 mesh::CancelContext::new()
-                    .with_timeout(std::time::Duration::from_secs(30))
+                    .with_timeout(std::time::Duration::from_secs(120))
                     .until_cancelled(std::future::pending::<()>())
                     .await
                     .unwrap_or_else(|_| {
