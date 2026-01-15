@@ -480,7 +480,12 @@ mod save_restore {
             /// The highest valid bus number under the root complex.
             #[mesh(2)]
             pub end_bus: u8,
-            /// The root port configuration space states, ordered by port number (index = port number / 8).
+            /// The root port configuration space states.
+            ///
+            /// Port numbers correspond to PCIe device numbers that are multiples of 8
+            /// (0, 8, 16, ...). The index into this vector is the zero-based port
+            /// index (0, 1, 2, ...). The actual device/port number for a given entry
+            /// can be obtained by `port_device_number = index * 8`.
             #[mesh(3)]
             pub root_ports: Vec<<ConfigSpaceType1Emulator as SaveRestore>::SavedState>,
         }
