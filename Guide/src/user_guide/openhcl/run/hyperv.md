@@ -104,11 +104,11 @@ Add-VMHardDiskDrive -VMName $VmName -Path "<VHDX path>" -ControllerType SCSI -Co
 This is a brief description to help you get started. Devs have their own scripts stashed away to make some of this easier. As we make this less tedious, we'll update this with more details.
 ```
 
-As described in (TODO), OpenHCL can relay (a.k.a translate) storage. It can take storage that the host presets as NVMe and show that to a guest as SCSI.
+As briefly described in the [architecture overview](../../../reference/architecture.md), OpenHCL can relay (a.k.a translate) storage. It can take storage that the host presents as NVMe and show that to a guest as SCSI.
 
-Because the core support in OpenHCL is relatviely backend-agnostic, you can also show a SCSI device to VTL2 (OpenHCL) and then re-emulate that device in OpenHCL to show it again to VTL0. This is useful for test cases primarily.
+Because the core support in OpenHCL is relatively backend-agnostic, you can also show a SCSI device to VTL2 (OpenHCL) and then re-emulate that device in OpenHCL to show it again to VTL0. This is useful for test cases primarily.
 
-While our automated test environment, petri, has good support to set this up, you need to dive into the guts of Hyper-V's WMI implemntation to set this up. We have several functions used by petri in `hyperv.psm1`, and those are a great starting point. You can learn more about petri in the [vmm test](../../../dev_guide/tests/vmm.md) docs.
+While our automated test environment, petri, has good support to set this up, you need to dive into the guts of Hyper-V's WMI implementation to set this up. We have several functions used by petri in `hyperv.psm1`, and those are a great starting point. You can learn more about petri in the [vmm test](../../../dev_guide/tests/vmm.md) docs.
 
 ```admonish note
 Besides reading source code, you can also find out what commands are in the petri HyperV module by running `Get-Command -Module HyperV` after importing it.
@@ -122,7 +122,7 @@ While these steps guide you to create a second SCSI controller, your generation 
 # $VmName = "OpenHCLTestVM"
 # $vm = new-vm $VmName -generation 2 -GuestStateIsolationType OpenHCL
 
-# (1) Use the built-in Hyper-V powershell cmdelets to create a new SCSI Controller for your VM
+# (1) Use the built-in Hyper-V powershell cmdlets to create a new SCSI Controller for your VM
 #
 # Uses the $vm that you created above
 # N.B.: Adding -Passthru is required for the cmdlet to return the controller object.
@@ -130,7 +130,8 @@ $controller = Add-VMScsiController -VM $vm -Passthru
 
 # (2) Import the `hyperv.psm1` module that's used by petri, e.g.
 Set-ExecutionPolicy Bypass -Scope Process # See about_Execution_Policies at https://go.microsoft.com/fwlink/?LinkID=135170.
-Import-Module \\wsl.localhost\Ubuntu\home\mattkur\openvmm\petri\src\vm\hyperv\hyperv.psm1
+$repoDir = "<your-linux-username>\openvmm"
+Import-Module \\wsl.localhost\Ubuntu\home\$($repoDir)\petri\src\vm\hyperv\hyperv.psm1
 
 # (3) Turn on "VMBUS Redirect", required for storage relay
 Set-VMBusRedirect -Vm $vm -Enable $true
@@ -154,9 +155,6 @@ Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -ControllerNumber $controller.C
 # Pick a guest-visible LUN and controller instance id (required below).
 $guestLun = 15
 $guestControllerId = [guid]::NewGuid()
-if (-not $guestControllerId) {
-    throw "Failed to generate guest controller ID."
-}
 
 # Build Base-namespace VTL2 settings (JSON) with:
 # * 1 SCSI controller (guest-visible instance id: $guestControllerId)
