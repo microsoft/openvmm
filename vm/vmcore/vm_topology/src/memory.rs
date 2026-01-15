@@ -34,6 +34,10 @@ pub struct MemoryLayout {
     ram: Vec<MemoryRangeWithNode>,
     #[cfg_attr(feature = "inspect", inspect(with = "inspect_ranges"))]
     mmio: Vec<MemoryRange>,
+    #[cfg_attr(feature = "inspect", inspect(with = "inspect_ranges"))]
+    pci_ecam: Vec<MemoryRange>,
+    #[cfg_attr(feature = "inspect", inspect(with = "inspect_ranges"))]
+    pci_mmio: Vec<MemoryRange>,
     /// The RAM range used by VTL2. This is not present in any of the stats
     /// above.
     vtl2_range: Option<MemoryRange>,
@@ -113,14 +117,19 @@ pub enum AddressType {
     Ram,
     /// The address describes mmio.
     Mmio,
+    /// The address describes PCI ECAM.
+    PciEcam,
+    /// The address describes PCI MMIO.
+    PciMmio,
 }
 
 impl MemoryLayout {
     /// Makes a new memory layout for a guest with `ram_size` bytes of memory
     /// and MMIO gaps at the locations specified by `gaps`.
     ///
-    /// `ram_size` must be a multiple of the page size. Each gap must be
-    /// non-empty, and the gaps must be in order and non-overlapping.
+    /// `ram_size` must be a multiple of the page size. Each mmio and device
+    /// reserved gap must be non-empty, and the gaps must be in order and
+    /// non-overlapping.
     ///
     /// `vtl2_range` describes a range of memory reserved for VTL2.
     /// It is not reported in ram.
@@ -128,17 +137,31 @@ impl MemoryLayout {
     /// All RAM is assigned to NUMA node 0.
     pub fn new(
         ram_size: u64,
-        gaps: &[MemoryRange],
+        mmio_gaps: &[MemoryRange],
+        pci_ecam_gaps: &[MemoryRange],
+        pci_mmio_gaps: &[MemoryRange],
         vtl2_range: Option<MemoryRange>,
     ) -> Result<Self, Error> {
         if ram_size == 0 || ram_size & (PAGE_SIZE - 1) != 0 {
             return Err(Error::BadSize);
         }
 
-        validate_ranges(gaps)?;
+        validate_ranges(mmio_gaps)?;
+        validate_ranges(pci_ecam_gaps)?;
+        validate_ranges(pci_mmio_gaps)?;
+
+        let mut combined_gaps = mmio_gaps
+            .iter()
+            .chain(pci_ecam_gaps)
+            .chain(pci_mmio_gaps)
+            .copied()
+            .collect::<Vec<_>>();
+        combined_gaps.sort();
+        validate_ranges(&combined_gaps)?;
+
         let mut ram = Vec::new();
         let mut remaining = ram_size;
-        let mut remaining_gaps = gaps.iter().cloned();
+        let mut remaining_gaps = combined_gaps.iter().cloned();
         let mut last_end = 0;
 
         while remaining > 0 {
@@ -148,15 +171,23 @@ impl MemoryLayout {
                 (remaining, 0)
             };
 
-            ram.push(MemoryRangeWithNode {
-                range: MemoryRange::new(last_end..last_end + this),
-                vnode: 0,
-            });
+            if this > 0 {
+                ram.push(MemoryRangeWithNode {
+                    range: MemoryRange::new(last_end..last_end + this),
+                    vnode: 0,
+                });
+            }
             remaining -= this;
             last_end = next_end;
         }
 
-        Self::build(ram, gaps.to_vec(), vtl2_range)
+        Self::build(
+            ram,
+            mmio_gaps.to_vec(),
+            pci_ecam_gaps.to_vec(),
+            pci_mmio_gaps.to_vec(),
+            vtl2_range,
+        )
     }
 
     /// Makes a new memory layout for a guest with the given mmio gaps and
@@ -170,15 +201,17 @@ impl MemoryLayout {
     ) -> Result<Self, Error> {
         validate_ranges_with_metadata(memory)?;
         validate_ranges(gaps)?;
-        Self::build(memory.to_vec(), gaps.to_vec(), None)
+        Self::build(memory.to_vec(), gaps.to_vec(), vec![], vec![], None)
     }
 
     /// Builds the memory layout.
     ///
-    /// `ram` and `mmio` must already be known to be sorted.
+    /// `ram` must already be known to be sorted.
     fn build(
         ram: Vec<MemoryRangeWithNode>,
         mmio: Vec<MemoryRange>,
+        pci_ecam: Vec<MemoryRange>,
+        pci_mmio: Vec<MemoryRange>,
         vtl2_range: Option<MemoryRange>,
     ) -> Result<Self, Error> {
         let mut all_ranges = ram
@@ -186,6 +219,8 @@ impl MemoryLayout {
             .map(|x| &x.range)
             .chain(&mmio)
             .chain(&vtl2_range)
+            .chain(&pci_ecam)
+            .chain(&pci_mmio)
             .copied()
             .collect::<Vec<_>>();
 
@@ -212,6 +247,8 @@ impl MemoryLayout {
         Ok(Self {
             ram,
             mmio,
+            pci_ecam,
+            pci_mmio,
             vtl2_range,
         })
     }
@@ -293,9 +330,15 @@ impl MemoryLayout {
         )
     }
 
-    /// One past the last byte of RAM, or the highest mmio range.
-    pub fn end_of_ram_or_mmio(&self) -> u64 {
-        std::cmp::max(self.mmio.last().expect("mmio set").end(), self.end_of_ram())
+    /// One past the last byte of RAM, MMIO, PCI ECAM, or PCI MMIO.
+    pub fn end_of_layout(&self) -> u64 {
+        std::cmp::max(
+            std::cmp::max(self.mmio.last().expect("mmio set").end(), self.end_of_ram()),
+            std::cmp::max(
+                self.pci_ecam.last().map(|r| r.end()).unwrap_or(0),
+                self.pci_mmio.last().map(|r| r.end()).unwrap_or(0),
+            ),
+        )
     }
 
     /// Probe a given address to see if it is in the memory layout described by
@@ -308,7 +351,9 @@ impl MemoryLayout {
             .ram
             .iter()
             .map(|r| (&r.range, AddressType::Ram))
-            .chain(self.mmio.iter().map(|r| (r, AddressType::Mmio)));
+            .chain(self.mmio.iter().map(|r| (r, AddressType::Mmio)))
+            .chain(self.pci_ecam.iter().map(|r| (r, AddressType::PciEcam)))
+            .chain(self.pci_mmio.iter().map(|r| (r, AddressType::PciMmio)));
 
         for (range, address_type) in ranges {
             if range.contains_addr(address) {
@@ -350,7 +395,7 @@ mod tests {
             },
         ];
 
-        let layout = MemoryLayout::new(TB, mmio, None).unwrap();
+        let layout = MemoryLayout::new(TB, mmio, &[], &[], None).unwrap();
         assert_eq!(
             layout.ram(),
             &[
@@ -371,6 +416,7 @@ mod tests {
         assert_eq!(layout.mmio(), mmio);
         assert_eq!(layout.ram_size(), TB);
         assert_eq!(layout.end_of_ram(), TB + 2 * GB);
+        assert_eq!(layout.end_of_layout(), TB + 2 * GB);
 
         let layout = MemoryLayout::new_from_ranges(ram, mmio).unwrap();
         assert_eq!(
@@ -393,16 +439,17 @@ mod tests {
         assert_eq!(layout.mmio(), mmio);
         assert_eq!(layout.ram_size(), TB);
         assert_eq!(layout.end_of_ram(), TB + 2 * GB);
+        assert_eq!(layout.end_of_layout(), TB + 2 * GB);
     }
 
     #[test]
     fn bad_layout() {
-        MemoryLayout::new(TB + 1, &[], None).unwrap_err();
+        MemoryLayout::new(TB + 1, &[], &[], &[], None).unwrap_err();
         let mmio = &[
             MemoryRange::new(3 * GB..4 * GB),
             MemoryRange::new(GB..2 * GB),
         ];
-        MemoryLayout::new(TB, mmio, None).unwrap_err();
+        MemoryLayout::new(TB, mmio, &[], &[], None).unwrap_err();
 
         MemoryLayout::new_from_ranges(&[], mmio).unwrap_err();
 
@@ -421,6 +468,69 @@ mod tests {
             MemoryRange::new(3 * GB..4 * GB),
         ];
         MemoryLayout::new_from_ranges(ram, mmio).unwrap_err();
+
+        let mmio = &[
+            MemoryRange::new(GB..2 * GB),
+            MemoryRange::new(3 * GB..4 * GB),
+        ];
+        let pci_ecam = &[MemoryRange::new(GB..GB + MB)];
+        MemoryLayout::new(TB, mmio, pci_ecam, &[], None).unwrap_err();
+
+        let mmio = &[
+            MemoryRange::new(GB..2 * GB),
+            MemoryRange::new(3 * GB..4 * GB),
+        ];
+        let pci_mmio = &[MemoryRange::new(GB..GB + MB)];
+        MemoryLayout::new(TB, mmio, &[], pci_mmio, None).unwrap_err();
+
+        let pci_ecam = &[MemoryRange::new(GB..GB + MB)];
+        let pci_mmio = &[MemoryRange::new(GB..GB + MB)];
+        MemoryLayout::new(TB, &[], pci_ecam, pci_mmio, None).unwrap_err();
+    }
+
+    #[test]
+    fn pci_ranges() {
+        let mmio = &[MemoryRange::new(3 * GB..4 * GB)];
+        let pci_ecam = &[MemoryRange::new(2 * TB - GB..2 * TB)];
+        let pci_mmio = &[
+            MemoryRange::new(2 * GB..3 * GB),
+            MemoryRange::new(5 * GB..6 * GB),
+        ];
+
+        let layout = MemoryLayout::new(TB, mmio, pci_ecam, pci_mmio, None).unwrap();
+        assert_eq!(
+            layout.ram(),
+            &[
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(0..2 * GB),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(4 * GB..5 * GB),
+                    vnode: 0,
+                },
+                MemoryRangeWithNode {
+                    range: MemoryRange::new(6 * GB..TB + 3 * GB),
+                    vnode: 0,
+                },
+            ]
+        );
+        assert_eq!(layout.end_of_layout(), 2 * TB);
+
+        assert_eq!(layout.probe_address(2 * GB), Some(AddressType::PciMmio));
+        assert_eq!(
+            layout.probe_address(2 * GB + MB),
+            Some(AddressType::PciMmio)
+        );
+        assert_eq!(layout.probe_address(5 * GB), Some(AddressType::PciMmio));
+        assert_eq!(
+            layout.probe_address(5 * GB + MB),
+            Some(AddressType::PciMmio)
+        );
+        assert_eq!(
+            layout.probe_address(2 * TB - GB),
+            Some(AddressType::PciEcam)
+        );
     }
 
     #[test]

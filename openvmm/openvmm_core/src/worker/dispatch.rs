@@ -870,6 +870,8 @@ impl InitializedVm {
                         physical_address_size,
                         cfg.memory.mem_size,
                         &cfg.memory.mmio_gaps,
+                        &cfg.memory.pci_ecam_gaps,
+                        &cfg.memory.pci_mmio_gaps,
                         igvm_file
                             .as_ref()
                             .expect("igvm file should be already parsed"),
@@ -886,13 +888,19 @@ impl InitializedVm {
         };
 
         // Choose the memory layout of the VM.
-        let mem_layout = MemoryLayout::new(cfg.memory.mem_size, &cfg.memory.mmio_gaps, vtl2_range)
-            .context("invalid memory configuration")?;
+        let mem_layout = MemoryLayout::new(
+            cfg.memory.mem_size,
+            &cfg.memory.mmio_gaps,
+            &cfg.memory.pci_ecam_gaps,
+            &cfg.memory.pci_mmio_gaps,
+            vtl2_range,
+        )
+        .context("invalid memory configuration")?;
 
-        if mem_layout.end_of_ram_or_mmio() > 1 << physical_address_size {
+        if mem_layout.end_of_layout() > 1 << physical_address_size {
             anyhow::bail!(
                 "memory layout ends at {:#x}, which exceeds the address with of {} bits",
-                mem_layout.end_of_ram_or_mmio(),
+                mem_layout.end_of_layout(),
                 physical_address_size
             );
         }
@@ -1769,16 +1777,8 @@ impl InitializedVm {
 
         // PCI Express topology
 
-        let mut pcie_host_bridges = Vec::new();
-        {
-            // ECAM allocation starts at the configured base and grows upwards.
-            // Low MMIO allocation for PCIe starts just below the low MMIO window for other
-            // devices and grows downwards.
-            // High MMIO allocation for PCIe starts just above the high MMIO window for
-            // other devices and grows upwards.
-            let mut ecam_address = cfg.memory.pcie_ecam_base;
-            let mut low_mmio_address = cfg.memory.mmio_gaps[0].start();
-            let mut high_mmio_address = cfg.memory.mmio_gaps[1].end();
+        let pcie_host_bridges = {
+            let mut pcie_host_bridges = Vec::new();
 
             for rc in cfg.pcie_root_complexes {
                 let device_name = format!("pcie-root:{}", rc.name);
@@ -1799,51 +1799,44 @@ impl InitializedVm {
                                 &mut services.register_mmio(),
                                 rc.start_bus,
                                 rc.end_bus,
-                                ecam_address,
+                                rc.ecam_range,
                                 root_port_definitions,
                             )
                         })?;
 
-                let ecam_size = root_complex.lock().ecam_size();
-                let low_mmio_size = rc.low_mmio_size as u64;
                 pcie_host_bridges.push(PcieHostBridge {
                     index: rc.index,
                     segment: rc.segment,
                     start_bus: rc.start_bus,
                     end_bus: rc.end_bus,
-                    ecam_range: MemoryRange::new(ecam_address..ecam_address + ecam_size),
-                    low_mmio: MemoryRange::new(low_mmio_address - low_mmio_size..low_mmio_address),
-                    high_mmio: MemoryRange::new(
-                        high_mmio_address..high_mmio_address + rc.high_mmio_size,
-                    ),
+                    ecam_range: rc.ecam_range,
+                    low_mmio: rc.low_mmio,
+                    high_mmio: rc.high_mmio,
                 });
 
                 let bus_id = vmotherboard::BusId::new(&rc.name);
                 chipset_builder.register_weak_mutex_pcie_enumerator(bus_id, Box::new(root_complex));
-
-                ecam_address += ecam_size;
-                low_mmio_address -= low_mmio_size;
-                high_mmio_address += rc.high_mmio_size;
             }
 
-            for switch in cfg.pcie_switches {
-                let device_name = format!("pcie-switch:{}", switch.name);
-                let switch_device = chipset_builder
-                    .arc_mutex_device(device_name)
-                    .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
-                    .add(|_services| {
-                        let definition = pcie::switch::GenericPcieSwitchDefinition {
-                            name: switch.name.clone().into(),
-                            downstream_port_count: switch.num_downstream_ports,
-                            hotplug: switch.hotplug,
-                        };
-                        GenericPcieSwitch::new(definition)
-                    })?;
+            pcie_host_bridges
+        };
 
-                let bus_id = vmotherboard::BusId::new(&switch.name);
-                chipset_builder
-                    .register_weak_mutex_pcie_enumerator(bus_id, Box::new(switch_device));
-            }
+        for switch in cfg.pcie_switches {
+            let device_name = format!("pcie-switch:{}", switch.name);
+            let switch_device = chipset_builder
+                .arc_mutex_device(device_name)
+                .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
+                .add(|_services| {
+                    let definition = pcie::switch::GenericPcieSwitchDefinition {
+                        name: switch.name.clone().into(),
+                        downstream_port_count: switch.num_downstream_ports,
+                        hotplug: switch.hotplug,
+                    };
+                    GenericPcieSwitch::new(definition)
+                })?;
+
+            let bus_id = vmotherboard::BusId::new(&switch.name);
+            chipset_builder.register_weak_mutex_pcie_enumerator(bus_id, Box::new(switch_device));
         }
 
         for dev_cfg in cfg.pcie_devices {
