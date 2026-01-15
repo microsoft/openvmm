@@ -71,7 +71,7 @@ pub enum GspType {
 
 // Aggregates fully validated data from the FILE_TABLE and EXTENDED_FILE_TABLE
 // control blocks.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "inspect", derive(Inspect))]
 struct ResolvedFileControlBlock {
     // FILE_TABLE data
@@ -352,14 +352,6 @@ impl<'a> AllocResult<'a> {
     }
 }
 
-// #[derive(PartialEq, Eq)]
-// enum UpdateExtendedFileTable {
-//     IfWritingEncrypted,
-//     AlwaysEmptyUnencrypted,
-//     #[cfg(with_encryption)]
-//     AlwaysEmptyEncrypted,
-// }
-
 /// Implementation of the VMGS file format, backed by a generic [`Disk`]
 /// device.
 #[cfg_attr(feature = "inspect", derive(Inspect))]
@@ -384,7 +376,6 @@ struct VmgsState {
     #[cfg_attr(feature = "inspect", inspect(with = "vmgs_inspect::fcbs"))]
     fcbs: HashMap<FileId, ResolvedFileControlBlock>,
     encryption_algorithm: EncryptionAlgorithm,
-    #[cfg_attr(not(with_encryption), expect(dead_code))]
     datastore_key_count: u8,
     active_datastore_key_index: Option<usize>,
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
@@ -556,60 +547,10 @@ impl Vmgs {
         active_header_index: usize,
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Vmgs, Error> {
-        let version = active_header.version;
-        let (encryption_algorithm, encrypted_metadata_keys, datastore_key_count, reprovisioned) =
-            if version >= VMGS_VERSION_3_0 {
-                let encryption_algorithm =
-                    if active_header.encryption_algorithm == EncryptionAlgorithm::AES_GCM {
-                        EncryptionAlgorithm::AES_GCM
-                    } else {
-                        EncryptionAlgorithm::NONE
-                    };
-                let encrypted_metadata_keys = active_header.metadata_keys;
-
-                let is_key_zero_empty = is_empty_key(&encrypted_metadata_keys[0].encryption_key);
-                let is_key_one_empty = is_empty_key(&encrypted_metadata_keys[1].encryption_key);
-                let datastore_key_count = {
-                    if is_key_zero_empty && is_key_one_empty {
-                        0
-                    } else if !is_key_zero_empty && !is_key_one_empty {
-                        encrypted_metadata_keys.len() as u8
-                    } else {
-                        1
-                    }
-                };
-                (
-                    encryption_algorithm,
-                    active_header.metadata_keys,
-                    datastore_key_count,
-                    active_header.markers.reprovisioned(),
-                )
-            } else {
-                (
-                    EncryptionAlgorithm::NONE,
-                    [VmgsEncryptionKey::new_zeroed(); 2],
-                    0,
-                    false,
-                )
-            };
-
         let mut vmgs = Self {
             storage,
 
-            state: VmgsState {
-                active_header_index,
-                active_header_sequence_number: active_header.sequence,
-                version,
-                fcbs: HashMap::new(),
-                encryption_algorithm,
-                datastore_key_count,
-                active_datastore_key_index: None,
-                datastore_keys: [VmgsDatastoreKey::new_zeroed(); 2],
-                metadata_key: VmgsDatastoreKey::new_zeroed(),
-                encrypted_metadata_keys,
-                reprovisioned,
-                provisioned_this_boot: false,
-            },
+            state: VmgsState::from_header(active_header, active_header_index),
 
             #[cfg(feature = "inspect")]
             stats: Default::default(),
@@ -617,22 +558,13 @@ impl Vmgs {
             logger,
         };
 
-        vmgs.state.fcbs.insert(
-            FileId::FILE_TABLE,
-            ResolvedFileControlBlock::new(
-                active_header.file_table_offset,
-                active_header.file_table_size,
-                size_of::<VmgsFileTable>(),
-                false,
-            ),
-        );
         let file_table_buffer = vmgs
             .read_file_internal(FileId::FILE_TABLE, false, None)
             .await?;
         vmgs.state.fcbs = initialize_file_metadata(
             VmgsFileTable::ref_from_bytes(&file_table_buffer)
                 .map_err(|_| anyhow::anyhow!("incorrect file table size"))?,
-            version,
+            vmgs.state.version,
             vmgs.storage.block_capacity(),
         )?;
 
@@ -681,7 +613,7 @@ impl Vmgs {
         vmgs.write_files_internal(files, None).await?;
 
         // write the active header
-        let (new_header, index) = vmgs.state.to_header();
+        let (new_header, index) = vmgs.state.make_header();
         vmgs.write_header_internal(&new_header, index).await?;
 
         // Flush the device to persist changes
@@ -777,7 +709,7 @@ impl Vmgs {
         Ok(())
     }
 
-    /// Write a set of files and update the in-memory FCBs if all are successful
+    /// Write a set of files and any necessary file tables
     async fn write_files_internal<'a>(
         &mut self,
         // using a BTreeMap here so that the allocations are predictable
@@ -964,7 +896,7 @@ impl Vmgs {
                         .log_event_fatal(VmgsLogEvent::AccessFailed)
                         .await;
 
-                    return Err(e);
+                    Err(e)
                 }
                 Ok(b) => Ok(b),
             }
@@ -1287,7 +1219,7 @@ impl Vmgs {
         // Data must be hardened on persistent storage before the header is updated.
         self.storage.flush().await.map_err(Error::FlushDisk)?;
 
-        let (new_header, index) = temp_state.to_header();
+        let (new_header, index) = temp_state.make_header();
         self.write_header_internal(&new_header, index).await?;
         self.apply(temp_state);
         Ok(())
@@ -1306,25 +1238,46 @@ impl VmgsState {
             active_datastore_key_index: None,
             datastore_keys: [VmgsDatastoreKey::new_zeroed(); 2],
             metadata_key: VmgsDatastoreKey::new_zeroed(),
-            encrypted_metadata_keys: [VmgsEncryptionKey::new_zeroed(); 2],
+            encrypted_metadata_keys: std::array::from_fn(|_| VmgsEncryptionKey::new_zeroed()),
             reprovisioned: false,
             provisioned_this_boot: true,
         }
     }
 
-    /// Whether the VMGS file is encrypted
-    pub fn is_encrypted(&self) -> bool {
-        self.encryption_algorithm != EncryptionAlgorithm::NONE
-    }
+    fn from_header(header: VmgsHeader, header_index: usize) -> Self {
+        let mut state = Self::new(header.version);
 
-    /// Whether the VMGS file is encrypted
-    pub fn is_encrypted_and_unlocked(&self) -> bool {
-        self.is_encrypted() && self.active_datastore_key_index.is_some()
+        state.active_header_index = header_index;
+        state.active_header_sequence_number = header.sequence;
+        state.provisioned_this_boot = false;
+
+        if header.version >= VMGS_VERSION_3_0 {
+            state.encryption_algorithm = header.encryption_algorithm;
+            state.encrypted_metadata_keys = header.metadata_keys;
+            for key in &state.encrypted_metadata_keys {
+                if !is_empty_key(&key.encryption_key) {
+                    state.datastore_key_count += 1;
+                }
+            }
+            state.reprovisioned = header.markers.reprovisioned();
+        }
+
+        state.fcbs.insert(
+            FileId::FILE_TABLE,
+            ResolvedFileControlBlock::new(
+                header.file_table_offset,
+                header.file_table_size,
+                size_of::<VmgsFileTable>(),
+                false,
+            ),
+        );
+
+        state
     }
 
     /// Initializes a new VMGS header populated using the temporary state,
     /// which is updated to point to the new header.
-    fn to_header(&mut self) -> (VmgsHeader, usize) {
+    fn make_header(&mut self) -> (VmgsHeader, usize) {
         let file_table_fcb = self.fcbs.get(&FileId::FILE_TABLE).unwrap();
         let mut header = VmgsHeader {
             signature: VMGS_SIGNATURE,
@@ -1336,9 +1289,7 @@ impl VmgsState {
             markers: VmgsMarkers::new().with_reprovisioned(self.reprovisioned),
             ..VmgsHeader::new_zeroed()
         };
-        header
-            .metadata_keys
-            .copy_from_slice(&self.encrypted_metadata_keys);
+        header.metadata_keys = self.encrypted_metadata_keys.clone();
 
         self.active_header_sequence_number = self.active_header_sequence_number.wrapping_add(1);
         self.active_header_index = if self.active_header_index == 0 { 1 } else { 0 };
@@ -1348,6 +1299,16 @@ impl VmgsState {
         header.checksum = compute_crc32(header.as_bytes());
 
         (header, self.active_header_index)
+    }
+
+    /// Whether the VMGS file is encrypted
+    pub fn is_encrypted(&self) -> bool {
+        self.encryption_algorithm != EncryptionAlgorithm::NONE
+    }
+
+    /// Whether the VMGS file is encrypted
+    pub fn is_encrypted_and_unlocked(&self) -> bool {
+        self.is_encrypted() && self.active_datastore_key_index.is_some()
     }
 
     /// Update the metadata key
@@ -1571,9 +1532,14 @@ pub fn validate_header(header: &VmgsHeader) -> Result<&VmgsHeader, Error> {
             "Invalid file table size",
         )));
     }
+    if header.encryption_algorithm > EncryptionAlgorithm::AES_GCM {
+        return Err(Error::InvalidFormat(String::from(
+            "Invalid encryption algorithm",
+        )));
+    }
 
     let stored_checksum = header.checksum;
-    let mut zero_checksum_header = *header;
+    let mut zero_checksum_header = header.clone();
     zero_checksum_header.checksum = 0;
     let computed_checksum = compute_crc32(zero_checksum_header.as_bytes());
     if stored_checksum != computed_checksum {
@@ -2014,13 +1980,13 @@ pub mod save_restore {
                 active_datastore_key_index: *active_datastore_key_index,
                 datastore_keys: *datastore_keys,
                 metadata_key: *metadata_key,
-                encrypted_metadata_keys: encrypted_metadata_keys.map(|k| {
+                encrypted_metadata_keys: std::array::from_fn(|i| {
                     let VmgsEncryptionKey {
                         nonce,
                         reserved: _,
                         authentication_tag,
                         encryption_key,
-                    } = k;
+                    } = encrypted_metadata_keys[i];
 
                     state::SavedVmgsEncryptionKey {
                         nonce,
@@ -2313,7 +2279,7 @@ mod tests {
         let result = validate_header(&header);
         assert!(result.is_ok());
 
-        let mut header_signature = header;
+        let mut header_signature = header.clone();
         header_signature.signature = 0;
         header_signature.checksum = 0;
         header_signature.checksum = compute_crc32(header_signature.as_bytes());
@@ -2323,7 +2289,7 @@ mod tests {
             _ => panic!(),
         };
 
-        let mut header_version = header;
+        let mut header_version = header.clone();
         header_version.version = 0;
         header_version.checksum = 0;
         header_version.checksum = compute_crc32(header_version.as_bytes());
@@ -2332,7 +2298,7 @@ mod tests {
             _ => panic!(),
         };
 
-        let mut header_header_size = header;
+        let mut header_header_size = header.clone();
         header_header_size.header_size = 0;
         header_header_size.checksum = 0;
         header_header_size.checksum = compute_crc32(header_header_size.as_bytes());
@@ -2341,7 +2307,7 @@ mod tests {
             _ => panic!(),
         };
 
-        let mut header_ft_offset = header;
+        let mut header_ft_offset = header.clone();
         header_ft_offset.file_table_offset = 0;
         header_ft_offset.checksum = 0;
         header_ft_offset.checksum = compute_crc32(header_ft_offset.as_bytes());
@@ -2350,7 +2316,7 @@ mod tests {
             _ => panic!(),
         };
 
-        let mut header_ft_size = header;
+        let mut header_ft_size = header.clone();
         header_ft_size.file_table_size = 0;
         header_ft_size.checksum = 0;
         header_ft_size.checksum = compute_crc32(header_ft_size.as_bytes());
