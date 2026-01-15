@@ -25,7 +25,7 @@ reg.exe add "HKLM\Software\Microsoft\Windows NT\CurrentVersion\Virtualization" /
 $com3Pipe = "\\.\pipe\openhcl-com3"
 Set-VMComPort -VMName $VmName -Number 3 -Path $com3Pipe
 
-# Pipe serial out to the console
+# Pipe serial out to the console, for example using the built-in tool `hvc.exe`... (you could use hypestv or other tools as well)
 hvc serial -c -p 3 -r $VmName
 ```
 
