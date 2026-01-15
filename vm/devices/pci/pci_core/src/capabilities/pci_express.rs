@@ -614,40 +614,74 @@ mod save_restore {
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             let state = self.state.lock();
+            let PciExpressState {
+                device_control,
+                device_status,
+                link_control,
+                link_status,
+                slot_control,
+                slot_status,
+                root_control,
+                root_status,
+                device_control_2,
+                device_status_2,
+                link_control_2,
+                link_status_2,
+                slot_control_2,
+                slot_status_2,
+            } = &*state;
+
             Ok(state::SavedState {
-                device_control: state.device_control.into_bits(),
-                device_status: state.device_status.into_bits(),
-                link_control: state.link_control.into_bits(),
-                link_status: state.link_status.into_bits(),
-                slot_control: state.slot_control.into_bits(),
-                slot_status: state.slot_status.into_bits(),
-                root_control: state.root_control.into_bits(),
-                root_status: state.root_status.into_bits(),
-                device_control_2: state.device_control_2.into_bits(),
-                device_status_2: state.device_status_2.into_bits(),
-                link_control_2: state.link_control_2.into_bits(),
-                link_status_2: state.link_status_2.into_bits(),
-                slot_control_2: state.slot_control_2.into_bits(),
-                slot_status_2: state.slot_status_2.into_bits(),
+                device_control: device_control.into_bits(),
+                device_status: device_status.into_bits(),
+                link_control: link_control.into_bits(),
+                link_status: link_status.into_bits(),
+                slot_control: slot_control.into_bits(),
+                slot_status: slot_status.into_bits(),
+                root_control: root_control.into_bits(),
+                root_status: root_status.into_bits(),
+                device_control_2: device_control_2.into_bits(),
+                device_status_2: device_status_2.into_bits(),
+                link_control_2: link_control_2.into_bits(),
+                link_status_2: link_status_2.into_bits(),
+                slot_control_2: slot_control_2.into_bits(),
+                slot_status_2: slot_status_2.into_bits(),
             })
         }
 
         fn restore(&mut self, saved: Self::SavedState) -> Result<(), RestoreError> {
+            let state::SavedState {
+                device_control,
+                device_status,
+                link_control,
+                link_status,
+                slot_control,
+                slot_status,
+                root_control,
+                root_status,
+                device_control_2,
+                device_status_2,
+                link_control_2,
+                link_status_2,
+                slot_control_2,
+                slot_status_2,
+            } = saved;
+
             let mut state = self.state.lock();
-            state.device_control = pci_express::DeviceControl::from_bits(saved.device_control);
-            state.device_status = pci_express::DeviceStatus::from_bits(saved.device_status);
-            state.link_control = pci_express::LinkControl::from_bits(saved.link_control);
-            state.link_status = pci_express::LinkStatus::from_bits(saved.link_status);
-            state.slot_control = pci_express::SlotControl::from_bits(saved.slot_control);
-            state.slot_status = pci_express::SlotStatus::from_bits(saved.slot_status);
-            state.root_control = pci_express::RootControl::from_bits(saved.root_control);
-            state.root_status = pci_express::RootStatus::from_bits(saved.root_status);
-            state.device_control_2 = pci_express::DeviceControl2::from_bits(saved.device_control_2);
-            state.device_status_2 = pci_express::DeviceStatus2::from_bits(saved.device_status_2);
-            state.link_control_2 = pci_express::LinkControl2::from_bits(saved.link_control_2);
-            state.link_status_2 = pci_express::LinkStatus2::from_bits(saved.link_status_2);
-            state.slot_control_2 = pci_express::SlotControl2::from_bits(saved.slot_control_2);
-            state.slot_status_2 = pci_express::SlotStatus2::from_bits(saved.slot_status_2);
+            state.device_control = pci_express::DeviceControl::from_bits(device_control);
+            state.device_status = pci_express::DeviceStatus::from_bits(device_status);
+            state.link_control = pci_express::LinkControl::from_bits(link_control);
+            state.link_status = pci_express::LinkStatus::from_bits(link_status);
+            state.slot_control = pci_express::SlotControl::from_bits(slot_control);
+            state.slot_status = pci_express::SlotStatus::from_bits(slot_status);
+            state.root_control = pci_express::RootControl::from_bits(root_control);
+            state.root_status = pci_express::RootStatus::from_bits(root_status);
+            state.device_control_2 = pci_express::DeviceControl2::from_bits(device_control_2);
+            state.device_status_2 = pci_express::DeviceStatus2::from_bits(device_status_2);
+            state.link_control_2 = pci_express::LinkControl2::from_bits(link_control_2);
+            state.link_status_2 = pci_express::LinkStatus2::from_bits(link_status_2);
+            state.slot_control_2 = pci_express::SlotControl2::from_bits(slot_control_2);
+            state.slot_status_2 = pci_express::SlotStatus2::from_bits(slot_status_2);
             Ok(())
         }
     }

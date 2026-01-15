@@ -484,8 +484,8 @@ mod save_restore {
                 if let Some((_, downstream_port)) = self.downstream_ports.get_mut(&port_number) {
                     downstream_ports.push(downstream_port.port.cfg_space.save()?);
                 } else {
-                    return Err(SaveError::Other(anyhow::anyhow!(
-                        "downstream port {} not found during save",
+                    return Err(SaveError::NotFound(format!(
+                        "downstream port {}",
                         port_number
                     )));
                 }
@@ -514,9 +514,10 @@ mod save_restore {
                 if let Some((_, downstream_port)) = self.downstream_ports.get_mut(&port_number) {
                     downstream_port.port.cfg_space.restore(cfg_space)?;
                 } else {
-                    return Err(RestoreError::InvalidSavedState(
-                        anyhow::anyhow!("downstream port {} not found", port_number).into(),
-                    ));
+                    return Err(RestoreError::NotFound(format!(
+                        "downstream port {}",
+                        port_number
+                    )));
                 }
             }
 

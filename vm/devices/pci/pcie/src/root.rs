@@ -502,10 +502,7 @@ mod save_restore {
                 if let Some((_, root_port)) = self.ports.get_mut(&port_number) {
                     root_ports.push(root_port.port.cfg_space.save()?);
                 } else {
-                    return Err(SaveError::Other(anyhow::anyhow!(
-                        "root port {} not found during save",
-                        port_number
-                    )));
+                    return Err(SaveError::NotFound(format!("root port {}", port_number)));
                 }
             }
 
@@ -525,16 +522,13 @@ mod save_restore {
 
             // Validate that bus numbers match
             if start_bus != self.start_bus || end_bus != self.end_bus {
-                return Err(RestoreError::InvalidSavedState(
-                    anyhow::anyhow!(
-                        "bus number mismatch: saved ({}-{}), current ({}-{})",
-                        start_bus,
-                        end_bus,
-                        self.start_bus,
-                        self.end_bus
-                    )
-                    .into(),
-                ));
+                return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                    "bus number mismatch: saved ({}-{}), current ({}-{})",
+                    start_bus,
+                    end_bus,
+                    self.start_bus,
+                    self.end_bus
+                )));
             }
 
             // Get all port numbers and sort them for consistent ordering
@@ -543,14 +537,11 @@ mod save_restore {
 
             // Validate port count matches
             if root_ports.len() != port_numbers.len() {
-                return Err(RestoreError::InvalidSavedState(
-                    anyhow::anyhow!(
-                        "root port count mismatch: saved {}, current {}",
-                        root_ports.len(),
-                        port_numbers.len()
-                    )
-                    .into(),
-                ));
+                return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                    "root port count mismatch: saved {}, current {}",
+                    root_ports.len(),
+                    port_numbers.len()
+                )));
             }
 
             // Restore all root ports (index corresponds to sorted port numbers)
@@ -558,9 +549,7 @@ mod save_restore {
                 if let Some((_, root_port)) = self.ports.get_mut(port_number) {
                     root_port.port.cfg_space.restore(cfg_space)?;
                 } else {
-                    return Err(RestoreError::InvalidSavedState(
-                        anyhow::anyhow!("root port {} not found", port_number).into(),
-                    ));
+                    return Err(RestoreError::NotFound(format!("root port {}", port_number)));
                 }
             }
 

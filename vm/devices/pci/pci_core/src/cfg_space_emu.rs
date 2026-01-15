@@ -44,7 +44,7 @@ use vmcore::line_interrupt::LineInterrupt;
 pub enum HeaderType {
     /// Type 0 header with 6 BARs (endpoint devices)
     Type0,
-    /// Type 1 header with 2 BARs (bridge devices)  
+    /// Type 1 header with 2 BARs (bridge devices)
     Type1,
 }
 
@@ -71,7 +71,7 @@ pub mod header_type_consts {
     /// Number of BARs for Type 0 headers
     pub const TYPE0_BAR_COUNT: usize = HeaderType::Type0.bar_count();
 
-    /// Number of BARs for Type 1 headers  
+    /// Number of BARs for Type 1 headers
     pub const TYPE1_BAR_COUNT: usize = HeaderType::Type1.bar_count();
 }
 
