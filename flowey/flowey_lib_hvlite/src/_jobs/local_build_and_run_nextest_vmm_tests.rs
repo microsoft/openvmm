@@ -103,7 +103,7 @@ define_vmm_test_selection_flags! {
     vmgstool: true,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BuildSelections {
     pub openhcl: bool,
     pub openvmm: bool,
