@@ -129,6 +129,30 @@ impl IntoPipeline for VmmTestsCli {
         let target_os = target.as_triple().operating_system;
         let target_architecture = target.as_triple().architecture;
 
+        // When running Windows binaries under WSL, the output directory must be
+        // a Windows-accessible path (e.g., /mnt/c/..., /mnt/d/...) because
+        // Windows binaries require the images to live in a Windows directory.
+        if flowey_cli::running_in_wsl()
+            && matches!(target_os, target_lexicon::OperatingSystem::Windows)
+        {
+            let dir_str = dir.to_string_lossy();
+            let is_windows_path = dir_str.starts_with("/mnt/")
+                && dir_str
+                    .chars()
+                    .nth(5)
+                    .is_some_and(|c| c.is_ascii_lowercase())
+                && dir_str.chars().nth(6).is_none_or(|c| c == '/');
+
+            if !is_windows_path {
+                anyhow::bail!(
+                    "When targeting Windows from WSL, --dir must be a Windows-accessible path \
+                     (e.g., /mnt/c/vmm_tests, /mnt/d/vmm_tests_out). \
+                     Got: {}",
+                    dir_str
+                );
+            }
+        }
+
         pipeline
             .new_job(
                 FlowPlatform::host(backend_hint),
