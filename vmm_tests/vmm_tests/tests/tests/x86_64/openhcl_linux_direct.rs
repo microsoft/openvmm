@@ -105,7 +105,7 @@ async fn many_nvme_devices_servicing_very_heavy(
             ("OPENVMM_SHOW_SPANS".to_owned(), "true".to_owned()),
         ].into()))
         .with_openhcl_command_line(
-            "OPENHCL_ENABLE_VTL2_GPA_POOL=16384 dyndbg=\"module vfio_pci +p; module pci_hyperv +p\" udev.log_priority=debug",
+            "OPENHCL_ENABLE_VTL2_GPA_POOL=16384 dyndbg=\"module vfio_pci +p; module pci_hyperv +p\" udev.log_priority=debug OPENHCL_CONFIG_TIMEOUT_IN_SECONDS=30",
         ) // 64MB of private pool for VTL2 NVMe devices, debug logging for vfio-pci driver.
         .with_memory(MemoryConfig {
             startup_bytes: 8 * 1024 * 1024 * 1024, // 8GB
@@ -132,7 +132,7 @@ async fn many_nvme_devices_servicing_very_heavy(
                 );
             })
         })
-        .with_custom_vtl2_settings(|v| {
+        .add_vtl2_storage_controller({
             let device_ids = (0..NUM_NVME_DEVICES)
                 .map(|i| {
                     let mut g = BASE_GUID;
@@ -141,26 +141,24 @@ async fn many_nvme_devices_servicing_very_heavy(
                 })
                 .collect::<Vec<_>>();
 
-            v.dynamic.as_mut().unwrap().storage_controllers.push(
-                Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
-                    .add_luns(
-                        device_ids
-                            .iter()
-                            .map(|(nsid, guid)| {
-                                Vtl2LunBuilder::disk()
-                                    // Add 1 so as to avoid any confusion with booting from LUN 0 (on the implicit SCSI
-                                    // controller created by the above `config.with_vmbus_redirect` call above).
-                                    .with_location((*nsid - NSID_OFFSET) + 1)
-                                    .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                                        ControllerType::Nvme,
-                                        *guid,
-                                        *nsid,
-                                    ))
-                            })
-                            .collect(),
-                    )
-                    .build(),
-            )
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .add_luns(
+                    device_ids
+                        .iter()
+                        .map(|(nsid, guid)| {
+                            Vtl2LunBuilder::disk()
+                                // Add 1 so as to avoid any confusion with booting from LUN 0 (on the implicit SCSI
+                                // controller created by the above `config.with_vmbus_redirect` call above).
+                                .with_location((*nsid - NSID_OFFSET) + 1)
+                                .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                                    ControllerType::Nvme,
+                                    *guid,
+                                    *nsid,
+                                ))
+                        })
+                        .collect(),
+                )
+                .build()
         })
         .run()
         .await?;

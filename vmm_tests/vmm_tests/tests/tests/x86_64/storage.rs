@@ -265,31 +265,29 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
                 ));
             })
         })
-        .with_custom_vtl2_settings(move |v| {
-            v.dynamic.as_mut().unwrap().storage_controllers.push(
-                Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
-                    .with_instance_id(scsi_instance)
-                    .add_lun(
-                        Vtl2LunBuilder::disk()
-                            .with_location(vtl0_scsi_lun)
-                            .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                                ControllerType::Scsi,
-                                scsi_instance,
-                                vtl2_lun,
-                            )),
-                    )
-                    .add_lun(
-                        Vtl2LunBuilder::disk()
-                            .with_location(vtl0_nvme_lun)
-                            .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                                ControllerType::Nvme,
-                                NVME_INSTANCE,
-                                vtl2_nsid,
-                            )),
-                    )
-                    .build(),
-            )
-        })
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(scsi_instance)
+                .add_lun(
+                    Vtl2LunBuilder::disk()
+                        .with_location(vtl0_scsi_lun)
+                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                            ControllerType::Scsi,
+                            scsi_instance,
+                            vtl2_lun,
+                        )),
+                )
+                .add_lun(
+                    Vtl2LunBuilder::disk()
+                        .with_location(vtl0_nvme_lun)
+                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                            ControllerType::Nvme,
+                            NVME_INSTANCE,
+                            vtl2_nsid,
+                        )),
+                )
+                .build(),
+        )
         .run()
         .await?;
 
@@ -326,10 +324,10 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
     let vtl2_lun = 5;
     let vtl0_scsi_lun = 0;
     let scsi_instance = Guid::new_random();
+    let vtl2_vsid = Guid::new_random();
     const SCSI_DISK_SECTORS: u64 = 0x4_0000;
     const SECTOR_SIZE: u64 = 512;
     const EXPECTED_SCSI_DISK_SIZE_BYTES: u64 = SCSI_DISK_SECTORS * SECTOR_SIZE;
-    const CONTROLLER_TEST_ID: &str = "scsi-controller";
 
     // Assumptions made by test infra & routines:
     //
@@ -353,35 +351,18 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
 
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
-        .with_custom_vtl2_settings(move |v| {
-            v.dynamic.as_mut().unwrap().storage_controllers.push(
-                Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
-                    .with_instance_id(scsi_instance)
-                    .build(),
-            );
-        })
-        .modify_backend(move |b| {
-            b.with_additional_scsi_controller(CONTROLLER_TEST_ID.to_string(), 2)
-        })
-        .run()
-        .await?;
-
-    let (vtl2_controller_num, vtl2_vsid) = vm
-        .backend()
-        .get_additional_scsi_controllers()
-        .iter()
-        .filter(|c| c.test_id == CONTROLLER_TEST_ID)
-        .map(|c| (c.controller_number, c.vsid))
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("couldn't find additional scsi controller"))?;
-
-    vm.backend()
-        .add_vhd(
-            vhd_path,
-            petri::hyperv::powershell::ControllerType::Scsi,
-            Some(vtl2_lun),
-            Some(vtl2_controller_num),
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(scsi_instance)
+                .build(),
         )
+        .add_vmbus_storage_controller(&vtl2_vsid, petri::Vtl::Vtl2, petri::VmbusStorageType::Scsi)
+        .add_vmbus_drive(
+            petri::Drive::new(Some(petri::Disk::Persistent(vhd_path.to_path_buf())), false),
+            &vtl2_vsid,
+            Some(vtl2_lun),
+        )
+        .run()
         .await?;
 
     vm.modify_vtl2_settings(|s| {
@@ -399,7 +380,7 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
                 .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
                     ControllerType::Scsi,
                     vtl2_vsid,
-                    vtl2_lun.into(),
+                    vtl2_lun,
                 ))
                 .build(),
         );
@@ -471,30 +452,28 @@ async fn openhcl_linux_stripe_storvsp(
                 ]);
             })
         })
-        .with_custom_vtl2_settings(move |v| {
-            v.dynamic.as_mut().unwrap().storage_controllers.push(
-                Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
-                    .with_instance_id(scsi_instance)
-                    .add_lun(
-                        Vtl2LunBuilder::disk()
-                            .with_location(vtl0_nvme_lun)
-                            .with_chunk_size_in_kb(128)
-                            .with_physical_devices(vec![
-                                Vtl2StorageBackingDeviceBuilder::new(
-                                    ControllerType::Nvme,
-                                    NVME_INSTANCE_1,
-                                    vtl2_nsid,
-                                ),
-                                Vtl2StorageBackingDeviceBuilder::new(
-                                    ControllerType::Nvme,
-                                    NVME_INSTANCE_2,
-                                    vtl2_nsid,
-                                ),
-                            ]),
-                    )
-                    .build(),
-            )
-        })
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(scsi_instance)
+                .add_lun(
+                    Vtl2LunBuilder::disk()
+                        .with_location(vtl0_nvme_lun)
+                        .with_chunk_size_in_kb(128)
+                        .with_physical_devices(vec![
+                            Vtl2StorageBackingDeviceBuilder::new(
+                                ControllerType::Nvme,
+                                NVME_INSTANCE_1,
+                                vtl2_nsid,
+                            ),
+                            Vtl2StorageBackingDeviceBuilder::new(
+                                ControllerType::Nvme,
+                                NVME_INSTANCE_2,
+                                vtl2_nsid,
+                            ),
+                        ]),
+                )
+                .build(),
+        )
         .run()
         .await?;
 
@@ -560,15 +539,13 @@ async fn openhcl_linux_storvsp_dvd(
                 ));
             })
         })
-        .with_custom_vtl2_settings(move |v| {
-            v.dynamic.as_mut().unwrap().storage_controllers.push(
-                Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
-                    .with_instance_id(scsi_instance)
-                    .add_lun(Vtl2LunBuilder::dvd().with_location(vtl0_scsi_lun))
-                    // No physical devices initially, so the drive is empty
-                    .build(),
-            )
-        })
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(scsi_instance)
+                .add_lun(Vtl2LunBuilder::dvd().with_location(vtl0_scsi_lun))
+                // No physical devices initially, so the drive is empty
+                .build(),
+        )
         .run()
         .await?;
 
@@ -684,22 +661,20 @@ async fn openhcl_linux_storvsp_dvd_nvme(
                 )]);
             })
         })
-        .with_custom_vtl2_settings(move |v| {
-            v.dynamic.as_mut().unwrap().storage_controllers.push(
-                Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
-                    .with_instance_id(scsi_instance)
-                    .add_lun(
-                        Vtl2LunBuilder::dvd()
-                            .with_location(vtl2_lun)
-                            .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                                ControllerType::Nvme,
-                                NVME_INSTANCE,
-                                vtl2_nsid,
-                            )),
-                    )
-                    .build(),
-            );
-        })
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(scsi_instance)
+                .add_lun(
+                    Vtl2LunBuilder::dvd()
+                        .with_location(vtl2_lun)
+                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                            ControllerType::Nvme,
+                            NVME_INSTANCE,
+                            vtl2_nsid,
+                        )),
+                )
+                .build(),
+        )
         .run()
         .await?;
 
@@ -719,6 +694,152 @@ async fn openhcl_linux_storvsp_dvd_nvme(
     assert_eq!(b[..], bytes[..], "content mismatch");
 
     tracing::info!("read complete and verified, powering off VM");
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Test an OpenHCL Linux direct VM with a SCSI disk assigned to VTL2, an NVMe disk assigned to VTL2, and
+/// vmbus relay. This should expose two disks to VTL0 via vmbus.
+#[openvmm_test(
+    openhcl_linux_direct_x64,
+    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+)]
+async fn storvsp_dynamic_add_disk(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+    let vtl0_lun1 = 0;
+    let vtl0_lun2 = 1;
+    let vtl2_nsid1 = 37;
+    let vtl2_nsid2 = 42;
+    let scsi_instance = Guid::new_random();
+    const NVME1_DISK_SECTORS: u64 = 0x4_0000;
+    const NVME2_DISK_SECTORS: u64 = 0x5_0000;
+    const SECTOR_SIZE: u64 = 512;
+    const EXPECTED_NVME1_DISK_SIZE_BYTES: u64 = NVME1_DISK_SECTORS * SECTOR_SIZE;
+    const EXPECTED_NVME2_DISK_SIZE_BYTES: u64 = NVME2_DISK_SECTORS * SECTOR_SIZE;
+
+    // Assumptions made by test infra & routines:
+    //
+    // 1. Some test-infra added disks are 64MiB in size. Since we find disks by size,
+    // ensure that our test disks are a different size.
+    // 2. Disks under test need to be at least 100MiB for the IO tests (see [`test_storage_linux`]),
+    // with some arbitrary buffer (5MiB in this case).
+    static_assertions::const_assert_ne!(EXPECTED_NVME1_DISK_SIZE_BYTES, 64 * 1024 * 1024);
+    static_assertions::const_assert!(EXPECTED_NVME1_DISK_SIZE_BYTES > 105 * 1024 * 1024);
+    static_assertions::const_assert_ne!(EXPECTED_NVME2_DISK_SIZE_BYTES, 64 * 1024 * 1024);
+    static_assertions::const_assert!(EXPECTED_NVME2_DISK_SIZE_BYTES > 105 * 1024 * 1024);
+
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                // Create NVMe controller with BOTH namespaces
+                c.vpci_devices.push(VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl2,
+                    instance_id: NVME_INSTANCE,
+                    resource: NvmeControllerHandle {
+                        subsystem_id: NVME_INSTANCE,
+                        max_io_queues: 64,
+                        msix_count: 64,
+                        namespaces: vec![
+                            NamespaceDefinition {
+                                nsid: vtl2_nsid1,
+                                disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                    len: Some(NVME1_DISK_SECTORS * SECTOR_SIZE),
+                                })
+                                .into_resource(),
+                                read_only: false,
+                            },
+                            NamespaceDefinition {
+                                nsid: vtl2_nsid2,
+                                disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                    len: Some(NVME2_DISK_SECTORS * SECTOR_SIZE),
+                                })
+                                .into_resource(),
+                                read_only: false,
+                            },
+                        ],
+                    }
+                    .into_resource(),
+                });
+            })
+        })
+        .with_custom_vtl2_settings(move |v| {
+            v.dynamic.as_mut().unwrap().storage_controllers.push(
+                Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                    .with_instance_id(scsi_instance)
+                    // Only attach the first disk initially
+                    .add_lun(
+                        Vtl2LunBuilder::disk()
+                            .with_location(vtl0_lun1)
+                            .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                                ControllerType::Nvme,
+                                NVME_INSTANCE,
+                                vtl2_nsid1,
+                            )),
+                    )
+                    .build(),
+            )
+        })
+        .run()
+        .await?;
+
+    test_storage_linux(
+        &agent,
+        vec![ExpectedGuestDevice {
+            controller_guid: scsi_instance,
+            lun: vtl0_lun1,
+            disk_size_sectors: NVME1_DISK_SECTORS as usize,
+            friendly_name: "nvme1".to_string(),
+        }],
+    )
+    .await?;
+
+    // Now dynamically add the second disk
+    tracing::info!("Dynamically adding second disk to VTL2 settings");
+    vm.modify_vtl2_settings(|s| {
+        s.dynamic.as_mut().unwrap().storage_controllers[0]
+            .luns
+            .push(
+                Vtl2LunBuilder::disk()
+                    .with_location(vtl0_lun2)
+                    .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                        ControllerType::Nvme,
+                        NVME_INSTANCE,
+                        vtl2_nsid2,
+                    ))
+                    .build(),
+            );
+    })
+    .await?;
+
+    // Let the guest detect the new disk
+    let sh = agent.unix_shell();
+    cmd!(sh, "sleep 5").run().await?;
+
+    tracing::info!("Testing presence and IO on both disks in guest");
+    test_storage_linux(
+        &agent,
+        vec![
+            ExpectedGuestDevice {
+                controller_guid: scsi_instance,
+                lun: vtl0_lun1,
+                disk_size_sectors: NVME1_DISK_SECTORS as usize,
+                friendly_name: "nvme1".to_string(),
+            },
+            ExpectedGuestDevice {
+                controller_guid: scsi_instance,
+                lun: vtl0_lun2,
+                disk_size_sectors: NVME2_DISK_SECTORS as usize,
+                friendly_name: "nvme2".to_string(),
+            },
+        ],
+    )
+    .await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;

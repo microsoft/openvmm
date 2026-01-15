@@ -269,6 +269,11 @@ pub struct Options {
 
     /// (OPENHCL_DISABLE_LOWER_VTL_TIMER_VIRT=1) Disable lower VTL timer virtualization.
     pub disable_lower_vtl_timer_virt: bool,
+
+    /// (OPENHCL_CONFIG_TIMEOUT_IN_SECONDS=\<number\>) (default: 5)
+    /// Timeout in seconds for VM configuration operations, both initial
+    /// configuration and subsequent modifications.
+    pub config_timeout_in_seconds: u64,
 }
 
 impl Options {
@@ -441,6 +446,8 @@ impl Options {
         let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY");
         let disable_proxy_redirect = parse_env_bool("OPENHCL_DISABLE_PROXY_REDIRECT");
         let disable_lower_vtl_timer_virt = parse_env_bool("OPENHCL_DISABLE_LOWER_VTL_TIMER_VIRT");
+        let config_timeout_in_seconds =
+            parse_legacy_env_number("OPENHCL_CONFIG_TIMEOUT_IN_SECONDS")?.unwrap_or(5);
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -506,6 +513,7 @@ impl Options {
             enable_vpci_relay,
             disable_proxy_redirect,
             disable_lower_vtl_timer_virt,
+            config_timeout_in_seconds,
         })
     }
 
