@@ -73,10 +73,25 @@ impl SimpleFlowNode for Node {
                         .output()?;
                 }
 
-                let binary_path = match prep_steps {
+                let binary_path = match &prep_steps {
                     PrepStepsOutput::WindowsBin { exe, .. } => exe,
                     PrepStepsOutput::LinuxBin { bin, .. } => bin,
                 };
+
+                // When running a Windows exe from WSL2, environment variables don't
+                // automatically propagate. We need to set WSLENV to tell WSL which
+                // env vars to share with Windows processes.
+                let is_windows_exe_via_wsl = flowey_lib_common::_util::running_in_wsl(rt)
+                    && matches!(prep_steps, PrepStepsOutput::WindowsBin { .. });
+
+                let mut env = env;
+                if is_windows_exe_via_wsl {
+                    // Build WSLENV string with all env var names we want to pass
+                    // No /p flag needed since paths are already converted to Windows format
+                    let wslenv_value = env.keys().cloned().collect::<Vec<_>>().join(":");
+                    env.insert("WSLENV".to_string(), wslenv_value);
+                }
+
                 flowey::shell_cmd!(rt, "{binary_path}").envs(env).run()?;
 
                 Ok(())
