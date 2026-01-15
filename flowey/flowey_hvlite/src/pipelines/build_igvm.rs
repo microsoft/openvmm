@@ -140,7 +140,7 @@ pub struct BuildIgvmCliCustomizations {
 
     /// Path to kernel modules, none means the packaged kernel modules will be
     /// used.
-    #[clap(long)]
+    #[clap(long, requires = "custom_kernel")]
     pub custom_kernel_modules: Option<PathBuf>,
 
     /// Path to custom vtl0 linux kernel to use if the manifest includes a
@@ -359,6 +359,20 @@ impl IntoPipeline for BuildIgvmCli {
             });
         }
 
+        // Override kernel with local paths if both kernel and modules are specified
+        if let (Some(kernel_path), Some(modules_path)) =
+            (custom_kernel.clone(), custom_kernel_modules.clone())
+        {
+            job =
+                job.dep_on(
+                    move |_| flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalKernel {
+                        arch: recipe_arch,
+                        kernel: kernel_path,
+                        modules: modules_path,
+                    },
+                );
+        }
+
         job.dep_on(
             |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
                 hvlite_repo_source: openvmm_repo,
@@ -419,7 +433,6 @@ impl IntoPipeline for BuildIgvmCli {
                 custom_openhcl_boot,
                 custom_uefi,
                 custom_kernel,
-                custom_kernel_modules,
                 custom_vtl0_kernel,
                 custom_layer,
                 custom_directory,
