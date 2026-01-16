@@ -361,13 +361,12 @@ where
 
 #[derive(clap::Parser)]
 struct Options {
-    /// Lists the required artifacts for tests matching the filter in JSON format.
-    /// Pass test name filters as positional arguments (same as libtest).
+    /// Lists the required artifacts for all tests in JSON format.
+    /// Use --tests-from-stdin to query artifacts for specific tests.
     #[clap(long)]
     list_required_artifacts: bool,
     /// When used with --list-required-artifacts, read exact test names from stdin
-    /// (one per line) instead of using the filter argument. This is more efficient
-    /// when querying artifacts for many tests at once.
+    /// (one per line) to query artifacts for specific tests only.
     #[clap(long, requires = "list_required_artifacts")]
     tests_from_stdin: bool,
     #[clap(flatten)]
@@ -392,7 +391,7 @@ pub fn test_main(
         use std::collections::BTreeSet;
         use std::collections::HashSet;
 
-        // Collect all artifacts from tests matching the filter
+        // Collect all artifacts from tests (all tests, or those specified via stdin)
         let mut required_set: BTreeSet<String> = BTreeSet::new();
         let mut optional_set: BTreeSet<String> = BTreeSet::new();
 
@@ -417,32 +416,10 @@ pub fn test_main(
         for test in Test::all() {
             let name = test.name();
 
-            let matches = if let Some(ref stdin_tests) = stdin_tests {
-                // When reading from stdin, do exact matching against the provided test names
-                stdin_tests.contains(&name)
-            } else {
-                // Apply the same filtering logic as libtest-mimic:
-                // - If filter is set, test name must contain the filter string
-                // - If --exact is set, test name must match exactly
-                // - Skip tests matching any --skip pattern
-                let matches_filter = match &args.inner.filter {
-                    Some(filter) => {
-                        if args.inner.exact {
-                            name == *filter
-                        } else {
-                            name.contains(filter.as_str())
-                        }
-                    }
-                    None => true,
-                };
-
-                let matches_skip = args
-                    .inner
-                    .skip
-                    .iter()
-                    .any(|skip| name.contains(skip.as_str()));
-
-                matches_filter && !matches_skip
+            // If reading from stdin, do exact matching; otherwise include all tests
+            let matches = match stdin_tests {
+                Some(ref stdin_tests) => stdin_tests.contains(&name),
+                None => true,
             };
 
             if matches {
