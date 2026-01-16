@@ -82,18 +82,13 @@ struct ExpectedGuestDevice {
     friendly_name: String,
 }
 
-/// Runs a series of validation steps inside the Linux guest to verify that the
-/// storage devices (especially as presented by OpenHCL's vSCSI implementation
-/// storvsp) are present and working correctly.
-///
-/// May `panic!`, `assert!`, or return an `Err` if any checks fail. Which
-/// mechanism is used depends on the nature of the failure ano the most
-/// convenient way to check for it in this routine.
-async fn test_storage_linux(
+/// Get the device paths for the expected devices inside the Linux guest,
+/// verifying that they exist and have the expected size.
+async fn get_device_paths(
     agent: &PipetteClient,
     controller_guid: Guid,
     expected_devices: Vec<ExpectedGuestDevice>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<String>> {
     let sh = agent.unix_shell();
 
     let all_disks = cmd!(sh, "sh -c 'ls -ld /sys/block/sd*'").read().await?;
@@ -169,6 +164,58 @@ async fn test_storage_linux(
             devices
         );
     }
+
+    Ok(device_paths)
+}
+
+/// Runs a series of validation steps inside the Linux guest to verify that the
+/// storage devices (especially as presented by OpenHCL's vSCSI implementation
+/// storvsp) are present and working correctly.
+///
+/// May `panic!`, `assert!`, or return an `Err` if any checks fail. Which
+/// mechanism is used depends on the nature of the failure ano the most
+/// convenient way to check for it in this routine.
+async fn test_storage_linux(
+    agent: &PipetteClient,
+    controller_guid: Guid,
+    expected_devices: Vec<ExpectedGuestDevice>,
+) -> anyhow::Result<()> {
+    const DEVICE_DISCOVER_RETRIES: u32 = 5;
+    const DEVICE_DISCOVER_SLEEP_SECS: u64 = 2;
+
+    let sh = agent.unix_shell();
+
+    // Discover device paths, with retries
+    let device_paths = {
+        let mut attempt = 0;
+        loop {
+            match get_device_paths(agent, controller_guid, expected_devices.clone()).await {
+                Ok(paths) => {
+                    tracing::info!(?paths, "Discovered device paths");
+                    break paths;
+                }
+                Err(e) if attempt + 1 < DEVICE_DISCOVER_RETRIES => {
+                    tracing::warn!(
+                        "Attempt {}/{}: Failed to get device paths: {:#}. Retrying in {} seconds...",
+                        attempt + 1,
+                        DEVICE_DISCOVER_RETRIES,
+                        e,
+                        DEVICE_DISCOVER_SLEEP_SECS
+                    );
+                    let seconds = format!("{DEVICE_DISCOVER_SLEEP_SECS}");
+                    cmd!(sh, "sleep {seconds}").run().await?;
+                    attempt += 1;
+                }
+                Err(e) => {
+                    anyhow::bail!(
+                        "Failed to get device paths after {} attempts: {:#}",
+                        DEVICE_DISCOVER_RETRIES,
+                        e
+                    );
+                }
+            }
+        }
+    };
 
     // Do IO to all devices. Generate a file with random contents so that we
     // can verify that the writes (and reads) work correctly.
@@ -717,8 +764,9 @@ async fn openhcl_linux_storvsp_dvd_nvme(
     Ok(())
 }
 
-/// Test an OpenHCL Linux direct VM with a SCSI disk assigned to VTL2, an NVMe disk assigned to VTL2, and
-/// vmbus relay. This should expose two disks to VTL0 via vmbus.
+/// Test an OpenHCL Linux direct VM with several NVMe namespaces assigned to VTL2, and
+/// vmbus relay. This should expose the disks to VTL0 as SCSI via vmbus.
+/// The disks are added dynamically after VM boot rather than being there at boot time.
 #[openvmm_test(
     openhcl_linux_direct_x64,
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
@@ -805,10 +853,6 @@ async fn storvsp_dynamic_add_disk(
             }))
     })
     .await?;
-
-    // Let the guest detect the new disk
-    let sh = agent.unix_shell();
-    cmd!(sh, "sleep 5").run().await?;
 
     tracing::info!("Testing presence and IO on all disks in guest");
     test_storage_linux(
