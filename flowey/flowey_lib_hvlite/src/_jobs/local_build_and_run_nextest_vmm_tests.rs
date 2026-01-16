@@ -209,6 +209,7 @@ impl SimpleFlowNode for Node {
             done,
         } = request;
 
+        let test_content_dir = test_content_dir.absolute()?;
         let custom_kernel_modules_abs = custom_kernel_modules.map(|p| p.absolute()).transpose()?;
         let custom_kernel_abs = custom_kernel.map(|p| p.absolute()).transpose()?;
 
@@ -328,7 +329,13 @@ impl SimpleFlowNode for Node {
                     filter.push_str(" & !test(guest_test_uefi)");
                     build.guest_test_uefi = false;
                 }
-                if !tdx && !snp && !hyperv_vbs {
+                // prep_steps is Windows-only
+                if !tdx && !snp && !hyperv_vbs
+                    || !matches!(
+                        target_triple.operating_system,
+                        target_lexicon::OperatingSystem::Windows
+                    )
+                {
                     build.prep_steps = false;
                 }
                 if !vmgstool {
