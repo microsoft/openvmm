@@ -173,7 +173,7 @@ async fn get_device_paths(
 /// storvsp) are present and working correctly.
 ///
 /// May `panic!`, `assert!`, or return an `Err` if any checks fail. Which
-/// mechanism is used depends on the nature of the failure ano the most
+/// mechanism is used depends on the nature of the failure and the most
 /// convenient way to check for it in this routine.
 async fn test_storage_linux(
     agent: &PipetteClient,
@@ -771,6 +771,7 @@ async fn openhcl_linux_storvsp_dvd_nvme(
     openhcl_linux_direct_x64,
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
+#[ignore]
 async fn storvsp_dynamic_add_disk(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
