@@ -768,7 +768,7 @@ enum Req {
 /// Functionality for an AER handler. The default implementation
 /// represents a NoOp handler with functions on the critical path compiled out
 /// for efficiency and should be used for IO Queues.
-pub trait AerHandler: Send + Sync + 'static {
+trait AerHandler: Send + Sync + 'static {
     /// Given a completion command, if the command pertains to a pending AEN,
     /// process it.
     #[inline]
@@ -792,7 +792,7 @@ pub trait AerHandler: Send + Sync + 'static {
 
 /// Admin queue AER handler. Ensures a single outstanding AER and persists state
 /// across save/restore to process AENs received during servicing.
-pub struct AdminAerHandler {
+struct AdminAerHandler {
     last_aen: Option<AsynchronousEventRequestDw0>,
     await_aen_cid: Option<u16>,
     send_aen: Option<Rpc<(), AenResponse>>, // Channel to return AENs on.
