@@ -100,6 +100,50 @@ impl IntoPipeline for CcaFvpCli {
         // Put Shrinkwrap repo under the pipeline working dir, so it's self-contained.
         let shrinkwrap_dir = dir.join("shrinkwrap");
 
+        // Convert platform and overlay paths that reference the shrinkwrap directory
+        // to absolute paths, since shrinkwrap will change directory during execution
+        let platform = if platform.starts_with("target/cca-fvp/shrinkwrap/") ||
+                          platform.starts_with("./target/cca-fvp/shrinkwrap/") {
+            // This is a shrinkwrap config file, make it absolute
+            let rel_path = platform.strip_prefix("target/cca-fvp/shrinkwrap/")
+                .or_else(|_| platform.strip_prefix("./target/cca-fvp/shrinkwrap/"))
+                .unwrap();
+            shrinkwrap_dir.join(rel_path)
+        } else if platform.is_absolute() {
+            platform
+        } else {
+            // Try to canonicalize if it exists, otherwise make it absolute
+            std::fs::canonicalize(&platform).unwrap_or_else(|_| {
+                std::env::current_dir().unwrap().join(&platform)
+            })
+        };
+
+        let overlay: Vec<PathBuf> = overlay.into_iter().map(|p| {
+            if p.starts_with("target/cca-fvp/shrinkwrap/") ||
+               p.starts_with("./target/cca-fvp/shrinkwrap/") {
+                // This is a shrinkwrap config file, make it absolute
+                let rel_path = p.strip_prefix("target/cca-fvp/shrinkwrap/")
+                    .or_else(|_| p.strip_prefix("./target/cca-fvp/shrinkwrap/"))
+                    .unwrap();
+                shrinkwrap_dir.join(rel_path)
+            } else if p.is_absolute() {
+                p
+            } else {
+                // Try to canonicalize if it exists, otherwise make it absolute
+                std::fs::canonicalize(&p).unwrap_or_else(|_| {
+                    std::env::current_dir().unwrap().join(&p)
+                })
+            }
+        }).collect();
+
+        let rootfs = std::fs::canonicalize(&rootfs).unwrap_or_else(|_| {
+            if rootfs.is_absolute() {
+                rootfs.clone()
+            } else {
+                std::env::current_dir().unwrap().join(&rootfs)
+            }
+        });
+
         pipeline
             .new_job(
                 FlowPlatform::host(backend_hint),
