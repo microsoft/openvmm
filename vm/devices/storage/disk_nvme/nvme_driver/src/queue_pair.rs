@@ -752,7 +752,10 @@ struct PendingCommand {
     respond: Rpc<(), spec::Completion>,
 }
 
-enum AenResponse {
+/// Response to an AEN request. Failure case is returned with a RequestError
+/// containing the NVMe error status code.
+#[derive(Debug)]
+pub enum AenResponse {
     Success(AsynchronousEventRequestDw0),
     Failure(RequestError),
 }
@@ -768,7 +771,7 @@ enum Req {
 /// Functionality for an AER handler. The default implementation
 /// represents a NoOp handler with functions on the critical path compiled out
 /// for efficiency and should be used for IO Queues.
-trait AerHandler: Send + Sync + 'static {
+pub trait AerHandler: Send + Sync + 'static {
     /// Given a completion command, if the command pertains to a pending AEN,
     /// process it.
     #[inline]
@@ -792,7 +795,7 @@ trait AerHandler: Send + Sync + 'static {
 
 /// Admin queue AER handler. Ensures a single outstanding AER and persists state
 /// across save/restore to process AENs received during servicing.
-struct AdminAerHandler {
+pub struct AdminAerHandler {
     last_aen: Option<AsynchronousEventRequestDw0>,
     await_aen_cid: Option<u16>,
     send_aen: Option<Rpc<(), AenResponse>>, // Channel to return AENs on.
@@ -886,7 +889,7 @@ impl AerHandler for AdminAerHandler {
 }
 
 /// No-op AER handler. Should be only used for IO queues.
-struct NoOpAerHandler;
+pub struct NoOpAerHandler;
 impl AerHandler for NoOpAerHandler {
     fn handle_aen_request(&mut self, _rpc: Rpc<(), AenResponse>) {
         panic!(
