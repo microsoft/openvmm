@@ -12,6 +12,7 @@ inspect = { workspace = true, optional = true }
 
 bitfield-struct.workspace = true
 static_assertions.workspace = true
+tpm_protocol.workspace = true
 zerocopy.workspace = true
 [lints]
 workspace = true

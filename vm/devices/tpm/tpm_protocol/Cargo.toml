@@ -8,6 +8,7 @@ edition.workspace = true
 
 [dependencies]
 bitfield-struct.workspace = true
+open_enum.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
 
