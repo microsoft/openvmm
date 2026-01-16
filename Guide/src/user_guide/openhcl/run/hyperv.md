@@ -70,6 +70,30 @@ $VmName = 'myFirstVM'
 
 ### Create the Hyper-V VM
 
+#### Create VM with OpenHCL (but not Trusted Launch)
+
+Use the `-GuestStateIsolationType OpenHCL` parameter to `New-VM`. The following snippet will create a new VM that uses OpenHCL with a firmware that you specify.
+
+```powershell
+# Names, directories, etc.
+# cargo xflowey will do some heavy lifting for you. You can run `cargo xflowey vmm-tests --build-only --dir /mnt/q/win-vmm-tests ...` from your WSL to get images, compiled OpenHCL, etc. See [cross-compile](../../../dev_guide/getting_started/cross_compile.md) and [vmm-test](../../../dev_guide/tests/vmm.md) docs for additional info.
+$repoDir = "home\<your-wsl-username-for-example>\openvmm" # for prereqs below, the path relative to the root of your WSL file system where you have cloned the openvmm repo
+
+$VmName = "OpenHCLTestVM"
+$vmOsDisk = " Q:\win-vmm-tests\osdisk.vhdx" # for step (1), the location of the OS disk for the VM. E.g. Convert-VHD Q:\win-vmm-tests\images\ubuntu-25.04-server-cloudimg-amd64.vhd -DestinationPath "Q:\win-vmm-tests\osdisk.vhdx"
+$firmwareFile = "Q:\win-vmm-tests\openhcl-x64.bin" # for step (1), the location of your built OpenHCL firmware.
+
+# Import the `hyperv.psm1` module that's used by petri, e.g.
+Set-ExecutionPolicy Bypass -Scope Process # See about_Execution_Policies at https://go.microsoft.com/fwlink/?LinkID=135170.
+Import-Module \\wsl.localhost\Ubuntu\$($repoDir)\petri\src\vm\hyperv\hyperv.psm1
+
+# (1) Create a VM with OpenHCL isolation mode
+$vm = New-VM $VmName -generation 2 -GuestStateIsolationType OpenHCL -VHDPath $vmOsDisk -BootDevice VHD
+Set-VM -VM $vm -AutomaticCheckpointsEnabled $false
+Set-VMFirmware -VM $vm -EnableSecureBoot Off # your guest image might need this, for example
+Set-OpenHCLFirmware -Vm $vm -IgvmFile $firmwareFile
+```
+
 #### Create VM as a Trusted Launch VM
 
 Enables [Trusted Launch](https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch) for the VM.
@@ -120,7 +144,7 @@ While these steps guide you to create a second SCSI controller, your generation 
 
 ```powershell
 # Names, directories, etc.
-# cargo xflowey will do some heavy lifting for you. You can run `cargo xflowey vmm-tests --build-only --dir /mnt/q/win-vmm-tests ...` from your WSL to get images, compiled OpenHCL, etc.
+# cargo xflowey will do some heavy lifting for you. You can run `cargo xflowey vmm-tests --build-only --dir /mnt/q/win-vmm-tests ...` from your WSL to get images, compiled OpenHCL, etc. See [cross-compile](../../../dev_guide/getting_started/cross_compile.md) and [vmm-test](../../../dev_guide/tests/vmm.md) docs for additional info.
 $repoDir = "home\<your-wsl-username-for-example>\openvmm" # for prereqs below, the path relative to the root of your WSL file system where you have cloned the openvmm repo
 
 $VmName = "OpenHCLTestVM"
