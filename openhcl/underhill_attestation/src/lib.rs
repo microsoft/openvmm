@@ -37,6 +37,7 @@ use key_protector::KeyProtectorExt as _;
 use mesh::MeshPayload;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
+use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
 use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::SecurityProfile;
@@ -237,6 +238,170 @@ pub enum AttestationType {
     Host,
 }
 
+/// Request VMGS encryption keys and unlock the VMGS.
+/// If successful, return a bool indicating whether igvmagent requested a
+/// state refresh. If unsuccessful, return an error and a bool indicating
+/// whether to retry.
+async fn try_unlock_vmgs(
+    get: &GuestEmulationTransportClient,
+    bios_guid: Guid,
+    attestation_vm_config: &AttestationVmConfig,
+    vmgs: &mut Vmgs,
+    tee_call: Option<&dyn TeeCall>,
+    guest_state_encryption_policy: GuestStateEncryptionPolicy,
+    strict_encryption_policy: bool,
+    agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
+    key_protector_by_id: &mut KeyProtectorById,
+) -> Result<bool, (AttestationErrorInner, bool)> {
+    let skr_response = if let Some(tee_call) = tee_call {
+        tracing::info!(CVM_ALLOWED, "Retrieving key-encryption key");
+
+        // Retrieve the tenant key via attestation
+        secure_key_release::request_vmgs_encryption_keys(
+            get,
+            tee_call,
+            vmgs,
+            attestation_vm_config,
+            agent_data,
+        )
+        .await
+    } else {
+        tracing::info!(CVM_ALLOWED, "Key-encryption key retrieval not required");
+
+        // Attestation is unavailable, assume no tenant key
+        Ok(VmgsEncryptionKeys::default())
+    };
+
+    let retry = match skr_response {
+        Ok(_) => false,
+        Err((_, r)) => r,
+    };
+
+    let VmgsEncryptionKeys {
+        ingress_rsa_kek,
+        wrapped_des_key,
+        tcb_version,
+    } = match skr_response {
+        Ok(k) => {
+            tracing::info!(CVM_ALLOWED, "Successfully retrieved key-encryption key");
+            k
+        }
+        Err((e, _)) => {
+            // Non-fatal, allowing for hardware-based recovery
+            tracing::error!(
+                CVM_ALLOWED,
+                error = &e as &dyn std::error::Error,
+                "Failed to retrieve key-encryption key"
+            );
+
+            VmgsEncryptionKeys::default()
+        }
+    };
+
+    // Determine the minimal size of a DEK entry based on whether `wrapped_des_key` presents
+    let dek_minimal_size = if wrapped_des_key.is_some() {
+        key_protector::AES_WRAPPED_AES_KEY_LENGTH
+    } else {
+        key_protector::RSA_WRAPPED_AES_KEY_LENGTH
+    };
+
+    // Read Key Protector blob from VMGS
+    tracing::info!(
+        CVM_ALLOWED,
+        dek_minimal_size = dek_minimal_size,
+        "Reading key protector from VMGS"
+    );
+    let mut key_protector = vmgs::read_key_protector(vmgs, dek_minimal_size)
+        .await
+        .map_err(|e| (AttestationErrorInner::ReadKeyProtector(e), false))?;
+
+    let start_time = std::time::SystemTime::now();
+    let vmgs_encrypted = vmgs.is_encrypted();
+    tracing::info!(
+        ?tcb_version,
+        vmgs_encrypted,
+        op_type = ?LogOpType::BeginDecryptVmgs,
+        "Deriving keys"
+    );
+
+    let derived_keys_result = get_derived_keys(
+        get,
+        tee_call,
+        vmgs,
+        &mut key_protector,
+        key_protector_by_id,
+        bios_guid,
+        attestation_vm_config,
+        vmgs_encrypted,
+        ingress_rsa_kek.as_ref(),
+        wrapped_des_key.as_deref(),
+        tcb_version,
+        guest_state_encryption_policy,
+        strict_encryption_policy,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            CVM_ALLOWED,
+            op_type = ?LogOpType::DecryptVmgs,
+            success = false,
+            err = &e as &dyn std::error::Error,
+            latency = std::time::SystemTime::now()
+                .duration_since(start_time)
+                .map_or(0, |d| d.as_millis()),
+            "Failed to derive keys"
+        );
+        (AttestationErrorInner::GetDerivedKeys(e), retry)
+    })?;
+
+    // All Underhill VMs use VMGS encryption
+    tracing::info!("Unlocking VMGS");
+    if let Err(e) = unlock_vmgs_data_store(
+        vmgs,
+        vmgs_encrypted,
+        &mut key_protector,
+        key_protector_by_id,
+        derived_keys_result.derived_keys,
+        derived_keys_result.key_protector_settings,
+        bios_guid,
+    )
+    .await
+    {
+        tracing::error!(
+            CVM_ALLOWED,
+            op_type = ?LogOpType::DecryptVmgs,
+            success = false,
+            err = &e as &dyn std::error::Error,
+            latency = std::time::SystemTime::now()
+                .duration_since(start_time)
+                .map_or(0, |d| d.as_millis()),
+            "Failed to unlock datastore"
+        );
+        get.event_log_fatal(guest_emulation_transport::api::EventLogId::ATTESTATION_FAILED)
+            .await;
+
+        Err((AttestationErrorInner::UnlockVmgsDataStore(e), retry))?;
+    }
+
+    tracing::info!(
+        CVM_ALLOWED,
+        op_type = ?LogOpType::DecryptVmgs,
+        success = true,
+        decrypt_gsp_type = ?derived_keys_result
+            .key_protector_settings
+            .decrypt_gsp_type,
+        encrypt_gsp_type = ?derived_keys_result
+            .key_protector_settings
+            .encrypt_gsp_type,
+        latency = std::time::SystemTime::now().duration_since(start_time).map_or(0, |d| d.as_millis()),
+        "Unlocked datastore"
+    );
+
+    Ok(derived_keys_result
+        .gsp_extended_status_flags
+        .state_refresh_request())
+}
+
 /// If required, attest platform. Gets VMGS datastore key.
 ///
 /// Returns `refresh_tpm_seeds` (the host side GSP service indicating
@@ -253,6 +418,9 @@ pub async fn initialize_platform_security(
     guest_state_encryption_policy: GuestStateEncryptionPolicy,
     strict_encryption_policy: bool,
 ) -> Result<PlatformAttestationData, Error> {
+    const MAXIMUM_RETRY_COUNT: usize = 10;
+    const NO_RETRY_COUNT: usize = 1;
+
     tracing::info!(CVM_ALLOWED,
         tee_type=?tee_call.map(|tee| tee.tee_type()),
         secure_boot=attestation_vm_config.secure_boot,
@@ -281,72 +449,6 @@ pub async fn initialize_platform_security(
         });
     }
 
-    let VmgsEncryptionKeys {
-        ingress_rsa_kek,
-        wrapped_des_key,
-        tcb_version,
-    } = if let Some(tee_call) = tee_call {
-        tracing::info!(CVM_ALLOWED, "Retrieving key-encryption key");
-
-        // Retrieve the tenant key via attestation
-        match secure_key_release::request_vmgs_encryption_keys(
-            get,
-            tee_call,
-            vmgs,
-            attestation_vm_config,
-            &mut agent_data,
-            driver,
-        )
-        .await
-        {
-            Ok(VmgsEncryptionKeys {
-                ingress_rsa_kek,
-                wrapped_des_key,
-                tcb_version,
-            }) => {
-                tracing::info!(CVM_ALLOWED, "Successfully retrieved key-encryption key");
-
-                VmgsEncryptionKeys {
-                    ingress_rsa_kek,
-                    wrapped_des_key,
-                    tcb_version,
-                }
-            }
-            Err(e) => {
-                // Non-fatal, allowing for hardware-based recovery
-                tracing::error!(
-                    CVM_ALLOWED,
-                    error = &e as &dyn std::error::Error,
-                    "Failed to retrieve key-encryption key"
-                );
-
-                VmgsEncryptionKeys::default()
-            }
-        }
-    } else {
-        tracing::info!(CVM_ALLOWED, "Key-encryption key retrieval not required");
-
-        // Attestation is unavailable, assume no tenant key
-        VmgsEncryptionKeys::default()
-    };
-
-    // Determine the minimal size of a DEK entry based on whether `wrapped_des_key` presents
-    let dek_minimal_size = if wrapped_des_key.is_some() {
-        key_protector::AES_WRAPPED_AES_KEY_LENGTH
-    } else {
-        key_protector::RSA_WRAPPED_AES_KEY_LENGTH
-    };
-
-    // Read Key Protector blob from VMGS
-    tracing::info!(
-        CVM_ALLOWED,
-        dek_minimal_size = dek_minimal_size,
-        "Reading key protector from VMGS"
-    );
-    let mut key_protector = vmgs::read_key_protector(vmgs, dek_minimal_size)
-        .await
-        .map_err(AttestationErrorInner::ReadKeyProtector)?;
-
     // Read VM id from VMGS
     tracing::info!(CVM_ALLOWED, "Reading VM ID from VMGS");
     let mut key_protector_by_id = match vmgs::read_key_protector_by_id(vmgs).await {
@@ -374,92 +476,49 @@ pub async fn initialize_platform_security(
         false
     };
 
+    // Retry attestation call-out if necessary (if VMGS encrypted).
+    // The IGVm Agent could be down for servicing, or the TDX service VM might not be ready, or a dynamic firmware
+    // update could mean that the report was not verifiable.
     let vmgs_encrypted: bool = vmgs.is_encrypted();
+    let max_retry = if vmgs_encrypted {
+        MAXIMUM_RETRY_COUNT
+    } else {
+        NO_RETRY_COUNT
+    };
 
-    let start_time = std::time::SystemTime::now();
-    tracing::info!(
-        ?tcb_version,
-        vmgs_encrypted,
-        op_type = ?LogOpType::BeginDecryptVmgs,
-        "Deriving keys"
-    );
+    let mut timer = pal_async::timer::PolledTimer::new(&driver);
+    let mut i = 0;
 
-    let derived_keys_result = get_derived_keys(
-        get,
-        tee_call,
-        vmgs,
-        &mut key_protector,
-        &mut key_protector_by_id,
-        bios_guid,
-        attestation_vm_config,
-        vmgs_encrypted,
-        ingress_rsa_kek.as_ref(),
-        wrapped_des_key.as_deref(),
-        tcb_version,
-        guest_state_encryption_policy,
-        strict_encryption_policy,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!(
-            CVM_ALLOWED,
-            op_type = ?LogOpType::DecryptVmgs,
-            success = false,
-            err = &e as &dyn std::error::Error,
-            latency = std::time::SystemTime::now()
-                .duration_since(start_time)
-                .map_or(0, |d| d.as_millis()),
-            "Failed to derive keys"
-        );
-        AttestationErrorInner::GetDerivedKeys(e)
-    })?;
+    let state_refresh_request_from_gsp = loop {
+        tracing::info!(CVM_ALLOWED, attempt = i, "attempt to unlock VMGS file");
 
-    // All Underhill VMs use VMGS encryption
-    tracing::info!("Unlocking VMGS");
-    if let Err(e) = unlock_vmgs_data_store(
-        vmgs,
-        vmgs_encrypted,
-        &mut key_protector,
-        &mut key_protector_by_id,
-        derived_keys_result.derived_keys,
-        derived_keys_result.key_protector_settings,
-        bios_guid,
-    )
-    .await
-    {
-        tracing::error!(
-            CVM_ALLOWED,
-            op_type = ?LogOpType::DecryptVmgs,
-            success = false,
-            err = &e as &dyn std::error::Error,
-            latency = std::time::SystemTime::now()
-                .duration_since(start_time)
-                .map_or(0, |d| d.as_millis()),
-            "Failed to unlock datastore"
-        );
-        get.event_log_fatal(guest_emulation_transport::api::EventLogId::ATTESTATION_FAILED)
-            .await;
+        let response = try_unlock_vmgs(
+            get,
+            bios_guid,
+            attestation_vm_config,
+            vmgs,
+            tee_call,
+            guest_state_encryption_policy,
+            strict_encryption_policy,
+            &mut agent_data,
+            &mut key_protector_by_id,
+        )
+        .await;
 
-        Err(AttestationErrorInner::UnlockVmgsDataStore(e))?
-    }
+        match response {
+            Ok(b) => break b,
+            Err((e, false)) => Err(e)?,
+            Err((e, true)) => {
+                if i >= max_retry - 1 {
+                    Err(e)?
+                }
+            }
+        }
 
-    tracing::info!(
-        CVM_ALLOWED,
-        op_type = ?LogOpType::DecryptVmgs,
-        success = true,
-        decrypt_gsp_type = ?derived_keys_result
-            .key_protector_settings
-            .decrypt_gsp_type,
-        encrypt_gsp_type = ?derived_keys_result
-            .key_protector_settings
-            .encrypt_gsp_type,
-        latency = std::time::SystemTime::now().duration_since(start_time).map_or(0, |d| d.as_millis()),
-        "Unlocked datastore"
-    );
-
-    let state_refresh_request_from_gsp = derived_keys_result
-        .gsp_extended_status_flags
-        .state_refresh_request();
+        // Stall on retries
+        timer.sleep(std::time::Duration::new(1, 0)).await;
+        i += 1;
+    };
 
     let host_attestation_settings = HostAttestationSettings {
         refresh_tpm_seeds: { state_refresh_request_from_gsp | vm_id_changed },
@@ -2218,7 +2277,7 @@ mod tests {
 
         // Write non-zero agent data to VMGS so we can verify it is returned.
         let agent = SecurityProfile {
-            agent_data: [0xAA; openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE],
+            agent_data: [0xAA; AGENT_DATA_MAX_SIZE],
         };
         vmgs.write_file(FileId::ATTEST, agent.as_bytes())
             .await
@@ -2305,8 +2364,7 @@ mod tests {
         });
         let key_reference = serde_json::to_string(&key_reference).unwrap();
         let key_reference = key_reference.as_bytes();
-        let mut expected_agent_data =
-            [0u8; openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE];
+        let mut expected_agent_data = [0u8; AGENT_DATA_MAX_SIZE];
         expected_agent_data[..key_reference.len()].copy_from_slice(key_reference);
         assert_eq!(res.agent_data.unwrap(), expected_agent_data.to_vec());
         // Secure key should be None without pre-provisioning
@@ -2337,7 +2395,7 @@ mod tests {
 
         // Write non-zero agent data to workaround the WRAPPED_KEY_REQUEST requirement.
         let agent = SecurityProfile {
-            agent_data: [0xAA; openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE],
+            agent_data: [0xAA; AGENT_DATA_MAX_SIZE],
         };
         vmgs.write_file(FileId::ATTEST, agent.as_bytes())
             .await
@@ -2417,6 +2475,16 @@ mod tests {
             IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
             VecDeque::from([
                 IgvmAgentAction::RespondSuccess,
+                // initialize_platform_security will attempt SKR/unlock 10 times
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
                 IgvmAgentAction::RespondFailure,
             ]),
         );
@@ -2461,8 +2529,7 @@ mod tests {
         });
         let key_reference = serde_json::to_string(&key_reference).unwrap();
         let key_reference = key_reference.as_bytes();
-        let mut expected_agent_data =
-            [0u8; openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE];
+        let mut expected_agent_data = [0u8; AGENT_DATA_MAX_SIZE];
         expected_agent_data[..key_reference.len()].copy_from_slice(key_reference);
         assert_eq!(res.agent_data.unwrap(), expected_agent_data.to_vec());
         // Secure key should be None without pre-provisioning
@@ -2501,6 +2568,16 @@ mod tests {
             IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
             VecDeque::from([
                 IgvmAgentAction::RespondSuccess,
+                // initialize_platform_security will attempt SKR/unlock 10 times
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
+                IgvmAgentAction::RespondFailure,
                 IgvmAgentAction::RespondFailure,
             ]),
         );
@@ -2546,8 +2623,7 @@ mod tests {
         });
         let key_reference = serde_json::to_string(&key_reference).unwrap();
         let key_reference = key_reference.as_bytes();
-        let mut expected_agent_data =
-            [0u8; openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE];
+        let mut expected_agent_data = [0u8; AGENT_DATA_MAX_SIZE];
         expected_agent_data[..key_reference.len()].copy_from_slice(key_reference);
         assert_eq!(res.agent_data.unwrap(), expected_agent_data.to_vec());
         // Secure key should be None without pre-provisioning
