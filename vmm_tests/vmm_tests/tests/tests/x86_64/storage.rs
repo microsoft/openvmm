@@ -766,7 +766,7 @@ async fn openhcl_linux_storvsp_dvd_nvme(
 
 /// Test an OpenHCL Linux direct VM with several NVMe namespaces assigned to VTL2, and
 /// vmbus relay. This should expose the disks to VTL0 as SCSI via vmbus.
-/// The disks are added dynamically after VM boot rather than being there at boot time.
+/// The disks are added and removed in a loop, dynamically after VM boot rather than being there at boot time.
 #[openvmm_test(
     openhcl_linux_direct_x64,
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
@@ -775,10 +775,11 @@ async fn storvsp_dynamic_add_disk(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
-    const NS_COUNT: u32 = 2;
+    const NS_COUNT: u32 = 8;
     const FIRST_NS: u32 = 30;
     const FIRST_LUN: u32 = 0;
     const SECTOR_SIZE: u64 = 512;
+    const NUM_ITERATIONS: u32 = 5;
 
     // 128MB for the first NS and 1MB extra for each subsequent NS
     const fn disk_sectors(index: u32) -> u64 {
@@ -836,37 +837,54 @@ async fn storvsp_dynamic_add_disk(
     tracing::info!("Testing that no disks are present in the guest");
     test_storage_linux(&agent, scsi_instance, vec![]).await?;
 
-    // Now dynamically add disks
-    tracing::info!("Dynamically adding disks to VTL2 settings");
-    vm.modify_vtl2_settings(|s| {
-        s.dynamic.as_mut().unwrap().storage_controllers[0]
-            .luns
-            .extend((0..NS_COUNT).map(|i| {
-                Vtl2LunBuilder::disk()
-                    .with_location(FIRST_LUN + i)
-                    .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                        ControllerType::Nvme,
-                        NVME_INSTANCE,
-                        FIRST_NS + i,
-                    ))
-                    .build()
-            }))
-    })
-    .await?;
+    for iteration in 1..=NUM_ITERATIONS {
+        // Now dynamically add disks
+        tracing::info!("Dynamically adding disks to VTL2 settings {iteration}/{NUM_ITERATIONS}");
+        vm.modify_vtl2_settings(|s| {
+            s.dynamic.as_mut().unwrap().storage_controllers[0]
+                .luns
+                .extend((0..NS_COUNT).map(|i| {
+                    Vtl2LunBuilder::disk()
+                        .with_location(FIRST_LUN + i)
+                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                            ControllerType::Nvme,
+                            NVME_INSTANCE,
+                            FIRST_NS + i,
+                        ))
+                        .build()
+                }))
+        })
+        .await?;
 
-    tracing::info!("Testing presence and IO on all disks in guest");
-    test_storage_linux(
-        &agent,
-        scsi_instance,
-        (0..NS_COUNT)
-            .map(|i| ExpectedGuestDevice {
-                lun: FIRST_LUN + i,
-                disk_size_sectors: disk_sectors(i) as usize,
-                friendly_name: format!("nvme{}", i),
-            })
-            .collect(),
-    )
-    .await?;
+        tracing::info!(
+            "Testing presence and IO on all disks in guest {iteration}/{NUM_ITERATIONS}"
+        );
+        test_storage_linux(
+            &agent,
+            scsi_instance,
+            (0..NS_COUNT)
+                .map(|i| ExpectedGuestDevice {
+                    lun: FIRST_LUN + i,
+                    disk_size_sectors: disk_sectors(i) as usize,
+                    friendly_name: format!("nvme{}", i),
+                })
+                .collect(),
+        )
+        .await?;
+
+        tracing::info!(
+            "Dynamically removing all disks from VTL2 settings {iteration}/{NUM_ITERATIONS}"
+        );
+        vm.modify_vtl2_settings(|s| {
+            s.dynamic.as_mut().unwrap().storage_controllers[0]
+                .luns
+                .clear();
+        })
+        .await?;
+
+        tracing::info!("Testing absence of disks in guest {iteration}/{NUM_ITERATIONS}");
+        test_storage_linux(&agent, scsi_instance, vec![]).await?;
+    }
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
