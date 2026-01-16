@@ -767,12 +767,12 @@ async fn openhcl_linux_storvsp_dvd_nvme(
 /// Test an OpenHCL Linux direct VM with several NVMe namespaces assigned to VTL2, and
 /// vmbus relay. This should expose the disks to VTL0 as SCSI via vmbus.
 /// The disks are added and removed in a loop, dynamically after VM boot rather than being there at boot time.
-#[openvmm_test(
-    openhcl_linux_direct_x64,
-    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
-)]
-#[ignore]
-async fn storvsp_dynamic_add_disk(
+// TODO: Re-enable once re-add after removal is working in OpenHCL
+// #[openvmm_test(
+//     openhcl_linux_direct_x64,
+//     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+// )]
+async fn _storvsp_dynamic_add_disk(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
