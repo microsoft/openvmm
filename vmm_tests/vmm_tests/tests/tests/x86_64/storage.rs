@@ -76,7 +76,6 @@ pub(crate) fn new_test_vtl2_nvme_device(
 
 #[derive(Debug, Clone)]
 struct ExpectedGuestDevice {
-    controller_guid: Guid,
     lun: u32,
     disk_size_sectors: usize,
     #[expect(dead_code)] // Only used in logging via `Debug` trait
@@ -92,6 +91,7 @@ struct ExpectedGuestDevice {
 /// convenient way to check for it in this routine.
 async fn test_storage_linux(
     agent: &PipetteClient,
+    controller_guid: Guid,
     expected_devices: Vec<ExpectedGuestDevice>,
 ) -> anyhow::Result<()> {
     let sh = agent.unix_shell();
@@ -106,19 +106,19 @@ async fn test_storage_linux(
     for d in &expected_devices {
         let list_sdx_cmd = format!(
             "ls -d /sys/bus/vmbus/devices/{}/host*/target*/*:0:0:{}/block/sd*",
-            d.controller_guid, d.lun
+            controller_guid, d.lun
         );
         let devices = cmd!(sh, "sh -c {list_sdx_cmd}").read().await?;
         let mut devices_iter = devices.lines();
         let dev = devices_iter.next().ok_or(anyhow::anyhow!(
             "Couldn't find device for controller {:#} lun {}",
-            d.controller_guid,
+            controller_guid,
             d.lun
         ))?;
         if devices_iter.next().is_some() {
             anyhow::bail!(
                 "More than 1 device for controller {:#} lun {}",
-                d.controller_guid,
+                controller_guid,
                 d.lun
             );
         }
@@ -133,12 +133,12 @@ async fn test_storage_linux(
             .parse::<usize>()
             .context(format!(
                 "Failed to parse size of device for controller {:#} lun {}",
-                d.controller_guid, d.lun
+                controller_guid, d.lun
             ))?;
         if sectors != d.disk_size_sectors {
             anyhow::bail!(
                 "Unexpected size (in sectors) for device for controller {:#} lun {}: expected {}, got {}",
-                d.controller_guid,
+                controller_guid,
                 d.lun,
                 d.disk_size_sectors,
                 sectors
@@ -151,6 +151,23 @@ async fn test_storage_linux(
     // Check duplicates
     if device_paths.iter().collect::<HashSet<_>>().len() != device_paths.len() {
         anyhow::bail!("Found duplicate device paths: {device_paths:?}");
+    }
+
+    // Check that we found all devices and no extra devices are present
+    let list_sdx_cmd = format!(
+        // Don't fail if no devices are found
+        "ls -d /sys/bus/vmbus/devices/{}/host*/target*/*:0:0:*/block/sd* || true",
+        controller_guid
+    );
+    let devices = cmd!(sh, "sh -c {list_sdx_cmd}").read().await?;
+    let devices_count = devices.lines().count();
+    if devices_count != expected_devices.len() {
+        anyhow::bail!(
+            "Expected {} devices, found {} devices: {:?}",
+            expected_devices.len(),
+            devices_count,
+            devices
+        );
     }
 
     // Do IO to all devices. Generate a file with random contents so that we
@@ -293,15 +310,14 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
 
     test_storage_linux(
         &agent,
+        scsi_instance,
         vec![
             ExpectedGuestDevice {
-                controller_guid: scsi_instance,
                 lun: vtl0_scsi_lun,
                 disk_size_sectors: SCSI_DISK_SECTORS as usize,
                 friendly_name: "scsi".to_string(),
             },
             ExpectedGuestDevice {
-                controller_guid: scsi_instance,
                 lun: vtl0_nvme_lun,
                 disk_size_sectors: NVME_DISK_SECTORS as usize,
                 friendly_name: "nvme".to_string(),
@@ -389,8 +405,8 @@ async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<()
 
     test_storage_linux(
         &agent,
+        scsi_instance,
         vec![ExpectedGuestDevice {
-            controller_guid: scsi_instance,
             lun: vtl0_scsi_lun,
             disk_size_sectors: SCSI_DISK_SECTORS as usize,
             friendly_name: "scsi".to_string(),
@@ -479,8 +495,8 @@ async fn openhcl_linux_stripe_storvsp(
 
     test_storage_linux(
         &agent,
+        scsi_instance,
         vec![ExpectedGuestDevice {
-            controller_guid: scsi_instance,
             lun: vtl0_nvme_lun,
             disk_size_sectors: (NVME_DISK_SECTORS * NUMBER_OF_STRIPE_DEVICES) as usize,
             friendly_name: "striped-nvme".to_string(),
@@ -711,16 +727,17 @@ async fn storvsp_dynamic_add_disk(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
-    let vtl0_lun1 = 0;
-    let vtl0_lun2 = 1;
-    let vtl2_nsid1 = 37;
-    let vtl2_nsid2 = 42;
-    let scsi_instance = Guid::new_random();
-    const NVME1_DISK_SECTORS: u64 = 0x4_0000;
-    const NVME2_DISK_SECTORS: u64 = 0x5_0000;
+    const NS_COUNT: u32 = 2;
+    const FIRST_NS: u32 = 30;
+    const FIRST_LUN: u32 = 0;
     const SECTOR_SIZE: u64 = 512;
-    const EXPECTED_NVME1_DISK_SIZE_BYTES: u64 = NVME1_DISK_SECTORS * SECTOR_SIZE;
-    const EXPECTED_NVME2_DISK_SIZE_BYTES: u64 = NVME2_DISK_SECTORS * SECTOR_SIZE;
+
+    // 128MB for the first NS and 1MB extra for each subsequent NS
+    const fn disk_sectors(index: u32) -> u64 {
+        (128 + (index as u64)) * 1024 * 1024 / SECTOR_SIZE
+    }
+
+    let scsi_instance = Guid::new_random();
 
     // Assumptions made by test infra & routines:
     //
@@ -728,16 +745,13 @@ async fn storvsp_dynamic_add_disk(
     // ensure that our test disks are a different size.
     // 2. Disks under test need to be at least 100MiB for the IO tests (see [`test_storage_linux`]),
     // with some arbitrary buffer (5MiB in this case).
-    static_assertions::const_assert_ne!(EXPECTED_NVME1_DISK_SIZE_BYTES, 64 * 1024 * 1024);
-    static_assertions::const_assert!(EXPECTED_NVME1_DISK_SIZE_BYTES > 105 * 1024 * 1024);
-    static_assertions::const_assert_ne!(EXPECTED_NVME2_DISK_SIZE_BYTES, 64 * 1024 * 1024);
-    static_assertions::const_assert!(EXPECTED_NVME2_DISK_SIZE_BYTES > 105 * 1024 * 1024);
+    static_assertions::const_assert!(disk_sectors(0) * SECTOR_SIZE > 105 * 1024 * 1024);
 
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(move |b| {
             b.with_custom_config(|c| {
-                // Create NVMe controller with BOTH namespaces
+                // Create NVMe controller with all namespaces
                 c.vpci_devices.push(VpciDeviceConfig {
                     vtl: DeviceVtl::Vtl2,
                     instance_id: NVME_INSTANCE,
@@ -745,24 +759,16 @@ async fn storvsp_dynamic_add_disk(
                         subsystem_id: NVME_INSTANCE,
                         max_io_queues: 64,
                         msix_count: 64,
-                        namespaces: vec![
-                            NamespaceDefinition {
-                                nsid: vtl2_nsid1,
+                        namespaces: (0..NS_COUNT)
+                            .map(|i| NamespaceDefinition {
+                                nsid: FIRST_NS + i,
                                 disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                                    len: Some(NVME1_DISK_SECTORS * SECTOR_SIZE),
+                                    len: Some(disk_sectors(i) * SECTOR_SIZE),
                                 })
                                 .into_resource(),
                                 read_only: false,
-                            },
-                            NamespaceDefinition {
-                                nsid: vtl2_nsid2,
-                                disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                                    len: Some(NVME2_DISK_SECTORS * SECTOR_SIZE),
-                                })
-                                .into_resource(),
-                                read_only: false,
-                            },
-                        ],
+                            })
+                            .collect(),
                     }
                     .into_resource(),
                 });
@@ -772,48 +778,31 @@ async fn storvsp_dynamic_add_disk(
             v.dynamic.as_mut().unwrap().storage_controllers.push(
                 Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
                     .with_instance_id(scsi_instance)
-                    // Only attach the first disk initially
-                    .add_lun(
-                        Vtl2LunBuilder::disk()
-                            .with_location(vtl0_lun1)
-                            .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                                ControllerType::Nvme,
-                                NVME_INSTANCE,
-                                vtl2_nsid1,
-                            )),
-                    )
+                    // No disks are attached initially
                     .build(),
             )
         })
         .run()
         .await?;
 
-    test_storage_linux(
-        &agent,
-        vec![ExpectedGuestDevice {
-            controller_guid: scsi_instance,
-            lun: vtl0_lun1,
-            disk_size_sectors: NVME1_DISK_SECTORS as usize,
-            friendly_name: "nvme1".to_string(),
-        }],
-    )
-    .await?;
+    tracing::info!("Testing that no disks are present in the guest");
+    test_storage_linux(&agent, scsi_instance, vec![]).await?;
 
-    // Now dynamically add the second disk
-    tracing::info!("Dynamically adding second disk to VTL2 settings");
+    // Now dynamically add disks
+    tracing::info!("Dynamically adding disks to VTL2 settings");
     vm.modify_vtl2_settings(|s| {
         s.dynamic.as_mut().unwrap().storage_controllers[0]
             .luns
-            .push(
+            .extend((0..NS_COUNT).map(|i| {
                 Vtl2LunBuilder::disk()
-                    .with_location(vtl0_lun2)
+                    .with_location(FIRST_LUN + i)
                     .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
                         ControllerType::Nvme,
                         NVME_INSTANCE,
-                        vtl2_nsid2,
+                        FIRST_NS + i,
                     ))
-                    .build(),
-            );
+                    .build()
+            }))
     })
     .await?;
 
@@ -821,23 +810,17 @@ async fn storvsp_dynamic_add_disk(
     let sh = agent.unix_shell();
     cmd!(sh, "sleep 5").run().await?;
 
-    tracing::info!("Testing presence and IO on both disks in guest");
+    tracing::info!("Testing presence and IO on all disks in guest");
     test_storage_linux(
         &agent,
-        vec![
-            ExpectedGuestDevice {
-                controller_guid: scsi_instance,
-                lun: vtl0_lun1,
-                disk_size_sectors: NVME1_DISK_SECTORS as usize,
-                friendly_name: "nvme1".to_string(),
-            },
-            ExpectedGuestDevice {
-                controller_guid: scsi_instance,
-                lun: vtl0_lun2,
-                disk_size_sectors: NVME2_DISK_SECTORS as usize,
-                friendly_name: "nvme2".to_string(),
-            },
-        ],
+        scsi_instance,
+        (0..NS_COUNT)
+            .map(|i| ExpectedGuestDevice {
+                lun: FIRST_LUN + i,
+                disk_size_sectors: disk_sectors(i) as usize,
+                friendly_name: format!("nvme{}", i),
+            })
+            .collect(),
     )
     .await?;
 
