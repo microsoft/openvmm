@@ -380,6 +380,7 @@ struct VmgsState {
     active_datastore_key_index: Option<usize>,
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
     datastore_keys: [VmgsDatastoreKey; 2],
+    // unused, retained for save-restore backwards compatibility
     metadata_key: VmgsDatastoreKey,
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
     encrypted_metadata_keys: [VmgsEncryptionKey; 2],
@@ -690,11 +691,6 @@ impl Vmgs {
         )
         .await?;
 
-        // Update the metadata key if encrypted
-        if temp_state.is_encrypted_and_unlocked() {
-            temp_state.encrypt_metadata_key(false)?;
-        }
-
         // Update the header
         self.write_header_and_apply(temp_state).await?;
 
@@ -756,6 +752,9 @@ impl Vmgs {
             state
                 .fcbs
                 .insert(FileId::EXTENDED_FILE_TABLE, res.fcb.clone());
+            if state.is_encrypted_and_unlocked() {
+                state.encrypt_metadata_key()?;
+            }
         }
 
         // generate the file table now that all of the nonces and auth tags
@@ -978,12 +977,15 @@ impl Vmgs {
 
         match valid_index_and_key {
             Some((i, metadata_key)) => {
-                temp_state
+                let fcb = temp_state
                     .fcbs
                     .get_mut(&FileId::EXTENDED_FILE_TABLE)
-                    .context("Missing extended file table")?
-                    .encryption_key
-                    .copy_from_slice(&metadata_key);
+                    .context("Missing extended file table")?;
+                // older implementations didn't write unencrypted attributes
+                // so configure them here so that the table is decrypted below
+                fcb.attributes.set_encrypted(true);
+                fcb.attributes.set_authenticated(true);
+                fcb.encryption_key.copy_from_slice(&metadata_key);
                 temp_state.datastore_keys[i].copy_from_slice(encryption_key);
                 temp_state.active_datastore_key_index = Some(i);
             }
@@ -1013,10 +1015,12 @@ impl Vmgs {
         // Update the cached extended file table
         let extended_file_table =
             VmgsExtendedFileTable::ref_from_bytes(extended_file_table_buffer.as_bytes())
-                .map_err(|_| anyhow!("Invalid decrypted extended file table"))?; // TODO: zerocopy: use result (https://github.com/microsoft/openvmm/issues/759)
+                .map_err(|_| anyhow!("Invalid decrypted extended file table"))?;
 
         for (file_id, fcb) in temp_state.fcbs.iter_mut() {
-            fcb.update_extended_data(&extended_file_table.entries[*file_id]);
+            if *file_id != FileId::EXTENDED_FILE_TABLE {
+                fcb.update_extended_data(&extended_file_table.entries[*file_id]);
+            }
         }
 
         self.apply(temp_state);
@@ -1100,8 +1104,6 @@ impl Vmgs {
             )));
         }
 
-        let write_extended_file_table = self.state.datastore_key_count == 0;
-
         let new_key_index = self
             .state
             .active_datastore_key_index
@@ -1112,14 +1114,18 @@ impl Vmgs {
         temp_state.datastore_keys[new_key_index].copy_from_slice(encryption_key);
         temp_state.active_datastore_key_index = Some(new_key_index);
         temp_state.datastore_key_count += 1;
+        // zero out the keys to ensure we get a new nonce
+        temp_state.encrypted_metadata_keys[new_key_index] = VmgsEncryptionKey::new_zeroed();
 
         // Allocate and write the new file tables
-        if write_extended_file_table {
+        if self.state.datastore_key_count == 0 {
             self.write_files_internal(BTreeMap::new(), Some(&mut temp_state))
                 .await?;
+        } else {
+            // the extended file table should already exist, but we still need
+            // to re-encrypt the metadata key.
+            temp_state.encrypt_metadata_key()?;
         }
-
-        temp_state.encrypt_metadata_key(true)?;
 
         // Update the header on the storage device
         self.write_header_and_apply(temp_state).await?;
@@ -1312,7 +1318,7 @@ impl VmgsState {
     }
 
     /// Update the metadata key
-    fn encrypt_metadata_key(&mut self, new_nonce: bool) -> Result<(), Error> {
+    fn encrypt_metadata_key(&mut self) -> Result<(), Error> {
         let current_index = self
             .active_datastore_key_index
             .context("cannot update metadata key without datastore key")?;
@@ -1324,7 +1330,7 @@ impl VmgsState {
 
         self.metadata_key.copy_from_slice(metadata_key);
 
-        if new_nonce {
+        if is_empty_key(&self.encrypted_metadata_keys[current_index].nonce) {
             self.encrypted_metadata_keys[current_index]
                 .nonce
                 .copy_from_slice(&generate_nonce());
