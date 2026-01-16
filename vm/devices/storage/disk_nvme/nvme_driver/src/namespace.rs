@@ -195,7 +195,7 @@ impl Namespace {
         1 << self.block_shift
     }
 
-    fn check_active(&self) -> Result<(), RequestError> {
+    pub fn check_active(&self) -> Result<(), RequestError> {
         if self.state.removed.load(Ordering::Relaxed) {
             // The namespace has been removed. Return invalid namespace even if
             // the namespace has returned to avoid accidentally accessing the
