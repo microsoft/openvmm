@@ -208,7 +208,8 @@ pub struct GenericPciBus {
     // Async bookkeeping
     #[inspect(with = "|x| x.is_some()")]
     waker: Option<std::task::Waker>,
-    deferred_action: Option<DeferredAction>,
+    #[inspect(iter_by_index)]
+    deferred_actions: Vec<DeferredAction>,
 
     // Volatile state
     state: GenericPciBusState,
@@ -241,7 +242,7 @@ impl GenericPciBus {
             pci_devices: BTreeMap::new(),
 
             waker: None,
-            deferred_action: None,
+            deferred_actions: Vec::new(),
 
             state: GenericPciBusState {
                 pio_addr_reg: AddressRegister::new(),
@@ -486,8 +487,7 @@ impl PortIoIntercept for GenericPciBus {
             }
             IoResult::Defer(deferred_device_read) => {
                 let (bus_read, bus_token) = defer_read();
-                assert!(self.deferred_action.is_none());
-                self.deferred_action = Some(DeferredAction::Read {
+                self.deferred_actions.push(DeferredAction::Read {
                     deferred_device_read,
                     bus_read,
                     read_len: data.len(),
@@ -561,8 +561,7 @@ impl PortIoIntercept for GenericPciBus {
                         }
                         IoResult::Defer(deferred_device_read) => {
                             let (bus_write, bus_token) = defer_write();
-                            assert!(self.deferred_action.is_none());
-                            self.deferred_action = Some(DeferredAction::ReadForWrite {
+                            self.deferred_actions.push(DeferredAction::ReadForWrite {
                                 deferred_device_read,
                                 bus_write,
                                 write_len: data.len(),
@@ -601,8 +600,9 @@ impl PortIoIntercept for GenericPciBus {
 impl PollDevice for GenericPciBus {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
         self.waker = Some(cx.waker().clone());
-        if let Some(action) = self.deferred_action.take() {
-            match action {
+        self.deferred_actions = std::mem::take(&mut self.deferred_actions)
+            .into_iter()
+            .filter_map(|action| match action {
                 DeferredAction::Read {
                     mut deferred_device_read,
                     bus_read,
@@ -622,14 +622,15 @@ impl PollDevice for GenericPciBus {
                         };
                         let value = shift_read_value(io_port, read_len, value);
                         bus_read.complete(&value.as_bytes()[..read_len]);
+                        None
                     } else {
-                        self.deferred_action = Some(DeferredAction::Read {
+                        Some(DeferredAction::Read {
                             deferred_device_read,
                             bus_read,
                             read_len,
                             io_port,
                             address,
-                        });
+                        })
                     }
                 }
                 DeferredAction::ReadForWrite {
@@ -655,30 +656,32 @@ impl PollDevice for GenericPciBus {
                         match self.handle_data_write(merged_value) {
                             IoResult::Ok => {
                                 bus_write.complete();
+                                None
                             }
                             IoResult::Err(e) => {
                                 self.trace_error(e, "write");
                                 bus_write.complete();
+                                None
                             }
                             IoResult::Defer(deferred_device_write) => {
-                                self.deferred_action = Some(DeferredAction::Write {
+                                cx.waker().wake_by_ref();
+                                Some(DeferredAction::Write {
                                     deferred_device_write,
                                     bus_write,
                                     value: merged_value,
                                     address,
-                                });
-                                cx.waker().wake_by_ref();
+                                })
                             }
                         }
                     } else {
-                        self.deferred_action = Some(DeferredAction::ReadForWrite {
+                        Some(DeferredAction::ReadForWrite {
                             deferred_device_read,
                             bus_write,
                             write_len,
                             io_port,
                             new_value,
                             address,
-                        });
+                        })
                     }
                 }
                 DeferredAction::Write {
@@ -695,17 +698,18 @@ impl PollDevice for GenericPciBus {
                             }
                         }
                         bus_write.complete();
+                        None
                     } else {
-                        self.deferred_action = Some(DeferredAction::Write {
+                        Some(DeferredAction::Write {
                             deferred_device_write,
                             bus_write,
                             value,
                             address,
-                        });
+                        })
                     }
                 }
-            }
-        }
+            })
+            .collect();
     }
 }
 
