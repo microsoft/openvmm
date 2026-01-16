@@ -148,7 +148,7 @@ While these steps guide you to create a second SCSI controller, your generation 
 $repoDir = "home\<your-wsl-username-for-example>\openvmm" # for prereqs below, the path relative to the root of your WSL file system where you have cloned the openvmm repo
 
 $VmName = "OpenHCLTestVM"
-$vmOsDisk = " Q:\win-vmm-tests\osdisk.vhdx" # for step (1), the location of the OS disk for the VM. E.g. Convert-VHD Q:\win-vmm-tests\images\ubuntu-25.04-server-cloudimg-amd64.vhd -DestinationPath "Q:\win-vmm-tests\osdisk.vhdx"
+$vmOsDisk = "Q:\win-vmm-tests\osdisk.vhdx" # for step (1), the location of the OS disk for the VM. E.g. Convert-VHD Q:\win-vmm-tests\images\ubuntu-25.04-server-cloudimg-amd64.vhd -DestinationPath "Q:\win-vmm-tests\osdisk.vhdx"
 $firmwareFile = "Q:\win-vmm-tests\openhcl-x64.bin" # for step (1), the location of your built OpenHCL firmware.
 $hostLun = 5 # for step (6) and (7), LUN on the controller presented to VTL2 from the host
 $vhdPath = "Q:\win-vmm-tests\foo.vhdx" # for step (6), the path to whatever VHD is added
