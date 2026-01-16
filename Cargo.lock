@@ -8808,6 +8808,7 @@ name = "virtiofs"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "arrayvec",
  "async-trait",
  "event-listener",
  "fuse",
