@@ -76,15 +76,10 @@ pub struct NvmeDriver<D: DeviceBacking> {
     rescan_notifiers: Arc<RwLock<HashMap<u32, mesh::Sender<()>>>>,
     /// NVMe namespaces associated with this driver. Mapping nsid to NamespaceHandle.
     #[inspect(skip)]
-    namespaces: HashMap<u32, NamespaceHandle>,
+    namespaces: HashMap<u32, Arc<Namespace>>,
     /// Keeps the controller connected (CC.EN==1) while servicing.
     nvme_keepalive: bool,
     bounce_buffer: bool,
-}
-
-struct NamespaceHandle {
-    namespace: Arc<Namespace>,
-    in_use: bool,
 }
 
 #[derive(Inspect)]
@@ -577,11 +572,10 @@ impl<D: DeviceBacking> NvmeDriver<D> {
 
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
-        if let Some(handle) = self.namespaces.get_mut(&nsid) {
-            // After reboot ns will be present but unused.
-            if !handle.in_use {
-                handle.in_use = true;
-                return Ok(handle.namespace.clone());
+        if let Some(namespace) = self.namespaces.get(&nsid) {
+            // Check if this is the only reference to the namespace
+            if Arc::strong_count(namespace) == 1 {
+                return Ok(namespace.clone());
             }
 
             // Prevent multiple references to the same Namespace.
@@ -603,13 +597,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             )
             .await?,
         );
-        self.namespaces.insert(
-            nsid,
-            NamespaceHandle {
-                namespace: namespace.clone(),
-                in_use: true,
-            },
-        );
+        self.namespaces.insert(nsid, namespace.clone());
 
         // Append the sender to the list of notifiers for this nsid.
         let mut notifiers = self.rescan_notifiers.write();
@@ -655,8 +643,8 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     "saving namespaces",
                 );
                 let mut saved_namespaces = vec![];
-                for (nsid, handle) in self.namespaces.iter() {
-                    saved_namespaces.push(handle.namespace.save().with_context(|| {
+                for (nsid, namespace) in self.namespaces.iter() {
+                    saved_namespaces.push(namespace.save().with_context(|| {
                         format!(
                             "failed to save namespace nsid {} device {}",
                             nsid, self.device_id
@@ -951,17 +939,14 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             let (send, recv) = mesh::channel::<()>();
             this.namespaces.insert(
                 ns.nsid,
-                NamespaceHandle {
-                    namespace: Arc::new(Namespace::restore(
-                        &driver,
-                        admin.issuer().clone(),
-                        recv,
-                        this.identify.clone().unwrap(),
-                        &this.io_issuers,
-                        ns,
-                    )?),
-                    in_use: false,
-                },
+                Arc::new(Namespace::restore(
+                    &driver,
+                    admin.issuer().clone(),
+                    recv,
+                    this.identify.clone().unwrap(),
+                    &this.io_issuers,
+                    ns,
+                )?),
             );
             this.rescan_notifiers.write().insert(ns.nsid, send);
         }
