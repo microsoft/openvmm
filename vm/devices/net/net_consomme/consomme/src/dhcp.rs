@@ -50,18 +50,18 @@ impl<T: Client> Access<'_, T> {
         let dns_servers = if self.inner.state.params.nameservers.is_empty() {
             None
         } else {
-            let mut dns_servers = [None; DHCP_MAX_DNS_SERVER_COUNT];
-            for (&s, d) in self
+            let mut dns_vec = heapless::Vec::new();
+            for &s in self
                 .inner
                 .state
                 .params
                 .nameservers
                 .iter()
-                .zip(&mut dns_servers)
+                .take(DHCP_MAX_DNS_SERVER_COUNT)
             {
-                *d = Some(s);
+                let _ = dns_vec.push(s);
             }
-            Some(dns_servers)
+            Some(dns_vec)
         };
 
         let resp_dhcp = if let Some(your_ip) = your_ip {
@@ -80,9 +80,13 @@ impl<T: Client> Access<'_, T> {
                 client_identifier: None,
                 server_identifier: Some(self.inner.state.params.gateway_ip),
                 parameter_request_list: None,
-                dns_servers,
+                dns_servers: dns_servers.clone(),
                 max_size: None,
                 lease_duration: Some(86400),
+                secs: 0,
+                renew_duration: None,
+                rebind_duration: None,
+                additional_options: &[],
             }
         } else {
             DhcpRepr {
@@ -103,6 +107,10 @@ impl<T: Client> Access<'_, T> {
                 dns_servers: None,
                 max_size: None,
                 lease_duration: None,
+                secs: 0,
+                renew_duration: None,
+                rebind_duration: None,
+                additional_options: &[],
             }
         };
 
@@ -113,7 +121,7 @@ impl<T: Client> Access<'_, T> {
         let resp_ipv4 = Ipv4Repr {
             src_addr: self.inner.state.params.gateway_ip,
             dst_addr: Ipv4Address::BROADCAST,
-            protocol: IpProtocol::Udp,
+            next_header: IpProtocol::Udp,
             payload_len: resp_udp.header_len() + resp_dhcp.buffer_len(),
             hop_limit: 64,
         };
