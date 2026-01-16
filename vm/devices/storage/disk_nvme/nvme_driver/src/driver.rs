@@ -592,6 +592,13 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         }
     }
 
+    // TODO: Thoughts in progress ..... maybe implement a struct like:
+    // pub struct NamespaceNoClone(Arc<Namespace>);
+    //
+    // If we move the read/write and other namespace methods here we can instead
+    // return a reference to NamespaceNoClone which does not implement Clone.
+    // This will prevent accidental cloning of Namespace handles.
+
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
         if let Some(namespace) = self.namespaces.get_mut(&nsid) {
