@@ -378,6 +378,23 @@ pub trait Fuse {
         let _ = (request, mapper, moffset, len);
         Err(lx::Error::ENOSYS)
     }
+
+    /// Retrieves the statx details of a file.
+    ///
+    /// # Note
+    ///
+    /// If information is retrieved through an open file descriptor (i.e. using `fstat`), the
+    /// `fh` parameter will be set to the file handle returned by the `open` call.
+    fn get_statx(
+        &self,
+        _request: &Request,
+        _fh: u64,
+        _getattr_flags: u32,
+        _flags: StatxFlags,
+        _mask: lx::StatExMask,
+    ) -> lx::Result<fuse_statx_out> {
+        Err(lx::Error::ENOSYS)
+    }
 }
 
 #[cfg(windows)]
@@ -429,6 +446,19 @@ impl fuse_attr_out {
             attr_valid_nsec: valid.subsec_nanos(),
             dummy: 0,
             attr,
+        }
+    }
+}
+
+impl fuse_statx_out {
+    /// Create a new `fuse_statx_out`.
+    pub fn new(valid: Duration, flags: StatxFlags, statx: fuse_statx) -> Self {
+        Self {
+            attr_valid: valid.as_secs(),
+            attr_valid_nsec: valid.subsec_nanos(),
+            flags,
+            statx,
+            _rsvd: [0; 2],
         }
     }
 }
