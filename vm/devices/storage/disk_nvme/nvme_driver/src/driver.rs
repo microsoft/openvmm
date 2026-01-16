@@ -573,16 +573,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
         if let Some(namespace) = self.namespaces.get(&nsid) {
-            // Check if this is the only reference to the namespace
-            if Arc::strong_count(namespace) == 1 {
-                return Ok(namespace.clone());
-            }
-
-            // Prevent multiple references to the same Namespace.
-            // Allowing this could lead to undefined behavior if multiple components
-            // concurrently read or write to the same namespace. To avoid this,
-            // return an error if the namespace is already requested.
-            return Err(NamespaceError::DuplicateRequest { nsid });
+            return Ok(namespace.clone());
         }
 
         let (send, recv) = mesh::channel::<()>();
