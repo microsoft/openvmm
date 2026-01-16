@@ -35,6 +35,7 @@ use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::Weak;
 use task_control::AsyncRun;
 use task_control::InspectTask;
 use task_control::TaskControl;
@@ -76,10 +77,31 @@ pub struct NvmeDriver<D: DeviceBacking> {
     rescan_notifiers: Arc<RwLock<HashMap<u32, mesh::Sender<()>>>>,
     /// NVMe namespaces associated with this driver. Mapping nsid to NamespaceHandle.
     #[inspect(skip)]
-    namespaces: HashMap<u32, Arc<Namespace>>,
+    namespaces: HashMap<u32, WeakOrStrong<Namespace>>,
     /// Keeps the controller connected (CC.EN==1) while servicing.
     nvme_keepalive: bool,
     bounce_buffer: bool,
+}
+
+pub enum WeakOrStrong<T> {
+    Weak(Weak<T>),
+    Strong(Arc<T>),
+}
+
+impl<T> WeakOrStrong<T> {
+    /// Returns a strong reference to the underlying value.
+    /// If this is a strong pointer, returns a clone of the Arc.
+    /// If this is a weak pointer, returns the result of upgrade() (None if gone).
+    pub fn get_strong(&mut self) -> Option<Arc<T>> {
+        match self {
+            WeakOrStrong::Strong(arc) => {
+                let strong = arc.clone();
+                *self = WeakOrStrong::Weak(Arc::downgrade(arc));
+                Some(strong)
+            }
+            WeakOrStrong::Weak(weak) => weak.upgrade(),
+        }
+    }
 }
 
 #[derive(Inspect)]
@@ -572,8 +594,12 @@ impl<D: DeviceBacking> NvmeDriver<D> {
 
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
-        if let Some(namespace) = self.namespaces.get(&nsid) {
-            return Ok(namespace.clone());
+        if let Some(namespace) = self.namespaces.get_mut(&nsid) {
+            if let Some(namespace) = namespace.get_strong()
+                && namespace.check_active().is_ok()
+            {
+                return Ok(namespace);
+            }
         }
 
         let (send, recv) = mesh::channel::<()>();
@@ -588,7 +614,8 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             )
             .await?,
         );
-        self.namespaces.insert(nsid, namespace.clone());
+        self.namespaces
+            .insert(nsid, WeakOrStrong::Weak(Arc::downgrade(&namespace)));
 
         // Append the sender to the list of notifiers for this nsid.
         let mut notifiers = self.rescan_notifiers.write();
@@ -634,13 +661,17 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     "saving namespaces",
                 );
                 let mut saved_namespaces = vec![];
-                for (nsid, namespace) in self.namespaces.iter() {
-                    saved_namespaces.push(namespace.save().with_context(|| {
-                        format!(
-                            "failed to save namespace nsid {} device {}",
-                            nsid, self.device_id
-                        )
-                    })?);
+                for (nsid, namespace) in self.namespaces.iter_mut() {
+                    if let Some(ns) = namespace.get_strong()
+                        && ns.check_active().is_ok()
+                    {
+                        saved_namespaces.push(ns.save().with_context(|| {
+                            format!(
+                                "failed to save namespace nsid {} device {}",
+                                nsid, self.device_id
+                            )
+                        })?);
+                    }
                 }
                 Ok(NvmeDriverSavedState {
                     identify_ctrl: spec::IdentifyController::read_from_bytes(
@@ -928,16 +959,16 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         // Restore namespace(s).
         for ns in &saved_state.namespaces {
             let (send, recv) = mesh::channel::<()>();
-            this.namespaces.insert(
+            let namespace = this.namespaces.insert(
                 ns.nsid,
-                Arc::new(Namespace::restore(
+                WeakOrStrong::Strong(Arc::new(Namespace::restore(
                     &driver,
                     admin.issuer().clone(),
                     recv,
                     this.identify.clone().unwrap(),
                     &this.io_issuers,
                     ns,
-                )?),
+                )?)),
             );
             this.rescan_notifiers.write().insert(ns.nsid, send);
         }
