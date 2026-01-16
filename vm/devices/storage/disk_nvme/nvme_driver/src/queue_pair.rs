@@ -814,6 +814,7 @@ impl AerHandler for AdminAerHandler {
             if completion.status.status() != 0 {
                 self.failed = true;
                 self.last_aen = None;
+                let _ = self.send_aen.take(); // Drop any pending AEN request.
                 return;
             }
             // Complete the AEN or pend it.
@@ -830,7 +831,9 @@ impl AerHandler for AdminAerHandler {
         if let Some(aen) = self.last_aen.take() {
             rpc.complete(aen);
         } else {
-            self.send_aen = Some(rpc); // Save driver request to be completed later.
+            if !self.failed {
+                self.send_aen = Some(rpc); // Save driver request to be completed later.
+            }
         }
     }
 
