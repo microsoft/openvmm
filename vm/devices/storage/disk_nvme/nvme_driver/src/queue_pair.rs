@@ -886,7 +886,7 @@ impl AerHandler for AdminAerHandler {
 }
 
 /// No-op AER handler. Should be only used for IO queues.
-pub struct NoOpAerHandler;
+struct NoOpAerHandler;
 impl AerHandler for NoOpAerHandler {
     fn handle_aen_request(&mut self, _rpc: Rpc<(), AenResponse>) {
         panic!(
