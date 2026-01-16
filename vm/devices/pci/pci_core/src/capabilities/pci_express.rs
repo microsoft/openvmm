@@ -572,40 +572,41 @@ mod save_restore {
     use vmcore::save_restore::SaveRestore;
 
     mod state {
+        use crate::spec::caps::pci_express;
         use mesh::payload::Protobuf;
         use vmcore::save_restore::SavedStateRoot;
 
         #[derive(Protobuf, SavedStateRoot)]
         #[mesh(package = "pci.capabilities.pci_express")]
         pub struct SavedState {
-            #[mesh(1)]
-            pub device_control: u16,
-            #[mesh(2)]
-            pub device_status: u16,
-            #[mesh(3)]
-            pub link_control: u16,
-            #[mesh(4)]
-            pub link_status: u16,
-            #[mesh(5)]
-            pub slot_control: u16,
-            #[mesh(6)]
-            pub slot_status: u16,
-            #[mesh(7)]
-            pub root_control: u16,
-            #[mesh(8)]
-            pub root_status: u32,
-            #[mesh(9)]
-            pub device_control_2: u16,
-            #[mesh(10)]
-            pub device_status_2: u16,
-            #[mesh(11)]
-            pub link_control_2: u16,
-            #[mesh(12)]
-            pub link_status_2: u16,
-            #[mesh(13)]
-            pub slot_control_2: u16,
-            #[mesh(14)]
-            pub slot_status_2: u16,
+            #[mesh(1, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+            pub device_control: pci_express::DeviceControl,
+            #[mesh(2, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+            pub device_status: pci_express::DeviceStatus,
+            #[mesh(3, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+            pub link_control: pci_express::LinkControl,
+            #[mesh(4, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+            pub link_status: pci_express::LinkStatus,
+            #[mesh(5, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+            pub slot_control: pci_express::SlotControl,
+            #[mesh(6, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+            pub slot_status: pci_express::SlotStatus,
+            #[mesh(7, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+            pub root_control: pci_express::RootControl,
+            #[mesh(8, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+            pub root_status: pci_express::RootStatus,
+            #[mesh(9, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+            pub device_control_2: pci_express::DeviceControl2,
+            #[mesh(10, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+            pub device_status_2: pci_express::DeviceStatus2,
+            #[mesh(11, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+            pub link_control_2: pci_express::LinkControl2,
+            #[mesh(12, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+            pub link_status_2: pci_express::LinkStatus2,
+            #[mesh(13, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+            pub slot_control_2: pci_express::SlotControl2,
+            #[mesh(14, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
+            pub slot_status_2: pci_express::SlotStatus2,
         }
     }
 
@@ -614,74 +615,40 @@ mod save_restore {
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             let state = self.state.lock();
-            let PciExpressState {
-                device_control,
-                device_status,
-                link_control,
-                link_status,
-                slot_control,
-                slot_status,
-                root_control,
-                root_status,
-                device_control_2,
-                device_status_2,
-                link_control_2,
-                link_status_2,
-                slot_control_2,
-                slot_status_2,
-            } = &*state;
-
             Ok(state::SavedState {
-                device_control: device_control.into_bits(),
-                device_status: device_status.into_bits(),
-                link_control: link_control.into_bits(),
-                link_status: link_status.into_bits(),
-                slot_control: slot_control.into_bits(),
-                slot_status: slot_status.into_bits(),
-                root_control: root_control.into_bits(),
-                root_status: root_status.into_bits(),
-                device_control_2: device_control_2.into_bits(),
-                device_status_2: device_status_2.into_bits(),
-                link_control_2: link_control_2.into_bits(),
-                link_status_2: link_status_2.into_bits(),
-                slot_control_2: slot_control_2.into_bits(),
-                slot_status_2: slot_status_2.into_bits(),
+                device_control: state.device_control,
+                device_status: state.device_status,
+                link_control: state.link_control,
+                link_status: state.link_status,
+                slot_control: state.slot_control,
+                slot_status: state.slot_status,
+                root_control: state.root_control,
+                root_status: state.root_status,
+                device_control_2: state.device_control_2,
+                device_status_2: state.device_status_2,
+                link_control_2: state.link_control_2,
+                link_status_2: state.link_status_2,
+                slot_control_2: state.slot_control_2,
+                slot_status_2: state.slot_status_2,
             })
         }
 
         fn restore(&mut self, saved: Self::SavedState) -> Result<(), RestoreError> {
-            let state::SavedState {
-                device_control,
-                device_status,
-                link_control,
-                link_status,
-                slot_control,
-                slot_status,
-                root_control,
-                root_status,
-                device_control_2,
-                device_status_2,
-                link_control_2,
-                link_status_2,
-                slot_control_2,
-                slot_status_2,
-            } = saved;
-
             let mut state = self.state.lock();
-            state.device_control = pci_express::DeviceControl::from_bits(device_control);
-            state.device_status = pci_express::DeviceStatus::from_bits(device_status);
-            state.link_control = pci_express::LinkControl::from_bits(link_control);
-            state.link_status = pci_express::LinkStatus::from_bits(link_status);
-            state.slot_control = pci_express::SlotControl::from_bits(slot_control);
-            state.slot_status = pci_express::SlotStatus::from_bits(slot_status);
-            state.root_control = pci_express::RootControl::from_bits(root_control);
-            state.root_status = pci_express::RootStatus::from_bits(root_status);
-            state.device_control_2 = pci_express::DeviceControl2::from_bits(device_control_2);
-            state.device_status_2 = pci_express::DeviceStatus2::from_bits(device_status_2);
-            state.link_control_2 = pci_express::LinkControl2::from_bits(link_control_2);
-            state.link_status_2 = pci_express::LinkStatus2::from_bits(link_status_2);
-            state.slot_control_2 = pci_express::SlotControl2::from_bits(slot_control_2);
-            state.slot_status_2 = pci_express::SlotStatus2::from_bits(slot_status_2);
+            state.device_control = saved.device_control;
+            state.device_status = saved.device_status;
+            state.link_control = saved.link_control;
+            state.link_status = saved.link_status;
+            state.slot_control = saved.slot_control;
+            state.slot_status = saved.slot_status;
+            state.root_control = saved.root_control;
+            state.root_status = saved.root_status;
+            state.device_control_2 = saved.device_control_2;
+            state.device_status_2 = saved.device_status_2;
+            state.link_control_2 = saved.link_control_2;
+            state.link_status_2 = saved.link_status_2;
+            state.slot_control_2 = saved.slot_control_2;
+            state.slot_status_2 = saved.slot_status_2;
             Ok(())
         }
     }
@@ -1548,25 +1515,25 @@ mod tests {
         let saved = cap.save().expect("save should succeed");
 
         // Verify default state values
-        assert_eq!(saved.device_control, 0);
-        assert_eq!(saved.device_status, 0);
-        assert_eq!(saved.link_control, 0);
+        assert_eq!(saved.device_control.into_bits(), 0);
+        assert_eq!(saved.device_status.into_bits(), 0);
+        assert_eq!(saved.link_control.into_bits(), 0);
         // Link status has default values for speed and width
         let expected_link_status = (LinkSpeed::Speed32_0GtS.into_bits() as u16)
             | ((LinkWidth::X16.into_bits() as u16) << 4);
-        assert_eq!(saved.link_status, expected_link_status);
-        assert_eq!(saved.slot_control, 0);
-        assert_eq!(saved.slot_status, 0);
-        assert_eq!(saved.root_control, 0);
-        assert_eq!(saved.root_status, 0);
-        assert_eq!(saved.device_control_2, 0);
-        assert_eq!(saved.device_status_2, 0);
+        assert_eq!(saved.link_status.into_bits(), expected_link_status);
+        assert_eq!(saved.slot_control.into_bits(), 0);
+        assert_eq!(saved.slot_status.into_bits(), 0);
+        assert_eq!(saved.root_control.into_bits(), 0);
+        assert_eq!(saved.root_status.into_bits(), 0);
+        assert_eq!(saved.device_control_2.into_bits(), 0);
+        assert_eq!(saved.device_status_2.into_bits(), 0);
         // Link control 2 has default target_link_speed
         let expected_link_control_2 = LinkSpeed::Speed32_0GtS.into_bits() as u16;
-        assert_eq!(saved.link_control_2, expected_link_control_2);
-        assert_eq!(saved.link_status_2, 0);
-        assert_eq!(saved.slot_control_2, 0);
-        assert_eq!(saved.slot_status_2, 0);
+        assert_eq!(saved.link_control_2.into_bits(), expected_link_control_2);
+        assert_eq!(saved.link_status_2.into_bits(), 0);
+        assert_eq!(saved.slot_control_2.into_bits(), 0);
+        assert_eq!(saved.slot_status_2.into_bits(), 0);
     }
 
     #[test]
@@ -1589,9 +1556,9 @@ mod tests {
         let saved = cap.save().expect("save should succeed");
 
         // Verify the saved state reflects the modifications
-        assert_eq!(saved.device_control, 0x0005);
-        assert_eq!(saved.link_control, 0x0003);
-        assert_eq!(saved.device_control_2, 0x0010);
+        assert_eq!(saved.device_control.into_bits(), 0x0005);
+        assert_eq!(saved.link_control.into_bits(), 0x0003);
+        assert_eq!(saved.device_control_2.into_bits(), 0x0010);
     }
 
     #[test]
@@ -1663,13 +1630,11 @@ mod tests {
         let saved = cap.save().expect("save should succeed");
 
         // Verify status bits are in saved state
-        let device_status = pci_express::DeviceStatus::from_bits(saved.device_status);
-        assert!(device_status.correctable_error_detected());
-        assert!(device_status.non_fatal_error_detected());
+        assert!(saved.device_status.correctable_error_detected());
+        assert!(saved.device_status.non_fatal_error_detected());
 
-        let slot_status = pci_express::SlotStatus::from_bits(saved.slot_status);
-        assert!(slot_status.presence_detect_changed());
-        assert_eq!(slot_status.presence_detect_state(), 1);
+        assert!(saved.slot_status.presence_detect_changed());
+        assert_eq!(saved.slot_status.presence_detect_state(), 1);
 
         // Restore to a new capability and verify
         let mut cap2 = PciExpressCapability::new(DevicePortType::RootPort, None);
@@ -1731,20 +1696,20 @@ mod tests {
         let saved = cap.save().expect("save should succeed");
 
         // Verify all fields in saved state
-        assert_eq!(saved.device_control, 0x1111);
-        assert_eq!(saved.device_status, 0x2222);
-        assert_eq!(saved.link_control, 0x3333);
-        assert_eq!(saved.link_status, 0x4444);
-        assert_eq!(saved.slot_control, 0x5555);
-        assert_eq!(saved.slot_status, 0x6666);
-        assert_eq!(saved.root_control, 0x7777);
-        assert_eq!(saved.root_status, 0x88888888);
-        assert_eq!(saved.device_control_2, 0x9999);
-        assert_eq!(saved.device_status_2, 0xAAAA);
-        assert_eq!(saved.link_control_2, 0xBBBB);
-        assert_eq!(saved.link_status_2, 0xCCCC);
-        assert_eq!(saved.slot_control_2, 0xDDDD);
-        assert_eq!(saved.slot_status_2, 0xEEEE);
+        assert_eq!(saved.device_control.into_bits(), 0x1111);
+        assert_eq!(saved.device_status.into_bits(), 0x2222);
+        assert_eq!(saved.link_control.into_bits(), 0x3333);
+        assert_eq!(saved.link_status.into_bits(), 0x4444);
+        assert_eq!(saved.slot_control.into_bits(), 0x5555);
+        assert_eq!(saved.slot_status.into_bits(), 0x6666);
+        assert_eq!(saved.root_control.into_bits(), 0x7777);
+        assert_eq!(saved.root_status.into_bits(), 0x88888888);
+        assert_eq!(saved.device_control_2.into_bits(), 0x9999);
+        assert_eq!(saved.device_status_2.into_bits(), 0xAAAA);
+        assert_eq!(saved.link_control_2.into_bits(), 0xBBBB);
+        assert_eq!(saved.link_status_2.into_bits(), 0xCCCC);
+        assert_eq!(saved.slot_control_2.into_bits(), 0xDDDD);
+        assert_eq!(saved.slot_status_2.into_bits(), 0xEEEE);
 
         // Restore to a new capability
         let mut cap2 = PciExpressCapability::new(DevicePortType::RootPort, None);
@@ -1752,20 +1717,20 @@ mod tests {
 
         // Save again and verify it matches
         let saved2 = cap2.save().expect("second save should succeed");
-        assert_eq!(saved2.device_control, 0x1111);
-        assert_eq!(saved2.device_status, 0x2222);
-        assert_eq!(saved2.link_control, 0x3333);
-        assert_eq!(saved2.link_status, 0x4444);
-        assert_eq!(saved2.slot_control, 0x5555);
-        assert_eq!(saved2.slot_status, 0x6666);
-        assert_eq!(saved2.root_control, 0x7777);
-        assert_eq!(saved2.root_status, 0x88888888);
-        assert_eq!(saved2.device_control_2, 0x9999);
-        assert_eq!(saved2.device_status_2, 0xAAAA);
-        assert_eq!(saved2.link_control_2, 0xBBBB);
-        assert_eq!(saved2.link_status_2, 0xCCCC);
-        assert_eq!(saved2.slot_control_2, 0xDDDD);
-        assert_eq!(saved2.slot_status_2, 0xEEEE);
+        assert_eq!(saved2.device_control.into_bits(), 0x1111);
+        assert_eq!(saved2.device_status.into_bits(), 0x2222);
+        assert_eq!(saved2.link_control.into_bits(), 0x3333);
+        assert_eq!(saved2.link_status.into_bits(), 0x4444);
+        assert_eq!(saved2.slot_control.into_bits(), 0x5555);
+        assert_eq!(saved2.slot_status.into_bits(), 0x6666);
+        assert_eq!(saved2.root_control.into_bits(), 0x7777);
+        assert_eq!(saved2.root_status.into_bits(), 0x88888888);
+        assert_eq!(saved2.device_control_2.into_bits(), 0x9999);
+        assert_eq!(saved2.device_status_2.into_bits(), 0xAAAA);
+        assert_eq!(saved2.link_control_2.into_bits(), 0xBBBB);
+        assert_eq!(saved2.link_status_2.into_bits(), 0xCCCC);
+        assert_eq!(saved2.slot_control_2.into_bits(), 0xDDDD);
+        assert_eq!(saved2.slot_status_2.into_bits(), 0xEEEE);
     }
 
     #[test]
@@ -1785,12 +1750,12 @@ mod tests {
         let saved = cap.save().expect("save should succeed");
 
         // Verify state is back to defaults
-        assert_eq!(saved.device_control, 0);
-        assert_eq!(saved.device_status, 0);
-        assert_eq!(saved.link_control, 0);
+        assert_eq!(saved.device_control.into_bits(), 0);
+        assert_eq!(saved.device_status.into_bits(), 0);
+        assert_eq!(saved.link_control.into_bits(), 0);
         // Link status has default speed and width
         let expected_link_status = (LinkSpeed::Speed32_0GtS.into_bits() as u16)
             | ((LinkWidth::X16.into_bits() as u16) << 4);
-        assert_eq!(saved.link_status, expected_link_status);
+        assert_eq!(saved.link_status.into_bits(), expected_link_status);
     }
 }
