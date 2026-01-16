@@ -2,17 +2,14 @@
 # Licensed under the MIT License.
 
 [package]
-name = "openvmm_pcat_locator"
+name = "resource_dll_parser"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-mesh.workspace = true
-
 anyhow.workspace = true
 fs-err.workspace = true
-tracing.workspace = true
-resource_dll_parser.workspace = true
+object = { workspace = true, features = ["pe", "read_core", "std"] }
 
 [lints]
 workspace = true
