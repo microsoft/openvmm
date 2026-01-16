@@ -386,6 +386,22 @@ pub mod artifacts {
         }
 
         declare_artifacts! {
+            /// Alpine Linux 3.23.2 x64 UEFI nocloud cloud-init
+            /// NOTE: The image on the alpine website is qcow2 and must be converted to a fixed vhd.
+            ALPINE_3_23_X64
+        }
+
+        impl IsTestVhd for ALPINE_3_23_X64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
+            const ARCH: MachineArch = MachineArch::X86_64;
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for ALPINE_3_23_X64 {
+            const FILENAME: &'static str = "nocloud_alpine-3.23.2-x86_64-uefi-cloudinit-r0.vhd";
+            const SIZE: u64 = 224494080;
+        }
+
+        declare_artifacts! {
             /// Ubuntu 24.04 Server Aarch64
             UBUNTU_2404_SERVER_AARCH64
         }
