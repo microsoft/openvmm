@@ -158,25 +158,26 @@ fn get_matching_tests_from_nextest(
     let mut binary_path = None;
 
     // Navigate to rust-suites -> vmm_tests::tests -> testcases
-    if let Some(rust_suites) = json.get("rust-suites") {
-        if let Some(vmm_tests) = rust_suites.get("vmm_tests::tests") {
-            // Get the binary path
-            if let Some(path) = vmm_tests.get("binary-path").and_then(|v| v.as_str()) {
-                binary_path = Some(PathBuf::from(path));
-            }
+    if let Some(vmm_tests) = json
+        .get("rust-suites")
+        .and_then(|s| s.get("vmm_tests::tests"))
+    {
+        // Get the binary path
+        if let Some(path) = vmm_tests.get("binary-path").and_then(|v| v.as_str()) {
+            binary_path = Some(PathBuf::from(path));
+        }
 
-            if let Some(testcases) = vmm_tests.get("testcases") {
-                if let Some(testcases_obj) = testcases.as_object() {
-                    for (test_name, test_info) in testcases_obj {
-                        // Check if filter-match.status == "matches"
-                        if let Some(filter_match) = test_info.get("filter-match") {
-                            if let Some(status) = filter_match.get("status") {
-                                if status.as_str() == Some("matches") {
-                                    test_names.push(test_name.clone());
-                                }
-                            }
-                        }
-                    }
+        if let Some(testcases_obj) = vmm_tests.get("testcases").and_then(|t| t.as_object()) {
+            for (test_name, test_info) in testcases_obj {
+                // Check if filter-match.status == "matches"
+                let matches = test_info
+                    .get("filter-match")
+                    .and_then(|fm| fm.get("status"))
+                    .and_then(|s| s.as_str())
+                    == Some("matches");
+
+                if matches {
+                    test_names.push(test_name.clone());
                 }
             }
         }
