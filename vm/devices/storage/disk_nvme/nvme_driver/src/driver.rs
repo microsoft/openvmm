@@ -35,6 +35,7 @@ use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::Weak;
 use task_control::AsyncRun;
 use task_control::InspectTask;
 use task_control::TaskControl;
@@ -76,15 +77,31 @@ pub struct NvmeDriver<D: DeviceBacking> {
     rescan_notifiers: Arc<RwLock<HashMap<u32, mesh::Sender<()>>>>,
     /// NVMe namespaces associated with this driver. Mapping nsid to NamespaceHandle.
     #[inspect(skip)]
-    namespaces: HashMap<u32, NamespaceHandle>,
+    namespaces: HashMap<u32, WeakOrStrong<Namespace>>,
     /// Keeps the controller connected (CC.EN==1) while servicing.
     nvme_keepalive: bool,
     bounce_buffer: bool,
 }
 
-struct NamespaceHandle {
-    namespace: Arc<Namespace>,
-    in_use: bool,
+pub enum WeakOrStrong<T> {
+    Weak(Weak<T>),
+    Strong(Arc<T>),
+}
+
+impl<T> WeakOrStrong<T> {
+    /// Returns a strong reference to the underlying value.
+    /// If this is a strong pointer, returns a clone of the Arc.
+    /// If this is a weak pointer, returns the result of upgrade() (None if gone).
+    pub fn get_strong(&mut self) -> Option<Arc<T>> {
+        match self {
+            WeakOrStrong::Strong(arc) => {
+                let strong = arc.clone();
+                *self = WeakOrStrong::Weak(Arc::downgrade(arc));
+                Some(strong)
+            }
+            WeakOrStrong::Weak(weak) => weak.upgrade(),
+        }
+    }
 }
 
 #[derive(Inspect)]
@@ -575,20 +592,21 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         }
     }
 
+    // TODO: Thoughts in progress ..... maybe implement a struct like:
+    // pub struct NamespaceNoClone(Arc<Namespace>);
+    //
+    // If we move the read/write and other namespace methods here we can instead
+    // return a reference to NamespaceNoClone which does not implement Clone.
+    // This will prevent accidental cloning of Namespace handles.
+
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
-        if let Some(handle) = self.namespaces.get_mut(&nsid) {
-            // After reboot ns will be present but unused.
-            if !handle.in_use {
-                handle.in_use = true;
-                return Ok(handle.namespace.clone());
+        if let Some(namespace) = self.namespaces.get_mut(&nsid) {
+            if let Some(namespace) = namespace.get_strong()
+                && namespace.check_active().is_ok()
+            {
+                return Ok(namespace);
             }
-
-            // Prevent multiple references to the same Namespace.
-            // Allowing this could lead to undefined behavior if multiple components
-            // concurrently read or write to the same namespace. To avoid this,
-            // return an error if the namespace is already requested.
-            return Err(NamespaceError::DuplicateRequest { nsid });
         }
 
         let (send, recv) = mesh::channel::<()>();
@@ -603,13 +621,8 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             )
             .await?,
         );
-        self.namespaces.insert(
-            nsid,
-            NamespaceHandle {
-                namespace: namespace.clone(),
-                in_use: true,
-            },
-        );
+        self.namespaces
+            .insert(nsid, WeakOrStrong::Weak(Arc::downgrade(&namespace)));
 
         // Append the sender to the list of notifiers for this nsid.
         let mut notifiers = self.rescan_notifiers.write();
@@ -655,13 +668,17 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     "saving namespaces",
                 );
                 let mut saved_namespaces = vec![];
-                for (nsid, handle) in self.namespaces.iter() {
-                    saved_namespaces.push(handle.namespace.save().with_context(|| {
-                        format!(
-                            "failed to save namespace nsid {} device {}",
-                            nsid, self.device_id
-                        )
-                    })?);
+                for (nsid, namespace) in self.namespaces.iter_mut() {
+                    if let Some(ns) = namespace.get_strong()
+                        && ns.check_active().is_ok()
+                    {
+                        saved_namespaces.push(ns.save().with_context(|| {
+                            format!(
+                                "failed to save namespace nsid {} device {}",
+                                nsid, self.device_id
+                            )
+                        })?);
+                    }
                 }
                 Ok(NvmeDriverSavedState {
                     identify_ctrl: spec::IdentifyController::read_from_bytes(
@@ -949,19 +966,16 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         // Restore namespace(s).
         for ns in &saved_state.namespaces {
             let (send, recv) = mesh::channel::<()>();
-            this.namespaces.insert(
+            let namespace = this.namespaces.insert(
                 ns.nsid,
-                NamespaceHandle {
-                    namespace: Arc::new(Namespace::restore(
-                        &driver,
-                        admin.issuer().clone(),
-                        recv,
-                        this.identify.clone().unwrap(),
-                        &this.io_issuers,
-                        ns,
-                    )?),
-                    in_use: false,
-                },
+                WeakOrStrong::Strong(Arc::new(Namespace::restore(
+                    &driver,
+                    admin.issuer().clone(),
+                    recv,
+                    this.identify.clone().unwrap(),
+                    &this.io_issuers,
+                    ns,
+                )?)),
             );
             this.rescan_notifiers.write().insert(ns.nsid, send);
         }

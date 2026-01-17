@@ -41,8 +41,6 @@ pub enum NamespaceError {
     Request(#[source] RequestError),
     #[error("maximum data transfer size too small: 2^{0} pages")]
     MdtsInvalid(u8),
-    #[error("namespace ID {nsid} already exists")]
-    DuplicateRequest { nsid: u32 },
 }
 
 /// An NVMe namespace.
@@ -197,7 +195,7 @@ impl Namespace {
         1 << self.block_shift
     }
 
-    fn check_active(&self) -> Result<(), RequestError> {
+    pub fn check_active(&self) -> Result<(), RequestError> {
         if self.state.removed.load(Ordering::Relaxed) {
             // The namespace has been removed. Return invalid namespace even if
             // the namespace has returned to avoid accidentally accessing the
