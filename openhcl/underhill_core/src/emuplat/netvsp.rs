@@ -37,6 +37,8 @@ use socket2::Socket;
 use std::future::pending;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::task::ready;
 use tracing::Instrument;
@@ -1106,6 +1108,29 @@ pub struct HclNetworkVFManager {
     _task: Task<()>,
 }
 
+pub struct NetworkAdapterIndex {
+    index: AtomicU32,
+}
+
+impl NetworkAdapterIndex {
+    pub fn new(initial_value: Option<u32>) -> Self {
+        Self {
+            // Adapter index is used to generate the serial number for the
+            // guest and there are various guest code that treat a serial number
+            // of '0' as invalid. Start at 1 to avoid that.
+            index: AtomicU32::new(initial_value.unwrap_or(1)),
+        }
+    }
+
+    pub fn next(&self) -> u32 {
+        self.index.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub fn get(&self) -> u32 {
+        self.index.load(Ordering::Relaxed)
+    }
+}
+
 impl HclNetworkVFManager {
     pub async fn new(
         vtl2_vf_instance_id: Guid,
@@ -1121,6 +1146,7 @@ impl HclNetworkVFManager {
         keepalive_mode: KeepAliveConfig,
         dma_clients: VfioDmaClients,
         mana_state: Option<&ManaSavedState>,
+        network_adapter_index: &NetworkAdapterIndex,
     ) -> anyhow::Result<(
         Self,
         Vec<HclNetworkVFManagerEndpointInfo>,
@@ -1205,14 +1231,11 @@ impl HclNetworkVFManager {
         let endpoints = endpoints
             .into_iter()
             .zip(mac_addresses)
-            .enumerate()
-            .map(
-                |(i, (endpoint, mac_address))| HclNetworkVFManagerEndpointInfo {
-                    adapter_index: i as u32,
-                    mac_address,
-                    endpoint,
-                },
-            )
+            .map(|(endpoint, mac_address)| HclNetworkVFManagerEndpointInfo {
+                adapter_index: network_adapter_index.next(),
+                mac_address,
+                endpoint,
+            })
             .collect();
 
         let task = driver_source
