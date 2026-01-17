@@ -477,7 +477,7 @@ impl HclNetworkVFManagerWorker {
         } {
             tracing::error!(
                 err = err.as_ref() as &dyn std::error::Error,
-                "Failed to revoke VTL0 VF."
+                "Failed to revoke VTL0 VF"
             );
         }
     }
