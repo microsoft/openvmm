@@ -34,6 +34,7 @@ open_enum! {
     #[cfg_attr(feature = "inspect", inspect(debug))]
     pub enum FileId: u32 {
         FILE_TABLE     = 0,
+
         BIOS_NVRAM     = 1,
         TPM_PPI        = 2,
         TPM_NVRAM      = 3,
@@ -79,7 +80,7 @@ pub type VmgsAuthTag = [u8; VMGS_AUTHENTICATION_TAG_SIZE];
 pub type VmgsDatastoreKey = [u8; VMGS_ENCRYPTION_KEY_SIZE];
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VmgsFileEntry {
     // V2 fields
     pub offset: u32,
@@ -90,7 +91,11 @@ pub struct VmgsFileEntry {
     pub nonce: VmgsNonce,
     pub authentication_tag: VmgsAuthTag,
 
-    pub reserved: [u8; 20],
+    // Store a copy of the extended attributes here so we can check if a FileId
+    // is encrypted without unlocking the VMGS.
+    pub attributes: FileAttribute,
+
+    pub reserved: [u8; 16],
 }
 
 const_assert!(size_of::<VmgsFileEntry>() == 64);
@@ -110,7 +115,7 @@ impl IndexMut<FileId> for [VmgsFileEntry] {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VmgsExtendedFileEntry {
     pub attributes: FileAttribute,
     pub encryption_key: VmgsDatastoreKey,
@@ -135,7 +140,7 @@ impl IndexMut<FileId> for [VmgsExtendedFileEntry] {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[cfg_attr(feature = "inspect", derive(Inspect))]
 pub struct VmgsEncryptionKey {
     pub nonce: VmgsNonce,
@@ -147,7 +152,7 @@ pub struct VmgsEncryptionKey {
 const_assert!(size_of::<VmgsEncryptionKey>() == 64);
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VmgsHeader {
     // V1 compatible fields
     pub signature: u64,
@@ -170,7 +175,7 @@ pub struct VmgsHeader {
 const_assert!(size_of::<VmgsHeader>() == 168);
 
 #[repr(C)]
-#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
+#[derive(Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
 pub struct VmgsFileTable {
     pub entries: [VmgsFileEntry; VMGS_FILE_COUNT],
 }
@@ -181,7 +186,7 @@ pub const VMGS_FILE_TABLE_BLOCK_SIZE: u32 =
     size_of::<VmgsFileTable>() as u32 / VMGS_BYTES_PER_BLOCK;
 
 #[repr(C)]
-#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VmgsExtendedFileTable {
     pub entries: [VmgsExtendedFileEntry; VMGS_FILE_COUNT],
 }
