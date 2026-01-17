@@ -41,8 +41,6 @@ pub enum NamespaceError {
     Request(#[source] RequestError),
     #[error("maximum data transfer size too small: 2^{0} pages")]
     MdtsInvalid(u8),
-    #[error("namespace ID {nsid} already exists")]
-    DuplicateRequest { nsid: u32 },
 }
 
 /// An NVMe namespace.
