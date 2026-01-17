@@ -5,7 +5,7 @@
 //! version configuration requests required by various dependencies in OpenVMM
 //! pipelines.
 
-use crate::download_openhcl_kernel_package::OpenhclKernelPackageKind;
+use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
 use crate::run_cargo_build::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -43,6 +43,12 @@ flowey_request! {
         LocalOpenvmmDeps(CommonArch, PathBuf),
         /// Override protoc with a local path
         LocalProtoc(PathBuf),
+        /// Override kernel with local paths (kernel binary, modules directory)
+        LocalKernel {
+            arch: CommonArch,
+            kernel: PathBuf,
+            modules: PathBuf,
+        },
     }
 }
 
@@ -52,7 +58,7 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::download_openhcl_kernel_package::Node>();
+        ctx.import::<crate::resolve_openhcl_kernel_package::Node>();
         ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
@@ -72,6 +78,7 @@ impl FlowNode for Node {
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let mut local_openvmm_deps: BTreeMap<CommonArch, PathBuf> = BTreeMap::new();
         let mut local_protoc: Option<PathBuf> = None;
+        let mut local_kernel: BTreeMap<CommonArch, (PathBuf, PathBuf)> = BTreeMap::new();
 
         for req in requests {
             match req {
@@ -94,12 +101,26 @@ impl FlowNode for Node {
                 Request::LocalProtoc(path) => {
                     same_across_all_reqs("ProtocPath", &mut local_protoc, path)?;
                 }
+                Request::LocalKernel { arch, kernel, modules } => {
+                    let paths = (kernel, modules);
+                    if let Some(existing) = local_kernel.get(&arch) {
+                        if existing != &paths {
+                            anyhow::bail!(
+                                "LocalKernel for {:?} must be consistent across requests",
+                                arch
+                            );
+                        }
+                    } else {
+                        local_kernel.insert(arch, paths);
+                    }
+                }
             }
         }
 
         // Track whether we have local paths for openvmm_deps and protoc
         let has_local_openvmm_deps = !local_openvmm_deps.is_empty();
         let has_local_protoc = local_protoc.is_some();
+        let has_local_kernel = !local_kernel.is_empty();
 
         // Set up local paths for openvmm_deps if provided
         for (arch, path) in local_openvmm_deps {
@@ -121,10 +142,27 @@ impl FlowNode for Node {
             ));
         }
 
-        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
-        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()));
-        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()));
-        ctx.req(crate::download_openhcl_kernel_package::Request::Version(OpenhclKernelPackageKind::CvmDev, OPENHCL_KERNEL_DEV_VERSION.into()));
+        // Set up local paths for kernel if provided
+        for (arch, (kernel, modules)) in local_kernel {
+            let kernel_arch = match arch {
+                CommonArch::X86_64 => crate::resolve_openhcl_kernel_package::OpenhclKernelPackageArch::X86_64,
+                CommonArch::Aarch64 => crate::resolve_openhcl_kernel_package::OpenhclKernelPackageArch::Aarch64,
+            };
+            ctx.req(crate::resolve_openhcl_kernel_package::Request::SetLocal {
+                arch: kernel_arch,
+                kernel,
+                modules,
+            });
+        }
+
+        // Only set kernel versions if we don't have local paths
+        // (versions are only needed for downloading)
+        if !has_local_kernel {
+            ctx.req(crate::resolve_openhcl_kernel_package::Request::SetVersion(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
+            ctx.req(crate::resolve_openhcl_kernel_package::Request::SetVersion(OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()));
+            ctx.req(crate::resolve_openhcl_kernel_package::Request::SetVersion(OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()));
+            ctx.req(crate::resolve_openhcl_kernel_package::Request::SetVersion(OpenhclKernelPackageKind::CvmDev, OPENHCL_KERNEL_DEV_VERSION.into()));
+        }
         if !has_local_openvmm_deps {
             ctx.req(crate::resolve_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
         }

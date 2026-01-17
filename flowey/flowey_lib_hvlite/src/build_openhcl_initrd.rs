@@ -20,9 +20,6 @@ pub struct OpenhclInitrdExtraParams {
     pub extra_initrd_layers: Vec<PathBuf>,
     /// additional directories to be included in the initrd
     pub extra_initrd_directories: Vec<PathBuf>,
-    /// Path to custom kernel modules. If not provided, uses modules under the
-    /// kernel package path.
-    pub custom_kernel_modules: Option<PathBuf>,
 }
 
 flowey_request! {
@@ -37,8 +34,12 @@ flowey_request! {
         /// Extra environment variables to set during the run (e.g: to
         /// interpolate paths into `rootfs.config`)
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
-        /// Path to kernel package
+        /// Path to kernel package (for metadata)
         pub kernel_package_root: ReadVar<PathBuf>,
+        /// Path to kernel modules directory
+        pub kernel_modules: ReadVar<PathBuf>,
+        /// Path to kernel build metadata file
+        pub kernel_metadata: ReadVar<PathBuf>,
         /// Path to the openhcl bin to use
         pub bin_openhcl: ReadVar<PathBuf>,
         /// Output path of generated initrd
@@ -83,6 +84,8 @@ impl FlowNode for Node {
             extra_params,
             rootfs_config,
             kernel_package_root,
+            kernel_modules,
+            kernel_metadata,
             extra_env,
             bin_openhcl,
             initrd,
@@ -92,7 +95,6 @@ impl FlowNode for Node {
             let OpenhclInitrdExtraParams {
                 extra_initrd_layers,
                 extra_initrd_directories,
-                custom_kernel_modules,
             } = extra_params.unwrap_or_default();
 
             let openvmm_deps_arch = match arch {
@@ -122,6 +124,8 @@ impl FlowNode for Node {
                 let bin_openhcl = bin_openhcl.claim(ctx);
                 let openvmm_repo_path = openvmm_repo_path.clone().claim(ctx);
                 let kernel_package_root = kernel_package_root.claim(ctx);
+                let kernel_modules = kernel_modules.claim(ctx);
+                let kernel_metadata = kernel_metadata.claim(ctx);
                 let initrd = initrd.claim(ctx);
                 move |rt| {
                     let interactive_dep = rt.read(interactive_dep);
@@ -130,6 +134,7 @@ impl FlowNode for Node {
                     let bin_openhcl = rt.read(bin_openhcl);
                     let openvmm_repo_path = rt.read(openvmm_repo_path);
                     let kernel_package_root = rt.read(kernel_package_root);
+                    let kernel_metadata = rt.read(kernel_metadata);
 
                     let sh = xshell::Shell::new()?;
 
@@ -164,18 +169,7 @@ impl FlowNode for Node {
                         CommonArch::Aarch64 => "aarch64",
                     };
 
-                    // Kernel modules use a different arch naming convention
-                    let kernel_modules_arch = match arch {
-                        CommonArch::X86_64 => "x64",
-                        CommonArch::Aarch64 => "arm64",
-                    };
-
-                    let kernel_modules = custom_kernel_modules.unwrap_or_else(|| {
-                        kernel_package_root
-                            .join("build/native/bin")
-                            .join(kernel_modules_arch)
-                            .join("modules")
-                    });
+                    let kernel_modules = rt.read(kernel_modules);
 
                     // FUTURE: to avoid making big changes to update-roots as
                     // part of the initial OSS workstream, stage the
@@ -210,6 +204,7 @@ impl FlowNode for Node {
                             --arch {rootfs_py_arch}
                             --package-root {kernel_package_root}
                             --kernel-modules {kernel_modules}
+                            --kernel-metadata {kernel_metadata}
                             {rootfs_config...}
                             {initrd_contents...}
                         "
