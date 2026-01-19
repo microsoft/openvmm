@@ -61,7 +61,6 @@ pub fn init() -> Result<(), Status> {
         return Err(Status::ABORTED);
     }
     crate::tmk_logger::init().map_err(|_| Status::NOT_READY)?;
-    log::info!("UEFI logger initialized");
     enable_uefi_vtl_protection();
     acpi_wrap::AcpiTableContext::init().map_err(|_| Status::ABORTED)?;
     Ok(())

@@ -45,6 +45,7 @@ impl RsdpParser {
         Ok(Self::new(rsdp_ptr)?)
     }
 
+    // Retrieves the XSDT pointer from the RSDP structure.
     pub fn get_xsdt_ptr(&self) -> TmkResult<NonNull<Header>> {
         let xsdt_address: usize = self.rsdp.xsdt as usize;
         Ok(NonNull::new(xsdt_address as *mut Header).ok_or(AcpiWrapError::InvalidXsdt)?)
@@ -221,8 +222,8 @@ pub enum AcpiWrapError {
 impl From<AcpiWrapError> for TmkError {
     fn from(err: AcpiWrapError) -> TmkError {
         let final_err = match err {
-            AcpiWrapError::InitializationError => TmkError::AcpiError,
-            AcpiWrapError::UefiSystemTableNotFound
+            AcpiWrapError::InitializationError
+            | AcpiWrapError::UefiSystemTableNotFound
             | AcpiWrapError::InvalidRsdp
             | AcpiWrapError::InvalidRsdpStructure
             | AcpiWrapError::InvalidXsdt
