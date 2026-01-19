@@ -150,7 +150,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     fn get_vp_count(&self) -> TmkResult<u32> {
         #[cfg(target_os = "uefi")]
         {
-            crate::uefi::acpi_wrap::get_apic_count_from_madt().map(|r| r as u32)
+            crate::uefi::acpi_wrap::AcpiTableContext::get_apic_count_from_madt().map(|r| r as u32)
         }
         #[cfg(not(target_os = "uefi"))]
         {
