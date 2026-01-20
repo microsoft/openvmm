@@ -84,7 +84,7 @@ pub struct NvmeDriver<D: DeviceBacking> {
     bounce_buffer: bool,
 }
 
-pub enum WeakOrStrong<T> {
+enum WeakOrStrong<T> {
     Weak(Weak<T>),
     Strong(Arc<T>),
 }
