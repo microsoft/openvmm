@@ -31,6 +31,7 @@ use uevent::UeventListener;
 use vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX;
 use vfio_sys::IommuType;
 use vfio_sys::IrqInfo;
+use vfio_sys::VfioErrata;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromBytes;
@@ -123,22 +124,26 @@ impl VfioDevice {
         tracing::info!(pci_id, keepalive, "device arrived");
         vfio_sys::print_relevant_params();
 
+        let workaround = VfioDelayWorkaroundConfig::new(driver_source.clone(), None);
         let container = vfio_sys::Container::new()?;
         let group_id = vfio_sys::Group::find_group_for_device(&path)?;
-        let group = vfio_sys::Group::open_noiommu(group_id)?;
+        let group = workaround
+            .retry_unconditional("open_noiommu", async |_| {
+                vfio_sys::Group::open_noiommu(group_id)
+            })
+            .await?;
         group.set_container(&container)?;
         if !group.status()?.viable() {
             anyhow::bail!("group is not viable");
         }
 
-        let driver = driver_source.simple();
         container.set_iommu(IommuType::NoIommu)?;
         if keepalive {
             // Prevent physical hardware interaction when restoring.
-            group.set_keep_alive(pci_id, &driver).await?;
+            group.set_keep_alive(pci_id).await?;
         }
         tracing::debug!(pci_id, "about to open device");
-        let device = group.open_device(pci_id, &driver).await?;
+        let device = group.open_device(pci_id).await?;
         let msix_info = device.irq_info(vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX)?;
         if msix_info.flags.noresize() {
             anyhow::bail!("unsupported: kernel does not support dynamic msix allocation");
@@ -227,6 +232,60 @@ impl VfioDevice {
             read_fallback: SharedCounter::new(),
             write_fallback: SharedCounter::new(),
         })
+    }
+}
+
+struct VfioDelayWorkaroundConfig {
+    driver: VmTaskDriverSource,
+    enodev_sleep_duration: Duration,
+}
+
+impl VfioDelayWorkaroundConfig {
+    const DEFAULT_ENODEV_SLEEP_DURATION: Duration = Duration::from_millis(250);
+    pub fn new(driver: VmTaskDriverSource, enodev_sleep_duration: Option<Duration>) -> Self {
+        Self {
+            driver,
+            enodev_sleep_duration: enodev_sleep_duration
+                .unwrap_or(Self::DEFAULT_ENODEV_SLEEP_DURATION),
+        }
+    }
+
+    pub async fn sleep(&self) {
+        pal_async::timer::PolledTimer::new(&self.driver.simple())
+            .sleep(self.enodev_sleep_duration)
+            .await;
+    }
+
+    // There is a small race window in the 6.1 kernel between when the
+    // vfio device is visible to userspace, and when it is added to its
+    // internal list. Try one more time on ENODEV failure after a brief
+    // sleep.
+    pub async fn retry_on_enodev<F, T>(&self, op_name: &str, mut f: F) -> anyhow::Result<T>
+    where
+        F: AsyncFnMut(bool) -> anyhow::Result<T>,
+    {
+        match f(false).await {
+            Err(e) if VfioErrata::from_error(&e) == VfioErrata::DelayWorkaround => {
+                tracing::warn!("vfio operation {op_name} got ENODEV, retrying after delay");
+                self.sleep().await;
+                f(true).await
+            }
+            r => r,
+        }
+    }
+
+    pub async fn retry_unconditional<F, T>(&self, op_name: &str, mut f: F) -> anyhow::Result<T>
+    where
+        F: AsyncFnMut(bool) -> anyhow::Result<T>,
+    {
+        match f(false).await {
+            Err(e) => {
+                tracing::warn!("vfio operation {op_name} failed with {e}, retrying after delay");
+                self.sleep().await;
+                f(true).await
+            }
+            r => r,
+        }
     }
 }
 
