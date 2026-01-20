@@ -674,7 +674,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                 );
                 let mut saved_namespaces = vec![];
                 for (nsid, namespace) in self.namespaces.iter_mut() {
-                    let is_weak = namespace.is_weak(); // This value will change after invokeing get_arc().
+                    let is_weak = namespace.is_weak(); // This value will change after invoking get_arc().
                     if let Some(ns) = namespace.get_arc()
                         && ns.check_active().is_ok()
                         && is_weak
