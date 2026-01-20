@@ -421,6 +421,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
 
     /// Save queue pair state for servicing.
     pub async fn save(&self) -> anyhow::Result<QueuePairSavedState> {
+        tracing::info!(qid = self.qid, "saving queue pair state");
         // Return error if the queue does not have any memory allocated.
         if self.mem.pfns().is_empty() {
             return Err(Error::InvalidState.into());
