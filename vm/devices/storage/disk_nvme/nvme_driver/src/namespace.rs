@@ -41,6 +41,8 @@ pub enum NamespaceError {
     Request(#[source] RequestError),
     #[error("maximum data transfer size too small: 2^{0} pages")]
     MdtsInvalid(u8),
+    #[error("requesting a duplicate namespace: {0}")]
+    Duplicate(u32),
 }
 
 /// A handle to an NVMe namespace that enforces single-ownership semantics.

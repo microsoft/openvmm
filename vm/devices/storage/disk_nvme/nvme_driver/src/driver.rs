@@ -103,6 +103,10 @@ impl<T> WeakOrStrong<T> {
             WeakOrStrong::Weak(weak) => weak.upgrade(),
         }
     }
+
+    pub fn is_weak(&self) -> bool {
+        matches!(self, WeakOrStrong::Weak(_))
+    }
 }
 
 #[derive(Inspect)]
@@ -596,10 +600,17 @@ impl<D: DeviceBacking> NvmeDriver<D> {
     /// Gets the namespace with namespace ID `nsid`.
     pub async fn namespace(&mut self, nsid: u32) -> Result<NamespaceHandle, NamespaceError> {
         if let Some(namespace) = self.namespaces.get_mut(&nsid) {
-            if let Some(namespace) = namespace.get_strong()
-                && namespace.check_active().is_ok()
-            {
-                return Ok(NamespaceHandle::new(namespace));
+            // After restore we will have a strong ref -> downgrade and return.
+            // If we have a weak ref, make sure it is not upgradeable (that means we have a duplicate somewhere).
+            let is_weak = namespace.is_weak(); // This value will change after invokeing get_strong().
+            let namespace_strong_ref = namespace.get_strong();
+            if namespace_strong_ref.is_some() {
+                let namespace_strong = namespace_strong_ref.unwrap();
+                if is_weak && namespace_strong.check_active().is_ok() {
+                    return Err(NamespaceError::Duplicate(nsid));
+                } else {
+                    return Ok(NamespaceHandle::new(namespace_strong));
+                }
             }
         }
 
@@ -663,8 +674,10 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                 );
                 let mut saved_namespaces = vec![];
                 for (nsid, namespace) in self.namespaces.iter_mut() {
+                    let is_weak = namespace.is_weak(); // This value will change after invokeing get_strong().
                     if let Some(ns) = namespace.get_strong()
                         && ns.check_active().is_ok()
+                        && is_weak
                     {
                         saved_namespaces.push(ns.save().with_context(|| {
                             format!(
