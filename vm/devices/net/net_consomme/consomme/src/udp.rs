@@ -346,7 +346,6 @@ impl<T: Client> Access<'_, T> {
     ) -> Result<(), DropReason> {
         let request = DnsRequest {
             flow: DnsFlow {
-                protocol: IpProtocol::Udp,
                 src_addr: addresses.src_addr,
                 dst_addr: addresses.dst_addr,
                 src_port: udp.src_port,

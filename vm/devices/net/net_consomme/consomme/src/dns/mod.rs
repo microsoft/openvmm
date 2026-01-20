@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
-
+#![cfg_attr(all(target_os = "linux", not(target_env = "gnu")), allow(dead_code))]
 use parking_lot::Mutex;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::IpProtocol;
@@ -11,7 +11,7 @@ use std::task::Waker;
 
 use crate::DropReason;
 
-#[cfg(unix)]
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 #[path = "dns_resolver_unix.rs"]
 mod resolver;
 
@@ -32,7 +32,6 @@ pub struct DnsFlow {
     pub dst_port: u16,
     pub gateway_mac: EthernetAddress,
     pub client_mac: EthernetAddress,
-    pub protocol: IpProtocol,
 }
 
 #[derive(Debug, Clone)]
@@ -74,11 +73,7 @@ pub struct DnsResponseAccessor {
 
 impl DnsResponseAccessor {
     pub fn push(&self, response: DnsResponse) {
-        match response.flow.protocol {
-            IpProtocol::Udp => self.queues.udp.lock().push(response),
-            IpProtocol::Tcp => unreachable!("Not yet implemented"),
-            _ => panic!("Unexpected protocol for DNS Response"),
-        }
+        self.queues.udp.lock().push(response);
         // Wake the async executor to process the response
         if let Some(waker) = self.queues.waker.lock().take() {
             waker.wake();
@@ -122,7 +117,7 @@ impl DnsResolver {
         })
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     pub fn new() -> Result<Self, std::io::Error> {
         use crate::dns_resolver::resolver::UnixDnsResolverBackend;
 
@@ -136,6 +131,20 @@ impl DnsResolver {
             backend: Box::new(UnixDnsResolverBackend::new()?),
             queues,
         })
+    }
+
+    /// On musl Linux, libresolv is not available.
+    /// Return an error so the caller falls back to DHCP-based DNS settings.
+    #[cfg(all(target_os = "linux", not(target_env = "gnu")))]
+    pub fn new() -> Result<Self, std::io::Error> {
+        tracing::info!(
+            "libresolv not available on musl; DNS interception disabled, \
+             falling back to DHCP-based DNS settings for guest"
+        );
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "DNS resolver backend not supported on musl libc (libresolv not available)",
+        ))
     }
 
     pub fn handle_dns(&mut self, request: &DnsRequest<'_>) -> Result<(), DropReason> {
