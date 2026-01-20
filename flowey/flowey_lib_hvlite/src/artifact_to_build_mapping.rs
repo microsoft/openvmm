@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use vmm_test_images::KnownTestArtifacts;
 
 /// Result of resolving artifact requirements to build/download selections.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ResolvedArtifactSelections {
     /// What to build
     pub build: BuildSelections,
@@ -22,6 +22,20 @@ pub struct ResolvedArtifactSelections {
     pub unknown: Vec<String>,
     /// Target triple from the artifacts file (if present)
     pub target_from_file: Option<String>,
+    /// Whether any tests need release IGVM files from GitHub
+    pub needs_release_igvm: bool,
+}
+
+impl Default for ResolvedArtifactSelections {
+    fn default() -> Self {
+        Self {
+            build: BuildSelections::none(),
+            downloads: BTreeSet::new(),
+            unknown: Vec::new(),
+            target_from_file: None,
+            needs_release_igvm: false,
+        }
+    }
 }
 
 impl ResolvedArtifactSelections {
@@ -132,7 +146,7 @@ impl ResolvedArtifactSelections {
             | "petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_STANDARD_AARCH64" =>
             {
                 // These are downloaded from GitHub releases, not built
-                // The download is handled separately
+                self.needs_release_igvm = true;
                 true
             }
 
@@ -185,6 +199,13 @@ impl ResolvedArtifactSelections {
             }
             "petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64" => {
                 self.build.tpm_guest_tests_linux = true;
+                true
+            }
+
+            // Host tools
+            "petri_artifacts_vmm_test::artifacts::host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64" =>
+            {
+                self.build.test_igvm_agent_rpc_server = true;
                 true
             }
 
@@ -243,6 +264,17 @@ impl ResolvedArtifactSelections {
             }
             "petri_artifacts_vmm_test::artifacts::test_vhd::FREE_BSD_13_2_X64" => {
                 self.downloads.insert(KnownTestArtifacts::FreeBsd13_2X64Vhd);
+                true
+            }
+            "petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64" => {
+                self.downloads.insert(KnownTestArtifacts::Alpine323X64Vhd);
+                self.build.pipette_linux = true;
+                true
+            }
+            "petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64" => {
+                self.downloads
+                    .insert(KnownTestArtifacts::Alpine323Aarch64Vhd);
+                self.build.pipette_linux = true;
                 true
             }
             "petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64" => {
@@ -307,7 +339,10 @@ impl ResolvedArtifactSelections {
                 true
             }
 
-            _ => false,
+            _ => {
+                log::warn!("unknown artifact ID with no build mapping: {artifact_id}");
+                false
+            }
         }
     }
 }

@@ -82,26 +82,65 @@ locally, set the following environment variable: `PETRI_REPORT_UNSTABLE_FAIL=1`
 
 ## Running VMM Tests (Flowey)
 
-The easiest way to run the VMM tests locally is using the
-`cargo xflowey vmm-tests` command. To see the most up-to-date options, run:
-`cargo xflowey vmm-tests --help`. When running Hyper-V tests, you will need
-to use an administrator terminal window (this works even if you are running
-from WSL2). When running Windows tests, the output dir should be on the
-Windows file system. For example, from WSL2:
+The easiest way to run VMM tests locally is `cargo xflowey vmm-tests-run`. It
+automatically discovers required artifacts, builds dependencies, and runs your
+tests in a single command.
+
+To run a **specific test** (or set of tests), use `--filter` with a
+[nextest filter](https://nexte.st/docs/filtersets/) expression:
 
 ```bash
-cargo xflowey vmm-tests --target windows-x64 --dir /mnt/e/vmm_tests
+cargo xflowey vmm-tests-run --filter "test(my_test_name)" --dir /mnt/e/vmm_tests
 ```
 
-This command will build or download all the test dependencies and copy them
-to a self-contained folder that can be copied to another system for testing.
-The folder will contain scripts for installing dependencies
-(install_deps.ps1 on Windows) and running the tests (run.ps1 on Windows).
-You can either specify a list of flags to disable certain tests and avoid
-building/downloading some dependencies, or you can specify a custom
-[nextest filter](https://nexte.st/docs/filtersets/) and list of artifacts.
-In this case, all possible dependencies will be obtained since deriving them
-from a test filter is not yet supported.
+### Targeting a Platform
+
+By default, `vmm-tests-run` builds for the current host. Use `--target` to
+build for a different platform. The supported targets are:
+
+| Target | Description |
+|--------|-------------|
+| `windows-x64` | Windows x86_64 (Hyper-V / WHP) |
+| `linux-x64` | Linux x86_64 |
+| `linux-aarch64` | Linux AArch64 |
+
+**Cross-compiling for Windows from WSL2** is fully supported — you can build
+and run Windows VMM tests directly from your WSL2 shell. This requires the
+cross-compilation environment to be set up first:
+
+```bash
+# One-time setup (see the cross-compilation guide for details):
+. ./build_support/setup_windows_cross.sh
+```
+
+Then target Windows as usual. The output directory **must** be on the Windows
+filesystem (e.g., `/mnt/e/...`):
+
+```bash
+cargo xflowey vmm-tests-run --target windows-x64 --dir /mnt/e/vmm_tests
+```
+
+For full cross-compilation setup instructions, see
+[Cross Compiling for Windows](../getting_started/cross_compile.md).
+
+When running Hyper-V tests, your user account must be a member of the
+Hyper-V Administrators group.
+
+To see all available options: `cargo xflowey vmm-tests-run --help`.
+
+### Advanced: `vmm-tests` (lower-level)
+
+The `cargo xflowey vmm-tests` command is a lower-level alternative that gives
+more control over artifact management. It builds or downloads all test
+dependencies and copies them to a self-contained folder that can be copied to
+another system for testing. The folder will contain scripts for installing
+dependencies (install_deps.ps1 on Windows) and running the tests (run.ps1 on
+Windows). You can specify flags to disable certain tests and avoid
+building/downloading some dependencies, or you can specify a custom nextest
+filter and list of artifacts.
+
+For most local development, prefer `vmm-tests-run` — it handles artifact
+discovery automatically.
 
 ## Running VMM Tests (Manual)
 
