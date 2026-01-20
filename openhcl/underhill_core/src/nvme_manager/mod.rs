@@ -95,7 +95,7 @@ pub trait NvmeDevice: Inspect + Send + Sync {
     async fn namespace(
         &mut self,
         nsid: u32,
-    ) -> Result<Arc<nvme_driver::Namespace>, nvme_driver::NamespaceError>;
+    ) -> Result<nvme_driver::NamespaceHandle, nvme_driver::NamespaceError>;
     async fn save(&mut self) -> anyhow::Result<nvme_driver::save_restore::NvmeDriverSavedState>;
     async fn shutdown(mut self: Box<Self>);
     fn update_servicing_flags(&mut self, keep_alive: bool);

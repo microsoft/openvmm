@@ -5,10 +5,11 @@
 
 use super::spec;
 use crate::NVME_PAGE_SHIFT;
-use crate::Namespace;
 use crate::NamespaceError;
+use crate::NamespaceHandle;
 use crate::RequestError;
 use crate::driver::save_restore::IoQueueSavedState;
+use crate::namespace::Namespace;
 use crate::queue_pair::AdminAerHandler;
 use crate::queue_pair::Issuer;
 use crate::queue_pair::MAX_CQ_ENTRIES;
@@ -592,20 +593,13 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         }
     }
 
-    // TODO: Thoughts in progress ..... maybe implement a struct like:
-    // pub struct NamespaceNoClone(Arc<Namespace>);
-    //
-    // If we move the read/write and other namespace methods here we can instead
-    // return a reference to NamespaceNoClone which does not implement Clone.
-    // This will prevent accidental cloning of Namespace handles.
-
     /// Gets the namespace with namespace ID `nsid`.
-    pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
+    pub async fn namespace(&mut self, nsid: u32) -> Result<NamespaceHandle, NamespaceError> {
         if let Some(namespace) = self.namespaces.get_mut(&nsid) {
             if let Some(namespace) = namespace.get_strong()
                 && namespace.check_active().is_ok()
             {
-                return Ok(namespace);
+                return Ok(NamespaceHandle::new(namespace));
             }
         }
 
@@ -627,7 +621,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         // Append the sender to the list of notifiers for this nsid.
         let mut notifiers = self.rescan_notifiers.write();
         notifiers.insert(nsid, send);
-        Ok(namespace)
+        Ok(NamespaceHandle::new(namespace))
     }
 
     /// Returns the number of CPUs that are in fallback mode (that are using a
@@ -966,7 +960,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         // Restore namespace(s).
         for ns in &saved_state.namespaces {
             let (send, recv) = mesh::channel::<()>();
-            let namespace = this.namespaces.insert(
+            this.namespaces.insert(
                 ns.nsid,
                 WeakOrStrong::Strong(Arc::new(Namespace::restore(
                     &driver,
