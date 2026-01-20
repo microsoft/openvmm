@@ -408,6 +408,28 @@ pub mod artifacts {
         }
 
         declare_artifacts! {
+            /// Alpine Linux 3.23.2 aarch64 UEFI nocloud cloud-init
+            /// NOTE: The image on the alpine website is qcow2 and must be converted to a fixed vhd.
+            ALPINE_3_23_AARCH64
+        }
+
+        impl IsTestVhd for ALPINE_3_23_AARCH64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
+            const ARCH: MachineArch = MachineArch::Aarch64;
+            fn quirks() -> GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    ..Default::default()
+                })
+            }
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for ALPINE_3_23_AARCH64 {
+            const FILENAME: &'static str = "nocloud_alpine-3.23.2-aarch64-uefi-tiny-r0.vhd";
+            const SIZE: u64 = 182592000;
+        }
+
+        declare_artifacts! {
             /// Ubuntu 24.04 Server Aarch64
             UBUNTU_2404_SERVER_AARCH64
         }

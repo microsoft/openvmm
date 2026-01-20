@@ -25,6 +25,7 @@ use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
 #[expect(missing_docs)] // Self-describing names
 pub enum KnownTestArtifacts {
     Alpine323X64Vhd,
+    Alpine323Aarch64Vhd,
     Gen1WindowsDataCenterCore2022X64Vhd,
     Gen2WindowsDataCenterCore2022X64Vhd,
     Gen2WindowsDataCenterCore2025X64Vhd,
@@ -59,6 +60,11 @@ const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = &[
         KnownTestArtifacts::Alpine323X64Vhd,
         petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64::FILENAME,
         petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64::SIZE,
+    ),
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::Alpine323Aarch64Vhd,
+        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64::FILENAME,
+        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64::SIZE,
     ),
     KnownTestArtifactMeta::new(
         KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,

@@ -23,6 +23,7 @@ use crate::UefiConfig;
 use crate::VmbusStorageType;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 
+use crate::SIZE_1_MB;
 use crate::VmbusStorageController;
 use crate::openvmm::memdiff_vmgs;
 use crate::openvmm::petri_disk_to_openvmm;
@@ -744,10 +745,10 @@ impl PetriVmConfigSetupCore<'_> {
                         Vtl2BaseAddressType::File
                     } else {
                         // By default, utilize IGVM relocation and tell OpenVMM
-                        // to place VTL2 at 2GB. This tests both relocation
+                        // to place VTL2 at 512MB. This tests both relocation
                         // support in OpenVMM, and relocation support within
                         // OpenHCL.
-                        Vtl2BaseAddressType::Absolute(2 * SIZE_1_GB)
+                        Vtl2BaseAddressType::Absolute(512 * SIZE_1_MB)
                     }
                 });
 

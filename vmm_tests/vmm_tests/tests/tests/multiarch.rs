@@ -78,13 +78,32 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64)),
-    openvmm_uefi_x64(vhd(alpine_3_23_x64)),
-    openvmm_openhcl_uefi_x64(vhd(alpine_3_23_x64)),
-    hyperv_openhcl_uefi_x64(vhd(alpine_3_23_x64))
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))
 )]
 async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config.run().await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Basic boot test for images that require small amounts of ram, like alpine.
+#[vmm_test(
+    openvmm_uefi_x64(vhd(alpine_3_23_x64)),
+    openvmm_openhcl_uefi_x64(vhd(alpine_3_23_x64)),
+    hyperv_openhcl_uefi_x64(vhd(alpine_3_23_x64)),
+    openvmm_uefi_aarch64(vhd(alpine_3_23_aarch64)),
+    openvmm_openhcl_uefi_aarch64(vhd(alpine_3_23_aarch64)),
+    hyperv_openhcl_uefi_aarch64(vhd(alpine_3_23_aarch64))
+)]
+async fn boot_small<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_memory(MemoryConfig {
+            startup_bytes: SIZE_1_GB,
+            ..Default::default()
+        })
+        .run()
+        .await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
