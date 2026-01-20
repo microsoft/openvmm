@@ -93,7 +93,7 @@ impl<T> WeakOrStrong<T> {
     /// Returns a strong reference to the underlying value.
     /// If this is a strong pointer, returns a clone of the Arc.
     /// If this is a weak pointer, returns the result of upgrade() (None if gone).
-    pub fn get_strong(&mut self) -> Option<Arc<T>> {
+    pub fn get_arc(&mut self) -> Option<Arc<T>> {
         match self {
             WeakOrStrong::Strong(arc) => {
                 let strong = arc.clone();
@@ -602,15 +602,15 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         if let Some(namespace) = self.namespaces.get_mut(&nsid) {
             // After restore we will have a strong ref -> downgrade and return.
             // If we have a weak ref, make sure it is not upgradeable (that means we have a duplicate somewhere).
-            let is_weak = namespace.is_weak(); // This value will change after invokeing get_strong().
-            let namespace_strong_ref = namespace.get_strong();
-            if namespace_strong_ref.is_some() {
-                let namespace_strong = namespace_strong_ref.unwrap();
-                if is_weak && namespace_strong.check_active().is_ok() {
+            let is_weak = namespace.is_weak(); // This value will change after invokeing get_arc().
+            let namespace = namespace.get_arc();
+            if namespace.is_some() {
+                let namespace = namespace.unwrap();
+                if is_weak && namespace.check_active().is_ok() {
                     return Err(NamespaceError::Duplicate(nsid));
-                } else {
-                    return Ok(NamespaceHandle::new(namespace_strong));
                 }
+
+                return Ok(NamespaceHandle::new(namespace));
             }
         }
 
@@ -674,8 +674,8 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                 );
                 let mut saved_namespaces = vec![];
                 for (nsid, namespace) in self.namespaces.iter_mut() {
-                    let is_weak = namespace.is_weak(); // This value will change after invokeing get_strong().
-                    if let Some(ns) = namespace.get_strong()
+                    let is_weak = namespace.is_weak(); // This value will change after invokeing get_arc().
+                    if let Some(ns) = namespace.get_arc()
                         && ns.check_active().is_ok()
                         && is_weak
                     {
