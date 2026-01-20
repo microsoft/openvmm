@@ -35,6 +35,9 @@ bootcmd:
   # Mounts module is not configured in some (all?) distros, so mount /cidata manually.
   - [mkdir, -p, /cidata]
   - [mount, LABEL=cidata, /cidata, -o, ro]
+    # Mount the crash dump folder manually too
+  - [mkdir, -p, /crash]
+  - [mount, LABEL=crashdump, /crash, -o, rw]
   # Disable snapd, which takes a long time to start and is not needed.
   - systemctl disable snapd.service snapd.apparmor snapd.seeded.service || true
   - systemctl mask snapd.service || true

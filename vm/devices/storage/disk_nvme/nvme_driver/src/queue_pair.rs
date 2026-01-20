@@ -20,20 +20,19 @@ use guestmem::GuestMemoryError;
 use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use inspect_counters::Counter;
-use mesh::Cancel;
-use mesh::CancelContext;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use nvme_spec::AsynchronousEventRequestDw0;
 use pal_async::driver::SpawnDriver;
-use pal_async::task::Task;
 use safeatomic::AtomicSliceOps;
 use slab::Slab;
 use std::future::poll_fn;
 use std::num::Wrapping;
 use std::sync::Arc;
 use std::task::Poll;
+use task_control::AsyncRun;
+use task_control::TaskControl;
 use thiserror::Error;
 use user_driver::DeviceBacking;
 use user_driver::interrupt::DeviceInterrupt;
@@ -65,11 +64,9 @@ const PER_QUEUE_PAGES_NO_BOUNCE_BUFFER: usize = 64;
 const SQ_ENTRIES_PER_PAGE: usize = PAGE_SIZE / SQ_ENTRY_SIZE;
 
 #[derive(Inspect)]
-pub(crate) struct QueuePair<T: AerHandler> {
+pub(crate) struct QueuePair<A: AerHandler, D: DeviceBacking> {
     #[inspect(skip)]
-    task: Task<QueueHandler<T>>,
-    #[inspect(skip)]
-    cancel: Cancel,
+    task: TaskControl<QueueHandlerLoop<A, D>, ()>,
     #[inspect(flatten, with = "|x| inspect::send(&x.send, Req::Inspect)")]
     issuer: Arc<Issuer>,
     #[inspect(skip)]
@@ -183,7 +180,33 @@ impl PendingCommands {
     }
 }
 
-impl<T: AerHandler> QueuePair<T> {
+struct QueueHandlerLoop<A: AerHandler, D: DeviceBacking> {
+    queue_handler: QueueHandler<A>,
+    registers: Arc<DeviceRegisters<D>>,
+    recv: Option<mesh::Receiver<Req>>,
+    interrupt: DeviceInterrupt,
+}
+
+impl<A: AerHandler, D: DeviceBacking> AsyncRun<()> for QueueHandlerLoop<A, D> {
+    async fn run(
+        &mut self,
+        stop: &mut task_control::StopTask<'_>,
+        _: &mut (),
+    ) -> Result<(), task_control::Cancelled> {
+        stop.until_stopped(async {
+            self.queue_handler
+                .run(
+                    &self.registers,
+                    self.recv.take().unwrap(),
+                    &mut self.interrupt,
+                )
+                .await;
+        })
+        .await
+    }
+}
+
+impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
     /// Create a new queue pair.
     ///
     /// `sq_entries` and `cq_entries` are the requested sizes in entries.
@@ -195,14 +218,14 @@ impl<T: AerHandler> QueuePair<T> {
     /// calls to [`QueuePair::sq_entries`] and [`QueuePair::cq_entries`] AFTER calling this routine.
     pub fn new(
         spawner: impl SpawnDriver,
-        device: &impl DeviceBacking,
+        device: &D,
         qid: u16,
         sq_entries: u16,
         cq_entries: u16,
         interrupt: DeviceInterrupt,
-        registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        registers: Arc<DeviceRegisters<D>>,
         bounce_buffer: bool,
-        aer_handler: T,
+        aer_handler: A,
     ) -> anyhow::Result<Self> {
         // FUTURE: Consider splitting this into several allocations, rather than
         // allocating the sum total together. This can increase the likelihood
@@ -244,12 +267,12 @@ impl<T: AerHandler> QueuePair<T> {
         qid: u16,
         sq_entries: u16,
         cq_entries: u16,
-        mut interrupt: DeviceInterrupt,
-        registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        interrupt: DeviceInterrupt,
+        registers: Arc<DeviceRegisters<D>>,
         mem: MemoryBlock,
         saved_state: Option<&QueueHandlerSavedState>,
         bounce_buffer: bool,
-        aer_handler: T,
+        aer_handler: A,
     ) -> anyhow::Result<Self> {
         // MemoryBlock is either allocated or restored prior calling here.
         let sq_mem_block = mem.subblock(0, SQ_SIZE);
@@ -299,7 +322,7 @@ impl<T: AerHandler> QueuePair<T> {
         let sq_addr = sq_mem_block.pfns()[0] * PAGE_SIZE64;
         let cq_addr = cq_mem_block.pfns()[0] * PAGE_SIZE64;
 
-        let mut queue_handler = match saved_state {
+        let queue_handler = match saved_state {
             Some(s) => QueueHandler::restore(sq_mem_block, cq_mem_block, s, aer_handler)?,
             None => {
                 // Create a new one.
@@ -315,17 +338,14 @@ impl<T: AerHandler> QueuePair<T> {
         };
 
         let (send, recv) = mesh::channel();
-        let (mut ctx, cancel) = CancelContext::new().with_cancel();
-        let task = spawner.spawn("nvme-queue", {
-            async move {
-                ctx.until_cancelled(async {
-                    queue_handler.run(&registers, recv, &mut interrupt).await;
-                })
-                .await
-                .ok();
-                queue_handler
-            }
+        let mut task = TaskControl::new(QueueHandlerLoop {
+            queue_handler,
+            registers,
+            recv: Some(recv),
+            interrupt,
         });
+        task.insert(spawner, "nvme-queue", ());
+        task.start();
 
         // Convert the queue pages to bytes, and assert that queue size is large
         // enough.
@@ -354,7 +374,6 @@ impl<T: AerHandler> QueuePair<T> {
 
         Ok(Self {
             task,
-            cancel,
             issuer: Arc::new(Issuer { send, alloc }),
             mem,
             qid,
@@ -388,8 +407,8 @@ impl<T: AerHandler> QueuePair<T> {
     }
 
     pub async fn shutdown(mut self) -> impl Send {
-        self.cancel.cancel();
-        self.task.await
+        self.task.stop().await;
+        self.task.into_inner().0.queue_handler
     }
 
     /// Save queue pair state for servicing.
@@ -416,11 +435,11 @@ impl<T: AerHandler> QueuePair<T> {
     pub fn restore(
         spawner: impl SpawnDriver,
         interrupt: DeviceInterrupt,
-        registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        registers: Arc<DeviceRegisters<D>>,
         mem: MemoryBlock,
         saved_state: &QueuePairSavedState,
         bounce_buffer: bool,
-        aer_handler: T,
+        aer_handler: A,
     ) -> anyhow::Result<Self> {
         let QueuePairSavedState {
             mem_len: _,  // Used to restore DMA buffer before calling this.
@@ -480,14 +499,42 @@ impl std::error::Error for NvmeError {}
 impl std::fmt::Display for NvmeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0.status_code_type() {
-            spec::StatusCodeType::GENERIC => write!(f, "general error {:#x?}", self.0),
+            spec::StatusCodeType::GENERIC => write!(
+                f,
+                "NVMe SCT general error, SC: {:#x?}",
+                self.0.status_code()
+            ),
             spec::StatusCodeType::COMMAND_SPECIFIC => {
-                write!(f, "command-specific error {:#x?}", self.0)
+                write!(
+                    f,
+                    "NVMe SCT command-specific error, SC: {:#x?}",
+                    self.0.status_code()
+                )
             }
             spec::StatusCodeType::MEDIA_ERROR => {
-                write!(f, "media error {:#x?}", self.0)
+                write!(f, "NVMe SCT media error, SC: {:#x?}", self.0.status_code())
             }
-            _ => write!(f, "{:#x?}", self.0),
+            spec::StatusCodeType::PATH_RELATED => {
+                write!(
+                    f,
+                    "NVMe SCT path-related error, SC: {:#x?}",
+                    self.0.status_code()
+                )
+            }
+            spec::StatusCodeType::VENDOR_SPECIFIC => {
+                write!(
+                    f,
+                    "NVMe SCT vendor-specific error, SC: {:#x?}",
+                    self.0.status_code()
+                )
+            }
+            _ => write!(
+                f,
+                "NVMe SCT unknown ({:#x?}), SC: {:#x?} (raw: {:#x?})",
+                self.0.status_code_type(),
+                self.0.status_code(),
+                self.0
+            ),
         }
     }
 }
@@ -607,7 +654,7 @@ impl Issuer {
                     .alloc
                     .alloc_pages(1)
                     .await
-                    .expect("pool cap is >= 1 page");
+                    .expect("pool capacity is >= 1 page");
 
                 let prp_addr = prp.physical_address(0);
                 let page = prp.page_as_slice(0);
@@ -666,17 +713,12 @@ impl Issuer {
             .alloc
             .alloc_bytes(data.len())
             .await
-            .expect("pool cap is sufficient");
+            .expect("pool capacity is sufficient");
 
-        assert_eq!(
-            mem.page_count(),
-            1,
-            "larger requests not currently supported"
-        );
-        let prp = Prp {
-            dptr: [mem.physical_address(0), INVALID_PAGE_ADDR],
-            _pages: None,
-        };
+        let prp = self
+            .make_prp(0, (0..mem.page_count()).map(|i| mem.physical_address(i)))
+            .await;
+
         command.dptr = prp.dptr;
         let completion = self.issue_raw(command).await;
         mem.read(data);
@@ -842,14 +884,14 @@ impl AerHandler for NoOpAerHandler {
 }
 
 #[derive(Inspect)]
-struct QueueHandler<T: AerHandler> {
+struct QueueHandler<A: AerHandler> {
     sq: SubmissionQueue,
     cq: CompletionQueue,
     commands: PendingCommands,
     stats: QueueStats,
     drain_after_restore: bool,
     #[inspect(skip)]
-    aer_handler: T,
+    aer_handler: A,
 }
 
 #[derive(Inspect, Default)]
@@ -859,7 +901,7 @@ struct QueueStats {
     interrupts: Counter,
 }
 
-impl<T: AerHandler> QueueHandler<T> {
+impl<A: AerHandler> QueueHandler<A> {
     async fn run(
         &mut self,
         registers: &DeviceRegisters<impl DeviceBacking>,
@@ -973,7 +1015,7 @@ impl<T: AerHandler> QueueHandler<T> {
         sq_mem_block: MemoryBlock,
         cq_mem_block: MemoryBlock,
         saved_state: &QueueHandlerSavedState,
-        mut aer_handler: T,
+        mut aer_handler: A,
     ) -> anyhow::Result<Self> {
         let QueueHandlerSavedState {
             sq_state,

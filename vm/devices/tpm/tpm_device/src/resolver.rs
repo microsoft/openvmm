@@ -55,12 +55,12 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
         input: ResolveChipsetDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let ppi_store = resolver
-            .resolve(resource.ppi_store, ())
+            .resolve(resource.ppi_store, &())
             .await
             .map_err(ResolveTpmError::ResolvePpiStore)?;
 
         let nvram_store = resolver
-            .resolve(resource.nvram_store, ())
+            .resolve(resource.nvram_store, &())
             .await
             .map_err(ResolveTpmError::ResolveNvramStore)?;
 
@@ -79,16 +79,14 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
                     .map_err(ResolveTpmError::ResolveRequestAkCert)?
                     .0,
             ),
-            TpmAkCertTypeResource::Trusted(request_ak_cert) => TpmAkCertType::Trusted(
+            TpmAkCertTypeResource::Trusted(request_ak_cert, handle) => TpmAkCertType::Trusted(
                 resolver
                     .resolve(request_ak_cert, &())
                     .await
                     .map_err(ResolveTpmError::ResolveRequestAkCert)?
                     .0,
+                handle,
             ),
-            TpmAkCertTypeResource::TrustedPreProvisionedOnly => {
-                TpmAkCertType::TrustedPreProvisionedOnly
-            }
             TpmAkCertTypeResource::None => TpmAkCertType::None,
         };
 

@@ -653,7 +653,7 @@ impl State {
 
     fn write_mcr(&mut self, data: u8) {
         let mcr = ModemControlRegister::from(data).with_reserved(0);
-        tracing::debug!(?mcr, "mcr update");
+        tracing::trace!(?mcr, "mcr update");
         // mcr.loopback may have changed, which could cause an MSR update.
         self.update_msr(|this| this.mcr = mcr);
     }
@@ -667,12 +667,12 @@ impl State {
         let fcr = FifoControlRegister::from(data).with_reserved(0);
         if fcr.enable_fifos() {
             if fcr.clear_rx_fifo() {
-                tracing::debug!("clearing rx fifo");
+                tracing::trace!("clearing rx fifo");
                 stats.rx_dropped.add(self.rx_buffer.len() as u64);
                 self.rx_buffer.clear();
             }
             if fcr.clear_tx_fifo() {
-                tracing::debug!("clearing tx fifo");
+                tracing::trace!("clearing tx fifo");
                 stats.tx_dropped.add(self.tx_buffer.len() as u64);
                 self.tx_buffer.clear();
             }

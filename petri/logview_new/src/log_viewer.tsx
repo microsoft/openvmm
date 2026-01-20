@@ -13,6 +13,7 @@ import './styles/log_viewer.css';
 import { SearchInput } from './search';
 import { createColumns, columnWidthMap, defaultSorting } from './table_defs/log_viewer';
 import { LogEntry } from './data_defs';
+import { InspectOverlay } from './inspect';
 
 interface LogViewerHeaderProps {
     runId: string;
@@ -22,9 +23,11 @@ interface LogViewerHeaderProps {
     searchFilter: string;
     setSearchFilter: (filter: string) => void;
     searchInputRef?: React.RefObject<HTMLInputElement | null>;
+    /** Whether the search input should have its global key handlers active */
+    searchActive?: boolean;
 }
 
-function LogViewerHeader({ runId, architecture, testNameRemainder, fullTestName, searchFilter, setSearchFilter, searchInputRef }: LogViewerHeaderProps): React.JSX.Element {
+function LogViewerHeader({ runId, architecture, testNameRemainder, fullTestName, searchFilter, setSearchFilter, searchInputRef, searchActive = true }: LogViewerHeaderProps): React.JSX.Element {
     const encodedArchitecture = encodeURIComponent(architecture);
     const encodedRemainder = encodeURIComponent(testNameRemainder);
 
@@ -57,7 +60,7 @@ function LogViewerHeader({ runId, architecture, testNameRemainder, fullTestName,
                 </div>
             </div>
             <div className="runs-header-right-section">
-                <SearchInput value={searchFilter} onChange={setSearchFilter} inputRef={searchInputRef} />
+                <SearchInput value={searchFilter} onChange={setSearchFilter} inputRef={searchInputRef} active={searchActive} />
             </div>
         </>
     );
@@ -77,6 +80,8 @@ export function LogViewer(): React.JSX.Element {
     // Deep link initialization refs
     const initialLogParamRef = useRef<number | null>(null);
     const initializedFromUrlRef = useRef<boolean>(false);
+    // Overlay state: supports parsed inspect tree or raw text view
+    const [inspectOverlay, setInspectOverlay] = useState<{ url: string; raw: boolean } | null>(null);
 
     let { runId, architecture, testName } = useParams();
     runId = runId ? decodeURIComponent(runId) : "";
@@ -85,7 +90,7 @@ export function LogViewer(): React.JSX.Element {
     const fullTestName = `${architecture}/${testName}`;
 
     // Fetch the relevant data
-    const { data: logEntries, isSuccess } = useQuery({
+    const { data: logEntries } = useQuery({
         queryKey: ["petriLog", runId, architecture, testName],
         queryFn: () => fetchProcessedLog(runId, architecture, testName),
         staleTime: Infinity, // never goes stale
@@ -170,6 +175,28 @@ export function LogViewer(): React.JSX.Element {
         }
     }, [searchFilter]);
 
+    // Intercept clicks on inspect attachment links (parsed + raw) to open overlay
+    useEffect(() => {
+        const handleClick = (e: MouseEvent) => {
+            const target = e.target as HTMLElement | null;
+            if (!target) return;
+            const parsedAnchor = target.closest('a[data-inspect="true"]') as HTMLAnchorElement | null;
+            if (parsedAnchor) {
+                e.preventDefault();
+                setInspectOverlay({ url: parsedAnchor.href, raw: false });
+                return;
+            }
+            const rawAnchor = target.closest('a[data-inspect-raw="true"]') as HTMLAnchorElement | null;
+            if (rawAnchor) {
+                e.preventDefault();
+                setInspectOverlay({ url: rawAnchor.href, raw: true });
+                return;
+            }
+        };
+        document.addEventListener('click', handleClick);
+        return () => document.removeEventListener('click', handleClick);
+    }, []);
+
     return (
         <div className="common-page-display">
             <div className="common-page-header">
@@ -181,43 +208,39 @@ export function LogViewer(): React.JSX.Element {
                     searchFilter={searchFilter}
                     setSearchFilter={setSearchFilter}
                     searchInputRef={searchInputRef}
+                    searchActive={inspectOverlay == null}
                 />
             </div>
 
             <div ref={logContainerRef} style={{ fontFamily: 'monospace', fontSize: '14px', position: 'relative' }}>
-                {filteredLogs.length === 0 && isSuccess ? (
-                    <div className="common-no-data">
-                        No log entries found
-                    </div>
-                ) : (
-                    <VirtualizedTable<LogEntry>
-                        data={filteredLogs}
-                        columns={columns}
-                        sorting={sorting}
-                        onSortingChange={setSorting}
-                        columnWidthMap={columnWidthMap}
-                        estimatedRowHeight={50}
-                        getRowClassName={(row) => {
-                            const logId = `log-${row.original.index}`;
-                            const isSelected = selectedRow === logId;
-                            const severityClass = `severity-${row.original.severity}`;
-                            return `${severityClass} ${isSelected ? 'selected' : ''}`;
-                        }}
-                        onRowClick={(row, event) => {
-                            const logId = `log-${row.original.index}`;
-                            handleRowClick(
-                                row.original.index,
-                                logId,
-                                event,
-                                selectedRow,
-                                setSelectedRow,
-                                location,
-                                navigate
-                            );
-                        }}
-                        scrollToIndex={pendingScrollIndex}
-                    />
-                )}
+                <VirtualizedTable<LogEntry>
+                    data={filteredLogs}
+                    columns={columns}
+                    sorting={sorting}
+                    onSortingChange={setSorting}
+                    columnWidthMap={columnWidthMap}
+                    estimatedRowHeight={50}
+                    getRowClassName={(row) => {
+                        const logId = `log-${row.original.index}`;
+                        const isSelected = selectedRow === logId;
+                        const severityClass = `severity-${row.original.severity}`;
+                        return `${severityClass} ${isSelected ? 'selected' : ''}`;
+                    }}
+                    overscan={100}
+                    onRowClick={(row, event) => {
+                        const logId = `log-${row.original.index}`;
+                        handleRowClick(
+                            row.original.index,
+                            logId,
+                            event,
+                            selectedRow,
+                            setSelectedRow,
+                            location,
+                            navigate
+                        );
+                    }}
+                    scrollToIndex={pendingScrollIndex}
+                />
             </div>
 
             {/* Image Content */}
@@ -232,6 +255,15 @@ export function LogViewer(): React.JSX.Element {
                             className="logviewer-image-content"
                         />
                 </div>
+            )}
+
+            {/* Inspect Overlay */}
+            {inspectOverlay && (
+                <InspectOverlay
+                    fileUrl={inspectOverlay.url}
+                    rawMode={inspectOverlay.raw}
+                    onClose={() => setInspectOverlay(null)}
+                />
             )}
         </div>
     );
@@ -369,7 +401,7 @@ function createKeyboardHandler(selectedRow: string | null, logEntries: LogEntry[
         textBlock += `relative: ${entry.relative}\n`;
         textBlock += `severity: ${entry.severity}\n`;
         textBlock += `source: ${decodeHtml(entry.source)}\n`;
-        textBlock += `message: ${decodeHtml(entry.message.trim())}`;
+        textBlock += `message: ${decodeHtml(entry.logMessage.message.trim())}`;
         if (entry.screenshot) {
             textBlock += `\nscreenshot: ${entry.screenshot}`;
         }
@@ -428,18 +460,21 @@ function filterLog(logs: LogEntry[] | undefined, query: string): LogEntry[] {
         return tokens.every(token => {
             const [prefix, ...rest] = token.split(':');
             const term = rest.join(':').toLowerCase();
+            const columnSearching = token.includes(':');
 
-            if (prefix === 'source') {
+            if (columnSearching && prefix === 'source') {
                 return log.source.toLowerCase().includes(term);
-            } else if (prefix === 'severity') {
+            } else if (columnSearching && prefix === 'severity') {
                 return log.severity.toLowerCase().includes(term);
-            } else if (prefix === 'message') {
-                return log.message.toLowerCase().includes(term);
+            } else if (columnSearching && prefix === 'message') {
+                return log.logMessage.message.toLowerCase().includes(term)
+                    || log.logMessage.link_string.toLowerCase().includes(term);
             } else {
                 return (
                     log.source.toLowerCase().includes(token.toLowerCase()) ||
                     log.severity.toLowerCase().includes(token.toLowerCase()) ||
-                    log.message.toLowerCase().includes(token.toLowerCase())
+                    log.logMessage.message.toLowerCase().includes(token.toLowerCase()) ||
+                    log.logMessage.link_string.toLowerCase().includes(token.toLowerCase())
                 );
             }
         });

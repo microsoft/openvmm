@@ -24,6 +24,7 @@ vm_resource::register_static_resolvers! {
 
     // Non-volatile stores
     vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreResolver,
+    vmgs_broker::resolver::VmgsFileResolver,
 
     // Serial ports
     serial_core::disconnected::resolver::DisconnectedSerialBackendResolver,
@@ -91,7 +92,7 @@ vm_resource::register_static_resolvers! {
 
 // Workers.
 mesh_worker::register_workers! {
-    hvlite_core::VmWorker,
+    openvmm_core::VmWorker,
     vnc_worker::VncWorker<std::net::TcpListener>,
 
     #[cfg(feature = "gdb")]

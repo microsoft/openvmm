@@ -75,7 +75,7 @@ impl VolumeState {
         util::get_attributes(&self.fs_context, self, root_handle, path, existing_handle)
     }
 
-    pub fn read_reparse_link(&self, handle: &OwnedHandle) -> lx::Result<Option<String>> {
+    pub fn read_reparse_link(&self, handle: &OwnedHandle) -> lx::Result<Option<lx::LxString>> {
         fs::read_reparse_link(handle, self)
     }
 }
@@ -323,7 +323,7 @@ impl LxVolume {
             symlink::read(&handle)?
         };
 
-        Ok(target.into())
+        Ok(target)
     }
 
     pub fn unlink(&self, path: &Path, flags: i32) -> lx::Result<()> {
@@ -893,10 +893,6 @@ impl LxVolume {
                 || disposition == FileSystem::FILE_CREATE
         );
 
-        // TODO: Async support.
-        let create_options = create_options | FileSystem::FILE_SYNCHRONOUS_IO_ALERT;
-        let desired_access = desired_access | W32Fs::SYNCHRONIZE;
-
         let mut ea_buffer = [0u8; fs::LX_UTIL_FS_METADATA_EA_BUFFER_SIZE];
         let mut ea = None;
         if disposition != FileSystem::FILE_OPEN {
@@ -1038,11 +1034,31 @@ impl LxVolume {
             }
         };
 
-        // If the target isn't inside the volume, create an LX symlink.
-        // TODO: Improve this; this doesn't protect against paths that walk out of the volume
-        //       and then back in.
+        // If the target isn't inside the volume, create an LX symlink. This catches cases where
+        // symlinks in the path point outside the mount.
         if !path.starts_with(&self.root_path) {
             return SymlinkType::Lx;
+        }
+
+        // Manually resolve the target path to check if it would cross the mount boundary. This
+        // catches cases where the target contains ".." components that would escape the volume
+        // (e.g., "../..") or that walk out and back in (e.g., "../../mount/dir").
+        let mut working_path = self.root_path.clone();
+        working_path.push(symlink_parent);
+        for component in target.components() {
+            match component {
+                Component::ParentDir => {
+                    if !working_path.pop() {
+                        return SymlinkType::Lx;
+                    }
+                    if !working_path.starts_with(&self.root_path) {
+                        return SymlinkType::Lx;
+                    }
+                }
+                Component::Normal(name) => working_path.push(name),
+                Component::CurDir => {}
+                _ => return SymlinkType::Lx,
+            }
         }
 
         // Determine the attributes of the found target. If an error occurs, create an LX symlink.
@@ -1224,7 +1240,7 @@ impl LxFile {
         let enumerator = self.enumerator.as_mut().unwrap();
         let mut local_offset = offset;
 
-        // Write the . and .. entries, since lxutil doesn't return them.
+        // Write the . and .. entries, since `read_dir` doesn't return them.
         if !Self::process_dot_entries(&mut local_offset, &mut callback)? {
             return Ok(());
         }

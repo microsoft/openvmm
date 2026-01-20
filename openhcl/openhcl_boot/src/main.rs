@@ -34,8 +34,6 @@ use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_memory_init;
 use crate::boot_logger::boot_logger_runtime_init;
-use crate::boot_logger::boot_logger_write_memory_log_to_runtime;
-use crate::boot_logger::log;
 use crate::hypercall::hvcall;
 use crate::memory::AddressSpaceManager;
 use crate::single_threaded::OffStackRef;
@@ -83,7 +81,6 @@ struct BuildKernelCommandLineParams<'a> {
     is_confidential_debug: bool,
     sidecar: Option<&'a SidecarConfig<'a>>,
     vtl2_pool_supported: bool,
-    disable_keep_alive: bool,
 }
 
 /// Read and setup the underhill kernel command line into the specified buffer.
@@ -98,7 +95,6 @@ fn build_kernel_command_line(
         is_confidential_debug,
         sidecar,
         vtl2_pool_supported,
-        disable_keep_alive,
     } = fn_params;
 
     // For reference:
@@ -193,6 +189,9 @@ fn build_kernel_command_line(
         "hv_storvsc.storvsc_ringbuffer_size=0x8000",
         // Disable eager mimalloc commit to prevent core dumps from being overly large
         "MIMALLOC_ARENA_EAGER_COMMIT=0",
+        // Disable acpi runtime support. Unused in underhill, but some support
+        // is compiled in for the kernel (ie TDX mailbox protocol).
+        "acpi=off",
     ];
 
     const X86_KERNEL_PARAMETERS: &[&str] = &[
@@ -288,31 +287,46 @@ fn build_kernel_command_line(
         )?;
     }
 
-    // Only when explicitly supported by Host.
+    // Generate the NVMe keep alive command line which should look something
+    // like: OPENHCL_NVME_KEEP_ALIVE=disabled,host,privatepool
     // TODO: Move from command line to device tree when stabilized.
-    if partition_info.nvme_keepalive && vtl2_pool_supported && !disable_keep_alive {
-        write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=1 ")?;
+    write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=")?;
+
+    if partition_info.boot_options.disable_nvme_keep_alive {
+        write!(cmdline, "disabled,")?;
+    }
+
+    if partition_info.nvme_keepalive {
+        write!(cmdline, "host,")?;
+    } else {
+        write!(cmdline, "nohost,")?;
+    }
+
+    if vtl2_pool_supported {
+        write!(cmdline, "privatepool ")?;
+    } else {
+        write!(cmdline, "noprivatepool ")?;
     }
 
     if let Some(sidecar) = sidecar {
         write!(cmdline, "{} ", sidecar.kernel_command_line())?;
     }
 
-    // HACK: Set the vmbus connection id via kernel commandline.
-    //
-    // This code will be removed when the kernel supports setting connection id
-    // via device tree.
-    write!(
-        cmdline,
-        "hv_vmbus.message_connection_id=0x{:x} ",
-        partition_info.vmbus_vtl2.connection_id
-    )?;
-
-    // If we're isolated we can't trust the host-provided cmdline
-    if can_trust_host {
-        // Prepend the computed parameters to the original command line.
-        cmdline.write_str(&partition_info.cmdline)?;
+    if !cmdline.contains("hv_vmbus.message_connection_id") {
+        // HACK: Set the vmbus connection id via kernel commandline if we haven't
+        // gotten one from elsewhere.
+        //
+        // This code will be removed when the kernel supports setting connection id
+        // via device tree.
+        write!(
+            cmdline,
+            "hv_vmbus.message_connection_id=0x{:x} ",
+            partition_info.vmbus_vtl2.connection_id
+        )?;
     }
+
+    // Prepend the computed parameters to the original command line.
+    cmdline.write_str(&partition_info.cmdline)?;
 
     Ok(())
 }
@@ -545,6 +559,11 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Enable the in-memory log.
     boot_logger_memory_init(p.log_buffer);
 
+    // Enable global log crate.
+    log::set_logger(&boot_logger::BOOT_LOGGER).unwrap();
+    // TODO: allow overriding filter at runtime
+    log::set_max_level(log::LevelFilter::Info);
+
     let boot_reftime = get_ref_time(p.isolation_type);
 
     // The support code for the fast hypercalls does not set
@@ -584,8 +603,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Enable logging ASAP. This is fine even when isolated, as we don't have
     // any access to secrets in the boot shim.
     boot_logger_runtime_init(p.isolation_type, partition_info.com3_serial_available);
-    log!("openhcl_boot: logging enabled");
-    boot_logger_write_memory_log_to_runtime();
+    log::info!("openhcl_boot: logging enabled");
 
     // Confidential debug will show up in boot_options only if included in the
     // static command line, or if can_trust_host is true (so the dynamic command
@@ -632,7 +650,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     validate_vp_hw_ids(partition_info);
 
-    setup_vtl2_memory(&p, partition_info);
+    setup_vtl2_memory(&p, partition_info, address_space);
     setup_vtl2_vp(partition_info);
 
     verify_imported_regions_hash(&p);
@@ -659,7 +677,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         is_confidential_debug,
         sidecar: sidecar.as_ref(),
         vtl2_pool_supported: address_space.has_vtl2_pool(),
-        disable_keep_alive: partition_info.boot_options.disable_nvme_keep_alive,
     })
     .unwrap();
 
@@ -756,7 +773,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     rt::verify_stack_cookie();
 
-    log!("uninitializing hypercalls, about to jump to kernel");
+    log::info!("uninitializing hypercalls, about to jump to kernel");
     hvcall().uninitialize();
 
     cfg_if::cfg_if! {

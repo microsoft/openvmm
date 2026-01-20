@@ -107,9 +107,10 @@ pub enum GuestStateLifetime {
 pub enum GuestStateEncryptionPolicy {
     /// Use the best encryption available, allowing fallback.
     ///
-    /// VMs will be created as or migrated to the best encryption available,
+    /// VMs will be created using the best encryption available,
     /// attempting GspKey, then GspById, and finally leaving the data
-    /// unencrypted if neither are available.
+    /// unencrypted if neither are available. VMs will not be migrated
+    /// to a different encryption method.
     #[default]
     Auto,
     /// Prefer (or require, if strict) no encryption.
@@ -155,8 +156,9 @@ open_enum! {
 pub struct ManagementVtlFeatures {
     pub strict_encryption_policy: bool,
     pub _reserved1: bool,
+    pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
-    #[bits(61)]
+    #[bits(60)]
     pub _reserved2: u64,
 }
 

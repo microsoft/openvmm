@@ -50,6 +50,8 @@ pub struct GenericPcieRootComplex {
 pub struct GenericPcieRootPortDefinition {
     /// The name of the root port.
     pub name: Arc<str>,
+    /// Whether hotplug is enabled for this root port.
+    pub hotplug: bool,
 }
 
 /// A flat description of a PCIe switch without hierarchy.
@@ -60,6 +62,8 @@ pub struct GenericSwitchDefinition {
     pub num_downstream_ports: u8,
     /// The parent port this switch is connected to.
     pub parent_port: Arc<str>,
+    /// Whether hotplug is enabled for this switch.
+    pub hotplug: bool,
 }
 
 impl GenericSwitchDefinition {
@@ -68,11 +72,13 @@ impl GenericSwitchDefinition {
         name: impl Into<Arc<str>>,
         num_downstream_ports: u8,
         parent_port: impl Into<Arc<str>>,
+        hotplug: bool,
     ) -> Self {
         Self {
             name: name.into(),
             num_downstream_ports,
             parent_port: parent_port.into(),
+            hotplug,
         }
     }
 }
@@ -94,6 +100,7 @@ impl GenericPcieRootComplex {
         ports: Vec<GenericPcieRootPortDefinition>,
     ) -> Self {
         let ecam_size = ecam_size_from_bus_numbers(start_bus, end_bus);
+
         let mut ecam = register_mmio.new_io_region("ecam", ecam_size);
         ecam.map(ecam_base);
 
@@ -102,8 +109,14 @@ impl GenericPcieRootComplex {
             .enumerate()
             .map(|(i, definition)| {
                 let device_number: u8 = (i << BDF_DEVICE_SHIFT).try_into().expect("too many ports");
-                let emulator = RootPort::new(definition.name.clone());
-                (device_number, (definition.name, emulator))
+                // Use the device number as the slot number for hotpluggable ports
+                let hotplug_slot_number = if definition.hotplug {
+                    Some((device_number as u32) + 1)
+                } else {
+                    None
+                };
+                let root_port = RootPort::new(definition.name.clone(), hotplug_slot_number);
+                (device_number, (definition.name, root_port))
             })
             .collect();
 
@@ -122,20 +135,37 @@ impl GenericPcieRootComplex {
         name: impl AsRef<str>,
         dev: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Arc<str>> {
-        let (_, root_port) = self
-            .ports
-            .get_mut(&port)
-            .expect("caller must pass port number returned by downstream_ports()");
-        root_port.connect_device(name, dev)?;
-        Ok(())
+        let (_port_name, root_port) = self.ports.get_mut(&port).ok_or_else(|| -> Arc<str> {
+            tracing::error!(
+                "GenericPcieRootComplex: port {:#x} not found for device '{}'",
+                port,
+                name.as_ref()
+            );
+            format!("Port {:#x} not found", port).into()
+        })?;
+
+        match root_port.connect_device(name, dev) {
+            Ok(()) => Ok(()),
+            Err(existing_device) => {
+                tracing::warn!(
+                    "GenericPcieRootComplex: failed to connect device to port {:#x}, existing device: '{}'",
+                    port,
+                    existing_device
+                );
+                Err(existing_device)
+            }
+        }
     }
 
     /// Enumerate the downstream ports of the root complex.
     pub fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
-        self.ports
+        let ports: Vec<(u8, Arc<str>)> = self
+            .ports
             .iter()
             .map(|(port, (name, _))| (*port, name.clone()))
-            .collect()
+            .collect();
+
+        ports
     }
 
     /// Returns the size of the ECAM MMIO region this root complex is emulating.
@@ -273,6 +303,7 @@ impl MmioIntercept for GenericPcieRootComplex {
             &dword_value.as_bytes()
                 [byte_offset_within_dword..byte_offset_within_dword + data.len()],
         );
+
         IoResult::Ok
     }
 
@@ -340,7 +371,12 @@ struct RootPort {
 
 impl RootPort {
     /// Constructs a new [`RootPort`] emulator.
-    pub fn new(name: impl Into<Arc<str>>) -> Self {
+    ///
+    /// # Arguments
+    /// * `name` - The name for this root port
+    /// * `hotplug_slot_number` - The slot number for hotplug support. `Some(slot_number)` enables hotplug, `None` disables it
+    pub fn new(name: impl Into<Arc<str>>, hotplug_slot_number: Option<u32>) -> Self {
+        let name_str = name.into();
         let hardware_ids = HardwareIds {
             vendor_id: VENDOR_ID,
             device_id: ROOT_PORT_DEVICE_ID,
@@ -351,14 +387,16 @@ impl RootPort {
             type0_sub_vendor_id: 0,
             type0_sub_system_id: 0,
         };
-        Self {
-            port: PcieDownstreamPort::new(
-                name.into().to_string(),
-                hardware_ids,
-                DevicePortType::RootPort,
-                false,
-            ),
-        }
+
+        let port = PcieDownstreamPort::new(
+            name_str.to_string(),
+            hardware_ids,
+            DevicePortType::RootPort,
+            false,
+            hotplug_slot_number,
+        );
+
+        Self { port }
     }
 
     /// Try to connect a PCIe device, returning an existing device name if the
@@ -368,16 +406,29 @@ impl RootPort {
         name: impl AsRef<str>,
         dev: Box<dyn GenericPciBusDevice>,
     ) -> Result<(), Arc<str>> {
+        let device_name = name.as_ref();
         let port_name = self.port.name.clone();
-        match self.port.add_pcie_device(&port_name, name.as_ref(), dev) {
+
+        match self.port.add_pcie_device(&port_name, device_name, dev) {
             Ok(()) => Ok(()),
             Err(_error) => {
                 // If the connection failed, it means the port is already occupied
                 // We need to get the name of the existing device
                 if let Some((existing_name, _)) = &self.port.link {
+                    tracing::warn!(
+                        "RootPort: '{}' failed to connect device '{}', port already occupied by '{}'",
+                        port_name,
+                        device_name,
+                        existing_name
+                    );
                     Err(existing_name.clone())
                 } else {
                     // This shouldn't happen if add_pcie_device works correctly
+                    tracing::error!(
+                        "RootPort: '{}' connection failed for device '{}' but no existing device found",
+                        port_name,
+                        device_name
+                    );
                     panic!("Port connection failed but no existing device found")
                 }
             }
@@ -443,6 +494,7 @@ mod tests {
         let port_defs = (0..port_count)
             .map(|i| GenericPcieRootPortDefinition {
                 name: format!("test-port-{}", i).into(),
+                hotplug: false,
             })
             .collect();
 
@@ -692,8 +744,36 @@ mod tests {
     }
 
     #[test]
+    fn test_root_port_hotplug_options() {
+        // Test with hotplug disabled (None)
+        let root_port_no_hotplug = RootPort::new("test-port-no-hotplug", None);
+        // We can't easily verify hotplug is disabled without accessing internal state,
+        // but we can verify the port was created successfully
+        let mut vendor_device_id: u32 = 0;
+        root_port_no_hotplug
+            .port
+            .cfg_space
+            .read_u32(0x0, &mut vendor_device_id)
+            .unwrap();
+        let expected = (ROOT_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
+        assert_eq!(vendor_device_id, expected);
+
+        // Test with hotplug enabled (Some(slot_number))
+        let root_port_with_hotplug = RootPort::new("test-port-hotplug", Some(5));
+        let mut vendor_device_id_hotplug: u32 = 0;
+        root_port_with_hotplug
+            .port
+            .cfg_space
+            .read_u32(0x0, &mut vendor_device_id_hotplug)
+            .unwrap();
+        assert_eq!(vendor_device_id_hotplug, expected);
+        // The slot number and hotplug capability would be tested via PCIe capability registers
+        // but that requires more complex setup
+    }
+
+    #[test]
     fn test_root_port_invalid_bus_range_handling() {
-        let mut root_port = RootPort::new("test-port");
+        let mut root_port = RootPort::new("test-port", None);
 
         // Don't configure bus numbers, so the range should be 0..=0 (invalid)
         let bus_range = root_port.port.cfg_space.assigned_bus_range();

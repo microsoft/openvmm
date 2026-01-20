@@ -32,6 +32,7 @@ missing_dev.workspace = true
 serial_16550.workspace = true
 serial_pl011.workspace = true
 tpm_device = { workspace = true, optional = true, features = ["tpm"] }
+vmgs_broker.workspace = true
 
 # VPCI devices
 nvme = { workspace = true, optional = true }

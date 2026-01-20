@@ -11,6 +11,7 @@ use super::InterceptMessageOptionalState;
 use super::InterceptMessageState;
 use super::UhEmulationState;
 use super::hardware_cvm;
+use super::hardware_cvm::HardwareIsolatedGuestTimer;
 use super::vp_state;
 use super::vp_state::UhVpStateAccess;
 use crate::BackingShared;
@@ -389,6 +390,16 @@ impl HardwareIsolatedBacking for SnpBacked {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
+
+    fn update_deadline(this: &mut UhProcessor<'_, Self>, ref_time_now: u64, next_ref_time: u64) {
+        this.shared
+            .guest_timer
+            .update_deadline(this, ref_time_now, next_ref_time);
+    }
+
+    fn clear_deadline(this: &mut UhProcessor<'_, Self>) {
+        this.shared.guest_timer.clear_deadline(this);
+    }
 }
 
 /// Partition-wide shared data for SNP VPs.
@@ -400,6 +411,9 @@ pub struct SnpBackedShared {
     tsc_aux_virtualized: bool,
     #[inspect(debug)]
     sev_status: SevStatusMsr,
+    /// Accessor for managing lower VTL timer deadlines.
+    #[inspect(skip)]
+    guest_timer: hardware_cvm::VmTimeGuestTimer,
 }
 
 impl SnpBackedShared {
@@ -428,11 +442,15 @@ impl SnpBackedShared {
             SevStatusMsr::from(msr.read_msr(x86defs::X86X_AMD_MSR_SEV).expect("read msr"));
         tracing::info!(CVM_ALLOWED, ?sev_status, "SEV status");
 
+        // Configure timer interface for lower VTLs.
+        let guest_timer = hardware_cvm::VmTimeGuestTimer;
+
         Ok(Self {
             sev_status,
             invlpgb_count_max,
             tsc_aux_virtualized,
             cvm,
+            guest_timer,
         })
     }
 }
@@ -938,6 +956,10 @@ impl UhProcessor<'_, SnpBacked> {
             .as_message::<hvdef::HvX64VmgexitInterceptMessage>();
 
         let ghcb_msr = x86defs::snp::GhcbMsr::from(message.ghcb_msr);
+        let flags = message.flags;
+        let sw_exit_code = message.ghcb_page.standard.sw_exit_code;
+        let sw_exit_info1 = message.ghcb_page.standard.sw_exit_info1;
+        let sw_exit_info2 = message.ghcb_page.standard.sw_exit_info2;
         tracing::trace!(?ghcb_msr, "vmgexit intercept");
 
         match x86defs::snp::GhcbInfo(ghcb_msr.info()) {
@@ -1007,7 +1029,17 @@ impl UhProcessor<'_, SnpBacked> {
                             )
                             .map_err(SnpGhcbError::GhcbPageAccess)?;
                     }
-                    usage => unimplemented!("ghcb usage {usage:?}"),
+                    usage => unimplemented!(
+                        r#"
+                        Invalid ghcb message.
+                        usage {usage:?}
+                        flags {flags:?}
+                        ghcb_msr {ghcb_msr:?}
+                        sw_exit_code {sw_exit_code:?}
+                        sw_exit_info1 {sw_exit_info1:?}
+                        sw_exit_info2 {sw_exit_info2:?}
+                    "#
+                    ),
                 }
             }
             info => unimplemented!("ghcb info {info:?}"),

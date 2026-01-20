@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// xtask-fmt allow-target-arch sys-crate
 #![cfg(target_arch = "x86_64")]
 
 use super::Context;
@@ -133,9 +132,9 @@ unsafe fn try_copy_forward(dest: *mut u8, src: *const u8, length: usize) -> Resu
                 "rep movsb",
                 "3:",
                 recovery_descriptor!("2b", "3b", "{bail}"),
-                in("rdi") dest,
-                in("rsi") src,
-                in("rcx") length,
+                inout("rdi") dest => _,
+                inout("rsi") src => _,
+                inout("rcx") length => _,
                 bail = label { return Err(Fault) },
                 options(nostack),
             }
@@ -164,9 +163,9 @@ unsafe fn try_copy_backward(dest: *mut u8, src: *const u8, length: usize) -> Res
             "cld", // note: `set_context_ip_and_result` will clear this in the failure case
             "3:",
             recovery_descriptor!("2b", "3b", "{bail}"),
-            in("rdi") dest.add(length - 1),
-            in("rsi") src.add(length - 1),
-            in("rcx") length,
+            inout("rdi") dest.add(length - 1) => _,
+            inout("rsi") src.add(length - 1) => _,
+            inout("rcx") length => _,
             bail = label { return Err(Fault) },
             options(nostack),
         }
@@ -204,9 +203,9 @@ pub(crate) unsafe fn try_memset(dest: *mut u8, c: u8, length: usize) -> Result<(
                 "rep stosb",
                 "3:",
                 recovery_descriptor!("2b", "3b", "{bail}"),
-                in("rdi") dest,
+                inout("rdi") dest => _,
                 in("al") c,
-                in("rcx") length,
+                inout("rcx") length => _,
                 bail = label { return Err(Fault) },
                 options(nostack),
             }

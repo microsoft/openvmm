@@ -27,6 +27,7 @@ use buffers::sub_allocation_size_for_mtu;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::channel::mpsc;
+use futures::channel::mpsc::TrySendError;
 use futures_concurrency::future::Race;
 use guestmem::AccessError;
 use guestmem::GuestMemory;
@@ -194,6 +195,7 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
                     WorkerState::Init(None) => "version",
                     WorkerState::Init(Some(_)) => "init",
                     WorkerState::Ready(_) => "ready",
+                    WorkerState::WaitingForCoordinator(_) => "waiting for coordinator",
                 },
             )
             .field("ring", &worker.channel.queue)
@@ -230,10 +232,10 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
     }
 }
 
-#[expect(clippy::large_enum_variant)]
 enum WorkerState {
     Init(Option<InitState>),
     Ready(ReadyState),
+    WaitingForCoordinator(Option<ReadyState>),
 }
 
 impl WorkerState {
@@ -1472,6 +1474,7 @@ impl Nic {
                 active_packet_filter: restoring
                     .map(|r| r.active_packet_filter)
                     .unwrap_or(rndisprot::NDIS_PACKET_TYPE_NONE),
+                sleep_deadline: None,
             },
         );
     }
@@ -1719,7 +1722,7 @@ impl Nic {
                         }),
                     })
                 }
-                WorkerState::Ready(ready) => {
+                WorkerState::WaitingForCoordinator(Some(ready)) | WorkerState::Ready(ready) => {
                     let primary = ready.state.primary.as_ref().unwrap();
 
                     let rndis_state = match primary.rndis_state {
@@ -1884,6 +1887,9 @@ impl Nic {
                         packet_filter: Some(worker_0_packet_filter),
                     })
                 }
+                WorkerState::WaitingForCoordinator(None) => {
+                    unreachable!("valid ready state")
+                }
             };
 
             let state = saved_state::OpenState { primary };
@@ -1946,6 +1952,8 @@ enum WorkerError {
     BufferRevoked,
     #[error("endpoint requires queue restart: {0}")]
     EndpointRequiresQueueRestart(#[source] anyhow::Error),
+    #[error("Failed to send message to coordinator")]
+    CoordinatorMessageSendFailed(#[source] TrySendError<CoordinatorMessage>),
 }
 
 impl From<task_control::Cancelled> for WorkerError {
@@ -3767,6 +3775,7 @@ struct Coordinator {
     buffers: Option<Arc<ChannelBuffers>>,
     num_queues: u16,
     active_packet_filter: u32,
+    sleep_deadline: Option<Instant>,
 }
 
 /// Removing the VF may result in the guest sending messages to switch the data
@@ -3883,7 +3892,6 @@ impl Coordinator {
         stop: &mut StopTask<'_>,
         state: &mut CoordinatorState,
     ) -> Result<(), task_control::Cancelled> {
-        let mut sleep_duration: Option<Instant> = None;
         loop {
             if self.restart {
                 stop.until_stopped(self.stop_workers()).await?;
@@ -3916,6 +3924,13 @@ impl Coordinator {
             for worker in &mut self.workers[1..] {
                 worker.start();
             }
+            if !self.workers[0].is_running()
+                && self.workers[0].state().is_none_or(|worker| {
+                    !matches!(worker.state, WorkerState::WaitingForCoordinator(_))
+                })
+            {
+                self.workers[0].start();
+            }
 
             enum Message {
                 Internal(CoordinatorMessage),
@@ -3930,23 +3945,6 @@ impl Coordinator {
                 state.pending_vf_state,
                 CoordinatorStatePendingVfState::Pending
             ) {
-                // The primary worker is allowed to run, but as no
-                // notifications are being processed, if it is waiting for an
-                // action then it should remain stopped until this completes
-                // and the regular message processing logic resumes. Currently
-                // the only message that requires processing is
-                // DataPathSwitchPending, so check for that here.
-                if !self.workers[0].is_running()
-                    && self.primary_mut().is_none_or(|primary| {
-                        !matches!(
-                            primary.guest_vf_state,
-                            PrimaryChannelGuestVfState::DataPathSwitchPending { result: None, .. }
-                        )
-                    })
-                {
-                    self.workers[0].start();
-                }
-
                 // guest_ready_for_device is not restartable, so do not poll on
                 // stop.
                 state
@@ -3958,9 +3956,9 @@ impl Coordinator {
                 Message::PendingVfStateComplete
             } else {
                 let timer_sleep = async {
-                    if let Some(sleep_duration) = sleep_duration {
+                    if let Some(deadline) = self.sleep_deadline {
                         let mut timer = PolledTimer::new(&state.adapter.driver);
-                        timer.sleep_until(sleep_duration).await;
+                        timer.sleep_until(deadline).await;
                     } else {
                         pending::<()>().await;
                     }
@@ -4008,16 +4006,12 @@ impl Coordinator {
                     }
                 };
 
-                let mut wait_for_message = std::pin::pin!(wait_for_message);
-                match (&mut wait_for_message).now_or_never() {
-                    Some(message) => message,
-                    None => {
-                        self.workers[0].start();
-                        stop.until_stopped(wait_for_message).await?
-                    }
-                }
+                stop.until_stopped(wait_for_message).await?
             };
             match message {
+                Message::Internal(msg) => {
+                    self.handle_coordinator_message(msg, state).await;
+                }
                 Message::UpdateFromVf(rpc) => {
                     rpc.handle(async |_| {
                         self.update_guest_vf_state(state).await;
@@ -4042,36 +4036,13 @@ impl Coordinator {
                 }
                 Message::TimerExpired => {
                     // Kick the worker as requested.
-                    if self.workers[0].is_running() {
-                        self.workers[0].stop().await;
-                        if let Some(primary) = self.primary_mut() {
-                            if let PendingLinkAction::Delay(up) = primary.pending_link_action {
-                                primary.pending_link_action = PendingLinkAction::Active(up);
-                            }
+                    self.workers[0].stop().await;
+                    if let Some(primary) = self.primary_mut() {
+                        if let PendingLinkAction::Delay(up) = primary.pending_link_action {
+                            primary.pending_link_action = PendingLinkAction::Active(up);
                         }
                     }
-                    sleep_duration = None;
-                }
-                Message::Internal(CoordinatorMessage::Update(update_type)) => {
-                    if update_type.filter_state {
-                        self.stop_workers().await;
-                        self.active_packet_filter =
-                            self.workers[0].state().unwrap().channel.packet_filter;
-                        self.workers.iter_mut().skip(1).for_each(|worker| {
-                            if let Some(state) = worker.state_mut() {
-                                state.channel.packet_filter = self.active_packet_filter;
-                                tracing::debug!(
-                                    packet_filter = ?self.active_packet_filter,
-                                    channel_idx = state.channel_idx,
-                                    "update packet filter"
-                                );
-                            }
-                        });
-                    }
-
-                    if update_type.guest_vf_state {
-                        self.update_guest_vf_state(state).await;
-                    }
+                    self.sleep_deadline = None;
                 }
                 Message::UpdateFromEndpoint(EndpointAction::RestartRequired) => self.restart = true,
                 Message::UpdateFromEndpoint(EndpointAction::LinkStatusNotify(connect)) => {
@@ -4089,13 +4060,7 @@ impl Coordinator {
                     }
 
                     // If there is any existing sleep timer running, cancel it out.
-                    sleep_duration = None;
-                }
-                Message::Internal(CoordinatorMessage::Restart) => self.restart = true,
-                Message::Internal(CoordinatorMessage::StartTimer(duration)) => {
-                    sleep_duration = Some(duration);
-                    // Restart primary task.
-                    self.workers[0].stop().await;
+                    self.sleep_deadline = None;
                 }
                 Message::ChannelDisconnected => {
                     break;
@@ -4103,6 +4068,51 @@ impl Coordinator {
             };
         }
         Ok(())
+    }
+
+    async fn handle_coordinator_message(
+        &mut self,
+        msg: CoordinatorMessage,
+        state: &mut CoordinatorState,
+    ) {
+        self.workers[0].stop().await;
+        if let Some(worker) = self.workers[0].state_mut() {
+            if matches!(worker.state, WorkerState::WaitingForCoordinator(_)) {
+                let WorkerState::WaitingForCoordinator(Some(ready)) =
+                    std::mem::replace(&mut worker.state, WorkerState::WaitingForCoordinator(None))
+                else {
+                    unreachable!("valid ready state")
+                };
+                let _ = std::mem::replace(&mut worker.state, WorkerState::Ready(ready));
+            }
+        }
+        match msg {
+            CoordinatorMessage::Update(update_type) => {
+                if update_type.filter_state {
+                    self.stop_workers().await;
+                    self.active_packet_filter =
+                        self.workers[0].state().unwrap().channel.packet_filter;
+                    self.workers.iter_mut().skip(1).for_each(|worker| {
+                        if let Some(state) = worker.state_mut() {
+                            state.channel.packet_filter = self.active_packet_filter;
+                            tracing::debug!(
+                                packet_filter = ?self.active_packet_filter,
+                                channel_idx = state.channel_idx,
+                                "update packet filter"
+                            );
+                        }
+                    });
+                }
+
+                if update_type.guest_vf_state {
+                    self.update_guest_vf_state(state).await;
+                }
+            }
+            CoordinatorMessage::StartTimer(deadline) => {
+                self.sleep_deadline = Some(deadline);
+            }
+            CoordinatorMessage::Restart => self.restart = true,
+        }
     }
 
     async fn stop_workers(&mut self) {
@@ -4236,6 +4246,7 @@ impl Coordinator {
                 }
                 PrimaryChannelGuestVfState::Initializing
                 | PrimaryChannelGuestVfState::Unavailable
+                | PrimaryChannelGuestVfState::UnavailableFromAvailable
                 | PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::NoState) => {
                     PrimaryChannelGuestVfState::Available { vfid: guest_vf_id }
                 }
@@ -4580,11 +4591,7 @@ impl<T: RingMem + 'static> Worker<T> {
         loop {
             match &mut self.state {
                 WorkerState::Init(initializing) => {
-                    if self.channel_idx != 0 {
-                        // Still waiting for the coordinator to provide receive
-                        // buffers. The task will be restarted when they are available.
-                        stop.until_stopped(pending()).await?
-                    }
+                    assert_eq!(self.channel_idx, 0);
 
                     tracelimit::info_ratelimited!("network accepted");
 
@@ -4602,7 +4609,13 @@ impl<T: RingMem + 'static> Worker<T> {
                     let _ = self.coordinator_send.try_send(CoordinatorMessage::Restart);
 
                     tracelimit::info_ratelimited!("network initialized");
-                    self.state = WorkerState::Ready(state);
+                    self.state = WorkerState::WaitingForCoordinator(Some(state));
+                }
+                WorkerState::WaitingForCoordinator(_) => {
+                    assert_eq!(self.channel_idx, 0);
+                    // Waiting for the coordinator to process a message and
+                    // restart the primary worker.
+                    stop.until_stopped(pending()).await?
                 }
                 WorkerState::Ready(state) => {
                     let queue_state = if let Some(queue_state) = &mut queue.queue_state {
@@ -4625,29 +4638,34 @@ impl<T: RingMem + 'static> Worker<T> {
                     };
 
                     let result = self.channel.main_loop(stop, state, queue_state).await;
-                    match result {
+                    let msg = match result {
                         Ok(restart) => {
                             assert_eq!(self.channel_idx, 0);
-                            let _ = self.coordinator_send.try_send(restart);
+                            restart
                         }
                         Err(WorkerError::EndpointRequiresQueueRestart(err)) => {
                             tracelimit::warn_ratelimited!(
                                 err = err.as_ref() as &dyn std::error::Error,
                                 "Endpoint requires queues to restart",
                             );
-                            if let Err(try_send_err) =
-                                self.coordinator_send.try_send(CoordinatorMessage::Restart)
-                            {
-                                tracing::error!(
-                                    try_send_err = &try_send_err as &dyn std::error::Error,
-                                    "failed to restart queues"
-                                );
-                                return Err(WorkerError::Endpoint(err));
-                            }
+                            CoordinatorMessage::Restart
                         }
                         Err(err) => return Err(err),
-                    }
+                    };
 
+                    let WorkerState::Ready(ready) = std::mem::replace(
+                        &mut self.state,
+                        WorkerState::WaitingForCoordinator(None),
+                    ) else {
+                        unreachable!("must be running in ready state")
+                    };
+                    let _ = std::mem::replace(
+                        &mut self.state,
+                        WorkerState::WaitingForCoordinator(Some(ready)),
+                    );
+                    self.coordinator_send
+                        .try_send(msg)
+                        .map_err(WorkerError::CoordinatorMessageSendFailed)?;
                     stop.until_stopped(pending()).await?
                 }
             }
@@ -5374,12 +5392,23 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 }
                 PacketData::SubChannelRequest(request) if state.primary.is_some() => {
                     let mut subchannel_count = 0;
+                    // The number of requested subchannels has to stay below the maximum queue limit
+                    // because one queue is always reserved for the primary channel. In other words,
+                    // the subchannels plus the primary channel must fit within the max_queues value,
+                    // which means subchannels + 1 ≤ max_queues, so the subchannel count must be
+                    // strictly less than max_queues.
                     let status = if request.operation == protocol::SubchannelOperation::ALLOCATE
-                        && request.num_sub_channels <= self.adapter.max_queues.into()
+                        && request.num_sub_channels < self.adapter.max_queues.into()
                     {
                         subchannel_count = request.num_sub_channels;
                         protocol::Status::SUCCESS
                     } else {
+                        tracelimit::warn_ratelimited!(
+                            operation = ?request.operation,
+                            request_sub_channels = request.num_sub_channels,
+                            max_supported_sub_channels = self.adapter.max_queues - 1,
+                            "Subchannel request failed: either operation is not supported or requested more subchannels than supported"
+                        );
                         protocol::Status::FAILURE
                     };
 

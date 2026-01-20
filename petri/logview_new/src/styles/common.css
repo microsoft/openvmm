@@ -35,8 +35,8 @@
   font-size: 1rem;
   padding: 0.45rem 1rem;
   border: none;
-  background: transparent;
-  color: #747474;
+  background: #f4f4f4;
+  color: #3a3a3a;
   cursor: pointer;
   border-radius: 8px;
   font-weight: 600;
@@ -47,19 +47,18 @@
 }
 
 .common-header-filter-btn:hover {
-  background-color: #f8f9fa;
+  background-color: #d2d2d2;
   color: #222222;
   box-shadow: none;
 }
 
 .common-header-filter-btn.active {
-  background-color: #eeeeee;
-  color: #505050;
+  background-color: #d2d2d2;
+  color: #000000;
   box-shadow: none;
 }
 
 .common-header-filter-btn.active:hover {
-  background-color: #eeeeee;
   color: #000000;
 }
 

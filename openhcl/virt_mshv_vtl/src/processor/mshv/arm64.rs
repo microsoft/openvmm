@@ -758,8 +758,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
 
         match self
             .vp
-            .partition
-            .hcl
+            .runner
             .translate_gva_to_gpa(gva, control_flags)
             .unwrap()
         {

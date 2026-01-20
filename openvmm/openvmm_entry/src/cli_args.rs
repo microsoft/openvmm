@@ -21,12 +21,12 @@
 use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
-use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
-use hvlite_defs::config::DeviceVtl;
-use hvlite_defs::config::Hypervisor;
-use hvlite_defs::config::PcatBootDevice;
-use hvlite_defs::config::Vtl2BaseAddressType;
-use hvlite_defs::config::X2ApicConfig;
+use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
+use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::Hypervisor;
+use openvmm_defs::config::PcatBootDevice;
+use openvmm_defs::config::Vtl2BaseAddressType;
+use openvmm_defs::config::X2ApicConfig;
 use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -238,35 +238,35 @@ options:
     #[clap(long, conflicts_with("virtio_console"))]
     pub virtio_console_pci: bool,
 
-    /// COM1 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
+    /// COM1 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com1: Option<SerialConfigCli>,
 
-    /// COM2 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
+    /// COM2 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com2: Option<SerialConfigCli>,
 
-    /// COM3 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
+    /// COM3 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com3: Option<SerialConfigCli>,
 
-    /// COM4 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
+    /// COM4 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com4: Option<SerialConfigCli>,
 
-    /// virtio serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
+    /// virtio serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
     pub virtio_serial: Option<SerialConfigCli>,
 
-    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
+    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com1_serial: Option<SerialConfigCli>,
 
-    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
+    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com2_serial: Option<SerialConfigCli>,
 
-    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none))
+    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none))
     #[clap(long, value_name = "SERIAL")]
     pub debugcon: Option<DebugconSerialConfigCli>,
 
@@ -465,7 +465,7 @@ flags:
     /// This is a _very_ niche utility, and it's unlikely you'll need to use it.
     ///
     /// e.g: this flag helped bring up certain Hyper-V Generation 1 legacy
-    /// devices without needing to port the associated ACPI code into HvLite's
+    /// devices without needing to port the associated ACPI code into OpenVMM's
     /// DSDT builder.
     #[clap(long, value_name = "FILE", conflicts_with_all(&["uefi", "pcat", "igvm"]))]
     pub custom_dsdt: Option<PathBuf>,
@@ -571,11 +571,15 @@ options:
 
     /// Attach a PCI Express root complex to the VM
     #[clap(long_help = r#"
-e.g: --pcie-root-complex rc0,segment=0,start_bus=0,end_bus=255,low_mmio=4M,high_mmio=1G
+Attach root complexes to the VM.
 
-syntax: <name>[,opt=arg,...]
+Examples:
+    # Attach root complex rc0 on segment 0 with bus and MMIO ranges
+    --pcie-root-complex rc0,segment=0,start_bus=0,end_bus=255,low_mmio=4M,high_mmio=1G
 
-options:
+Syntax: <name>[,opt=arg,...]
+
+Options:
     `segment=<value>`              configures the PCI Express segment, default 0
     `start_bus=<value>`            lowest valid bus number, default 0
     `end_bus=<value>`              highest valid bus number, default 255
@@ -587,22 +591,32 @@ options:
 
     /// Attach a PCI Express root port to the VM
     #[clap(long_help = r#"
-e.g: --pcie-root-port rc0:rc0rp0
+Attach root ports to root complexes.
 
-syntax: <root_complex_name>:<name>
+Examples:
+    # Attach root port rc0rp0 to root complex rc0
+    --pcie-root-port rc0:rc0rp0
+
+    # Attach root port rc0rp1 to root complex rc0 with hotplug support
+    --pcie-root-port rc0:rc0rp1,hotplug
+
+Syntax: <root_complex_name>:<name>[,hotplug]
+
+Options:
+    `hotplug`                      enable hotplug support for this root port
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_port: Vec<PcieRootPortCli>,
 
     /// Attach a PCI Express switch to the VM
     #[clap(long_help = r#"
-Attach switches to root ports or other switches to create PCIe hierarchies.
+Attach switches to root ports or downstream switch ports to create PCIe hierarchies.
 
 Examples:
-    # Connect switch0 directly to root port rp0
+    # Connect switch0 (with 4 downstream switch ports) directly to root port rp0
     --pcie-switch rp0:switch0,num_downstream_ports=4
 
-    # Connect switch1 to downstream port 0 of switch0
+    # Connect switch1 (with 2 downstream switch ports) to downstream port 0 of switch0
     --pcie-switch switch0-downstream-0:switch1,num_downstream_ports=2
 
     # Create a 3-level hierarchy: rp0 -> switch0 -> switch1 -> switch2
@@ -610,14 +624,18 @@ Examples:
     --pcie-switch switch0-downstream-0:switch1
     --pcie-switch switch1-downstream-1:switch2
 
-syntax: <port_name>:<name>[,opt=arg,...]
+    # Enable hotplug on all downstream switch ports of switch0
+    --pcie-switch rp0:switch0,hotplug
 
-port_name can be:
-    - Root port name (e.g., "rp0") to connect directly to a root port
-    - Downstream port name (e.g., "switch0-downstream-1") to connect to another switch
+Syntax: <port_name>:<name>[,opt,opt=arg,...]
 
-options:
-    `num_downstream_ports=<value>`    number of downstream ports, default 4
+    port_name can be:
+        - Root port name (e.g., "rp0") to connect directly to a root port
+        - Downstream port name (e.g., "switch0-downstream-1") to connect to another switch
+
+Options:
+    `hotplug`                       enable hotplug support for all downstream switch ports
+    `num_downstream_ports=<value>`  number of downstream ports, default 4
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_switch: Vec<GenericPcieSwitchCli>,
@@ -1115,7 +1133,7 @@ impl FromStr for DebugconSerialConfigCli {
     }
 }
 
-/// (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | file=\<path\> | none)
+/// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
 #[derive(Clone, Debug, PartialEq)]
 pub enum SerialConfigCli {
     None,
@@ -1147,19 +1165,16 @@ impl FromStr for SerialConfigCli {
                 Some(path) => SerialConfigCli::File(path.into()),
                 None => Err("invalid serial configuration: file requires a value")?,
             },
-            "term" => match first_value {
-                Some(path) => {
-                    // If user supplies a name key, use it to title the window
-                    let window_name = keyvalues.iter().find(|(key, _)| key == "name");
-                    let window_name = match window_name {
-                        Some((_, Some(name))) => Some(name.clone()),
-                        _ => None,
-                    };
+            "term" => {
+                // If user supplies a name key, use it to title the window
+                let window_name = keyvalues.iter().find(|(key, _)| key == "name");
+                let window_name = match window_name {
+                    Some((_, Some(name))) => Some(name.clone()),
+                    _ => None,
+                };
 
-                    SerialConfigCli::NewConsole(Some(path.into()), window_name)
-                }
-                None => SerialConfigCli::NewConsole(None, None),
-            },
+                SerialConfigCli::NewConsole(first_value.map(|p| p.into()), window_name)
+            }
             "listen" => match first_value {
                 Some(path) => {
                     if let Some(tcp) = path.strip_prefix("tcp:") {
@@ -1534,6 +1549,7 @@ impl FromStr for PcieRootComplexCli {
 pub struct PcieRootPortCli {
     pub root_complex_name: String,
     pub name: String,
+    pub hotplug: bool,
 }
 
 impl FromStr for PcieRootPortCli {
@@ -1554,13 +1570,20 @@ impl FromStr for PcieRootPortCli {
             anyhow::bail!("unexpected token: '{extra}'")
         }
 
-        if let Some(extra) = opts.next() {
-            anyhow::bail!("unexpected token: '{extra}'")
+        let mut hotplug = false;
+
+        // Parse optional flags
+        for opt in opts {
+            match opt {
+                "hotplug" => hotplug = true,
+                _ => anyhow::bail!("unexpected option: '{opt}'"),
+            }
         }
 
         Ok(PcieRootPortCli {
             root_complex_name: rc_name.to_string(),
             name: rp_name.to_string(),
+            hotplug,
         })
     }
 }
@@ -1570,6 +1593,7 @@ pub struct GenericPcieSwitchCli {
     pub port_name: String,
     pub name: String,
     pub num_downstream_ports: u8,
+    pub hotplug: bool,
 }
 
 impl FromStr for GenericPcieSwitchCli {
@@ -1591,19 +1615,25 @@ impl FromStr for GenericPcieSwitchCli {
         }
 
         let mut num_downstream_ports = 4u8; // Default value
+        let mut hotplug = false;
 
         for opt in opts {
             let mut kv = opt.split('=');
             let key = kv.next().context("expected option name")?;
-            let value = kv.next().context("expected option value")?;
-
-            if let Some(extra) = kv.next() {
-                anyhow::bail!("unexpected token: '{extra}'")
-            }
 
             match key {
                 "num_downstream_ports" => {
+                    let value = kv.next().context("expected option value")?;
+                    if let Some(extra) = kv.next() {
+                        anyhow::bail!("unexpected token: '{extra}'")
+                    }
                     num_downstream_ports = value.parse().context("invalid num_downstream_ports")?;
+                }
+                "hotplug" => {
+                    if kv.next().is_some() {
+                        anyhow::bail!("hotplug option does not take a value")
+                    }
+                    hotplug = true;
                 }
                 _ => anyhow::bail!("unknown option: '{key}'"),
             }
@@ -1613,6 +1643,7 @@ impl FromStr for GenericPcieSwitchCli {
             port_name: port_name.to_string(),
             name: switch_name.to_string(),
             num_downstream_ports,
+            hotplug,
         })
     }
 }
@@ -1951,6 +1982,20 @@ mod tests {
             panic!("Expected File variant");
         }
 
+        // Test term config with name, but no specific path
+        match SerialConfigCli::from_str("term,name=MyTerm").unwrap() {
+            SerialConfigCli::NewConsole(None, Some(name)) => {
+                assert_eq!(name, "MyTerm");
+            }
+            _ => panic!("Expected NewConsole variant with name"),
+        }
+
+        // Test term config without name, but no specific path
+        match SerialConfigCli::from_str("term").unwrap() {
+            SerialConfigCli::NewConsole(None, None) => (),
+            _ => panic!("Expected NewConsole variant without name"),
+        }
+
         // Test term config with name
         match SerialConfigCli::from_str("term=/dev/pts/0,name=MyTerm").unwrap() {
             SerialConfigCli::NewConsole(Some(path), Some(name)) => {
@@ -2041,7 +2086,7 @@ mod tests {
 
     #[test]
     fn test_nic_config_from_str() {
-        use hvlite_defs::config::DeviceVtl;
+        use openvmm_defs::config::DeviceVtl;
 
         // Test basic endpoint
         let config = NicConfigCli::from_str("none").unwrap();
@@ -2237,7 +2282,8 @@ mod tests {
             PcieRootPortCli::from_str("rc0:rc0rp0").unwrap(),
             PcieRootPortCli {
                 root_complex_name: "rc0".to_string(),
-                name: "rc0rp0".to_string()
+                name: "rc0rp0".to_string(),
+                hotplug: false,
             }
         );
 
@@ -2245,7 +2291,18 @@ mod tests {
             PcieRootPortCli::from_str("my_rc:port2").unwrap(),
             PcieRootPortCli {
                 root_complex_name: "my_rc".to_string(),
-                name: "port2".to_string()
+                name: "port2".to_string(),
+                hotplug: false,
+            }
+        );
+
+        // Test with hotplug flag
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port2,hotplug").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port2".to_string(),
+                hotplug: true,
             }
         );
 
@@ -2254,7 +2311,7 @@ mod tests {
         assert!(PcieRootPortCli::from_str("rp0").is_err());
         assert!(PcieRootPortCli::from_str("rp0,opt").is_err());
         assert!(PcieRootPortCli::from_str("rc0:rp0:rp3").is_err());
-        assert!(PcieRootPortCli::from_str("rc0:rp0,rp3").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,invalid_option").is_err());
     }
 
     #[test]
@@ -2265,6 +2322,7 @@ mod tests {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
+                hotplug: false,
             }
         );
 
@@ -2274,6 +2332,7 @@ mod tests {
                 port_name: "port1".to_string(),
                 name: "my_switch".to_string(),
                 num_downstream_ports: 4,
+                hotplug: false,
             }
         );
 
@@ -2283,6 +2342,7 @@ mod tests {
                 port_name: "rp2".to_string(),
                 name: "sw".to_string(),
                 num_downstream_ports: 8,
+                hotplug: false,
             }
         );
 
@@ -2293,6 +2353,29 @@ mod tests {
                 port_name: "switch0-downstream-1".to_string(),
                 name: "child_switch".to_string(),
                 num_downstream_ports: 4,
+                hotplug: false,
+            }
+        );
+
+        // Test hotplug flag
+        assert_eq!(
+            GenericPcieSwitchCli::from_str("rp0:switch0,hotplug").unwrap(),
+            GenericPcieSwitchCli {
+                port_name: "rp0".to_string(),
+                name: "switch0".to_string(),
+                num_downstream_ports: 4,
+                hotplug: true,
+            }
+        );
+
+        // Test hotplug with num_downstream_ports
+        assert_eq!(
+            GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=8,hotplug").unwrap(),
+            GenericPcieSwitchCli {
+                port_name: "rp0".to_string(),
+                name: "switch0".to_string(),
+                num_downstream_ports: 8,
+                hotplug: true,
             }
         );
 
@@ -2303,5 +2386,6 @@ mod tests {
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,invalid_opt=value").is_err());
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=bad").is_err());
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=").is_err());
+        assert!(GenericPcieSwitchCli::from_str("rp0:switch0,invalid_flag").is_err());
     }
 }

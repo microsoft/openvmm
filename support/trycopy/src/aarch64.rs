@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// xtask-fmt allow-target-arch sys-crate
 #![cfg(target_arch = "aarch64")]
 
 use super::Context;

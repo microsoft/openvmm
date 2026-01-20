@@ -5,10 +5,11 @@
 
 use crate::x86_64::storage::new_test_vtl2_nvme_device;
 use guid::Guid;
-use hvlite_defs::config::Vtl2BaseAddressType;
+use openvmm_defs::config::Vtl2BaseAddressType;
 use petri::MemoryConfig;
-use petri::OpenHclServicingFlags;
+use petri::OpenvmmLogConfig;
 use petri::PetriVmBuilder;
+use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::PipetteClient;
@@ -76,36 +77,9 @@ async fn mana_nic_shared_pool(
     Ok(())
 }
 
-/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
-/// the MANA emulator), and vmbus relay. Perform servicing and validate that the
-/// nic is still functional.
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn mana_nic_servicing(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
-) -> Result<(), anyhow::Error> {
-    let (mut vm, agent) = config
-        .with_vmbus_redirect(true)
-        .modify_backend(|b| b.with_nic())
-        .run()
-        .await?;
-
-    validate_mana_nic(&agent).await?;
-
-    vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
-        .await?;
-
-    validate_mana_nic(&agent).await?;
-
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-
-    Ok(())
-}
-
 /// Test an OpenHCL Linux direct VM with many NVMe devices assigned to VTL2 and vmbus relay.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn many_nvme_devices_servicing(
+async fn many_nvme_devices_servicing_very_heavy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
@@ -119,8 +93,28 @@ async fn many_nvme_devices_servicing(
     const GUID_UPDATE_PREFIX: u16 = 0x1110;
     const NSID_OFFSET: u32 = 0x10;
 
+    let flags = config.default_servicing_flags();
+
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
+        .with_vtl2_base_address_type(Vtl2BaseAddressType::MemoryLayout {
+            size: Some((960 + 64) * 1024 * 1024), // 960MB as specified in manifest, plus 64MB extra for private pool.
+        })
+        .with_host_log_levels(OpenvmmLogConfig::Custom([
+            ("OPENVMM_LOG".to_owned(), "debug,vpci=trace".to_owned()),
+            ("OPENVMM_SHOW_SPANS".to_owned(), "true".to_owned()),
+        ].into()))
+        .with_openhcl_command_line(
+            "OPENHCL_ENABLE_VTL2_GPA_POOL=16384 dyndbg=\"module vfio_pci +p; module pci_hyperv +p\" udev.log_priority=debug OPENHCL_CONFIG_TIMEOUT_IN_SECONDS=30",
+        ) // 64MB of private pool for VTL2 NVMe devices, debug logging for vfio-pci driver.
+        .with_memory(MemoryConfig {
+            startup_bytes: 8 * 1024 * 1024 * 1024, // 8GB
+            ..Default::default()
+        })
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 4,
+            ..Default::default()
+        })
         .modify_backend(|b| {
             b.with_custom_config(|c| {
                 let device_ids = (0..NUM_NVME_DEVICES)
@@ -137,36 +131,34 @@ async fn many_nvme_devices_servicing(
                         .map(|(nsid, guid)| new_test_vtl2_nvme_device(*nsid, SIZE, *guid, None)),
                 );
             })
-            .with_custom_vtl2_settings(|v| {
-                let device_ids = (0..NUM_NVME_DEVICES)
-                    .map(|i| {
-                        let mut g = BASE_GUID;
-                        g.data2 = g.data2.wrapping_add(i as u16) + GUID_UPDATE_PREFIX;
-                        (NSID_OFFSET + i as u32, g)
-                    })
-                    .collect::<Vec<_>>();
+        })
+        .add_vtl2_storage_controller({
+            let device_ids = (0..NUM_NVME_DEVICES)
+                .map(|i| {
+                    let mut g = BASE_GUID;
+                    g.data2 = g.data2.wrapping_add(i as u16) + GUID_UPDATE_PREFIX;
+                    (NSID_OFFSET + i as u32, g)
+                })
+                .collect::<Vec<_>>();
 
-                v.dynamic.as_mut().unwrap().storage_controllers.push(
-                    Vtl2StorageControllerBuilder::scsi()
-                        .add_luns(
-                            device_ids
-                                .iter()
-                                .map(|(nsid, guid)| {
-                                    Vtl2LunBuilder::disk()
-                                        // Add 1 so as to avoid any confusion with booting from LUN 0 (on the implicit SCSI
-                                        // controller created by the above `config.with_vmbus_redirect` call above).
-                                        .with_location((*nsid - NSID_OFFSET) + 1)
-                                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                                            ControllerType::Nvme,
-                                            *guid,
-                                            *nsid,
-                                        ))
-                                })
-                                .collect(),
-                        )
-                        .build(),
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .add_luns(
+                    device_ids
+                        .iter()
+                        .map(|(nsid, guid)| {
+                            Vtl2LunBuilder::disk()
+                                // Add 1 so as to avoid any confusion with booting from LUN 0 (on the implicit SCSI
+                                // controller created by the above `config.with_vmbus_redirect` call above).
+                                .with_location((*nsid - NSID_OFFSET) + 1)
+                                .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                                    ControllerType::Nvme,
+                                    *guid,
+                                    *nsid,
+                                ))
+                        })
+                        .collect(),
                 )
-            })
+                .build()
         })
         .run()
         .await?;
@@ -177,14 +169,7 @@ async fn many_nvme_devices_servicing(
         // Test that inspect serialization works with the old version.
         vm.test_inspect_openhcl().await?;
 
-        vm.restart_openhcl(
-            igvm_file.clone(),
-            OpenHclServicingFlags {
-                enable_nvme_keepalive: false,
-                ..Default::default()
-            },
-        )
-        .await?;
+        vm.restart_openhcl(igvm_file.clone(), flags).await?;
 
         agent.ping().await?;
 
@@ -214,6 +199,7 @@ async fn openhcl_linux_vtl2_ram_self_allocate(
         .with_vtl2_base_address_type(Vtl2BaseAddressType::Vtl2Allocate {
             size: Some(vtl2_ram_size),
         })
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=off") // Private pool steals from reported memory usage, disable it for this test.
         .run()
         .await?;
 

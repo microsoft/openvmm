@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! This module contains Underhill specific functionality and implementations of require traits
-//! in order to plug into the rest of the common HvLite code.
+//! This module contains Underhill specific functionality and implementations of required traits
+//! in order to plug into the rest of the common code.
 
 pub mod mshv;
 mod nice;
@@ -274,6 +274,7 @@ pub(crate) struct BackingSharedParams<'a> {
     pub cpuid: &'a virt::CpuidLeafSet,
     pub hcl: &'a Hcl,
     pub guest_vsm_available: bool,
+    pub lower_vtl_timer_virt_available: bool,
 }
 
 /// Supported intercept message types.
@@ -482,6 +483,12 @@ pub(crate) trait HardwareIsolatedBacking: Backing {
     );
 
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
+
+    /// Updates the timer deadline.
+    fn update_deadline(this: &mut UhProcessor<'_, Self>, ref_time_now: u64, next_ref_time: u64);
+
+    /// Clears any pending timer deadline.
+    fn clear_deadline(this: &mut UhProcessor<'_, Self>);
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]

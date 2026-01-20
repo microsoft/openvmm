@@ -89,7 +89,7 @@ def generate_build_info(path: str):
 
 
 def process(temp_dir: str, underhill_path: str, kernel_path: str,
-            build_info: str, rootfs_config_path: List[str],
+            modules_path: str, build_info: str, rootfs_config_path: List[str],
             updated_initramfs_path: str, additional_layers: List[str],
             additional_dirs: List[str]):
     align = lambda x, boundary: (x + boundary-1) & ~(boundary-1)
@@ -107,6 +107,7 @@ def process(temp_dir: str, underhill_path: str, kernel_path: str,
 
     os.environ["OPENHCL_OPENVMM_PATH"] = final_underhill_path
     os.environ["OPENHCL_KERNEL_PATH"] = kernel_path
+    os.environ["OPENHCL_MODULES_PATH"] = modules_path
     os.environ["OPENHCL_BUILD_INFO"] = build_info
 
     stat = create_cpio_from_config(rootfs_config_path, underhill_cpio_gz_file_name, 'gzip')
@@ -153,7 +154,7 @@ def main():
     parser.add_argument('updated_initramfs_path', help='The path to the updated initramfs')
     parser.add_argument('--arch', default=os.environ.get("UNDERHILL_ARCH"), help='The architecture type (e.g., x86_64, aarch64)')
     parser.add_argument('--package-root', default=os.path.join(get_script_path(), "../.packages", package_id), help='HCL package root containing kernel modules and extra cpio.gz files')
-    parser.add_argument('--kernel-modules', help='Path to kernel modules (defaults to package root)')
+    parser.add_argument('--kernel-modules', required=True, help='Path to kernel modules')
     parser.add_argument('--build_info', help='Path to the file with build information')
     parser.add_argument('--rootfs-config', action='append', help='Configuration file for the root filesystem')
     parser.add_argument('--layer', action='append', help='Adds a custom layer file.')
@@ -206,11 +207,9 @@ def main():
             raise Exception(f"Can't find {required_tool}")
 
     underhill_path = os.path.realpath(args.underhill_path)
-    kernel_path = args.kernel_modules
-    if not kernel_path:
-        kernel_path = args.package_root
     build_info = args.build_info
-    kernel_path = os.path.realpath(kernel_path)
+    kernel_path = os.path.realpath(args.package_root)
+    modules_path = os.path.realpath(args.kernel_modules)
     updated_initramfs_path = args.updated_initramfs_path
 
     additional_layers = []
@@ -227,7 +226,7 @@ def main():
     with tempfile.TemporaryDirectory() as temp_dir:
         process(
             str(temp_dir),
-            underhill_path, kernel_path, build_info, args.rootfs_config,
+            underhill_path, kernel_path, modules_path, build_info, args.rootfs_config,
             updated_initramfs_path, additional_layers,
             additional_dirs)
 

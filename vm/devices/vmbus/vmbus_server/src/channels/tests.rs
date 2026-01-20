@@ -2164,6 +2164,70 @@ fn test_gpadl_create_failure() {
         }));
 }
 
+#[test]
+fn test_gpadl_in_progress_reset() {
+    let mut env = TestEnv::new();
+
+    let offer_id1 = env.offer(1);
+
+    const RANGE: [u64; 2] = [1u64, 0u64];
+
+    env.connect(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+    env.notifier.messages.clear();
+
+    // Start a gpadl creation but do not complete it.
+    env.c().handle_gpadl_header(
+        &protocol::GpadlHeader {
+            channel_id: ChannelId(1),
+            gpadl_id: GpadlId(1),
+            count: 2,
+            len: 32,
+        },
+        RANGE.as_bytes(),
+    );
+
+    // Ensure no error was sent.
+    assert!(env.notifier.messages.is_empty());
+
+    // Reset the connection while gpadl creation is in progress.
+    env.c().reset();
+    env.complete_reset();
+    assert!(env.notifier.is_reset());
+
+    // Reconnect and start a new gpadl creation with the same ID, and complete it this time.
+    env.connect(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+    env.notifier.messages.clear();
+    env.c().handle_gpadl_header(
+        &protocol::GpadlHeader {
+            channel_id: ChannelId(1),
+            gpadl_id: GpadlId(1),
+            count: 1,
+            len: 32,
+        },
+        RANGE.as_bytes(),
+    );
+
+    env.c()
+        .handle_gpadl_body(
+            &protocol::GpadlBody {
+                rsvd: 0,
+                gpadl_id: GpadlId(1),
+            },
+            RANGE.as_bytes(),
+        )
+        .unwrap();
+
+    // Ensure no error was sent.
+    assert!(env.notifier.messages.is_empty());
+
+    // Check for the gpadl creation notification.
+    let (offer_id, action) = env.recv.recv().unwrap();
+    assert_eq!(offer_id, offer_id1);
+    assert!(matches!(action, Action::Gpadl(GpadlId(1), ..)));
+}
+
 struct TestNotifier {
     send: mpsc::Sender<(OfferId, Action)>,
     modify_requests: VecDeque<ModifyConnectionRequest>,

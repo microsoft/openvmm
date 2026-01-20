@@ -449,7 +449,7 @@ impl TestIgvmAgent {
             .map_err(WrappedKeyError::RsaEncryptionError)?;
 
         let aes_info = cps::AesInfo {
-            ciphertext: encrypted_des.to_vec(),
+            ciphertext: encrypted_des.clone(),
         };
 
         let key_reference = serde_json::json!({

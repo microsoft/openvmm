@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { LogEntry } from "../data_defs";
+import { LogEntry, LogLink } from "../data_defs";
 
 /**
  * Fetch the raw petri.jsonl log content for a given run / architecture / test path.
@@ -161,6 +161,8 @@ export async function fetchProcessedLog(
     const sevExtract = extractSeverity(message, severity);
     message = sevExtract.message;
     severity = sevExtract.severity;
+    let logLinks: LogLink[] = [];
+    let links_text = "";
 
     let screenshot: string | null = null;
     if (rec.attachment) {
@@ -175,15 +177,35 @@ export async function fetchProcessedLog(
         entries[entries.length - 1].screenshot = attachmentUrl;
         continue; // don't emit separate row
       }
+
       // Inspect attachment gets two links (inspect + raw); others single link
       if (rec.attachment.includes("inspect")) {
-        message +=
-          (message ? " " : "") +
-          `<a href="${attachmentUrl}" class="attachment" target="_blank" data-inspect="true">${escapeHtml(rec.attachment)}</a> <a href="${attachmentUrl}" class="attachment" target="_blank">[raw]</a>`;
+        // Add two links:
+        //  1. data-inspect => parsed / tree view
+        //  2. data-inspect-raw => raw text view inside the same overlay (no parsing)
+        //     The click handler in log_viewer.tsx intercepts both and opens the
+        //     overlay accordingly.
+        logLinks.push({
+          text: rec.attachment,
+          url: attachmentUrl,
+          inspect: true,
+        });
+
+        logLinks.push({
+          text: "[raw]",
+          url: attachmentUrl,
+          inspect: false,
+        });
+
+        links_text += rec.attachment + " [raw] ";
       } else {
-        message +=
-          (message ? " " : "") +
-          `<a href="${attachmentUrl}" class="attachment" target="_blank">${escapeHtml(rec.attachment)}</a>`;
+        logLinks.push({
+          text: rec.attachment,
+          url: attachmentUrl,
+          inspect: false,
+        });
+
+        links_text += rec.attachment + " ";
       }
     }
 
@@ -193,7 +215,11 @@ export async function fetchProcessedLog(
       relative: start ? formatRelative(start, timestamp) : "0m 0.000s",
       severity,
       source,
-      message,
+      logMessage: {
+        message: message,
+        link_string: links_text.trim(),
+        links: logLinks,
+      },
       screenshot,
     });
   }

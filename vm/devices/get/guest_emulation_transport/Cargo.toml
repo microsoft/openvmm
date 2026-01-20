@@ -19,6 +19,7 @@ user_driver.workspace = true
 vmbus_async.workspace = true
 vmbus_ring.workspace = true
 vm_resource.workspace = true
+vmcore.workspace = true
 vpci.workspace = true
 
 chipset_resources.workspace = true

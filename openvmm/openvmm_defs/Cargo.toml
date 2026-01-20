@@ -1,0 +1,41 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "openvmm_defs"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+openvmm_pcat_locator.workspace = true
+
+# vmcore
+memory_range.workspace = true
+vm_resource.workspace = true
+vmgs_resources.workspace = true
+
+vmotherboard.workspace = true
+firmware_uefi_custom_vars.workspace = true
+floppy_resources.workspace = true
+framebuffer.workspace = true
+get_resources.workspace = true
+ide_resources.workspace = true
+input_core.workspace = true
+net_backend_resources.workspace = true
+virt.workspace = true
+vmm_core_defs.workspace = true
+
+guid.workspace = true
+mesh_worker.workspace = true
+mesh.workspace = true
+unix_socket = { workspace = true, features = ["mesh"] }
+
+anyhow.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+virt_whp.workspace = true
+vmbus_proxy.workspace = true
+
+[lints]
+workspace = true

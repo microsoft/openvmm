@@ -40,6 +40,8 @@ vnc_worker_defs.workspace = true
 chipset.workspace = true
 chipset_device.workspace = true
 chipset_device_resources.workspace = true
+chipset_device_worker.workspace = true
+chipset_device_worker_defs.workspace = true
 closeable_mutex.workspace = true
 profiler_worker = { workspace = true, optional = true }
 chipset_legacy.workspace = true
@@ -179,6 +181,7 @@ firmware_pcat.workspace = true
 [dev-dependencies]
 guest_emulation_transport = { workspace = true, features = ["test_utilities"] }
 test_with_tracing.workspace = true
+nvme_spec.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

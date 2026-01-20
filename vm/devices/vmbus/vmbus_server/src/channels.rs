@@ -2051,6 +2051,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         offer_id,
                         channel,
                         &mut self.inner.gpadls,
+                        &mut self.inner.incomplete_gpadls,
                         &mut self.inner.assigned_channels,
                         &mut self.inner.assigned_monitors,
                         None,
@@ -2535,6 +2536,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     offer_id,
                     channel,
                     gpadls,
+                    &mut self.inner.incomplete_gpadls,
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
                     None,
@@ -2755,14 +2757,26 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         };
 
         // If we're not done, track the offer ID for GPADL body requests
-        if !done
-            && self
-                .inner
-                .incomplete_gpadls
-                .insert(input.gpadl_id, offer_id)
-                .is_some()
-        {
-            unreachable!("gpadl ID validated above");
+        // N.B. The above only checks if the combination of (gpadl_id, offer_id) is unique, which
+        //      allows for a guest to reuse a gpadl ID in use by a reserved channel (which it may
+        //      not know about). But for in-progress GPADLs we need to ensure the gpadl ID itself
+        //      is unique, since the body message doesn't include a channel ID.
+        if !done {
+            match self.inner.incomplete_gpadls.entry(input.gpadl_id) {
+                Entry::Vacant(entry) => {
+                    entry.insert(offer_id);
+                }
+                Entry::Occupied(_) => {
+                    self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
+                    tracelimit::error_ratelimited!(
+                        channel_id = ?input.channel_id,
+                        key = %channel.offer.key(),
+                        gpadl_id = ?input.gpadl_id,
+                        "duplicate in-progress gpadl ID",
+                    );
+                    return Err(ChannelError::DuplicateGpadlId);
+                }
+            }
         }
 
         if done
@@ -3176,6 +3190,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         offer_id: OfferId,
         channel: &mut Channel,
         gpadls: &mut GpadlMap,
+        incomplete_gpadls: &mut IncompleteGpadlMap,
         assigned_channels: &mut AssignedChannels,
         assigned_monitors: &mut AssignedMonitors,
         info: Option<&ConnectionInfo>,
@@ -3187,7 +3202,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 return true;
             }
             match gpadl.state {
-                GpadlState::InProgress => false,
+                GpadlState::InProgress => {
+                    incomplete_gpadls.remove(&gpadl_id);
+                    false
+                }
                 GpadlState::Offered => {
                     gpadl.state = GpadlState::OfferedTearingDown;
                     true
@@ -3280,6 +3298,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     offer_id,
                     channel,
                     &mut self.inner.gpadls,
+                    &mut self.inner.incomplete_gpadls,
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
                     self.inner.state.get_connected_info(),

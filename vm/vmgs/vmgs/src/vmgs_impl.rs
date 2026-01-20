@@ -47,6 +47,7 @@ enum LogOpType {
 
 /// Info about a specific VMGS file.
 #[derive(Debug)]
+#[cfg_attr(feature = "mesh", derive(mesh_protobuf::Protobuf))]
 pub struct VmgsFileInfo {
     /// Number of bytes allocated in the file.
     pub allocated_bytes: u64,
@@ -112,6 +113,7 @@ pub struct Vmgs {
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
     encrypted_metadata_keys: [VmgsEncryptionKey; 2],
     reprovisioned: bool,
+    provisioned_this_boot: bool,
 
     #[cfg_attr(feature = "inspect", inspect(skip))]
     logger: Option<Arc<dyn VmgsLogger>>,
@@ -245,7 +247,9 @@ impl Vmgs {
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Self, Error> {
         let active_header = Self::format(&mut storage, VMGS_VERSION_3_0).await?;
-        Self::finish_open(storage, active_header, 0, logger).await
+        let mut vmgs = Self::finish_open(storage, active_header, 0, logger).await?;
+        vmgs.provisioned_this_boot = true;
+        Ok(vmgs)
     }
 
     async fn open_inner(
@@ -265,15 +269,7 @@ impl Vmgs {
     }
 
     async fn open_header(storage: &mut VmgsStorage) -> Result<(VmgsHeader, usize), Error> {
-        let (header_1, header_2) = read_headers_inner(storage).await?;
-
-        let empty_header = VmgsHeader::new_zeroed();
-
-        if header_1.as_bytes() == empty_header.as_bytes()
-            && header_2.as_bytes() == empty_header.as_bytes()
-        {
-            return Err(Error::EmptyFile);
-        }
+        let (header_1, header_2) = read_headers_inner(storage).await.map_err(|(e, _)| e)?;
 
         let active_header_index =
             get_active_header(validate_header(&header_1), validate_header(&header_2))?;
@@ -367,6 +363,7 @@ impl Vmgs {
             metadata_key: VmgsDatastoreKey::new_zeroed(),
             encrypted_metadata_keys,
             reprovisioned,
+            provisioned_this_boot: false,
 
             #[cfg(feature = "inspect")]
             stats: Default::default(),
@@ -1522,6 +1519,11 @@ impl Vmgs {
         self.encryption_algorithm != EncryptionAlgorithm::NONE
     }
 
+    /// Whether the VMGS file was provisioned during the most recent boot
+    pub fn was_provisioned_this_boot(&self) -> bool {
+        self.provisioned_this_boot
+    }
+
     fn prepare_new_header(&self, file_table_fcb: &ResolvedFileControlBlock) -> VmgsHeader {
         VmgsHeader {
             signature: VMGS_SIGNATURE,
@@ -1570,28 +1572,56 @@ mod test_helpers {
     }
 }
 
-/// Read both headers. For compatibility with the V1 format, the headers are
-/// at logical sectors 0 and 1
-pub async fn read_headers(disk: Disk) -> Result<(VmgsHeader, VmgsHeader), Error> {
-    read_headers_inner(&mut VmgsStorage::new(disk)).await
+/// Attempt to read both headers and separately return any validation errors
+pub async fn read_headers(
+    disk: Disk,
+) -> Result<(VmgsHeader, VmgsHeader), (Error, Option<(VmgsHeader, VmgsHeader)>)> {
+    let mut storage = VmgsStorage::new(disk);
+    match (storage.validate(), read_headers_inner(&mut storage).await) {
+        (Ok(_), res) => res,
+        (Err(e), res) => Err((Error::Initialization(e), res.ok())),
+    }
 }
 
-async fn read_headers_inner(storage: &mut VmgsStorage) -> Result<(VmgsHeader, VmgsHeader), Error> {
-    // Read both headers, and determine the active one. For compatibility with
-    // the V1 format, the headers are at logical sectors 0 and 1
+async fn read_headers_inner(
+    storage: &mut VmgsStorage,
+) -> Result<(VmgsHeader, VmgsHeader), (Error, Option<(VmgsHeader, VmgsHeader)>)> {
+    // first_two_blocks will contain enough bytes to read the first two headers
     let mut first_two_blocks = [0; (VMGS_BYTES_PER_BLOCK * 2) as usize];
+
     storage
         .read_block(0, &mut first_two_blocks)
         .await
-        .map_err(Error::ReadDisk)?;
+        .map_err(|e| (Error::ReadDisk(e), None))?;
 
-    // first_two_blocks will contain enough bytes to read the first two headers
     let header_1 = VmgsHeader::read_from_prefix(&first_two_blocks).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     let header_2 =
         VmgsHeader::read_from_prefix(&first_two_blocks[storage.aligned_header_size() as usize..])
             .unwrap()
             .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-    Ok((header_1, header_2))
+    let headers = (header_1, header_2);
+
+    if vmgs_is_v1(&first_two_blocks) {
+        Err((Error::V1Format, Some(headers)))
+    } else if vmgs_headers_empty(&headers.0, &headers.1) {
+        Err((Error::EmptyFile, Some(headers)))
+    } else {
+        Ok(headers)
+    }
+}
+
+fn vmgs_is_v1(first_two_blocks: &[u8; 2 * VMGS_BYTES_PER_BLOCK as usize]) -> bool {
+    const EFI_SIGNATURE: &[u8] = b"EFI PART";
+    const EFI_SIGNATURE_OFFSET: usize = 512;
+
+    EFI_SIGNATURE
+        == &first_two_blocks[EFI_SIGNATURE_OFFSET..EFI_SIGNATURE_OFFSET + EFI_SIGNATURE.len()]
+}
+
+fn vmgs_headers_empty(header_1: &VmgsHeader, header_2: &VmgsHeader) -> bool {
+    let empty_header = VmgsHeader::new_zeroed();
+
+    header_1.as_bytes() == empty_header.as_bytes() && header_2.as_bytes() == empty_header.as_bytes()
 }
 
 /// Determines which header to use given the results of checking the
@@ -1992,6 +2022,7 @@ pub mod save_restore {
                     }
                 }),
                 reprovisioned,
+                provisioned_this_boot: false,
                 logger,
             }
         }
@@ -2020,6 +2051,7 @@ pub mod save_restore {
                 encrypted_metadata_keys,
                 logger: _,
                 reprovisioned,
+                provisioned_this_boot: _,
             } = self;
 
             state::SavedVmgsState {

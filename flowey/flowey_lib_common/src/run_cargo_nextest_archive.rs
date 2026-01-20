@@ -51,7 +51,6 @@ impl FlowNode for Node {
                     packages,
                     features,
                     no_default_features,
-                    unstable_panic_abort_tests,
                     target,
                     profile,
                     extra_env,
@@ -90,7 +89,6 @@ impl FlowNode for Node {
                                 target,
                                 packages,
                                 features,
-                                unstable_panic_abort_tests,
                                 no_default_features,
                                 extra_env,
                             );

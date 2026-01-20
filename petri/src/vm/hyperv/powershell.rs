@@ -76,12 +76,12 @@ impl TryFrom<i32> for HyperVGuestStateIsolationType {
 impl ps::AsVal for HyperVGuestStateIsolationType {
     fn as_val(&self) -> impl '_ + AsRef<OsStr> {
         match self {
-            HyperVGuestStateIsolationType::TrustedLaunch => "TrustedLaunch",
-            HyperVGuestStateIsolationType::Vbs => "VBS",
-            HyperVGuestStateIsolationType::Snp => "SNP",
-            HyperVGuestStateIsolationType::Tdx => "TDX",
-            HyperVGuestStateIsolationType::OpenHCL => "OpenHCL",
-            HyperVGuestStateIsolationType::Disabled => "Disabled",
+            HyperVGuestStateIsolationType::Disabled => "-1",
+            HyperVGuestStateIsolationType::TrustedLaunch => "0",
+            HyperVGuestStateIsolationType::Vbs => "1",
+            HyperVGuestStateIsolationType::Snp => "2",
+            HyperVGuestStateIsolationType::Tdx => "3",
+            HyperVGuestStateIsolationType::OpenHCL => "16",
         }
     }
 }
@@ -282,7 +282,7 @@ pub struct HyperVAddVMHardDiskDriveArgs<'a> {
     /// hard disk drive is to be added. If not specified, the first available
     /// location in the controller specified with the ControllerNumber parameter
     /// is used.
-    pub controller_location: Option<u32>,
+    pub controller_location: Option<u8>,
     /// Specifies the number of the controller to which the hard disk drive is
     /// to be added. If not specified, this parameter assumes the value of the
     /// first available controller at the location specified in the
@@ -369,6 +369,98 @@ pub async fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::
     .await
     .map(|_| ())
     .context("add_vm_dvd_drive")
+}
+
+/// Adds a SCSI controller with the specified VSID and target VTL to the VM
+pub async fn run_add_vm_scsi_controller_with_id(
+    ps_mod: &Path,
+    vmid: &Guid,
+    vsid: &Guid,
+    target_vtl: u32,
+) -> anyhow::Result<()> {
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Add-VmScsiControllerWithId")
+            .arg("Vsid", vsid)
+            .arg("TargetVtl", target_vtl)
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("add_vm_scsi_controller_with_id")
+}
+
+/// Adds or modifies the drive at the specified location on the SCSI controller
+/// with the specified VSID.
+pub async fn run_set_vm_drive_scsi(
+    ps_mod: &Path,
+    vmid: &Guid,
+    controller_vsid: &Guid,
+    controller_location: u8,
+    disk_path: Option<&Path>,
+    dvd: bool,
+    allow_modify_existing: bool,
+) -> anyhow::Result<()> {
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-VmDrive")
+            .arg("ControllerVsid", controller_vsid)
+            .arg("Lun", controller_location)
+            .arg_opt("DiskPath", disk_path)
+            .flag_opt(dvd.then_some("Dvd"))
+            .flag_opt(allow_modify_existing.then_some("AllowModifyExisting"))
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("set_vm_drive_scsi")
+}
+
+/// Adds or modifies the drive at the specified location on the IDE controller
+/// with the specified number.
+pub async fn run_set_vm_drive_ide(
+    ps_mod: &Path,
+    vmid: &Guid,
+    controller_number: u32,
+    controller_location: u8,
+    disk_path: Option<&Path>,
+    dvd: bool,
+    allow_modify_existing: bool,
+) -> anyhow::Result<()> {
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-VmDrive")
+            .arg("ControllerNumber", controller_number)
+            .arg("Lun", controller_location)
+            .arg_opt("DiskPath", disk_path)
+            .flag_opt(dvd.then_some("Dvd"))
+            .flag_opt(allow_modify_existing.then_some("AllowModifyExisting"))
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("set_vm_drive_ide")
 }
 
 /// Runs Add-VMScsiController with the given arguments.
@@ -1196,4 +1288,36 @@ pub async fn run_set_guest_state_isolation_mode(
     .await
     .map(|_| ())
     .context("set_guest_state_isolation_mode")
+}
+
+/// Runs Enable-VMTPM
+pub async fn run_enable_vmtpm(vmid: &Guid) -> anyhow::Result<()> {
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Enable-VMTPM")
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("run_enable_vmtpm")
+}
+
+/// Runs Disable-VMTPM
+pub async fn run_disable_vmtpm(vmid: &Guid) -> anyhow::Result<()> {
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Disable-VMTPM")
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("run_disable_vmtpm")
 }

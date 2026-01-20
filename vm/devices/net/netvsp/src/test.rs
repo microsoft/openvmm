@@ -136,6 +136,7 @@ struct TestNicEndpointState {
     pub use_vf: Option<bool>,
     // Used for any queries since use_vf is often reset after check.
     pub last_use_vf: Option<bool>,
+    pub vf_state: Option<TestVirtualFunctionState>,
     pub stop_endpoint_counter: usize,
     pub link_status_updater: Option<mesh::Sender<VecDeque<bool>>>,
     pub queues: Vec<mesh::Sender<Vec<u8>>>,
@@ -147,6 +148,7 @@ impl TestNicEndpointState {
             poll_iterations_required: 1,
             use_vf: None,
             last_use_vf: None,
+            vf_state: None,
             stop_endpoint_counter: 0,
             link_status_updater: None,
             queues: Vec::new(),
@@ -280,9 +282,22 @@ impl net_backend::Endpoint for TestNicEndpoint {
             let locked_inner = inner.lock().await;
             let endpoint_state = locked_inner.endpoint_state.as_ref().unwrap();
             let mut locked_data = endpoint_state.lock();
-            locked_data.use_vf = Some(use_vf);
-            locked_data.last_use_vf = Some(use_vf);
-            locked_data.poll_iterations_required
+            if locked_data
+                .vf_state
+                .as_ref()
+                .is_none_or(|vf_state| vf_state.is_ready())
+            {
+                locked_data.use_vf = Some(use_vf);
+                locked_data.last_use_vf = Some(use_vf);
+                locked_data.poll_iterations_required
+            } else {
+                if use_vf {
+                    anyhow::bail!("VF not ready");
+                } else {
+                    // VF not available, but switching away from using it.
+                    return Ok(());
+                }
+            }
         };
         std::future::poll_fn(move |cx| {
             if iter <= 1 {
@@ -335,7 +350,15 @@ impl NetQueue for TestNicQueue {
         }
         if self.next_rx_packet.is_none() {
             let recv = std::pin::pin!(self.rx.recv());
-            self.next_rx_packet = Some(std::task::ready!(recv.poll(cx)).unwrap());
+            match std::task::ready!(recv.poll(cx)) {
+                Ok(packet) => {
+                    self.next_rx_packet = Some(packet);
+                }
+                Err(err) => {
+                    tracing::error!(?err, "Error receiving packet");
+                    return Poll::Pending;
+                }
+            }
         }
         Poll::Ready(())
     }
@@ -826,6 +849,7 @@ struct TestNicChannel<'a> {
     gpadl_map: Arc<GpadlMap>,
     recv_buf_id: GpadlId,
     send_buf_id: GpadlId,
+    send_offset: usize,
     channel_id: GpadlId,
     host_to_guest_event: Arc<SlimEvent>,
     subchannels: HashMap<u32, TestNicSubchannel>,
@@ -860,6 +884,7 @@ impl<'a> TestNicChannel<'a> {
             gpadl_map,
             recv_buf_id: GpadlId(0),
             send_buf_id: GpadlId(0),
+            send_offset: 0,
             channel_id,
             host_to_guest_event,
             subchannels: HashMap::new(),
@@ -1232,7 +1257,9 @@ impl<'a> TestNicChannel<'a> {
         let message_length = size_of::<rndisprot::MessageHeader>() + size_of::<T>() + extra.len();
         let mem = self.nic.mock_vmbus.memory.clone();
         let gpadl_view = self.gpadl_map.clone().view().map(self.send_buf_id).unwrap();
-        let mut buf_writer = PagedRanges::new(&*gpadl_view).writer(&mem);
+        let mut range = PagedRanges::new(&*gpadl_view);
+        range.skip(self.send_offset);
+        let mut buf_writer = range.writer(&mem);
         buf_writer
             .write(
                 rndisprot::MessageHeader {
@@ -1261,13 +1288,17 @@ impl<'a> TestNicChannel<'a> {
             padding: &[],
         };
         let gpadl_map_view = self.gpadl_map.clone().view().map(self.send_buf_id).unwrap();
-        let gpa_range = gpadl_map_view.first().unwrap().subrange(0, message_length);
+        let gpa_range = gpadl_map_view
+            .first()
+            .unwrap()
+            .subrange(self.send_offset, message_length);
         self.write(OutgoingPacket {
             transaction_id: self.transaction_id,
             packet_type: OutgoingPacketType::GpaDirect(&[gpa_range]),
             payload: &message.payload(),
         })
         .await;
+        self.send_offset += message_length;
         self.transaction_id += 1;
     }
 
@@ -1624,7 +1655,8 @@ enum TestVirtualFunctionStateChange {
 struct TestVirtualFunctionState {
     id: Arc<parking_lot::Mutex<Option<u32>>>,
     send_runtime_update: Arc<parking_lot::Mutex<mesh::Sender<TestVirtualFunctionStateChange>>>,
-    is_ready: Arc<(parking_lot::Mutex<Option<bool>>, event_listener::Event)>,
+    is_ready: Arc<parking_lot::Mutex<bool>>,
+    is_ready_update: Arc<(parking_lot::Mutex<Option<bool>>, event_listener::Event)>,
     oneshot_ready_callback: Arc<parking_lot::Mutex<Option<mesh::OneshotSender<Rpc<bool, ()>>>>>,
 }
 
@@ -1636,7 +1668,8 @@ impl TestVirtualFunctionState {
         Self {
             id: Arc::new(parking_lot::Mutex::new(id)),
             send_runtime_update: Arc::new(parking_lot::Mutex::new(send_runtime_update)),
-            is_ready: Default::default(),
+            is_ready: Arc::new(parking_lot::Mutex::new(false)),
+            is_ready_update: Default::default(),
             oneshot_ready_callback: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
@@ -1651,6 +1684,9 @@ impl TestVirtualFunctionState {
         timeout: Option<Duration>,
     ) -> anyhow::Result<()> {
         *self.id.lock() = new_id;
+        if new_id.is_none() && self.is_ready() {
+            self.set_ready(false).await;
+        }
         let send_update = self
             .send_runtime_update
             .lock()
@@ -1672,9 +1708,9 @@ impl TestVirtualFunctionState {
         let mut ctx = mesh::CancelContext::new().with_timeout(timeout);
 
         loop {
-            let listener = self.is_ready.1.listen();
+            let listener = self.is_ready_update.1.listen();
             {
-                let mut val = self.is_ready.0.lock();
+                let mut val = self.is_ready_update.0.lock();
                 if *val == Some(is_ready) {
                     val.take();
                     return Ok(());
@@ -1685,16 +1721,22 @@ impl TestVirtualFunctionState {
     }
 
     pub fn is_ready_unchanged(&self) -> bool {
-        self.is_ready.0.lock().is_none()
+        self.is_ready_update.0.lock().is_none()
+    }
+
+    pub fn is_ready(&self) -> bool {
+        *self.is_ready.lock()
     }
 
     pub async fn set_ready(&self, is_ready: bool) {
+        tracing::info!(is_ready, "set_ready");
+        *self.is_ready.lock() = is_ready;
         let ready_callback = self.oneshot_ready_callback.lock().take();
         if let Some(ready_callback) = ready_callback {
             ready_callback.call(|x| x, is_ready).await.unwrap();
         }
-        *self.is_ready.0.lock() = Some(is_ready);
-        self.is_ready.1.notify(usize::MAX);
+        *self.is_ready_update.0.lock() = Some(is_ready);
+        self.is_ready_update.1.notify(usize::MAX);
     }
 }
 
@@ -1704,10 +1746,10 @@ struct TestVirtualFunction {
 }
 
 impl TestVirtualFunction {
-    pub fn new(id: u32) -> Self {
+    pub fn new(id: Option<u32>) -> Self {
         let (tx, rx) = mesh::channel();
         Self {
-            state: TestVirtualFunctionState::new(Some(id), tx),
+            state: TestVirtualFunctionState::new(id, tx),
             recv_update: rx,
         }
     }
@@ -1723,6 +1765,10 @@ impl VirtualFunction for TestVirtualFunction {
         self.state.id()
     }
     async fn guest_ready_for_device(&mut self) {
+        if self.state.is_ready() {
+            return;
+        }
+        self.state.set_ready(true).await;
         // Wait a random amount of time before completing the request.
         let mut wait_ms: u64 = 0;
         getrandom::fill(wait_ms.as_mut_bytes()).expect("rng failure");
@@ -1731,7 +1777,6 @@ impl VirtualFunction for TestVirtualFunction {
         let mut ctx = mesh::CancelContext::new().with_timeout(Duration::from_millis(wait_ms));
         let _ = ctx.until_cancelled(pending::<()>()).await;
         tracing::info!(id = self.state.id(), "VF ready");
-        self.state.set_ready(true).await;
     }
     async fn wait_for_state_change(&mut self) -> Rpc<(), ()> {
         match self.recv_update.select_next_some().await {
@@ -2019,7 +2064,7 @@ async fn initialize_rndis_with_vf_without_completion(driver: DefaultDriver) {
 async fn test_initialize_rndis_with_vf_common(driver: DefaultDriver, with_vf_completion: bool) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -2159,7 +2204,7 @@ async fn test_initialize_rndis_with_vf_common(driver: DefaultDriver, with_vf_com
 async fn initialize_rndis_with_vf_alternate_id(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let get_guest_os_id = Box::new(move || -> HvGuestOsId {
         let id: u64 = HvGuestOsMicrosoft::new()
@@ -2278,7 +2323,7 @@ async fn initialize_rndis_with_vf_alternate_id(driver: DefaultDriver) {
 async fn initialize_rndis_with_vf_multi_open(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -2458,7 +2503,7 @@ async fn initialize_rndis_with_vf_multi_open(driver: DefaultDriver) {
 async fn initialize_rndis_with_prev_vf_switch_data_path(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -2645,7 +2690,7 @@ async fn rndis_handle_packet_errors(driver: DefaultDriver) {
 async fn stop_start_with_vf(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -2750,15 +2795,7 @@ async fn stop_start_with_vf(driver: DefaultDriver) {
         .expect("completion message");
 
     assert_eq!(endpoint_state.lock().use_vf.take().unwrap(), true);
-
-    // The switch data path triggers a VF update as it uses the common restore
-    // 'guest VF' state logic.
-    assert!(
-        test_vf_state
-            .await_ready(true, Duration::from_millis(333))
-            .await
-            .is_ok()
-    );
+    assert!(test_vf_state.is_ready_unchanged());
 
     // VF should remain visible through start/stop
     channel.stop().await;
@@ -2773,7 +2810,7 @@ async fn stop_start_with_vf(driver: DefaultDriver) {
 async fn save_restore_with_vf(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -2841,7 +2878,7 @@ async fn save_restore_with_vf(driver: DefaultDriver) {
 
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let old_test_vf_state = test_vf_state;
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
@@ -2882,7 +2919,7 @@ async fn save_restore_with_vf(driver: DefaultDriver) {
 
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let old_test_vf_state = test_vf_state;
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
@@ -2948,7 +2985,7 @@ async fn save_restore_with_vf(driver: DefaultDriver) {
 
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -2970,7 +3007,7 @@ async fn save_restore_with_vf(driver: DefaultDriver) {
 async fn save_restore_with_vf_multi_open(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -3116,7 +3153,7 @@ async fn save_restore_with_vf_multi_open(driver: DefaultDriver) {
 
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let old_test_vf_state = test_vf_state;
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
@@ -3209,7 +3246,7 @@ async fn save_restore_with_vf_multi_open(driver: DefaultDriver) {
 
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -3232,7 +3269,7 @@ async fn test_save_restore_with_rss_table(
 ) -> anyhow::Result<()> {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -3339,7 +3376,7 @@ async fn test_save_restore_with_rss_table(
     let mut endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
     // Change the indirection table size on the endpoint
     endpoint.multiqueue_support.indirection_table_size = restore_indirection_table_size;
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -3492,7 +3529,7 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
     proxy_endpoint_control.connect(Box::new(endpoint)).unwrap();
     proxy_endpoint.wait_for_endpoint_action().await;
 
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -3591,7 +3628,10 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
         })
         .await;
 
-    assert!(test_vf_state.is_ready_unchanged());
+    test_vf_state
+        .await_ready(false, Duration::ZERO)
+        .await
+        .unwrap();
 
     //
     // Add back VF capability and switch data path
@@ -3660,12 +3700,7 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
         .expect("completion message");
 
     assert_eq!(endpoint_state.lock().use_vf.take().unwrap(), true);
-    assert!(
-        test_vf_state
-            .await_ready(true, Duration::from_millis(333))
-            .await
-            .is_ok()
-    );
+    assert!(test_vf_state.is_ready_unchanged());
 
     //
     // Remove VF ID. The VF state that tracks whether the VF can be offered
@@ -3681,7 +3716,10 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
         .unwrap();
 
     assert_eq!(endpoint_state.lock().use_vf.take().unwrap(), false);
-    assert!(test_vf_state.is_ready_unchanged());
+    test_vf_state
+        .await_ready(false, Duration::ZERO)
+        .await
+        .unwrap();
 
     //
     // Disconnect and reconnect endpoint
@@ -3782,12 +3820,7 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
             .await
             .is_err()
     );
-    assert!(
-        test_vf_state
-            .await_ready(true, Duration::from_millis(333))
-            .await
-            .is_ok()
-    );
+    assert!(test_vf_state.is_ready_unchanged());
     assert!(endpoint_state.lock().use_vf.is_none());
 }
 
@@ -3799,7 +3832,7 @@ async fn link_status_update(driver: DefaultDriver) {
     proxy_endpoint_control.connect(Box::new(endpoint)).unwrap();
     proxy_endpoint.wait_for_endpoint_action().await;
 
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -4000,7 +4033,7 @@ async fn link_status_update(driver: DefaultDriver) {
 async fn send_rndis_reset_message(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -4032,7 +4065,7 @@ async fn send_rndis_reset_message(driver: DefaultDriver) {
 async fn send_rndis_indicate_status_message(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -4068,7 +4101,7 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
     const TOTAL_QUEUES: u32 = 4;
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -4351,7 +4384,7 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
 async fn send_rndis_set_ex_message(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -4388,7 +4421,7 @@ async fn send_rndis_set_ex_message(driver: DefaultDriver) {
 async fn set_rss_parameter(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -4486,7 +4519,7 @@ async fn set_rss_parameter(driver: DefaultDriver) {
 async fn set_rss_parameter_no_valid_queues(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -4588,7 +4621,7 @@ async fn set_rss_parameter_no_valid_queues(driver: DefaultDriver) {
 async fn set_rss_parameter_unused_first_queue(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -4943,7 +4976,7 @@ async fn set_rss_parameter_bufs_not_evenly_divisible(driver: DefaultDriver) {
     const TOTAL_QUEUES: u32 = 6;
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -5226,7 +5259,7 @@ async fn set_rss_parameter_bufs_not_evenly_divisible(driver: DefaultDriver) {
 async fn race_coordinator_and_worker_stop_events(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf = Box::new(TestVirtualFunction::new(Some(123)));
     let test_vf_state = test_vf.state();
     let builder = Nic::builder();
     let nic = builder.virtual_function(test_vf).build(
@@ -5325,7 +5358,7 @@ async fn race_coordinator_and_worker_stop_events(driver: DefaultDriver) {
             }
         }
 
-        // send switch data path message
+        // send switch data path messages
         channel
             .write(OutgoingPacket {
                 transaction_id: 123,
@@ -5335,11 +5368,23 @@ async fn race_coordinator_and_worker_stop_events(driver: DefaultDriver) {
                         message_type: protocol::MESSAGE4_TYPE_SWITCH_DATA_PATH,
                     },
                     data: protocol::Message4SwitchDataPath {
-                        active_data_path: if i % 2 == 0 {
-                            protocol::DataPath::VF.0
-                        } else {
-                            protocol::DataPath::SYNTHETIC.0
-                        },
+                        active_data_path: protocol::DataPath::SYNTHETIC.0,
+                    },
+                    padding: &[],
+                }
+                .payload(),
+            })
+            .await;
+        channel
+            .write(OutgoingPacket {
+                transaction_id: 123,
+                packet_type: OutgoingPacketType::InBandWithCompletion,
+                payload: &NvspMessage {
+                    header: protocol::MessageHeader {
+                        message_type: protocol::MESSAGE4_TYPE_SWITCH_DATA_PATH,
+                    },
+                    data: protocol::Message4SwitchDataPath {
+                        active_data_path: protocol::DataPath::VF.0,
                     },
                     padding: &[],
                 }

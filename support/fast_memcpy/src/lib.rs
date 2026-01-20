@@ -45,7 +45,12 @@ pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *m
                     // Copy the first 16 bytes, then resume at the next aligned
                     // address.
                     copy_one::<U128>(dest.cast(), src.cast());
-                    let offset = 16 - dest.addr() % 16;
+                    // If the buffer was already 16-byte aligned, don't
+                    // advance--keep the original alignment (which may be better
+                    // than 16). This is useful on Intel, where `rep movsq`
+                    // prefers 64-byte alignment when it can get it, and the
+                    // caller may have provided that.
+                    let offset = dest.addr().wrapping_neg() % 16;
                     copy_loop_dest_aligned_forward::<U128x4>(
                         dest.byte_add(offset).cast(),
                         src.byte_add(offset).cast(),
@@ -133,13 +138,10 @@ struct U128x2(U128, U128);
 struct U128x4(U128, U128, U128, U128);
 
 // Use a SIMD type when possible to encourage better register use.
-// xtask-fmt allow-target-arch sys-crate
 #[cfg(target_arch = "x86_64")]
 type U128 = core::arch::x86_64::__m128i;
-// xtask-fmt allow-target-arch sys-crate
 #[cfg(target_arch = "aarch64")]
 type U128 = core::arch::aarch64::uint8x16_t;
-// xtask-fmt allow-target-arch sys-crate
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 type U128 = u128;
 
@@ -258,15 +260,21 @@ unsafe fn copy_loop_dest_aligned_forward<T: Chunk>(dest: *mut T, src: *const T, 
 
         // Save the tail now in case it is overlapping.
         let tail = read_one(src.byte_add(len - size_of::<T>()));
-        // Copy until the last chunk.
-        let mut i = 0;
-        loop {
-            write_one_aligned(dest.byte_add(i), read_one(src.byte_add(i)));
-            i += size_of::<T>();
-            if i >= len - size_of::<T>() {
-                break;
+
+        if len < ARCH_LARGE_COPY_THRESHOLD {
+            // Copy until the last chunk.
+            let mut i = 0;
+            loop {
+                write_one_aligned(dest.byte_add(i), read_one(src.byte_add(i)));
+                i += size_of::<T>();
+                if i >= len - size_of::<T>() {
+                    break;
+                }
             }
+        } else {
+            arch_copy_forward_no_tail::<T>(dest.cast(), src.cast(), len);
         }
+
         // Write the tail.
         write_one(dest.byte_add(len - size_of::<T>()), tail);
     }
@@ -299,6 +307,44 @@ unsafe fn copy_loop_dest_aligned_backward<T: Chunk>(dest: *mut T, src: *const T,
         }
         // Write the head.
         write_one(dest, head);
+    }
+}
+
+const ARCH_LARGE_COPY_THRESHOLD: usize = if cfg!(target_arch = "x86_64") {
+    // Use rep movsq for relatively large copies.
+    1800
+} else {
+    // No architecture-specific large copy implementation.
+    usize::MAX
+};
+
+/// Copies bytes from `src` to `dest`, minus some tail portion no bigger than
+/// `T`--the caller must handle the tail separately, but the buffers must include
+/// a full tail.
+unsafe fn arch_copy_forward_no_tail<T>(dest: *mut u8, src: *const u8, len: usize) {
+    // On x86_64, use `rep movsq` for large copies. This seems to be fast on
+    // Intel and AMD, on aligned and unaligned data. (AMD's `rep movsb` is slow
+    // on unaligned data).
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Copy the buffer minus the tail, but copy part of the tail if needed to
+        // make the length a multiple of 8.
+        const { assert!(size_of::<T>() >= 8) };
+        let count = (len - size_of::<T>()).div_ceil(8);
+        unsafe {
+            core::arch::asm!(
+                "rep movsq",
+                inout("rdi") dest => _,
+                inout("rsi") src => _,
+                inout("rcx") count => _,
+                options(nostack, preserves_flags)
+            );
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (dest, src, len, size_of::<T>());
+        unreachable!();
     }
 }
 

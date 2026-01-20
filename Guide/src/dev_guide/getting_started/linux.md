@@ -15,11 +15,13 @@ PS> wsl --install
 This should install WSL2 using the default Ubuntu linux distribution.
 You can check that the installation completed successfully by running the
 following command in a Powershell window.
+
 ```powershell
 PS> wsl -l -v
   NAME            STATE           VERSION
 * Ubuntu          Running         2
 ```
+
 Once that command has completed, you will need to open WSL to complete the
 installation and set your password. You can open WSL by typing `wsl` or `bash`
 into Command Prompt or Powershell, or by opening the "Ubuntu" Windows Terminal
@@ -68,8 +70,8 @@ clone from Linux! It will result in serious performance issues, and may break
 certain functionality (e.g: cross-compiling Windows binaries).
 
 ```bash
-$ cd ~/src/
-$ git clone https://github.com/microsoft/openvmm.git
+cd ~/src/
+git clone https://github.com/microsoft/openvmm.git
 ```
 
 ## Next Steps
