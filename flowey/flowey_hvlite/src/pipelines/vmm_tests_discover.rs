@@ -106,13 +106,12 @@ impl IntoPipeline for VmmTestsDiscoverCli {
                 local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
                     interactive: true,
                     auto_install: false,
-                    force_nuget_mono: false,
-                    external_nuget_auth: false,
                     ignore_rust_version: true,
                 }),
                 verbose: ReadVar::from_static(verbose),
                 locked: false,
                 deny_warnings: false,
+                no_incremental: false,
             })
             .dep_on(
                 |ctx| flowey_lib_hvlite::_jobs::local_discover_vmm_tests_artifacts::Params {
@@ -121,6 +120,8 @@ impl IntoPipeline for VmmTestsDiscoverCli {
                     output,
                     release,
                     done: ctx.new_done_handle(),
+                    artifacts_json_out: None,
+                    pre_build_done: Vec::new(),
                 },
             )
             .finish();

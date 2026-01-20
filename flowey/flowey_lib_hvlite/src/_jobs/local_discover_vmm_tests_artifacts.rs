@@ -5,7 +5,6 @@
 
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
-use std::path::Path;
 use std::path::PathBuf;
 
 flowey_request! {
@@ -21,6 +20,11 @@ flowey_request! {
         pub release: bool,
         /// Handle to signal job completion
         pub done: WriteVar<SideEffect>,
+        /// If set, also write the artifacts JSON string to this variable.
+        pub artifacts_json_out: Option<WriteVar<String>>,
+        /// Additional side-effect dependencies to wait for before building
+        /// (e.g., install_cargo_nextest in CI).
+        pub pre_build_done: Vec<ReadVar<SideEffect>>,
     }
 }
 
@@ -40,6 +44,8 @@ impl SimpleFlowNode for Node {
             output,
             release,
             done,
+            artifacts_json_out,
+            pre_build_done,
         } = request;
 
         let target_str = target.as_triple().to_string();
@@ -47,7 +53,11 @@ impl SimpleFlowNode for Node {
 
         ctx.emit_rust_step("build vmm_tests and discover artifacts", |ctx| {
             done.claim(ctx);
+            for dep in pre_build_done {
+                dep.claim(ctx);
+            }
             let openvmm_repo_path = openvmm_repo_path.claim(ctx);
+            let artifacts_json_out = artifacts_json_out.map(|v| v.claim(ctx));
             move |rt| {
                 let openvmm_repo_path = rt.read(openvmm_repo_path);
 
@@ -58,12 +68,23 @@ impl SimpleFlowNode for Node {
                 );
 
                 // Step 1: Use nextest to resolve the filter expression to test names and get binary path
-                let (test_binary, test_names) = get_matching_tests_from_nextest(
-                    &openvmm_repo_path,
-                    &filter,
-                    &target_str,
-                    release,
-                )?;
+                rt.sh.change_dir(&openvmm_repo_path);
+                let mut cmd = flowey::shell_cmd!(
+                    rt,
+                    "cargo nextest list -p vmm_tests --target {target_str} --filter-expr {filter} --message-format json"
+                );
+                if release {
+                    cmd = cmd.arg("--release");
+                }
+                let nextest_output = cmd.output()?;
+                anyhow::ensure!(
+                    nextest_output.status.success(),
+                    "cargo nextest list failed: {}",
+                    String::from_utf8_lossy(&nextest_output.stderr)
+                );
+                let nextest_stdout = String::from_utf8(nextest_output.stdout)
+                    .map_err(|e| anyhow::anyhow!("nextest output is not valid UTF-8: {}", e))?;
+                let (test_binary, test_names) = parse_nextest_output(&nextest_stdout)?;
 
                 if test_names.is_empty() {
                     log::warn!("No tests match the filter: {}", filter);
@@ -80,6 +101,9 @@ impl SimpleFlowNode for Node {
                     } else {
                         println!("{}", empty_output_str);
                     }
+                    if let Some(var) = artifacts_json_out {
+                        rt.write(var, &empty_output_str);
+                    }
                     return Ok(());
                 }
 
@@ -89,12 +113,26 @@ impl SimpleFlowNode for Node {
                 }
 
                 // Step 2: Query petri for artifacts of each matching test
-                let json_output = get_artifacts_for_tests(
-                    &openvmm_repo_path,
-                    &test_binary,
-                    &test_names,
-                    &target_str,
-                )?;
+                log::info!("Using test binary: {}", test_binary.display());
+                log::info!(
+                    "Querying artifacts for {} tests in a single invocation",
+                    test_names.len()
+                );
+                let stdin_data = test_names.iter().map(|n| format!("{n}\n")).collect::<String>();
+                let artifact_output = flowey::shell_cmd!(
+                    rt,
+                    "{test_binary} --list-required-artifacts --tests-from-stdin"
+                )
+                .stdin(stdin_data)
+                .output()?;
+                anyhow::ensure!(
+                    artifact_output.status.success(),
+                    "test binary failed: {}",
+                    String::from_utf8_lossy(&artifact_output.stderr)
+                );
+                let artifact_stdout = String::from_utf8(artifact_output.stdout)
+                    .map_err(|e| anyhow::anyhow!("test output is not valid UTF-8: {}", e))?;
+                let json_output = parse_artifacts_output(&artifact_stdout, &target_str)?;
 
                 if let Some(output_path) = output {
                     std::fs::write(&output_path, &json_output)
@@ -105,6 +143,10 @@ impl SimpleFlowNode for Node {
                     println!("{}", json_output);
                 }
 
+                if let Some(var) = artifacts_json_out {
+                    rt.write(var, &json_output);
+                }
+
                 Ok(())
             }
         });
@@ -113,45 +155,9 @@ impl SimpleFlowNode for Node {
     }
 }
 
-/// Use `cargo nextest list` to resolve a filter expression to test names and get the binary path.
-fn get_matching_tests_from_nextest(
-    repo_path: &Path,
-    filter: &str,
-    target: &str,
-    release: bool,
-) -> anyhow::Result<(PathBuf, Vec<String>)> {
-    let mut cmd = std::process::Command::new("cargo");
-    cmd.arg("nextest")
-        .arg("list")
-        .arg("-p")
-        .arg("vmm_tests")
-        .arg("--target")
-        .arg(target)
-        .arg("--filter-expr")
-        .arg(filter)
-        .arg("--message-format")
-        .arg("json");
-
-    if release {
-        cmd.arg("--release");
-    }
-
-    cmd.current_dir(repo_path);
-
-    let output = cmd
-        .output()
-        .map_err(|e| anyhow::anyhow!("failed to run cargo nextest list: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("cargo nextest list failed: {}", stderr);
-    }
-
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|e| anyhow::anyhow!("nextest output is not valid UTF-8: {}", e))?;
-
-    // Parse the JSON output to extract matching test names and binary path
-    let json: serde_json::Value = serde_json::from_str(&stdout)
+/// Parse `cargo nextest list --message-format json` output to extract test names and binary path.
+fn parse_nextest_output(stdout: &str) -> anyhow::Result<(PathBuf, Vec<String>)> {
+    let json: serde_json::Value = serde_json::from_str(stdout)
         .map_err(|e| anyhow::anyhow!("failed to parse nextest JSON output: {}", e))?;
 
     let mut test_names = Vec::new();
@@ -189,61 +195,9 @@ fn get_matching_tests_from_nextest(
     Ok((binary_path, test_names))
 }
 
-/// Query petri for artifacts of specific tests.
-///
-/// This function runs the test binary directly (bypassing cargo overhead)
-/// to query artifacts for all tests at once using --tests-from-stdin.
-fn get_artifacts_for_tests(
-    repo_path: &Path,
-    test_binary: &Path,
-    test_names: &[String],
-    target: &str,
-) -> anyhow::Result<String> {
-    use std::io::Write;
-
-    log::info!("Using test binary: {}", test_binary.display());
-    log::info!(
-        "Querying artifacts for {} tests in a single invocation",
-        test_names.len()
-    );
-
-    // Run the test binary with --tests-from-stdin to query all tests at once
-    let mut child = std::process::Command::new(test_binary)
-        .arg("--list-required-artifacts")
-        .arg("--tests-from-stdin")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .current_dir(repo_path)
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("failed to spawn test binary: {}", e))?;
-
-    // Write all test names to stdin
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("failed to open stdin"))?;
-        for test_name in test_names {
-            writeln!(stdin, "{}", test_name)
-                .map_err(|e| anyhow::anyhow!("failed to write to stdin: {}", e))?;
-        }
-    }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| anyhow::anyhow!("failed to wait for test binary: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("test binary failed: {}", stderr);
-    }
-
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|e| anyhow::anyhow!("test output is not valid UTF-8: {}", e))?;
-
-    // Parse the JSON output and add target info
-    let json: serde_json::Value = serde_json::from_str(&stdout)
+/// Parse test binary `--list-required-artifacts` JSON output and add target info.
+fn parse_artifacts_output(stdout: &str, target: &str) -> anyhow::Result<String> {
+    let json: serde_json::Value = serde_json::from_str(stdout)
         .map_err(|e| anyhow::anyhow!("failed to parse test output JSON: {}", e))?;
 
     let required = json

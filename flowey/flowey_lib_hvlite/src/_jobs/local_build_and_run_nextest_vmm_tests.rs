@@ -33,6 +33,8 @@ pub enum VmmTestSelections {
         build: BuildSelections,
         /// Dependencies to install
         deps: VmmTestsDepSelections,
+        /// Whether to download release IGVM files from GitHub
+        needs_release_igvm: bool,
     },
     Flags(VmmTestSelectionFlags),
 }
@@ -144,6 +146,28 @@ impl Default for BuildSelections {
     }
 }
 
+impl BuildSelections {
+    /// No selections (build nothing)
+    pub fn none() -> Self {
+        Self {
+            prep_steps: false,
+            openhcl: false,
+            openvmm: false,
+            openvmm_vhost: false,
+            pipette_windows: false,
+            pipette_linux: false,
+            guest_test_uefi: false,
+            tmks: false,
+            tmk_vmm_windows: false,
+            tmk_vmm_linux: false,
+            vmgstool: false,
+            tpm_guest_tests_windows: false,
+            tpm_guest_tests_linux: false,
+            test_igvm_agent_rpc_server: false,
+        }
+    }
+}
+
 flowey_request! {
     pub struct Params {
         pub target: CommonTriple,
@@ -240,186 +264,195 @@ impl SimpleFlowNode for Node {
         let mut copy_to_dir = Vec::new();
         let extras_dir = Path::new("extras");
 
-        let (nextest_filter_expr, test_artifacts, mut build, deps) = match selections {
-            VmmTestSelections::Custom {
-                filter,
-                artifacts,
-                build,
-                deps,
-            } => (filter, artifacts, build, deps),
-            VmmTestSelections::Flags(VmmTestSelectionFlags {
-                tdx,
-                snp,
-                hyperv_vbs,
-                windows,
-                mut ubuntu,
-                freebsd,
-                linux,
-                mut openhcl,
-                openvmm,
-                hyperv,
-                uefi,
-                pcat,
-                tmk,
-                guest_test_uefi,
-                vmgstool,
-            }) => {
-                let mut build = BuildSelections::default();
+        let (nextest_filter_expr, test_artifacts, mut build, deps, needs_release_igvm) =
+            match selections {
+                VmmTestSelections::Custom {
+                    filter,
+                    artifacts,
+                    build,
+                    deps,
+                    needs_release_igvm,
+                } => (filter, artifacts, build, deps, needs_release_igvm),
+                VmmTestSelections::Flags(VmmTestSelectionFlags {
+                    tdx,
+                    snp,
+                    hyperv_vbs,
+                    windows,
+                    mut ubuntu,
+                    freebsd,
+                    linux,
+                    mut openhcl,
+                    openvmm,
+                    hyperv,
+                    uefi,
+                    pcat,
+                    tmk,
+                    guest_test_uefi,
+                    vmgstool,
+                }) => {
+                    let mut build = BuildSelections::default();
 
-                if !linux_host {
-                    log::warn!(
-                        "Cannot build for linux on windows. Skipping all tests that rely on linux artifacts."
-                    );
-                    ubuntu = false;
-                    openhcl = false;
-                }
+                    if !linux_host {
+                        log::warn!(
+                            "Cannot build for linux on windows. Skipping all tests that rely on linux artifacts."
+                        );
+                        ubuntu = false;
+                        openhcl = false;
+                    }
 
-                // VTL2 not supported on Linux
-                if !matches!(
-                    target_triple.operating_system,
-                    target_lexicon::OperatingSystem::Windows
-                ) {
-                    openhcl = false;
-                }
-
-                let mut filter = "all()".to_string();
-                if !tdx {
-                    filter.push_str(" & !test(tdx)");
-                }
-                if !snp {
-                    filter.push_str(" & !test(snp)");
-                }
-                if !hyperv_vbs {
-                    filter.push_str(" & !(test(vbs) & test(hyperv))");
-                }
-                if !ubuntu {
-                    filter.push_str(" & !test(ubuntu)");
-                }
-                if !windows {
-                    filter.push_str(" & !test(windows)");
-                    build.pipette_windows = false;
-                    build.tpm_guest_tests_windows = false;
-                    build.test_igvm_agent_rpc_server = false;
-                }
-                if !freebsd {
-                    filter.push_str(" & !test(freebsd)");
-                }
-                if !linux {
-                    filter.push_str(" & !test(linux)");
-                    build.tpm_guest_tests_linux = false;
-                }
-                if !linux && !ubuntu {
-                    build.pipette_linux = false;
-                }
-                if !openhcl {
-                    filter.push_str(" & !test(openhcl)");
-                    build.openhcl = false;
-                }
-                if !openvmm {
-                    filter.push_str(" & !test(openvmm)");
-                    build.openvmm = false;
-                }
-                if !hyperv {
-                    filter.push_str(" & !test(hyperv)");
-                }
-                if !uefi {
-                    filter.push_str(" & !test(uefi)");
-                }
-                if !pcat {
-                    filter.push_str(" & !test(pcat)");
-                }
-                if !tmk {
-                    filter.push_str(" & !test(tmk)");
-                    build.tmks = false;
-                    build.tmk_vmm_linux = false;
-                    build.tmk_vmm_windows = false;
-                }
-                if !guest_test_uefi {
-                    filter.push_str(" & !test(guest_test_uefi)");
-                    build.guest_test_uefi = false;
-                }
-                // prep_steps is Windows-only
-                if !tdx && !snp && !hyperv_vbs
-                    || !matches!(
+                    // VTL2 not supported on Linux
+                    if !matches!(
                         target_triple.operating_system,
                         target_lexicon::OperatingSystem::Windows
-                    )
-                {
-                    build.prep_steps = false;
-                }
-                if !vmgstool {
-                    filter.push_str(" & !test(vmgstool)");
-                    build.vmgstool = false;
-                }
-
-                let artifacts = match arch {
-                    CommonArch::X86_64 => {
-                        let mut artifacts = Vec::new();
-
-                        if windows && (tdx || snp || hyperv_vbs) {
-                            artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
-                            artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd);
-                        }
-                        if ubuntu {
-                            artifacts.push(KnownTestArtifacts::Ubuntu2404ServerX64Vhd);
-                            artifacts.push(KnownTestArtifacts::Ubuntu2504ServerX64Vhd);
-                            artifacts.push(KnownTestArtifacts::VmgsWith16kTpm);
-                        }
-                        if windows && uefi {
-                            artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
-                        }
-                        if windows && pcat {
-                            artifacts.push(KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd);
-                        }
-                        if freebsd && pcat {
-                            artifacts.extend_from_slice(&[
-                                KnownTestArtifacts::FreeBsd13_2X64Vhd,
-                                KnownTestArtifacts::FreeBsd13_2X64Iso,
-                            ]);
-                        }
-                        if windows || ubuntu {
-                            artifacts.push(KnownTestArtifacts::VmgsWithBootEntry);
-                        }
-                        if linux {
-                            artifacts.push(KnownTestArtifacts::Alpine323X64Vhd);
-                        }
-
-                        artifacts
+                    ) {
+                        openhcl = false;
                     }
-                    CommonArch::Aarch64 => {
-                        let mut artifacts = Vec::new();
 
-                        if ubuntu {
-                            artifacts.push(KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd);
-                            artifacts.push(KnownTestArtifacts::VmgsWith16kTpm);
-                        }
-                        if windows {
-                            artifacts.push(KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx);
-                        }
-                        if windows || ubuntu {
-                            artifacts.push(KnownTestArtifacts::VmgsWithBootEntry);
-                        }
-                        if linux {
-                            artifacts.push(KnownTestArtifacts::Alpine323Aarch64Vhd);
-                        }
-
-                        artifacts
+                    let mut filter = "all()".to_string();
+                    if !tdx {
+                        filter.push_str(" & !test(tdx)");
                     }
-                };
+                    if !snp {
+                        filter.push_str(" & !test(snp)");
+                    }
+                    if !hyperv_vbs {
+                        filter.push_str(" & !(test(vbs) & test(hyperv))");
+                    }
+                    if !ubuntu {
+                        filter.push_str(" & !test(ubuntu)");
+                    }
+                    if !windows {
+                        filter.push_str(" & !test(windows)");
+                        build.pipette_windows = false;
+                        build.tpm_guest_tests_windows = false;
+                        build.test_igvm_agent_rpc_server = false;
+                    }
+                    if !freebsd {
+                        filter.push_str(" & !test(freebsd)");
+                    }
+                    if !linux {
+                        filter.push_str(" & !test(linux)");
+                        build.tpm_guest_tests_linux = false;
+                    }
+                    if !linux && !ubuntu {
+                        build.pipette_linux = false;
+                    }
+                    if !openhcl {
+                        filter.push_str(" & !test(openhcl)");
+                        build.openhcl = false;
+                    }
+                    if !openvmm {
+                        filter.push_str(" & !test(openvmm)");
+                        build.openvmm = false;
+                    }
+                    if !hyperv {
+                        filter.push_str(" & !test(hyperv)");
+                    }
+                    if !uefi {
+                        filter.push_str(" & !test(uefi)");
+                    }
+                    if !pcat {
+                        filter.push_str(" & !test(pcat)");
+                    }
+                    if !tmk {
+                        filter.push_str(" & !test(tmk)");
+                        build.tmks = false;
+                        build.tmk_vmm_linux = false;
+                        build.tmk_vmm_windows = false;
+                    }
+                    if !guest_test_uefi {
+                        filter.push_str(" & !test(guest_test_uefi)");
+                        build.guest_test_uefi = false;
+                    }
+                    // prep_steps is Windows-only
+                    if !tdx && !snp && !hyperv_vbs
+                        || !matches!(
+                            target_triple.operating_system,
+                            target_lexicon::OperatingSystem::Windows
+                        )
+                    {
+                        build.prep_steps = false;
+                    }
+                    if !vmgstool {
+                        filter.push_str(" & !test(vmgstool)");
+                        build.vmgstool = false;
+                    }
 
-                let deps = match target_triple.operating_system {
-                    target_lexicon::OperatingSystem::Windows => VmmTestsDepSelections::Windows {
-                        hyperv,
-                        whp: openvmm,
-                        hardware_isolation: tdx || snp,
-                    },
-                    target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
-                    _ => unreachable!(),
-                };
+                    let artifacts = match arch {
+                        CommonArch::X86_64 => {
+                            let mut artifacts = Vec::new();
 
-                (filter, artifacts, build, deps)
-            }
-        };
+                            if windows && (tdx || snp || hyperv_vbs) {
+                                artifacts
+                                    .push(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
+                                artifacts
+                                    .push(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd);
+                            }
+                            if ubuntu {
+                                artifacts.push(KnownTestArtifacts::Ubuntu2404ServerX64Vhd);
+                                artifacts.push(KnownTestArtifacts::Ubuntu2504ServerX64Vhd);
+                                artifacts.push(KnownTestArtifacts::VmgsWith16kTpm);
+                            }
+                            if windows && uefi {
+                                artifacts
+                                    .push(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
+                            }
+                            if windows && pcat {
+                                artifacts
+                                    .push(KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd);
+                            }
+                            if freebsd && pcat {
+                                artifacts.extend_from_slice(&[
+                                    KnownTestArtifacts::FreeBsd13_2X64Vhd,
+                                    KnownTestArtifacts::FreeBsd13_2X64Iso,
+                                ]);
+                            }
+                            if windows || ubuntu {
+                                artifacts.push(KnownTestArtifacts::VmgsWithBootEntry);
+                            }
+                            if linux {
+                                artifacts.push(KnownTestArtifacts::Alpine323X64Vhd);
+                            }
+
+                            artifacts
+                        }
+                        CommonArch::Aarch64 => {
+                            let mut artifacts = Vec::new();
+
+                            if ubuntu {
+                                artifacts.push(KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd);
+                                artifacts.push(KnownTestArtifacts::VmgsWith16kTpm);
+                            }
+                            if windows {
+                                artifacts.push(KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx);
+                            }
+                            if windows || ubuntu {
+                                artifacts.push(KnownTestArtifacts::VmgsWithBootEntry);
+                            }
+                            if linux {
+                                artifacts.push(KnownTestArtifacts::Alpine323Aarch64Vhd);
+                            }
+
+                            artifacts
+                        }
+                    };
+
+                    let deps = match target_triple.operating_system {
+                        target_lexicon::OperatingSystem::Windows => {
+                            VmmTestsDepSelections::Windows {
+                                hyperv,
+                                whp: openvmm,
+                                hardware_isolation: tdx || snp,
+                            }
+                        }
+                        target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
+                        _ => unreachable!(),
+                    };
+
+                    // Flags mode always downloads release IGVM for potential servicing tests
+                    (filter, artifacts, build, deps, true)
+                }
+            };
 
         if !linux_host {
             build.openhcl = false;
@@ -907,7 +940,7 @@ impl SimpleFlowNode for Node {
         copy_to_dir.push((nextest_bin.to_owned(), nextest_bin_src));
         let nextest_bin = test_content_dir.join(nextest_bin);
 
-        let release_igvm_files =
+        let release_igvm_files = needs_release_igvm.then(|| {
             ctx.reqv(
                 |v| crate::download_release_igvm_files_from_gh::resolve::Request {
                     arch,
@@ -915,7 +948,8 @@ impl SimpleFlowNode for Node {
                     release_version:
                         crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest(),
                 },
-            );
+            )
+        });
 
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir: ReadVar::from_static(test_content_dir.clone()),
@@ -936,7 +970,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: None,
             get_env: v,
-            release_igvm_files: Some(release_igvm_files),
+            release_igvm_files,
             use_relative_paths: build_only,
         });
 

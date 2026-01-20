@@ -1486,6 +1486,26 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(mi_secure_test_job.finish());
         }
 
+        // test that all petri artifacts have build/download mappings
+        {
+            if matches!(backend_hint, PipelineBackendHint::Github) {
+                let job = pipeline
+                    .new_job(
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                        FlowArch::X86_64,
+                        "test artifact mapping completeness",
+                    )
+                    .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
+                    .dep_on(|ctx| {
+                        flowey_lib_hvlite::_jobs::test_artifact_mapping_completeness::Request {
+                            done: ctx.new_done_handle(),
+                        }
+                    })
+                    .finish();
+                all_jobs.push(job);
+            }
+        }
+
         // ── Wire phase 2: all jobs depend on the quick-check gate ──────────
         if let Some(ref quick_check) = quick_check_job {
             for job in all_jobs.iter() {
