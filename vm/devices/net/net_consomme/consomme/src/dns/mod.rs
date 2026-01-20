@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+
 #![cfg_attr(all(target_os = "linux", not(target_env = "gnu")), allow(dead_code))]
 use parking_lot::Mutex;
 use smoltcp::wire::EthernetAddress;
