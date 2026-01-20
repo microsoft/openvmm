@@ -394,6 +394,13 @@ pub mod artifacts {
         impl IsTestVhd for ALPINE_3_23_X64 {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::X86_64;
+            // TODO: copied from ubuntu, unclear if needed.
+            fn quirks() -> GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    initial_reboot: Some(InitialRebootCondition::WithTpm),
+                })
+            }
         }
 
         impl IsHostedOnHvliteAzureBlobStore for ALPINE_3_23_X64 {
