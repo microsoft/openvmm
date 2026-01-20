@@ -227,7 +227,7 @@ impl VirtioFsFile {
 
     /// Gets the attributes of the open file.
     pub fn get_attr(&self) -> lx::Result<fuse_attr> {
-        let stat = self.file.read().fstat()?.into();
+        let stat = self.file.read().fstat()?;
         Ok(util::stat_to_fuse_attr(&stat))
     }
 
@@ -288,13 +288,13 @@ impl VirtioFsFile {
 
             // Serve cached entries to the buffer.
             for entry in entries {
-                entry_count += 1;
                 match self.write_dir_entry(&mut buffer, fs, entry, self_inode, plus)? {
                     WriteResult::Written => {
+                        entry_count += 1;
                         last_offset_written = entry.offset;
                     }
                     WriteResult::Skipped => {
-                        entry_count -= 1;
+                        // Just continue to next entry.
                     }
                     WriteResult::BufferFull => {
                         break; // Buffer full
