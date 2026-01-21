@@ -86,10 +86,19 @@ impl SimpleFlowNode for Node {
 
                 let mut env = env;
                 if is_windows_exe_via_wsl {
-                    // Build WSLENV string with all env var names we want to pass
-                    // No /p flag needed since paths are already converted to Windows format
-                    let wslenv_value = env.keys().cloned().collect::<Vec<_>>().join(":");
-                    env.insert("WSLENV".to_string(), wslenv_value);
+                    // Inherit the existing WSLENV value if any and append any
+                    // new vars to add. No /p flag needed since paths are
+                    // already converted to Windows format.
+                    let old_wslenv = std::env::var("WSLENV");
+                    let new_wslenv = env.keys().cloned().collect::<Vec<_>>().join(":");
+                    env.insert(
+                        "WSLENV".into(),
+                        format!(
+                            "{}{}",
+                            old_wslenv.map(|s| s + ":").unwrap_or_default(),
+                            new_wslenv
+                        ),
+                    );
                 }
 
                 flowey::shell_cmd!(rt, "{binary_path}").envs(env).run()?;
