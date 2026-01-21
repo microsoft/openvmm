@@ -9,10 +9,14 @@ pub(crate) mod path;
 mod util;
 
 use crate::SetAttributes;
+use lx::StatEx;
 use std::ffi;
 use std::mem;
 use std::os::unix::prelude::*;
 use std::path::Path;
+
+const STATX_BASIC_STATS: u32 = 0x000007ff;
+const STATX_BTIME: u32 = 0x00000800;
 
 // Unix implementation of LxVolume.
 // See crate::LxVolume for more detailed comments.
@@ -42,23 +46,24 @@ impl LxVolume {
         true
     }
 
-    pub fn lstat(&self, path: &Path) -> lx::Result<lx::Stat> {
+    pub fn lstat(&self, path: &Path) -> lx::Result<StatEx> {
         assert!(path.is_relative());
         let path = util::path_to_cstr(path)?;
 
-        // SAFETY: Calling C API as documented, with no special requirements.
-        let stat = unsafe {
-            let mut stat = mem::zeroed();
-            util::check_lx_errno(libc::fstatat(
+        // SAFETY: Calling syscall as documented, with no special requirements.
+        let statx = unsafe {
+            let mut statx: StatEx = mem::zeroed();
+            util::check_lx_errno(libc::syscall(
+                libc::SYS_statx as ffi::c_long,
                 self.root.as_raw_fd(),
                 path.as_ptr(),
-                &mut stat,
                 libc::AT_SYMLINK_NOFOLLOW | libc::AT_EMPTY_PATH,
+                STATX_BASIC_STATS | STATX_BTIME,
+                &mut statx,
             ))?;
-            stat
+            statx
         };
-
-        Ok(util::libc_stat_to_lx_stat(stat))
+        Ok(statx)
     }
 
     pub fn set_attr(&self, path: &Path, attr: SetAttributes) -> lx::Result<()> {
@@ -67,7 +72,7 @@ impl LxVolume {
 
     pub fn set_attr_stat(&self, path: &Path, attr: SetAttributes) -> lx::Result<lx::Stat> {
         util::set_attr(&self.root, Some(path), &attr)?;
-        self.lstat(path)
+        self.lstat(path).map(|x| x.into())
     }
 
     pub fn open(
@@ -105,7 +110,7 @@ impl LxVolume {
 
     pub fn mkdir_stat(&self, path: &Path, options: super::LxCreateOptions) -> lx::Result<lx::Stat> {
         self.mkdir(path, options)?;
-        self.lstat(path)
+        self.lstat(path).map(|x| x.into())
     }
 
     // The options are entirely ignored on Unix, because uid/gid are never used, and mode isn't
@@ -140,7 +145,7 @@ impl LxVolume {
         options: super::LxCreateOptions,
     ) -> lx::Result<lx::Stat> {
         self.symlink(path, target, options)?;
-        self.lstat(path)
+        self.lstat(path).map(|x| x.into())
     }
 
     pub fn read_link(&self, path: &Path) -> lx::Result<lx::LxString> {
@@ -206,7 +211,7 @@ impl LxVolume {
         device_id: lx::dev_t,
     ) -> lx::Result<lx::Stat> {
         self.mknod(path, options, device_id)?;
-        self.lstat(path)
+        self.lstat(path).map(|x| x.into())
     }
 
     pub fn rename(&self, path: &Path, new_path: &Path, flags: u32) -> lx::Result<()> {
@@ -254,7 +259,7 @@ impl LxVolume {
 
     pub fn link_stat(&self, path: &Path, new_path: &Path) -> lx::Result<lx::Stat> {
         self.link(path, new_path)?;
-        self.lstat(new_path)
+        self.lstat(new_path).map(|x| x.into())
     }
 
     pub fn stat_fs(&self, path: &Path) -> lx::Result<lx::StatFs> {
@@ -383,15 +388,22 @@ pub struct LxFile {
 }
 
 impl LxFile {
-    pub fn fstat(&self) -> lx::Result<lx::Stat> {
-        // SAFETY: Calling C API as documented, with no special requirements.
-        let stat = unsafe {
-            let mut stat = mem::zeroed();
-            util::check_lx_errno(libc::fstat(self.fd.as_raw_fd(), &mut stat))?;
-            stat
+    pub fn fstat(&self) -> lx::Result<StatEx> {
+        // SAFETY: Calling syscall as documented, with no special requirements.
+        let empty_path = util::create_cstr("")?;
+        let statx = unsafe {
+            let mut statx: StatEx = mem::zeroed();
+            util::check_lx_errno(libc::syscall(
+                libc::SYS_statx as ffi::c_long,
+                self.fd.as_raw_fd(),
+                empty_path.as_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW | libc::AT_EMPTY_PATH,
+                STATX_BASIC_STATS | STATX_BTIME,
+                &mut statx,
+            ))?;
+            statx
         };
-
-        Ok(util::libc_stat_to_lx_stat(stat))
+        Ok(statx)
     }
 
     pub fn set_attr(&self, attr: SetAttributes) -> lx::Result<()> {

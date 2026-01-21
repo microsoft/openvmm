@@ -8,6 +8,7 @@ use fuse::DirEntryWriter;
 use fuse::protocol::fuse_attr;
 use fuse::protocol::fuse_entry_out;
 use fuse::protocol::fuse_setattr_in;
+use fuse::protocol::fuse_statx;
 use lxutil::LxFile;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -227,8 +228,14 @@ impl VirtioFsFile {
 
     /// Gets the attributes of the open file.
     pub fn get_attr(&self) -> lx::Result<fuse_attr> {
-        let stat = self.file.read().fstat()?;
+        let stat = self.file.read().fstat()?.into();
         Ok(util::stat_to_fuse_attr(&stat))
+    }
+
+    /// Gets the statx details for the open file.
+    pub fn get_statx(&self) -> lx::Result<fuse_statx> {
+        let statx = self.file.read().fstat()?;
+        Ok(util::statx_to_fuse_statx(&statx))
     }
 
     /// Sets the attributes of the open file.

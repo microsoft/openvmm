@@ -2,15 +2,14 @@
 # Licensed under the MIT License.
 
 [package]
-name = "lx"
+name = "vmm_test_igvm_agent"
 edition.workspace = true
 rust-version.workspace = true
 
-[dependencies]
-bitfield-struct.workspace = true
-static_assertions.workspace = true
-thiserror.workspace = true
-zerocopy.workspace = true
+[target.'cfg(windows)'.dependencies]
+anyhow.workspace = true
+pal.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

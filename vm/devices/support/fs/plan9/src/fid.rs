@@ -221,7 +221,7 @@ impl FileState {
     // Determine file attributes based on the stored path.
     fn get_attributes(&self) -> lx::Result<(Qid, lx::Stat)> {
         let stat = if let Some(file) = self.file.as_ref() {
-            file.fstat()?
+            file.fstat()?.into()
         } else {
             self.root.lstat(&self.path)?
         };
@@ -230,7 +230,7 @@ impl FileState {
     }
 
     fn get_file_attributes(file: &LxFile) -> lx::Result<(Qid, lx::Stat)> {
-        let stat = file.fstat()?;
+        let stat = file.fstat()?.into();
         Ok((Self::stat_to_qid(&stat), stat))
     }
 }
