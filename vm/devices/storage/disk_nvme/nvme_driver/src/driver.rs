@@ -84,6 +84,13 @@ pub struct NvmeDriver<D: DeviceBacking> {
     bounce_buffer: bool,
 }
 
+/// This type allows the driver to store either a weak or a strong reference to
+/// a type T (in this case, Namespace) in the same map. The idea here is that
+/// during normal operation the driver should ONLY hold weak refernces to
+/// Namespaces. However, during save/restore, we need to hold strong references
+/// after restoring namespace from saved state until they are requested for by
+/// the StorageController. When a restored Namespace is requested, we can downgrade
+/// the strong reference and then proceed as normal.
 enum WeakOrStrong<T> {
     Weak(Weak<T>),
     Strong(Arc<T>),

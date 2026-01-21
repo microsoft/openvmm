@@ -17,6 +17,7 @@ use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
@@ -58,160 +59,12 @@ impl NamespaceHandle {
     pub fn new(namespace: Arc<Namespace>) -> Self {
         Self { namespace }
     }
+}
 
-    /// Gets the current block count.
-    pub fn block_count(&self) -> u64 {
-        self.namespace.block_count()
-    }
-
-    /// Wait for the block count to be different from `block_count`.
-    pub async fn wait_resize(&self, block_count: u64) -> u64 {
-        self.namespace.wait_resize(block_count).await
-    }
-
-    /// Gets the block size in bytes.
-    pub fn block_size(&self) -> u32 {
-        self.namespace.block_size()
-    }
-
-    /// Reads from the namespace.
-    pub async fn read(
-        &self,
-        target_cpu: u32,
-        lba: u64,
-        block_count: u32,
-        guest_memory: &GuestMemory,
-        mem: PagedRange<'_>,
-    ) -> Result<(), RequestError> {
-        self.namespace
-            .read(target_cpu, lba, block_count, guest_memory, mem)
-            .await
-    }
-
-    /// Writes to the namespace.
-    pub async fn write(
-        &self,
-        target_cpu: u32,
-        lba: u64,
-        block_count: u32,
-        fua: bool,
-        guest_memory: &GuestMemory,
-        mem: PagedRange<'_>,
-    ) -> Result<(), RequestError> {
-        self.namespace
-            .write(target_cpu, lba, block_count, fua, guest_memory, mem)
-            .await
-    }
-
-    /// Flushes the namespace to persistent media.
-    pub async fn flush(&self, target_cpu: u32) -> Result<(), RequestError> {
-        self.namespace.flush(target_cpu).await
-    }
-
-    /// Returns the maximum size for a read or write, in blocks.
-    pub fn max_transfer_block_count(&self) -> u32 {
-        self.namespace.max_transfer_block_count()
-    }
-
-    /// Returns whether the namespace support dataset management, needed to call
-    /// [`Self::deallocate`].
-    pub fn supports_dataset_management(&self) -> bool {
-        self.namespace.supports_dataset_management()
-    }
-
-    /// The preferred granularity for unmap requests.
-    pub fn preferred_deallocate_granularity(&self) -> u16 {
-        self.namespace.preferred_deallocate_granularity()
-    }
-
-    /// Returns the maximum number of ranges to pass to [`Self::deallocate`].
-    pub fn dataset_management_range_limit(&self) -> usize {
-        self.namespace.dataset_management_range_limit()
-    }
-
-    /// Returns the maximum size of a single range to pass to
-    /// [`Self::deallocate`].
-    pub fn dataset_management_range_size_limit(&self) -> u32 {
-        self.namespace.dataset_management_range_size_limit()
-    }
-
-    /// Issues a dataset management command to deallocate the specified ranges.
-    ///
-    /// The device may ignore ranges or LBA counts beyond a certain point. Use
-    /// [`Self::dataset_management_range_limit`] and
-    /// [`Self::dataset_management_range_size_limit`] to get the
-    /// controller-reported bounds.
-    pub async fn deallocate(
-        &self,
-        target_cpu: u32,
-        ranges: &[nvm::DsmRange],
-    ) -> Result<(), RequestError> {
-        self.namespace.deallocate(target_cpu, ranges).await
-    }
-
-    /// Gets the namespace's reservation capabilities.
-    pub fn reservation_capabilities(&self) -> nvm::ReservationCapabilities {
-        self.namespace.reservation_capabilities()
-    }
-
-    /// Gets the namespace's reservation report.
-    pub async fn reservation_report_extended(
-        &self,
-        target_cpu: u32,
-    ) -> Result<
-        (
-            nvm::ReservationReportExtended,
-            Vec<nvm::RegisteredControllerExtended>,
-        ),
-        RequestError,
-    > {
-        self.namespace.reservation_report_extended(target_cpu).await
-    }
-
-    /// Acquires a reservation.
-    pub async fn reservation_acquire(
-        &self,
-        target_cpu: u32,
-        action: nvm::ReservationAcquireAction,
-        crkey: u64,
-        prkey: u64,
-        reservation_type: nvm::ReservationType,
-    ) -> Result<(), RequestError> {
-        self.namespace
-            .reservation_acquire(target_cpu, action, crkey, prkey, reservation_type)
-            .await
-    }
-
-    /// Releases a reservation.
-    pub async fn reservation_release(
-        &self,
-        target_cpu: u32,
-        action: nvm::ReservationReleaseAction,
-        crkey: u64,
-        reservation_type: nvm::ReservationType,
-    ) -> Result<(), RequestError> {
-        self.namespace
-            .reservation_release(target_cpu, action, crkey, reservation_type)
-            .await
-    }
-
-    /// Modifies a reservation registration.
-    pub async fn reservation_register(
-        &self,
-        target_cpu: u32,
-        action: nvm::ReservationRegisterAction,
-        crkey: Option<u64>,
-        nrkey: u64,
-        ptpl: Option<bool>,
-    ) -> Result<(), RequestError> {
-        self.namespace
-            .reservation_register(target_cpu, action, crkey, nrkey, ptpl)
-            .await
-    }
-
-    /// Return Namespace ID.
-    pub fn nsid(&self) -> u32 {
-        self.namespace.nsid()
+impl Deref for NamespaceHandle {
+    type Target = Namespace;
+    fn deref(&self) -> &Self::Target {
+        &self.namespace
     }
 }
 
