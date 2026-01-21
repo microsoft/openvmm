@@ -604,8 +604,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             // If we have a weak ref, make sure it is not upgradeable (that means we have a duplicate somewhere).
             let is_weak = namespace.is_weak(); // This value will change after invoking get_arc().
             let namespace = namespace.get_arc();
-            if namespace.is_some() {
-                let namespace = namespace.unwrap();
+            if let Some(namespace) = namespace {
                 if is_weak && namespace.check_active().is_ok() {
                     return Err(NamespaceError::Duplicate(nsid));
                 }
