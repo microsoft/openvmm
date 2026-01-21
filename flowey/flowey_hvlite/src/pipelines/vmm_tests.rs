@@ -137,27 +137,18 @@ impl IntoPipeline for VmmTestsCli {
         };
 
         // When running Windows binaries under WSL, the output directory must be
-        // a Windows-accessible path (e.g., /mnt/c/..., /mnt/d/...) because
-        // Windows binaries require the images to live in a Windows directory.
+        // a Windows  path (e.g., /mnt/c/..., /mnt/d/...) because Windows
+        // requires the VHDs to live in a Windows directory.
         if flowey_cli::running_in_wsl()
             && matches!(target_os, target_lexicon::OperatingSystem::Windows)
+            && !flowey_cli::is_wsl_windows_path(&dir)
         {
-            let dir_str = dir.to_string_lossy();
-            let is_windows_path = dir_str.starts_with("/mnt/")
-                && dir_str
-                    .chars()
-                    .nth(5)
-                    .is_some_and(|c| c.is_ascii_lowercase())
-                && dir_str.chars().nth(6).is_none_or(|c| c == '/');
-
-            if !is_windows_path {
-                anyhow::bail!(
-                    "When targeting Windows from WSL, --dir must be a Windows-accessible path \
-                     (e.g., /mnt/c/vmm_tests, /mnt/d/vmm_tests_out). \
+            anyhow::bail!(
+                "When targeting Windows from WSL, --dir must be a path on Windows \
+                     (i.e., on a DrvFs mount like /mnt/c/vmm_tests). \
                      Got: {}",
-                    dir_str
-                );
-            }
+                dir.display()
+            );
         }
 
         let mut job = pipeline.new_job(
