@@ -51,7 +51,6 @@
 
 use async_trait::async_trait;
 use inspect::Inspect;
-use std::sync::Arc;
 use thiserror::Error;
 use vmcore::vm_task::VmTaskDriverSource;
 
