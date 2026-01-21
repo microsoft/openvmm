@@ -83,6 +83,24 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
                             .into(),
                         true,
                     ))
+                } else if subleaf == 1 {
+                    Some(CpuidResultMask::new(
+                        cpuid::ExtendedFeatureSubleaf1Eax::new()
+                            .with_avx_vnni(true)
+                            .with_avx512_bfloat16(true)
+                            .with_fzlrep_movsb(true)
+                            .with_fsrep_stosb(true)
+                            .with_fsrep_cmpsb(true)
+                            .with_avx_ifma(true)
+                            .into(),
+                        0,
+                        0,
+                        cpuid::ExtendedFeatureSubleaf1Edx::new()
+                            .with_avx_vnni_int8(true)
+                            .with_avx_ne_convert(true)
+                            .into(),
+                        true,
+                    ))
                 } else {
                     None
                 }
@@ -350,6 +368,26 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
 
     fn update_xsave_dependencies(&self, xsave_support: u64, results: &mut CpuidResults) {
         let mut clear_extended_features0_edx = cpuid::ExtendedFeatureSubleaf0Edx::new();
+        let mut clear_extended_features1_eax = cpuid::ExtendedFeatureSubleaf1Eax::new();
+        let mut clear_extended_features1_edx = cpuid::ExtendedFeatureSubleaf1Edx::new();
+
+        let mut disable_avx_512 = false;
+
+        if (xsave_support & xsave::XFEATURE_YMM != xsave::XFEATURE_YMM)
+            || (xsave_support & xsave::XFEATURE_SSE != xsave::XFEATURE_SSE)
+        {
+            clear_extended_features1_eax.set_avx_vnni(true);
+            clear_extended_features1_eax.set_avx_ifma(true);
+
+            clear_extended_features1_edx.set_avx_vnni_int8(true);
+            clear_extended_features1_edx.set_avx_ne_convert(true);
+
+            disable_avx_512 = true;
+        }
+
+        if disable_avx_512 || (xsave_support & xsave::XFEATURE_AVX512 != xsave::XFEATURE_AVX512) {
+            clear_extended_features1_eax.set_avx512_bfloat16(true);
+        }
 
         if xsave_support & xsave::XFEATURE_AMX != xsave::XFEATURE_AMX {
             clear_extended_features0_edx.set_amx_tile(true);
@@ -362,5 +400,11 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
             .expect("validated this leaf exists");
 
         extended_features0_entry.edx &= !u32::from(clear_extended_features0_edx);
+
+        let extended_features1_entry = results
+            .leaf_result_mut_ref(CpuidFunction::ExtendedFeatures, Some(1))
+            .expect("validated this leaf exists");
+        extended_features1_entry.eax &= !u32::from(clear_extended_features1_eax);
+        extended_features1_entry.edx &= !u32::from(clear_extended_features1_edx);
     }
 }

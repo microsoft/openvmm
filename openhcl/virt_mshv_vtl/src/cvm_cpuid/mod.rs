@@ -643,8 +643,7 @@ impl CpuidResults {
         let mut clear_extended_features0_ebx = cpuid::ExtendedFeatureSubleaf0Ebx::new();
         let mut clear_extended_features0_ecx = cpuid::ExtendedFeatureSubleaf0Ecx::new();
         let mut clear_extended_features0_edx = cpuid::ExtendedFeatureSubleaf0Edx::new();
-        let mut clear_extended_features1_eax = cpuid::ExtendedFeatureSubleaf1Eax::new();
-        let mut clear_extended_features1_edx = cpuid::ExtendedFeatureSubleaf1Edx::new();
+
         let mut clear_version_and_features0_ecx = cpuid::VersionAndFeaturesEcx::new();
 
         let CpuidResult {
@@ -672,11 +671,6 @@ impl CpuidResults {
             clear_extended_features0_ecx.set_gfni(true);
             clear_extended_features0_ecx.set_vpclmulqdq(true);
 
-            clear_extended_features1_eax.set_avx_vnni(true);
-            clear_extended_features1_eax.set_avx_ifma(true);
-            clear_extended_features1_edx.set_avx_vnni_int8(true);
-            clear_extended_features1_edx.set_avx_ne_convert(true);
-
             disable_avx_512 = true;
         }
 
@@ -696,8 +690,6 @@ impl CpuidResults {
 
             clear_extended_features0_edx.set_avx512_vp2_intersect(true);
             clear_extended_features0_edx.set_avx512_fp16(true);
-
-            clear_extended_features1_eax.set_avx512_bfloat16(true);
         }
 
         let extended_features0_entry = self
@@ -707,12 +699,6 @@ impl CpuidResults {
         extended_features0_entry.ebx &= !u32::from(clear_extended_features0_ebx);
         extended_features0_entry.ecx &= !u32::from(clear_extended_features0_ecx);
         extended_features0_entry.edx &= !u32::from(clear_extended_features0_edx);
-
-        let extended_features1_entry = self
-            .leaf_result_mut_ref(CpuidFunction::ExtendedFeatures, Some(1))
-            .expect("validated this leaf exists");
-        extended_features1_entry.eax &= !u32::from(clear_extended_features1_eax);
-        extended_features1_entry.edx &= !u32::from(clear_extended_features1_edx);
 
         let version_and_features = self
             .leaf_result_mut_ref(CpuidFunction::VersionAndFeatures, None)
