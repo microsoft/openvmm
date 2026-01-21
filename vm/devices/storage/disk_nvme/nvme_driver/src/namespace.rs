@@ -46,7 +46,7 @@ pub enum NamespaceError {
     Duplicate(u32),
 }
 
-/// A thin Namespace wrapper to revoke cloning permissions on Arc<Namespace>.
+/// A thin Namespace wrapper to revoke cloning permissions on `Arc<Namespace>`.
 /// This type allows the nvme_driver to force system-wide single-ownership
 /// semantics for Namespace objects.
 /// Because the end-user can no longer call namespace.clone(), `weak.upgrade()` can
