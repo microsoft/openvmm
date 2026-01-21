@@ -19,7 +19,6 @@ use crate::dns_resolver::delay_load::get_dns_query_raw_result_free_fn;
 use crate::dns_resolver::delay_load::get_module;
 use crate::dns_resolver::delay_load::is_dns_raw_apis_supported;
 use parking_lot::Mutex;
-use smoltcp::wire::IpProtocol;
 use std::collections::HashMap;
 use std::ptr::null_mut;
 use std::sync::Arc;
@@ -99,14 +98,6 @@ impl DnsBackend for WindowsDnsResolverBackend {
         request: &DnsRequest<'_>,
         accessor: DnsResponseAccessor,
     ) -> Result<(), DropReason> {
-        // Only support UDP protocol on Windows
-        if request.flow.protocol != IpProtocol::Udp {
-            tracelimit::warn_ratelimited!(
-                "TCP DNS queries not supported on Windows backend, only UDP is supported"
-            );
-            return Err(DropReason::Packet(smoltcp::wire::Error));
-        }
-
         // Generate unique request ID
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
 
