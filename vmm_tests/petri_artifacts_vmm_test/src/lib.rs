@@ -425,8 +425,8 @@ pub mod artifacts {
         }
 
         impl IsHostedOnHvliteAzureBlobStore for ALPINE_3_23_AARCH64 {
-            const FILENAME: &'static str = "nocloud_alpine-3.23.2-aarch64-uefi-tiny-r0.vhd";
-            const SIZE: u64 = 182592000;
+            const FILENAME: &'static str = "nocloud_alpine-3.23.2-aarch64-uefi-cloudinit-r0.vhd";
+            const SIZE: u64 = 258015744;
         }
 
         declare_artifacts! {
