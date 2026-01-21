@@ -46,9 +46,11 @@ pub enum NamespaceError {
     Duplicate(u32),
 }
 
-/// A handle to an NVMe namespace that enforces single-ownership semantics.
-/// By not exposing `Arc<Namespace>` directly, this wrapper prevents cloning,
-/// ensuring the nvme driver can rely on exclusive access for Namespace management.
+/// A thin Namespace wrapper to revoke cloning permissions on Arc<Namespace>.
+/// This type allows the nvme_driver to force system-wide single-ownership
+/// semantics for Namespace objects.
+/// Because the end-user can no longer call namespace.clone(), `weak.upgrade()` can
+/// safely be used to determine when a Namespace is no longer in use by the disk.
 #[derive(Debug, Inspect)]
 pub struct NamespaceHandle {
     namespace: Arc<Namespace>,

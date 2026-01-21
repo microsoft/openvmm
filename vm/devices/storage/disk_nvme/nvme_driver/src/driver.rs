@@ -84,22 +84,20 @@ pub struct NvmeDriver<D: DeviceBacking> {
     bounce_buffer: bool,
 }
 
-/// This type allows the driver to store either a weak or a strong reference to
-/// a type T (in this case, Namespace) in the same map. The idea here is that
-/// during normal operation the driver should ONLY hold weak refernces to
-/// Namespaces. However, during save/restore, we need to hold strong references
-/// after restoring namespace from saved state until they are requested for by
-/// the StorageController. When a restored Namespace is requested, we can downgrade
-/// the strong reference and then proceed as normal.
+/// A container that can hold either a weak or strong reference to a value.
+///
+/// During normal operation, the driver ONLY stores weak references. After restore
+/// strong references are temporarily held until the StorageController retrieves them.
+/// Once retrieved, the strong reference is downgraded to a weak one, resuming
+/// normal behavior.
 enum WeakOrStrong<T> {
     Weak(Weak<T>),
     Strong(Arc<T>),
 }
 
 impl<T> WeakOrStrong<T> {
-    /// Returns a strong reference to the underlying value.
-    /// If this is a strong pointer, returns a clone of the Arc.
-    /// If this is a weak pointer, returns the result of upgrade() (None if gone).
+    /// Returns a strong reference to the underlying value when possible.
+    /// Implicitly downgrades Strong to Weak when this function is invoked.
     pub fn get_arc(&mut self) -> Option<Arc<T>> {
         match self {
             WeakOrStrong::Strong(arc) => {
