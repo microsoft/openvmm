@@ -602,7 +602,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         if let Some(namespace) = self.namespaces.get_mut(&nsid) {
             // After restore we will have a strong ref -> downgrade and return.
             // If we have a weak ref, make sure it is not upgradeable (that means we have a duplicate somewhere).
-            let is_weak = namespace.is_weak(); // This value will change after invokeing get_arc().
+            let is_weak = namespace.is_weak(); // This value will change after invoking get_arc().
             let namespace = namespace.get_arc();
             if namespace.is_some() {
                 let namespace = namespace.unwrap();
