@@ -54,6 +54,16 @@ pub mod artifacts {
         }
     }
 
+    /// Host-side tools used by the VMM tests.
+    pub mod host_tools {
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// Windows x86_64 build of the `test_igvm_agent_rpc_server` executable.
+            TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64,
+        }
+    }
+
     /// Loadable artifacts
     pub mod loadable {
         use petri_artifacts_common::tags::IsLoadable;

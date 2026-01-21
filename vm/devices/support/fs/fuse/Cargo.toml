@@ -13,6 +13,7 @@ ci = []
 [dependencies]
 lx.workspace = true
 
+bitfield-struct.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

@@ -2069,6 +2069,7 @@ checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 name = "fuse"
 version = "0.0.0"
 dependencies = [
+ "bitfield-struct 0.11.0",
  "libc",
  "lx",
  "parking_lot",
@@ -2657,7 +2658,6 @@ name = "guest_emulation_device"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
  "disk_backend",
  "disklayer_ram",
  "futures",
@@ -2668,15 +2668,13 @@ dependencies = [
  "inspect",
  "jiff",
  "mesh",
- "openhcl_attestation_protocol",
  "pal_async",
  "parking_lot",
  "power_resources",
- "rsa",
  "scsi_buffers",
  "serde_json",
- "sha2",
  "task_control",
+ "test_igvm_agent_lib",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -3821,7 +3819,10 @@ dependencies = [
 name = "lx"
 version = "0.0.0"
 dependencies = [
+ "bitfield-struct 0.11.0",
+ "static_assertions",
  "thiserror 2.0.16",
+ "zerocopy 0.8.27",
 ]
 
 [[package]]
@@ -7253,6 +7254,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_igvm_agent_lib"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "get_resources",
+ "inspect",
+ "openhcl_attestation_protocol",
+ "rsa",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.16",
+ "tracing",
+ "zerocopy 0.8.27",
+]
+
+[[package]]
+name = "test_igvm_agent_rpc_server"
+version = "0.0.0"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "clap",
+ "get_resources",
+ "guid",
+ "parking_lot",
+ "serde_json",
+ "test_igvm_agent_lib",
+ "tracing",
+ "tracing-subscriber",
+ "winapi",
+ "windows-sys 0.61.0",
+]
+
+[[package]]
 name = "test_with_tracing"
 version = "0.0.0"
 dependencies = [
@@ -9424,6 +9459,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vmm_test_igvm_agent"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "pal",
+ "tracing",
+]
+
+[[package]]
 name = "vmm_test_images"
 version = "0.0.0"
 dependencies = [
@@ -9483,6 +9527,7 @@ dependencies = [
  "virtio_resources",
  "vm_resource",
  "vmgs_resources",
+ "vmm_test_igvm_agent",
  "vmm_test_macros",
  "zerocopy 0.8.27",
 ]
