@@ -1730,9 +1730,11 @@ impl GuestMemory {
             |()| {
                 // Fallback: use compare_exchange_fallback to probe write access
                 let mut current = 0u8;
-                self.inner
-                    .imp
-                    .compare_exchange_fallback(gpa, std::slice::from_mut(&mut current), &[0u8])?;
+                self.inner.imp.compare_exchange_fallback(
+                    gpa,
+                    std::slice::from_mut(&mut current),
+                    &[0u8],
+                )?;
                 Ok(())
             },
         )
@@ -2718,7 +2720,6 @@ mod tests {
         gm.read_plain::<u8>(PAGE_SIZE64 * 3 - 1).unwrap();
         gm.write_plain::<u8>(PAGE_SIZE64 * 3 - 1, &0).unwrap_err();
 
-
         // Test probe_gpn_writable_range with FaultingMapping
         // FaultingMapping layout:
         // - Page 0 (address 0 to PAGE_SIZE): unmapped, fails on access
@@ -2761,7 +2762,6 @@ mod tests {
         let range = PagedRange::empty();
         gm.probe_gpn_writable_range(&range).unwrap();
 
-
         // Test probe_gpn_readable_range with FaultingMapping
 
         // Test 8: Probe unmapped page for read - should fail
@@ -2773,7 +2773,6 @@ mod tests {
         let gpns = vec![1];
         let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
         gm.probe_gpn_readable_range(&range).unwrap();
-
 
         // Test 10: Probe mixed access (writable + read-only) for read - should succeed
         let gpns = vec![1, 2];
