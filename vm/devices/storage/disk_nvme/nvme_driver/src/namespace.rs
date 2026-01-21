@@ -48,7 +48,7 @@ pub enum NamespaceError {
 
 /// A thin Namespace wrapper to revoke cloning permissions on `Arc<Namespace>`.
 /// This type allows the nvme_driver to force system-wide single-ownership
-/// semantics for Namespace objects.
+/// semantics for `Namespace` objects.
 /// Because the end-user can no longer call namespace.clone(), `weak.upgrade()` can
 /// safely be used to determine when a Namespace is no longer in use by the disk.
 #[derive(Debug, Inspect)]
