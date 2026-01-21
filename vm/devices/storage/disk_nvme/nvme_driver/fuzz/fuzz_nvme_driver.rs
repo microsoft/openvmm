@@ -11,7 +11,7 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use nvme::NvmeController;
 use nvme::NvmeControllerCaps;
-use nvme_driver::Namespace;
+use nvme_driver::NamespaceHandle;
 use nvme_driver::NvmeDriver;
 use nvme_spec::nvm::DsmRange;
 use page_pool_alloc::PagePoolAllocator;
@@ -27,7 +27,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 /// Nvme driver fuzzer
 pub struct FuzzNvmeDriver {
     driver: Option<NvmeDriver<FuzzEmulatedDevice<NvmeController, PagePoolAllocator>>>,
-    namespace: Arc<Namespace>,
+    namespace: NamespaceHandle,
     payload_mem: GuestMemory,
     cpu_count: u32,
 }
