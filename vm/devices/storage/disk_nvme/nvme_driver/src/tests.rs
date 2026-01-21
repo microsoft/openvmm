@@ -2,15 +2,23 @@
 // Licensed under the MIT License.
 
 use crate::NvmeDriver;
+use crate::RequestError;
+use crate::queue_pair::AdminAerHandler;
+use crate::queue_pair::AenResponse;
+use crate::queue_pair::AerHandler;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use disk_backend::Disk;
 use disk_prwrap::DiskWithReservations;
+use futures::StreamExt;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::CancelContext;
 use mesh::CellUpdater;
+use mesh::rpc::Rpc;
+use mesh::rpc::RpcSend;
 use nvme::NvmeControllerCaps;
 use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::AdminQueueFaultConfig;
@@ -31,6 +39,7 @@ use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use test_with_tracing::test;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
@@ -44,6 +53,60 @@ use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
+
+/// When given a failed AER completion this test ensures that the AER handler
+/// responds to the RPC with the appropriate error and stops issuing further AERs.
+#[async_test]
+async fn test_admin_aer_handler_failed_completion(_driver: DefaultDriver) {
+    // ARRANGE
+    enum TestReq {
+        Aen(Rpc<(), AenResponse>),
+    }
+
+    let cid = 0;
+    let failure_status = nvme_spec::Status::INVALID_COMMAND_OPCODE.0;
+    let failed_completion = nvme_spec::Completion {
+        dw0: 0,
+        dw1: 0,
+        sqhd: 0,
+        sqid: 0,
+        cid,
+        status: nvme_spec::CompletionStatus::new().with_status(failure_status),
+    };
+
+    // Create both sides of the RPC channel and other admin AER handler setup.
+    let (send, mut recv) = mesh::channel::<TestReq>();
+    let pending_aen = send.call(TestReq::Aen, ());
+    let send_aen = recv.next().await.expect("aen request received");
+    let TestReq::Aen(rpc) = send_aen;
+    let mut handler = AdminAerHandler::new();
+
+    // Handler was just created, so this should never be false.
+    assert!(handler.poll_send_aer());
+    handler.handle_aen_request(rpc);
+    handler.update_awaiting_cid(cid);
+
+    // ACT: Try to handle a failed completion.
+    handler.handle_completion(&failed_completion);
+
+    // ASSERT: The AEN response should be sent and should indicate failure.
+    let response = CancelContext::new()
+        .with_timeout(Duration::from_secs(2))
+        .until_cancelled(pending_aen) // Avoid hanging test
+        .await
+        .expect("got response before timeout")
+        .expect("aen rpc completed");
+    match response {
+        AenResponse::Failure(RequestError::Nvme(err)) => {
+            assert_eq!(err.status(), nvme_spec::Status(failure_status));
+        }
+        other => panic!("unexpected aen response: {other:?}"),
+    }
+    assert!(
+        !handler.poll_send_aer(),
+        "handler should stop issuing AERs after a failed completion"
+    );
+}
 
 #[async_test]
 #[should_panic(expected = "assertion `left == right` failed: cid sequence number mismatch:")]
