@@ -44,7 +44,7 @@ use vmcore::line_interrupt::LineInterrupt;
 pub enum HeaderType {
     /// Type 0 header with 6 BARs (endpoint devices)
     Type0,
-    /// Type 1 header with 2 BARs (bridge devices)  
+    /// Type 1 header with 2 BARs (bridge devices)
     Type1,
 }
 
@@ -71,7 +71,7 @@ pub mod header_type_consts {
     /// Number of BARs for Type 0 headers
     pub const TYPE0_BAR_COUNT: usize = HeaderType::Type0.bar_count();
 
-    /// Number of BARs for Type 1 headers  
+    /// Number of BARs for Type 1 headers
     pub const TYPE1_BAR_COUNT: usize = HeaderType::Type1.bar_count();
 }
 
@@ -1011,44 +1011,54 @@ impl ConfigSpaceType0Emulator {
 struct ConfigSpaceType1EmulatorState {
     /// The subordinate bus number register. Software programs
     /// this register with the highest bus number below the bridge.
+    #[inspect(hex)]
     subordinate_bus_number: u8,
     /// The secondary bus number register. Software programs
     /// this register with the bus number assigned to the secondary
     /// side of the bridge.
+    #[inspect(hex)]
     secondary_bus_number: u8,
     /// The primary bus number register. This is unused for PCI Express but
     /// is supposed to be read/write for compability with legacy software.
+    #[inspect(hex)]
     primary_bus_number: u8,
     /// The memory base register. Software programs the upper 12 bits of this
     /// register with the upper 12 bits of a 32-bit base address of MMIO assigned
     /// to the hierarchy under the bridge (the lower 20 bits are assumed to be 0s).
+    #[inspect(hex)]
     memory_base: u16,
     /// The memory limit register. Software programs the upper 12 bits of this
     /// register with the upper 12 bits of a 32-bit limit address of MMIO assigned
     /// to the hierarchy under the bridge (the lower 20 bits are assumed to be 1s).
+    #[inspect(hex)]
     memory_limit: u16,
     /// The prefetchable memory base register. Software programs the upper 12 bits of
     /// this register with bits 20:31 of the base address of the prefetchable MMIO
     /// window assigned to the hierarchy under the bridge. Bits 0:19 are assumed to
     /// be 0s.
+    #[inspect(hex)]
     prefetch_base: u16,
     /// The prefetchable memory limit register. Software programs the upper 12 bits of
     /// this register with bits 20:31 of the limit address of the prefetchable MMIO
     /// window assigned to the hierarchy under the bridge. Bits 0:19 are assumed to
     /// be 1s.
+    #[inspect(hex)]
     prefetch_limit: u16,
     /// The prefetchable memory base upper 32 bits register. When the bridge supports
     /// 64-bit addressing for prefetchable memory, software programs this register
     /// with the upper 32 bits of the base address of the prefetchable MMIO window
     /// assigned to the hierarchy under the bridge.
+    #[inspect(hex)]
     prefetch_base_upper: u32,
     /// The prefetchable memory limit upper 32 bits register. When the bridge supports
     /// 64-bit addressing for prefetchable memory, software programs this register
     /// with the upper 32 bits of the base address of the prefetchable MMIO window
     /// assigned to the hierarchy under the bridge.
+    #[inspect(hex)]
     prefetch_limit_upper: u32,
     /// The bridge control register. Contains various control bits for bridge behavior
     /// such as secondary bus reset, VGA enable, etc.
+    #[inspect(hex)]
     bridge_control: u16,
 }
 
