@@ -347,4 +347,20 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
 
         [l0, l1, l2, l3, l4]
     }
+
+    fn update_xsave_dependencies(&self, xsave_support: u64, results: &mut CpuidResults) {
+        let mut clear_extended_features0_edx = cpuid::ExtendedFeatureSubleaf0Edx::new();
+
+        if xsave_support & xsave::XFEATURE_AMX != xsave::XFEATURE_AMX {
+            clear_extended_features0_edx.set_amx_tile(true);
+            clear_extended_features0_edx.set_amx_int8(true);
+            clear_extended_features0_edx.set_amx_bf16(true);
+        }
+
+        let extended_features0_entry = results
+            .leaf_result_mut_ref(CpuidFunction::ExtendedFeatures, Some(0))
+            .expect("validated this leaf exists");
+
+        extended_features0_entry.edx &= !u32::from(clear_extended_features0_edx);
+    }
 }
