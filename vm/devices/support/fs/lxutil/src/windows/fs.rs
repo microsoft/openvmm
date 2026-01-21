@@ -565,7 +565,7 @@ pub fn get_lx_attr(
     umask: u32,
     fmask: u32,
     dmask: u32,
-) -> lx::Result<lx::Stat> {
+) -> lx::Result<lx::StatEx> {
     let inode_attr = determine_inode_attributes(fs_context, info, flags, umask, fmask, dmask)?;
     let mode = inode_attr.mode.unwrap_or(0);
     let file_size: u64;
@@ -579,29 +579,56 @@ pub fn get_lx_attr(
         block_count = allocation_size_to_block_count(info.AllocationSize, block_size)
     }
 
-    // lx::Stat has different padding members on ARM and x86. As such, don't construct it manually,
-    // but just fill out the individual fields.
-    let mut stat: lx::Stat = unsafe { std::mem::zeroed() };
-    stat.uid = inode_attr.uid.unwrap_or(default_uid);
-    stat.gid = inode_attr.gid.unwrap_or(default_gid);
-    stat.mode = mode;
-    stat.device_nr_special = inode_attr.device_id.unwrap_or(0) as _;
-    stat.inode_nr = info.FileId as _;
-    stat.link_count = info.NumberOfLinks as _;
-    stat.access_time = util::nt_time_to_timespec(info.LastAccessTime, true);
-    stat.write_time = util::nt_time_to_timespec(info.LastWriteTime, true);
-    stat.change_time = if info.ChangeTime == 0 {
-        // Some file systems do not provide a change time. If this is the case,
-        // use the write time.
-        util::nt_time_to_timespec(info.LastWriteTime, true)
-    } else {
-        util::nt_time_to_timespec(info.ChangeTime, true)
-    };
-    stat.block_size = block_size as _;
-    stat.file_size = file_size;
-    stat.block_count = block_count;
+    let attributes_mask = lx::StatExAttributes::new()
+        .with_compressed(true)
+        .with_encrypted(true)
+        .with_nodump(true);
+    let attributes = lx::StatExAttributes::new()
+        .with_compressed(info.FileAttributes & W32Fs::FILE_ATTRIBUTE_COMPRESSED.0 != 0)
+        .with_encrypted(info.FileAttributes & W32Fs::FILE_ATTRIBUTE_ENCRYPTED.0 != 0)
+        .with_nodump(info.FileAttributes & W32Fs::FILE_ATTRIBUTE_ARCHIVE.0 == 0);
+    let mask = lx::StatExMask::new()
+        .with_file_type(true)
+        .with_mode(true)
+        .with_nlink(true)
+        .with_uid(true)
+        .with_gid(true)
+        .with_atime(true)
+        .with_btime(true)
+        .with_ctime(info.ChangeTime != 0)
+        .with_mtime(true)
+        .with_ino(true)
+        .with_size(true)
+        .with_blocks(true);
 
-    Ok(stat)
+    let rdev_id = inode_attr.device_id.unwrap_or(0);
+    Ok(lx::StatEx {
+        uid: inode_attr.uid.unwrap_or(default_uid),
+        gid: inode_attr.gid.unwrap_or(default_gid),
+        mode: mode as u16,
+        rdev_major: lx::major32(rdev_id),
+        rdev_minor: lx::minor(rdev_id),
+        inode_id: info.FileId as _,
+        link_count: info.NumberOfLinks as _,
+        creation_time: util::nt_time_to_timespec(info.CreationTime, true).into(),
+        access_time: util::nt_time_to_timespec(info.LastAccessTime, true).into(),
+        write_time: util::nt_time_to_timespec(info.LastWriteTime, true).into(),
+        change_time: if info.ChangeTime == 0 {
+            // Some file systems do not provide a change time. If this is the case,
+            // use the write time.
+            util::nt_time_to_timespec(info.LastWriteTime, true)
+        } else {
+            util::nt_time_to_timespec(info.ChangeTime, true)
+        }
+        .into(),
+        block_size: block_size as _,
+        file_size,
+        block_count,
+        attributes_mask,
+        attributes,
+        mask,
+        ..Default::default()
+    })
 }
 
 /// Query the stat information for a handle. If the filesystem does not support FILE_STAT_INFORMATION,

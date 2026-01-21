@@ -2069,6 +2069,7 @@ checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 name = "fuse"
 version = "0.0.0"
 dependencies = [
+ "bitfield-struct 0.11.0",
  "libc",
  "lx",
  "parking_lot",
@@ -3818,7 +3819,10 @@ dependencies = [
 name = "lx"
 version = "0.0.0"
 dependencies = [
+ "bitfield-struct 0.11.0",
+ "static_assertions",
  "thiserror 2.0.16",
+ "zerocopy 0.8.27",
 ]
 
 [[package]]

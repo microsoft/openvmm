@@ -553,7 +553,7 @@ pub fn file_info_to_stat(
     information: &mut LxStatInformation,
     options: &crate::LxVolumeOptions,
     block_size: u32,
-) -> lx::Result<lx::Stat> {
+) -> lx::Result<lx::StatEx> {
     let mut stat = fs::get_lx_attr(
         fs_context,
         &mut information.stat,
@@ -574,7 +574,7 @@ pub fn file_info_to_stat(
         stat.gid = gid;
     }
     if let Some(mode) = options.mode {
-        stat.mode = override_mode(stat.mode, mode);
+        stat.mode = override_mode(stat.mode as u32, mode) as u16;
     }
     if let Some(symlink_len) = information.symlink_len {
         stat.file_size = symlink_len as u64;
