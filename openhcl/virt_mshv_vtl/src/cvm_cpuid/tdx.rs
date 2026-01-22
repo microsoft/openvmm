@@ -97,6 +97,7 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
                         0,
                         cpuid::ExtendedFeatureSubleaf1Edx::new()
                             .with_avx_vnni_int8(true)
+                            .with_avx_vnni_int16(true)
                             .with_avx_ne_convert(true)
                             .into(),
                         true,
