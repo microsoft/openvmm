@@ -361,6 +361,68 @@ async fn servicing_keepalive_with_namespace_update(
     Ok(())
 }
 
+// #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn _servicing_keepalive_with_missed_get_log_page(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let flags = config.default_servicing_flags();
+    let mut fault_start_updater = CellUpdater::new(false);
+    let (ns_change_send, ns_change_recv) = mesh::channel::<NamespaceChange>();
+    let (identify_verify_send, identify_verify_recv) = mesh::oneshot::<()>();
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_namespace_fault(NamespaceFaultConfig::new(ns_change_recv))
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new()
+                .with_submission_queue_fault(
+                    CommandMatchBuilder::new()
+                        .match_cdw0_opcode(nvme_spec::AdminOpcode::GET_LOG_PAGE.0)
+                        .build(),
+                    AdminQueueFaultBehavior::Delay(Duration::from_secs(10)),
+                )
+                .with_submission_queue_fault(
+                    CommandMatchBuilder::new()
+                        .match_cdw0_opcode(nvme_spec::AdminOpcode::IDENTIFY.0)
+                        .match_cdw10(
+                            nvme_spec::Cdw10Identify::new()
+                                .with_cns(nvme_spec::Cns::NAMESPACE.0)
+                                .into(),
+                            nvme_spec::Cdw10Identify::new().with_cns(u8::MAX).into(),
+                        )
+                        .build(),
+                    AdminQueueFaultBehavior::Verify(Some(identify_verify_send)),
+                ),
+        );
+
+    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
+
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+
+    // Make sure the disk showed up.
+    cmd!(sh, "ls /dev/sda").run().await?;
+
+    fault_start_updater.set(true).await;
+    ns_change_send
+        .call(NamespaceChange::ChangeNotification, KEEPALIVE_VTL2_NSID)
+        .await?;
+
+    vm.restart_openhcl(igvm_file.clone(), flags).await?;
+
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(30))
+        .until_cancelled(identify_verify_recv)
+        .await
+        .expect("IDENTIFY command was observed within 30 seconds of vm restore after servicing with namespace change")
+        .expect("IDENTIFY verification completed");
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    Ok(())
+}
+
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support and a faulty controller that drops CREATE_IO_COMPLETION_QUEUE commands
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
