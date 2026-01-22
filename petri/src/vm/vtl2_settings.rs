@@ -94,7 +94,6 @@ pub fn build_vtl2_storage_backing_physical_devices(
 /// these requirements.)
 #[derive(Debug, PartialEq, Eq)]
 pub struct Vtl2LunBuilder {
-    channel: Option<u32>,
     location: u32,
     device_id: Guid,
     vendor_id: String,
@@ -112,7 +111,6 @@ impl Vtl2LunBuilder {
     /// opposed to NOT a DVD.
     pub fn disk() -> Self {
         Self {
-            channel: None,
             location: 0,
             device_id: Guid::new_random(),
             vendor_id: "OpenVMM".to_string(),
@@ -133,12 +131,6 @@ impl Vtl2LunBuilder {
         s.is_dvd = true;
         s.product_id = "DVD".to_string();
         s
-    }
-
-    /// Guest visible IDE controller number
-    pub fn with_channel(mut self, channel: u32) -> Self {
-        self.channel = Some(channel);
-        self
     }
 
     /// Guest visible location of the device (aka a guest "LUN")
@@ -174,7 +166,6 @@ impl Vtl2LunBuilder {
     /// Builds the LUN into the protobuf type used by VTL2 settings.
     pub fn build(self) -> vtl2_settings_proto::Lun {
         vtl2_settings_proto::Lun {
-            channel: self.channel,
             location: self.location,
             device_id: self.device_id.to_string(),
             vendor_id: self.vendor_id,
