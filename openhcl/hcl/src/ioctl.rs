@@ -810,9 +810,6 @@ impl MshvHvcall {
     ///
     /// Returns on error, the hypervisor error and the number of pages
     /// processed.
-    //
-    // TODO SNP: this isn't really safe. Probably this should be an IOCTL in the
-    // kernel so that it can validate the page ranges are VTL0 memory.
     pub fn modify_gpa_visibility(
         &self,
         host_visibility: HostVisibilityType,
