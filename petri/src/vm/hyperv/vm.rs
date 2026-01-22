@@ -233,7 +233,7 @@ impl HyperVVM {
     /// Waits for an event emitted by the firmware about its boot status, and
     /// returns that status.
     pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
-        self.wait_for_off_or_internal(Self::boot_event).await
+        self.wait_for_some(Self::boot_event).await
     }
 
     async fn boot_event(&self) -> anyhow::Result<Option<FirmwareEvent>> {
@@ -338,7 +338,7 @@ impl HyperVVM {
         powershell::run_set_initial_machine_configuration(&self.vmid, &self.ps_mod, imc_hive).await
     }
 
-    async fn state(&self) -> anyhow::Result<VmState> {
+    pub(crate) async fn state(&self) -> anyhow::Result<VmState> {
         hvc::hvc_state(&self.vmid).await
     }
 
@@ -404,7 +404,7 @@ impl HyperVVM {
 
     /// Wait for the VM to stop
     pub async fn wait_for_halt(&mut self, _allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
-        let (halt_reason, timestamp) = self.wait_for_off_or_internal(Self::halt_event).await?;
+        let (halt_reason, timestamp) = self.wait_for_some(Self::halt_event).await?;
         if halt_reason == PetriHaltReason::Reset {
             // add 1ms to avoid getting the same event again
             self.last_start_time = Some(timestamp.checked_add(Duration::from_millis(1))?);
@@ -423,6 +423,19 @@ impl HyperVVM {
             anyhow::bail!("Got more than one halt event");
         }
         let event = events.first();
+
+        if event.is_some_and(|e| e.id == powershell::MSVM_VMMS_VM_TERMINATE_ERROR) {
+            tracing::error!("hyper-v worker process crashed");
+            // Get 5 seconds of non-vm-specific hyper-v logs preceding the crash
+            const COLLECT_HYPERV_CRASH_LOGS_SECONDS: u64 = 5;
+            let start_time = event
+                .unwrap()
+                .time_created
+                .checked_sub(Duration::from_secs(COLLECT_HYPERV_CRASH_LOGS_SECONDS))?;
+            for event in powershell::hyperv_event_logs(None, &start_time).await? {
+                self.log_winevent(&event);
+            }
+        }
 
         event
             .map(|e| {
@@ -453,7 +466,7 @@ impl HyperVVM {
 
     /// Wait for the VM shutdown ic
     pub async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()> {
-        self.wait_for_target(Self::shutdown_ic_status, powershell::VmShutdownIcStatus::Ok)
+        self.wait_for(Self::shutdown_ic_status, powershell::VmShutdownIcStatus::Ok)
             .await
             .context("wait_for_enlightened_shutdown_ready")
     }
@@ -470,44 +483,39 @@ impl HyperVVM {
         Ok(())
     }
 
-    async fn wait_for_target<T: std::fmt::Debug + PartialEq>(
+    async fn wait_for<T: std::fmt::Debug + PartialEq>(
         &mut self,
         f: impl AsyncFn(&Self) -> anyhow::Result<T>,
         target: T,
     ) -> anyhow::Result<()> {
-        self.wait_for_off_or_internal(async move |s| Ok((f(s).await? == target).then_some(())))
-            .await
-    }
-
-    pub(crate) async fn wait_for_off_or_internal<T>(
-        &mut self,
-        f: impl AsyncFn(&Self) -> anyhow::Result<Option<T>>,
-    ) -> anyhow::Result<T> {
         // flush the logs every time we start waiting for something in case
         // they don't get flushed when the VM is destroyed.
         // TODO: run this periodically in a task.
         self.flush_logs().await?;
-
-        // Even if the VM is rebooting or otherwise transitioning power states
-        // it should never be considered fully off. The only exception is if we
-        // are waiting for the VM to turn off, and we haven't detected the halt
-        // event yet. To avoid this race condition, allow for one more attempt
-        // a second after the VM turns off.
-        let mut last_off = false;
-
         loop {
-            if let Some(output) = f(self).await? {
-                return Ok(output);
+            let state = f(self).await?;
+            if state == target {
+                break;
             }
+            PolledTimer::new(&self.driver)
+                .sleep(Duration::from_secs(1))
+                .await;
+        }
 
-            let off = self.state().await? == VmState::Off;
-            if last_off && off {
-                anyhow::bail!(
-                    "The VM is no longer running, but a halt event was either not received or not expected."
-                );
+        Ok(())
+    }
+
+    async fn wait_for_some<T: std::fmt::Debug + PartialEq>(
+        &mut self,
+        f: impl AsyncFn(&Self) -> anyhow::Result<Option<T>>,
+    ) -> anyhow::Result<T> {
+        // see comment in `wait_for` above
+        self.flush_logs().await?;
+        loop {
+            let state = f(self).await?;
+            if let Some(state) = state {
+                return Ok(state);
             }
-            last_off = off;
-
             PolledTimer::new(&self.driver)
                 .sleep(Duration::from_secs(1))
                 .await;
