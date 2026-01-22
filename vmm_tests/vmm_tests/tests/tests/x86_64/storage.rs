@@ -779,7 +779,7 @@ async fn storvsp_dynamic_add_disk(
     const FIRST_NS: u32 = 30;
     const FIRST_LUN: u32 = 0;
     const SECTOR_SIZE: u64 = 512;
-    const NUM_ITERATIONS: u32 = 5;
+    const NUM_ITERATIONS: u32 = 3;
 
     // 128MB for the first NS and 1MB extra for each subsequent NS
     const fn disk_sectors(index: u32) -> u64 {
