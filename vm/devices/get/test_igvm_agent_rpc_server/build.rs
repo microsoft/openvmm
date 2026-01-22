@@ -19,19 +19,19 @@ fn main() {
     println!("cargo:rerun-if-changed=idl/IGVmAgentRpcApi.idl");
     println!("cargo:rerun-if-env-changed=MIDL");
 
-    let target = env::var("TARGET").unwrap_or_default();
-    let target_env = target.replace('-', "_");
-    println!("cargo:rerun-if-env-changed=MIDLRT_{}", target_env);
-
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    if target_os != "windows" {
+    if env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() != "windows" {
         // Stub interface is only needed when targeting Windows.
         return;
     }
 
     let host = env::var("HOST").unwrap_or_default();
     let host_is_windows = host.contains("windows");
-    let midl_info = locate_midl(&target_env);
+
+    // Construct the version of MIDL to use based on host architecture but windows target.
+    let host_arch = host.split_once("-").unwrap().0;
+    let midl_env = format!("{}_pc_windows_msvc", host_arch);
+    println!("cargo:rerun-if-env-changed=MIDLRT_{}", midl_env);
+    let midl_info = locate_midl(&midl_env);
 
     if midl_info.is_none() {
         if host_is_windows {
@@ -45,7 +45,7 @@ fn main() {
             panic!(
                 "MIDL compiler is required to build for Windows targets from non-Windows hosts. \
                 Set MIDL or MIDLRT_{} environment variable to point to a cross-compilation MIDL tool.",
-                target_env
+                midl_env
             );
         }
     }
@@ -58,7 +58,7 @@ fn main() {
     cmd.arg("/nologo");
 
     let cross_cfg = if !host_is_windows {
-        match load_cross_config(&target) {
+        match load_cross_config() {
             Ok(cfg) => Some(cfg),
             Err(err) => {
                 panic!("Failed to load cross-compilation configuration: {err}");
@@ -104,7 +104,7 @@ fn main() {
         _ => {
             // When building on native Windows, set up the MSVC environment for MIDL
             if host_is_windows {
-                if let Err(err) = setup_msvc_env_for_midl(&mut cmd, &target) {
+                if let Err(err) = setup_msvc_env_for_midl(&mut cmd) {
                     panic!("Failed to set up MSVC environment for MIDL: {err}");
                 }
             }
@@ -228,10 +228,10 @@ fn find_windows_sdk_midl() -> Option<String> {
 }
 
 #[cfg(windows)]
-fn setup_msvc_env_for_midl(cmd: &mut Command, target: &str) -> Result<(), String> {
+fn setup_msvc_env_for_midl(cmd: &mut Command) -> Result<(), String> {
     // Use the cc crate to get the MSVC compiler tool, which will give us
     // access to the properly configured environment including cl.exe path
-    let tool = cc::Build::new().target(target).host(target).get_compiler();
+    let tool = cc::Build::new().get_compiler();
 
     // Get the path to cl.exe
     let cl_path = tool.path();
@@ -256,7 +256,7 @@ fn setup_msvc_env_for_midl(cmd: &mut Command, target: &str) -> Result<(), String
 }
 
 #[cfg(not(windows))]
-fn setup_msvc_env_for_midl(_cmd: &mut Command, _target: &str) -> Result<(), String> {
+fn setup_msvc_env_for_midl(_cmd: &mut Command) -> Result<(), String> {
     Ok(())
 }
 
@@ -281,17 +281,15 @@ fn configure_cross_env(cmd: &mut Command, cfg: &CrossConfig) -> Result<(), Strin
     Ok(())
 }
 
-fn load_cross_config(target: &str) -> Result<CrossConfig, String> {
-    let arch = target
-        .split('-')
-        .next()
-        .ok_or_else(|| "could not determine target arch".to_string())?;
+fn load_cross_config() -> Result<CrossConfig, String> {
+    let arch = env::var("CARGO_CFG_TARGET_ARCH")
+        .map_err(|_| "CARGO_CFG_TARGET_ARCH not set".to_string())?;
     let tool = env::var_os("OPENVMM_WINDOWS_CROSS_TOOL")
         .ok_or_else(|| "OPENVMM_WINDOWS_CROSS_TOOL not set".to_string())?;
 
     let output = Command::new(&tool)
         .arg("--arch")
-        .arg(arch)
+        .arg(&arch)
         .arg("--dump")
         .output()
         .map_err(|err| format!("failed to run cross tool `{tool:?}`: {err}"))?;
@@ -307,7 +305,7 @@ fn load_cross_config(target: &str) -> Result<CrossConfig, String> {
     let lib = extract_paths(&value, "lib")?;
     let mut bin_dirs = extract_paths(&value, "sdk")?;
 
-    if let Some(msvc_bin) = msvc_bin_dir(&include, arch) {
+    if let Some(msvc_bin) = msvc_bin_dir(&include, &arch) {
         bin_dirs.push(msvc_bin);
     }
 
