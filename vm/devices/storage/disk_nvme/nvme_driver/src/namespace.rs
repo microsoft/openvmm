@@ -107,6 +107,12 @@ impl Namespace {
             .await
             .map_err(NamespaceError::Request)?;
 
+        tracing::debug!(
+            "created namespace from identify nsid={}, identify={:#?}",
+            nsid,
+            identify
+        );
+
         Namespace::new_from_identify(
             driver,
             admin,
@@ -586,7 +592,7 @@ impl DynamicState {
         mut rescan_event: mesh::Receiver<()>,
     ) {
         loop {
-            tracing::debug!("rescan");
+            tracing::debug!("rescan task started nsid={}", nsid);
 
             // This relies on a mesh channel so notifications will NOT be missed
             // even if the task was not started when the first AEN was processed.
@@ -595,7 +601,7 @@ impl DynamicState {
             // Once the sender is dropped, no more repoll signals can be received so
             // there is no point in continuing.
             if event.is_none() {
-                tracing::debug!("rescan task exiting");
+                tracing::debug!("rescan task exiting nsid={}", nsid);
                 break;
             }
 

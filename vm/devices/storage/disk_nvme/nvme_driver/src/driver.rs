@@ -614,6 +614,10 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     return Err(NamespaceError::Duplicate(nsid));
                 }
 
+                tracing::debug!(
+                    "reusing existing namespace nsid={}. This should only happen after restore.",
+                    nsid
+                );
                 return Ok(NamespaceHandle::new(namespace));
             }
         }
