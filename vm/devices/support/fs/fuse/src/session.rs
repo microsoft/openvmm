@@ -650,7 +650,10 @@ mod tests {
         session.dispatch(request, &mut error_sender, None);
 
         // Verify that an error reply was sent with ENAMETOOLONG (36)
-        assert_eq!(error_sender.last_error, Some(lx::Error::ENAMETOOLONG.value()));
+        assert_eq!(
+            error_sender.last_error,
+            Some(lx::Error::ENAMETOOLONG.value())
+        );
     }
 
     #[test]
