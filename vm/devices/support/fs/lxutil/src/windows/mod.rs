@@ -970,10 +970,14 @@ impl LxVolume {
         match result {
             Ok(_) => result,
             Err(e) => {
-                // Read-only files can fail to be deleted with EIO if:
-                // - The file system didn't support FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE.
-                // - The file system's permission check for that flag failed.
-                if e.value() == lx::EIO {
+                // Only try the read-only file workaround for access-related errors.
+                // For errors like ENOTEMPTY (directory not empty), preserve the original error.
+                if e.value() == lx::EIO
+                    || e.value() == lx::ENOTEMPTY
+                    || e.value() == lx::ENOENT
+                    || e.value() == lx::ENOTDIR
+                    || e.value() == lx::EISDIR
+                {
                     result
                 } else {
                     // Reopen with the correct permissions to query and clear the read-only attribute,

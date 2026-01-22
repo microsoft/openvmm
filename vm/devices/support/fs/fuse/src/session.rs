@@ -130,6 +130,11 @@ impl Session {
                 // so send an error reply.
                 return Err(lx::Error::EIO.into());
             }
+            FuseOperation::Error(e) => {
+                // This indicates the request was parsed but contained invalid data (e.g., a name
+                // that was too long). Return the specific error.
+                return Err((*e).into());
+            }
             FuseOperation::Lookup { name } => {
                 let out = self.fs.lookup(&request, name)?;
                 sender.send_arg(request.unique(), out)?;

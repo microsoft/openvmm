@@ -281,7 +281,14 @@ pub fn delete_file(fs_context: &FsContext, file_handle: &OwnedHandle) -> lx::Res
     match result {
         Ok(_) => result,
         Err(e) => {
-            if e.value() == lx::EIO {
+            // Only try the read-only file workaround for access-related errors.
+            // For errors like ENOTEMPTY (directory not empty), preserve the original error.
+            if e.value() == lx::EIO
+                || e.value() == lx::ENOTEMPTY
+                || e.value() == lx::ENOENT
+                || e.value() == lx::ENOTDIR
+                || e.value() == lx::EISDIR
+            {
                 result
             } else {
                 delete_read_only_file(fs_context, file_handle)
