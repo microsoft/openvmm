@@ -582,6 +582,35 @@ impl LoadedVm {
             anyhow::bail!("Servicing is not yet supported for isolated VMs");
         }
 
+        // Start a servicing timeout thread on its own executor in a new thread.
+        // Do this to avoid any tasks that may block the current threadpool
+        // executor, and drop the task when this function returns which will
+        // dismiss the timeout panic.
+        //
+        // This helps catch issues where save may hang, and allows the existing
+        // machinery to send the dump to the host when this process crashes.
+        // Note that we choose to not use a livedump call like the firmware
+        // watchdog handlers, as we expect any hang to be a fatal error for
+        // OpenHCL, whereas the firmware watchdog is a failure inside the guest,
+        // not necessarily inside OpenHCL.
+        let (_servicing_timeout_thread, driver) =
+            pal_async::DefaultPool::spawn_on_thread("servicing-timeout-executor");
+        let _servicing_timeout = driver.clone().spawn("servicing-timeout-task", async move {
+            let mut timer = pal_async::timer::PolledTimer::new(&driver);
+            // Subtract 500ms from the host provided timeout hint to allow for
+            // time for the dump to be sent to the host before termination.
+            let duration = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .map(|d| d.saturating_sub(Duration::from_millis(500)))
+                .unwrap_or(Duration::from_secs(0));
+            timer.sleep(duration).await;
+            tracing::error!(
+                CVM_ALLOWED,
+                "servicing operation timed out, triggering panic"
+            );
+            panic!("servicing operation timed out");
+        });
+
         // NOTE: This is set via the corresponding env arg, as this feature is
         // experimental.
         if !capabilities_flags.enable_nvme_keepalive() {
