@@ -129,9 +129,11 @@ impl Deferred {
     ///
     /// If this is not an update request, returns `Err(self)`.
     pub fn update(self) -> Result<DeferredUpdate, Self> {
-        if self.0.value.is_some() && self.0.path.is_empty() {
+        if self.0.path.is_empty()
+            && let Some(value) = self.0.value
+        {
             Ok(DeferredUpdate {
-                value: self.0.value.unwrap(),
+                value,
                 node: self.0.node,
                 number_format: self.0.number_format,
             })
