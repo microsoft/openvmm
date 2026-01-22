@@ -29,9 +29,13 @@ struct MsiCapabilityState {
     enabled: bool,
     multiple_message_enable: u8,  // 2^(MME) messages allocated
     multiple_message_capable: u8, // 2^(MMC) maximum messages requestable
+    #[inspect(hex)]
     address: u64,
+    #[inspect(hex)]
     data: u16,
+    #[inspect(hex)]
     mask_bits: u32,
+    #[inspect(hex)]
     pending_bits: u32,
     interrupt: Option<MsiInterrupt>,
 }

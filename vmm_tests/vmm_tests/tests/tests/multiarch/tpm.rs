@@ -13,8 +13,12 @@ use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64;
+#[cfg(windows)]
+use petri_artifacts_vmm_test::artifacts::host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64;
 use pipette_client::PipetteClient;
 use std::path::Path;
+#[cfg(windows)]
+use vmm_test_igvm_agent as igvm_agent_rpc_server;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 
@@ -23,6 +27,29 @@ const AK_CERT_TOTAL_BYTES: usize = 4096;
 
 const TPM_GUEST_TESTS_LINUX_GUEST_PATH: &str = "/tmp/tpm_guest_tests";
 const TPM_GUEST_TESTS_WINDOWS_GUEST_PATH: &str = "C:\\tpm_guest_tests.exe";
+
+#[cfg(windows)]
+fn ensure_rpc_server_running(
+    rpc_server_path: &Path,
+) -> anyhow::Result<Option<igvm_agent_rpc_server::RpcServerGuard>> {
+    // For local single-test runs we start and own the server (see vmm_test_igvm_agent/README.md).
+    // If it's already running (e.g., CI), do nothing.
+    if igvm_agent_rpc_server::ensure_rpc_server_running().is_ok() {
+        return Ok(None);
+    }
+
+    if !igvm_agent_rpc_server::local_autostart_enabled() {
+        anyhow::bail!(
+            "test_igvm_agent_rpc_server is not running. Flowey should start it in CI; for local single-test runs set {}=1 to opt-in to auto-starting it.",
+            igvm_agent_rpc_server::LOCAL_AUTOSTART_ENV
+        );
+    }
+
+    // Otherwise start locally and keep the guard alive so the server is terminated when the test ends.
+    igvm_agent_rpc_server::start_rpc_server(rpc_server_path)
+        .map(Some)
+        .context("failed to start test_igvm_agent_rpc_server")
+}
 
 fn expected_ak_cert_hex() -> String {
     use std::fmt::Write as _;
@@ -164,10 +191,12 @@ impl<'a> TpmGuestTests<'a> {
     // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     // openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     // openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(alpine_3_23_x64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_x64(vhd(alpine_3_23_x64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -440,24 +469,34 @@ async fn tpm_test_platform_hierarchy_disabled(
 // }
 
 /// CVM with guest tpm tests on Hyper-V.
+///
+/// The test requires the test_igvm_agent_rpc_server to be running.
+/// In CI, the server is started by flowey before tests run.
+/// For local development, either start the server manually or set
+/// `VMM_TEST_IGVM_AGENT_LOCAL_AUTOSTART=1` to let the test spin it up.
 #[cfg(windows)]
 #[vmm_test(
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 )]
-async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
+async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
-    extra_deps: (ResolvedArtifact<T>,),
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    // TODO: Add test IGVMAgent RPC server to support the boot-time attestation.
+    let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
+
+    // Verify (or start) the RPC server. Flowey handles CI; local nextest can start it here.
+    let rpc_server_path = rpc_server_artifact.get();
+    let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
+
     let config = config
         .with_tpm(true)
-        .with_tpm_state_persistence(false)
+        .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
 
     let (vm, agent) = config.run().await?;
@@ -467,20 +506,21 @@ async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
         OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
         _ => unreachable!(),
     };
-    let (artifact,) = extra_deps;
-    let host_binary_path = artifact.get();
+    let host_binary_path = tpm_guest_tests_artifact.get();
     let tpm_guest_tests =
         TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
             .await?;
 
-    // TODO: Add test IGVMAgent RPC server to support AK Cert
-    // let expected_hex = expected_ak_cert_hex();
-    // let ak_cert_output = tpm_guest_tests.read_ak_cert_with_expected_hex(expected_hex.as_str()).await?;
+    // Verify AK cert with the test IGVM agent RPC server
+    let expected_hex = expected_ak_cert_hex();
+    let ak_cert_output = tpm_guest_tests
+        .read_ak_cert_with_expected_hex(expected_hex.as_str())
+        .await?;
 
-    // ensure!(
-    //     ak_cert_output.contains("AK certificate matches expected value"),
-    //     format!("{ak_cert_output}")
-    // );
+    ensure!(
+        ak_cert_output.contains("AK certificate matches expected value"),
+        format!("{ak_cert_output}")
+    );
 
     let report_output = tpm_guest_tests
         .read_report()

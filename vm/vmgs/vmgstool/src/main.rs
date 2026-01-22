@@ -287,6 +287,9 @@ fn parse_file_id(file_id: &str) -> Result<FileId, std::num::ParseIntError> {
         "GUEST_WATCHDOG" => FileId::GUEST_WATCHDOG,
         "HW_KEY_PROTECTOR" => FileId::HW_KEY_PROTECTOR,
         "GUEST_SECRET_KEY" => FileId::GUEST_SECRET_KEY,
+        "HIBERNATION_FIRMWARE" => FileId::HIBERNATION_FIRMWARE,
+        "PLATFORM_SEED" => FileId::PLATFORM_SEED,
+        "PROVENANCE_DOC" => FileId::PROVENANCE_DOC,
         "EXTENDED_FILE_TABLE" => FileId::EXTENDED_FILE_TABLE,
         v => FileId(v.parse::<u32>()?),
     })

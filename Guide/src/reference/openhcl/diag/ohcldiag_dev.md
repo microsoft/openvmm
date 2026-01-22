@@ -44,7 +44,9 @@ PS > .\ohcldiag-dev.exe <vm name> run -- cat /etc/kernel-build-info.json
   "build_name": "5.15.90.7-hcl.1"
 }
 ```
+
 The OpenHCL version information can be read from the filesystem, too:
+
 ```powershell
 PS > .\ohcldiag-dev.exe <vm name> run -- cat /etc/underhill-build-info.json
 {
@@ -52,6 +54,7 @@ PS > .\ohcldiag-dev.exe <vm name> run -- cat /etc/underhill-build-info.json
     "git_revision": "a7c4ba3ffcd8708346d33a608f25b9287ac89f8b"
 }
 ```
+
 ### Interactive Shell
 
 To get an interactive shell into the VM, try:
@@ -82,7 +85,7 @@ ohcldiag-dev.exe <vm name> inspect -r
 
 The kernel `kmsg` log currently contains both the kernel log output and the
 OpenHCL log output. You can see this output via the
-[console](#kernel-console), if you have it configured, or via `ohcldiag-dev`:
+[serial console](./tracing.md#enabling-serial-logging-for-openhcl), if you have it configured, or via `ohcldiag-dev`:
 
 ```powershell
 ohcldiag-dev.exe <vm name> kmsg

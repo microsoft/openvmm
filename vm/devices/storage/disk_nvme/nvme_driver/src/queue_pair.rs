@@ -654,7 +654,7 @@ impl Issuer {
                     .alloc
                     .alloc_pages(1)
                     .await
-                    .expect("pool cap is >= 1 page");
+                    .expect("pool capacity is >= 1 page");
 
                 let prp_addr = prp.physical_address(0);
                 let page = prp.page_as_slice(0);
@@ -713,7 +713,7 @@ impl Issuer {
             .alloc
             .alloc_bytes(data.len())
             .await
-            .expect("pool cap is sufficient");
+            .expect("pool capacity is sufficient");
 
         let prp = self
             .make_prp(0, (0..mem.page_count()).map(|i| mem.physical_address(i)))
@@ -839,11 +839,8 @@ impl AerHandler for AdminAerHandler {
     }
 
     fn update_awaiting_cid(&mut self, cid: u16) {
-        if self.await_aen_cid.is_some() {
-            panic!(
-                "already awaiting on AEN with cid {}",
-                self.await_aen_cid.unwrap()
-            );
+        if let Some(await_aen_cid) = self.await_aen_cid {
+            panic!("already awaiting on AEN with cid {}", await_aen_cid);
         }
         self.await_aen_cid = Some(cid);
     }

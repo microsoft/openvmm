@@ -15,8 +15,21 @@ These logs are written by default to `COM3` and OpenVMM can be configured to red
 
 For examples on how to enable `OPENVMM_LOG`, see [OpenVMM Logging](../../openvmm/logging.md).
 
-## \[Hyper-V\] Saving traces to the Windows event log
+### What about Hyper-V?
 
+Hyper-V only supports 2 COM ports for production scenarios. If you are on Windows Insider build 28000 or higher, you can do the following. (This is how we get COM3 output in our CI runs.)
+
+```pwsh
+reg.exe add "HKLM\Software\Microsoft\Windows NT\CurrentVersion\Virtualization" /v EnableAdditionalComPorts /t REG_DWORD /d 1 /f
+
+$com3Pipe = "\\.\pipe\openhcl-com3"
+Set-VMComPort -VMName $VmName -Number 3 -Path $com3Pipe
+
+# Pipe serial out to the console, for example using the built-in tool `hvc.exe`... (you could use hypestv or other tools as well)
+hvc serial -c -p 3 -r $VmName
+```
+
+## \[Hyper-V\] Saving traces to the Windows event log
 
 The OpenHCL traces can be saved to the Windows event log on the host. That is
 not meant to be a production scenario due to resource consumption concerns. By

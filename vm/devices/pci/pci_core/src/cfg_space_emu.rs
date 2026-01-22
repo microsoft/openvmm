@@ -44,7 +44,7 @@ use vmcore::line_interrupt::LineInterrupt;
 pub enum HeaderType {
     /// Type 0 header with 6 BARs (endpoint devices)
     Type0,
-    /// Type 1 header with 2 BARs (bridge devices)  
+    /// Type 1 header with 2 BARs (bridge devices)
     Type1,
 }
 
@@ -71,7 +71,7 @@ pub mod header_type_consts {
     /// Number of BARs for Type 0 headers
     pub const TYPE0_BAR_COUNT: usize = HeaderType::Type0.bar_count();
 
-    /// Number of BARs for Type 1 headers  
+    /// Number of BARs for Type 1 headers
     pub const TYPE1_BAR_COUNT: usize = HeaderType::Type1.bar_count();
 }
 
@@ -1011,44 +1011,54 @@ impl ConfigSpaceType0Emulator {
 struct ConfigSpaceType1EmulatorState {
     /// The subordinate bus number register. Software programs
     /// this register with the highest bus number below the bridge.
+    #[inspect(hex)]
     subordinate_bus_number: u8,
     /// The secondary bus number register. Software programs
     /// this register with the bus number assigned to the secondary
     /// side of the bridge.
+    #[inspect(hex)]
     secondary_bus_number: u8,
     /// The primary bus number register. This is unused for PCI Express but
     /// is supposed to be read/write for compability with legacy software.
+    #[inspect(hex)]
     primary_bus_number: u8,
     /// The memory base register. Software programs the upper 12 bits of this
     /// register with the upper 12 bits of a 32-bit base address of MMIO assigned
     /// to the hierarchy under the bridge (the lower 20 bits are assumed to be 0s).
+    #[inspect(hex)]
     memory_base: u16,
     /// The memory limit register. Software programs the upper 12 bits of this
     /// register with the upper 12 bits of a 32-bit limit address of MMIO assigned
     /// to the hierarchy under the bridge (the lower 20 bits are assumed to be 1s).
+    #[inspect(hex)]
     memory_limit: u16,
     /// The prefetchable memory base register. Software programs the upper 12 bits of
     /// this register with bits 20:31 of the base address of the prefetchable MMIO
     /// window assigned to the hierarchy under the bridge. Bits 0:19 are assumed to
     /// be 0s.
+    #[inspect(hex)]
     prefetch_base: u16,
     /// The prefetchable memory limit register. Software programs the upper 12 bits of
     /// this register with bits 20:31 of the limit address of the prefetchable MMIO
     /// window assigned to the hierarchy under the bridge. Bits 0:19 are assumed to
     /// be 1s.
+    #[inspect(hex)]
     prefetch_limit: u16,
     /// The prefetchable memory base upper 32 bits register. When the bridge supports
     /// 64-bit addressing for prefetchable memory, software programs this register
     /// with the upper 32 bits of the base address of the prefetchable MMIO window
     /// assigned to the hierarchy under the bridge.
+    #[inspect(hex)]
     prefetch_base_upper: u32,
     /// The prefetchable memory limit upper 32 bits register. When the bridge supports
     /// 64-bit addressing for prefetchable memory, software programs this register
     /// with the upper 32 bits of the base address of the prefetchable MMIO window
     /// assigned to the hierarchy under the bridge.
+    #[inspect(hex)]
     prefetch_limit_upper: u32,
     /// The bridge control register. Contains various control bits for bridge behavior
     /// such as secondary bus reset, VGA enable, etc.
+    #[inspect(hex)]
     bridge_control: u16,
 }
 
@@ -1295,9 +1305,13 @@ mod save_restore {
         use vmcore::save_restore::SavedStateBlob;
         use vmcore::save_restore::SavedStateRoot;
 
+        /// Unified saved state for both Type 0 and Type 1 PCI configuration space emulators.
+        /// Type 1 specific fields (mesh indices 6-15) will be ignored when restoring Type 0 devices,
+        /// and will have default values (0) when restoring old save state to Type 1 devices.
         #[derive(Protobuf, SavedStateRoot)]
         #[mesh(package = "pci.cfg_space_emu")]
         pub struct SavedState {
+            // Common fields (used by both Type 0 and Type 1)
             #[mesh(1)]
             pub command: u16,
             #[mesh(2)]
@@ -1308,6 +1322,29 @@ mod save_restore {
             pub latency_timer: u8,
             #[mesh(5)]
             pub capabilities: Vec<(String, SavedStateBlob)>,
+
+            // Type 1 specific fields (bridge devices)
+            // These fields default to 0 for backward compatibility with old save state
+            #[mesh(6)]
+            pub subordinate_bus_number: u8,
+            #[mesh(7)]
+            pub secondary_bus_number: u8,
+            #[mesh(8)]
+            pub primary_bus_number: u8,
+            #[mesh(9)]
+            pub memory_base: u16,
+            #[mesh(10)]
+            pub memory_limit: u16,
+            #[mesh(11)]
+            pub prefetch_base: u16,
+            #[mesh(12)]
+            pub prefetch_limit: u16,
+            #[mesh(13)]
+            pub prefetch_base_upper: u32,
+            #[mesh(14)]
+            pub prefetch_limit_upper: u32,
+            #[mesh(15)]
+            pub bridge_control: u16,
         }
     }
 
@@ -1319,130 +1356,84 @@ mod save_restore {
         InvalidCap(String),
     }
 
-    impl<const N: usize> SaveRestore for ConfigSpaceCommonHeaderEmulator<N> {
+    impl SaveRestore for ConfigSpaceType0Emulator {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            tracing::info!(
-                "ConfigSpaceCommonHeaderEmulator<{}>: starting save operation",
-                N
-            );
-
-            let ConfigSpaceCommonHeaderEmulatorState {
-                command,
-                base_addresses,
-                interrupt_line,
-            } = self.state;
-
-            // Convert to 6-element array, padding with zeros if needed
-            let mut saved_base_addresses = [0u32; 6];
-            for (i, &addr) in base_addresses.iter().enumerate() {
-                if i < 6 {
-                    saved_base_addresses[i] = addr;
-                }
-            }
-
-            tracing::info!(
-                "ConfigSpaceCommonHeaderEmulator<{}>: saving state - command={:#x}, interrupt_line={}, base_addresses={:?}",
-                N,
-                command.into_bits(),
-                interrupt_line,
-                saved_base_addresses
-            );
+            let ConfigSpaceType0EmulatorState { latency_timer } = self.state;
 
             let saved_state = state::SavedState {
-                command: command.into_bits(),
-                base_addresses: saved_base_addresses,
-                interrupt_line,
-                latency_timer: 0, // Not used in common header, always 0
+                command: self.common.command().into_bits(),
+                base_addresses: *self.common.base_addresses(),
+                interrupt_line: self.common.interrupt_line(),
+                latency_timer,
                 capabilities: self
-                    .capabilities
+                    .common
+                    .capabilities_mut()
                     .iter_mut()
                     .map(|cap| {
                         let id = cap.label().to_owned();
                         Ok((id, cap.save()?))
                     })
                     .collect::<Result<_, _>>()?,
+                // Type 1 specific fields - not used for Type 0
+                subordinate_bus_number: 0,
+                secondary_bus_number: 0,
+                primary_bus_number: 0,
+                memory_base: 0,
+                memory_limit: 0,
+                prefetch_base: 0,
+                prefetch_limit: 0,
+                prefetch_base_upper: 0,
+                prefetch_limit_upper: 0,
+                bridge_control: 0,
             };
 
-            tracing::info!(
-                "ConfigSpaceCommonHeaderEmulator<{}>: save operation completed successfully",
-                N
-            );
             Ok(saved_state)
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            tracing::info!(
-                "ConfigSpaceCommonHeaderEmulator<{}>: starting restore operation",
-                N
-            );
-
             let state::SavedState {
                 command,
                 base_addresses,
                 interrupt_line,
-                latency_timer: _, // Ignore latency_timer field
+                latency_timer,
                 capabilities,
+                // Type 1 specific fields - ignored for Type 0
+                subordinate_bus_number: _,
+                secondary_bus_number: _,
+                primary_bus_number: _,
+                memory_base: _,
+                memory_limit: _,
+                prefetch_base: _,
+                prefetch_limit: _,
+                prefetch_base_upper: _,
+                prefetch_limit_upper: _,
+                bridge_control: _,
             } = state;
 
-            tracing::info!(
-                "ConfigSpaceCommonHeaderEmulator<{}>: restoring state - command={:#x}, interrupt_line={}, base_addresses={:?}",
-                N,
-                command,
-                interrupt_line,
-                base_addresses
-            );
+            self.state = ConfigSpaceType0EmulatorState { latency_timer };
 
-            // Convert from 6-element array, taking only what we need
-            let mut restored_base_addresses = {
-                const ZERO: u32 = 0;
-                [ZERO; N]
-            };
-            for (i, &addr) in base_addresses.iter().enumerate() {
-                if i < N {
-                    restored_base_addresses[i] = addr;
-                }
-            }
-
-            self.state = ConfigSpaceCommonHeaderEmulatorState {
-                command: cfg_space::Command::from_bits(command),
-                base_addresses: restored_base_addresses,
-                interrupt_line,
-            };
+            self.common.set_base_addresses(&base_addresses);
+            self.common.set_interrupt_line(interrupt_line);
+            self.common
+                .set_command(cfg_space::Command::from_bits(command));
 
             if command & !SUPPORTED_COMMAND_BITS != 0 {
-                tracing::warn!(
-                    "ConfigSpaceCommonHeaderEmulator<{}>: invalid command bits found: {:#x}",
-                    N,
-                    command
-                );
                 return Err(RestoreError::InvalidSavedState(
                     ConfigSpaceRestoreError::InvalidConfigBits.into(),
                 ));
             }
 
-            tracing::info!(
-                "ConfigSpaceCommonHeaderEmulator<{}>: syncing command register",
-                N
-            );
-            self.sync_command_register(self.state.command);
+            self.common.sync_command_register(self.common.command());
 
-            tracing::info!(
-                "ConfigSpaceCommonHeaderEmulator<{}>: restoring {} capabilities",
-                N,
-                capabilities.len()
-            );
             for (id, entry) in capabilities {
-                tracing::debug!(
-                    save_id = id.as_str(),
-                    "restoring pci common header capability"
-                );
+                tracing::debug!(save_id = id.as_str(), "restoring pci capability");
 
                 // yes, yes, this is O(n^2), but devices never have more than a
                 // handful of caps, so it's totally fine.
                 let mut restored = false;
-                for cap in self.capabilities.iter_mut() {
+                for cap in self.common.capabilities_mut() {
                     if cap.label() == id {
                         cap.restore(entry)?;
                         restored = true;
@@ -1451,120 +1442,18 @@ mod save_restore {
                 }
 
                 if !restored {
-                    tracing::error!(
-                        "ConfigSpaceCommonHeaderEmulator<{}>: failed to find capability: {}",
-                        N,
-                        id
-                    );
                     return Err(RestoreError::InvalidSavedState(
                         ConfigSpaceRestoreError::InvalidCap(id).into(),
                     ));
                 }
             }
 
-            tracing::info!(
-                "ConfigSpaceCommonHeaderEmulator<{}>: restore operation completed successfully",
-                N
-            );
             Ok(())
-        }
-    }
-
-    mod type0_state {
-        use super::state;
-        use mesh::payload::Protobuf;
-        use vmcore::save_restore::SavedStateRoot;
-
-        #[derive(Protobuf, SavedStateRoot)]
-        #[mesh(package = "pci.cfg_space_emu")]
-        pub struct SavedType0State {
-            #[mesh(1)]
-            pub latency_timer: u8,
-            #[mesh(2)]
-            pub common_header: state::SavedState,
-        }
-    }
-
-    impl SaveRestore for ConfigSpaceType0Emulator {
-        type SavedState = type0_state::SavedType0State;
-
-        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            tracing::info!("ConfigSpaceType0Emulator: starting save operation");
-
-            let ConfigSpaceType0EmulatorState { latency_timer } = self.state;
-
-            tracing::info!(
-                "ConfigSpaceType0Emulator: saving latency_timer={}",
-                latency_timer
-            );
-
-            let saved_state = type0_state::SavedType0State {
-                latency_timer,
-                common_header: self.common.save()?,
-            };
-
-            tracing::info!("ConfigSpaceType0Emulator: save operation completed successfully");
-            Ok(saved_state)
-        }
-
-        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            tracing::info!("ConfigSpaceType0Emulator: starting restore operation");
-
-            let type0_state::SavedType0State {
-                latency_timer,
-                common_header,
-            } = state;
-
-            tracing::info!(
-                "ConfigSpaceType0Emulator: restoring latency_timer={}",
-                latency_timer
-            );
-
-            self.state = ConfigSpaceType0EmulatorState { latency_timer };
-
-            tracing::info!("ConfigSpaceType0Emulator: delegating to common header restore");
-            self.common.restore(common_header)?;
-
-            tracing::info!("ConfigSpaceType0Emulator: restore operation completed successfully");
-            Ok(())
-        }
-    }
-
-    mod type1_state {
-        use super::state;
-        use mesh::payload::Protobuf;
-        use vmcore::save_restore::SavedStateRoot;
-
-        #[derive(Protobuf, SavedStateRoot)]
-        #[mesh(package = "pci.cfg_space_emu")]
-        pub struct SavedType1State {
-            #[mesh(1)]
-            pub subordinate_bus_number: u8,
-            #[mesh(2)]
-            pub secondary_bus_number: u8,
-            #[mesh(3)]
-            pub primary_bus_number: u8,
-            #[mesh(4)]
-            pub memory_base: u16,
-            #[mesh(5)]
-            pub memory_limit: u16,
-            #[mesh(6)]
-            pub prefetch_base: u16,
-            #[mesh(7)]
-            pub prefetch_limit: u16,
-            #[mesh(8)]
-            pub prefetch_base_upper: u32,
-            #[mesh(9)]
-            pub prefetch_limit_upper: u32,
-            #[mesh(10)]
-            pub bridge_control: u16,
-            #[mesh(11)]
-            pub common_header: state::SavedState,
         }
     }
 
     impl SaveRestore for ConfigSpaceType1Emulator {
-        type SavedState = type1_state::SavedType1State;
+        type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             let ConfigSpaceType1EmulatorState {
@@ -1580,7 +1469,27 @@ mod save_restore {
                 bridge_control,
             } = self.state;
 
-            let saved_state = type1_state::SavedType1State {
+            // Pad base_addresses to 6 elements for saved state (Type 1 uses 2 BARs)
+            let type1_base_addresses = self.common.base_addresses();
+            let mut saved_base_addresses = [0u32; 6];
+            saved_base_addresses[0] = type1_base_addresses[0];
+            saved_base_addresses[1] = type1_base_addresses[1];
+
+            let saved_state = state::SavedState {
+                command: self.common.command().into_bits(),
+                base_addresses: saved_base_addresses,
+                interrupt_line: self.common.interrupt_line(),
+                latency_timer: 0, // Not used for Type 1
+                capabilities: self
+                    .common
+                    .capabilities_mut()
+                    .iter_mut()
+                    .map(|cap| {
+                        let id = cap.label().to_owned();
+                        Ok((id, cap.save()?))
+                    })
+                    .collect::<Result<_, _>>()?,
+                // Type 1 specific fields
                 subordinate_bus_number,
                 secondary_bus_number,
                 primary_bus_number,
@@ -1591,14 +1500,18 @@ mod save_restore {
                 prefetch_base_upper,
                 prefetch_limit_upper,
                 bridge_control,
-                common_header: self.common.save()?,
             };
 
             Ok(saved_state)
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            let type1_state::SavedType1State {
+            let state::SavedState {
+                command,
+                base_addresses,
+                interrupt_line,
+                latency_timer: _, // Not used for Type 1
+                capabilities,
                 subordinate_bus_number,
                 secondary_bus_number,
                 primary_bus_number,
@@ -1609,7 +1522,6 @@ mod save_restore {
                 prefetch_base_upper,
                 prefetch_limit_upper,
                 bridge_control,
-                common_header,
             } = state;
 
             self.state = ConfigSpaceType1EmulatorState {
@@ -1625,7 +1537,43 @@ mod save_restore {
                 bridge_control,
             };
 
-            self.common.restore(common_header)?;
+            // Pad base_addresses to 6 elements for common header (Type 1 uses 2 BARs)
+            let mut full_base_addresses = [0u32; 6];
+            for (i, &addr) in base_addresses.iter().enumerate().take(2) {
+                full_base_addresses[i] = addr;
+            }
+            self.common
+                .set_base_addresses(&[full_base_addresses[0], full_base_addresses[1]]);
+            self.common.set_interrupt_line(interrupt_line);
+            self.common
+                .set_command(cfg_space::Command::from_bits(command));
+
+            if command & !SUPPORTED_COMMAND_BITS != 0 {
+                return Err(RestoreError::InvalidSavedState(
+                    ConfigSpaceRestoreError::InvalidConfigBits.into(),
+                ));
+            }
+
+            self.common.sync_command_register(self.common.command());
+
+            for (id, entry) in capabilities {
+                tracing::debug!(save_id = id.as_str(), "restoring pci capability");
+
+                let mut restored = false;
+                for cap in self.common.capabilities_mut() {
+                    if cap.label() == id {
+                        cap.restore(entry)?;
+                        restored = true;
+                        break;
+                    }
+                }
+
+                if !restored {
+                    return Err(RestoreError::InvalidSavedState(
+                        ConfigSpaceRestoreError::InvalidCap(id).into(),
+                    ));
+                }
+            }
 
             Ok(())
         }
@@ -2142,91 +2090,100 @@ mod tests {
     }
 
     #[test]
-    fn test_common_header_emulator_save_restore() {
+    fn test_type0_emulator_save_restore() {
         use vmcore::save_restore::SaveRestore;
 
-        // Test Type 0 common header emulator save/restore
-        let hardware_ids = HardwareIds {
-            vendor_id: 0x1111,
-            device_id: 0x2222,
-            revision_id: 1,
-            prog_if: ProgrammingInterface::NONE,
-            sub_class: Subclass::NONE,
-            base_class: ClassCode::UNCLASSIFIED,
-            type0_sub_vendor_id: 0,
-            type0_sub_system_id: 0,
-        };
+        // Test Type 0 emulator save/restore
+        let mut emu = create_type0_emulator(vec![]);
 
-        let bars = DeviceBars::new().bar0(4096, BarMemoryKind::Dummy);
+        // Modify some state by writing to command register
+        emu.write_u32(0x04, 0x0007).unwrap(); // Enable some command bits
 
-        let mut common_emu: ConfigSpaceCommonHeaderEmulatorType0 =
-            ConfigSpaceCommonHeaderEmulator::new(hardware_ids, vec![], bars);
-
-        // Modify some state
+        // Read back and verify
         let mut test_val = 0u32;
-        let result = common_emu.write_u32(0x04, 0x0007); // Enable some command bits
-        assert_eq!(result, CommonHeaderResult::Handled);
-        let result = common_emu.read_u32(0x04, &mut test_val);
-        assert_eq!(result, CommonHeaderResult::Handled);
+        emu.read_u32(0x04, &mut test_val).unwrap();
         assert_eq!(test_val & 0x0007, 0x0007);
 
+        // Write to latency timer / interrupt register
+        emu.write_u32(0x3C, 0x0040_0000).unwrap(); // Set latency_timer
+
         // Save the state
-        let saved_state = common_emu.save().expect("save should succeed");
+        let saved_state = emu.save().expect("save should succeed");
 
         // Reset the emulator
-        common_emu.reset();
-        let result = common_emu.read_u32(0x04, &mut test_val);
-        assert_eq!(result, CommonHeaderResult::Handled);
+        emu.reset();
+
+        // Verify state is reset
+        emu.read_u32(0x04, &mut test_val).unwrap();
         assert_eq!(test_val & 0x0007, 0x0000); // Should be reset
 
         // Restore the state
-        common_emu
-            .restore(saved_state)
-            .expect("restore should succeed");
-        let result = common_emu.read_u32(0x04, &mut test_val);
-        assert_eq!(result, CommonHeaderResult::Handled);
+        emu.restore(saved_state).expect("restore should succeed");
+
+        // Verify state is restored
+        emu.read_u32(0x04, &mut test_val).unwrap();
         assert_eq!(test_val & 0x0007, 0x0007); // Should be restored
+    }
 
-        // Test Type 1 common header emulator save/restore
-        let hardware_ids = HardwareIds {
-            vendor_id: 0x3333,
-            device_id: 0x4444,
-            revision_id: 1,
-            prog_if: ProgrammingInterface::NONE,
-            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
-            base_class: ClassCode::BRIDGE,
-            type0_sub_vendor_id: 0,
-            type0_sub_system_id: 0,
-        };
+    #[test]
+    fn test_type1_emulator_save_restore() {
+        use vmcore::save_restore::SaveRestore;
 
-        let bars = DeviceBars::new(); // No BARs for Type 1
-
-        let mut common_emu_type1: ConfigSpaceCommonHeaderEmulatorType1 =
-            ConfigSpaceCommonHeaderEmulator::new(hardware_ids, vec![], bars);
+        // Test Type 1 emulator save/restore
+        let mut emu = create_type1_emulator(vec![]);
 
         // Modify some state
-        let result = common_emu_type1.write_u32(0x04, 0x0003); // Enable some command bits
-        assert_eq!(result, CommonHeaderResult::Handled);
-        let result = common_emu_type1.read_u32(0x04, &mut test_val);
-        assert_eq!(result, CommonHeaderResult::Handled);
+        emu.write_u32(0x04, 0x0003).unwrap(); // Enable command bits
+        emu.write_u32(0x18, 0x0012_1000).unwrap(); // Set bus numbers
+        emu.write_u32(0x20, 0xFFF0_FF00).unwrap(); // Set memory range
+        emu.write_u32(0x24, 0xFFF0_FF00).unwrap(); // Set prefetch range
+        emu.write_u32(0x28, 0x00AA_BBCC).unwrap(); // Set prefetch base upper
+        emu.write_u32(0x2C, 0x00DD_EEFF).unwrap(); // Set prefetch limit upper
+        emu.write_u32(0x3C, 0x0001_0000).unwrap(); // Set bridge control
+
+        // Verify values
+        let mut test_val = 0u32;
+        emu.read_u32(0x04, &mut test_val).unwrap();
         assert_eq!(test_val & 0x0003, 0x0003);
+        emu.read_u32(0x18, &mut test_val).unwrap();
+        assert_eq!(test_val, 0x0012_1000);
+        emu.read_u32(0x20, &mut test_val).unwrap();
+        assert_eq!(test_val, 0xFFF0_FF00);
+        emu.read_u32(0x28, &mut test_val).unwrap();
+        assert_eq!(test_val, 0x00AA_BBCC);
+        emu.read_u32(0x2C, &mut test_val).unwrap();
+        assert_eq!(test_val, 0x00DD_EEFF);
+        emu.read_u32(0x3C, &mut test_val).unwrap();
+        assert_eq!(test_val >> 16, 0x0001); // bridge_control
 
         // Save the state
-        let saved_state = common_emu_type1.save().expect("save should succeed");
+        let saved_state = emu.save().expect("save should succeed");
 
         // Reset the emulator
-        common_emu_type1.reset();
-        let result = common_emu_type1.read_u32(0x04, &mut test_val);
-        assert_eq!(result, CommonHeaderResult::Handled);
-        assert_eq!(test_val & 0x0003, 0x0000); // Should be reset
+        emu.reset();
+
+        // Verify state is reset
+        emu.read_u32(0x04, &mut test_val).unwrap();
+        assert_eq!(test_val & 0x0003, 0x0000);
+        emu.read_u32(0x18, &mut test_val).unwrap();
+        assert_eq!(test_val, 0x0000_0000);
 
         // Restore the state
-        common_emu_type1
-            .restore(saved_state)
-            .expect("restore should succeed");
-        let result = common_emu_type1.read_u32(0x04, &mut test_val);
-        assert_eq!(result, CommonHeaderResult::Handled);
-        assert_eq!(test_val & 0x0003, 0x0003); // Should be restored
+        emu.restore(saved_state).expect("restore should succeed");
+
+        // Verify state is restored
+        emu.read_u32(0x04, &mut test_val).unwrap();
+        assert_eq!(test_val & 0x0003, 0x0003);
+        emu.read_u32(0x18, &mut test_val).unwrap();
+        assert_eq!(test_val, 0x0012_1000);
+        emu.read_u32(0x20, &mut test_val).unwrap();
+        assert_eq!(test_val, 0xFFF0_FF00);
+        emu.read_u32(0x28, &mut test_val).unwrap();
+        assert_eq!(test_val, 0x00AA_BBCC);
+        emu.read_u32(0x2C, &mut test_val).unwrap();
+        assert_eq!(test_val, 0x00DD_EEFF);
+        emu.read_u32(0x3C, &mut test_val).unwrap();
+        assert_eq!(test_val >> 16, 0x0001); // bridge_control
     }
 
     #[test]

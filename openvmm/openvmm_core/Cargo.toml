@@ -48,6 +48,7 @@ vmotherboard = { workspace = true, features = [
 ] }
 chipset_legacy.workspace = true
 chipset_device_resources.workspace = true
+chipset_device_worker.workspace = true
 disk_backend.workspace = true
 firmware_pcat.workspace = true
 firmware_uefi_custom_vars.workspace = true
