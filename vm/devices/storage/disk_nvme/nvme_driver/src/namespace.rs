@@ -108,9 +108,10 @@ impl Namespace {
             .map_err(NamespaceError::Request)?;
 
         tracing::debug!(
-            "created namespace from identify nsid={}, identify={:#?}",
+            "created namespace from identify nsid={}, nsze={}, nsguid={:?}",
             nsid,
-            identify
+            identify.nsze,
+            identify.nguid
         );
 
         Namespace::new_from_identify(
