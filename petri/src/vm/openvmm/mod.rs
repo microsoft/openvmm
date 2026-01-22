@@ -130,12 +130,8 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         resources: &PetriVmResources,
         properties: PetriVmProperties,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
-<<<<<<< HEAD
-        let mut config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources)?;
-=======
         let mut config =
-            PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources, properties).await?;
->>>>>>> 5b9004e7 (petri: backend agnostic additional disk configuration (#2551))
+            PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources, properties)?;
 
         if let Some(f) = modify_vmm_config {
             config = f.0(config);

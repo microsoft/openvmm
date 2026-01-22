@@ -473,7 +473,6 @@ impl PetriVmConfigOpenVmm {
             arch,
             host_log_levels,
             config,
-            boot_device_type,
 
             resources: PetriVmResourcesOpenVmm {
                 log_stream_tasks,
