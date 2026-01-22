@@ -196,13 +196,12 @@ pub struct Vtl2StorageControllerBuilder {
 }
 
 impl Vtl2StorageControllerBuilder {
-    /// Creates a new storage controller builder with default values
-    /// (arbitrary `instance_id` and no disks) and the specified guest-visible
-    /// controller type.
-    pub fn new(protocol: ControllerType) -> Self {
+    /// Creates a new storage controller builder with default values (a SCSI
+    /// controller, with arbitrary `instance_id` and no disks).
+    pub fn scsi() -> Self {
         Self {
             instance_id: Guid::new_random(),
-            protocol,
+            protocol: ControllerType::Scsi,
             luns: Vec::new(),
             io_queue_depth: None,
         }
@@ -211,6 +210,12 @@ impl Vtl2StorageControllerBuilder {
     /// Set the guest-visible instance GUID.
     pub fn with_instance_id(mut self, instance_id: Guid) -> Self {
         self.instance_id = instance_id;
+        self
+    }
+
+    /// Change the guest-visible protocol.
+    pub fn with_protocol(mut self, protocol: ControllerType) -> Self {
+        self.protocol = protocol;
         self
     }
 

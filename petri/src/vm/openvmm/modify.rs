@@ -22,6 +22,7 @@ use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use vm_resource::IntoResource;
 use vmotherboard::ChipsetDeviceHandle;
+use vtl2_settings_proto::Vtl2Settings;
 
 impl PetriVmConfigOpenVmm {
     /// Enable the VTL0 alias map.
@@ -78,7 +79,7 @@ impl PetriVmConfigOpenVmm {
     pub fn with_nic(mut self) -> Self {
         let endpoint =
             net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
-        if self.vtl2_settings.is_some() {
+        if self.resources.vtl2_settings.is_some() {
             self.config.vpci_devices.push(VpciDeviceConfig {
                 vtl: DeviceVtl::Vtl2,
                 instance_id: MANA_INSTANCE,
@@ -91,7 +92,8 @@ impl PetriVmConfigOpenVmm {
                 .into_resource(),
             });
 
-            self.vtl2_settings
+            self.resources
+                .vtl2_settings
                 .as_mut()
                 .unwrap()
                 .dynamic
@@ -117,6 +119,18 @@ impl PetriVmConfigOpenVmm {
             ));
         }
 
+        self
+    }
+
+    /// Add custom VTL 2 settings.
+    // TODO: At some point we want to replace uses of this with nicer with_disk,
+    // with_nic, etc. methods.
+    pub fn with_custom_vtl2_settings(mut self, f: impl FnOnce(&mut Vtl2Settings)) -> Self {
+        f(self
+            .resources
+            .vtl2_settings
+            .as_mut()
+            .expect("Custom VTL 2 settings are only supported with OpenHCL."));
         self
     }
 

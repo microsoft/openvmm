@@ -164,10 +164,6 @@ impl PetriVmRuntime for PetriVmOpenVmm {
     async fn reset(&mut self) -> anyhow::Result<()> {
         Self::reset(self).await
     }
-
-    async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()> {
-        Self::set_vtl2_settings(self, settings).await
-    }
 }
 
 pub(super) struct PetriVmInner {
@@ -264,8 +260,8 @@ impl PetriVmOpenVmm {
         pub async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>
     );
     petri_vm_fn!(
-        /// Set the OpenHCL VTL2 settings.
-        pub async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()>
+        /// Modifies OpenHCL VTL2 settings.
+        pub async fn modify_vtl2_settings(&mut self, f: impl FnOnce(&mut Vtl2Settings)) -> anyhow::Result<()>
     );
 
     petri_vm_fn!(pub(crate) async fn resume(&mut self) -> anyhow::Result<()>);
@@ -436,7 +432,12 @@ impl PetriVmInner {
         self.worker.restore_openhcl(ged_send).await
     }
 
-    async fn set_vtl2_settings(&self, settings: &Vtl2Settings) -> anyhow::Result<()> {
+    async fn modify_vtl2_settings(
+        &mut self,
+        f: impl FnOnce(&mut Vtl2Settings),
+    ) -> anyhow::Result<()> {
+        f(self.resources.vtl2_settings.as_mut().unwrap());
+
         let ged_send = self
             .resources
             .ged_send
@@ -446,7 +447,7 @@ impl PetriVmInner {
         ged_send
             .call_failable(
                 get_resources::ged::GuestEmulationRequest::ModifyVtl2Settings,
-                prost::Message::encode_to_vec(settings),
+                prost::Message::encode_to_vec(self.resources.vtl2_settings.as_ref().unwrap()),
             )
             .await?;
 
