@@ -88,8 +88,6 @@ struct DirEntryCursor {
     host_consumed: u64,
     /// Whether we've reached the end of the directory.
     complete: bool,
-    /// The last offset that was successfully served (for detecting backward seeks).
-    last_served_offset: u64,
 }
 
 impl DirEntryCursor {
@@ -99,7 +97,6 @@ impl DirEntryCursor {
             window_start: 0,
             host_consumed: 0,
             complete: false,
-            last_served_offset: 0,
         }
     }
 
@@ -109,7 +106,6 @@ impl DirEntryCursor {
         self.window_start = 0;
         self.host_consumed = 0;
         self.complete = false;
-        self.last_served_offset = 0;
     }
 
     /// Check if the cache contains entries for the given offset.
@@ -276,7 +272,6 @@ impl VirtioFsFile {
         let mut buffer = Vec::with_capacity(size as usize);
         let self_inode = self.inode.inode_nr();
         let mut entry_count: u32 = 0;
-        let mut last_offset_written = offset;
 
         // Ensure cache is populated for the requested offset.
         self.ensure_cache_populated(offset)?;
@@ -298,7 +293,6 @@ impl VirtioFsFile {
                 match self.write_dir_entry(&mut buffer, fs, entry, self_inode, plus)? {
                     WriteResult::Written => {
                         entry_count += 1;
-                        last_offset_written = entry.offset;
                     }
                     WriteResult::Skipped => {
                         // Just continue to next entry.
@@ -309,11 +303,6 @@ impl VirtioFsFile {
                 }
             }
             break;
-        }
-
-        // Update last served offset for backward seek detection.
-        if entry_count > 0 {
-            self.dir_cursor.write().last_served_offset = last_offset_written;
         }
 
         if entry_count > 0 && buffer.is_empty() {
@@ -327,11 +316,8 @@ impl VirtioFsFile {
     fn ensure_cache_populated(&self, offset: u64) -> lx::Result<()> {
         let cursor = self.dir_cursor.read();
 
-        // Detect backward seek - cache might be stale due to deletions.
-        let is_backward_seek = offset < cursor.last_served_offset;
-
         // Check if cache is valid and not stale.
-        if offset != 0 && !is_backward_seek && cursor.contains(offset) {
+        if offset != 0 && cursor.contains(offset) {
             return Ok(());
         }
 
@@ -339,19 +325,17 @@ impl VirtioFsFile {
         let mut cursor = self.dir_cursor.write();
 
         // Double-check under write lock.
-        let is_backward_seek = offset < cursor.last_served_offset;
-        if offset != 0 && !is_backward_seek && cursor.contains(offset) {
+        if offset != 0 && cursor.contains(offset) {
             return Ok(());
         }
 
         // Determine if this is a sequential continuation.
         // Backward seeks are never sequential (require full refresh).
-        let is_sequential = !is_backward_seek
-            && offset != 0
+        let is_sequential = offset != 0
             && !cursor.entries.is_empty()
             && offset == cursor.entries.last().map_or(0, |e| e.offset);
 
-        if offset == 0 || is_backward_seek {
+        if offset == 0 {
             cursor.reset();
         }
 
@@ -897,19 +881,5 @@ mod tests {
 
         cursor.populate(3, &mut source, false).unwrap();
         assert_eq!(cursor.window_start, 3);
-    }
-
-    #[test]
-    fn backward_seek_forces_refresh() {
-        let mut cursor = DirEntryCursor::new();
-        let mut source = MockDirSource::with_n_files(10);
-
-        // Read forward
-        cursor.populate(0, &mut source, false).unwrap();
-        cursor.last_served_offset = 5;
-
-        // Now check that a backward seek (offset < last_served_offset) would be detected
-        // In the real code, this would trigger a refresh via ensure_cache_populated
-        assert!(3 < cursor.last_served_offset); // Backward seek condition
     }
 }
