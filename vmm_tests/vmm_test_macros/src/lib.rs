@@ -40,7 +40,6 @@ enum Firmware {
     Pcat(PcatGuest),
     Uefi(UefiGuest),
     OpenhclLinuxDirect,
-    OpenhclPcat(PcatGuest),
     OpenhclUefi(OpenhclUefiOptions, UefiGuest),
 }
 
@@ -104,13 +103,12 @@ impl Config {
             Firmware::Pcat(_) => "pcat",
             Firmware::Uefi(_) => "uefi",
             Firmware::OpenhclLinuxDirect => "openhcl_linux",
-            Firmware::OpenhclPcat(..) => "openhcl_pcat",
             Firmware::OpenhclUefi(..) => "openhcl_uefi",
         };
 
         let guest_prefix = match &self.firmware {
             Firmware::LinuxDirect | Firmware::OpenhclLinuxDirect => None,
-            Firmware::Pcat(guest) | Firmware::OpenhclPcat(guest) => Some(guest.name_prefix()),
+            Firmware::Pcat(guest) => Some(guest.name_prefix()),
             Firmware::Uefi(guest) | Firmware::OpenhclUefi(_, guest) => guest.name_prefix(),
         };
 
@@ -118,8 +116,7 @@ impl Config {
             Firmware::LinuxDirect
             | Firmware::Pcat(_)
             | Firmware::Uefi(_)
-            | Firmware::OpenhclLinuxDirect
-            | Firmware::OpenhclPcat(_) => None,
+            | Firmware::OpenhclLinuxDirect => None,
             Firmware::OpenhclUefi(opt, _) => opt.name_prefix(),
         };
 
@@ -208,9 +205,6 @@ impl ToTokens for FirmwareAndArch {
             Firmware::OpenhclLinuxDirect => {
                 quote!(::petri::Firmware::openhcl_linux_direct(resolver, #arch))
             }
-            Firmware::OpenhclPcat(guest) => {
-                quote!(::petri::Firmware::openhcl_pcat(resolver, #guest))
-            }
             Firmware::OpenhclUefi(OpenhclUefiOptions { isolation }, guest) => {
                 let isolation = match isolation {
                     Some(i) => quote!(Some(#i)),
@@ -280,10 +274,6 @@ impl Parse for Config {
             "uefi_aarch64" => (
                 MachineArch::Aarch64,
                 Firmware::Uefi(parse_uefi_guest(input)?),
-            ),
-            "openhcl_pcat_x64" => (
-                MachineArch::X86_64,
-                Firmware::OpenhclPcat(parse_pcat_guest(input)?),
             ),
             "openhcl_uefi_x64" => (
                 MachineArch::X86_64,
@@ -544,7 +534,6 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `{vmm}_openhcl_linux_direct_{arch}`: Our provided Linux direct image with OpenHCL
 /// - `{vmm}_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration
 /// - `{vmm}_uefi_{arch}(<UEFI guest>)`: A Gen 2 configuration
-/// - `{vmm}_openhcl_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration with OpenHCL
 /// - `{vmm}_openhcl_uefi_{arch}[list,of,options](<UEFI guest>)`: A Gen 2 configuration with OpenHCL
 ///
 /// Valid VMMs are:

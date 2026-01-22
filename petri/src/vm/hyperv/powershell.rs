@@ -76,12 +76,12 @@ impl TryFrom<i32> for HyperVGuestStateIsolationType {
 impl ps::AsVal for HyperVGuestStateIsolationType {
     fn as_val(&self) -> impl '_ + AsRef<OsStr> {
         match self {
-            HyperVGuestStateIsolationType::Disabled => "-1",
-            HyperVGuestStateIsolationType::TrustedLaunch => "0",
-            HyperVGuestStateIsolationType::Vbs => "1",
-            HyperVGuestStateIsolationType::Snp => "2",
-            HyperVGuestStateIsolationType::Tdx => "3",
-            HyperVGuestStateIsolationType::OpenHCL => "16",
+            HyperVGuestStateIsolationType::TrustedLaunch => "TrustedLaunch",
+            HyperVGuestStateIsolationType::Vbs => "VBS",
+            HyperVGuestStateIsolationType::Snp => "SNP",
+            HyperVGuestStateIsolationType::Tdx => "TDX",
+            HyperVGuestStateIsolationType::OpenHCL => "OpenHCL",
+            HyperVGuestStateIsolationType::Disabled => "Disabled",
         }
     }
 }
