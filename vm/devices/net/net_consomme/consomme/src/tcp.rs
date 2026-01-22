@@ -54,20 +54,14 @@ use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
 
-trait SupportedAddressFamily {}
-
-impl SupportedAddressFamily for SocketAddrV4 {}
-impl SupportedAddressFamily for SocketAddrV6 {}
-impl SupportedAddressFamily for SocketAddr {}
-
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-struct FourTuple<T: SupportedAddressFamily> {
-    src: T,
-    dst: T,
+struct FourTuple {
+    src: SocketAddr,
+    dst: SocketAddr,
 }
 
 pub(crate) struct Tcp {
-    connections: HashMap<FourTuple<SocketAddr>, TcpConnection>,
+    connections: HashMap<FourTuple, TcpConnection>,
     listeners: HashMap<u16, TcpListener>,
 }
 
@@ -443,7 +437,7 @@ impl<T: Client> Access<'_, T> {
 }
 
 struct Sender<'a, T> {
-    ft: &'a FourTuple<SocketAddr>,
+    ft: &'a FourTuple,
     client: &'a mut T,
     state: &'a mut ConsommeState,
 }
