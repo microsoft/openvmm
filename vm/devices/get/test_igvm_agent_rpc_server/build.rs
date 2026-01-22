@@ -60,8 +60,11 @@ fn main() {
     let mut cmd = Command::new(&midl);
     cmd.arg("/nologo");
 
+    // xtask-fmt allow-target-arch dependency
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "x86_64".to_owned());
+
     let cross_cfg = if !host_is_windows {
-        match load_cross_config() {
+        match load_cross_config(&arch) {
             Ok(cfg) => Some(cfg),
             Err(err) => {
                 panic!("Failed to load cross-compilation configuration: {err}");
@@ -115,14 +118,12 @@ fn main() {
     }
 
     // Determine the MIDL target environment based on the Cargo target.
-    // xtask-fmt allow-target-arch dependency
-    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "x86_64".to_owned());
-    let midl_env = match arch.as_str() {
+    let midl_env_arg = match arch.as_str() {
         "x86_64" => "x64",
         "aarch64" => "arm64",
         unsupported => panic!("Unsupported architecture for MIDL: {}", unsupported),
     };
-    cmd.args(["/env", midl_env]);
+    cmd.args(["/env", midl_env_arg]);
 
     let out_dir_arg = path_for_midl(&out_dir, host_is_windows);
     cmd.arg("/out");
@@ -284,15 +285,13 @@ fn configure_cross_env(cmd: &mut Command, cfg: &CrossConfig) -> Result<(), Strin
     Ok(())
 }
 
-fn load_cross_config() -> Result<CrossConfig, String> {
-    let arch = env::var("CARGO_CFG_TARGET_ARCH")
-        .map_err(|_| "CARGO_CFG_TARGET_ARCH not set".to_string())?;
+fn load_cross_config(arch: &str) -> Result<CrossConfig, String> {
     let tool = env::var_os("OPENVMM_WINDOWS_CROSS_TOOL")
         .ok_or_else(|| "OPENVMM_WINDOWS_CROSS_TOOL not set".to_string())?;
 
     let output = Command::new(&tool)
         .arg("--arch")
-        .arg(&arch)
+        .arg(arch)
         .arg("--dump")
         .output()
         .map_err(|err| format!("failed to run cross tool `{tool:?}`: {err}"))?;
@@ -308,7 +307,7 @@ fn load_cross_config() -> Result<CrossConfig, String> {
     let lib = extract_paths(&value, "lib")?;
     let mut bin_dirs = extract_paths(&value, "sdk")?;
 
-    if let Some(msvc_bin) = msvc_bin_dir(&include, &arch) {
+    if let Some(msvc_bin) = msvc_bin_dir(&include, arch) {
         bin_dirs.push(msvc_bin);
     }
 
