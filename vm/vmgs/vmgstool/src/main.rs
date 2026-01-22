@@ -1175,36 +1175,15 @@ async fn vmgs_file_copy_igvmfile(
     allow_overwrite: bool,
     resource_code: ResourceCode,
 ) -> Result<(), Error> {
-    eprintln!("Writing IGVMfile to VMGS");
-
     let encrypt = key_path.is_some();
     let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadWrite).await?;
-    eprintln!("Reading IGVMfile from DLL");
-    write_igvmfile(
-        &mut vmgs,
-        encrypt,
-        allow_overwrite,
-        data_path,
-        resource_code,
-    )
-    .await?;
 
-    Ok(())
-}
-
-async fn write_igvmfile(
-    vmgs: &mut Vmgs,
-    encrypt: bool,
-    allow_overwrite: bool,
-    data_path: impl AsRef<Path>,
-    resource_code: ResourceCode,
-) -> Result<(), Error> {
     eprintln!("Reading IGVMfile from: {}", data_path.as_ref().display());
 
     let bytes = read_igvmfile(data_path.as_ref().to_path_buf(), resource_code).await?;
 
     vmgs_write(
-        vmgs,
+        &mut vmgs,
         FileId::GUEST_FIRMWARE,
         &bytes,
         encrypt,
@@ -1217,9 +1196,6 @@ async fn write_igvmfile(
 
 async fn read_igvmfile(dll_path: PathBuf, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
     use std::io::{Read, Seek, SeekFrom};
-
-    eprintln!("Reading IGVMfile from DLL");
-    // Convert the wide string back to a PathBuf
 
     let file = File::open(dll_path)
         .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to open DLL file: {}", e)))?;
@@ -1443,9 +1419,18 @@ mod tests {
             .await
             .unwrap();
 
-        write_igvmfile(&mut vmgs, false, false, data_path, ResourceCode::Snp)
-            .await
-            .unwrap();
+        // write_igvmfile(&mut vmgs, false, false, data_path, ResourceCode::Snp)
+        //     .await
+        //     .unwrap();
+
+        vmgs_write(
+            &mut vmgs,
+            FileId::GUEST_FIRMWARE,
+            &buf,
+            false,
+            false,
+        )
+        .await.unwrap();
 
         let read_buf = vmgs_read(&mut vmgs, FileId::GUEST_FIRMWARE, false)
             .await
@@ -1564,9 +1549,19 @@ mod tests {
             .await
             .unwrap();
 
-        write_igvmfile(&mut vmgs, true, false, data_path, ResourceCode::Snp)
-            .await
-            .unwrap();
+        // write_igvmfile(&mut vmgs, true, false, data_path, ResourceCode::Snp)
+        //     .await
+        //     .unwrap();
+
+        vmgs_write(
+            &mut vmgs,
+            FileId::GUEST_FIRMWARE,
+            &buf,
+            true,
+            false,
+        )
+        .await
+        .unwrap();
 
         let read_buf = vmgs_read(&mut vmgs, FileId::GUEST_FIRMWARE, true)
             .await
@@ -1575,9 +1570,19 @@ mod tests {
         assert_eq!(buf, read_buf);
 
         // try normal write IGVMfile to encrypted VMGS
-        write_igvmfile(&mut vmgs, false, false, data_path, ResourceCode::Snp)
-            .await
-            .unwrap();
+        // write_igvmfile(&mut vmgs, false, false, data_path, ResourceCode::Snp)
+        //     .await
+        //     .unwrap();
+        let bytes = read_igvmfile(data_path.as_ref().to_path_buf(), ResourceCode::Snp).await?;
+
+        vmgs_write(
+            &mut vmgs,
+            FileId::GUEST_FIRMWARE,
+            &bytes,
+            false,
+            false,
+        )
+        .await?;
     }
 
     #[async_test]
