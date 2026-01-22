@@ -28,7 +28,10 @@ fn main() {
     let host_is_windows = host.contains("windows");
 
     // Construct the version of MIDL to use based on host architecture but windows target.
-    let host_arch = host.split_once("-").expect("HOST target triple should contain hyphen separating architecture and vendor").0;
+    let host_arch = host
+        .split_once("-")
+        .expect("HOST target triple should contain hyphen separating architecture and vendor")
+        .0;
     let midl_env = format!("{}_pc_windows_msvc", host_arch);
     println!("cargo:rerun-if-env-changed=MIDLRT_{}", midl_env);
     let midl_info = locate_midl(&midl_env);
