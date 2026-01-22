@@ -970,7 +970,7 @@ impl LxVolume {
         match result {
             Ok(_) => result,
             Err(e) => {
-                // Only try the read-only file workaround for access-related errors.
+                // Skip the read-only file workaround for these specific errors that are unrelated to file permissions.
                 // For errors like ENOTEMPTY (directory not empty), preserve the original error.
                 if e.value() == lx::EIO
                     || e.value() == lx::ENOTEMPTY

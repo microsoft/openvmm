@@ -467,4 +467,16 @@ pub(crate) mod tests {
         0, 0, 203, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0,
         0, 255, 15, 0, 0,
     ];
+
+    #[test]
+    fn name_too_long_returns_enametoolong() {
+        // Create a name with 256 characters (exceeds NAME_MAX of 255) + null terminator
+        let mut data = vec![b'a'; 256];
+        data.push(0); // null terminator
+
+        let mut reader: &[u8] = &data;
+        let result = reader.name();
+
+        assert_eq!(result, Err(lx::Error::ENAMETOOLONG));
+    }
 }

@@ -281,19 +281,38 @@ pub fn delete_file(fs_context: &FsContext, file_handle: &OwnedHandle) -> lx::Res
     match result {
         Ok(_) => result,
         Err(e) => {
-            // Only try the read-only file workaround for access-related errors.
+            // Skip the read-only file workaround for these specific errors that are unrelated to file permissions.
             // For errors like ENOTEMPTY (directory not empty), preserve the original error.
-            if e.value() == lx::EIO
-                || e.value() == lx::ENOTEMPTY
+            if e.value() == lx::ENOTEMPTY
                 || e.value() == lx::ENOENT
                 || e.value() == lx::ENOTDIR
                 || e.value() == lx::EISDIR
             {
                 result
+            } else if e.value() == lx::EIO {
+                // EIO can come from STATUS_CANNOT_DELETE, which for directories means
+                // the directory is not empty. Check if this is a directory and return
+                // ENOTEMPTY in that case.
+                if is_directory(file_handle) {
+                    Err(lx::Error::ENOTEMPTY)
+                } else {
+                    result
+                }
             } else {
                 delete_read_only_file(fs_context, file_handle)
             }
         }
+    }
+}
+
+/// Check if a file handle refers to a directory.
+fn is_directory(file_handle: &OwnedHandle) -> bool {
+    if let Ok(info) =
+        util::query_information_file::<FileSystem::FILE_BASIC_INFORMATION>(file_handle)
+    {
+        info.FileAttributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0
+    } else {
+        false
     }
 }
 

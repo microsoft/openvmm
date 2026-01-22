@@ -804,8 +804,9 @@ pub fn nt_status_to_lx(status: Foundation::NTSTATUS) -> lx::Error {
         | Foundation::STATUS_DELETE_PENDING
         | Foundation::STATUS_BAD_NETWORK_NAME
         | Foundation::STATUS_NO_SUCH_FILE => lx::ENOENT,
-        Foundation::STATUS_CANNOT_DELETE => lx::ENOTEMPTY,
-        Foundation::STATUS_INTERNAL_ERROR | Foundation::STATUS_WRONG_VOLUME => lx::EIO,
+        Foundation::STATUS_CANNOT_DELETE
+        | Foundation::STATUS_INTERNAL_ERROR
+        | Foundation::STATUS_WRONG_VOLUME => lx::EIO,
         Foundation::STATUS_TIMEOUT | Foundation::STATUS_IO_TIMEOUT | Foundation::STATUS_RETRY => {
             lx::EAGAIN
         }
