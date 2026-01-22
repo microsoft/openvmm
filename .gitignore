@@ -46,3 +46,9 @@ __pycache__
 
 flowey-out
 flowey-persist
+
+# Node.js dependencies and artifacts
+node_modules/
+
+# Build output directories for logview_new
+**/logview_new/dist*

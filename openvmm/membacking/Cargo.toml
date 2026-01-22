@@ -19,6 +19,7 @@ mesh.workspace = true
 pal_async.workspace = true
 sparse_mmap.workspace = true
 
+anyhow.workspace = true
 futures.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true

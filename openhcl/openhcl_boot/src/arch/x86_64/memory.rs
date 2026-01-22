@@ -5,21 +5,38 @@
 
 use super::address_space::LocalMap;
 use super::address_space::init_local_map;
+use crate::AddressSpaceManager;
 use crate::ShimParams;
 use crate::arch::TdxHypercallPage;
 use crate::arch::x86_64::address_space::tdx_share_large_page;
 use crate::host_params::PartitionInfo;
 use crate::host_params::shim_params::IsolationType;
 use crate::hypercall::hvcall;
+use crate::memory::AllocationPolicy;
+use crate::memory::AllocationType;
+use crate::off_stack;
+use arrayvec::ArrayVec;
+use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
+use page_table::x64::MappedRange;
+use page_table::x64::PAGE_TABLE_MAX_BYTES;
+use page_table::x64::PAGE_TABLE_MAX_COUNT;
+use page_table::x64::PageTable;
+use page_table::x64::PageTableBuilder;
 use sha2::Digest;
 use sha2::Sha384;
+use static_assertions::const_assert;
 use x86defs::X64_LARGE_PAGE_SIZE;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
+use zerocopy::FromZeros;
 
 /// On isolated systems, transitions all VTL2 RAM to be private and accepted, with the appropriate
 /// VTL permissions applied.
-pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInfo) {
+pub fn setup_vtl2_memory(
+    shim_params: &ShimParams,
+    partition_info: &PartitionInfo,
+    address_space: &mut AddressSpaceManager,
+) {
     // Only if the partition is VBS-isolated, accept memory and apply vtl 2 protections here.
     // Non-isolated partitions can undergo servicing, and additional information
     // would be needed to determine whether vtl 2 protections should be applied
@@ -121,12 +138,90 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
         }
     }
 
-    // For TDVMCALL based hypercalls, take the first 2 MB region from ram_buffer for
-    // hypercall IO pages. ram_buffer must not be used again beyond this point
-    // TODO: find an approach that does not require re-using the ram_buffer
+    // TDX has specific memory initialization logic. Create a set of page tables for the APs
+    // to use during the mailbox spinloop, and carve out memory for TDCALL based hypercalls
     if shim_params.isolation_type == IsolationType::Tdx {
+        // Allocate a range of memory for AP page tables
+        let page_table_region = address_space
+            .allocate_aligned(
+                None,
+                PAGE_TABLE_MAX_BYTES as u64,
+                AllocationType::TdxPageTables,
+                AllocationPolicy::LowMemory,
+                X64_LARGE_PAGE_SIZE,
+            )
+            .expect("allocation of space for TDX page tables must succeed");
+
+        // The local map will map a single 2MB PTE per allocation
+        const_assert!((PAGE_TABLE_MAX_BYTES as u64) < X64_LARGE_PAGE_SIZE);
+        assert_eq!(page_table_region.range.start() % X64_LARGE_PAGE_SIZE, 0);
+
+        let mut local_map = local_map.expect("must be present on TDX");
+        let page_table_region_mapping = local_map.map_pages(page_table_region.range, false);
+        page_table_region_mapping.data.fill(0);
+
+        const MAX_RANGE_COUNT: usize = 64;
+        let mut ranges = off_stack!(
+            ArrayVec::<MappedRange, MAX_RANGE_COUNT>,
+            ArrayVec::new_const()
+        );
+
+        // All VTL2_RAM ranges should be present as R+X in the AP page table mappings, the mailbox
+        // wakeup vector will be somewhere in this range, below the 4GB boundary
+        const AP_MEMORY_BOUNDARY: u64 = 4 * 1024 * 1024 * 1024;
+        let vtl2_ram = address_space
+            .vtl2_ranges()
+            .filter_map(|(range, typ)| match typ {
+                MemoryVtlType::VTL2_RAM => {
+                    if range.start() < AP_MEMORY_BOUNDARY {
+                        let end = if range.end() < AP_MEMORY_BOUNDARY {
+                            range.end()
+                        } else {
+                            AP_MEMORY_BOUNDARY
+                        };
+                        Some(MappedRange::new(range.start(), end).read_only())
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            });
+
+        ranges.extend(vtl2_ram);
+
+        // Map the reset vector as executable and writable, as the mailbox protocol uses offsets
+        // in the reset vector to communicate with the kernel
+        const PAGE_SIZE: u64 = 0x1000;
+        ranges.push(MappedRange::new(
+            x86defs::tdx::RESET_VECTOR_PAGE,
+            x86defs::tdx::RESET_VECTOR_PAGE + PAGE_SIZE,
+        ));
+
+        ranges.sort_by_key(|r| r.start());
+
+        let mut page_table_work_buffer =
+            off_stack!(ArrayVec<PageTable, PAGE_TABLE_MAX_COUNT>, ArrayVec::new_const());
+        for _ in 0..PAGE_TABLE_MAX_COUNT {
+            page_table_work_buffer.push(PageTable::new_zeroed());
+        }
+
+        PageTableBuilder::new(
+            page_table_region.range.start(),
+            page_table_work_buffer.as_mut_slice(),
+            page_table_region_mapping.data,
+            ranges.as_slice(),
+        )
+        .expect("page table builder must return no error")
+        .build()
+        .expect("page table construction must succeed");
+
+        crate::arch::tdx::tdx_prepare_ap_trampoline(page_table_region.range.start());
+
+        // For TDVMCALL based hypercalls, take the first 2 MB region from ram_buffer for
+        // hypercall IO pages. ram_buffer must not be used again beyond this point
+        // TODO: find an approach that does not require re-using the ram_buffer
         let free_buffer = ram_buffer.as_mut_ptr() as u64;
-        assert!(free_buffer % X64_LARGE_PAGE_SIZE == 0);
+        assert!(free_buffer.is_multiple_of(X64_LARGE_PAGE_SIZE));
         // SAFETY: The bottom 2MB region of the ram_buffer is unused by the shim
         // The region is aligned to 2MB, and mapped as a large page
         let tdx_io_page = unsafe {

@@ -27,7 +27,7 @@ workspace = true
 libc.workspace = true
 
 [dependencies]
-crossterm.workspace = true
+crossterm = { workspace = true, features = ["windows"] }
 thiserror.workspace = true
 
 [lints]

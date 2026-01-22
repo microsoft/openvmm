@@ -29,6 +29,7 @@ use clap::CommandFactory;
 use clap::FromArgMatches;
 use clap::Parser;
 use cli_args::DiskCliKind;
+use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
 use cli_args::NicConfigCli;
 use cli_args::ProvisionVmgs;
@@ -58,30 +59,6 @@ use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
 use get_resources::ged::GuestServicingFlags;
 use guid::Guid;
-use hvlite_defs::config::Config;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
-use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
-use hvlite_defs::config::DeviceVtl;
-use hvlite_defs::config::HypervisorConfig;
-use hvlite_defs::config::LateMapVtl0MemoryPolicy;
-use hvlite_defs::config::LoadMode;
-use hvlite_defs::config::MemoryConfig;
-use hvlite_defs::config::ProcessorTopologyConfig;
-use hvlite_defs::config::SerialInformation;
-use hvlite_defs::config::VirtioBus;
-use hvlite_defs::config::VmbusConfig;
-use hvlite_defs::config::VpciDeviceConfig;
-use hvlite_defs::config::Vtl2BaseAddressType;
-use hvlite_defs::config::Vtl2Config;
-use hvlite_defs::rpc::PulseSaveRestoreError;
-use hvlite_defs::rpc::VmRpc;
-use hvlite_defs::worker::VM_WORKER;
-use hvlite_defs::worker::VmWorkerParameters;
-use hvlite_helpers::disk::create_disk_type;
-use hvlite_helpers::disk::open_disk_type;
 use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
 use inspect::InspectionBuilder;
@@ -94,9 +71,37 @@ use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh_worker::WorkerEvent;
 use mesh_worker::WorkerHandle;
-use mesh_worker::launch_local_worker;
 use meshworker::VmmMesh;
 use net_backend_resources::mac_address::MacAddress;
+use openvmm_defs::config::Config;
+use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
+use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
+use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
+use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
+use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
+use openvmm_defs::config::DEFAULT_PCIE_ECAM_BASE;
+use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::EfiDiagnosticsLogLevelType;
+use openvmm_defs::config::HypervisorConfig;
+use openvmm_defs::config::LateMapVtl0MemoryPolicy;
+use openvmm_defs::config::LoadMode;
+use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::PcieRootComplexConfig;
+use openvmm_defs::config::PcieRootPortConfig;
+use openvmm_defs::config::PcieSwitchConfig;
+use openvmm_defs::config::ProcessorTopologyConfig;
+use openvmm_defs::config::SerialInformation;
+use openvmm_defs::config::VirtioBus;
+use openvmm_defs::config::VmbusConfig;
+use openvmm_defs::config::VpciDeviceConfig;
+use openvmm_defs::config::Vtl2BaseAddressType;
+use openvmm_defs::config::Vtl2Config;
+use openvmm_defs::rpc::PulseSaveRestoreError;
+use openvmm_defs::rpc::VmRpc;
+use openvmm_defs::worker::VM_WORKER;
+use openvmm_defs::worker::VmWorkerParameters;
+use openvmm_helpers::disk::create_disk_type;
+use openvmm_helpers::disk::open_disk_type;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::pipe::PolledPipe;
@@ -131,7 +136,6 @@ use storvsp_resources::ScsiPath;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
 use tracing_helpers::AnyhowValueExt;
-use ttrpc::TtrpcWorker;
 use uidevices_resources::SynthKeyboardHandle;
 use uidevices_resources::SynthMouseHandle;
 use uidevices_resources::SynthVideoHandle;
@@ -151,12 +155,14 @@ use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_serial_resources::VmbusSerialDeviceHandle;
 use vmbus_serial_resources::VmbusSerialPort;
 use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
+use vmgs_resources::GuestStateEncryptionPolicy;
+use vmgs_resources::VmgsDisk;
 use vmgs_resources::VmgsFileHandle;
 use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vnc_worker_defs::VncParameters;
 
-pub fn hvlite_main() {
+pub fn openvmm_main() {
     // Save the current state of the terminal so we can restore it back to
     // normal before exiting.
     #[cfg(unix)]
@@ -202,8 +208,25 @@ struct ConsoleState<'a> {
     input: Box<dyn AsyncWrite + Unpin + Send>,
 }
 
-fn vm_config_from_command_line(
+/// Build a flat list of switches with their parent port assignments.
+///
+/// This function converts hierarchical CLI switch definitions into a flat list
+/// where each switch specifies its parent port directly.
+fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<PcieSwitchConfig> {
+    all_switches
+        .iter()
+        .map(|switch_cli| PcieSwitchConfig {
+            name: switch_cli.name.clone(),
+            num_downstream_ports: switch_cli.num_downstream_ports,
+            parent_port: switch_cli.port_name.clone(),
+            hotplug: switch_cli.hotplug,
+        })
+        .collect()
+}
+
+async fn vm_config_from_command_line(
     spawner: impl Spawn,
+    mesh: &VmmMesh,
     opt: &Options,
 ) -> anyhow::Result<(Config, VmResources)> {
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
@@ -283,7 +306,7 @@ fn vm_config_from_command_line(
                     app.or_else(openvmm_terminal_app).as_deref(),
                     &path,
                     ConsoleLaunchOptions {
-                        window_title: Some(window_title + " [OpenVMM]"),
+                        window_title: Some(window_title),
                     },
                 )
                 .context("failed to launch console")?;
@@ -501,8 +524,13 @@ fn vm_config_from_command_line(
         read_only,
         is_dvd,
         underhill,
+        ref pcie_port,
     } in &opt.disk
     {
+        if pcie_port.is_some() {
+            anyhow::bail!("`--disk` is incompatible with PCIe");
+        }
+
         storage.add(
             vtl,
             underhill,
@@ -537,12 +565,13 @@ fn vm_config_from_command_line(
         read_only,
         is_dvd,
         underhill,
+        ref pcie_port,
     } in &opt.nvme
     {
         storage.add(
             vtl,
             underhill,
-            storage_builder::DiskLocation::Nvme(None),
+            storage_builder::DiskLocation::Nvme(None, pcie_port.clone()),
             kind,
             is_dvd,
             read_only,
@@ -646,7 +675,7 @@ fn vm_config_from_command_line(
         let (port_id, port) = new_switch_port(switch_id)?;
         resources.switch_ports.push(port);
 
-        kernel_vmnics.push(hvlite_defs::config::KernelVmNicConfig {
+        kernel_vmnics.push(openvmm_defs::config::KernelVmNicConfig {
             instance_id,
             mac_address: mac_address.into(),
             switch_port_id: port_id,
@@ -677,6 +706,36 @@ fn vm_config_from_command_line(
             resource: handle.into_resource(),
         })
     }));
+
+    let pcie_switches = build_switch_list(&opt.pcie_switch);
+
+    let pcie_root_complexes = opt
+        .pcie_root_complex
+        .iter()
+        .enumerate()
+        .map(|(i, cli)| {
+            let ports = opt
+                .pcie_root_port
+                .iter()
+                .filter(|port_cli| port_cli.root_complex_name == cli.name)
+                .map(|port_cli| PcieRootPortConfig {
+                    name: port_cli.name.clone(),
+                    hotplug: port_cli.hotplug,
+                })
+                .collect();
+
+            PcieRootComplexConfig {
+                index: i as u32,
+                name: cli.name.clone(),
+                segment: cli.segment,
+                start_bus: cli.start_bus,
+                end_bus: cli.end_bus,
+                low_mmio_size: cli.low_mmio,
+                high_mmio_size: cli.high_mmio,
+                ports,
+            }
+        })
+        .collect();
 
     #[cfg(windows)]
     let vpci_resources: Vec<_> = opt
@@ -765,6 +824,9 @@ fn vm_config_from_command_line(
         );
     }
 
+    // TODO: load from VMGS file if it exists
+    let bios_guid = Guid::new_random();
+
     let VmChipsetResult {
         chipset,
         mut chipset_devices,
@@ -795,7 +857,7 @@ fn vm_config_from_command_line(
         }
         with_hv = true;
 
-        let firmware = hvlite_pcat_locator::find_pcat_bios(opt.pcat_firmware.as_deref())?;
+        let firmware = openvmm_pcat_locator::find_pcat_bios(opt.pcat_firmware.as_deref())?;
         load_mode = LoadMode::Pcat {
             firmware,
             boot_order: opt
@@ -804,7 +866,7 @@ fn vm_config_from_command_line(
                 .unwrap_or(DEFAULT_PCAT_BOOT_ORDER),
         };
     } else if opt.uefi {
-        use hvlite_defs::config::UefiConsoleMode;
+        use openvmm_defs::config::UefiConsoleMode;
 
         with_hv = true;
 
@@ -833,6 +895,7 @@ fn vm_config_from_command_line(
                 UefiConsoleModeCli::None => UefiConsoleMode::None,
             }),
             default_boot_always_attempt: opt.default_boot_always_attempt,
+            bios_guid,
         };
     } else {
         // Linux Direct
@@ -887,7 +950,14 @@ fn vm_config_from_command_line(
     }
 
     let mut vmgs = Some(if let Some(VmgsCli { kind, provision }) = &opt.vmgs {
-        let disk = disk_open(kind, false).context("failed to open vmgs disk")?;
+        let disk = VmgsDisk {
+            disk: disk_open(kind, false).context("failed to open vmgs disk")?,
+            encryption_policy: if opt.test_gsp_by_id {
+                GuestStateEncryptionPolicy::GspById(true)
+            } else {
+                GuestStateEncryptionPolicy::None(true)
+            },
+        };
         match provision {
             ProvisionVmgs::OnEmpty => VmgsResource::Disk(disk),
             ProvisionVmgs::OnFailure => VmgsResource::ReprovisionOnFailure(disk),
@@ -927,16 +997,16 @@ fn vm_config_from_command_line(
                                 .pcat_boot_order
                                 .map_or(DEFAULT_PCAT_BOOT_ORDER, |x| x.0)
                                 .map(|x| match x {
-                                    hvlite_defs::config::PcatBootDevice::Floppy => {
+                                    openvmm_defs::config::PcatBootDevice::Floppy => {
                                         get_resources::ged::PcatBootDevice::Floppy
                                     }
-                                    hvlite_defs::config::PcatBootDevice::HardDrive => {
+                                    openvmm_defs::config::PcatBootDevice::HardDrive => {
                                         get_resources::ged::PcatBootDevice::HardDrive
                                     }
-                                    hvlite_defs::config::PcatBootDevice::Optical => {
+                                    openvmm_defs::config::PcatBootDevice::Optical => {
                                         get_resources::ged::PcatBootDevice::Optical
                                     }
-                                    hvlite_defs::config::PcatBootDevice::Network => {
+                                    openvmm_defs::config::PcatBootDevice::Network => {
                                         get_resources::ged::PcatBootDevice::Network
                                     }
                                 }),
@@ -983,6 +1053,14 @@ fn vm_config_from_command_line(
                     enable_battery: opt.battery,
                     no_persistent_secrets: true,
                     igvm_attest_test_config: None,
+                    test_gsp_by_id: opt.test_gsp_by_id,
+                    efi_diagnostics_log_level: {
+                        match opt.efi_diagnostics_log_level.unwrap_or_default() {
+                            EfiDiagnosticsLogLevelCli::Default => get_resources::ged::EfiDiagnosticsLogLevelType::Default,
+                            EfiDiagnosticsLogLevelCli::Info => get_resources::ged::EfiDiagnosticsLogLevelType::Info,
+                            EfiDiagnosticsLogLevelCli::Full => get_resources::ged::EfiDiagnosticsLogLevelType::Full,
+                        }
+                    },
                 }
                 .into_resource(),
             ),
@@ -1010,14 +1088,20 @@ fn vm_config_from_command_line(
 
         chipset_devices.push(ChipsetDeviceHandle {
             name: "tpm".to_string(),
-            resource: TpmDeviceHandle {
-                ppi_store,
-                nvram_store,
-                refresh_tpm_seeds: false,
-                ak_cert_type: tpm_resources::TpmAkCertTypeResource::None,
-                register_layout,
-                guest_secret_key: None,
-                logger: None,
+            resource: chipset_device_worker_defs::RemoteChipsetDeviceHandle {
+                device: TpmDeviceHandle {
+                    ppi_store,
+                    nvram_store,
+                    refresh_tpm_seeds: false,
+                    ak_cert_type: tpm_resources::TpmAkCertTypeResource::None,
+                    register_layout,
+                    guest_secret_key: None,
+                    logger: None,
+                    is_confidential_vm: false,
+                    bios_guid,
+                }
+                .into_resource(),
+                worker_host: mesh.make_host("tpm", None).await?,
             }
             .into_resource(),
         });
@@ -1073,7 +1157,7 @@ fn vm_config_from_command_line(
     };
 
     let vga_firmware = if opt.pcat {
-        Some(hvlite_pcat_locator::find_svga_bios(
+        Some(openvmm_pcat_locator::find_svga_bios(
             opt.vga_firmware.as_deref(),
         )?)
     } else {
@@ -1153,16 +1237,16 @@ fn vm_config_from_command_line(
     }
 
     #[cfg(guest_arch = "aarch64")]
-    let topology_arch = hvlite_defs::config::ArchTopologyConfig::Aarch64(
-        hvlite_defs::config::Aarch64TopologyConfig {
+    let topology_arch = openvmm_defs::config::ArchTopologyConfig::Aarch64(
+        openvmm_defs::config::Aarch64TopologyConfig {
             // TODO: allow this to be configured from the command line
             gic_config: None,
-            pmu_gsiv: hvlite_defs::config::PmuGsivConfig::Platform,
+            pmu_gsiv: openvmm_defs::config::PmuGsivConfig::Platform,
         },
     );
     #[cfg(guest_arch = "x86_64")]
     let topology_arch =
-        hvlite_defs::config::ArchTopologyConfig::X86(hvlite_defs::config::X86TopologyConfig {
+        openvmm_defs::config::ArchTopologyConfig::X86(openvmm_defs::config::X86TopologyConfig {
             apic_id_offset: opt.apic_id_offset,
             x2apic: opt.x2apic,
         });
@@ -1179,7 +1263,7 @@ fn vm_config_from_command_line(
         }
 
         match isolation {
-            cli_args::IsolationCli::Vbs => Some(hvlite_defs::config::IsolationType::Vbs),
+            cli_args::IsolationCli::Vbs => Some(openvmm_defs::config::IsolationType::Vbs),
         }
     } else {
         None
@@ -1304,12 +1388,16 @@ fn vm_config_from_command_line(
         chipset,
         load_mode,
         floppy_disks,
+        pcie_root_complexes,
+        pcie_devices: Vec::new(),
+        pcie_switches,
         vpci_devices,
         ide_disks: Vec::new(),
         memory: MemoryConfig {
             mem_size: opt.memory,
             mmio_gaps,
             prefetch_memory: opt.prefetch,
+            pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
         },
         processor_topology: ProcessorTopologyConfig {
             proc_count: opt.processors,
@@ -1372,6 +1460,13 @@ fn vm_config_from_command_line(
         generation_id_recv: None,
         rtc_delta_milliseconds: 0,
         automatic_guest_reset: !opt.halt_on_reset,
+        efi_diagnostics_log_level: {
+            match opt.efi_diagnostics_log_level.unwrap_or_default() {
+                EfiDiagnosticsLogLevelCli::Default => EfiDiagnosticsLogLevelType::Default,
+                EfiDiagnosticsLogLevelCli::Info => EfiDiagnosticsLogLevelType::Info,
+                EfiDiagnosticsLogLevelCli::Full => EfiDiagnosticsLogLevelType::Full,
+            }
+        },
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
@@ -1406,7 +1501,7 @@ const DEFAULT_SWITCH: &str = "C08CB7B8-9B3C-408E-8E30-5E16A3AEB444";
 fn new_switch_port(
     switch_id: &str,
 ) -> anyhow::Result<(
-    hvlite_defs::config::SwitchPortId,
+    openvmm_defs::config::SwitchPortId,
     vmswitch::kernel::SwitchPort,
 )> {
     let id = vmswitch::kernel::SwitchPortId {
@@ -1418,7 +1513,7 @@ fn new_switch_port(
 
     let port = vmswitch::kernel::SwitchPort::new(&id).context("failed to create switch port")?;
 
-    let id = hvlite_defs::config::SwitchPortId {
+    let id = openvmm_defs::config::SwitchPortId {
         switch: id.switch,
         port: id.port,
     };
@@ -1697,8 +1792,9 @@ fn do_main() -> anyhow::Result<()> {
         return console_relay::relay_console(&path, console_title.as_str());
     }
 
+    #[cfg(any(feature = "grpc", feature = "ttrpc"))]
     if let Some(path) = opt.ttrpc.as_ref().or(opt.grpc.as_ref()) {
-        block_on(async {
+        return block_on(async {
             let _ = std::fs::remove_file(path);
             let listener =
                 unix_socket::UnixListener::bind(path).context("failed to bind to socket")?;
@@ -1710,11 +1806,12 @@ fn do_main() -> anyhow::Result<()> {
             };
 
             // This is a local launch
-            let mut handle = launch_local_worker::<TtrpcWorker>(ttrpc::Parameters {
-                listener,
-                transport,
-            })
-            .await?;
+            let mut handle =
+                mesh_worker::launch_local_worker::<ttrpc::TtrpcWorker>(ttrpc::Parameters {
+                    listener,
+                    transport,
+                })
+                .await?;
 
             tracing::info!(%transport, path = %path.display(), "listening");
 
@@ -1724,15 +1821,15 @@ fn do_main() -> anyhow::Result<()> {
             handle.join().await?;
 
             Ok(())
-        })
-    } else {
-        DefaultPool::run_with(async |driver| {
-            let mesh = VmmMesh::new(&driver, opt.single_process)?;
-            let result = run_control(&driver, &mesh, opt).await;
-            mesh.shutdown().await;
-            result
-        })
+        });
     }
+
+    DefaultPool::run_with(async |driver| {
+        let mesh = VmmMesh::new(&driver, opt.single_process)?;
+        let result = run_control(&driver, &mesh, opt).await;
+        mesh.shutdown().await;
+        result
+    })
 }
 
 fn maybe_with_radix_u64(s: &str) -> Result<u64, String> {
@@ -1898,6 +1995,14 @@ enum InteractiveCommand {
         /// configured path.
         #[clap(long, conflicts_with("user_mode_only"))]
         igvm: Option<PathBuf>,
+        /// Enable keepalive when servicing VTL2 devices.
+        /// Default is `true`.
+        #[clap(long, short = 'n', default_missing_value = "true")]
+        nvme_keepalive: bool,
+        /// Enable keepalive when servicing VTL2 devices.
+        /// Default is `false`.
+        #[clap(long)]
+        mana_keepalive: bool,
     },
 
     /// Read guest memory
@@ -1968,7 +2073,7 @@ fn new_hvsock_service_id(port: u32) -> Guid {
 }
 
 async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> anyhow::Result<()> {
-    let (mut vm_config, mut resources) = vm_config_from_command_line(driver, &opt)?;
+    let (mut vm_config, mut resources) = vm_config_from_command_line(driver, mesh, &opt).await?;
 
     let mut vnc_worker = None;
     if opt.gfx || opt.vnc {
@@ -2751,6 +2856,8 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             InteractiveCommand::ServiceVtl2 {
                 user_mode_only,
                 igvm,
+                mana_keepalive,
+                nvme_keepalive,
             } => {
                 let paravisor_diag = paravisor_diag.clone();
                 let vm_rpc = vm_rpc.clone();
@@ -2765,11 +2872,19 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         let path = igvm.context("no igvm file loaded")?;
                         let file = fs_err::File::open(path)?;
                         start = Instant::now();
-                        hvlite_helpers::underhill::service_underhill(
+                        openvmm_helpers::underhill::save_underhill(
                             &vm_rpc,
                             ged_rpc.as_ref().context("no GED")?,
-                            GuestServicingFlags::default(),
+                            GuestServicingFlags {
+                                nvme_keepalive,
+                                mana_keepalive,
+                            },
                             file.into(),
+                        )
+                        .await?;
+                        openvmm_helpers::underhill::restore_underhill(
+                            &vm_rpc,
+                            ged_rpc.as_ref().context("no GED")?,
                         )
                         .await?;
                     }

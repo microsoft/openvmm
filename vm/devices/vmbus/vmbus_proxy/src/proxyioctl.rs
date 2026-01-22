@@ -18,7 +18,6 @@ use windows::Win32::System::Ioctl::FILE_READ_ACCESS;
 use windows::Win32::System::Ioctl::FILE_WRITE_ACCESS;
 use windows::Win32::System::Ioctl::METHOD_BUFFERED;
 use windows::core::GUID;
-use windows_sys::Win32::Foundation::BOOLEAN;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 
@@ -101,6 +100,7 @@ pub struct VMBUS_PROXY_NEXT_ACTION_OUTPUT_union_Offer {
     pub Offer: VMBUS_CHANNEL_OFFER,
     pub DeviceIncomingRingEvent: u64, // BUGBUG: HANDLE
     pub DeviceOutgoingRingEvent: u64, // BUGBUG: HANDLE
+    pub DeviceOrder: u32,
 }
 
 #[repr(C)]
@@ -142,7 +142,7 @@ pub struct VMBUS_PROXY_RESTORE_CHANNEL_INPUT {
     pub InterfaceInstance: Guid,
     pub SubchannelIndex: u16,
     pub TargetVtl: u8,
-    pub Open: BOOLEAN,
+    pub Open: u8,
     pub OpenParameters: VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS,
     pub GpadlCount: u32,
 }

@@ -10,6 +10,8 @@
 use fs_err::os::unix::fs::OpenOptionsExt;
 use hvdef::HvError;
 use hvdef::HvMessage;
+use hvdef::HvRegisterName;
+use hvdef::HvRegisterValue;
 use hvdef::HvStatus;
 use hvdef::hypercall::HvInputVtl;
 use hvdef::hypercall::HvRegisterAssoc;
@@ -47,6 +49,7 @@ use std::task::Poll;
 use std::task::Waker;
 use thiserror::Error;
 use zerocopy::FromBytes;
+use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
@@ -350,7 +353,7 @@ struct VpSharedPages {
     register_page: hvdef::HvX64RegisterPage,
 }
 
-const _: () = assert!(size_of::<VpSharedPages>() % PAGE_SIZE == 0);
+const _: () = assert!(size_of::<VpSharedPages>().is_multiple_of(PAGE_SIZE));
 
 impl Drop for SidecarVp<'_> {
     fn drop(&mut self) {
@@ -425,28 +428,40 @@ impl<'a> SidecarVp<'a> {
     pub fn get_vp_registers(
         &mut self,
         target_vtl: HvInputVtl,
-        regs: &mut [HvRegisterAssoc],
+        names: &[HvRegisterName],
+        values: &mut [HvRegisterValue],
     ) -> Result<(), SidecarError> {
-        tracing::trace!(count = regs.len(), "get vp register");
-        for regs in regs.chunks_mut(sidecar_defs::MAX_GET_SET_VP_REGISTERS) {
+        tracing::trace!(count = names.len(), "get vp register");
+        for (names, values) in names
+            .chunks(sidecar_defs::MAX_GET_SET_VP_REGISTERS)
+            .zip(values.chunks_mut(sidecar_defs::MAX_GET_SET_VP_REGISTERS))
+        {
             let buf = self.set_command(
                 SidecarCommand::GET_VP_REGISTERS,
                 GetSetVpRegisterRequest {
-                    count: regs.len() as u16,
+                    count: names.len() as u16,
                     target_vtl,
                     rsvd: 0,
                     status: HvStatus::SUCCESS,
                     rsvd2: [0; 10],
                     regs: [],
                 },
-                regs.len(),
+                names.len(),
             );
-            buf.copy_from_slice(regs);
+            for (i, name) in names.iter().enumerate() {
+                buf[i] = HvRegisterAssoc {
+                    name: *name,
+                    pad: Default::default(),
+                    value: FromZeros::new_zeroed(),
+                };
+            }
             self.run_sync()?;
             let (&GetSetVpRegisterRequest { status, .. }, buf) =
-                self.command_result::<_, HvRegisterAssoc>(regs.len())?;
+                self.command_result::<_, HvRegisterAssoc>(names.len())?;
             status.result().map_err(SidecarError::Hypervisor)?;
-            regs.copy_from_slice(buf);
+            for (i, value) in values.iter_mut().enumerate() {
+                *value = buf[i].value;
+            }
         }
         Ok(())
     }

@@ -9,52 +9,72 @@
 // because the stack itself is in BSS, so BSS must be zeroed before the stack is
 // set up.
 
-    .weak _DYNAMIC
-    .hidden _DYNAMIC
+    // Not all distro's have toolchains whose linker script facilitates emitting
+    // _DYNAMIC. In case of the linking failures due to missing _DYNAMIC, blame on
+    // the toolchain's default linker script (maybe we should provide our own one).
+    //
+    // Adding something like ".weak _DYNAMIC" masks that issue, and makes the bootloader
+    // fail when relocating the image as that won't point to the correct location.
+
+    .extern _DYNAMIC
+
+    // Calls into the platform's debug interface
+
+    .macro SMC_CALL_DEBUG_INTERFACE
+        mov     x0, 6
+        movk    x0, 0x8600, lsl 16
+        smc     #0
+        brk     #0xffff
+    .endm
 
     .balign 0x10
 .globl _start
 _start:
 
-    // Clean BSS, avoid using x0 as it contains the IGVM parameter.
-    // NOTE: the stack space is allocated in BSS, and can't use function calls
+    // Save the x0 which contains the IGVM parameter to the first scratch non-volatile register.
+
+    mov     x19, x0
+
+    // Set the EL1 vector base address register to point to the vector table
+    // at the earliest possible point.
+
+    adrp    x0, _vector_table_el1
+    add     x0, x0, :lo12:_vector_table_el1
+    msr     VBAR_EL1, x0
+    isb
+
+    // Clean BSS.
+    // NOTE: the stack space is allocated in BSS, and one can't use function calls yet
     // as the return address will be wiped out.
 
-    adrp    x1,  __bss_start__
-    add     x1, x1, :lo12:__bss_start__ // X1 contains the BSS start
-    adrp    x2, __bss_end__
-    add     x2, x2, :lo12:__bss_end__
-    sub     x2, x2, x1                  // X2 contains the BSS length
+    adrp    x0,  __bss_start
+    add     x0, x0, :lo12:__bss_start // X0 contains the BSS start
+    adrp    x1, _end
+    add     x1, x1, :lo12:_end
+    sub     x1, x1, x0                  // X2 contains the BSS length
 1:
-    cbz     x2, 2f
-    sub     x2, x2, 1
-    strb    wzr, [x1,x2]
+    cbz     x1, 2f
+    sub     x1, x1, 1
+    strb    wzr, [x0,x1]
     b       1b
 2:
 
     // Set up the stack space.
 
-    adrp    x1, {stack}
-    add     x1, x1, :lo12:{stack}
-    mov     x2, {STACK_COOKIE_LO}           // Lower 16 bits of the stack cookie
-    movk    x2, {STACK_COOKIE_HI}, lsl 16   // Higher 16 bits of the stack cookie, keep the lower bits
-    str     x2, [x1]                        // Store the stack cookie at the bottom
-    add     x1, x1, {STACK_SIZE}            // Stack size
-    sub     x1, x1, #8                      // Leave 8 bytes for the stack cookie at the top
-    str     x2, [x1]                        // Store the stack cookie at the top
-    sub     x1, x1, #8                      // Set the stack pointer
-    mov     sp, x1
+    adrp    x0, {stack}
+    add     x0, x0, :lo12:{stack}
+    mov     x1, {STACK_COOKIE_LO}           // Lower 16 bits of the stack cookie
+    movk    x1, {STACK_COOKIE_HI}, lsl 16   // Higher 16 bits of the stack cookie, keep the lower bits
+    str     x1, [x0]                        // Store the stack cookie at the bottom
+    add     x0, x0, {STACK_SIZE}            // Stack size
+    sub     x0, x0, #8                      // Leave 8 bytes for the stack cookie at the top
+    str     x1, [x0]                        // Store the stack cookie at the top
+    sub     x0, x0, #8                      // Set the stack pointer
+    mov     sp, x0
 
-    // Set the vector table up.
+    // Push `x19` (the IGVM parameter copied from x0) to the stack, its value has to be passed to `start`.
 
-    adrp    x1, _vector_table_el1
-    add     x1, x1, :lo12:_vector_table_el1
-    msr     VBAR_EL1, x1
-    isb
-
-    // Push x0 to the stack, its value has to be passed to `start`.
-
-    str     x0, [sp, #-16]!
+    str     x19, [sp, #-16]!
 
     // NEON and FP setup for EL1. The compiler can use SIMD as an
     // optimization because the target specific options set in the `rustc`
@@ -88,15 +108,56 @@ _start:
     // If the main function exited, call into the Debug Interface, or
     // break.
 
-    mov     x0, 6
-    movk    x0, 0x8600, lsl 16
-    smc     #0
+    SMC_CALL_DEBUG_INTERFACE
 
-    .macro EXCEPTION_ENTRY source, kind
+    // This macro is used to connect to the hypervisor and run the enlightened
+    // crash reporting from the handlers in the exception table. Using Rust or stack
+    // might be problematic at the time of the crash if the stack is corrupted or the
+    // image is not relocated.
+    //
+    // Save the value to `x5`.
+    // Clobbers `x0`-`x6`.
+    //
+    // N.B. Using the combination of `ldr` and `=` for loading constants is safe w/o
+    // relocation as it produces PC-relative addresses or movz/movk instructions if
+    // the immediate value fits.
+
+    .macro SET_VP_REGISTER64 vp_reg_name, val
+        ldr     x0, =0x100010051            // Input: 1 argument, fast, HvCallSetVpRegisters
+        mov     x1, #0xffffffffffffffff     // This partition
+        mov     x2, #0xfffffffe             // This VP
+        ldr     x3, =\vp_reg_name
+        mov     x4, #0                      // Padding
+        mov     x6, #0                      // Upper 64 bits of the value
+        hvc     #1                          // Hyper-V ABI
+    .endm
+
+    .macro EXCEPTION_ENTRY source_and_kind
     .align 7
-        b       .
-        mov     x0, \source
-        mov     x1, \kind
+        // Connect to the hypervisor as can't assume that has been done already.
+        // No harm if that is done any number of times.
+
+        mov                 x5, {OHCL_LOADER_OSID}
+        SET_VP_REGISTER64   {HV_REGISTER_OSID}
+
+        // Report the crash data
+
+        mov                 x5, \source_and_kind
+        SET_VP_REGISTER64   {HV_REGISTER_GUEST_CRASH_P0}
+        mrs                 x5, PAR_EL1 
+        SET_VP_REGISTER64   {HV_REGISTER_GUEST_CRASH_P1}
+        mrs                 x5, ELR_EL1
+        SET_VP_REGISTER64   {HV_REGISTER_GUEST_CRASH_P2}
+        mrs                 x5, ESR_EL1
+        SET_VP_REGISTER64   {HV_REGISTER_GUEST_CRASH_P3}
+        mov                 x5, 0 // No message
+        SET_VP_REGISTER64   {HV_REGISTER_GUEST_CRASH_P4}
+        mov                 x5, {GUEST_CRASH_CTRL}
+        SET_VP_REGISTER64   {HV_REGISTER_GUEST_CRASH_CTRL}
+
+        SMC_CALL_DEBUG_INTERFACE
+
+        // If nothing of the above has made the code break, spin forever.
         b       .
     .endm
 
@@ -104,25 +165,25 @@ _start:
     .balign 0x800
 _vector_table_el1:
     // Target and source at same exception level with source SP = SP_EL0
-    EXCEPTION_ENTRY #0x0, #0x0  // Synchronous exception
-    EXCEPTION_ENTRY #0x0, #0x1  // IRQ
-    EXCEPTION_ENTRY #0x0, #0x2  // FIQ
-    EXCEPTION_ENTRY #0x0, #0x3  // SError
+    EXCEPTION_ENTRY 0x00  // Synchronous exception
+    EXCEPTION_ENTRY 0x01  // IRQ
+    EXCEPTION_ENTRY 0x02  // FIQ
+    EXCEPTION_ENTRY 0x03  // SError
 
     // Target and source at same exception level with source SP = SP_ELx
-    EXCEPTION_ENTRY #0x1, #0x0  // Synchronous exception
-    EXCEPTION_ENTRY #0x1, #0x1  // IRQ
-    EXCEPTION_ENTRY #0x1, #0x2  // FIQ
-    EXCEPTION_ENTRY #0x1, #0x3  // SError
+    EXCEPTION_ENTRY 0x10  // Synchronous exception
+    EXCEPTION_ENTRY 0x11  // IRQ
+    EXCEPTION_ENTRY 0x12  // FIQ
+    EXCEPTION_ENTRY 0x13  // SError
 
     // Source is at lower exception level running on AArch64
-    EXCEPTION_ENTRY #0x2, #0x0  // Synchronous exception
-    EXCEPTION_ENTRY #0x2, #0x1  // IRQ
-    EXCEPTION_ENTRY #0x2, #0x2  // FIQ
-    EXCEPTION_ENTRY #0x2, #0x3  // SError
+    EXCEPTION_ENTRY 0x20  // Synchronous exception
+    EXCEPTION_ENTRY 0x21  // IRQ
+    EXCEPTION_ENTRY 0x22  // FIQ
+    EXCEPTION_ENTRY 0x23  // SError
 
     // Source is at lower exception level running on AArch32
-    EXCEPTION_ENTRY #0x3, #0x0  // Synchronous exception
-    EXCEPTION_ENTRY #0x3, #0x1  // IRQ
-    EXCEPTION_ENTRY #0x3, #0x2  // FIQ
-    EXCEPTION_ENTRY #0x3, #0x3  // SError
+    EXCEPTION_ENTRY 0x30  // Synchronous exception
+    EXCEPTION_ENTRY 0x31  // IRQ
+    EXCEPTION_ENTRY 0x32  // FIQ
+    EXCEPTION_ENTRY 0x33  // SError

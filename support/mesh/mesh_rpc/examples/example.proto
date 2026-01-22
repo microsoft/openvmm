@@ -11,7 +11,7 @@ option go_package = "github.com/containerd/ttrpc/example;example";
 
 service Example {
 	rpc Method1(Method1Request) returns (Method1Response);
-	rpc Method2(Method1Request) returns (google.protobuf.Empty);
+	rpc Method2(Method2Request) returns (google.protobuf.Empty);
 }
 
 message Method1Request {

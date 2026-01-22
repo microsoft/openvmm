@@ -70,7 +70,6 @@ use vmcore::reference_time::ReferenceTimeResult;
 use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::vmtime::VmTimeAccess;
 use vmcore::vmtime::VmTimeSource;
-use vp::WhpRunVpError;
 use vp_state::WhpVpStateAccess;
 use x86defs::cpuid::Vendor;
 
@@ -543,6 +542,14 @@ impl virt::Partition for WhpPartition {
         Some(self.with_vtl(minimum_vtl).clone())
     }
 
+    #[cfg(guest_arch = "x86_64")]
+    fn msi_interrupt_target(
+        self: &Arc<Self>,
+        minimum_vtl: Vtl,
+    ) -> Option<Arc<dyn pci_core::msi::MsiInterruptTarget>> {
+        Some(self.with_vtl(minimum_vtl).clone())
+    }
+
     fn request_msi(&self, vtl: Vtl, request: MsiRequest) {
         if let Err(err) = self.inner.interrupt(vtl, request) {
             tracelimit::warn_ratelimited!(
@@ -685,6 +692,7 @@ struct WhpVpRef<'a> {
     index: VpIndex,
 }
 
+// TODO: Chunk this up into smaller types.
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("whp error, failed to {operation}")]
@@ -693,8 +701,6 @@ pub enum Error {
         #[source]
         source: whp::WHvError,
     },
-    #[error("vtl2 memory process creation")]
-    Vtl2MemoryProcess(#[source] std::io::Error),
     #[error("guest debugging not supported")]
     GuestDebuggingNotSupported,
     #[error(transparent)]
@@ -704,11 +710,13 @@ pub enum Error {
     #[error("failed to create virtual device")]
     NewDevice(#[source] virt::x86::apic_software_device::DeviceIdInUse),
     #[error("resetting memory mappings failed")]
-    ResetMemoryMapping(#[source] virt::Error),
+    ResetMemoryMapping(#[source] anyhow::Error),
     #[error("accepting pages failed")]
-    AcceptPages(#[source] virt::Error),
+    AcceptPages(#[source] anyhow::Error),
     #[error("invalid apic base")]
     InvalidApicBase(#[source] virt_support_apic::InvalidApicBase),
+    #[error("host does not support required cpu capabilities")]
+    Capabilities(virt::PartitionCapabilitiesError),
 }
 
 trait WhpResultExt<T> {
@@ -1006,7 +1014,8 @@ impl WhpPartitionInner {
                         &[output.Eax, output.Ebx, output.Ecx, output.Edx],
                     )
                 },
-            );
+            )
+            .map_err(Error::Capabilities)?;
             caps.can_freeze_time = true;
             caps.xsaves_state_bv_broken = true;
             caps.dr6_tsx_broken = true;
@@ -1332,7 +1341,7 @@ impl VtlPartition {
                         features.bank0 |= F::AccessIntrCtrlRegs;
 
                         // BUG: this feature is required for running VTL2 w/ vmbus
-                        // under hvlite to avoid timer/vmbus sint contention
+                        // under OpenVMM to avoid timer/vmbus sint contention
                         features.bank0 |= F::DirectSyntheticTimers;
                     }
 
@@ -1491,8 +1500,6 @@ impl Drop for WhpProcessor<'_> {
 }
 
 impl<'p> virt::Processor for WhpProcessor<'p> {
-    type Error = Error;
-    type RunVpError = WhpRunVpError;
     type StateAccess<'a>
         = WhpVpStateAccess<'a, 'p>
     where
@@ -1502,7 +1509,7 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         &mut self,
         _vtl: Vtl,
         _state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), <WhpVpStateAccess<'_, 'p> as virt::vp::AccessVpState>::Error> {
         Err(Error::GuestDebuggingNotSupported)
     }
 
@@ -1516,17 +1523,16 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<WhpRunVpError>> {
+    ) -> Result<Infallible, VpHaltReason> {
         self.run_vp(stop, dev).await
     }
 
-    fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
+    fn flush_async_requests(&mut self) {
         // TODO: flush more (e.g. HvStartVp context)
-        self.flush_apic(Vtl::Vtl0)?;
+        self.flush_apic(Vtl::Vtl0);
         if self.state.vtls.vtl2.is_some() {
-            self.flush_apic(Vtl::Vtl2)?;
+            self.flush_apic(Vtl::Vtl2);
         }
-        Ok(())
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {

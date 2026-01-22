@@ -22,6 +22,9 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+/// The standard, non-redirected synthetic interrupt used by VMBus.
+pub const VMBUS_SINT: u8 = 2;
+
 #[derive(Debug)]
 pub struct TaggedStream<T, S>(Option<T>, S);
 

@@ -163,7 +163,7 @@ impl SynicPortAccess for SynicPorts {
         vtl: Vtl,
         vp: u32,
         sint: u8,
-    ) -> Result<Box<(dyn GuestMessagePort)>, vmcore::synic::HypervisorError> {
+    ) -> Result<Box<dyn GuestMessagePort>, vmcore::synic::HypervisorError> {
         Ok(Box::new(DirectGuestMessagePort {
             partition: Arc::clone(&self.partition),
             vtl,
@@ -180,7 +180,7 @@ impl SynicPortAccess for SynicPorts {
         sint: u8,
         flag: u16,
         _monitor_info: Option<MonitorInfo>,
-    ) -> Result<Box<(dyn GuestEventPort)>, vmcore::synic::HypervisorError> {
+    ) -> Result<Box<dyn GuestEventPort>, vmcore::synic::HypervisorError> {
         Ok(self.partition.new_guest_event_port(vtl, vp, sint, flag))
     }
 
@@ -199,6 +199,19 @@ impl SynicMonitorAccess for SynicPorts {
             .monitor_support()
             .unwrap()
             .set_monitor_page(vtl, gpa.map(|mp| mp.child_to_parent))
+    }
+
+    fn allocate_monitor_page(&self, vtl: Vtl) -> anyhow::Result<Option<MonitorPageGpas>> {
+        self.partition
+            .monitor_support()
+            .unwrap()
+            .allocate_monitor_page(vtl)
+            .map(|gpa| {
+                gpa.map(|child_to_parent| MonitorPageGpas {
+                    parent_to_child: 0,
+                    child_to_parent,
+                })
+            })
     }
 }
 

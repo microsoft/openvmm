@@ -20,7 +20,7 @@ pub struct WhpVpStateAccess<'a, 'b> {
 
 impl<'a> WhpProcessor<'a> {
     pub(crate) fn access_state(&mut self, vtl: Vtl) -> WhpVpStateAccess<'_, 'a> {
-        self.reset_if_requested().unwrap();
+        self.reset_if_requested();
         WhpVpStateAccess { run: self, vtl }
     }
 }

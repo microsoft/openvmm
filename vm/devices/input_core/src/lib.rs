@@ -47,10 +47,7 @@ pub struct KeyboardData {
 pub trait InputSource<T>: futures::Stream<Item = T> + Unpin + Send {
     /// Sets this input source active, so that the sending side can choose which
     /// device to send input to.
-    fn set_active(
-        &mut self,
-        active: bool,
-    ) -> Pin<Box<dyn '_ + std::future::Future<Output = ()> + Send>>;
+    fn set_active(&mut self, active: bool) -> Pin<Box<dyn '_ + Future<Output = ()> + Send>>;
 }
 
 /// A resolved [`InputSource`].

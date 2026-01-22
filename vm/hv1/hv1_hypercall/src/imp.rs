@@ -1013,3 +1013,24 @@ impl<T: SendSyntheticClusterIpiEx> HypercallDispatch<HvSendSyntheticClusterIpiEx
         })
     }
 }
+
+/// Defines the `HvVbsVmCallReport` hypercall.
+pub type HvVbsVmCallReport = SimpleHypercall<
+    defs::VbsVmCallReport,
+    defs::VbsVmCallReportOutput,
+    { HypercallCode::HvCallVbsVmCallReport.0 },
+>;
+
+/// Implements the `HvVbsVmCallReport` hypercall.
+pub trait VbsVmCallReport {
+    /// Generates a VBS VM call report.
+    fn vbs_vm_call_report(&self, report_data: &[u8]) -> HvResult<defs::VbsVmCallReportOutput>;
+}
+
+impl<T: VbsVmCallReport> HypercallDispatch<HvVbsVmCallReport> for T {
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        HvVbsVmCallReport::run(params, |header| {
+            self.vbs_vm_call_report(&header.report_data)
+        })
+    }
+}

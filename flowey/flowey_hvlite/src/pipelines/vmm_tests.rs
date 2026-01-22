@@ -70,6 +70,13 @@ pub struct VmmTestsCli {
     /// Copy extras to output dir (symbols, etc)
     #[clap(long)]
     copy_extras: bool,
+
+    /// Optional: custom kernel modules
+    #[clap(long)]
+    custom_kernel_modules: Option<PathBuf>,
+    /// Optional: custom kernel image
+    #[clap(long)]
+    custom_kernel: Option<PathBuf>,
 }
 
 impl IntoPipeline for VmmTestsCli {
@@ -90,6 +97,8 @@ impl IntoPipeline for VmmTestsCli {
             release,
             build_only,
             copy_extras,
+            custom_kernel_modules,
+            custom_kernel,
         } = self;
 
         let openvmm_repo = flowey_lib_common::git_checkout::RepoSource::ExistingClone(
@@ -126,7 +135,7 @@ impl IntoPipeline for VmmTestsCli {
                 FlowArch::host(backend_hint),
                 "build vmm test dependencies",
             )
-            .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request {})
+            .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
             .dep_on(
                 |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
                     hvlite_repo_source: openvmm_repo.clone(),
@@ -185,6 +194,8 @@ impl IntoPipeline for VmmTestsCli {
                     release,
                     build_only,
                     copy_extras,
+                    custom_kernel_modules,
+                    custom_kernel,
                     done: ctx.new_done_handle(),
                 },
             )

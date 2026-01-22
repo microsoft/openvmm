@@ -46,7 +46,7 @@ pub enum MessageDescription<'a> {
 
 /// A type URL, used in [`ProtobufAny`](super::message::ProtobufAny) (which
 /// shares an encoding with `google.protobuf.Any`).
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone)]
 pub struct TypeUrl<'a> {
     package: &'a str,
     name: &'a str,
@@ -106,21 +106,23 @@ where
 }
 
 /// The description of a field type.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone)]
 pub struct FieldType<'a> {
     kind: FieldKind<'a>,
     sequence_type: Option<SequenceType<'a>>,
     annotation: &'a str,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(not(feature = "std"), expect(dead_code))]
+#[derive(Debug, Copy, Clone)]
 enum SequenceType<'a> {
     Optional,
     Repeated,
     Map(&'a str),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(not(feature = "std"), expect(dead_code))]
+#[derive(Debug, Copy, Clone)]
 enum FieldKind<'a> {
     Builtin(&'a str),
     Local(&'a str),
@@ -291,7 +293,8 @@ impl<'a> FieldType<'a> {
 }
 
 /// A descriptor for a message field.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(not(feature = "std"), expect(dead_code))]
+#[derive(Debug, Copy, Clone)]
 pub struct FieldDescriptor<'a> {
     field_type: FieldType<'a>,
     field_number: u32,
@@ -317,7 +320,8 @@ impl<'a> FieldDescriptor<'a> {
 }
 
 /// A description of a protobuf `oneof`.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(not(feature = "std"), expect(dead_code))]
+#[derive(Debug, Copy, Clone)]
 pub struct OneofDescriptor<'a> {
     name: &'a str,
     variants: &'a [FieldDescriptor<'a>],
@@ -331,7 +335,8 @@ impl<'a> OneofDescriptor<'a> {
 }
 
 /// A message descriptor.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone)]
+#[cfg_attr(not(feature = "std"), expect(dead_code))]
 pub struct MessageDescriptor<'a> {
     comment: &'a str,
     name: &'a str,
@@ -361,7 +366,7 @@ impl<'a> MessageDescriptor<'a> {
 
 /// A message descriptor for a message rooted directly in a package (and not
 /// nested in another message type).
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone)]
 pub struct TopLevelDescriptor<'a> {
     package: &'a str,
     message: &'a MessageDescriptor<'a>,

@@ -11,11 +11,14 @@ default = []
 
 inspect = ["vmgs_format/inspect", "dep:inspect", "dep:inspect_counters"]
 save_restore = ["dep:mesh_protobuf"]
+mesh = ["dep:mesh_protobuf"]
 
 # Use native windows crypto APIs
 encryption_win = ["dep:windows"]
 # Use OpenSSL crypto APIs
 encryption_ossl = ["dep:openssl"]
+
+test_helpers = []
 
 [dependencies]
 disk_backend.workspace = true

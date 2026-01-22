@@ -3,7 +3,7 @@
 
 //! Wrapper around `update-rootfs.py`
 
-use crate::download_openvmm_deps::OpenvmmDepsArch;
+use crate::resolve_openvmm_deps::OpenvmmDepsArch;
 use crate::run_cargo_build::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -52,17 +52,26 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         // ambient deps required by `update-rootfs.py`
+        let platform = ctx.platform();
+        let python_pkg = match platform {
+            FlowPlatform::Linux(linux_distribution) => match linux_distribution {
+                FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::Ubuntu => "python3",
+                FlowPlatformLinuxDistro::Arch => "python",
+                FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
+            },
+            _ => anyhow::bail!("Unsupported platform"),
+        };
         let pydeps =
             ctx.reqv(
                 |side_effect| flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: ["python3"].map(Into::into).into(),
+                    package_names: [python_pkg].map(Into::into).into(),
                     done: side_effect,
                 },
             );
@@ -93,11 +102,11 @@ impl FlowNode for Node {
 
             let interactive_dep = if interactive {
                 ctx.reqv(|v| {
-                    crate::download_openvmm_deps::Request::GetOpenhclCpioDbgrd(openvmm_deps_arch, v)
+                    crate::resolve_openvmm_deps::Request::GetOpenhclCpioDbgrd(openvmm_deps_arch, v)
                 })
             } else {
                 ctx.reqv(|v| {
-                    crate::download_openvmm_deps::Request::GetOpenhclCpioShell(openvmm_deps_arch, v)
+                    crate::resolve_openvmm_deps::Request::GetOpenhclCpioShell(openvmm_deps_arch, v)
                 })
             };
 
@@ -150,13 +159,23 @@ impl FlowNode for Node {
                         v
                     };
 
-                    let kernel_modules =
-                        custom_kernel_modules.unwrap_or(kernel_package_root.join("."));
-
                     let rootfs_py_arch = match arch {
                         CommonArch::X86_64 => "x86_64",
                         CommonArch::Aarch64 => "aarch64",
                     };
+
+                    // Kernel modules use a different arch naming convention
+                    let kernel_modules_arch = match arch {
+                        CommonArch::X86_64 => "x64",
+                        CommonArch::Aarch64 => "arm64",
+                    };
+
+                    let kernel_modules = custom_kernel_modules.unwrap_or_else(|| {
+                        kernel_package_root
+                            .join("build/native/bin")
+                            .join(kernel_modules_arch)
+                            .join("modules")
+                    });
 
                     // FUTURE: to avoid making big changes to update-roots as
                     // part of the initial OSS workstream, stage the

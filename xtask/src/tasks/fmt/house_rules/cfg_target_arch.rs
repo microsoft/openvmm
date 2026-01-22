@@ -19,9 +19,6 @@ const SUPPRESS_REASON_DEPENDENCY: &str = "dependency";
 /// One off - support for the auto-arch selection logic in
 /// `build_rs_guest_arch`.
 const SUPPRESS_REASON_ONEOFF_GUEST_ARCH_IMPL: &str = "oneoff-guest-arch-impl";
-/// One off - considiton to check that `virt_hvf` is being used when both guest
-/// and host arch to be the same.
-const SUPPRESS_REASON_ONEOFF_VIRT_HVF: &str = "oneoff-virt-hvf";
 /// One off - used as part of flowey CI infra
 const SUPPRESS_REASON_ONEOFF_FLOWEY: &str = "oneoff-flowey";
 /// One off - used by petri to select native test dependencies
@@ -43,7 +40,6 @@ fn has_suppress(s: &str) -> bool {
             | SUPPRESS_REASON_SYS_CRATE
             | SUPPRESS_REASON_DEPENDENCY
             | SUPPRESS_REASON_ONEOFF_GUEST_ARCH_IMPL
-            | SUPPRESS_REASON_ONEOFF_VIRT_HVF
             | SUPPRESS_REASON_ONEOFF_FLOWEY
             | SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_TEST_DEPS
             | SUPPRESS_REASON_ONEOFF_PETRI_HOST_ARCH
@@ -83,8 +79,8 @@ pub fn check_cfg_target_arch(path: &Path, _fix: bool) -> anyhow::Result<()> {
     // Similar for the sidecar kernel and TMKs. And minimal_rt provides the
     // (arch-specific) runtime for both of them.
     //
-    // safe_intrinsics performs architecture-specific operations that require
-    // the use of target_arch
+    // support crates are not VM specific, so guest_arch doesn't make sense
+    // there.
     //
     // the whp/kvm crates are inherently arch-specific, as they contain
     // low-level bindings to a particular platform's virtualization APIs
@@ -94,7 +90,7 @@ pub fn check_cfg_target_arch(path: &Path, _fix: bool) -> anyhow::Result<()> {
         || path.starts_with("openhcl/openhcl_boot")
         || path.starts_with("openhcl/minimal_rt")
         || path.starts_with("openhcl/sidecar")
-        || path.starts_with("support/safe_intrinsics")
+        || path.starts_with("support/")
         || path.starts_with("tmk/simple_tmk")
         || path.starts_with("tmk/tmk_core")
         || path.starts_with("vm/whp")

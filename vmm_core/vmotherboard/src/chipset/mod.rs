@@ -10,6 +10,7 @@ mod line_sets;
 
 pub use self::builder::ChipsetBuilder;
 pub use self::builder::ChipsetDevices;
+pub use self::builder::DynamicDeviceUnit;
 
 use self::io_ranges::IoRanges;
 use self::io_ranges::LookupResult;
@@ -46,7 +47,7 @@ enum IoType<'a> {
     Write(&'a [u8]),
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 enum IoKind {
     Pio,
     Mmio,
@@ -82,88 +83,83 @@ impl Chipset {
             );
             self.debug_event_handler.on_debug_break(Some(vp));
         }
-        let r = match result {
-            IoResult::Ok => Ok(()),
+        match result {
+            IoResult::Ok => {}
             IoResult::Defer(mut token) => match &mut io_type {
                 IoType::Read(bytes) => {
-                    let r = poll_fn(|cx| token.poll_read(cx, bytes)).await;
-                    if r.is_err() {
-                        bytes.fill(!0);
+                    if let Err(err) = poll_fn(|cx| token.poll_read(cx, bytes)).await {
+                        self.handle_io_error(err, &lookup, kind, address, len, &mut io_type);
                     }
-                    r
                 }
-                IoType::Write(_) => poll_fn(|cx| token.poll_write(cx)).await,
+                IoType::Write(_) => {
+                    if let Err(err) = poll_fn(|cx| token.poll_write(cx)).await {
+                        self.handle_io_error(err, &lookup, kind, address, len, &mut io_type);
+                    }
+                }
             },
             IoResult::Err(err) => {
-                let error = match err {
-                    IoError::InvalidRegister => "register not present",
-                    IoError::InvalidAccessSize => "invalid access size",
-                    IoError::UnalignedAccess => "unaligned access",
-                };
-                match &mut io_type {
-                    IoType::Read(bytes) => {
-                        // Fill data with !0 to indicate an error to the guest.
-                        bytes.fill(!0);
-                        tracelimit::warn_ratelimited!(
-                            CVM_CONFIDENTIAL,
-                            device = &*lookup.dev_name,
-                            address,
-                            len,
-                            ?kind,
-                            error,
-                            "device io read error"
-                        );
-                    }
-                    IoType::Write(bytes) => tracelimit::warn_ratelimited!(
-                        CVM_CONFIDENTIAL,
-                        device = &*lookup.dev_name,
-                        address,
-                        len,
-                        ?kind,
-                        error,
-                        ?bytes,
-                        "device io write error"
-                    ),
-                }
-                Ok(())
+                self.handle_io_error(err, &lookup, kind, address, len, &mut io_type);
             }
         };
 
-        match r {
-            Ok(()) => {
-                if let Some(range_name) = &lookup.trace {
-                    // Don't lower the tracing level or the whole thing is
-                    // useless.
-                    tracing::info!(
-                        device = &*lookup.dev_name,
-                        range_name = range_name.as_ref(),
-                        ?kind,
-                        address,
-                        direction = if matches!(io_type, IoType::Read(_)) {
-                            "read"
-                        } else {
-                            "write"
-                        },
-                        data = format_args!("{:02x?}", io_type.bytes()),
-                        "device io"
-                    );
-                }
-            }
-            Err(err) => {
-                tracelimit::error_ratelimited!(
+        if let Some(range_name) = &lookup.trace {
+            // Don't lower the tracing level or the whole thing is
+            // useless.
+            tracing::info!(
+                device = &*lookup.dev_name,
+                range_name = range_name.as_ref(),
+                ?kind,
+                address,
+                direction = if matches!(io_type, IoType::Read(_)) {
+                    "read"
+                } else {
+                    "write"
+                },
+                data = format_args!("{:02x?}", io_type.bytes()),
+                "device io"
+            );
+        }
+    }
+
+    fn handle_io_error(
+        &self,
+        err: IoError,
+        lookup: &LookupResult,
+        kind: IoKind,
+        address: u64,
+        len: usize,
+        io_type: &mut IoType<'_>,
+    ) {
+        let error = match err {
+            IoError::InvalidRegister => "register not present",
+            IoError::InvalidAccessSize => "invalid access size",
+            IoError::UnalignedAccess => "unaligned access",
+            IoError::NoResponse => "device didn't respond",
+        };
+        match io_type {
+            IoType::Read(bytes) => {
+                // Fill data with !0 to indicate an error to the guest.
+                bytes.fill(!0);
+                tracelimit::warn_ratelimited!(
                     CVM_CONFIDENTIAL,
                     device = &*lookup.dev_name,
-                    ?kind,
                     address,
-                    direction = if matches!(io_type, IoType::Read(_)) {
-                        "read"
-                    } else {
-                        "write"
-                    },
-                    error = &err as &dyn std::error::Error,
-                    "deferred io failed"
+                    len,
+                    ?kind,
+                    error,
+                    "device io read error"
                 );
             }
+            IoType::Write(bytes) => tracelimit::warn_ratelimited!(
+                CVM_CONFIDENTIAL,
+                device = &*lookup.dev_name,
+                address,
+                len,
+                ?kind,
+                error,
+                ?bytes,
+                "device io write error"
+            ),
         }
     }
 
@@ -317,6 +313,47 @@ impl std::fmt::Display for PciConflict {
                     fmt,
                     "cannot attach {} to {:02x}:{:02x}:{}, no valid PCI bus",
                     self.conflict_dev, b, d, f
+                )
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum PcieConflictReason {
+    ExistingDev(Arc<str>),
+    MissingDownstreamPort,
+    MissingEnumerator,
+}
+
+#[derive(Debug)]
+pub struct PcieConflict {
+    pub conflict_dev: Arc<str>,
+    pub reason: PcieConflictReason,
+}
+
+impl std::fmt::Display for PcieConflict {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.reason {
+            PcieConflictReason::ExistingDev(existing_dev) => {
+                write!(
+                    fmt,
+                    "cannot attach {}, port already occupied by {}",
+                    self.conflict_dev, existing_dev
+                )
+            }
+            PcieConflictReason::MissingDownstreamPort => {
+                write!(
+                    fmt,
+                    "cannot attach {}, no valid pcie downstream port",
+                    self.conflict_dev
+                )
+            }
+            PcieConflictReason::MissingEnumerator => {
+                write!(
+                    fmt,
+                    "cannot attach {}, no valid pcie enumerator",
+                    self.conflict_dev
                 )
             }
         }

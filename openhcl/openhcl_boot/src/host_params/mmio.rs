@@ -3,53 +3,53 @@
 
 //! Manages MMIO range partitioning between VTLs.
 
-use super::PartitionInfo;
 use super::dt::DtError;
 use memory_range::MemoryRange;
 
 /// The start address of MMIO high range.
 const MMIO_HIGH_RANGE_START: u64 = 1 << 32;
 
-impl PartitionInfo {
-    /// Select the mmio range that VTL2 should use from looking at VTL0 mmio
-    /// ranges.
-    ///
-    /// VTL2 MMIO is partitioned such that:
-    /// - All MMIO low range is assigned to VTL0.
-    /// - VTL2_MMIO_HIGH_RANGE_SIZE bytes from the end of the high range is
-    ///   assigned to VTL2.
-    /// - The remaining high range is assigned to VTL0.
-    ///
-    /// Assumes input ranges are non-overlapping and in increasing address
-    /// order.
-    ///
-    /// On success, returns the mmio that VTL2 should use.
-    ///
-    /// Returns an error if the input VTL0 MMIO range is invalid or if the VTL2
-    /// allocation amount was not satisfied due to a lack of high MMIO assigned
-    /// to VTL0.
-    pub fn select_vtl2_mmio_range(&self, vtl2_size: u64) -> Result<MemoryRange, DtError> {
-        // Iterate over the list of MMIO ranges in reverse address order so that
-        // the VTL2 range is carved out from the end.
-        for range in self.vmbus_vtl0.mmio.iter().rev() {
-            // Do not select low MMIO ranges for VTL2.
-            if range.start() < MMIO_HIGH_RANGE_START {
-                continue;
-            }
-
-            // Compute the length of the VTL2 subrange. If there is not enough
-            // mmio, give up.
-            if range.len() < vtl2_size {
-                return Err(DtError::NotEnoughMmio);
-            }
-
-            let vtl2_range_start = range.end() - vtl2_size;
-
-            return Ok(MemoryRange::new(vtl2_range_start..range.end()));
+/// Select the mmio range that VTL2 should use from looking at VTL0 mmio
+/// ranges.
+///
+/// VTL2 MMIO is partitioned such that:
+/// - All MMIO low range is assigned to VTL0.
+/// - VTL2_MMIO_HIGH_RANGE_SIZE bytes from the end of the high range is
+///   assigned to VTL2.
+/// - The remaining high range is assigned to VTL0.
+///
+/// Assumes input ranges are non-overlapping and in increasing address
+/// order.
+///
+/// On success, returns the mmio that VTL2 should use.
+///
+/// Returns an error if the input VTL0 MMIO range is invalid or if the VTL2
+/// allocation amount was not satisfied due to a lack of high MMIO assigned
+/// to VTL0.
+pub fn select_vtl2_mmio_range(
+    mmio: &[MemoryRange],
+    vtl2_size: u64,
+) -> Result<MemoryRange, DtError> {
+    // Iterate over the list of MMIO ranges in reverse address order so that
+    // the VTL2 range is carved out from the end.
+    for range in mmio.iter().rev() {
+        // Do not select low MMIO ranges for VTL2.
+        if range.start() < MMIO_HIGH_RANGE_START {
+            continue;
         }
 
-        Err(DtError::NotEnoughMmio)
+        // Compute the length of the VTL2 subrange. If there is not enough
+        // mmio, give up.
+        if range.len() < vtl2_size {
+            return Err(DtError::NotEnoughMmio);
+        }
+
+        let vtl2_range_start = range.end() - vtl2_size;
+
+        return Ok(MemoryRange::new(vtl2_range_start..range.end()));
     }
+
+    Err(DtError::NotEnoughMmio)
 }
 
 #[cfg(test)]
@@ -75,7 +75,7 @@ mod test {
             vtl2_range: MemoryRange,
         }
 
-        let testcases = vec![
+        let testcases = [
             TestCase {
                 // No MMIO range is provided, fails.
                 mmio: ArrayVec::new(),
@@ -182,10 +182,7 @@ mod test {
 
         // Run all test cases.
         for (i, tc) in testcases.iter().enumerate() {
-            let mut vtl2_info = PartitionInfo::new();
-            vtl2_info.vmbus_vtl0.mmio.clone_from(&tc.mmio);
-
-            let result = vtl2_info.select_vtl2_mmio_range(VTL2_MMIO_HIGH_RANGE_SIZE);
+            let result = select_vtl2_mmio_range(&tc.mmio, VTL2_MMIO_HIGH_RANGE_SIZE);
 
             assert_eq!(
                 tc.succeeds,

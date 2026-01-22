@@ -3,6 +3,8 @@
 
 //! An executor backed by IO completion ports.
 
+#![expect(clippy::undocumented_unsafe_blocks)]
+
 use super::overlapped::IoOverlapped;
 use super::overlapped::OverlappedIoDriver;
 use super::socket::AfdHandle;
@@ -45,7 +47,6 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
-use winapi::shared::winerror::ERROR_IO_PENDING;
 use winapi::um::winbase::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
 use winapi::um::winbase::FILE_SKIP_SET_EVENT_ON_HANDLE;
 
@@ -564,20 +565,14 @@ impl OverlappedIoDriver for Arc<IocpDriver> {
 impl IoOverlapped for OverlappedIo {
     fn pre_io(&self) {}
 
-    unsafe fn post_io(&self, result: &io::Result<()>, _overlapped: &Overlapped) -> bool {
-        // The IO result will arrive on the completion port only if the IO returned pending.
-        result
-            .as_ref()
-            .map(|_| true)
-            .unwrap_or_else(|err| err.raw_os_error() != Some(ERROR_IO_PENDING as i32))
-    }
-}
+    unsafe fn post_io(&self, _completed: bool, _overlapped: &Overlapped) {}
 
-impl Drop for OverlappedIo {
-    fn drop(&mut self) {
-        // SAFETY: the caller guarantees handle is still owned.
+    unsafe fn disassociate(&mut self) {
+        // SAFETY: the caller guarantees the handle is still owned and that no
+        // further IO will be issued.
         unsafe {
-            disassociate_completion_port(self.handle.0).unwrap();
+            disassociate_completion_port(self.handle.0)
+                .expect("caller bug: no pending IO should be in flight");
         }
     }
 }

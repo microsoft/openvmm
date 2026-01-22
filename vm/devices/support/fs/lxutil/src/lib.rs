@@ -4,9 +4,6 @@
 //! The LxUtil crate provides an API that allows you to write the same file system code on Windows
 //! and Linux, using Linux semantics on both platforms (subject to the limitations of the underlying
 //! file system).
-//!
-//! This crate uses lxutil.dll, a library created for the Windows Subsystem for Linux to emulate
-//! Linux file system semantics on Windows.
 
 #![cfg(any(windows, target_os = "linux"))]
 #![expect(clippy::field_reassign_with_default)] // protocol code benefits from imperative field assignment
@@ -92,6 +89,11 @@ impl LxVolume {
 
     /// Retrieves the attributes of a file. Symlinks are not followed.
     pub fn lstat(&self, path: impl AsRef<Path>) -> lx::Result<lx::Stat> {
+        self.inner.lstat(path.as_ref()).map(|x| x.into())
+    }
+
+    /// Retrieves the statx details of a file. Symlinks are not followed.
+    pub fn statx(&self, path: impl AsRef<Path>) -> lx::Result<lx::StatEx> {
         self.inner.lstat(path.as_ref())
     }
 
@@ -533,7 +535,7 @@ pub struct LxFile {
 
 impl LxFile {
     /// Retrieves the attributes of the file.
-    pub fn fstat(&self) -> lx::Result<lx::Stat> {
+    pub fn fstat(&self) -> lx::Result<lx::StatEx> {
         self.inner.fstat()
     }
 
@@ -1095,11 +1097,12 @@ pub struct SetAttributes {
 }
 
 /// Supplies the value to set a time attribute to.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub enum SetTime {
     /// Don't change the time.
+    #[default]
     Omit,
-    /// Set the time to the specified vale.
+    /// Set the time to the specified value.
     Set(std::time::Duration),
     /// Set the time to the current time.
     Now,
@@ -1109,12 +1112,6 @@ impl SetTime {
     /// Checks whether the value matches the `Omit` variant.
     pub fn is_omit(&self) -> bool {
         matches!(self, SetTime::Omit)
-    }
-}
-
-impl Default for SetTime {
-    fn default() -> Self {
-        Self::Omit
     }
 }
 
@@ -1159,7 +1156,7 @@ mod tests {
         env.create_file("testfile", "test");
         let stat = env.volume.lstat("testfile").unwrap();
         let file = env.volume.open("testfile", lx::O_RDONLY, None).unwrap();
-        let fstat = file.fstat().unwrap();
+        let fstat = file.fstat().unwrap().into();
         println!("{:#?}", fstat);
         assert_eq!(stat, fstat);
 
@@ -1169,7 +1166,7 @@ mod tests {
             .open("", lx::O_RDONLY | lx::O_DIRECTORY, None)
             .unwrap();
 
-        let fstat = file.fstat().unwrap();
+        let fstat = file.fstat().unwrap().into();
         println!("{:#?}", fstat);
         assert_eq!(stat, fstat);
     }
@@ -1363,7 +1360,7 @@ mod tests {
             .unwrap();
 
         let stat = file.fstat().unwrap();
-        assert_eq!(stat.mode, lx::S_IFREG | 0o640);
+        assert_eq!(stat.mode as u32, lx::S_IFREG | 0o640);
         // Only Windows uses the uid/gid
         if cfg!(windows) {
             assert_eq!(stat.uid, 1000);
@@ -1526,7 +1523,8 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(file.fstat().unwrap(), env.volume.lstat(&path).unwrap());
+        let file_stat: lx::Stat = file.fstat().unwrap().into();
+        assert_eq!(file_stat, env.volume.lstat(&path).unwrap());
     }
 
     #[test]
@@ -1693,7 +1691,7 @@ mod tests {
             .unwrap();
 
         let stat = file.fstat().unwrap();
-        assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+        assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
 
         let write_result = if cfg!(windows) || !is_lx_root() {
             lx::S_IFREG | 0o777
@@ -1704,45 +1702,45 @@ mod tests {
         // Write clears it (except for root).
         file.pwrite(b"hello", 0, 1000).unwrap();
         let stat = file.fstat().unwrap();
-        assert_eq!(stat.mode, write_result);
+        assert_eq!(stat.mode as u32, write_result);
         if cfg!(windows) {
             // Write does not clear it for root.
             file.chmod(lx::S_IFREG | 0o6777).unwrap();
             let stat = file.fstat().unwrap();
-            assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+            assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
             file.pwrite(b"hello", 0, 0).unwrap();
             let stat = file.fstat().unwrap();
-            assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+            assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
         }
 
         file.chmod(lx::S_IFREG | 0o6777).unwrap();
         let stat = file.fstat().unwrap();
-        assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+        assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
 
         // Truncate clears it (except for root).
         file.truncate(2, 1000).unwrap();
         let stat = file.fstat().unwrap();
         assert_eq!(stat.file_size, 2);
-        assert_eq!(stat.mode, write_result);
+        assert_eq!(stat.mode as u32, write_result);
         if cfg!(windows) {
             // Truncate does not clear it as root.
             file.chmod(lx::S_IFREG | 0o6777).unwrap();
             let stat = file.fstat().unwrap();
-            assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+            assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
             file.truncate(2, 0).unwrap();
             let stat = file.fstat().unwrap();
             assert_eq!(stat.file_size, 2);
-            assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+            assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
         }
 
         file.chmod(lx::S_IFREG | 0o6777).unwrap();
         let stat = file.fstat().unwrap();
-        assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+        assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
 
         // Chown no changes does not clear it.
         let stat = file.fstat().unwrap();
         file.chown(None, None).unwrap();
-        assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+        assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
 
         // Chown clears it.
         // N.B. Only perform this test if we have permissions to do so.
@@ -1751,17 +1749,17 @@ mod tests {
             let stat = file.fstat().unwrap();
             assert_eq!(stat.uid, 1001);
             assert_eq!(stat.gid, 2001);
-            assert_eq!(stat.mode, lx::S_IFREG | 0o777);
+            assert_eq!(stat.mode as u32, lx::S_IFREG | 0o777);
 
             // Chown doesn't clear setgid if not group executable.
             file.chmod(lx::S_IFREG | 0o6767).unwrap();
             let stat = file.fstat().unwrap();
-            assert_eq!(stat.mode, lx::S_IFREG | 0o6767);
+            assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6767);
             file.chown(Some(1001), Some(2001)).unwrap();
             let stat = file.fstat().unwrap();
             assert_eq!(stat.uid, 1001);
             assert_eq!(stat.gid, 2001);
-            assert_eq!(stat.mode, lx::S_IFREG | 0o2767);
+            assert_eq!(stat.mode as u32, lx::S_IFREG | 0o2767);
         }
     }
 
@@ -2087,7 +2085,7 @@ mod tests {
     // the case sensitive directory attribute, which is only enabled if the WSL optional component
     // is installed.
     #[test]
-    #[cfg(any(unix, not(feature = "ci")))]
+    #[cfg(not(all(windows, feature = "ci")))]
     fn case_sensitive() {
         let env = TestEnv::with_options(LxVolumeOptions::new().create_case_sensitive_dirs(true));
 

@@ -3,6 +3,8 @@
 
 //! Implements a command line utility to generate IGVM files.
 
+#![forbid(unsafe_code)]
+
 mod file_loader;
 mod identity_mapping;
 mod signed_measurement;

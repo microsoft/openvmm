@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::api;
 use super::fs;
 use super::macros::impl_directory_information;
 use super::util;
@@ -25,6 +24,45 @@ use windows::Win32::System::Threading as W32Threading;
 
 const DIR_ENUM_BUFFER_SIZE: usize = 4096;
 const BUFFER_EXTRA_SIZE: usize = 0x200;
+
+#[expect(non_snake_case)]
+#[repr(C)]
+pub struct FILE_ID_64_EXTD_DIR_INFORMATION {
+    pub NextEntryOffset: u32,
+    pub FileIndex: u32,
+    pub CreationTime: i64,
+    pub LastAccessTime: i64,
+    pub LastWriteTime: i64,
+    pub ChangeTime: i64,
+    pub EndOfFile: i64,
+    pub AllocationSize: i64,
+    pub FileAttributes: u32,
+    pub FileNameLength: u32,
+    pub EaSize: u32,
+    pub ReparsePointTag: u32,
+    pub FileId: i64,
+    pub FileName: [u16; 1],
+}
+
+#[expect(non_snake_case)]
+#[repr(C)]
+pub struct FILE_ID_ALL_EXTD_DIR_INFORMATION {
+    pub NextEntryOffset: u32,
+    pub FileIndex: u32,
+    pub CreationTime: i64,
+    pub LastAccessTime: i64,
+    pub LastWriteTime: i64,
+    pub ChangeTime: i64,
+    pub EndOfFile: i64,
+    pub AllocationSize: i64,
+    pub FileAttributes: u32,
+    pub FileNameLength: u32,
+    pub EaSize: u32,
+    pub ReparsePointTag: u32,
+    pub FileId: i64,
+    pub FileId128: W32Fs::FILE_ID_128,
+    pub FileName: [u16; 1],
+}
 
 #[bitfield(u32)]
 struct DirectoryEnumeratorFlags {
@@ -56,8 +94,8 @@ trait DirectoryInformation {
 
 // Implement DirectoryInformation for the structures which all have similar implementations.
 impl_directory_information!(
-    api::FILE_ID_64_EXTD_DIR_INFORMATION, FileAttributes, ReparsePointTag;
-    api::FILE_ID_ALL_EXTD_DIR_INFORMATION, FileAttributes, ReparsePointTag;
+    FILE_ID_64_EXTD_DIR_INFORMATION, FileAttributes, ReparsePointTag;
+    FILE_ID_ALL_EXTD_DIR_INFORMATION, FileAttributes, ReparsePointTag;
     FileSystem::FILE_ID_FULL_DIR_INFORMATION, FileAttributes, EaSize;
     FileSystem::FILE_ID_BOTH_DIR_INFORMATION, FileAttributes, EaSize;
 );
@@ -198,7 +236,8 @@ impl DirectoryEnumerator {
             self.next_read_index = 0;
             true
         } else {
-            false
+            // If this is the first read, restart_scan should be true.
+            self.next_read_index == 0
         };
 
         // Loop over all the entries in the enumerator.
@@ -301,10 +340,10 @@ impl DirectoryEnumerator {
         debug_assert!(!self.buffer_next_entry.is_null());
         let entry: &dyn DirectoryInformation = match self.file_information_class {
             DirectoryEnumeratorFileInformationClass::FileId64ExtdDirectoryInformation => {
-                self.get_next_entry::<api::FILE_ID_64_EXTD_DIR_INFORMATION>()?
+                self.get_next_entry::<FILE_ID_64_EXTD_DIR_INFORMATION>()?
             }
             DirectoryEnumeratorFileInformationClass::FileIdAllExtdDirectoryInformation => {
-                self.get_next_entry::<api::FILE_ID_ALL_EXTD_DIR_INFORMATION>()?
+                self.get_next_entry::<FILE_ID_ALL_EXTD_DIR_INFORMATION>()?
             }
             DirectoryEnumeratorFileInformationClass::FileIdExtdDirectoryInformation => {
                 self.get_next_entry::<FileSystem::FILE_ID_EXTD_DIR_INFORMATION>()?
@@ -527,14 +566,14 @@ impl DirectoryEnumerator {
         callback: &mut F,
         offset: &mut lx::off_t,
         file_id: i64,
-        name: &String,
+        name: &lx::LxString,
         entry_type: u8,
     ) -> lx::Result<bool>
     where
         F: FnMut(lx::DirEntry) -> lx::Result<bool>,
     {
         let entry = lx::DirEntry {
-            name: name.into(),
+            name: name.clone(),
             inode_nr: file_id as _,
             offset: *offset + 1 + super::DOT_ENTRY_COUNT, // Pass the offset of the next entry plus the number of dot entries processed.
             file_type: entry_type,

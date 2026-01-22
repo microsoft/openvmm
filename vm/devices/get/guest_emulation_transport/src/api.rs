@@ -17,16 +17,21 @@ pub use get_protocol::NUMBER_GSP;
 pub use get_protocol::ProtocolVersion;
 pub use get_protocol::SaveGuestVtl2StateFlags;
 pub use get_protocol::VmgsIoStatus;
-use zerocopy::FromZeros;
 
 use guid::Guid;
+use mesh::MeshPayload;
+use std::time::Duration;
+use zerocopy::FromZeros;
 
 /// Device platform settings.
 #[expect(missing_docs)]
 pub mod platform_settings {
     pub use get_protocol::dps_json::PcatBootDevice;
 
+    use get_protocol::dps_json::EfiDiagnosticsLogLevelType;
+    use get_protocol::dps_json::GuestStateEncryptionPolicy;
     use get_protocol::dps_json::GuestStateLifetime;
+    use get_protocol::dps_json::ManagementVtlFeatures;
     use guid::Guid;
     use inspect::Inspect;
 
@@ -120,9 +125,14 @@ pub mod platform_settings {
         pub firmware_mode_is_pcat: bool,
         pub imc_enabled: bool,
         pub cxl_memory_enabled: bool,
-
+        #[inspect(debug)]
+        pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
         #[inspect(debug)]
         pub guest_state_lifetime: GuestStateLifetime,
+        #[inspect(debug)]
+        pub guest_state_encryption_policy: GuestStateEncryptionPolicy,
+        #[inspect(debug)]
+        pub management_vtl_features: ManagementVtlFeatures,
     }
 
     #[derive(Copy, Clone, Debug, Inspect)]
@@ -239,11 +249,13 @@ impl RemoteRamGpaRangeHandle {
 }
 
 /// Request to save Guest state during servicing.
+#[derive(MeshPayload)]
 pub struct GuestSaveRequest {
     /// GUID associated with the request.
     pub correlation_id: Guid,
     /// When to complete the request.
-    pub deadline: std::time::Instant,
+    pub timeout_hint: Duration,
     /// Flags bitfield.
+    #[mesh(encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
     pub capabilities_flags: SaveGuestVtl2StateFlags,
 }

@@ -5,6 +5,7 @@
 //! guarantees.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod completions;
 
@@ -289,7 +290,7 @@ pub struct VmArg {
 
     This can be one of:
 
-    * vsock:PATH - A path to a hybrid vsock Unix socket for a VM, as used by HvLite
+    * vsock:PATH - A path to a hybrid vsock Unix socket for a VM, as used by OpenVMM
 
     * unix:PATH - A path to a Unix socket for connecting to the control plane
 
@@ -329,7 +330,7 @@ impl FromStr for VmId {
             } else if !pal::windows::fs::is_unix_socket(s.as_ref()).unwrap_or(false) {
                 return Ok(Self::HyperV(s.to_owned()));
             }
-            // Default to hybrid vsock since this is what HvLite supports for
+            // Default to hybrid vsock since this is what OpenVMM supports for
             // Underhill.
             Ok(Self::HybridVsock(Path::new(s).to_owned()))
         }
@@ -399,7 +400,7 @@ async fn run(
     stderr_thread
         .join()
         .unwrap()
-        .context("failed stdout copy")?;
+        .context("failed stderr thread")?;
 
     let status = process.wait().await?;
     std::process::exit(status.exit_code());
@@ -895,7 +896,7 @@ fn create_or_stderr(path: &Option<PathBuf>) -> std::io::Result<fs_err::File> {
 
 async fn capture_packets(
     client: DiagClient,
-    streams: Vec<impl std::future::Future<Output = Result<u64, std::io::Error>>>,
+    streams: Vec<impl Future<Output = Result<u64, std::io::Error>>>,
     capture_duration: Duration,
 ) {
     let mut capture_streams = FuturesUnordered::from_iter(streams);

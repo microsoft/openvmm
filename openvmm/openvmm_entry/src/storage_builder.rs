@@ -9,17 +9,19 @@ use crate::cli_args::UnderhillDiskSource;
 use crate::disk_open;
 use anyhow::Context;
 use guid::Guid;
-use hvlite_defs::config::Config;
-use hvlite_defs::config::DeviceVtl;
-use hvlite_defs::config::LoadMode;
-use hvlite_defs::config::VpciDeviceConfig;
 use ide_resources::GuestMedia;
 use ide_resources::IdeDeviceConfig;
 use ide_resources::IdePath;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
+use openvmm_defs::config::Config;
+use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::LoadMode;
+use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::VpciDeviceConfig;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
+use std::collections::BTreeMap;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
@@ -34,23 +36,24 @@ pub(super) struct StorageBuilder {
     vtl2_scsi_devices: Vec<ScsiDeviceAndPath>,
     vtl0_nvme_namespaces: Vec<NamespaceDefinition>,
     vtl2_nvme_namespaces: Vec<NamespaceDefinition>,
+    pcie_nvme_controllers: BTreeMap<String, Vec<NamespaceDefinition>>,
     underhill_scsi_luns: Vec<Lun>,
     underhill_nvme_luns: Vec<Lun>,
     openhcl_vtl: Option<DeviceVtl>,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub enum DiskLocation {
     Ide(Option<u8>, Option<u8>),
     Scsi(Option<u8>),
-    Nvme(Option<u32>),
+    Nvme(Option<u32>, Option<String>),
 }
 
 impl From<UnderhillDiskSource> for DiskLocation {
     fn from(value: UnderhillDiskSource) -> Self {
         match value {
             UnderhillDiskSource::Scsi => Self::Scsi(None),
-            UnderhillDiskSource::Nvme => Self::Nvme(None),
+            UnderhillDiskSource::Nvme => Self::Nvme(None, None),
         }
     }
 }
@@ -64,6 +67,29 @@ const SCSI_VTL2_INSTANCE_ID: Guid = guid::guid!("73d3aa59-b82b-4fe7-9e15-e2b0b55
 const UNDERHILL_VTL0_SCSI_INSTANCE: Guid = guid::guid!("e1c5bd94-d0d6-41d4-a2b0-88095a16ded7");
 const UNDERHILL_VTL0_NVME_INSTANCE: Guid = guid::guid!("09a59b81-2bf6-4164-81d7-3a0dc977ba65");
 
+// PCIe controllers don't have VMBUS channel instance IDs the way VPCI
+// enumerated controllers do but we still need to present different
+// subsystem IDs to the guest and we want those to be somewhat reliable.
+// Just hardcode a bunch for now.
+const PCIE_NVME_SUBSYSTEM_IDS: [Guid; 16] = [
+    guid::guid!("55bfb22d-3f6c-4d5a-8ed8-d779dbdae6b8"),
+    guid::guid!("6e4fbff0-eefc-4982-9e09-faf2f185701e"),
+    guid::guid!("5f429e81-06e4-4a5f-8763-1f589ce51f9d"),
+    guid::guid!("9732c737-d78a-4c29-bc8c-72664b8fe970"),
+    guid::guid!("8b561a94-6e13-4449-8b69-f37995b66a51"),
+    guid::guid!("a17a3e14-9f12-426b-b48a-49c397cc0e5e"),
+    guid::guid!("6e26115c-df74-432b-82a2-ced14fa80fa3"),
+    guid::guid!("00335fd5-0967-45bf-abd0-1d2f46ab6f92"),
+    guid::guid!("aeb1f8a9-f9e1-4177-84e2-3a31a73b57da"),
+    guid::guid!("1a95b8bd-353e-41ff-8420-32c4173ef296"),
+    guid::guid!("02613c53-23d1-4c0a-b3ab-90e8dc1bcec2"),
+    guid::guid!("c95d1f3f-a89f-4727-bc16-6be1cbeed1ec"),
+    guid::guid!("b2ded1f0-7a13-4c2a-83bd-d0156e3867a9"),
+    guid::guid!("7f3ac17d-667f-470c-a441-6adcea9164a1"),
+    guid::guid!("ca7d41a4-0337-47ee-990e-23140e652f47"),
+    guid::guid!("5864e1e4-bb70-40d2-900c-2128034960d2"),
+];
+
 impl StorageBuilder {
     pub fn new(openhcl_vtl: Option<DeviceVtl>) -> Self {
         Self {
@@ -72,6 +98,7 @@ impl StorageBuilder {
             vtl2_scsi_devices: Vec::new(),
             vtl0_nvme_namespaces: Vec::new(),
             vtl2_nvme_namespaces: Vec::new(),
+            pcie_nvme_controllers: BTreeMap::new(),
             underhill_scsi_luns: Vec::new(),
             underhill_nvme_luns: Vec::new(),
             openhcl_vtl,
@@ -188,11 +215,18 @@ impl StorageBuilder {
                 });
                 Some(lun.into())
             }
-            DiskLocation::Nvme(nsid) => {
-                let namespaces = match vtl {
-                    DeviceVtl::Vtl0 => &mut self.vtl0_nvme_namespaces,
-                    DeviceVtl::Vtl1 => anyhow::bail!("vtl1 unsupported"),
-                    DeviceVtl::Vtl2 => &mut self.vtl2_nvme_namespaces,
+            DiskLocation::Nvme(nsid, pcie_port) => {
+                let namespaces = match (vtl, pcie_port) {
+                    // VPCI
+                    (DeviceVtl::Vtl0, None) => &mut self.vtl0_nvme_namespaces,
+                    (DeviceVtl::Vtl1, None) => anyhow::bail!("vtl1 vpci unsupported"),
+                    (DeviceVtl::Vtl2, None) => &mut self.vtl2_nvme_namespaces,
+                    // PCIe
+                    (DeviceVtl::Vtl0, Some(port)) => {
+                        self.pcie_nvme_controllers.entry(port).or_default()
+                    }
+                    (DeviceVtl::Vtl1, Some(_)) => anyhow::bail!("vtl1 pcie unsupported"),
+                    (DeviceVtl::Vtl2, Some(_)) => anyhow::bail!("vtl2 pcie unsupported"),
                 };
                 if is_dvd {
                     anyhow::bail!("dvd not supported with nvme");
@@ -219,7 +253,7 @@ impl StorageBuilder {
     ) -> anyhow::Result<()> {
         let vtl = self.openhcl_vtl.context("openhcl not configured")?;
         let sub_device_path = self
-            .add_inner(vtl, source, kind, is_dvd, read_only)?
+            .add_inner(vtl, source.clone(), kind, is_dvd, read_only)?
             .context("source device not supported by underhill")?;
 
         let (device_type, device_path) = match source {
@@ -232,7 +266,10 @@ impl StorageBuilder {
                     SCSI_VTL0_INSTANCE_ID
                 },
             ),
-            DiskLocation::Nvme(_) => (
+            DiskLocation::Nvme(_, Some(_)) => {
+                anyhow::bail!("underhill does not support consuming pcie")
+            }
+            DiskLocation::Nvme(_, None) => (
                 vtl2_settings_proto::physical_device::DeviceType::Nvme,
                 if vtl == DeviceVtl::Vtl2 {
                     NVME_VTL2_INSTANCE_ID
@@ -243,7 +280,7 @@ impl StorageBuilder {
         };
 
         let (luns, location) = match target {
-            // TODO: once hvlite supports VTL2 with PCAT VTL0, remove this restriction.
+            // TODO: once openvmm supports VTL2 with PCAT VTL0, remove this restriction.
             DiskLocation::Ide(_, _) => {
                 anyhow::bail!("ide target currently not supported for Underhill (no PCAT support)")
             }
@@ -251,7 +288,10 @@ impl StorageBuilder {
                 let lun = lun.unwrap_or(self.underhill_scsi_luns.len() as u8);
                 (&mut self.underhill_scsi_luns, lun.into())
             }
-            DiskLocation::Nvme(nsid) => {
+            DiskLocation::Nvme(_, Some(_)) => {
+                anyhow::bail!("underhill does not support targeting pcie")
+            }
+            DiskLocation::Nvme(nsid, None) => {
                 let nsid = nsid.unwrap_or(self.underhill_nvme_luns.len() as u32 + 1);
                 (&mut self.underhill_nvme_luns, nsid)
             }
@@ -300,6 +340,7 @@ impl StorageBuilder {
                     devices: std::mem::take(&mut self.vtl0_scsi_devices),
                     io_queue_depth: None,
                     requests: Some(recv),
+                    poll_mode_queue_depth: None,
                 }
                 .into_resource(),
             ));
@@ -323,6 +364,7 @@ impl StorageBuilder {
                     devices: std::mem::take(&mut self.vtl2_scsi_devices),
                     io_queue_depth: None,
                     requests: None,
+                    poll_mode_queue_depth: None,
                 }
                 .into_resource(),
             ));
@@ -374,9 +416,34 @@ impl StorageBuilder {
             });
         }
 
+        let owned_pcie_controllers = std::mem::take(&mut self.pcie_nvme_controllers);
+        if owned_pcie_controllers.len() > PCIE_NVME_SUBSYSTEM_IDS.len() {
+            anyhow::bail!(
+                "too many PCIe nvme controllers, max supported: {}",
+                PCIE_NVME_SUBSYSTEM_IDS.len()
+            );
+        }
+        for ((port_name, namespaces), subsystem_id) in owned_pcie_controllers
+            .into_iter()
+            .zip(PCIE_NVME_SUBSYSTEM_IDS)
+        {
+            config.pcie_devices.push(PcieDeviceConfig {
+                port_name,
+                resource: NvmeControllerHandle {
+                    subsystem_id,
+                    namespaces,
+                    max_io_queues: 64,
+                    msix_count: 64,
+                }
+                .into_resource(),
+            });
+        }
+
         Ok(())
     }
 
+    /// Generate VTL2 settings for storage devices offered to the guest via
+    /// OpenHCL.
     pub fn build_underhill(&self) -> Vec<StorageController> {
         let mut storage_controllers = Vec::new();
         if !self.underhill_scsi_luns.is_empty() {

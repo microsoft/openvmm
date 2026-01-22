@@ -138,7 +138,7 @@ impl NvramServices {
             };
 
             self.services
-                .set_variable_ucs2(vendor, name, attr.into(), data.to_vec())
+                .set_variable_ucs2(vendor, name, attr.into(), data.clone())
                 .await
                 .map_err(|(status, err)| {
                     NvramSetupError::InjectPreBootVar(name.into(), status, err)

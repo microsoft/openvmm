@@ -371,7 +371,7 @@ impl OwnedRequestBuffers {
     /// `offset..offset+len`.
     pub fn linear(offset: u64, len: usize, is_write: bool) -> Self {
         let start_page = offset / PAGE_SIZE as u64;
-        let end_page = offset + (len as u64).div_ceil(PAGE_SIZE as u64);
+        let end_page = start_page + (len as u64).div_ceil(PAGE_SIZE as u64);
         let gpns: Vec<u64> = (start_page..end_page).collect();
         Self {
             gpns,

@@ -13,13 +13,9 @@ use anyhow::Result;
 use mesh::payload::Protobuf;
 use mesh::rpc::RpcSend;
 use pal_event::Event;
-use std::sync::Arc;
-use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
 use vmbus_channel::bus::ChannelServerRequest;
-use vmbus_channel::bus::OpenResult;
 use vmbus_client as client;
-use vmcore::interrupt::Interrupt;
 use vmcore::notify::Notify;
 use vmcore::save_restore::SavedStateRoot;
 
@@ -158,26 +154,10 @@ impl RelayChannelTask {
             anyhow::bail!("cannot restore an intercepted channel");
         }
 
-        // FUTURE: restore vmbus_client before vmbus_server to avoid this
-        // indirection. This requires vmbus_client saving/restoring the
-        // connection ID itself.
-        let restored_interrupt = Arc::new(OnceLock::<Interrupt>::new());
-        let guest_to_host_interrupt = Interrupt::from_fn({
-            let x = restored_interrupt.clone();
-            move || {
-                if let Some(x) = x.get() {
-                    x.deliver();
-                }
-            }
-        });
-
-        let open_result = is_open.then(|| OpenResult {
-            guest_to_host_interrupt,
-        });
         let result = self
             .channel
             .server_request_send
-            .call(ChannelServerRequest::Restore, open_result)
+            .call(ChannelServerRequest::Restore, is_open)
             .await
             .context("Failed to send restore request")?
             .map_err(|err| {
@@ -200,8 +180,7 @@ impl RelayChannelTask {
             }
             .unzip();
 
-            let opened = self
-                .channel
+            self.channel
                 .request_send
                 .call_failable(
                     client::ChannelRequest::Restore,
@@ -221,11 +200,6 @@ impl RelayChannelTask {
                     interrupt: request.interrupt,
                 });
             }
-
-            restored_interrupt
-                .set(opened.guest_to_host_signal)
-                .ok()
-                .unwrap();
         }
 
         Ok(())

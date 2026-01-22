@@ -9,11 +9,13 @@ pub mod resolver;
 use async_trait::async_trait;
 use consomme::ChecksumState;
 use consomme::Consomme;
-use consomme::ConsommeControl;
-use consomme::ConsommeState;
+use consomme::ConsommeParams;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
+use mesh::rpc::RpcSend;
 use net_backend::BufferAccess;
 use net_backend::L4Protocol;
 use net_backend::QueueConfig;
@@ -29,43 +31,143 @@ use net_backend::TxSegmentType;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use thiserror::Error;
 
 pub struct ConsommeEndpoint {
-    consomme: Arc<Mutex<Option<Consomme>>>,
+    endpoint_state: Arc<Mutex<Option<EndpointState>>>,
+}
+
+struct EndpointState {
+    consomme: Consomme,
+    recv: Option<mesh::Receiver<ConsommeMessage>>,
 }
 
 impl ConsommeEndpoint {
-    pub fn new() -> Result<Self, consomme::Error> {
-        Ok(Self {
-            consomme: Arc::new(Mutex::new(Some(Consomme::new()?))),
-        })
-    }
-
-    pub fn new_with_state(state: ConsommeState) -> Self {
+    pub fn new(state: ConsommeParams) -> Self {
         Self {
-            consomme: Arc::new(Mutex::new(Some(Consomme::new_with_state(state)))),
+            endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
+                consomme: Consomme::new(state),
+                recv: None,
+            }))),
         }
     }
 
-    pub fn new_dynamic(state: ConsommeState) -> (Self, ConsommeControl) {
-        let (consomme, control) = Consomme::new_dynamic(state);
+    pub fn new_dynamic(state: ConsommeParams) -> (Self, ConsommeControl) {
+        let consomme = Consomme::new(state);
+        let (send, recv) = mesh::channel();
         (
             Self {
-                consomme: Arc::new(Mutex::new(Some(consomme))),
+                endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
+                    consomme,
+                    recv: Some(recv),
+                }))),
             },
-            control,
+            ConsommeControl { send },
         )
     }
 }
 
 impl InspectMut for ConsommeEndpoint {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        if let Some(consomme) = &mut *self.consomme.lock() {
-            consomme.inspect_mut(req);
+        if let Some(consomme) = &mut *self.endpoint_state.lock() {
+            consomme.consomme.inspect_mut(req);
+        } else {
+            req.respond();
         }
+    }
+}
+
+/// Provide dynamic updates during runtime.
+pub struct ConsommeControl {
+    send: mesh::Sender<ConsommeMessage>,
+}
+
+/// Error type returned from some dynamic update functions like bind_port.
+#[derive(Debug, Error)]
+pub enum ConsommeMessageError {
+    /// Communication error with running instance.
+    #[error("communication error")]
+    Mesh(RpcError),
+    /// Error executing request on current network instance.
+    #[error("network err")]
+    Network(consomme::DropReason),
+}
+
+/// Callback to modify network state dynamically.
+pub type ConsommeParamsUpdateFn = Box<dyn Fn(&mut ConsommeParams) + Send>;
+
+pub enum IpProtocol {
+    Tcp,
+    Udp,
+}
+
+struct MessageBindPort {
+    protocol: IpProtocol,
+    address: Option<Ipv4Addr>,
+    port: u16,
+}
+
+enum ConsommeMessage {
+    BindPort(Rpc<MessageBindPort, Result<(), consomme::DropReason>>),
+    UnbindPort(Rpc<MessageBindPort, Result<(), consomme::DropReason>>),
+    UpdateState(Rpc<ConsommeParamsUpdateFn, ()>),
+}
+
+impl ConsommeControl {
+    /// Binds a port to receive incoming packets.
+    pub async fn bind_port(
+        &self,
+        protocol: IpProtocol,
+        ip_addr: Option<Ipv4Addr>,
+        port: u16,
+    ) -> Result<(), ConsommeMessageError> {
+        self.send
+            .call(
+                ConsommeMessage::BindPort,
+                MessageBindPort {
+                    protocol,
+                    address: ip_addr,
+                    port,
+                },
+            )
+            .await
+            .map_err(ConsommeMessageError::Mesh)?
+            .map_err(ConsommeMessageError::Network)
+    }
+
+    /// Unbinds a port previously reserved with bind_port()
+    pub async fn unbind_port(
+        &self,
+        protocol: IpProtocol,
+        port: u16,
+    ) -> Result<(), ConsommeMessageError> {
+        self.send
+            .call(
+                ConsommeMessage::UnbindPort,
+                MessageBindPort {
+                    protocol,
+                    address: None,
+                    port,
+                },
+            )
+            .await
+            .map_err(ConsommeMessageError::Mesh)?
+            .map_err(ConsommeMessageError::Network)
+    }
+
+    /// Updates dynamic network state
+    pub async fn update_state(
+        &self,
+        f: ConsommeParamsUpdateFn,
+    ) -> Result<(), ConsommeMessageError> {
+        self.send
+            .call(ConsommeMessage::UpdateState, f)
+            .await
+            .map_err(ConsommeMessageError::Mesh)
     }
 }
 
@@ -84,8 +186,8 @@ impl net_backend::Endpoint for ConsommeEndpoint {
         assert_eq!(config.len(), 1);
         let config = config.into_iter().next().unwrap();
         let mut queue = Box::new(ConsommeQueue {
-            slot: self.consomme.clone(),
-            consomme: self.consomme.lock().take(),
+            slot: self.endpoint_state.clone(),
+            endpoint_state: self.endpoint_state.lock().take(),
             state: QueueState {
                 pool: config.pool,
                 rx_avail: config.initial_rx.iter().copied().collect(),
@@ -102,7 +204,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
     }
 
     async fn stop(&mut self) {
-        assert!(self.consomme.lock().is_some());
+        assert!(self.endpoint_state.lock().is_some());
     }
 
     fn is_ordered(&self) -> bool {
@@ -120,8 +222,8 @@ impl net_backend::Endpoint for ConsommeEndpoint {
 }
 
 pub struct ConsommeQueue {
-    slot: Arc<Mutex<Option<Consomme>>>,
-    consomme: Option<Consomme>,
+    slot: Arc<Mutex<Option<EndpointState>>>,
+    endpoint_state: Option<EndpointState>,
     state: QueueState,
     stats: Stats,
     driver: Box<dyn Driver>,
@@ -130,7 +232,7 @@ pub struct ConsommeQueue {
 impl InspectMut for ConsommeQueue {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.respond()
-            .merge(self.consomme.as_mut().unwrap())
+            .merge(&mut self.endpoint_state.as_mut().unwrap().consomme)
             .field("rx_avail", self.state.rx_avail.len())
             .field("rx_ready", self.state.rx_ready.len())
             .field("tx_avail", self.state.tx_avail.len())
@@ -141,7 +243,7 @@ impl InspectMut for ConsommeQueue {
 
 impl Drop for ConsommeQueue {
     fn drop(&mut self) {
-        *self.slot.lock() = self.consomme.take();
+        *self.slot.lock() = self.endpoint_state.take();
     }
 }
 
@@ -150,11 +252,65 @@ impl ConsommeQueue {
     where
         F: FnOnce(&mut consomme::Access<'_, Client<'_>>) -> R,
     {
-        f(&mut self.consomme.as_mut().unwrap().access(&mut Client {
-            state: &mut self.state,
-            stats: &mut self.stats,
-            driver: &self.driver,
-        }))
+        f(&mut self
+            .endpoint_state
+            .as_mut()
+            .unwrap()
+            .consomme
+            .access(&mut Client {
+                state: &mut self.state,
+                stats: &mut self.stats,
+                driver: &self.driver,
+            }))
+    }
+
+    fn poll_message(&mut self, cx: &mut Context<'_>) {
+        // process all pending messages
+        let state = self.endpoint_state.as_mut().unwrap();
+        while let Some(recv) = &mut state.recv {
+            match recv.poll_recv(cx) {
+                Poll::Ready(Err(err)) => {
+                    tracing::warn!(
+                        err = &err as &dyn std::error::Error,
+                        "Consomme dynamic update channel failure"
+                    );
+                    state.recv = None;
+                    return;
+                }
+                Poll::Ready(Ok(message)) => process_message(
+                    &mut state.consomme.access(&mut Client {
+                        state: &mut self.state,
+                        stats: &mut self.stats,
+                        driver: &self.driver,
+                    }),
+                    message,
+                ),
+                Poll::Pending => return,
+            }
+        }
+    }
+}
+
+fn process_message(
+    consomme: &mut consomme::Access<'_, impl consomme::Client>,
+    message: ConsommeMessage,
+) {
+    match message {
+        ConsommeMessage::BindPort(rpc) => {
+            rpc.handle_sync(|bind_message| match bind_message.protocol {
+                IpProtocol::Tcp => consomme.bind_tcp_port(bind_message.address, bind_message.port),
+                IpProtocol::Udp => consomme.bind_udp_port(bind_message.address, bind_message.port),
+            });
+        }
+        ConsommeMessage::UnbindPort(rpc) => {
+            rpc.handle_sync(|bind_message| match bind_message.protocol {
+                IpProtocol::Tcp => consomme.unbind_tcp_port(bind_message.port),
+                IpProtocol::Udp => consomme.unbind_udp_port(bind_message.port),
+            });
+        }
+        ConsommeMessage::UpdateState(rpc) => {
+            rpc.handle_sync(|f| f(consomme.get_mut().params_mut()));
+        }
     }
 }
 
@@ -166,18 +322,19 @@ impl net_backend::Queue for ConsommeQueue {
             };
             let tx_id = meta.id;
             let checksum = ChecksumState {
-                ipv4: meta.offload_ip_header_checksum,
-                tcp: meta.offload_tcp_checksum,
-                udp: meta.offload_udp_checksum,
+                ipv4: meta.flags.offload_ip_header_checksum(),
+                tcp: meta.flags.offload_tcp_checksum(),
+                udp: meta.flags.offload_udp_checksum(),
                 tso: meta
-                    .offload_tcp_segmentation
+                    .flags
+                    .offload_tcp_segmentation()
                     .then_some(meta.max_tcp_segment_size),
             };
 
-            let mut buf = vec![0; meta.len];
+            let mut buf = vec![0; meta.len as usize];
             let gm = self.state.pool.guest_memory();
             let mut offset = 0;
-            for segment in self.state.tx_avail.drain(..meta.segment_count) {
+            for segment in self.state.tx_avail.drain(..meta.segment_count as usize) {
                 let dest = &mut buf[offset..offset + segment.len as usize];
                 if let Err(err) = gm.read_at(segment.gpa, dest) {
                     tracing::error!(
@@ -206,6 +363,12 @@ impl net_backend::Queue for ConsommeQueue {
 
             self.state.tx_ready.push_back(tx_id);
         }
+
+        // TODO: handle messages asynchronously from any queue processing, since
+        // there is no guarantee the queue will be processed at all (e.g., if
+        // the guest stops processing traffic). This will probably require adding
+        // a lock around the consomme state.
+        self.poll_message(cx);
 
         self.with_consomme(|c| c.poll(cx));
 

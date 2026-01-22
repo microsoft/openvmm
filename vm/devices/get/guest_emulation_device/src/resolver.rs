@@ -2,10 +2,12 @@
 // Licensed under the MIT License.
 
 use crate::GuestEmulationDevice;
+use crate::IgvmAgentTestSetting;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::dps_json::GuestStateLifetime;
+use get_resources::ged::EfiDiagnosticsLogLevelType;
 use get_resources::ged::GuestEmulationDeviceHandle;
 use get_resources::ged::GuestFirmwareConfig;
 use get_resources::ged::GuestSecureBootTemplateType;
@@ -23,6 +25,7 @@ use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_channel::resources::ResolveVmbusDeviceHandleParams;
 use vmbus_channel::resources::ResolvedVmbusDevice;
 use vmbus_channel::simple::SimpleDeviceWrapper;
+use vmgs_resources::GuestStateEncryptionPolicy;
 use vmgs_resources::VmgsResource;
 
 pub struct GuestEmulationDeviceResolver;
@@ -72,13 +75,45 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
             .await
             .map_err(Error::Power)?;
 
-        let (vmgs_disk, guest_state_lifetime) = match resource.vmgs {
-            VmgsResource::Disk(disk) => (Some(disk), GuestStateLifetime::Default),
-            VmgsResource::ReprovisionOnFailure(disk) => {
-                (Some(disk), GuestStateLifetime::ReprovisionOnFailure)
+        let (vmgs_disk, guest_state_encryption_policy, guest_state_lifetime) = match resource.vmgs {
+            VmgsResource::Disk(disk) => (
+                Some(disk.disk),
+                disk.encryption_policy,
+                GuestStateLifetime::Default,
+            ),
+            VmgsResource::ReprovisionOnFailure(disk) => (
+                Some(disk.disk),
+                disk.encryption_policy,
+                GuestStateLifetime::ReprovisionOnFailure,
+            ),
+            VmgsResource::Reprovision(disk) => (
+                Some(disk.disk),
+                disk.encryption_policy,
+                GuestStateLifetime::Reprovision,
+            ),
+            VmgsResource::Ephemeral => (
+                None,
+                GuestStateEncryptionPolicy::None(false),
+                GuestStateLifetime::Ephemeral,
+            ),
+        };
+
+        let management_vtl_features = get_protocol::dps_json::ManagementVtlFeatures::new()
+            .with_strict_encryption_policy(guest_state_encryption_policy.is_strict());
+
+        let guest_state_encryption_policy = match guest_state_encryption_policy {
+            GuestStateEncryptionPolicy::Auto => {
+                get_protocol::dps_json::GuestStateEncryptionPolicy::Auto
             }
-            VmgsResource::Reprovision(disk) => (Some(disk), GuestStateLifetime::Reprovision),
-            VmgsResource::Ephemeral => (None, GuestStateLifetime::Ephemeral),
+            GuestStateEncryptionPolicy::None(_) => {
+                get_protocol::dps_json::GuestStateEncryptionPolicy::None
+            }
+            GuestStateEncryptionPolicy::GspById(_) => {
+                get_protocol::dps_json::GuestStateEncryptionPolicy::GspById
+            }
+            GuestStateEncryptionPolicy::GspKey(_) => {
+                get_protocol::dps_json::GuestStateEncryptionPolicy::GspKey
+            }
         };
 
         let vmgs_disk = if let Some(disk) = vmgs_disk {
@@ -157,13 +192,29 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 enable_battery: resource.enable_battery,
                 no_persistent_secrets: resource.no_persistent_secrets,
                 guest_state_lifetime,
+                guest_state_encryption_policy,
+                management_vtl_features,
+                efi_diagnostics_log_level: match resource.efi_diagnostics_log_level {
+                    EfiDiagnosticsLogLevelType::Default => {
+                        get_protocol::dps_json::EfiDiagnosticsLogLevelType::DEFAULT
+                    }
+                    EfiDiagnosticsLogLevelType::Info => {
+                        get_protocol::dps_json::EfiDiagnosticsLogLevelType::INFO
+                    }
+                    EfiDiagnosticsLogLevelType::Full => {
+                        get_protocol::dps_json::EfiDiagnosticsLogLevelType::FULL
+                    }
+                },
             },
             halt,
             resource.firmware_event_send,
             resource.guest_request_recv,
             framebuffer_control,
             vmgs_disk,
-            resource.igvm_attest_test_config,
+            resource
+                .igvm_attest_test_config
+                .map(IgvmAgentTestSetting::TestConfig),
+            resource.test_gsp_by_id,
         );
         Ok(SimpleDeviceWrapper::new(input.driver_source.simple(), device).into())
     }

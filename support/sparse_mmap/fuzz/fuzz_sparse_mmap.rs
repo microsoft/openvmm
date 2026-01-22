@@ -153,7 +153,7 @@ fn generate_blocks(
                 blocks.push(block);
             }
 
-            if max_pages % num_blocks != 0 {
+            if !max_pages.is_multiple_of(num_blocks) {
                 let offset = num_blocks * safe_mul!(pages_per_block, page_size);
                 let len = (max_pages % num_blocks) * page_size;
                 let block = Block::new(offset, len)?;

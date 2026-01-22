@@ -73,6 +73,17 @@ impl OpenHclDiagHandler {
         })
     }
 
+    pub(crate) async fn run_detached_vtl2_command(
+        &self,
+        command: impl AsRef<str>,
+        args: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> anyhow::Result<ExitStatus> {
+        let client = self.diag_client().await?;
+        let proc = client.exec(command.as_ref()).args(args).spawn().await?;
+        let exit_status = proc.wait().await?;
+        Ok(exit_status)
+    }
+
     pub async fn core_dump(&self, name: &str, path: &std::path::Path) -> anyhow::Result<()> {
         let client = self.diag_client().await?;
         let pid = client.get_pid(name).await?;
@@ -92,12 +103,16 @@ impl OpenHclDiagHandler {
         client.crash(pid).await
     }
 
-    pub async fn test_inspect(&self) -> anyhow::Result<()> {
+    pub async fn inspect(
+        &self,
+        path: impl Into<String>,
+        depth: Option<usize>,
+        timeout: Option<std::time::Duration>,
+    ) -> anyhow::Result<inspect::Node> {
         self.diag_client()
             .await?
-            .inspect("", None, None)
+            .inspect(path, depth, timeout)
             .await
-            .map(|_| ())
     }
 
     pub async fn kmsg(&self) -> anyhow::Result<KmsgStream> {

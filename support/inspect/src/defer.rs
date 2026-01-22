@@ -9,6 +9,7 @@ use super::Request;
 use super::Response;
 use super::SensitivityLevel;
 use super::UpdateRequest;
+use crate::Inspect;
 use crate::NumberFormat;
 use crate::RequestParams;
 use crate::RootParams;
@@ -17,6 +18,43 @@ use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::string::String;
 use mesh::MeshPayload;
+
+/// An [`Inspect`] implementation that defers the inspection to another
+/// thread or context by sending the request on a [`mesh`] channel.
+///
+/// # Usage
+///
+/// ```rust
+/// enum MyRpc {
+///     Inspect(inspect::Deferred),
+///     SomeWork(mesh::rpc::Rpc<u32, u32>),
+/// }
+///
+/// fn inspect_remote(sender: &mesh::Sender<MyRpc>, req: inspect::Request<'_>) {
+///     req.respond().merge(inspect::send(sender, MyRpc::Inspect));
+/// }
+/// ```
+pub fn send<'a, S: 'a + mesh::rpc::RpcSend + Copy, F: 'a + Fn(Deferred) -> S::Message>(
+    sender: S,
+    map: F,
+) -> AsDeferred<S, F> {
+    AsDeferred(sender, map)
+}
+
+/// The return type of [`send`].
+pub struct AsDeferred<S, F>(S, F);
+
+impl<S: mesh::rpc::RpcSend + Copy, F: Fn(Deferred) -> S::Message> Inspect for AsDeferred<S, F> {
+    fn inspect(&self, req: Request<'_>) {
+        self.0.send_rpc(self.1(req.defer()));
+    }
+}
+
+impl<S: mesh::rpc::RpcSend + Copy, F: Fn(Deferred) -> S::Message> InspectMut for AsDeferred<S, F> {
+    fn inspect_mut(&mut self, req: Request<'_>) {
+        self.0.send_rpc(self.1(req.defer()));
+    }
+}
 
 impl Request<'_> {
     /// Defers the inspection request, producing a value that can be sent to

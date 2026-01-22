@@ -39,7 +39,7 @@ fn do_fuzz(static_params: StaticParams) -> arbitrary::Result<()> {
             Error::NotEnoughBytes => unreachable!(),
 
             // Should be impossible given our simple cpu implementation
-            Error::MemoryAccess(_, _, _) | Error::IoPort(_, _, _) | Error::XmmRegister(_, _, _) => {
+            Error::MemoryAccess(_, _, _) | Error::IoPort(_, _, _) => {
                 unreachable!()
             }
         }

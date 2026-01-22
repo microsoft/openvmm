@@ -53,10 +53,18 @@ pub struct ShimParamsRaw {
     pub bounce_buffer_start: i64,
     /// The size of the bounce buffer range. This is 0 if unavailable.
     pub bounce_buffer_size: u64,
-    /// The offset to the page_tables start address. This is 0 if unavailable.
-    pub page_tables_start: i64,
-    /// The size of the openhcl_boot page tables. This is 0 if unavailable.
-    pub page_tables_size: u64,
+    /// The offset to the persisted bootshim log buffer.
+    pub log_buffer_start: i64,
+    /// The size of the persisted bootshim log buffer.
+    pub log_buffer_size: u64,
+    /// The offset to the start of the bootshim heap.
+    pub heap_start_offset: i64,
+    /// The size of the bootshim heap.
+    pub heap_size: u64,
+    /// The offset to the start of the supported persisted state region.
+    pub persisted_state_region_offset: i64,
+    /// The size of the supported persisted state region.
+    pub persisted_state_region_size: u64,
 }
 
 open_enum! {
@@ -79,6 +87,8 @@ open_enum! {
 open_enum! {
     /// The memory type reported from the bootshim to usermode, for which VTL a
     /// given memory range is for.
+    #[derive(mesh_protobuf::Protobuf)]
+    #[mesh(package = "openhcl.openhcl_boot")]
     pub enum MemoryVtlType: u32 {
         /// This memory is for VTL0.
         VTL0 = 0,
@@ -105,6 +115,18 @@ open_enum! {
         /// This memory is part of VTL2's address space, not VTL0's. It is
         /// marked as reserved to the kernel.
         VTL2_GPA_POOL = 8,
+        /// This memory is used by VTL2 for TDX AP startup page tables, and is
+        /// marked as reserved to the kernel.
+        VTL2_TDX_PAGE_TABLES = 9,
+        /// This memory is used by VTL2 to store in-memory bootshim logs. It is
+        /// marked as reserved to the kernel.
+        VTL2_BOOTSHIM_LOG_BUFFER = 10,
+        /// This memory is used by VTL2 to store a persisted state header. This
+        /// memory is marked as reserved to the kernel.
+        VTL2_PERSISTED_STATE_HEADER = 11,
+        /// This memory is used by VTL2 to store the persisted protobuf payload.
+        /// This memory is marked as reserved to the kernel.
+        VTL2_PERSISTED_STATE_PROTOBUF = 12,
     }
 }
 
@@ -120,6 +142,28 @@ impl MemoryVtlType {
                 | MemoryVtlType::VTL2_SIDECAR_NODE
                 | MemoryVtlType::VTL2_RESERVED
                 | MemoryVtlType::VTL2_GPA_POOL
+                | MemoryVtlType::VTL2_TDX_PAGE_TABLES
+                | MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER
+                | MemoryVtlType::VTL2_PERSISTED_STATE_HEADER
+                | MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF
+        )
+    }
+
+    /// Returns true if this range is used by VTL2.
+    pub fn vtl2(&self) -> bool {
+        matches!(
+            *self,
+            MemoryVtlType::VTL2_RAM
+                | MemoryVtlType::VTL2_CONFIG
+                | MemoryVtlType::VTL2_SIDECAR_IMAGE
+                | MemoryVtlType::VTL2_SIDECAR_NODE
+                | MemoryVtlType::VTL2_MMIO
+                | MemoryVtlType::VTL2_RESERVED
+                | MemoryVtlType::VTL2_GPA_POOL
+                | MemoryVtlType::VTL2_TDX_PAGE_TABLES
+                | MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER
+                | MemoryVtlType::VTL2_PERSISTED_STATE_HEADER
+                | MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF
         )
     }
 }
@@ -193,4 +237,120 @@ pub struct TdxTrampolineContext {
     pub padding_3: u32,
     /// Statuc GDT
     pub static_gdt: [u8; 16],
+}
+
+/// This is the header used to describe the overall persisted state region. By
+/// convention, the header resides at the start of VTL2 memory, taking a single
+/// page.
+///
+/// This header should never change, instead for new information to be stored
+/// add it to the protobuf payload described below.
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct PersistedStateHeader {
+    /// A magic value. If this is not set to [`PersistedStateHeader::MAGIC`],
+    /// then the previous instance did not support this region.
+    pub magic: u64,
+    /// The gpa for the start of the protobuf region. This must be 4K aligned.
+    pub protobuf_base: u64,
+    /// The size of the protobuf region in bytes.
+    pub protobuf_region_len: u64,
+    /// The size of the protobuf payload in bytes.
+    /// This must be less than or equal to `protobuf_region_len`.
+    pub protobuf_payload_len: u64,
+}
+
+impl PersistedStateHeader {
+    /// "OHCLPHDR" in ASCII.
+    pub const MAGIC: u64 = u64::from_le_bytes(*b"OHCLPHDR");
+}
+
+/// Definitions used for save/restore between boots.
+pub mod save_restore {
+    extern crate alloc;
+
+    use super::MemoryVtlType;
+    use alloc::vec::Vec;
+    use memory_range::MemoryRange;
+
+    /// A local newtype wrapper that represents a [`igvm_defs::MemoryMapEntryType`].
+    ///
+    /// This is required to make it protobuf deriveable.
+    #[derive(mesh_protobuf::Protobuf, Clone, Debug, PartialEq)]
+    #[mesh(package = "openhcl.openhcl_boot")]
+    pub struct IgvmMemoryType(#[mesh(1)] u16);
+
+    impl From<igvm_defs::MemoryMapEntryType> for IgvmMemoryType {
+        fn from(igvm_type: igvm_defs::MemoryMapEntryType) -> Self {
+            Self(igvm_type.0)
+        }
+    }
+
+    impl From<IgvmMemoryType> for igvm_defs::MemoryMapEntryType {
+        fn from(igvm_type: IgvmMemoryType) -> Self {
+            igvm_defs::MemoryMapEntryType(igvm_type.0)
+        }
+    }
+
+    /// A memory entry describing what range of address space described as memory is
+    /// used for what.
+    #[derive(mesh_protobuf::Protobuf, Debug)]
+    #[mesh(package = "openhcl.openhcl_boot")]
+    pub struct MemoryEntry {
+        /// The range of memory.
+        #[mesh(1)]
+        pub range: MemoryRange,
+        /// The numa vnode for this range.
+        #[mesh(2)]
+        pub vnode: u32,
+        /// The VTL type for this range.
+        #[mesh(3)]
+        pub vtl_type: MemoryVtlType,
+        /// The IGVM type for this range, which was reported by the host originally.
+        #[mesh(4)]
+        pub igvm_type: IgvmMemoryType,
+    }
+
+    /// A mmio entry describing what range of address space described as mmio is
+    /// used for what.
+    #[derive(mesh_protobuf::Protobuf, Debug)]
+    #[mesh(package = "openhcl.openhcl_boot")]
+    pub struct MmioEntry {
+        /// The range of mmio.
+        #[mesh(1)]
+        pub range: MemoryRange,
+        /// The VTL type for this range, which should always be an mmio type.
+        #[mesh(2)]
+        pub vtl_type: MemoryVtlType,
+    }
+
+    /// The format for saved state between the previous instance of OpenHCL and the
+    /// next.
+    #[derive(mesh_protobuf::Protobuf, Debug)]
+    #[mesh(package = "openhcl.openhcl_boot")]
+    pub struct SavedState {
+        /// The memory entries describing memory for the whole partition.
+        #[mesh(1)]
+        pub partition_memory: Vec<MemoryEntry>,
+        /// The mmio entries describing mmio for the whole partition.
+        #[mesh(2)]
+        pub partition_mmio: Vec<MmioEntry>,
+        /// The list of CPUs with mapped device interrupts present at save time
+        /// that do not have outstanding IO (those CPUs are counted in
+        /// `cpus_with_outstanding_io`).
+        ///
+        /// DEFAULT: For save state from prior versions, this will be empty.
+        /// This is fine: the restore heuristics might be less optimal, but will
+        /// still be functionally correct.
+        #[mesh(3)]
+        pub cpus_with_mapped_interrupts_no_io: Vec<u32>,
+        /// The list of CPUs with mapped device interrupts present at save time,
+        /// and that also have outstanding IO on that CPU.
+        ///
+        /// DEFAULT: For save state from prior versions, this will be empty.
+        /// This is fine: the restore heuristics might be less optimal, but will
+        /// still be functionally correct.
+        #[mesh(4)]
+        pub cpus_with_outstanding_io: Vec<u32>,
+    }
 }

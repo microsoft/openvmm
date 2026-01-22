@@ -30,7 +30,7 @@ pub mod tags {
 
     /// A coarse-grained label used to differentiate between different OS
     /// environments.
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     #[expect(missing_docs)] // Self-describing names.
     pub enum OsFlavor {
         Windows,
@@ -64,14 +64,44 @@ pub mod tags {
     }
 
     /// Quirks needed to boot a guest.
-    #[derive(Default, Copy, Clone, Debug)]
-    pub struct GuestQuirks {
+    #[derive(Default, Clone, Debug)]
+    pub struct GuestQuirksInner {
         /// How long to wait after the shutdown IC reports ready before sending
         /// the shutdown command.
         ///
         /// This is necessary because some guests will ignore shutdown requests
         /// that arrive too early in the boot process.
         pub hyperv_shutdown_ic_sleep: Option<std::time::Duration>,
+        /// Some guests reboot automatically soon after first boot.
+        pub initial_reboot: Option<InitialRebootCondition>,
+    }
+
+    /// Some guests may automatically reboot only in certain configurations
+    #[derive(Clone, Copy, Debug)]
+    pub enum InitialRebootCondition {
+        /// This guest always reboots on this VMM.
+        Always,
+        /// This guest only reboots when the TPM is enabled.
+        WithTpm,
+    }
+
+    /// Quirks needed to boot a guest, allowing for differences based on backend
+    #[derive(Default, Clone, Debug)]
+    pub struct GuestQuirks {
+        /// Quirks when running in OpenVMM
+        pub openvmm: GuestQuirksInner,
+        /// Quirks when running in Hyper-V
+        pub hyperv: GuestQuirksInner,
+    }
+
+    impl GuestQuirks {
+        /// Use the same quirks for all backends
+        pub fn for_all_backends(quirks: GuestQuirksInner) -> GuestQuirks {
+            GuestQuirks {
+                openvmm: quirks.clone(),
+                hyperv: quirks,
+            }
+        }
     }
 
     /// Artifact is a OpenHCL IGVM file
@@ -113,4 +143,7 @@ pub mod tags {
 
     /// Artifact is a test VMGS file
     pub trait IsTestVmgs: ArtifactId {}
+
+    /// Artifact is a VmgsTool binary
+    pub trait IsVmgsTool: ArtifactId {}
 }

@@ -2,26 +2,37 @@
 // Licensed under the MIT License.
 
 //! I/O queue handler.
+//!
+//! Each handler task is responsible for a single completion queue and multiple
+//! submission queues.
+//!
+//! This approach simplifies synchronization of the completion queue, but it
+//! does limit parallelism across submission queues. This is probably fine,
+//! though--most operating systems will only use multiple submission queues with
+//! a single completion queue in order to effect multiple IO classes, not to
+//! increase throughput.
 
 use crate::error::CommandResult;
-use crate::error::NvmeError;
 use crate::namespace::Namespace;
 use crate::queue::CompletionQueue;
-use crate::queue::DoorbellRegister;
+use crate::queue::DoorbellMemory;
 use crate::queue::QueueError;
-use crate::queue::ShadowDoorbell;
 use crate::queue::SubmissionQueue;
 use crate::spec;
 use crate::spec::nvm;
 use crate::workers::MAX_DATA_TRANSFER_SIZE;
-use futures_concurrency::future::Race;
+use futures::StreamExt;
 use guestmem::GuestMemory;
 use inspect::Inspect;
+use parking_lot::RwLock;
+use slab::Slab;
 use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::future::Future;
-use std::future::pending;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::Poll;
 use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::InspectTask;
@@ -33,50 +44,54 @@ use vmcore::interrupt::Interrupt;
 #[derive(Inspect)]
 pub struct IoHandler {
     mem: GuestMemory,
-    sqid: u16,
     #[inspect(skip)]
     admin_response: mesh::Sender<u16>,
 }
 
 #[derive(Inspect)]
 pub struct IoState {
-    sq: SubmissionQueue,
+    #[inspect(with = "|x| inspect::iter_by_key(x.iter().map(|(_, sq)| (sq.sqid, sq)))")]
+    sqs: Slab<SqState>,
     cq: CompletionQueue,
     #[inspect(skip)]
     namespaces: BTreeMap<u32, Arc<Namespace>>,
     #[inspect(skip)]
     ios: FuturesUnordered<Pin<Box<dyn Future<Output = IoResult> + Send>>>,
-    io_count: usize,
-    queue_state: IoQueueState,
+    #[inspect(with = "VecDeque::len")]
+    completions: VecDeque<IoResult>,
 }
 
 #[derive(Inspect)]
-enum IoQueueState {
-    Active,
-    Deleting,
-    Deleted,
+struct SqState {
+    sqid: u16,
+    sq: SubmissionQueue,
+    io_count: usize,
+    deleting: bool,
 }
 
 impl IoState {
     pub fn new(
-        sq_gpa: u64,
-        sq_len: u16,
-        sq_tail: Arc<DoorbellRegister>,
-        sq_sdb_idx_gpas: Option<ShadowDoorbell>,
+        mem: &GuestMemory,
+        doorbell: Arc<RwLock<DoorbellMemory>>,
         cq_gpa: u64,
         cq_len: u16,
-        cq_head: Arc<DoorbellRegister>,
-        cq_sdb_idx_gpas: Option<ShadowDoorbell>,
+        cqid: u16,
         interrupt: Option<Interrupt>,
         namespaces: BTreeMap<u32, Arc<Namespace>>,
     ) -> Self {
         Self {
-            sq: SubmissionQueue::new(sq_tail, sq_gpa, sq_len, sq_sdb_idx_gpas),
-            cq: CompletionQueue::new(cq_head, interrupt, cq_gpa, cq_len, cq_sdb_idx_gpas),
+            sqs: Slab::new(),
+            cq: CompletionQueue::new(
+                doorbell,
+                cqid * 2 + 1,
+                mem.clone(),
+                interrupt,
+                cq_gpa,
+                cq_len,
+            ),
             namespaces,
             ios: FuturesUnordered::new(),
-            io_count: 0,
-            queue_state: IoQueueState::Active,
+            completions: VecDeque::new(),
         }
     }
 
@@ -88,29 +103,52 @@ impl IoState {
         let _ = self.namespaces.remove(&nsid).unwrap();
     }
 
+    pub fn has_sqs(&self) -> bool {
+        !self.sqs.is_empty()
+    }
+
+    pub fn create_sq(&mut self, sqid: u16, sq_gpa: u64, sq_len: u16) -> usize {
+        self.sqs.insert(SqState {
+            sq: SubmissionQueue::new(&self.cq, sqid * 2, sq_gpa, sq_len),
+            deleting: false,
+            sqid,
+            io_count: 0,
+        })
+    }
+
+    pub fn delete_sq(&mut self, sq_idx: usize) {
+        let sq = &mut self.sqs[sq_idx];
+        sq.deleting = true;
+        self.completions.retain(|io_result| {
+            if io_result.sq_idx != sq_idx {
+                return true;
+            }
+            sq.io_count -= 1;
+            tracelimit::warn_ratelimited!("dropped i/o completion during queue deletion");
+            false
+        });
+    }
+
     /// Drains any pending IOs.
     ///
     /// This future may be dropped and reissued.
     pub async fn drain(&mut self) {
-        while self.ios.next().await.is_some() {
-            self.io_count -= 1;
+        while let Some(io_result) = self.ios.next().await {
+            self.sqs[io_result.sq_idx].io_count -= 1;
         }
     }
 }
 
 struct IoResult {
-    nsid: u32,
+    sq_idx: usize,
     cid: u16,
-    opcode: nvm::NvmOpcode,
-    result: Result<CommandResult, NvmeError>,
-    advance_evt_idx: bool,
+    result: CommandResult,
 }
 
 impl AsyncRun<IoState> for IoHandler {
     async fn run(&mut self, stop: &mut StopTask<'_>, state: &mut IoState) -> Result<(), Cancelled> {
-        let mem = self.mem.clone();
         stop.until_stopped(async {
-            if let Err(err) = self.process(state, &mem).await {
+            if let Err(err) = self.process(state).await {
                 tracing::error!(error = &err as &dyn std::error::Error, "io handler failed");
             }
         })
@@ -133,164 +171,119 @@ enum HandlerError {
 }
 
 impl IoHandler {
-    pub fn new(mem: GuestMemory, sqid: u16, admin_response: mesh::Sender<u16>) -> Self {
+    pub fn new(mem: GuestMemory, admin_response: mesh::Sender<u16>) -> Self {
         Self {
             mem,
-            sqid,
             admin_response,
         }
     }
 
-    pub fn delete(&mut self, state: &mut IoState) {
-        match state.queue_state {
-            IoQueueState::Active => state.queue_state = IoQueueState::Deleting,
-            IoQueueState::Deleting | IoQueueState::Deleted => {}
-        }
-    }
-
-    async fn process(
-        &mut self,
-        state: &mut IoState,
-        mem: &GuestMemory,
-    ) -> Result<(), HandlerError> {
+    async fn process(&mut self, state: &mut IoState) -> Result<(), HandlerError> {
         loop {
-            let deleting = match state.queue_state {
-                IoQueueState::Active => {
-                    // Wait for a completion to be ready. This will be necessary either
-                    // to post an immediate result or to post an IO completion. It's not
-                    // strictly necessary to start a new IO, but handling that special
-                    // case is not worth the complexity.
-                    state.cq.wait_ready(mem).await?;
-                    false
-                }
-                IoQueueState::Deleting => {
-                    if state.ios.is_empty() {
-                        self.admin_response.send(self.sqid);
-                        state.queue_state = IoQueueState::Deleted;
-                        break;
-                    }
-                    true
-                }
-                IoQueueState::Deleted => break,
-            };
-
             enum Event {
-                Sq(Result<spec::Command, QueueError>),
+                Sq(usize, Result<spec::Command, QueueError>),
                 Io(IoResult),
+                CompletionReady(Result<IoResult, QueueError>),
+                Deleted(usize),
             }
 
-            let next_sqe = async {
-                if state.io_count < MAX_IO_QUEUE_DEPTH && !deleting {
-                    Event::Sq(state.sq.next(&self.mem).await)
-                } else {
-                    pending().await
-                }
-            };
-
-            let next_io_completion = async {
-                if state.ios.is_empty() {
-                    pending().await
-                } else {
-                    Event::Io(state.ios.next().await.unwrap())
-                }
-            };
-
-            let event = (next_sqe, next_io_completion).race().await;
-            let (cid, result) = match event {
-                Event::Io(io_result) => {
-                    if io_result.advance_evt_idx {
-                        let result = state.sq.advance_evt_idx(&self.mem);
-                        if result.is_err() {
-                            tracelimit::warn_ratelimited!("failure to advance evt_idx");
+            let event = poll_fn(|cx| {
+                for (sq_idx, sq) in &mut state.sqs {
+                    if !sq.deleting && sq.io_count < MAX_IO_QUEUE_DEPTH {
+                        if let Poll::Ready(r) = sq.sq.poll_next(cx) {
+                            return Poll::Ready(Event::Sq(sq_idx, r));
                         }
+                    } else if sq.deleting && sq.io_count == 0 {
+                        return Poll::Ready(Event::Deleted(sq_idx));
                     }
-                    state.io_count -= 1;
-                    let result = match io_result.result {
-                        Ok(cr) => cr,
-                        Err(err) => {
-                            tracelimit::warn_ratelimited!(
-                                error = &err as &dyn std::error::Error,
-                                cid = io_result.cid,
-                                nsid = io_result.nsid,
-                                opcode = ?io_result.opcode,
-                                "io error"
-                            );
-                            err.into()
-                        }
-                    };
-                    (io_result.cid, result)
                 }
-                Event::Sq(r) => {
+                if let Poll::Ready(Some(r)) = state.ios.poll_next_unpin(cx) {
+                    return Poll::Ready(Event::Io(r));
+                }
+                if !state.completions.is_empty() {
+                    if let Poll::Ready(r) = state.cq.poll_ready(cx) {
+                        return Poll::Ready(Event::CompletionReady(
+                            r.map(|()| state.completions.pop_front().unwrap()),
+                        ));
+                    }
+                }
+                Poll::Pending
+            })
+            .await;
+
+            let io_result = match event {
+                Event::Io(io_result) => io_result,
+                Event::CompletionReady(r) => r?,
+                Event::Deleted(sq_idx) => {
+                    let sq = state.sqs.remove(sq_idx);
+                    self.admin_response.send(sq.sqid);
+                    continue;
+                }
+                Event::Sq(sq_idx, r) => {
                     let command = r?;
                     let cid = command.cdw0.cid();
 
                     if let Some(ns) = state.namespaces.get(&command.nsid) {
                         let ns = ns.clone();
-                        // If the queue depth is low, immediately update the evt_idx, so that
-                        // the guest driver will ring the doorbell again.  If the queue depth is
-                        // high, defer this until I/O completion, on the theory that high queue
-                        // depth workloads won't wait before enqueuing more work.
-                        //
-                        // TODO: Update later after performance testing, perhaps to something
-                        // like to 2*(number of VPs)/(number of queue pairs).
-                        let mut advance_evt_idx = true;
-                        if state.io_count <= 1 {
-                            let result = state.sq.advance_evt_idx(&self.mem);
-                            if result.is_err() {
-                                tracelimit::warn_ratelimited!("failure to advance evt_idx");
-                            }
-                            advance_evt_idx = false;
-                        }
                         let io = Box::pin(async move {
-                            let result = ns.nvm_command(MAX_DATA_TRANSFER_SIZE, &command).await;
+                            let result = ns
+                                .nvm_command(MAX_DATA_TRANSFER_SIZE, &command)
+                                .await
+                                .unwrap_or_else(|err| {
+                                    tracelimit::warn_ratelimited!(
+                                        error = &err as &dyn std::error::Error,
+                                        cid,
+                                        nsid = command.nsid,
+                                        opcode = ?nvm::NvmOpcode(command.cdw0.opcode()),
+                                        "io error"
+                                    );
+                                    err.into()
+                                });
                             IoResult {
-                                nsid: command.nsid,
-                                opcode: nvm::NvmOpcode(command.cdw0.opcode()),
+                                sq_idx,
                                 cid,
                                 result,
-                                advance_evt_idx,
                             }
                         });
                         state.ios.push(io);
-                        state.io_count += 1;
+                        state.sqs[sq_idx].io_count += 1;
                         continue;
                     }
 
-                    let result = state.sq.advance_evt_idx(&self.mem);
-                    if result.is_err() {
-                        tracelimit::warn_ratelimited!("failure to advance evt_idx");
+                    IoResult {
+                        cid,
+                        sq_idx,
+                        result: spec::Status::INVALID_NAMESPACE_OR_FORMAT.into(),
                     }
-                    (cid, spec::Status::INVALID_NAMESPACE_OR_FORMAT.into())
                 }
             };
 
+            let sq = &mut state.sqs[io_result.sq_idx];
             let completion = spec::Completion {
-                dw0: result.dw[0],
-                dw1: result.dw[1],
-                sqhd: state.sq.sqhd(),
-                sqid: self.sqid,
-                cid,
-                status: spec::CompletionStatus::new().with_status(result.status.0),
+                dw0: io_result.result.dw[0],
+                dw1: io_result.result.dw[1],
+                sqhd: sq.sq.sqhd(),
+                sqid: sq.sqid,
+                cid: io_result.cid,
+                status: spec::CompletionStatus::new().with_status(io_result.result.status.0),
             };
-            if !state.cq.write(&self.mem, completion)? {
-                assert!(deleting);
-                tracelimit::warn_ratelimited!("dropped i/o completion during queue deletion");
-            }
-            state
-                .cq
-                .catch_up_evt_idx(false, state.io_count as u32, &self.mem)?;
-        }
-        Ok(())
-    }
 
-    pub fn update_shadow_db(
-        &mut self,
-        mem: &GuestMemory,
-        state: &mut IoState,
-        sq_sdb: ShadowDoorbell,
-        cq_sdb: ShadowDoorbell,
-    ) {
-        state.sq.update_shadow_db(mem, sq_sdb);
-        state.cq.update_shadow_db(mem, cq_sdb);
+            match state.cq.write(completion) {
+                Ok(true) => {}
+                Ok(false) => {
+                    if !sq.deleting {
+                        state.completions.push_back(io_result);
+                        continue;
+                    }
+                    tracelimit::warn_ratelimited!("dropped i/o completion during queue deletion");
+                }
+                Err(err) => {
+                    state.completions.push_back(io_result);
+                    return Err(err.into());
+                }
+            }
+
+            sq.io_count -= 1;
+        }
     }
 }

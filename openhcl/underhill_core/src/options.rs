@@ -7,11 +7,13 @@
 
 use anyhow::Context;
 use anyhow::bail;
+use inspect::Inspect;
 use mesh::MeshPayload;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 #[derive(Clone, Debug, MeshPayload)]
 pub enum TestScenarioConfig {
@@ -20,7 +22,7 @@ pub enum TestScenarioConfig {
     SaveStuck,
 }
 
-impl std::str::FromStr for TestScenarioConfig {
+impl FromStr for TestScenarioConfig {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<TestScenarioConfig, anyhow::Error> {
@@ -30,6 +32,77 @@ impl std::str::FromStr for TestScenarioConfig {
             "SERVICING_SAVE_STUCK" => Ok(TestScenarioConfig::SaveStuck),
             _ => Err(anyhow::anyhow!("Invalid test config: {}", s)),
         }
+    }
+}
+
+#[derive(Clone, Debug, MeshPayload)]
+pub enum GuestStateLifetimeCli {
+    Default,
+    ReprovisionOnFailure,
+    Reprovision,
+    Ephemeral,
+}
+
+impl FromStr for GuestStateLifetimeCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<GuestStateLifetimeCli, anyhow::Error> {
+        match s {
+            "DEFAULT" | "0" => Ok(GuestStateLifetimeCli::Default),
+            "REPROVISION_ON_FAILURE" | "1" => Ok(GuestStateLifetimeCli::ReprovisionOnFailure),
+            "REPROVISION" | "2" => Ok(GuestStateLifetimeCli::Reprovision),
+            "EPHEMERAL" | "3" => Ok(GuestStateLifetimeCli::Ephemeral),
+            _ => Err(anyhow::anyhow!("Invalid lifetime: {}", s)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, MeshPayload)]
+pub enum GuestStateEncryptionPolicyCli {
+    Auto,
+    None,
+    GspById,
+    GspKey,
+}
+
+impl FromStr for GuestStateEncryptionPolicyCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<GuestStateEncryptionPolicyCli, anyhow::Error> {
+        match s {
+            "AUTO" | "0" => Ok(GuestStateEncryptionPolicyCli::Auto),
+            "NONE" | "1" => Ok(GuestStateEncryptionPolicyCli::None),
+            "GSP_BY_ID" | "2" => Ok(GuestStateEncryptionPolicyCli::GspById),
+            "GSP_KEY" | "3" => Ok(GuestStateEncryptionPolicyCli::GspKey),
+            _ => Err(anyhow::anyhow!("Invalid encryption policy: {}", s)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, MeshPayload, Inspect)]
+pub enum KeepAliveConfig {
+    EnabledHostAndPrivatePoolPresent,
+    DisabledHostAndPrivatePoolPresent,
+    Disabled,
+}
+
+impl FromStr for KeepAliveConfig {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<KeepAliveConfig, anyhow::Error> {
+        match s.to_lowercase().as_str() {
+            "host,privatepool" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolPresent),
+            "nohost,privatepool" => Ok(KeepAliveConfig::DisabledHostAndPrivatePoolPresent),
+            "nohost,noprivatepool" => Ok(KeepAliveConfig::Disabled),
+            x if x.starts_with("disabled,") => Ok(KeepAliveConfig::Disabled),
+            _ => Err(anyhow::anyhow!("Invalid keepalive config: {}", s)),
+        }
+    }
+}
+
+impl KeepAliveConfig {
+    pub fn is_enabled(&self) -> bool {
+        matches!(self, KeepAliveConfig::EnabledHostAndPrivatePoolPresent)
     }
 }
 
@@ -121,11 +194,6 @@ pub struct Options {
     /// MCR Device Enable
     pub mcr: bool, // TODO MCR: support closed-source ENV vars
 
-    /// (OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1)
-    /// Enable the shared visibility pool. This is enabled by default on
-    /// hardware isolated platforms, but can be enabled for testing.
-    pub enable_shared_visibility_pool: bool,
-
     /// (OPENHCL_HIDE_ISOLATION=1)
     /// Hide the isolation mode from the guest.
     pub hide_isolation: bool,
@@ -140,8 +208,24 @@ pub struct Options {
     /// hit exits.
     pub no_sidecar_hotplug: bool,
 
-    /// (OPENHCL_NVME_KEEP_ALIVE=1) Enable nvme keep alive when servicing.
-    pub nvme_keep_alive: bool,
+    /// (OPENHCL_NVME_KEEP_ALIVE=\<KeepaliveConfig\>)
+    /// Configure NVMe keep alive behavior when servicing.
+    /// Options are:
+    ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
+    ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
+    ///  - "nohost,noprivatepool" - Keepalive is disabled.
+    ///  - "disabled, X, X" - Keepalive is disabled due to manual
+    ///    override. Host and private pool options are ignored.
+    pub nvme_keep_alive: KeepAliveConfig,
+
+    /// (OPENHCL_MANA_KEEP_ALIVE=\<KeepAliveConfig\>)
+    /// Configure MANA keep alive behavior when servicing.
+    /// Options are:
+    ///  - "host,privatepool" - Enable keep alive if both host and private pool support it.
+    ///  - "nohost,privatepool" - Used when the host does not support keepalive, but a private pool is present. Keepalive is disabled.
+    ///  - "nohost,noprivatepool" - Keepalive is disabled.
+    ///  - "disabled, X, X" - TODO: This needs to be implemented for mana.
+    pub mana_keep_alive: KeepAliveConfig,
 
     /// (OPENHCL_NVME_ALWAYS_FLR=1)
     /// Always use the FLR (Function Level Reset) path for NVMe devices,
@@ -156,7 +240,40 @@ pub struct Options {
     /// (OPENHCL_DISABLE_UEFI_FRONTPAGE=1) Disable the frontpage in UEFI which
     /// will result in UEFI terminating, shutting down the guest instead of
     /// showing the frontpage.
-    pub disable_uefi_frontpage: bool,
+    pub disable_uefi_frontpage: Option<bool>,
+
+    /// (HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=1) Instruct UEFI to always attempt a
+    /// default boot, even if existing boot entries fail.
+    pub default_boot_always_attempt: Option<bool>,
+
+    /// (HCL_GUEST_STATE_LIFETIME=\<GuestStateLifetimeCli\>)
+    /// Specify which guest state lifetime to use.
+    pub guest_state_lifetime: Option<GuestStateLifetimeCli>,
+
+    /// (HCL_GUEST_STATE_ENCRYPTION_POLICY=\<GuestStateEncryptionPolicyCli\>)
+    /// Specify which guest state encryption policy to use.
+    pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+
+    /// (HCL_STRICT_ENCRYPTION_POLICY=1) Strict guest state encryption policy.
+    pub strict_encryption_policy: Option<bool>,
+
+    /// (HCL_ATTEMPT_AK_CERT_CALLBACK=1) Attempt to renew the AK cert.
+    /// If not specified, use the configuration in DPSv2 ManagementVtlFeatures.
+    pub attempt_ak_cert_callback: Option<bool>,
+
+    /// (OPENHCL_ENABLE_VPCI_RELAY=1) Enable the VPCI relay.
+    pub enable_vpci_relay: Option<bool>,
+
+    /// (OPENHCL_DISABLE_PROXY_REDIRECT=1) Disable proxy interrupt redirection.
+    pub disable_proxy_redirect: bool,
+
+    /// (OPENHCL_DISABLE_LOWER_VTL_TIMER_VIRT=1) Disable lower VTL timer virtualization.
+    pub disable_lower_vtl_timer_virt: bool,
+
+    /// (OPENHCL_CONFIG_TIMEOUT_IN_SECONDS=\<number\>) (default: 5)
+    /// Timeout in seconds for VM configuration operations, both initial
+    /// configuration and subsequent modifications.
+    pub config_timeout_in_seconds: u64,
 }
 
 impl Options {
@@ -175,7 +292,7 @@ impl Options {
 
         // Reads an environment variable, falling back to a legacy variable (replacing
         // "OPENHCL_" with "UNDERHILL_") if the original is not set.
-        let legacy_openhcl_env = |name: &str| -> Option<&OsString> {
+        let read_legacy_openhcl_env = |name: &str| -> Option<&OsString> {
             env.get::<OsStr>(name.as_ref()).or_else(|| {
                 env.get::<OsStr>(
                     format!(
@@ -188,48 +305,72 @@ impl Options {
         };
 
         // Reads an environment variable strings.
-        let parse_env_string =
-            |name: &str| -> Option<&OsString> { env.get::<OsStr>(name.as_ref()) };
+        let read_env = |name: &str| -> Option<&OsString> { env.get::<OsStr>(name.as_ref()) };
 
-        fn parse_bool(value: Option<&OsString>) -> bool {
+        fn parse_bool_opt(value: Option<&OsString>) -> anyhow::Result<Option<bool>> {
             value
-                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
-                .unwrap_or_default()
-        }
-
-        let parse_legacy_env_bool = |name| parse_bool(legacy_openhcl_env(name));
-        let parse_env_bool = |name: &str| parse_bool(env.get::<OsStr>(name.as_ref()));
-
-        let parse_legacy_env_number = |name| {
-            legacy_openhcl_env(name)
                 .map(|v| {
-                    v.to_string_lossy().parse().context(format!(
-                        "Error parsing numeric environment variable {} {:?}",
-                        name, v
-                    ))
+                    if v.eq_ignore_ascii_case("true") || v == "1" {
+                        Ok(true)
+                    } else if v.eq_ignore_ascii_case("false") || v == "0" {
+                        Ok(false)
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "invalid boolean environment variable: {}",
+                            v.to_string_lossy()
+                        ))
+                    }
                 })
                 .transpose()
+        }
+
+        fn parse_bool(value: Option<&OsString>) -> bool {
+            parse_bool_opt(value).ok().flatten().unwrap_or_default()
+        }
+
+        let parse_legacy_env_bool = |name| parse_bool(read_legacy_openhcl_env(name));
+        let parse_env_bool = |name: &str| parse_bool(read_env(name));
+        let parse_env_bool_opt = |name: &str| {
+            parse_bool_opt(read_env(name))
+                .map_err(|e| tracing::warn!("failed to parse {name}: {e:#}"))
+                .ok()
+                .flatten()
+        };
+
+        fn parse_number(value: Option<&OsString>) -> anyhow::Result<Option<u64>> {
+            value
+                .map(|v| {
+                    let v = v.to_string_lossy();
+                    v.parse()
+                        .context(format!("invalid numeric environment variable: {v}"))
+                })
+                .transpose()
+        }
+
+        let parse_legacy_env_number = |name| {
+            parse_number(read_legacy_openhcl_env(name))
+                .context(format!("parsing legacy env number: {name}"))
         };
 
         let mut wait_for_start = parse_legacy_env_bool("OPENHCL_WAIT_FOR_START");
         let mut reformat_vmgs = parse_legacy_env_bool("OPENHCL_REFORMAT_VMGS");
-        let mut pid = legacy_openhcl_env("OPENHCL_PID_FILE_PATH")
+        let mut pid = read_legacy_openhcl_env("OPENHCL_PID_FILE_PATH")
             .map(|x| x.to_string_lossy().into_owned().into());
-        let vmbus_max_version = legacy_openhcl_env("OPENHCL_VMBUS_MAX_VERSION")
+        let vmbus_max_version = read_legacy_openhcl_env("OPENHCL_VMBUS_MAX_VERSION")
             .map(|x| {
                 vmbus_core::parse_vmbus_version(&(x.to_string_lossy()))
                     .map_err(|x| anyhow::anyhow!("Error parsing vmbus max version: {}", x))
             })
             .transpose()?;
         let vmbus_enable_mnf =
-            legacy_openhcl_env("OPENHCL_VMBUS_ENABLE_MNF").map(|v| parse_bool(Some(v)));
+            read_legacy_openhcl_env("OPENHCL_VMBUS_ENABLE_MNF").map(|v| parse_bool(Some(v)));
         let vmbus_force_confidential_external_memory =
             parse_env_bool("OPENHCL_VMBUS_FORCE_CONFIDENTIAL_EXTERNAL_MEMORY");
         let vmbus_channel_unstick_delay_ms =
             parse_legacy_env_number("OPENHCL_VMBUS_CHANNEL_UNSTICK_DELAY_MS")?;
-        let cmdline_append =
-            legacy_openhcl_env("OPENHCL_CMDLINE_APPEND").map(|x| x.to_string_lossy().into_owned());
-        let force_load_vtl0_image = legacy_openhcl_env("OPENHCL_FORCE_LOAD_VTL0_IMAGE")
+        let cmdline_append = read_legacy_openhcl_env("OPENHCL_CMDLINE_APPEND")
+            .map(|x| x.to_string_lossy().into_owned());
+        let force_load_vtl0_image = read_legacy_openhcl_env("OPENHCL_FORCE_LOAD_VTL0_IMAGE")
             .map(|x| x.to_string_lossy().into_owned());
         let mut vnc_port = parse_legacy_env_number("OPENHCL_VNC_PORT")?.map(|x| x as u32);
         let framebuffer_gpa_base = parse_legacy_env_number("OPENHCL_FRAMEBUFFER_GPA_BASE")?;
@@ -237,16 +378,41 @@ impl Options {
         let serial_wait_for_rts = parse_legacy_env_bool("OPENHCL_SERIAL_WAIT_FOR_RTS");
         let nvme_vfio = parse_legacy_env_bool("OPENHCL_NVME_VFIO");
         let mcr = parse_legacy_env_bool("OPENHCL_MCR_DEVICE");
-        let enable_shared_visibility_pool =
-            parse_legacy_env_bool("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL");
         let hide_isolation = parse_env_bool("OPENHCL_HIDE_ISOLATION");
         let halt_on_guest_halt = parse_legacy_env_bool("OPENHCL_HALT_ON_GUEST_HALT");
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
         let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
         let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
-        let nvme_keep_alive = parse_env_bool("OPENHCL_NVME_KEEP_ALIVE");
+        let nvme_keep_alive = read_env("OPENHCL_NVME_KEEP_ALIVE")
+                    .map(|x| {
+                        let s = x.to_string_lossy();
+                        match s.parse::<KeepAliveConfig>() {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "failed to parse OPENHCL_NVME_KEEP_ALIVE ('{s}'): {e}. Nvme keepalive will be disabled."
+                                );
+                                KeepAliveConfig::Disabled
+                            }
+                        }
+                    })
+                    .unwrap_or(KeepAliveConfig::Disabled);
+        let mana_keep_alive = read_env("OPENHCL_MANA_KEEP_ALIVE")
+                    .map(|x| {
+                        let s = x.to_string_lossy();
+                        match s.parse::<KeepAliveConfig>() {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "failed to parse OPENHCL_MANA_KEEP_ALIVE ('{s}'): {e}. Mana keepalive will be disabled."
+                                );
+                                KeepAliveConfig::Disabled
+                            }
+                        }
+                    })
+                    .unwrap_or(KeepAliveConfig::Disabled);
         let nvme_always_flr = parse_env_bool("OPENHCL_NVME_ALWAYS_FLR");
-        let test_configuration = parse_env_string("OPENHCL_TEST_CONFIG").and_then(|x| {
+        let test_configuration = read_env("OPENHCL_TEST_CONFIG").and_then(|x| {
             x.to_string_lossy()
                 .parse::<TestScenarioConfig>()
                 .map_err(|e| {
@@ -257,8 +423,31 @@ impl Options {
                 })
                 .ok()
         });
-        let disable_uefi_frontpage = parse_env_bool("OPENHCL_DISABLE_UEFI_FRONTPAGE");
+        let disable_uefi_frontpage = parse_env_bool_opt("OPENHCL_DISABLE_UEFI_FRONTPAGE");
         let signal_vtl0_started = parse_env_bool("OPENHCL_SIGNAL_VTL0_STARTED");
+        let default_boot_always_attempt = parse_env_bool_opt("HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT");
+        let guest_state_lifetime = read_env("HCL_GUEST_STATE_LIFETIME").and_then(|x| {
+            x.to_string_lossy()
+                .parse::<GuestStateLifetimeCli>()
+                .map_err(|e| tracing::warn!("failed to parse HCL_GUEST_STATE_LIFETIME: {:#}", e))
+                .ok()
+        });
+        let guest_state_encryption_policy =
+            read_env("HCL_GUEST_STATE_ENCRYPTION_POLICY").and_then(|x| {
+                x.to_string_lossy()
+                    .parse::<GuestStateEncryptionPolicyCli>()
+                    .map_err(|e| {
+                        tracing::warn!("failed to parse HCL_GUEST_STATE_ENCRYPTION_POLICY: {:#}", e)
+                    })
+                    .ok()
+            });
+        let strict_encryption_policy = parse_env_bool_opt("HCL_STRICT_ENCRYPTION_POLICY");
+        let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK");
+        let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY");
+        let disable_proxy_redirect = parse_env_bool("OPENHCL_DISABLE_PROXY_REDIRECT");
+        let disable_lower_vtl_timer_virt = parse_env_bool("OPENHCL_DISABLE_LOWER_VTL_TIMER_VIRT");
+        let config_timeout_in_seconds =
+            parse_legacy_env_number("OPENHCL_CONFIG_TIMEOUT_IN_SECONDS")?.unwrap_or(5);
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -308,14 +497,23 @@ impl Options {
             force_load_vtl0_image,
             nvme_vfio,
             mcr,
-            enable_shared_visibility_pool,
             hide_isolation,
             halt_on_guest_halt,
             no_sidecar_hotplug,
             nvme_keep_alive,
+            mana_keep_alive,
             nvme_always_flr,
             test_configuration,
             disable_uefi_frontpage,
+            default_boot_always_attempt,
+            guest_state_lifetime,
+            guest_state_encryption_policy,
+            strict_encryption_policy,
+            attempt_ak_cert_callback,
+            enable_vpci_relay,
+            disable_proxy_redirect,
+            disable_lower_vtl_timer_virt,
+            config_timeout_in_seconds,
         })
     }
 

@@ -74,7 +74,7 @@ fn host_tmks_core(
     driver
         .spawn(
             "log",
-            petri::log_stream(params.logger.log_file("tmk_vmm")?, stdout),
+            petri::log_task(params.logger.log_file("tmk_vmm")?, stdout, "tmk_vmm stdout"),
         )
         .detach();
 
@@ -141,7 +141,7 @@ const OPENHCL_COMMAND_LINE: &str =
 
 async fn openhcl_tmks_inner<T: PetriVmmBackend>(
     driver: &DefaultDriver,
-    params: &petri::PetriTestParams<'_>,
+    logger: petri::PetriLogSource,
     vm: &mut PetriVm<T>,
 ) -> anyhow::Result<()> {
     let agent = vm.wait_for_vtl2_agent().await?;
@@ -159,9 +159,10 @@ async fn openhcl_tmks_inner<T: PetriVmmBackend>(
     driver
         .spawn(
             "log",
-            petri::log_stream(
-                params.logger.log_file("tmk_vmm")?,
+            petri::log_task(
+                logger.log_file("tmk_vmm")?,
                 child.stdout.take().unwrap(),
+                "tmk_vmm stdout",
             ),
         )
         .detach();
@@ -221,8 +222,10 @@ fn openvmm_openhcl_tmks(
     artifacts: OpenhclTmkArtifacts<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
     DefaultPool::run_with(async |driver| {
-        let mut vm = petri::PetriVmBuilder::new(&params, artifacts.vm, &driver)?
+        let logger = params.logger.clone();
+        let mut vm = petri::PetriVmBuilder::new(params, artifacts.vm, &driver)?
             .with_openhcl_command_line(OPENHCL_COMMAND_LINE)
+            .with_expect_no_boot_event()
             .with_openhcl_agent_file("tmk_vmm", artifacts.tmk_vmm)
             .with_openhcl_agent_file("simple_tmk", artifacts.tmk)
             .with_processor_topology(ProcessorTopology {
@@ -236,7 +239,7 @@ fn openvmm_openhcl_tmks(
             .await?;
 
         tracing::info!("started vm");
-        openhcl_tmks_inner(&driver, &params, &mut vm).await?;
+        openhcl_tmks_inner(&driver, logger, &mut vm).await?;
 
         Ok(())
     })
@@ -257,8 +260,10 @@ mod hyperv {
         artifacts: OpenhclTmkArtifacts<HyperVPetriBackend>,
     ) -> anyhow::Result<()> {
         DefaultPool::run_with(async |driver| {
-            let mut vm = petri::PetriVmBuilder::new(&params, artifacts.vm, &driver)?
+            let logger = params.logger.clone();
+            let mut vm = petri::PetriVmBuilder::new(params, artifacts.vm, &driver)?
                 .with_openhcl_command_line(OPENHCL_COMMAND_LINE)
+                .with_expect_no_boot_event()
                 .with_openhcl_agent_file("tmk_vmm", artifacts.tmk_vmm)
                 .with_openhcl_agent_file("simple_tmk", artifacts.tmk)
                 .with_processor_topology(ProcessorTopology {
@@ -269,7 +274,7 @@ mod hyperv {
                 .await?;
 
             tracing::info!("started vm");
-            openhcl_tmks_inner(&driver, &params, &mut vm).await?;
+            openhcl_tmks_inner(&driver, logger, &mut vm).await?;
 
             Ok(())
         })

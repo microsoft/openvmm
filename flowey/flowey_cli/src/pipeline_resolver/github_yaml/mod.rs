@@ -89,16 +89,23 @@ pub fn github_yaml(
             arch,
             ref external_read_vars,
             ado_pool: _,
+            timeout_minutes,
             ref gh_override_if,
             ref gh_global_env,
             ref gh_pool,
             ref gh_permissions,
-            cond_param_idx: _,
+            cond_param_idx,
             ref parameters_used,
             ref artifacts_used,
             ref artifacts_published,
             ado_variables: _,
         } = graph[job_idx];
+
+        if cond_param_idx.is_some() {
+            anyhow::bail!(
+                "conditional params are not supported in GitHub backend, use `gh_dangerous_override_if` instead"
+            );
+        }
 
         let flowey_bin = platform.binary("flowey");
         let (steps, req_db) = resolve_flow_as_github_yaml_steps(
@@ -484,22 +491,20 @@ EOF
         let runner_kind_to_yaml = |runner: &GhRunner| match runner {
             GhRunner::GhHosted(s) => github_yaml_defs::Runner::GhHosted(match s {
                 GhRunnerOsLabel::UbuntuLatest => github_yaml_defs::RunnerOsLabel::UbuntuLatest,
+                GhRunnerOsLabel::Ubuntu2404 => github_yaml_defs::RunnerOsLabel::Ubuntu2404,
                 GhRunnerOsLabel::Ubuntu2204 => github_yaml_defs::RunnerOsLabel::Ubuntu2204,
-                GhRunnerOsLabel::Ubuntu2004 => github_yaml_defs::RunnerOsLabel::Ubuntu2004,
                 GhRunnerOsLabel::WindowsLatest => github_yaml_defs::RunnerOsLabel::WindowsLatest,
+                GhRunnerOsLabel::Windows2025 => github_yaml_defs::RunnerOsLabel::Windows2025,
                 GhRunnerOsLabel::Windows2022 => github_yaml_defs::RunnerOsLabel::Windows2022,
-                GhRunnerOsLabel::Windows2019 => github_yaml_defs::RunnerOsLabel::Windows2019,
-                GhRunnerOsLabel::MacOsLatest => github_yaml_defs::RunnerOsLabel::MacOsLatest,
-                GhRunnerOsLabel::MacOs14 => github_yaml_defs::RunnerOsLabel::MacOs14,
-                GhRunnerOsLabel::MacOs13 => github_yaml_defs::RunnerOsLabel::MacOs13,
-                GhRunnerOsLabel::MacOs12 => github_yaml_defs::RunnerOsLabel::MacOs12,
-                GhRunnerOsLabel::MacOs11 => github_yaml_defs::RunnerOsLabel::MacOs11,
+                GhRunnerOsLabel::Ubuntu2404Arm => github_yaml_defs::RunnerOsLabel::Ubuntu2404Arm,
+                GhRunnerOsLabel::Ubuntu2204Arm => github_yaml_defs::RunnerOsLabel::Ubuntu2204Arm,
+                GhRunnerOsLabel::Windows11Arm => github_yaml_defs::RunnerOsLabel::Windows11Arm,
                 GhRunnerOsLabel::Custom(s) => github_yaml_defs::RunnerOsLabel::Custom(s.into()),
             }),
-            GhRunner::SelfHosted(v) => github_yaml_defs::Runner::SelfHosted(v.to_vec()),
+            GhRunner::SelfHosted(v) => github_yaml_defs::Runner::SelfHosted(v.clone()),
             GhRunner::RunnerGroup { group, labels } => github_yaml_defs::Runner::Group {
                 group: group.into(),
-                labels: labels.to_vec(),
+                labels: labels.clone(),
             },
         };
 
@@ -547,6 +552,7 @@ EOF
             format!("job{}", job_idx.index()),
             github_yaml_defs::Job {
                 name: label.clone(),
+                timeout_minutes,
                 runs_on: gh_pool.clone().map(|runner| runner_kind_to_yaml(&runner)),
                 permissions: job_permissions
                     .iter()

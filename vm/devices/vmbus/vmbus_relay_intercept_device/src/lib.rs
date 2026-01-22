@@ -7,7 +7,6 @@
 //! and send any vmbus notifications for that device to the
 //! SimpleVmbusClientDeviceWrapper instance.
 
-#![cfg(target_os = "linux")]
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
@@ -167,28 +166,36 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceWrapper<T> {
         mut self,
         driver: impl SpawnDriver,
         recv_relay: mesh::Receiver<InterceptChannelRequest>,
-    ) -> Result<mesh::OneshotSender<()>> {
+    ) -> Result<()> {
+        let (send_disconnected, recv_disconnected) = mesh::oneshot();
         self.vmbus_listener.insert(
             &self.spawner,
             format!("{}", self.instance_id),
             SimpleVmbusClientDeviceTaskState {
                 offer: None,
                 recv_relay,
+                send_disconnected: Some(send_disconnected),
                 vtl_pages: None,
             },
         );
-        let (driver_send, driver_recv) = mesh::oneshot();
         driver
             .spawn(
                 format!("vmbus_relay_device {}", self.instance_id),
                 async move {
                     self.vmbus_listener.start();
-                    let _ = driver_recv.await;
-                    self.vmbus_listener.stop().await;
+                    let _ = recv_disconnected.await;
+                    assert!(!self.vmbus_listener.stop().await);
+                    if self.vmbus_listener.state().unwrap().vtl_pages.is_some() {
+                        // The VTL pages were not freed. This can occur if an
+                        // error is hit that drops the vmbus parent tasks. Just
+                        // pend here and let the outer error cause the VM to
+                        // exit.
+                        pending::<()>().await;
+                    }
                 },
             )
             .detach();
-        Ok(driver_send)
+        Ok(())
     }
 }
 
@@ -215,6 +222,8 @@ struct SimpleVmbusClientDeviceTaskState {
     offer: Option<OfferInfo>,
     #[inspect(skip)]
     recv_relay: mesh::Receiver<InterceptChannelRequest>,
+    #[inspect(skip)]
+    send_disconnected: Option<mesh::OneshotSender<()>>,
     #[inspect(hex, with = "|x| x.as_ref().map(|x| inspect::iter_by_index(x.pfns()))")]
     vtl_pages: Option<MemoryBlock>,
 }
@@ -234,7 +243,13 @@ impl<T: SimpleVmbusClientDeviceAsync> AsyncRun<SimpleVmbusClientDeviceTaskState>
         stop: &mut StopTask<'_>,
         state: &mut SimpleVmbusClientDeviceTaskState,
     ) -> Result<(), Cancelled> {
-        stop.until_stopped(self.process_messages(state)).await
+        stop.until_stopped(self.process_messages(state)).await?;
+        state
+            .send_disconnected
+            .take()
+            .expect("task should not be restarted")
+            .send(());
+        Ok(())
     }
 }
 
@@ -296,22 +311,23 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             .reserve_memory(state, &offer.request_send, 4)
             .await
             .context("reserve memory")?;
+        let guest_to_host_interrupt = offer.guest_to_host_interrupt.clone();
         state.offer = Some(offer);
         let offer = state.offer.as_ref().unwrap();
-        let opened = self
-            .open_channel(&offer.request_send, ring_gpadl_id, &interrupt_event)
+        self.open_channel(&offer.request_send, ring_gpadl_id, &interrupt_event)
             .await
             .context("open channel")?;
         let channel = self
-            .create_vmbus_channel(&memory, &interrupt_event, opened.guest_to_host_signal)
+            .create_vmbus_channel(&memory, &interrupt_event, guest_to_host_interrupt)
             .context("create vmbus queue")?;
 
         let save_restore = self.device.task_mut().0.supports_save_restore();
         let saved_state = self.saved_state.take();
-        let device_runner = if save_restore.is_some() && saved_state.is_some() {
+        let device_runner = if let Some(save_restore) = save_restore
+            && let Some(saved_state) = saved_state
+        {
             save_restore
-                .unwrap()
-                .restore_open(saved_state.unwrap(), channel)
+                .restore_open(saved_state, channel)
                 .context("device restore_open callback")?
         } else {
             self.device
@@ -351,7 +367,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
         };
 
         if state.vtl_pages.is_some() {
-            if let Err(err) = offer
+            match offer
                 .request_send
                 .call(
                     ChannelRequest::TeardownGpadl,
@@ -359,13 +375,19 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
                 )
                 .await
             {
-                tracing::error!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to teardown gpadl"
-                );
+                Ok(()) => {
+                    state.vtl_pages = None;
+                }
+                Err(err) => {
+                    // If the ring buffer pages are still in use by the host, which
+                    // has to be assumed, the memory pages cannot be used again as
+                    // they have been marked as visible to VTL0.
+                    tracing::error!(
+                        error = &err as &dyn std::error::Error,
+                        "Failed to teardown gpadl -- leaking memory."
+                    );
+                }
             }
-
-            state.vtl_pages = None;
         }
     }
 
@@ -504,7 +526,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
 
     /// Responds to the channel being revoked by the host.
     async fn handle_revoke(&mut self, state: &mut SimpleVmbusClientDeviceTaskState) {
-        let Some(offer) = state.offer.take() else {
+        let Some(offer) = state.offer.as_ref() else {
             return;
         };
         tracing::info!("device revoked");
@@ -513,6 +535,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             self.device.task_mut().0.close(offer.offer.subchannel_index);
         }
         self.cleanup_device_resources(state).await;
+        drop(state.offer.take());
     }
 
     fn handle_save(&mut self) -> SavedStateBlob {
@@ -546,27 +569,25 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             #[expect(clippy::large_enum_variant)]
             enum Event {
                 Request(InterceptChannelRequest),
-                Revoke(()),
+                Revoke,
             }
-            let revoke = pin!(async {
-                if let Some(offer) = &mut state.offer {
-                    (&mut offer.revoke_recv).await.ok();
-                } else {
-                    pending().await
-                }
-            });
-            let Some(r) = (
-                (&mut state.recv_relay).map(Event::Request),
-                futures::stream::once(revoke).map(Event::Revoke),
-            )
-                .merge()
-                .next()
-                .await
-            else {
+            let r = if let Some(offer) = &mut state.offer {
+                (
+                    (&mut state.recv_relay).map(Event::Request),
+                    futures::stream::once(&mut offer.revoke_recv).map(|_| Event::Revoke),
+                )
+                    .merge()
+                    .next()
+                    .await
+            } else {
+                let mut recv_relay = pin!(&mut state.recv_relay);
+                recv_relay.next().await.map(Event::Request)
+            };
+            let Some(r) = r else {
                 break;
             };
             match r {
-                Event::Revoke(()) => {
+                Event::Revoke => {
                     self.handle_revoke(state).await;
                 }
                 Event::Request(InterceptChannelRequest::Offer(offer)) => {

@@ -1,0 +1,44 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "nvme_test"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+disk_backend.workspace = true
+nvme_common.workspace = true
+nvme_resources.workspace = true
+nvme_spec.workspace = true
+scsi_buffers.workspace = true
+
+device_emulators.workspace = true
+pci_core.workspace = true
+pci_resources.workspace = true
+
+chipset_device.workspace = true
+guestmem.workspace = true
+vmcore.workspace = true
+vm_resource.workspace = true
+
+guid.workspace = true
+inspect.workspace = true
+mesh.workspace = true
+pal_async.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+futures-concurrency.workspace = true
+parking_lot.workspace = true
+task_control.workspace = true
+thiserror.workspace = true
+tracelimit.workspace = true
+tracing.workspace = true
+unicycle.workspace = true
+zerocopy = { workspace = true, features = ["alloc"] }
+
+[dev-dependencies]
+user_driver.workspace = true
+
+[lints]
+workspace = true

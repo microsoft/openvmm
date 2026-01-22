@@ -149,7 +149,7 @@ justification for the suppressed lint.
 
 e.g:
 
-```rust
+```rust,ignore
 // x86_64-unknown-linux-musl targets have a different type defn for
 // `libc::cmsghdr`, hence why these lints are being suppressed.
 #[expect(clippy::needless_update, clippy::useless_conversion)]
@@ -205,8 +205,8 @@ In a nutshell:
 These requirements are enforced by CI, and will cause the build to fail if
 required documentation is missing.
 
-Editing a file containing unsafe code will trigger CI to automatically add the
-OpenVMM Unsafe Approvers group to your PR. This is to ensure that all unsafe code
+Editing a file containing unsafe code will trigger CI to label your PR and warn
+reviewers that the PR touches unsafe code. This is to ensure that all unsafe code
 is audited for correctness by area experts.
 
 ## Uses of `cfg(target_arch = ...)` must be justified
@@ -323,7 +323,7 @@ with an all-zero handle, as the type hadn't finished being fully initialized.
 If we wanted to use this library from Rust, a "naive" approach would be to do
 something like:
 
-```rust
+```rust,ignore
 #[repr(C)]
 #[derive(Default)]
 struct Handle {
@@ -357,7 +357,7 @@ also have valid all-zero _default_ values!**
 
 So, for the example above:
 
-```rust
+```rust,ignore
 #[repr(C)]
 #[derive(zerocopy::FromZeros)]
 struct Handle {
@@ -374,7 +374,7 @@ Now, it's impossible for code elsewhere to obtain a `Handle` via
 ...but if it so happens that we _do_ want a `Default` impl for `Handle`, we can
 do so by _manually_ implementing `derive(Default)` ourselves:
 
-```rust
+```rust,ignore
 // Default + FromZeros: `default` returns fully initialized handle
 impl Default for Handle {
     fn default() -> Handle {
@@ -391,7 +391,7 @@ _Checked Automatically:_ **No**
 
 **TL;DR:** Don't do this:
 
-```rust
+```rust,ignore
 trait MyTrait: std::fmt::Debug
 ```
 
@@ -443,3 +443,38 @@ goes more in-depth as to why.
 
 Instead, name things based on what they logically provide, like functionality or
 data types.
+
+## Release Gates Workflow
+
+_Triggered Manually:_ **Yes** (via GitHub labels)
+
+In addition to the standard PR gates that run in debug mode, OpenVMM also provides
+a "Release Gates" workflow that runs the same checks but compiled in release mode.
+This workflow takes significantly longer to run but can catch issues that only
+manifest in optimized builds.
+
+### When to Use Release Gates
+
+The release gates workflow should be used when:
+
+- Making changes to performance-critical code paths
+- Modifying compiler flags or build configuration
+- Implementing low-level optimizations
+- Debugging issues that only appear in release builds
+- Before merging large refactoring changes
+
+### How to Trigger Release Gates
+
+To run the release gates on your PR:
+
+1. Ensure your PR is ready for review (not in draft mode)
+2. Add the `release-ci-required` label to your PR
+3. The workflow will automatically trigger and run all checks in release mode
+
+The workflow will only run when the specific label is present, so you have full
+control over when to use this more resource-intensive testing.
+
+### Label Management
+
+Only repository maintainers can add labels to PRs. If you need release gates
+run on your PR, ask a maintainer to add the `release-ci-required` label for you.

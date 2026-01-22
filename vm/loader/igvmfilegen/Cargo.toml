@@ -24,15 +24,13 @@ hex = { workspace = true, features = ["serde"] }
 igvm.workspace = true
 igvm_defs.workspace = true
 range_map_vec.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+serde = { workspace = true, features = ["std"] }
+serde_json = { workspace = true, features = ["std"] }
 sha2.workspace = true
 thiserror.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing.workspace = true
 zerocopy.workspace = true
-[target.'cfg(all(target_arch = "x86_64", target_os = "linux"))'.build-dependencies]
-loader_defs.workspace = true
 
 [lints]
 workspace = true

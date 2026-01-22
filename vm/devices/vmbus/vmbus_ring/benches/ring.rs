@@ -8,11 +8,11 @@
 use criterion::BenchmarkId;
 use criterion::Criterion;
 use criterion::Throughput;
-use criterion::black_box;
 use criterion::criterion_group;
 use criterion::criterion_main;
 use safeatomic::AsAtomicBytes;
 use safeatomic::AtomicSliceOps;
+use std::hint::black_box;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU32;
 use vmbus_ring::CONTROL_WORD_COUNT;
@@ -120,7 +120,7 @@ fn paged_ring_mem(c: &mut Criterion) {
     group.finish();
 
     let mut group = c.benchmark_group("write");
-    for size in &[16usize, 256, 8192] {
+    for size in &[16usize, 40, 256, 8192] {
         group
             .throughput(Throughput::Bytes(*size as u64))
             .bench_with_input(

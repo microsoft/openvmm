@@ -41,11 +41,59 @@ impl ResourceId<NonVolatileStoreKind> for VmgsFileHandle {
 #[derive(MeshPayload, Debug)]
 pub enum VmgsResource {
     /// Use disk to store guest state
-    Disk(Resource<DiskHandleKind>),
+    Disk(VmgsDisk),
     /// Use disk to store guest state, reformatting if corrupted.
-    ReprovisionOnFailure(Resource<DiskHandleKind>),
+    ReprovisionOnFailure(VmgsDisk),
     /// Format and use disk to store guest state
-    Reprovision(Resource<DiskHandleKind>),
+    Reprovision(VmgsDisk),
     /// Store guest state in memory
     Ephemeral,
+}
+
+impl VmgsResource {
+    /// get the encryption policy (returns None for ephemeral guest state)
+    pub fn encryption_policy(&self) -> GuestStateEncryptionPolicy {
+        match self {
+            VmgsResource::Disk(vmgs)
+            | VmgsResource::ReprovisionOnFailure(vmgs)
+            | VmgsResource::Reprovision(vmgs) => vmgs.encryption_policy,
+            VmgsResource::Ephemeral => GuestStateEncryptionPolicy::None(true),
+        }
+    }
+}
+
+/// VMGS disk resource
+#[derive(MeshPayload, Debug)]
+pub struct VmgsDisk {
+    /// Backing disk
+    pub disk: Resource<DiskHandleKind>,
+    /// Guest state encryption policy
+    pub encryption_policy: GuestStateEncryptionPolicy,
+}
+
+/// Guest state encryption policy
+///
+/// See detailed comments in `get_protocol`
+#[derive(MeshPayload, Debug, Clone, Copy)]
+pub enum GuestStateEncryptionPolicy {
+    /// Use the best encryption available, allowing fallback.
+    Auto,
+    /// Prefer (or require, if strict) no encryption.
+    None(bool),
+    /// Prefer (or require, if strict) GspById.
+    GspById(bool),
+    /// Prefer (or require, if strict) GspKey.
+    GspKey(bool),
+}
+
+impl GuestStateEncryptionPolicy {
+    /// whether to use strict encryption policy
+    pub fn is_strict(&self) -> bool {
+        match self {
+            GuestStateEncryptionPolicy::Auto => false,
+            GuestStateEncryptionPolicy::None(strict)
+            | GuestStateEncryptionPolicy::GspById(strict)
+            | GuestStateEncryptionPolicy::GspKey(strict) => *strict,
+        }
+    }
 }

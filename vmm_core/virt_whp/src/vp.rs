@@ -27,30 +27,6 @@ use virt::io::CpuIo;
 use virt::vp::AccessVpState;
 use zerocopy::IntoBytes;
 
-#[derive(Debug, Error)]
-pub enum WhpRunVpError {
-    #[error("failed to run")]
-    Run(#[source] whp::WHvError),
-    #[error("failed to access state for emulation")]
-    EmulationState(#[source] whp::WHvError),
-    #[error("failed to set VP activity")]
-    Activity(#[source] whp::WHvError),
-    #[error("failed to set pending event")]
-    Event(#[source] whp::WHvError),
-    #[error("failed to translate GVA")]
-    TranslateGva(#[source] whp::WHvError),
-    #[error("failed to set pending interruption")]
-    Interruption(#[source] whp::WHvError),
-    #[error("vp state is invalid")]
-    InvalidVpState,
-    #[error("accessing deferred ram by VTL 2")]
-    DeferredRamAccess,
-    #[error("state access error")]
-    State(#[source] crate::Error),
-    #[error("exit reason {0:?} not supported")]
-    UnknownExit(HvMessageType),
-}
-
 #[derive(Debug, Default, Inspect)]
 pub(crate) struct ExitStats {
     msr: Counter,
@@ -71,6 +47,10 @@ pub(crate) struct ExitStats {
     exception: Counter,
     other: Counter,
 }
+
+#[derive(Debug, Error)]
+#[error("failed to run")]
+pub struct WhpRunVpError(#[source] whp::WHvError);
 
 impl<'a> WhpProcessor<'a> {
     pub(crate) fn current_vtlp(&self) -> &'a VtlPartition {
@@ -250,9 +230,8 @@ impl<'a> WhpProcessor<'a> {
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<WhpRunVpError>> {
-        self.reset_if_requested()
-            .map_err(VpHaltReason::Hypervisor)?;
+    ) -> Result<Infallible, VpHaltReason> {
+        self.reset_if_requested();
 
         tracing::trace!(vtl = ?self.state.active_vtl, "current vtl");
         let mut last_waker = None;
@@ -288,9 +267,7 @@ impl<'a> WhpProcessor<'a> {
                         } else {
                             self.current_whp()
                                 .set_register(whp::Register64::InternalActivityState, 0)
-                                .map_err(|err| {
-                                    VpHaltReason::Hypervisor(WhpRunVpError::Activity(err))
-                                })?;
+                                .unwrap();
                         }
                     }
                 }
@@ -367,7 +344,7 @@ impl<'a> WhpProcessor<'a> {
                 }
 
                 // Process the user-mode APIC, waiting for interrupts if halted.
-                let ready = self.process_apic(dev).map_err(VpHaltReason::Hypervisor)?;
+                let ready = self.process_apic(dev);
 
                 // Arm the timer.
                 if self.state.vmtime.poll_timeout(cx).is_ready() {
@@ -378,7 +355,7 @@ impl<'a> WhpProcessor<'a> {
                 }
 
                 if ready {
-                    <Result<_, VpHaltReason<_>>>::Ok(()).into()
+                    <Result<_, VpHaltReason>>::Ok(()).into()
                 } else {
                     Poll::Pending
                 }
@@ -409,7 +386,7 @@ impl<'a> WhpProcessor<'a> {
             let mut runner = self.current_whp().runner();
             let exit = runner
                 .run()
-                .map_err(|err| VpHaltReason::Hypervisor(WhpRunVpError::Run(err)))?;
+                .map_err(|err| dev.fatal_error(WhpRunVpError(err).into()))?;
 
             // Clear lazy EOI before processing the exit.
             if lazy_eoi {
@@ -422,7 +399,7 @@ impl<'a> WhpProcessor<'a> {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn handle_triple_fault(&mut self) -> Result<(), VpHaltReason<WhpRunVpError>> {
+    fn handle_triple_fault(&mut self) -> Result<(), VpHaltReason> {
         let reinject_into_vtl2 = self
             .vp
             .partition
@@ -485,7 +462,7 @@ impl<'a> WhpProcessor<'a> {
     }
 
     /// Flushes pending register changes.
-    pub(crate) fn reset_if_requested(&mut self) -> Result<(), WhpRunVpError> {
+    pub(crate) fn reset_if_requested(&mut self) {
         if self.inner.reset_next.swap(false, Ordering::SeqCst) {
             self.state.reset(false, self.inner.vp_info.base.is_bsp());
         }
@@ -503,8 +480,6 @@ impl<'a> WhpProcessor<'a> {
             self.state.finish_reset_vtl2 = false;
             self.finish_reset(Vtl::Vtl2);
         }
-
-        Ok(())
     }
 
     fn finish_reset(&mut self, vtl: Vtl) {
@@ -562,7 +537,6 @@ impl<'a> WhpProcessor<'a> {
 
 #[cfg(guest_arch = "x86_64")]
 mod x86 {
-    use super::WhpRunVpError;
     use crate::Hv1State;
     use crate::WhpProcessor;
     use crate::emu;
@@ -576,6 +550,7 @@ mod x86 {
     use hvdef::HvX64VpExecutionState;
     use hvdef::Vtl;
     use hvdef::hypercall::InitialVpContextX64;
+    use thiserror::Error;
     use virt::LateMapVtl0MemoryPolicy;
     use virt::VpHaltReason;
     use virt::io::CpuIo;
@@ -591,6 +566,14 @@ mod x86 {
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
 
+    #[derive(Debug, Error)]
+    #[error("vp state is invalid")]
+    struct InvalidVpState;
+
+    #[derive(Debug, Error)]
+    #[error("accessing deferred ram by VTL 2")]
+    struct DeferredRamAccess;
+
     // HACK: on certain machines, Windows booting from the PCAT BIOS spams these
     // MSRs during boot.
     //
@@ -603,7 +586,7 @@ mod x86 {
             &mut self,
             dev: &impl CpuIo,
             exit: whp::Exit<'_>,
-        ) -> Result<(), VpHaltReason<WhpRunVpError>> {
+        ) -> Result<(), VpHaltReason> {
             use whp::ExitReason;
 
             let stat = match exit.reason {
@@ -612,7 +595,7 @@ mod x86 {
                     &mut self.state.exits.io
                 }
                 ExitReason::Cpuid(info) => {
-                    self.handle_cpuid(info, exit)?;
+                    self.handle_cpuid(info, exit);
                     &mut self.state.exits.cpuid
                 }
                 ExitReason::ApicEoi(info) => {
@@ -620,17 +603,15 @@ mod x86 {
                     &mut self.state.exits.apic_eoi
                 }
                 ExitReason::MsrAccess(info) => {
-                    self.handle_msr(dev, info, exit)
-                        .map_err(VpHaltReason::Hypervisor)?;
+                    self.handle_msr(dev, info, exit);
                     &mut self.state.exits.msr
                 }
                 ExitReason::InterruptWindow(info) => {
-                    self.handle_interrupt_window(info)?;
+                    self.handle_interrupt_window(info);
                     &mut self.state.exits.interrupt_window
                 }
                 ExitReason::Hypercall(info) => {
-                    crate::hypercalls::WhpHypercallExit::handle(self, dev, info, exit.vp_context)
-                        .map_err(VpHaltReason::Hypervisor)?;
+                    crate::hypercalls::WhpHypercallExit::handle(self, dev, info, exit.vp_context);
                     &mut self.state.exits.hypercall
                 }
                 ExitReason::MemoryAccess(access) => {
@@ -647,15 +628,14 @@ mod x86 {
                     &mut self.state.exits.other
                 }
                 ExitReason::InvalidVpRegisterValue => {
-                    return Err(VpHaltReason::InvalidVmState(WhpRunVpError::InvalidVpState));
+                    return Err(dev.fatal_error(InvalidVpState.into()));
                 }
                 ExitReason::Halt => {
                     self.handle_halt(exit);
                     &mut self.state.exits.halt
                 }
                 ExitReason::Exception(info) => {
-                    self.handle_exception(dev, info, exit)
-                        .map_err(VpHaltReason::Hypervisor)?;
+                    self.handle_exception(dev, info, exit);
                     &mut self.state.exits.exception
                 }
                 _ => {
@@ -744,7 +724,7 @@ mod x86 {
             dev: &impl CpuIo,
             access: &whp::abi::WHV_MEMORY_ACCESS_CONTEXT,
             exit: whp::Exit<'_>,
-        ) -> Result<(), VpHaltReason<WhpRunVpError>> {
+        ) -> Result<(), VpHaltReason> {
             let backing_type = self
                 .vp
                 .partition
@@ -875,9 +855,7 @@ mod x86 {
                         .vtl0_deferred_policy
                     {
                         LateMapVtl0MemoryPolicy::Halt => {
-                            return Err(VpHaltReason::InvalidVmState(
-                                WhpRunVpError::DeferredRamAccess,
-                            ));
+                            return Err(dev.fatal_error(DeferredRamAccess.into()));
                         }
                         LateMapVtl0MemoryPolicy::Log => {}
                         LateMapVtl0MemoryPolicy::InjectException => {
@@ -890,9 +868,7 @@ mod x86 {
 
                             self.current_whp()
                                 .set_register(whp::Register128::PendingEvent, event.into())
-                                .map_err(|err| {
-                                    VpHaltReason::Hypervisor(WhpRunVpError::Event(err))
-                                })?;
+                                .unwrap();
 
                             return Ok(());
                         }
@@ -914,7 +890,7 @@ mod x86 {
                         dev,
                         interruption_pending,
                         gva_valid,
-                    )? {
+                    ) {
                         if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
                             self.signal_mnf(dev, connection_id);
                         }
@@ -941,7 +917,7 @@ mod x86 {
         fn handle_interrupt_window(
             &mut self,
             info: &whp::abi::WHV_X64_INTERRUPTION_DELIVERABLE_CONTEXT,
-        ) -> Result<(), VpHaltReason<WhpRunVpError>> {
+        ) {
             if self.state.enabled_vtls.is_set(Vtl::Vtl2) && self.state.active_vtl == Vtl::Vtl0 {
                 let notifications = &mut self.state.vtl2_deliverability_notifications;
                 let inject = if notifications.interrupt_notification()
@@ -974,7 +950,7 @@ mod x86 {
                     );
 
                     // If VTL2 wanted this type of notification, then the host did not.
-                    return Ok(());
+                    return;
                 }
             }
 
@@ -983,7 +959,6 @@ mod x86 {
             notifications.set_interrupt_notification(false);
             notifications.set_nmi_notification(false);
             notifications.set_interrupt_priority(0);
-            Ok(())
         }
 
         fn handle_apic_eoi(&mut self, info: &whp::abi::WHV_X64_APIC_EOI_CONTEXT, dev: &impl CpuIo) {
@@ -1009,7 +984,7 @@ mod x86 {
             dev: &impl CpuIo,
             info: &whp::abi::WHV_X64_IO_PORT_ACCESS_CONTEXT,
             exit: whp::Exit<'_>,
-        ) -> Result<(), VpHaltReason<WhpRunVpError>> {
+        ) -> Result<(), VpHaltReason> {
             // Before handling, check if we should dispatch the exit to VTL2.
             if let Some(intercept_state) = self.intercept_state() {
                 if self.state.active_vtl == Vtl::Vtl0
@@ -1076,7 +1051,7 @@ mod x86 {
                     self.current_whp(),
                     [(whp::Register64::Rax, rax), (whp::Register64::Rip, rip),]
                 )
-                .map_err(|err| VpHaltReason::Hypervisor(WhpRunVpError::EmulationState(err)))?;
+                .unwrap();
             }
             Ok(())
         }
@@ -1085,7 +1060,7 @@ mod x86 {
             &mut self,
             info: &whp::abi::WHV_X64_CPUID_ACCESS_CONTEXT,
             exit: whp::Exit<'_>,
-        ) -> Result<(), VpHaltReason<WhpRunVpError>> {
+        ) {
             let function = info.Rax as u32;
             let index = info.Rcx as u32;
             let default = [
@@ -1182,7 +1157,7 @@ mod x86 {
                         HvMessageType::HvMessageTypeX64CpuidIntercept,
                         message.as_bytes(),
                     );
-                    return Ok(());
+                    return;
                 }
             }
 
@@ -1197,9 +1172,7 @@ mod x86 {
                     (whp::Register64::Rip, rip),
                 ]
             )
-            .map_err(|err| VpHaltReason::Hypervisor(WhpRunVpError::EmulationState(err)))?;
-
-            Ok(())
+            .unwrap();
         }
 
         fn send_unknown_msrs_to_vtl2(&self) -> bool {
@@ -1235,11 +1208,11 @@ mod x86 {
             dev: &impl CpuIo,
             info: &whp::abi::WHV_X64_MSR_ACCESS_CONTEXT,
             exit: whp::Exit<'_>,
-        ) -> Result<(), WhpRunVpError> {
+        ) {
             let handled = if info.AccessInfo.IsWrite() {
-                self.msr_write(dev, exit, info.MsrNumber, info.Rax, info.Rdx)?
+                self.msr_write(dev, exit, info.MsrNumber, info.Rax, info.Rdx)
             } else {
-                self.msr_read(dev, exit, info.MsrNumber)?
+                self.msr_read(dev, exit, info.MsrNumber)
             };
             if !handled {
                 // inject a GPF
@@ -1251,9 +1224,8 @@ mod x86 {
 
                 self.current_whp()
                     .set_register(whp::Register128::PendingEvent, event.into())
-                    .map_err(WhpRunVpError::Event)?;
+                    .unwrap();
             }
-            Ok(())
         }
 
         fn msr_write(
@@ -1263,7 +1235,7 @@ mod x86 {
             msr: u32,
             rax: u64,
             rdx: u64,
-        ) -> Result<bool, WhpRunVpError> {
+        ) -> bool {
             let v = rax & 0xffffffff | rdx << 32;
             let r = self
                 .apic_msr_write(dev, msr, v)
@@ -1361,7 +1333,7 @@ mod x86 {
                         rdx,
                         rax,
                     );
-                    return Ok(true);
+                    return true;
                 }
             }
 
@@ -1384,18 +1356,13 @@ mod x86 {
                 let rip = exit.vp_context.Rip.wrapping_add(2);
                 self.current_whp()
                     .set_register(whp::Register64::Rip, rip)
-                    .map_err(WhpRunVpError::EmulationState)?;
+                    .unwrap();
             }
 
-            Ok(!gpf)
+            !gpf
         }
 
-        fn msr_read(
-            &mut self,
-            dev: &impl CpuIo,
-            exit: whp::Exit<'_>,
-            msr: u32,
-        ) -> Result<bool, WhpRunVpError> {
+        fn msr_read(&mut self, dev: &impl CpuIo, exit: whp::Exit<'_>, msr: u32) -> bool {
             let r = self
                 .apic_msr_read(dev, msr)
                 .or_else_if_unknown(|| match msr {
@@ -1455,7 +1422,7 @@ mod x86 {
                         0,
                         0,
                     );
-                    return Ok(true);
+                    return true;
                 }
             }
 
@@ -1480,10 +1447,10 @@ mod x86 {
                         (whp::Register64::Rip, rip),
                     ]
                 )
-                .map_err(WhpRunVpError::EmulationState)?;
+                .unwrap();
             }
 
-            Ok(v.is_some())
+            v.is_some()
         }
 
         /// Handles exception exits, which are only used to handle emulating
@@ -1493,7 +1460,7 @@ mod x86 {
             dev: &impl CpuIo,
             info: &whp::abi::WHV_VP_EXCEPTION_CONTEXT,
             exit: whp::Exit<'_>,
-        ) -> Result<(), WhpRunVpError> {
+        ) {
             if !info.ExceptionInfo.SoftwareException()
                 && info.ExceptionType.0 == x86defs::Exception::GENERAL_PROTECTION_FAULT.0
             {
@@ -1508,13 +1475,10 @@ mod x86 {
                                 whp::Register64::Rdx
                             ]
                         )
-                        .map_err(WhpRunVpError::EmulationState)?;
+                        .unwrap();
 
-                        let mut header = self.new_intercept_header(2, HvInterceptAccessType::WRITE);
-                        header.instruction_length_and_cr8 = 2;
-
-                        if self.msr_write(dev, exit, rcx as u32, rax, rdx)? {
-                            return Ok(());
+                        if self.msr_write(dev, exit, rcx as u32, rax, rdx) {
+                            return;
                         }
                     }
                     [0x0f, 0x32, ..] => {
@@ -1522,13 +1486,10 @@ mod x86 {
                         let rcx = self
                             .current_whp()
                             .get_register(whp::Register64::Rcx)
-                            .map_err(WhpRunVpError::EmulationState)?;
+                            .unwrap();
 
-                        let mut header = self.new_intercept_header(2, HvInterceptAccessType::READ);
-                        header.instruction_length_and_cr8 = 2;
-
-                        if self.msr_read(dev, exit, rcx as u32)? {
-                            return Ok(());
+                        if self.msr_read(dev, exit, rcx as u32) {
+                            return;
                         }
                     }
                     _ => {}
@@ -1551,9 +1512,7 @@ mod x86 {
 
             self.current_whp()
                 .set_register(whp::Register128::PendingEvent, event)
-                .map_err(WhpRunVpError::Event)?;
-
-            Ok(())
+                .unwrap();
         }
 
         /// Emulates an instruction due to a memory access exit.
@@ -1562,7 +1521,7 @@ mod x86 {
             access: &WhpVpRefEmulation<'_>,
             dev: &impl CpuIo,
             exit: &whp::Exit<'_>,
-        ) -> Result<(), VpHaltReason<WhpRunVpError>> {
+        ) -> Result<(), VpHaltReason> {
             let vp = self.vp;
             let mut state = emu::WhpEmulationState::new(access, self, exit, dev);
             let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
@@ -1726,7 +1685,6 @@ mod x86 {
 
 #[cfg(guest_arch = "aarch64")]
 mod aarch64 {
-    use super::WhpRunVpError;
     use crate::InitialVpContext;
     use crate::WhpProcessor;
     use aarch64defs::EsrEl2;
@@ -1742,8 +1700,8 @@ mod aarch64 {
     }
 
     impl WhpProcessor<'_> {
-        pub(super) fn process_apic(&mut self, _dev: &impl CpuIo) -> Result<bool, WhpRunVpError> {
-            Ok(true)
+        pub(super) fn process_apic(&mut self, _dev: &impl CpuIo) -> bool {
+            true
         }
 
         pub(super) fn sync_lazy_eoi(&mut self) -> bool {
@@ -1754,11 +1712,9 @@ mod aarch64 {
             unreachable!()
         }
 
-        pub(crate) fn flush_apic(&mut self, _vtl: Vtl) -> Result<(), WhpRunVpError> {
-            Ok(())
-        }
+        pub(crate) fn flush_apic(&mut self, _vtl: Vtl) {}
 
-        fn get_x(&self, n: u8) -> Result<u64, WhpRunVpError> {
+        fn get_x(&self, n: u8) -> u64 {
             let mut value = [Default::default()];
             self.current_whp()
                 .get_registers(
@@ -1767,11 +1723,11 @@ mod aarch64 {
                     )],
                     &mut value,
                 )
-                .map_err(WhpRunVpError::EmulationState)?;
-            Ok(u128::from(value[0].0) as u64)
+                .unwrap();
+            u128::from(value[0].0) as u64
         }
 
-        fn set_x(&self, n: u8, v: u64) -> Result<(), WhpRunVpError> {
+        fn set_x(&self, n: u8, v: u64) {
             let value = [whp::abi::WHV_REGISTER_VALUE(v.into())];
             self.current_whp()
                 .set_registers(
@@ -1780,15 +1736,14 @@ mod aarch64 {
                     )],
                     &value,
                 )
-                .map_err(WhpRunVpError::EmulationState)?;
-            Ok(())
+                .unwrap();
         }
 
         pub(super) async fn handle_exit(
             &mut self,
             dev: &impl CpuIo,
             exit: whp::Exit<'_>,
-        ) -> Result<(), VpHaltReason<WhpRunVpError>> {
+        ) -> Result<(), VpHaltReason> {
             use whp::ExitReason;
 
             let stat = match exit.reason {
@@ -1816,8 +1771,8 @@ mod aarch64 {
                     HvMessageType::HvMessageTypeArm64ResetIntercept => {
                         return Err(self.handle_reset(message_ref(message)));
                     }
-                    reason => {
-                        return Err(VpHaltReason::Hypervisor(WhpRunVpError::UnknownExit(reason)));
+                    _ => {
+                        unreachable!("unsupported exit reason: {:?}", exit);
                     }
                 },
             };
@@ -1836,7 +1791,7 @@ mod aarch64 {
             dev: &impl CpuIo,
             message: &hvdef::HvArm64MemoryInterceptMessage,
             exit: whp::Exit<'_>,
-        ) -> Result<(), VpHaltReason<WhpRunVpError>> {
+        ) -> Result<(), VpHaltReason> {
             let _ = (dev, message, exit);
             let syndrome = EsrEl2::from(message.syndrome);
             tracing::trace!(
@@ -1848,7 +1803,7 @@ mod aarch64 {
                 ExceptionClass::DATA_ABORT_LOWER => {
                     let iss = IssDataAbort::from(syndrome.iss());
                     if !iss.isv() {
-                        return Err(VpHaltReason::EmulationFailure(
+                        return Err(dev.fatal_error(
                             anyhow::anyhow!("can't handle data abort without isv: {iss:?}").into(),
                         ));
                     }
@@ -1856,10 +1811,7 @@ mod aarch64 {
                     let sign_extend = iss.sse();
                     let reg = iss.srt();
                     if iss.wnr() {
-                        let data = self
-                            .get_x(reg)
-                            .map_err(VpHaltReason::Hypervisor)?
-                            .to_ne_bytes();
+                        let data = self.get_x(reg).to_ne_bytes();
                         dev.write_mmio(self.vp.index, message.guest_physical_address, &data[..len])
                             .await;
                     } else {
@@ -1878,7 +1830,7 @@ mod aarch64 {
                                 data &= 0xffffffff;
                             }
                         }
-                        self.set_x(reg, data).map_err(VpHaltReason::Hypervisor)?;
+                        self.set_x(reg, data);
                     }
                     let pc = message
                         .header
@@ -1886,12 +1838,10 @@ mod aarch64 {
                         .wrapping_add(if syndrome.il() { 4 } else { 2 });
                     self.current_whp()
                         .set_register(whp::Register64::Pc, pc)
-                        .map_err(|err| {
-                            VpHaltReason::Hypervisor(WhpRunVpError::EmulationState(err))
-                        })?;
+                        .unwrap();
                 }
                 ec => {
-                    return Err(VpHaltReason::EmulationFailure(
+                    return Err(dev.fatal_error(
                         anyhow::anyhow!("unknown memory access exception: {ec:?}").into(),
                     ));
                 }
@@ -1900,14 +1850,17 @@ mod aarch64 {
         }
 
         /// Handle a reset from the hypervisor-handled PSCI call.
-        fn handle_reset(
-            &mut self,
-            info: &hvdef::HvArm64ResetInterceptMessage,
-        ) -> VpHaltReason<WhpRunVpError> {
+        fn handle_reset(&mut self, info: &hvdef::HvArm64ResetInterceptMessage) -> VpHaltReason {
             match info.reset_type {
                 hvdef::HvArm64ResetType::POWER_OFF => VpHaltReason::PowerOff,
                 hvdef::HvArm64ResetType::REBOOT => VpHaltReason::Reset,
-                ty => unreachable!("unexpected reset type: {ty:?}",),
+                hvdef::HvArm64ResetType::HIBERNATE => VpHaltReason::Hibernate,
+                hvdef::HvArm64ResetType::SYSTEM_RESET => {
+                    // TODO: What values can it have?
+                    tracing::debug!(reset_code = info.reset_code, "system reset");
+                    VpHaltReason::Reset
+                }
+                ty => unreachable!("unknown reset type: {:#x?}, {:#x}", ty, info.reset_code),
             }
         }
 

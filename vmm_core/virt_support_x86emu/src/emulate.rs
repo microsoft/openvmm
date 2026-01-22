@@ -12,6 +12,7 @@ use hvdef::HV_PAGE_SIZE;
 use hvdef::HvInterceptAccessType;
 use hvdef::HvMapGpaFlags;
 use thiserror::Error;
+use virt::EmulatorMonitorSupport;
 use virt::VpHaltReason;
 use virt::io::CpuIo;
 use vm_topology::processor::VpIndex;
@@ -27,9 +28,6 @@ use zerocopy::IntoBytes;
 
 /// Support routines for the emulator.
 pub trait EmulatorSupport {
-    /// The hypervisor error type.
-    type Error: 'static + std::error::Error + Send + Sync;
-
     /// The current VP index.
     fn vp_index(&self) -> VpIndex;
 
@@ -67,10 +65,10 @@ pub trait EmulatorSupport {
     fn xmm(&mut self, reg: usize) -> u128;
 
     /// Sets the value of an XMM* register.
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error>;
+    fn set_xmm(&mut self, reg: usize, value: u128);
 
     /// Flush registers in the emulation cache to the backing
-    fn flush(&mut self) -> Result<(), Self::Error>;
+    fn flush(&mut self);
 
     /// The instruction bytes, if available.
     fn instruction_bytes(&self) -> &[u8];
@@ -90,23 +88,21 @@ pub trait EmulatorSupport {
         &mut self,
         gpa: u64,
         mode: TranslateMode,
-    ) -> Result<(), EmuCheckVtlAccessError<Self::Error>>;
+    ) -> Result<(), EmuCheckVtlAccessError>;
 
     /// Translates a GVA to a GPA.
     fn translate_gva(
         &mut self,
         gva: u64,
         mode: TranslateMode,
-    ) -> Result<Result<EmuTranslateResult, EmuTranslateError>, Self::Error>;
+    ) -> Result<EmuTranslateResult, EmuTranslateError>;
 
     /// Generates an event (exception, guest nested page fault, etc.) in the guest.
     fn inject_pending_event(&mut self, event_info: hvdef::HvX64PendingEvent);
 
-    /// Check if the specified write is wholly inside the monitor page, and signal the associated
-    /// connected ID if it is.
-    fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
-        let _ = (gpa, bytes);
-        false
+    /// Get access to monitor support for the emulator, if it supports it.
+    fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
+        None
     }
 
     /// Returns true if `gpa` is mapped for the specified permissions.
@@ -136,8 +132,6 @@ pub trait EmulatorSupport {
 }
 
 pub trait TranslateGvaSupport {
-    type Error;
-
     /// Gets the object used to access the guest memory.
     fn guest_memory(&self) -> &GuestMemory;
 
@@ -145,7 +139,7 @@ pub trait TranslateGvaSupport {
     fn acquire_tlb_lock(&mut self);
 
     /// Returns the registers used to walk the page table.
-    fn registers(&mut self) -> Result<crate::translate::TranslationRegisters, Self::Error>;
+    fn registers(&mut self) -> crate::translate::TranslationRegisters;
 }
 
 /// Emulates a page table walk.
@@ -155,7 +149,7 @@ pub fn emulate_translate_gva<T: TranslateGvaSupport>(
     support: &mut T,
     gva: u64,
     mode: TranslateMode,
-) -> Result<Result<EmuTranslateResult, EmuTranslateError>, T::Error> {
+) -> Result<EmuTranslateResult, EmuTranslateError> {
     // Always acquire the TLB lock for this path.
     support.acquire_tlb_lock();
 
@@ -169,9 +163,9 @@ pub fn emulate_translate_gva<T: TranslateGvaSupport>(
         set_page_table_bits: true,
     };
 
-    let registers = support.registers()?;
+    let registers = support.registers();
 
-    let r = match translate_gva_to_gpa(support.guest_memory(), gva, &registers, flags) {
+    match translate_gva_to_gpa(support.guest_memory(), gva, &registers, flags) {
         Ok(crate::translate::TranslateResult { gpa, cache_info: _ }) => Ok(EmuTranslateResult {
             gpa,
             overlay_page: None,
@@ -180,8 +174,7 @@ pub fn emulate_translate_gva<T: TranslateGvaSupport>(
             code: err.into(),
             event_info: None,
         }),
-    };
-    Ok(r)
+    }
 }
 
 /// The result of translate_gva on [`EmulatorSupport`].
@@ -205,9 +198,7 @@ pub struct InitialTranslation {
 }
 
 #[derive(Error, Debug)]
-pub enum EmuCheckVtlAccessError<E> {
-    #[error(transparent)]
-    Hypervisor(#[from] E),
+pub enum EmuCheckVtlAccessError {
     #[error("failed vtl permissions access for vtl {vtl:?} and access flags {denied_flags:?}")]
     AccessDenied {
         vtl: hvdef::Vtl,
@@ -255,20 +246,18 @@ impl TryFrom<HvInterceptAccessType> for TranslateMode {
 }
 
 #[derive(Debug, Error)]
-enum EmulationError<E> {
+enum EmulationError {
     #[error("an interrupt caused the memory access exit")]
     InterruptionPending,
     #[error("linear IP was not within CS segment limit")]
     LinearIpPastCsLimit,
-    #[error("failed to flush the emulator cache")]
-    CacheFlushFailed(#[source] E),
     #[error("failed to read instruction stream")]
-    InstructionRead(#[source] E),
+    InstructionRead(#[source] Error),
     #[error("emulator error (instruction {bytes:02x?})")]
     Emulator {
         bytes: Vec<u8>,
         #[source]
-        error: x86emu::Error<E>,
+        error: x86emu::Error<Error>,
     },
 }
 
@@ -303,7 +292,17 @@ pub async fn emulate<T: EmulatorSupport>(
     support: &mut T,
     emu_mem: &EmulatorMemoryAccess<'_>,
     dev: &impl CpuIo,
-) -> Result<(), VpHaltReason<T::Error>> {
+) -> Result<(), VpHaltReason> {
+    emulate_core(support, emu_mem, dev)
+        .await
+        .map_err(|e| dev.fatal_error(e.into()))
+}
+
+async fn emulate_core<T: EmulatorSupport>(
+    support: &mut T,
+    emu_mem: &EmulatorMemoryAccess<'_>,
+    dev: &impl CpuIo,
+) -> Result<(), EmulationError> {
     let vendor = support.vendor();
 
     let mut bytes = [0; 16];
@@ -335,9 +334,7 @@ pub async fn emulate<T: EmulatorSupport>(
         // cause an infinite loop (as the processor tries to get the trap
         // vector out of the mmio-ed vector table).  Just give up.
 
-        return Err(VpHaltReason::EmulationFailure(
-            EmulationError::<T::Error>::InterruptionPending.into(),
-        ));
+        return Err(EmulationError::InterruptionPending);
     }
 
     let initial_alignment_check = support.rflags().alignment_check();
@@ -357,11 +354,9 @@ pub async fn emulate<T: EmulatorSupport>(
                 assert!(valid_bytes < bytes.len());
 
                 // TODO: inject #GP due to segmentation fault.
-                let linear_ip =
-                    emu.linear_ip(valid_bytes as u64)
-                        .ok_or(VpHaltReason::EmulationFailure(
-                            EmulationError::<T::Error>::LinearIpPastCsLimit.into(),
-                        ))?;
+                let linear_ip = emu
+                    .linear_ip(valid_bytes as u64)
+                    .ok_or(EmulationError::LinearIpPastCsLimit)?;
 
                 let is_user_mode = emu.is_user_mode();
 
@@ -374,9 +369,7 @@ pub async fn emulate<T: EmulatorSupport>(
                         if inject_memory_access_fault(linear_ip, &translate_error, support) {
                             return Ok(());
                         } else {
-                            return Err(VpHaltReason::EmulationFailure(
-                                EmulationError::InstructionRead(translate_error).into(),
-                            ));
+                            return Err(EmulationError::InstructionRead(translate_error));
                         }
                     }
                 };
@@ -387,9 +380,7 @@ pub async fn emulate<T: EmulatorSupport>(
                     if inject_memory_access_fault(linear_ip, &err, support) {
                         return Ok(());
                     } else {
-                        return Err(VpHaltReason::EmulationFailure(
-                            EmulationError::InstructionRead(err).into(),
-                        ));
+                        return Err(EmulationError::InstructionRead(err));
                     };
                 }
 
@@ -417,9 +408,7 @@ pub async fn emulate<T: EmulatorSupport>(
         break res;
     };
 
-    cpu.support.flush().map_err(|err| {
-        VpHaltReason::EmulationFailure(EmulationError::<T::Error>::CacheFlushFailed(err).into())
-    })?;
+    cpu.support.flush();
 
     // If the alignment check flag is not in sync with the hypervisor because the instruction emulator
     // modifies internally, then the appropriate SMAP enforcement flags need to be passed to the hypervisor
@@ -463,13 +452,10 @@ pub async fn emulate<T: EmulatorSupport>(
                     "given an instruction that we shouldn't have been asked to emulate - likely a bug in the caller"
                 );
 
-                return Err(VpHaltReason::EmulationFailure(
-                    EmulationError::Emulator {
-                        bytes: instruction_bytes.to_vec(),
-                        error: err,
-                    }
-                    .into(),
-                ));
+                return Err(EmulationError::Emulator {
+                    bytes: instruction_bytes.to_vec(),
+                    error: err,
+                });
             }
             x86emu::Error::InstructionException(exception, error_code, cause) => {
                 tracing::trace!(
@@ -483,23 +469,17 @@ pub async fn emulate<T: EmulatorSupport>(
             }
             x86emu::Error::MemoryAccess(addr, kind, err) => {
                 if !inject_memory_access_fault(addr, &err, support) {
-                    return Err(VpHaltReason::EmulationFailure(
-                        EmulationError::Emulator {
-                            bytes: instruction_bytes.to_vec(),
-                            error: x86emu::Error::MemoryAccess(addr, kind, err),
-                        }
-                        .into(),
-                    ));
+                    return Err(EmulationError::Emulator {
+                        bytes: instruction_bytes.to_vec(),
+                        error: x86emu::Error::MemoryAccess(addr, kind, err),
+                    });
                 }
             }
-            err @ (x86emu::Error::IoPort { .. } | x86emu::Error::XmmRegister { .. }) => {
-                return Err(VpHaltReason::EmulationFailure(
-                    EmulationError::Emulator {
-                        bytes: instruction_bytes.to_vec(),
-                        error: err,
-                    }
-                    .into(),
-                ));
+            err @ x86emu::Error::IoPort { .. } => {
+                return Err(EmulationError::Emulator {
+                    bytes: instruction_bytes.to_vec(),
+                    error: err,
+                });
             }
             x86emu::Error::NotEnoughBytes => unreachable!(),
         }
@@ -521,7 +501,7 @@ pub async fn emulate_insn_memory_op<T: EmulatorSupport>(
     segment: Segment,
     alignment: AlignmentMode,
     op: EmulatedMemoryOperation<'_>,
-) -> Result<(), VpHaltReason<T::Error>> {
+) -> Result<(), VpHaltReason> {
     assert!(!support.interruption_pending());
 
     let vendor = support.vendor();
@@ -534,7 +514,7 @@ pub async fn emulate_insn_memory_op<T: EmulatorSupport>(
             emu.write_memory(segment, gva, alignment, data).await
         }
     }
-    .map_err(|e| VpHaltReason::EmulationFailure(e.into()))
+    .map_err(|e| dev.fatal_error(e.into()))
 
     // No need to flush the cache, we have not modified any registers.
 }
@@ -571,9 +551,7 @@ struct EmulatorCpu<'a, T, U> {
 }
 
 #[derive(Debug, Error)]
-enum Error<E> {
-    #[error(transparent)]
-    Hypervisor(#[from] E),
+enum Error {
     #[error("translation error")]
     Translate(
         #[source] TranslateGvaError,
@@ -638,7 +616,7 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
         gva: u64,
         mode: TranslateMode,
         is_user_mode: bool,
-    ) -> Result<u64, Error<T::Error>> {
+    ) -> Result<u64, Error> {
         type TranslateCode = hvdef::hypercall::TranslateGvaResultCode;
 
         if let Some(GvaGpaCacheEntry {
@@ -660,7 +638,7 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
         };
 
         match self.support.translate_gva(gva, mode) {
-            Ok(Ok(EmuTranslateResult { gpa, overlay_page })) => {
+            Ok(EmuTranslateResult { gpa, overlay_page }) => {
                 if overlay_page.is_some()
                     && overlay_page
                         .expect("should've already checked that the overlay page has value")
@@ -691,7 +669,7 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
                 self.cached_translation = Some(new_cache_entry);
                 Ok(gpa)
             }
-            Ok(Err(EmuTranslateError { code, event_info })) => {
+            Err(EmuTranslateError { code, event_info }) => {
                 match code {
                     TranslateCode::INTERCEPT => {
                         tracing::trace!("translate gva to gpa returned an intercept event");
@@ -778,22 +756,13 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
                     }
                 }
             }
-            Err(e) => {
-                tracing::trace!("translate error {:?}", e);
-                Err(Error::Hypervisor(e))
-            }
         }
     }
 
-    pub fn check_vtl_access(
-        &mut self,
-        gpa: u64,
-        mode: TranslateMode,
-    ) -> Result<(), Error<T::Error>> {
+    pub fn check_vtl_access(&mut self, gpa: u64, mode: TranslateMode) -> Result<(), Error> {
         self.support
             .check_vtl_access(gpa, mode)
             .map_err(|e| match e {
-                EmuCheckVtlAccessError::Hypervisor(hv_err) => Error::Hypervisor(hv_err),
                 EmuCheckVtlAccessError::AccessDenied { vtl, denied_flags } => Error::NoVtlAccess {
                     gpa,
                     intercepting_vtl: vtl,
@@ -801,10 +770,26 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
                 },
             })
     }
+
+    fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
+        if let Some(monitor_support) = self.support.monitor_support() {
+            monitor_support.check_write(gpa, bytes)
+        } else {
+            false
+        }
+    }
+
+    fn check_monitor_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
+        if let Some(monitor_support) = self.support.monitor_support() {
+            monitor_support.check_read(gpa, bytes)
+        } else {
+            false
+        }
+    }
 }
 
 impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
-    type Error = Error<T::Error>;
+    type Error = Error;
 
     async fn read_memory(
         &mut self,
@@ -821,14 +806,16 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
 
         self.check_vtl_access(gpa, TranslateMode::Read)?;
 
-        if self.support.is_gpa_mapped(gpa, false) {
-            self.gm.read_at(gpa, bytes).map_err(Error::Memory)?;
+        if self.check_monitor_read(gpa, bytes) {
+            Ok(())
+        } else if self.support.is_gpa_mapped(gpa, false) {
+            self.gm.read_at(gpa, bytes).map_err(Error::Memory)
         } else {
             self.dev
                 .read_mmio(self.support.vp_index(), gpa, bytes)
                 .await;
+            Ok(())
         }
-        Ok(())
     }
 
     async fn write_memory(
@@ -866,14 +853,41 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         let gpa = self.translate_gva(gva, TranslateMode::Write, is_user_mode)?;
         self.check_vtl_access(gpa, TranslateMode::Write)?;
 
-        let success = if self.support.check_monitor_write(gpa, new) {
+        let success = if self.check_monitor_write(gpa, new) {
             true
         } else if self.support.is_gpa_mapped(gpa, true) {
-            let buf = &mut [0; 16][..current.len()];
-            buf.copy_from_slice(current);
-            self.gm
-                .compare_exchange_bytes(gpa, buf, new)
-                .map_err(Error::Memory)?
+            match (current.len(), new.len()) {
+                (1, 1) => self
+                    .gm
+                    .compare_exchange(gpa, current[0], new[0])
+                    .map(|r| r.is_ok()),
+                (2, 2) => self
+                    .gm
+                    .compare_exchange(
+                        gpa,
+                        u16::from_ne_bytes(current.try_into().unwrap()),
+                        u16::from_ne_bytes(new.try_into().unwrap()),
+                    )
+                    .map(|r| r.is_ok()),
+                (4, 4) => self
+                    .gm
+                    .compare_exchange(
+                        gpa,
+                        u32::from_ne_bytes(current.try_into().unwrap()),
+                        u32::from_ne_bytes(new.try_into().unwrap()),
+                    )
+                    .map(|r| r.is_ok()),
+                (8, 8) => self
+                    .gm
+                    .compare_exchange(
+                        gpa,
+                        u64::from_ne_bytes(current.try_into().unwrap()),
+                        u64::from_ne_bytes(new.try_into().unwrap()),
+                    )
+                    .map(|r| r.is_ok()),
+                _ => panic!("unsupported cmpxchg size"),
+            }
+            .map_err(Error::Memory)?
         } else {
             // Ignore the comparison aspect for device MMIO.
             self.dev.write_mmio(self.support.vp_index(), gpa, new).await;
@@ -947,8 +961,8 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
     }
 
     /// Sets the value of an XMM* register.
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
-        self.support.set_xmm(reg, value).map_err(Error::Hypervisor)
+    fn set_xmm(&mut self, reg: usize, value: u128) {
+        self.support.set_xmm(reg, value)
     }
 }
 
@@ -988,7 +1002,7 @@ pub async fn emulate_io(
 #[must_use]
 fn inject_memory_access_fault<T: EmulatorSupport>(
     gva: u64,
-    result: &Error<T::Error>,
+    result: &Error,
     support: &mut T,
 ) -> bool {
     match result {
@@ -1022,7 +1036,7 @@ fn inject_memory_access_fault<T: EmulatorSupport>(
             support.inject_pending_event(event);
             true
         }
-        Error::Hypervisor(_) | Error::Memory(_) => false,
+        Error::Memory(_) => false,
     }
 }
 
@@ -1103,11 +1117,11 @@ pub fn emulate_mnf_write_fast_path<T: EmulatorSupport>(
     dev: &impl CpuIo,
     interruption_pending: bool,
     tlb_lock_held: bool,
-) -> Result<Option<u32>, VpHaltReason<T::Error>> {
+) -> Option<u32> {
     let mut cpu = EmulatorCpu::new(gm, dev, support);
     let instruction_bytes = cpu.support.instruction_bytes();
     if interruption_pending || !tlb_lock_held || instruction_bytes.is_empty() {
-        return Ok(None);
+        return None;
     }
     let mut bytes = [0; 16];
     let valid_bytes;
@@ -1118,8 +1132,6 @@ pub fn emulate_mnf_write_fast_path<T: EmulatorSupport>(
     }
     let instruction_bytes = &bytes[..valid_bytes];
     let bit = x86emu::fast_path::emulate_fast_path_set_bit(instruction_bytes, &mut cpu);
-    support.flush().map_err(|err| {
-        VpHaltReason::EmulationFailure(EmulationError::<T::Error>::CacheFlushFailed(err).into())
-    })?;
-    Ok(bit)
+    support.flush();
+    bit
 }

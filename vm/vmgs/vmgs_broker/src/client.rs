@@ -4,10 +4,12 @@
 //! The Vmgs worker will send messages to the Vmgs dispatch, allowing
 //! tasks to queue for the dispatcher to handle synchronously
 
+use crate::broker::VmgsBrokerError;
 use crate::broker::VmgsBrokerRpc;
 use inspect::Inspect;
-use mesh_channel::rpc::RpcError;
-use mesh_channel::rpc::RpcSend;
+use mesh::MeshPayload;
+use mesh::rpc::RpcError;
+use mesh::rpc::RpcSend;
 use thiserror::Error;
 use tracing::instrument;
 use vmgs::VmgsFileInfo;
@@ -19,14 +21,22 @@ use vmgs_format::FileId;
 pub enum VmgsClientError {
     /// VMGS broker is offline
     #[error("broker is offline")]
-    BrokerOffline(#[from] RpcError),
+    BrokerOffline(#[source] RpcError),
     /// VMGS error
     #[error("vmgs error")]
-    Vmgs(#[from] vmgs::Error),
+    Vmgs(#[source] VmgsBrokerError),
 }
 
-impl From<RpcError<vmgs::Error>> for VmgsClientError {
-    fn from(value: RpcError<vmgs::Error>) -> Self {
+impl From<RpcError> for VmgsClientError {
+    fn from(value: RpcError) -> Self {
+        match value {
+            RpcError::Channel(e) => VmgsClientError::BrokerOffline(RpcError::Channel(e)),
+        }
+    }
+}
+
+impl From<RpcError<VmgsBrokerError>> for VmgsClientError {
+    fn from(value: RpcError<VmgsBrokerError>) -> Self {
         match value {
             RpcError::Call(e) => VmgsClientError::Vmgs(e),
             RpcError::Channel(e) => VmgsClientError::BrokerOffline(RpcError::Channel(e)),
@@ -35,15 +45,10 @@ impl From<RpcError<vmgs::Error>> for VmgsClientError {
 }
 
 /// Client to interact with a backend-agnostic VMGS instance.
-#[derive(Clone)]
+#[derive(Clone, Inspect, MeshPayload)]
 pub struct VmgsClient {
-    pub(crate) control: mesh_channel::Sender<VmgsBrokerRpc>,
-}
-
-impl Inspect for VmgsClient {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.control.send(VmgsBrokerRpc::Inspect(req.defer()));
-    }
+    #[inspect(flatten, send = "VmgsBrokerRpc::Inspect")]
+    pub(crate) control: mesh::Sender<VmgsBrokerRpc>,
 }
 
 impl VmgsClient {
@@ -52,7 +57,7 @@ impl VmgsClient {
     pub async fn get_file_info(&self, file_id: FileId) -> Result<VmgsFileInfo, VmgsClientError> {
         let res = self
             .control
-            .call_failable(VmgsBrokerRpc::GetFileInfo, file_id)
+            .call_failable(VmgsBrokerRpc::GetFileInfo, file_id.into())
             .await?;
 
         Ok(res)
@@ -63,7 +68,7 @@ impl VmgsClient {
     pub async fn read_file(&self, file_id: FileId) -> Result<Vec<u8>, VmgsClientError> {
         let res = self
             .control
-            .call_failable(VmgsBrokerRpc::ReadFile, file_id)
+            .call_failable(VmgsBrokerRpc::ReadFile, file_id.into())
             .await?;
 
         Ok(res)
@@ -76,7 +81,7 @@ impl VmgsClient {
     #[instrument(skip_all, fields(file_id))]
     pub async fn write_file(&self, file_id: FileId, buf: Vec<u8>) -> Result<(), VmgsClientError> {
         self.control
-            .call_failable(VmgsBrokerRpc::WriteFile, (file_id, buf))
+            .call_failable(VmgsBrokerRpc::WriteFile, (file_id.into(), buf))
             .await?;
 
         Ok(())
@@ -93,7 +98,7 @@ impl VmgsClient {
         buf: Vec<u8>,
     ) -> Result<(), VmgsClientError> {
         self.control
-            .call_failable(VmgsBrokerRpc::WriteFileEncrypted, (file_id, buf))
+            .call_failable(VmgsBrokerRpc::WriteFileEncrypted, (file_id.into(), buf))
             .await?;
 
         Ok(())

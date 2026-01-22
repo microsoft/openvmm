@@ -89,9 +89,9 @@ fn pvalidate(
     validate: bool,
 ) -> Result<AcceptGpaStatus, AcceptGpaError> {
     if large_page {
-        assert!(va % x86defs::X64_LARGE_PAGE_SIZE == 0);
+        assert!(va.is_multiple_of(x86defs::X64_LARGE_PAGE_SIZE));
     } else {
-        assert!(va % hvdef::HV_PAGE_SIZE == 0)
+        assert!(va.is_multiple_of(hvdef::HV_PAGE_SIZE))
     }
 
     let validate_page = validate as u32;
@@ -149,7 +149,7 @@ pub fn set_page_acceptance(
             MemoryRange::from_4k_gpn_range(page_base..page_base + 1),
             true,
         );
-        if page_base % pages_per_large_page == 0 && page_count >= pages_per_large_page {
+        if page_base.is_multiple_of(pages_per_large_page) && page_count >= pages_per_large_page {
             let res = pvalidate(page_base, mapping.data.as_ptr() as u64, true, validate)?;
             match res {
                 AcceptGpaStatus::Success => {

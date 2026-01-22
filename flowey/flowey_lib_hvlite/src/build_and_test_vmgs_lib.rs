@@ -70,7 +70,7 @@ impl SimpleFlowNode for Node {
             out_name: "vmgs_lib".into(),
             crate_type: CargoCrateType::DynamicLib,
             profile: profile.into(),
-            features: [].into(),
+            features: Default::default(),
             target: target.as_triple(),
             no_split_dbg_info: false,
             extra_env: None,

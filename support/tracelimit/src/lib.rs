@@ -82,6 +82,7 @@ impl RateLimiter {
     ///
     /// `missed_events` is `Some(n)` if there were any missed events or if this
     /// event is the last one before rate limiting kicks in.
+    #[cold]
     pub fn event_with_config(
         &self,
         period_ms: Option<u32>,
@@ -291,6 +292,159 @@ macro_rules! info_ratelimited {
             static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
             if let Ok(missed_events) = RATE_LIMITER.event() {
                 $crate::tracing::info!(dropped_ratelimited = missed_events, $($rest)*);
+            }
+        }
+    };
+}
+
+/// As [`tracing::event!`], but rate limited.
+///
+/// Can be called with optional parameters to customize rate limiting:
+/// - `period: <ms>` - rate limiting period in milliseconds
+/// - `limit: <count>` - maximum events per period
+///
+/// `level` is required and must be a compile-time literal identifier (ERROR, WARN, INFO, DEBUG, TRACE).
+#[macro_export]
+macro_rules! event_ratelimited_static {
+    // With both period and limit and level
+    (level: $level:ident, period: $period:expr, limit: $limit:expr, $($rest:tt)*) => {{
+        static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+        if let Ok(missed_events) = RATE_LIMITER.event_with_config(Some($period), Some($limit)) {
+            $crate::tracing::event!(
+                $crate::tracing::Level::$level,
+                dropped_ratelimited = missed_events,
+                $($rest)*
+            );
+        }
+    }};
+    // With only period and level
+    (level: $level:ident, period: $period:expr, $($rest:tt)*) => {{
+        static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+        if let Ok(missed_events) = RATE_LIMITER.event_with_config(Some($period), None) {
+            $crate::tracing::event!(
+                $crate::tracing::Level::$level,
+                dropped_ratelimited = missed_events,
+                $($rest)*
+            );
+        }
+    }};
+    // With only limit and level
+    (level: $level:ident, limit: $limit:expr, $($rest:tt)*) => {{
+        static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+        if let Ok(missed_events) = RATE_LIMITER.event_with_config(None, Some($limit)) {
+            $crate::tracing::event!(
+                $crate::tracing::Level::$level,
+                dropped_ratelimited = missed_events,
+                $($rest)*
+            );
+        }
+    }};
+    // Default case (only level provided)
+    (level: $level:ident, $($rest:tt)*) => {{
+        static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+        if let Ok(missed_events) = RATE_LIMITER.event() {
+            $crate::tracing::event!(
+                $crate::tracing::Level::$level,
+                dropped_ratelimited = missed_events,
+                $($rest)*
+            );
+        }
+    }};
+}
+
+/// Helper macro for dynamically dispatching to [`event_ratelimited_static!`] based on a runtime level.
+///
+/// This macro accepts a runtime `tracing::Level` expression and dispatches to the appropriate
+/// compile-time level identifier. Allows the log level to be determined at runtime.
+///
+/// Examples:
+/// ```
+/// use tracing::Level;
+/// use tracelimit::event_ratelimited;
+/// event_ratelimited!(Level::ERROR, period: 1000, limit: 5, "custome period and limit");
+/// event_ratelimited!(Level::WARN, period: 10000, "custom period only");
+/// event_ratelimited!(Level::INFO, limit: 50, "custom limit only");
+/// event_ratelimited!(Level::TRACE, "simple message");
+/// ```
+#[macro_export]
+macro_rules! event_ratelimited {
+    // With period and limit and level
+    ($level:expr, period: $period:expr, limit: $limit:expr, $($rest:tt)*) => {
+        match $level {
+            $crate::tracing::Level::ERROR => {
+                $crate::event_ratelimited_static!(level: ERROR, period: $period, limit: $limit, $($rest)*);
+            }
+            $crate::tracing::Level::WARN => {
+                $crate::event_ratelimited_static!(level: WARN, period: $period, limit: $limit, $($rest)*);
+            }
+            $crate::tracing::Level::INFO => {
+                $crate::event_ratelimited_static!(level: INFO, period: $period, limit: $limit, $($rest)*);
+            }
+            $crate::tracing::Level::DEBUG => {
+                $crate::event_ratelimited_static!(level: DEBUG, period: $period, limit: $limit, $($rest)*);
+            }
+            $crate::tracing::Level::TRACE => {
+                $crate::event_ratelimited_static!(level: TRACE, period: $period, limit: $limit, $($rest)*);
+            }
+        }
+    };
+    // With period and level
+    ($level:expr, period: $period:expr, $($rest:tt)*) => {
+        match $level {
+            $crate::tracing::Level::ERROR => {
+                $crate::event_ratelimited_static!(level: ERROR, period: $period, $($rest)*);
+            }
+            $crate::tracing::Level::WARN => {
+                $crate::event_ratelimited_static!(level: WARN, period: $period, $($rest)*);
+            }
+            $crate::tracing::Level::INFO => {
+                $crate::event_ratelimited_static!(level: INFO, period: $period, $($rest)*);
+            }
+            $crate::tracing::Level::DEBUG => {
+                $crate::event_ratelimited_static!(level: DEBUG, period: $period, $($rest)*);
+            }
+            $crate::tracing::Level::TRACE => {
+                $crate::event_ratelimited_static!(level: TRACE, period: $period, $($rest)*);
+            }
+        }
+    };
+    // With limit and level
+    ($level:expr, limit: $limit:expr, $($rest:tt)*) => {
+        match $level {
+            $crate::tracing::Level::ERROR => {
+                $crate::event_ratelimited_static!(level: ERROR, limit: $limit, $($rest)*);
+            }
+            $crate::tracing::Level::WARN => {
+                $crate::event_ratelimited_static!(level: WARN, limit: $limit, $($rest)*);
+            }
+            $crate::tracing::Level::INFO => {
+                $crate::event_ratelimited_static!(level: INFO, limit: $limit, $($rest)*);
+            }
+            $crate::tracing::Level::DEBUG => {
+                $crate::event_ratelimited_static!(level: DEBUG, limit: $limit, $($rest)*);
+            }
+            $crate::tracing::Level::TRACE => {
+                $crate::event_ratelimited_static!(level: TRACE, limit: $limit, $($rest)*);
+            }
+        }
+    };
+    // Default case (only level provided)
+    ($level:expr, $($rest:tt)*) => {
+        match $level {
+            $crate::tracing::Level::ERROR => {
+                $crate::event_ratelimited_static!(level: ERROR, $($rest)*);
+            }
+            $crate::tracing::Level::WARN => {
+                $crate::event_ratelimited_static!(level: WARN, $($rest)*);
+            }
+            $crate::tracing::Level::INFO => {
+                $crate::event_ratelimited_static!(level: INFO, $($rest)*);
+            }
+            $crate::tracing::Level::DEBUG => {
+                $crate::event_ratelimited_static!(level: DEBUG, $($rest)*);
+            }
+            $crate::tracing::Level::TRACE => {
+                $crate::event_ratelimited_static!(level: TRACE, $($rest)*);
             }
         }
     };

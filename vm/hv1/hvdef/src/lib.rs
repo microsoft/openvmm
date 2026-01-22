@@ -7,6 +7,8 @@
 #![forbid(unsafe_code)]
 #![no_std]
 
+pub mod vbs;
+
 use bitfield_struct::bitfield;
 use core::fmt::Debug;
 use core::mem::size_of;
@@ -48,6 +50,8 @@ pub const VS1_PARTITION_PROPERTIES_EAX_IS_PORTABLE: u32 = 0x000000001;
 pub const VS1_PARTITION_PROPERTIES_EAX_DEBUG_DEVICE_PRESENT: u32 = 0x000000002;
 /// Extended I/O APIC RTEs are supported for the current partition.
 pub const VS1_PARTITION_PROPERTIES_EAX_EXTENDED_IOAPIC_RTE: u32 = 0x000000004;
+/// Confidential VMBus is available.
+pub const VS1_PARTITION_PROPERTIES_EAX_CONFIDENTIAL_VMBUS_AVAILABLE: u32 = 0x000000008;
 
 /// SMCCC UID for the Microsoft Hypervisor.
 pub const VENDOR_HYP_UID_MS_HYPERVISOR: [u32; 4] = [0x4d32ba58, 0xcd244764, 0x8eef6c75, 0x16597024];
@@ -172,6 +176,7 @@ impl HvFeatures {
 }
 
 #[bitfield(u128)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvEnlightenmentInformation {
     pub use_hypercall_for_address_space_switch: bool,
     pub use_hypercall_for_local_flush: bool,
@@ -204,6 +209,16 @@ pub struct HvEnlightenmentInformation {
     #[bits(25)]
     _reserved1: u32,
     _reserved2: u32,
+}
+
+impl HvEnlightenmentInformation {
+    pub fn from_cpuid(cpuid: [u32; 4]) -> Self {
+        zerocopy::transmute!(cpuid)
+    }
+
+    pub fn into_cpuid(self) -> [u32; 4] {
+        zerocopy::transmute!(self)
+    }
 }
 
 #[bitfield(u128)]
@@ -311,6 +326,9 @@ open_enum! {
 
         // Extended hypercalls.
         HvExtCallQueryCapabilities = 0x8001,
+
+        // VBS guest calls.
+        HvCallVbsVmCallReport = 0xC001,
     }
 }
 
@@ -1037,12 +1055,14 @@ pub mod hypercall {
     pub struct HvInterruptTargetFlags {
         pub multicast: bool,
         pub processor_set: bool,
-        #[bits(30)]
+        pub proxy_redirect: bool,
+        #[bits(29)]
         pub reserved: u32,
     }
 
     pub const HV_DEVICE_INTERRUPT_TARGET_MULTICAST: u32 = 1;
     pub const HV_DEVICE_INTERRUPT_TARGET_PROCESSOR_SET: u32 = 2;
+    pub const HV_DEVICE_INTERRUPT_TARGET_PROXY_REDIRECT: u32 = 4;
 
     pub const HV_GENERIC_SET_SPARSE_4K: u64 = 0;
     pub const HV_GENERIC_SET_ALL: u64 = 1;
@@ -1730,6 +1750,21 @@ pub mod hypercall {
     #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct QuerySparsePageVisibility {
         pub partition_id: u64,
+    }
+
+    pub const VBS_VM_REPORT_DATA_SIZE: usize = 64;
+    pub const VBS_VM_MAX_REPORT_SIZE: usize = 2048;
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct VbsVmCallReport {
+        pub report_data: [u8; VBS_VM_REPORT_DATA_SIZE],
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct VbsVmCallReportOutput {
+        pub report: [u8; VBS_VM_MAX_REPORT_SIZE],
     }
 
     #[bitfield(u8)]
@@ -3000,7 +3035,7 @@ impl MessagePayload for HvX64HaltMessage {}
 pub struct HvArm64ResetInterceptMessage {
     pub header: HvArm64InterceptMessageHeader,
     pub reset_type: HvArm64ResetType,
-    pub padding: u32,
+    pub reset_code: u32,
 }
 
 impl MessagePayload for HvArm64ResetInterceptMessage {}
@@ -3010,6 +3045,8 @@ open_enum! {
     pub enum HvArm64ResetType: u32 {
         POWER_OFF = 0,
         REBOOT = 1,
+        SYSTEM_RESET = 2,
+        HIBERNATE = 3,
     }
 }
 
@@ -3116,8 +3153,11 @@ pub struct HvRegisterVsmCapabilities {
     pub install_intercept_ex: bool,
     /// Only available in VTL2.
     pub intercept_system_reset_available: bool,
-    #[bits(31)]
-    pub reserved: u64,
+    #[bits(1)]
+    pub reserved1: u8,
+    pub proxy_interrupt_redirect_available: bool,
+    #[bits(29)]
+    pub reserved2: u64,
 }
 
 #[bitfield(u64)]

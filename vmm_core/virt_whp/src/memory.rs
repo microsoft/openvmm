@@ -35,9 +35,9 @@ pub trait SimpleMemoryMap: Send + Sync {
         addr: u64,
         writable: bool,
         exec: bool,
-    ) -> Result<(), virt::Error>;
+    ) -> anyhow::Result<()>;
 
-    fn unmap_range(&self, addr: u64, size: u64) -> Result<(), virt::Error>;
+    fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()>;
 }
 
 impl SimpleMemoryMap for whp::Partition {
@@ -49,8 +49,8 @@ impl SimpleMemoryMap for whp::Partition {
         addr: u64,
         writable: bool,
         exec: bool,
-    ) -> Result<(), virt::Error> {
-        tracing::debug!(addr, size, ?data, writable, exec, "map range");
+    ) -> anyhow::Result<()> {
+        tracing::trace!(addr, size, ?data, writable, exec, "map range");
         let mut flags = whp::abi::WHvMapGpaRangeFlagRead;
         if writable {
             flags |= whp::abi::WHvMapGpaRangeFlagWrite;
@@ -66,8 +66,8 @@ impl SimpleMemoryMap for whp::Partition {
         }
     }
 
-    fn unmap_range(&self, addr: u64, size: u64) -> Result<(), virt::Error> {
-        tracing::debug!(addr, size, "unmap range");
+    fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
+        tracing::trace!(addr, size, "unmap range");
         whp::Partition::unmap_range(self, addr, size).context("whp unmap_range failed")
     }
 }
@@ -88,7 +88,7 @@ pub(crate) trait MemoryMapper: Inspect + Send + Sync {
         addr: u64,
         writable: bool,
         exec: bool,
-    ) -> Result<(), virt::Error>;
+    ) -> anyhow::Result<()>;
 
     /// Unmap a given range from the partition.
     ///
@@ -100,7 +100,7 @@ pub(crate) trait MemoryMapper: Inspect + Send + Sync {
         partition: &dyn SimpleMemoryMap,
         addr: u64,
         size: u64,
-    ) -> Result<(), virt::Error>;
+    ) -> anyhow::Result<()>;
 
     /// If overlays are supported in this partition mapper or not.
     fn overlays_supported(&self) -> bool;
@@ -134,7 +134,7 @@ pub(crate) trait MemoryMapper: Inspect + Send + Sync {
 
     /// Map all deferred ranges and put the mapper into a mapped state, where
     /// future map calls are no longer deferred.
-    fn map_deferred(&self, partition: &dyn SimpleMemoryMap) -> Result<(), virt::Error>;
+    fn map_deferred(&self, partition: &dyn SimpleMemoryMap) -> anyhow::Result<()>;
 
     /// Apply the specified VTL protection to the specified `addr`, `size`.
     ///
@@ -145,14 +145,14 @@ pub(crate) trait MemoryMapper: Inspect + Send + Sync {
         addr: u64,
         size: u64,
         access: VtlAccess,
-    ) -> Result<(), virt::Error>;
+    ) -> anyhow::Result<()>;
 
     /// Return this partition to the reset state. If this partition was
     /// previously in a deferred mapping state at start, each range will become
     /// unmapped and deferred until mapped again, unless previously allowed.
     ///
     /// Additionally, VTL protections are removed.
-    fn reset_mappings(&self, partition: &dyn SimpleMemoryMap) -> Result<(), virt::Error>;
+    fn reset_mappings(&self, partition: &dyn SimpleMemoryMap) -> anyhow::Result<()>;
 
     /// If page acceptance and visibility is supported by this mapper.
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -160,7 +160,6 @@ pub(crate) trait MemoryMapper: Inspect + Send + Sync {
 
     /// The page visibility for a given page. None means this page is not
     /// accepted. Only supported on mappers that support page acceptance.
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn gpa_visibility(&self, gpa: u64) -> Option<PageVisibility>;
 
     /// Accept the given gpa range on behalf of the guest, with the given
@@ -177,7 +176,7 @@ pub(crate) trait MemoryMapper: Inspect + Send + Sync {
         partition: &dyn SimpleMemoryMap,
         range: &MemoryRange,
         visibility: PageVisibility,
-    ) -> Result<(), virt::Error>;
+    ) -> anyhow::Result<()>;
 
     /// Modify the visibility of an accepted range.
     ///
@@ -188,7 +187,7 @@ pub(crate) trait MemoryMapper: Inspect + Send + Sync {
         partition: &dyn SimpleMemoryMap,
         range: &MemoryRange,
         visibility: PageVisibility,
-    ) -> Result<(), virt::Error>;
+    ) -> anyhow::Result<()>;
 }
 
 /// Memory mapper implementation that does not support VTLs, but does support
@@ -220,7 +219,7 @@ impl MemoryMapper for WhpMemoryMapper {
         addr: u64,
         writable: bool,
         exec: bool,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         if let Some(overlays) = self.overlays.as_ref() {
             if process.is_some() {
                 todo!();
@@ -246,7 +245,7 @@ impl MemoryMapper for WhpMemoryMapper {
         partition: &dyn SimpleMemoryMap,
         addr: u64,
         size: u64,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         if let Some(overlays) = self.overlays.as_ref() {
             overlays.lock().unmap_range(partition, addr, size);
             Ok(())
@@ -296,7 +295,7 @@ impl MemoryMapper for WhpMemoryMapper {
         false
     }
 
-    fn map_deferred(&self, _partition: &dyn SimpleMemoryMap) -> Result<(), virt::Error> {
+    fn map_deferred(&self, _partition: &dyn SimpleMemoryMap) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -306,11 +305,11 @@ impl MemoryMapper for WhpMemoryMapper {
         _addr: u64,
         _size: u64,
         _access: VtlAccess,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         unimplemented!()
     }
 
-    fn reset_mappings(&self, _partition: &dyn SimpleMemoryMap) -> Result<(), virt::Error> {
+    fn reset_mappings(&self, _partition: &dyn SimpleMemoryMap) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -327,7 +326,7 @@ impl MemoryMapper for WhpMemoryMapper {
         _partition: &dyn SimpleMemoryMap,
         _range: &MemoryRange,
         _visibility: PageVisibility,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         unimplemented!()
     }
 
@@ -336,7 +335,7 @@ impl MemoryMapper for WhpMemoryMapper {
         _partition: &dyn SimpleMemoryMap,
         _range: &MemoryRange,
         _visibility: PageVisibility,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         unimplemented!()
     }
 }
@@ -382,7 +381,7 @@ impl VtlPartition {
         addr: u64,
         writable: bool,
         exec: bool,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         let range = MemoryRange::new(addr..addr + size as u64);
         let mut ranges = self.ranges.write();
         assert!(
@@ -406,11 +405,11 @@ impl VtlPartition {
         Ok(())
     }
 
-    pub fn map_deferred(&self) -> Result<(), virt::Error> {
+    pub fn map_deferred(&self) -> anyhow::Result<()> {
         self.mapper.map_deferred(&self.whp)
     }
 
-    fn unmap_range(&self, addr: u64, size: u64) -> Result<(), virt::Error> {
+    fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
         let range = MemoryRange::new(addr..addr + size);
         let mut ranges = self.ranges.write();
 
@@ -427,12 +426,12 @@ impl VtlPartition {
         addr: u64,
         size: u64,
         access: VtlAccess,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         self.mapper
             .apply_vtl_protection(&self.whp, addr, size, access)
     }
 
-    pub fn reset_mappings(&self) -> Result<(), virt::Error> {
+    pub fn reset_mappings(&self) -> anyhow::Result<()> {
         self.mapper.reset_mappings(&self.whp)
     }
 
@@ -440,15 +439,19 @@ impl VtlPartition {
         &self,
         range: &MemoryRange,
         visibility: PageVisibility,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         self.mapper.accept_range(&self.whp, range, visibility)
+    }
+
+    pub fn gpa_visibility(&self, gpa: u64) -> Option<PageVisibility> {
+        self.mapper.gpa_visibility(gpa)
     }
 
     pub fn modify_visibility(
         &self,
         range: &MemoryRange,
         visibility: PageVisibility,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         self.mapper.modify_visibility(&self.whp, range, visibility)
     }
 }
@@ -460,7 +463,7 @@ impl virt::PartitionMemoryMapper for WhpPartition {
 }
 
 impl virt::PartitionMemoryMap for WhpPartitionAndVtl {
-    fn unmap_range(&self, addr: u64, size: u64) -> Result<(), virt::Error> {
+    fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
         self.vtlp().unmap_range(addr, size)
     }
 
@@ -471,7 +474,7 @@ impl virt::PartitionMemoryMap for WhpPartitionAndVtl {
         addr: u64,
         writable: bool,
         exec: bool,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         // SAFETY: guaranteed by caller
         unsafe {
             self.vtlp()
@@ -487,7 +490,7 @@ impl virt::PartitionMemoryMap for WhpPartitionAndVtl {
         addr: u64,
         writable: bool,
         exec: bool,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         // SAFETY: guaranteed by caller
         unsafe {
             self.vtlp()
@@ -495,7 +498,7 @@ impl virt::PartitionMemoryMap for WhpPartitionAndVtl {
         }
     }
 
-    fn prefetch_range(&self, addr: u64, size: u64) -> Result<(), virt::Error> {
+    fn prefetch_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
         self.vtlp().whp.populate_ranges(
             &[whp::abi::WHV_MEMORY_RANGE_ENTRY {
                 GuestAddress: addr,
@@ -507,7 +510,7 @@ impl virt::PartitionMemoryMap for WhpPartitionAndVtl {
         Ok(())
     }
 
-    fn pin_range(&self, addr: u64, size: u64) -> Result<(), virt::Error> {
+    fn pin_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
         self.vtlp()
             .whp
             .pin_ranges(&[whp::abi::WHV_MEMORY_RANGE_ENTRY {

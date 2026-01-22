@@ -15,11 +15,12 @@ use crate::protofile::MessageDescription;
 use crate::protofile::SequenceType;
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use heck::ToUpperCamelCase;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io;
 use std::io::Write;
 use std::path::Path;
@@ -44,8 +45,6 @@ impl<'a> DescriptorWriter<'a> {
 
         // Sort the descriptors to get a consistent order from run to run and build to build.
         descriptors.sort_by_key(|desc| (desc.package, desc.message.name));
-        // Deduplicate by package and name. TODO: ensure duplicates match.
-        descriptors.dedup_by_key(|desc| (desc.package, desc.message.name));
 
         Self {
             descriptors,
@@ -188,34 +187,39 @@ impl Write for PackageWriter<'_, '_> {
 fn referenced_descriptors<'a>(
     descriptors: impl IntoIterator<Item = &'a MessageDescription<'a>>,
 ) -> Vec<&'a TopLevelDescriptor<'a>> {
+    // Deduplicate by package and name. TODO: ensure duplicates match.
     let mut descriptors =
-        Vec::from_iter(descriptors.into_iter().copied().filter_map(|d| match d {
-            MessageDescription::Internal(tld) => Some(tld),
+        HashMap::from_iter(descriptors.into_iter().copied().filter_map(|d| match d {
+            MessageDescription::Internal(tld) => Some(((tld.package, tld.message.name), tld)),
             MessageDescription::External { .. } => None,
         }));
-    let mut inserted = HashSet::from_iter(descriptors.iter().copied());
+
+    let mut queue = VecDeque::from_iter(descriptors.values().copied());
 
     fn process_field_type<'a>(
         field_type: &FieldType<'a>,
-        descriptors: &mut Vec<&'a TopLevelDescriptor<'a>>,
-        inserted: &mut HashSet<&'a TopLevelDescriptor<'a>>,
+        descriptors: &mut HashMap<(&'a str, &'a str), &'a TopLevelDescriptor<'a>>,
+        queue: &mut VecDeque<&'a TopLevelDescriptor<'a>>,
     ) {
         match field_type.kind {
             FieldKind::Message(tld) => {
                 if let MessageDescription::Internal(tld) = tld() {
-                    if inserted.insert(tld) {
-                        descriptors.push(tld);
+                    if descriptors
+                        .insert((tld.package, tld.message.name), tld)
+                        .is_none()
+                    {
+                        queue.push_back(tld);
                     }
                 }
             }
             FieldKind::Tuple(tys) => {
                 for ty in tys {
-                    process_field_type(ty, descriptors, inserted);
+                    process_field_type(ty, descriptors, queue);
                 }
             }
             FieldKind::KeyValue(tys) => {
                 for ty in tys {
-                    process_field_type(ty, descriptors, inserted);
+                    process_field_type(ty, descriptors, queue);
                 }
             }
             FieldKind::Builtin(_) | FieldKind::Local(_) | FieldKind::External { .. } => {}
@@ -224,28 +228,26 @@ fn referenced_descriptors<'a>(
 
     fn process_message<'a>(
         message: &MessageDescriptor<'a>,
-        descriptors: &mut Vec<&'a TopLevelDescriptor<'a>>,
-        inserted: &mut HashSet<&'a TopLevelDescriptor<'a>>,
+        descriptors: &mut HashMap<(&'a str, &'a str), &'a TopLevelDescriptor<'a>>,
+        queue: &mut VecDeque<&'a TopLevelDescriptor<'a>>,
     ) {
         for field in message
             .fields
             .iter()
             .chain(message.oneofs.iter().flat_map(|oneof| oneof.variants))
         {
-            process_field_type(&field.field_type, descriptors, inserted);
+            process_field_type(&field.field_type, descriptors, queue);
         }
         for inner in message.messages {
-            process_message(inner, descriptors, inserted);
+            process_message(inner, descriptors, queue);
         }
     }
 
-    let mut i = 0;
-    while let Some(&tld) = descriptors.get(i) {
-        process_message(tld.message, &mut descriptors, &mut inserted);
-        i += 1;
+    while let Some(tld) = queue.pop_front() {
+        process_message(tld.message, &mut descriptors, &mut queue);
     }
 
-    descriptors
+    descriptors.values().copied().collect()
 }
 
 fn package_proto_file(package: &str) -> String {

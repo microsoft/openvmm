@@ -8,8 +8,8 @@ pub mod tlb_lock;
 
 use super::UhEmulationState;
 use super::UhProcessor;
-use super::UhRunVpError;
 use crate::CvmVtl1State;
+use crate::GpnSource;
 use crate::GuestVsmState;
 use crate::GuestVtl;
 use crate::InitialVpContextOperation;
@@ -33,6 +33,7 @@ use hvdef::HvInterruptType;
 use hvdef::HvMapGpaFlags;
 use hvdef::HvMessage;
 use hvdef::HvMessageType;
+use hvdef::HvRegisterValue;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmVpSecureVtlConfig;
 use hvdef::HvResult;
@@ -50,7 +51,6 @@ use hvdef::hypercall::HvFlushFlags;
 use hvdef::hypercall::TranslateGvaResultCode;
 use std::iter::zip;
 use virt::Processor;
-use virt::VpHaltReason;
 use virt::io::CpuIo;
 use virt::irqcon::MsiRequest;
 use virt::vp::AccessVpState;
@@ -65,10 +65,68 @@ use x86defs::cpuid::CpuidFunction;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
+/// Error type for proxy interrupt redirection failures.
+#[derive(Debug, thiserror::Error)]
+enum ProxyInterruptRedirectionError {
+    /// Multicast is not supported for proxy interrupt redirection.
+    #[error("multicast not supported")]
+    MulticastNotSupported,
+    /// Processor set operation failed.
+    #[error("processor set operation failed")]
+    ProcessorSetError,
+    /// Failed to map the redirected device interrupt in VTL2 kernel.
+    #[error("failed to map redirected device interrupt in VTL2 kernel: {0}")]
+    MapInterruptFailed(#[source] hcl::ioctl::Error),
+    /// HvCallRetargetDeviceInterrupt hypercall failed in hypervisor.
+    #[error("HvCallRetargetDeviceInterrupt with proxy redirect failed in hypervisor: {0}")]
+    RetargetDeviceInterruptFailed(HvError),
+}
+
+/// Manages redirected interrupt vector mapping in VTL2 for proxy interrupt redirection.
+struct RedirectedVectorMapping<'a> {
+    hcl: &'a hcl::ioctl::Hcl,
+    apic_id: u32,
+    redirected_vector: u32,
+}
+
+impl<'a> RedirectedVectorMapping<'a> {
+    /// Creates a new mapping in VTL2 kernel for proxy interrupt redirection. This will be automatically
+    /// unmapped when the guard is dropped unless explicitly disarmed.
+    fn new(hcl: &'a hcl::ioctl::Hcl, vector: u32, apic_id: u32) -> Result<Self, hcl::ioctl::Error> {
+        let redirected_vector = hcl.map_redirected_device_interrupt(vector, apic_id, true)?;
+        Ok(Self {
+            hcl,
+            apic_id,
+            redirected_vector,
+        })
+    }
+
+    /// Returns the redirected vector value returned by the VTL2 kernel.
+    fn redirected_vector(&self) -> u32 {
+        self.redirected_vector
+    }
+}
+
+impl Drop for RedirectedVectorMapping<'_> {
+    /// Drop guard to unmap the interrupt vector in VTL2 kernel.
+    fn drop(&mut self) {
+        match self
+            .hcl
+            .map_redirected_device_interrupt(self.redirected_vector, self.apic_id, false)
+        {
+            Ok(_) => {}
+            Err(err) => panic!(
+                "failed to unmap VTL2 vector for proxy device interrupt: redirected_vector={}, apic_id={}, error={:?}",
+                self.redirected_vector, self.apic_id, err
+            ),
+        }
+    }
+}
+
 impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     fn validate_register_access(
         &mut self,
-        vtl: GuestVtl,
+        target_vtl: GuestVtl,
         name: hvdef::HvRegisterName,
     ) -> HvResult<()> {
         match name.into() {
@@ -122,14 +180,14 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::R15
             | HvX64RegisterName::Pat => {
                 // Architectural registers can only be accessed by a higher VTL.
-                if vtl >= self.intercepted_vtl {
+                if target_vtl >= self.intercepted_vtl {
                     return Err(HvError::AccessDenied);
                 }
                 Ok(())
             }
             HvX64RegisterName::TscAux => {
                 // Architectural registers can only be accessed by a higher VTL.
-                if vtl >= self.intercepted_vtl {
+                if target_vtl >= self.intercepted_vtl {
                     return Err(HvError::AccessDenied);
                 }
 
@@ -140,7 +198,13 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 }
             }
             HvX64RegisterName::PendingEvent0 => {
-                if vtl >= self.intercepted_vtl {
+                if target_vtl >= self.intercepted_vtl {
+                    return Err(HvError::InvalidParameter);
+                }
+                Ok(())
+            }
+            HvX64RegisterName::VsmVina => {
+                if target_vtl == GuestVtl::Vtl0 {
                     return Err(HvError::InvalidParameter);
                 }
                 Ok(())
@@ -149,7 +213,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::CrInterceptCr0Mask
             | HvX64RegisterName::CrInterceptCr4Mask
             | HvX64RegisterName::CrInterceptIa32MiscEnableMask => {
-                if vtl != GuestVtl::Vtl1 {
+                if target_vtl != GuestVtl::Vtl1 {
                     return Err(HvError::AccessDenied);
                 }
                 Ok(())
@@ -174,7 +238,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         &mut self,
         vtl: GuestVtl,
         name: hvdef::HvRegisterName,
-    ) -> HvResult<hvdef::HvRegisterValue> {
+    ) -> HvResult<HvRegisterValue> {
         self.validate_register_access(vtl, name)?;
         // TODO: when get vp register i.e. in access vp state gets refactored,
         // clean this up.
@@ -463,7 +527,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                                 .isolated_memory_protector
                                 .as_ref(),
                             tlb_access: &mut B::tlb_flush_lock_access(
-                                self_index,
+                                Some(self_index),
                                 self.vp.partition,
                                 self.vp.shared,
                             ),
@@ -618,7 +682,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                             .isolated_memory_protector
                             .as_ref(),
                         tlb_access: &mut B::tlb_flush_lock_access(
-                            self_index,
+                            Some(self_index),
                             self.vp.partition,
                             self.vp.shared,
                         ),
@@ -687,8 +751,6 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 Err(HvError::InvalidParameter)
             }
         }
-
-        // TODO GUEST VSM: interrupt rewinding
     }
 
     fn set_vtl0_pending_event(&mut self, event: HvX64PendingExceptionEvent) -> HvResult<()> {
@@ -863,6 +925,12 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         multicast: bool,
         target_processors: ProcessorSet<'_>,
     ) -> HvResult<()> {
+        let entry = hvdef::hypercall::InterruptEntry {
+            source: hvdef::hypercall::HvInterruptSource::MSI,
+            rsvd: 0,
+            data: [address as u32, data],
+        };
+
         // Before dispatching retarget_device_interrupt, add the device vector
         // to partition global device vector table and issue `proxy_irr_blocked`
         // filter wake request to other VPs
@@ -875,17 +943,121 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         // Update `proxy_irr_blocked` for this VP itself
         self.vp.update_proxy_irr_filter(self.intercepted_vtl);
 
+        if self.vp.cvm_partition().proxy_interrupt_redirect {
+            // Try proxy interrupt redirection. Fall back to normal proxy delivery upon any error.
+            match self.try_proxy_interrupt_redirection(
+                device_id,
+                entry,
+                vector,
+                multicast,
+                &target_processors,
+            ) {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        error = %err,
+                        "proxy interrupt redirection failed, using normal proxy delivery"
+                    );
+                }
+            }
+        }
+
         self.vp.partition.hcl.retarget_device_interrupt(
             device_id,
-            hvdef::hypercall::InterruptEntry {
-                source: hvdef::hypercall::HvInterruptSource::MSI,
-                rsvd: 0,
-                data: [address as u32, data],
-            },
+            entry,
             vector,
             multicast,
             target_processors,
+            false,
         )
+    }
+
+    /// Request redirection of interrupts from VTL0 owned devices to VTL2 via posted interrupt mechanism.
+    /// This is useful performance optimization when VTL0 doesn't have posted interrupt support.
+    fn try_proxy_interrupt_redirection(
+        &mut self,
+        device_id: u64,
+        entry: hvdef::hypercall::InterruptEntry,
+        vector: u32,
+        multicast: bool,
+        target_processors: &ProcessorSet<'_>,
+    ) -> Result<(), ProxyInterruptRedirectionError> {
+        // Proxy interrupt redirection doesn't support multicast.
+        if multicast {
+            return Err(ProxyInterruptRedirectionError::MulticastNotSupported);
+        }
+
+        // Register the interrupt handler in VTL2 for only the first processor in the target set.
+        // This is safe because we expose only this single processor in the target processor set
+        // when forwarding the hypercall to the hypervisor.
+
+        // Get the first processor from the target processor set.
+        let first_processor_index = target_processors
+            .iter()
+            .next()
+            .ok_or(ProxyInterruptRedirectionError::ProcessorSetError)?;
+        let first_apic_id = self
+            .vp
+            .partition
+            .vps
+            .get(first_processor_index as usize)
+            .ok_or(ProxyInterruptRedirectionError::ProcessorSetError)?
+            .vp_info
+            .apic_id;
+
+        // Map the interrupt vector in VTL2 and create guard for automatic cleanup.
+        let guard = RedirectedVectorMapping::new(&self.vp.partition.hcl, vector, first_apic_id)
+            .map_err(ProxyInterruptRedirectionError::MapInterruptFailed)?;
+
+        // Create new sparse ProcessorSet containing only the first processor.
+        let mask_index = first_processor_index / 64;
+        let processor_mask = 1u64 << (first_processor_index % 64);
+        let masks = [processor_mask];
+        let redirected_processor = ProcessorSet::from_processor_masks(1u64 << mask_index, &masks)
+            .ok_or(ProxyInterruptRedirectionError::ProcessorSetError)?;
+        let redirected_vector = guard.redirected_vector();
+
+        // Issue HvCallRetargetDeviceInterrupt hypercall with posted interrupt redirection enabled
+        self.vp
+            .partition
+            .hcl
+            .retarget_device_interrupt(
+                device_id,
+                entry,
+                redirected_vector,
+                multicast,
+                redirected_processor,
+                true,
+            )
+            .map_err(ProxyInterruptRedirectionError::RetargetDeviceInterruptFailed)?;
+
+        // Disarm the guard upon success to prevent unmapping.
+        std::mem::forget(guard);
+
+        // Record the redirection for debugging/inspection purposes.
+        let mut proxy_redirect_interrupts = self
+            .vp
+            .cvm_partition()
+            .vp_inner(first_processor_index)
+            .proxy_redirect_interrupts
+            .lock();
+        proxy_redirect_interrupts.insert(
+            redirected_vector,
+            crate::ProxyRedirectVectorInfo {
+                device_id,
+                original_vector: vector,
+            },
+        );
+        tracelimit::info_ratelimited!(
+            CVM_ALLOWED,
+            device_id,
+            target_vp_index = first_processor_index,
+            original_vector = vector,
+            redirected_vector,
+            "proxy interrupt redirection successfully mapped"
+        );
+        Ok(())
     }
 
     pub(crate) fn hcvm_validate_flush_inputs(
@@ -920,7 +1092,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::GetVpRegisters
         vp_index: u32,
         vtl: Option<Vtl>,
         registers: &[hvdef::HvRegisterName],
-        output: &mut [hvdef::HvRegisterValue],
+        output: &mut [HvRegisterValue],
     ) -> HvRepResult {
         if partition_id != hvdef::HV_PARTITION_ID_SELF {
             return Err((HvError::AccessDenied, 0));
@@ -1219,7 +1391,6 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
         // 1 can set the protections, the permissions should be changed for VTL
         // 0.
         protector.change_vtl_protections(
-            self.intercepted_vtl.into(),
             GuestVtl::Vtl0,
             gpa_pages,
             map_flags,
@@ -1301,7 +1472,6 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
         // Grant VTL 1 access to lower VTL memory
         tracing::debug!("Granting VTL 1 access to lower VTL memory");
         protector.change_default_vtl_protections(
-            Vtl::Vtl2,
             GuestVtl::Vtl1,
             hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
             &mut self.vp.tlb_flush_lock_access(),
@@ -1542,6 +1712,7 @@ impl hv1_emulator::VtlProtectAccess for CvmVtlProtectAccess<'_> {
         self.protector.register_overlay_page(
             self.vtl,
             gpn,
+            GpnSource::GuestMemory,
             check_perms,
             new_perms,
             self.tlb_access,
@@ -1585,7 +1756,11 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             protector: B::cvm_partition_state(self.shared)
                 .isolated_memory_protector
                 .as_ref(),
-            tlb_access: &mut B::tlb_flush_lock_access(self_index, self.partition, self.shared),
+            tlb_access: &mut B::tlb_flush_lock_access(
+                Some(self_index),
+                self.partition,
+                self.shared,
+            ),
             guest_memory: &self.partition.gm[vtl],
         };
         let r = hv.msr_write(msr, value, &mut access);
@@ -1603,10 +1778,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     pub(crate) fn cvm_cpuid_result(&mut self, vtl: GuestVtl, leaf: u32, subleaf: u32) -> [u32; 4] {
         // Get the base fixed values.
         let [mut eax, mut ebx, mut ecx, mut edx] =
-            self.partition.cpuid_result(leaf, subleaf, &[0, 0, 0, 0]);
+            self.partition.cpuid.result(leaf, subleaf, &[0, 0, 0, 0]);
 
         // Apply fixups. These must be runtime changes only, for parts of cpuid
-        // that are dynamic (either beccause it's a function of the current VP's
+        // that are dynamic (either because it's a function of the current VP's
         // identity or the current VP or partition state).
         //
         // We rely on the cpuid set being accurate during partition startup,
@@ -1645,51 +1820,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 }
                 _ => {}
             },
-            CpuidFunction::ProcessorTopologyDefinition
-                if self.partition.caps.vendor.is_amd_compatible() =>
-            {
-                let apic_id = self.inner.vp_info.apic_id;
-                let vps_per_socket = self.cvm_partition().vps_per_socket;
-                eax = cpuid::ProcessorTopologyDefinitionEax::from(eax)
-                    .with_extended_apic_id(apic_id)
-                    .into();
-
-                let topology_ebx = cpuid::ProcessorTopologyDefinitionEbx::from(ebx);
-                let mut new_unit_id = apic_id & (vps_per_socket - 1);
-
-                if topology_ebx.threads_per_compute_unit() > 0 {
-                    new_unit_id /= 2;
-                }
-
-                ebx = topology_ebx.with_compute_unit_id(new_unit_id as u8).into();
-
-                // TODO SNP: Ideally we would use the actual value of this property from the host, but
-                // we currently have no way of obtaining it. 1 is the default value for all current VMs.
-                let amd_nodes_per_socket = 1u32;
-
-                let node_id = apic_id
-                    >> (vps_per_socket
-                        .trailing_zeros()
-                        .saturating_sub(amd_nodes_per_socket.trailing_zeros()));
-                // TODO: just set this part statically.
-                let nodes_per_processor = amd_nodes_per_socket - 1;
-
-                ecx = cpuid::ProcessorTopologyDefinitionEcx::from(ecx)
-                    .with_node_id(node_id as u8)
-                    .with_nodes_per_processor(nodes_per_processor as u8)
-                    .into();
-            }
-            CpuidFunction::ExtendedSevFeatures
-                if self.partition.caps.vendor.is_amd_compatible() =>
-            {
-                // SEV features are not exposed to lower VTLs at this time.
-                //
-                // TODO: set this in cvm_cpuid.
-                eax = 0;
-                ebx = 0;
-                ecx = 0;
-                edx = 0;
-            }
             CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION) => {
                 // If VSM has been revoked (or just isn't available) then don't
                 // recommend the use of TLB flush hypercalls. They are only needed
@@ -1699,12 +1829,21 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     *self.cvm_partition().guest_vsm.read(),
                     GuestVsmState::NotPlatformSupported
                 ) {
-                    // The only bit we care about here is within the first 32 bits,
-                    // so just truncating is fine.
-                    let eax_bit = hvdef::HvEnlightenmentInformation::new()
-                        .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
-                        .into_bits() as u32;
-                    eax &= !eax_bit;
+                    [eax, ebx, ecx, edx] =
+                        hvdef::HvEnlightenmentInformation::from_cpuid([eax, ebx, ecx, edx])
+                            .with_use_hypercall_for_remote_flush_and_local_flush_entire(false)
+                            .into_cpuid();
+                }
+            }
+            CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES) => {
+                // Update the VSM access privilege if it's been revoked by UEFI.
+                if matches!(
+                    *self.cvm_partition().guest_vsm.read(),
+                    GuestVsmState::NotPlatformSupported
+                ) {
+                    let mut features = hvdef::HvFeatures::from_cpuid([eax, ebx, ecx, edx]);
+                    features.set_privileges(features.privileges().with_access_vsm(false));
+                    [eax, ebx, ecx, edx] = features.into_cpuid();
                 }
             }
 
@@ -1775,7 +1914,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         }
 
         protector.change_default_vtl_protections(
-            vtl.into(),
             targeted_vtl,
             protections,
             &mut self.tlb_flush_lock_access(),
@@ -1806,17 +1944,17 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
     /// Returns the appropriately backed TLB flush and lock access
     pub(crate) fn tlb_flush_lock_access(&self) -> impl TlbFlushLockAccess + use<'_, B> {
-        B::tlb_flush_lock_access(self.vp_index(), self.partition, self.shared)
+        B::tlb_flush_lock_access(Some(self.vp_index()), self.partition, self.shared)
     }
 
     /// Handle checking for cross-VTL interrupts, preempting VTL 0, and setting
     /// VINA when appropriate. Returns true if interrupt reprocessing is required.
-    fn cvm_handle_cross_vtl_interrupts(&mut self, dev: &impl CpuIo) -> Result<bool, UhRunVpError> {
+    fn cvm_handle_cross_vtl_interrupts(&mut self, dev: &impl CpuIo) -> bool {
         let cvm_state = self.backing.cvm_state();
 
         // If VTL1 is not yet enabled, there is nothing to do.
         if cvm_state.vtl1.is_none() {
-            return Ok(false);
+            return false;
         }
 
         // Check for VTL preemption - which ignores RFLAGS.IF
@@ -1844,13 +1982,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             }
         }
 
-        Ok(reprocessing_required)
+        reprocessing_required
     }
 
-    pub(crate) fn hcvm_handle_vp_start_enable_vtl(
-        &mut self,
-        vtl: GuestVtl,
-    ) -> Result<(), UhRunVpError> {
+    pub(crate) fn hcvm_handle_vp_start_enable_vtl(&mut self, vtl: GuestVtl) {
         let context = {
             self.cvm_vp_inner().hv_start_enable_vtl_vp[vtl]
                 .lock()
@@ -1871,63 +2006,11 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 "setting up vp with initial registers"
             );
 
-            if vtl == GuestVtl::Vtl0 {
-                let is_protected_register = |reg, value| -> Result<(), UhRunVpError> {
-                    if self.cvm_is_protected_register_write(vtl, reg, value) {
-                        // In this case, it doesn't matter what VTL the calling
-                        // VP was in, just fail the startup. No need to send an
-                        // intercept message.
-                        return Err(UhRunVpError::StateAccessDenied);
-                    }
-                    Ok(())
-                };
-
-                let hvdef::hypercall::InitialVpContextX64 {
-                    rip: _,
-                    rsp: _,
-                    rflags: _,
-                    cs: _,
-                    ds: _,
-                    es: _,
-                    fs: _,
-                    gs: _,
-                    ss: _,
-                    tr,
-                    ldtr,
-                    idtr,
-                    gdtr,
-                    efer: _,
-                    cr0,
-                    cr3: _,
-                    cr4,
-                    msr_cr_pat: _,
-                } = start_enable_vtl_state.context;
-
-                is_protected_register(HvX64RegisterName::Cr0, cr0)?;
-                is_protected_register(HvX64RegisterName::Cr4, cr4)?;
-                is_protected_register(
-                    HvX64RegisterName::Gdtr,
-                    hvdef::HvRegisterValue::from(gdtr).as_u64(),
-                )?;
-                is_protected_register(
-                    HvX64RegisterName::Idtr,
-                    hvdef::HvRegisterValue::from(idtr).as_u64(),
-                )?;
-                is_protected_register(
-                    HvX64RegisterName::Ldtr,
-                    hvdef::HvRegisterValue::from(ldtr).as_u64(),
-                )?;
-                is_protected_register(
-                    HvX64RegisterName::Tr,
-                    hvdef::HvRegisterValue::from(tr).as_u64(),
-                )?;
-            }
-
             hv1_emulator::hypercall::set_x86_vp_context(
                 &mut self.access_state(vtl.into()),
                 &(start_enable_vtl_state.context),
             )
-            .map_err(UhRunVpError::State)?;
+            .unwrap();
 
             if let InitialVpContextOperation::StartVp = start_enable_vtl_state.operation {
                 match vtl {
@@ -1958,8 +2041,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 }
             }
         }
-
-        Ok(())
     }
 
     fn cvm_handle_exit_activity(&mut self) {
@@ -1977,15 +2058,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         // Currently, the only pending event that needs to be delivered on exit
         // are those that VTL 1 injects into VTL 0.
         if next_vtl == GuestVtl::Vtl0 {
-            // TODO GUEST VSM: rewind interrupts injected by the apic. This
-            // might mean keeping track of whether an event was injected by the
-            // apic, injected directly (as a result of emulation or in response
-            // to the pending event register being set), or e.g. in the case of
-            // SNP, if it came in through EXTINTINFO. The latter two should not
-            // be rewound.
-            //
-            // TODO GUEST VSM: Memory intercept handling.
-
             let pending_event = self
                 .backing
                 .cvm_state()
@@ -2084,18 +2156,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             let intercept_control = configured_intercepts.intercept_control;
             return match reg {
                 HvX64RegisterName::Cr0 => {
-                    if intercept_control.cr0_write() {
-                        true
-                    } else {
-                        (B::cr0(self, vtl) ^ value) & configured_intercepts.cr0_mask != 0
-                    }
+                    intercept_control.cr0_write()
+                        && (B::cr0(self, vtl) ^ value) & configured_intercepts.cr0_mask != 0
                 }
                 HvX64RegisterName::Cr4 => {
-                    if intercept_control.cr4_write() {
-                        true
-                    } else {
-                        (B::cr4(self, vtl) ^ value) & configured_intercepts.cr4_mask != 0
-                    }
+                    intercept_control.cr4_write()
+                        && (B::cr4(self, vtl) ^ value) & configured_intercepts.cr4_mask != 0
                 }
                 HvX64RegisterName::Xfem => intercept_control.xcr0_write(),
                 HvX64RegisterName::Gdtr => intercept_control.gdtr_write(),
@@ -2124,6 +2190,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     ) -> bool {
         let send_intercept = self.cvm_is_protected_register_write(vtl, reg, value);
         if send_intercept {
+            tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
+                ?vtl,
+                ?reg,
+                "received protected register write, sending intercept"
+            );
             let message_state = B::intercept_message_state(self, vtl, false);
 
             self.send_intercept_message(
@@ -2181,6 +2253,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             };
 
             if send_intercept {
+                tracelimit::warn_ratelimited!(
+                    CVM_ALLOWED,
+                    ?vtl,
+                    ?msr,
+                    "received protected msr write, sending intercept"
+                );
                 let message_state = B::intercept_message_state(self, vtl, false);
 
                 self.send_intercept_message(
@@ -2229,6 +2307,16 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             };
 
             if send_intercept {
+                tracelimit::warn_ratelimited!(
+                    CVM_ALLOWED,
+                    ?vtl,
+                    port_number,
+                    is_read,
+                    access_size,
+                    string_access,
+                    rep_access,
+                    "received protected io port access, sending intercept"
+                );
                 let message_state = B::intercept_message_state(self, vtl, true);
 
                 self.send_intercept_message(
@@ -2386,7 +2474,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         scan_irr: VtlArray<bool, 2>,
         first_scan_irr: &mut bool,
         dev: &impl CpuIo,
-    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
+    ) -> bool {
+        // Cancel any existing deadline before processing interrupts.
+        B::clear_deadline(self);
+
         self.cvm_handle_exit_activity();
 
         if self.backing.untrusted_synic_mut().is_some() {
@@ -2397,21 +2488,14 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             // Process interrupts.
             self.update_synic(vtl, false);
 
-            B::poll_apic(self, vtl, scan_irr[vtl] || *first_scan_irr)
-                .map_err(VpHaltReason::Hypervisor)?;
+            B::poll_apic(self, vtl, scan_irr[vtl] || *first_scan_irr);
         }
         *first_scan_irr = false;
 
         self.cvm_handle_cross_vtl_interrupts(dev)
-            .map_err(VpHaltReason::InvalidVmState)
     }
 
     fn update_synic(&mut self, vtl: GuestVtl, untrusted_synic: bool) {
-        fn duration_from_100ns(n: u64) -> std::time::Duration {
-            const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
-            std::time::Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
-        }
-
         loop {
             let hv = &mut self.backing.cvm_state_mut().hv[vtl];
 
@@ -2429,14 +2513,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
             );
             if let Some(next_ref_time) = next_ref_time {
-                // Convert from reference timer basis to vmtime basis via
-                // difference of programmed timer and current reference time.
-                let ref_diff = next_ref_time.saturating_sub(ref_time_now);
-                let timeout = self
-                    .vmtime
-                    .now()
-                    .wrapping_add(duration_from_100ns(ref_diff));
-                self.vmtime.set_timeout_if_before(timeout);
+                B::update_deadline(self, ref_time_now, next_ref_time);
             }
             if ready_sints == 0 {
                 break;
@@ -2596,28 +2673,44 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 false
             }
             None => {
-                if !self.cvm_partition().hide_isolation {
-                    // TODO: Addresses outside of ram and mmio probably should
-                    // not be accessed by the guest, if it has been told about
-                    // isolation. While it's okay as we will return FFs or
-                    // discard writes for addresses that are not mmio, we should
-                    // consider if instead we should also inject a machine check
-                    // for such accesses. The guest should not access any
-                    // addresses not described to it.
-                    //
-                    // For now, log that the guest did this.
-                    tracelimit::warn_ratelimited!(
-                        CVM_ALLOWED,
-                        gpa,
-                        ?vtl,
-                        is_shared,
-                        ?extra_info,
-                        "guest accessed gpa not described in memory layout, emulating anyways"
-                    );
-                }
+                if self.partition.monitor_page.gpa() == Some(gpa & !(hvdef::HV_PAGE_SIZE - 1)) {
+                    if !is_write {
+                        tracing::debug!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            is_shared,
+                            ?extra_info,
+                            "spurious exit for guest monitor page read"
+                        );
+                    }
 
-                // Emulate the access.
-                true
+                    // Emulate monitor page writes, but not reads.
+                    is_write
+                } else {
+                    if !self.cvm_partition().hide_isolation {
+                        // TODO: Addresses outside of ram and mmio probably should
+                        // not be accessed by the guest, if it has been told about
+                        // isolation. While it's okay as we will return FFs or
+                        // discard writes for addresses that are not mmio, we should
+                        // consider if instead we should also inject a machine check
+                        // for such accesses. The guest should not access any
+                        // addresses not described to it.
+                        //
+                        // For now, log that the guest did this.
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            is_shared,
+                            ?extra_info,
+                            "guest accessed gpa not described in memory layout, emulating anyways"
+                        );
+                    }
+
+                    // Emulate the access.
+                    true
+                }
             }
         }
     }
@@ -2673,8 +2766,6 @@ pub(crate) fn validate_xsetbv_exit(input: XsetbvExitInput) -> Option<u64> {
 }
 
 impl<T: CpuIo, B: HardwareIsolatedBacking> TranslateGvaSupport for UhEmulationState<'_, '_, T, B> {
-    type Error = UhRunVpError;
-
     fn guest_memory(&self) -> &GuestMemory {
         &self.vp.partition.gm[self.vtl]
     }
@@ -2683,8 +2774,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> TranslateGvaSupport for UhEmulationSt
         self.vp.set_tlb_lock(Vtl::Vtl2, self.vtl)
     }
 
-    fn registers(&mut self) -> Result<TranslationRegisters, Self::Error> {
-        Ok(self.vp.backing.translation_registers(self.vp, self.vtl))
+    fn registers(&mut self) -> TranslationRegisters {
+        self.vp.backing.translation_registers(self.vp, self.vtl)
     }
 }
 
@@ -2842,5 +2933,63 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::AssertVirtualInterrupt
         );
 
         Ok(())
+    }
+}
+
+/// Trait for managing lower VTL timer deadline in hardware-isolated partitions.
+///
+/// Note that this interface is currently used only for synic timer emulation in VTL2
+/// and not for APIC timers. APIC timer emulation uses [`VmTime`] directly for managing
+/// its timer deadlines. In practice, VTL0 guest kernels typically prefer Hyper-V
+/// synthetic timers over APIC timers, so this should not be a concern. This can be
+/// revisited in the future if APIC timer emulation performance becomes a priority.
+pub(super) trait HardwareIsolatedGuestTimer<T: HardwareIsolatedBacking>:
+    Send + Sync
+{
+    /// Returns true if the implementation uses hardware virtualized timer service.
+    fn is_hardware_virtualized(&self) -> bool;
+
+    /// Update timer deadline.
+    fn update_deadline(&self, vp: &mut UhProcessor<'_, T>, ref_time_now: u64, ref_time_next: u64);
+
+    /// Clear any pending deadline.
+    fn clear_deadline(&self, vp: &mut UhProcessor<'_, T>);
+
+    /// Synchronize armed deadline state for hardware virtualized timers.
+    fn sync_deadline_state(&self, vp: &mut UhProcessor<'_, T>);
+}
+
+/// Interface for managing lower VTL timer deadlines via [`VmTime`].
+/// This is the default interface used when a hardware-isolated backing doesn't support
+/// timer virtualization.
+pub(super) struct VmTimeGuestTimer;
+
+impl<T: HardwareIsolatedBacking> HardwareIsolatedGuestTimer<T> for VmTimeGuestTimer {
+    fn is_hardware_virtualized(&self) -> bool {
+        false
+    }
+
+    /// Update timer deadline.
+    fn update_deadline(&self, vp: &mut UhProcessor<'_, T>, ref_time_now: u64, ref_time_next: u64) {
+        /// Convert reference time in 100ns units to Duration.
+        fn duration_from_100ns(n: u64) -> std::time::Duration {
+            const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
+            std::time::Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
+        }
+
+        // Convert from reference timer basis to [`VmTime`] basis via
+        // difference of programmed timer and current reference time.
+        let ref_diff = ref_time_next.saturating_sub(ref_time_now);
+        let timeout = vp.vmtime.now().wrapping_add(duration_from_100ns(ref_diff));
+        vp.vmtime.set_timeout_if_before(timeout);
+    }
+
+    /// Clear any pending deadline.
+    fn clear_deadline(&self, vp: &mut UhProcessor<'_, T>) {
+        vp.vmtime.cancel_timeout();
+    }
+
+    fn sync_deadline_state(&self, _vp: &mut UhProcessor<'_, T>) {
+        // No-op for software timers
     }
 }

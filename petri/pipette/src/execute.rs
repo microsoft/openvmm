@@ -3,8 +3,6 @@
 
 //! Handler for the execute request.
 
-#![cfg(any(target_os = "linux", target_os = "windows"))]
-
 use futures::executor::block_on;
 use futures::io::AllowStdIo;
 use std::process::Stdio;

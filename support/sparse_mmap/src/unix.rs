@@ -95,7 +95,7 @@ impl SparseMapping {
     /// The range will be aligned to the largest system page size that's smaller
     /// or equal to `len`.
     pub fn new(len: usize) -> Result<Self, Error> {
-        super::initialize_try_copy();
+        trycopy::initialize_try_copy();
 
         // Length of 0 return an OS error, so we need to handle it explicitly.
         if len == 0 {
@@ -184,7 +184,7 @@ impl SparseMapping {
     fn validate_offset_len(&self, offset: usize, len: usize) -> io::Result<usize> {
         let end = offset.checked_add(len).ok_or(io::ErrorKind::InvalidInput)?;
         let page_size = page_size();
-        if offset % page_size != 0 || end % page_size != 0 || end > self.len {
+        if !offset.is_multiple_of(page_size) || !end.is_multiple_of(page_size) || end > self.len {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         Ok(end)
@@ -207,6 +207,36 @@ impl SparseMapping {
     pub fn map_zero(&self, offset: usize, len: usize) -> Result<(), Error> {
         // SAFETY: The flags passed in are guaranteed to be valid
         unsafe { self.mmap_anonymous(offset, len, libc::PROT_READ, libc::MAP_PRIVATE) }
+    }
+
+    /// Updates the protection flags of the mapping at the given offset and length
+    /// to allow or disallow writes.
+    pub fn set_writable(&self, offset: usize, len: usize, allow_writes: bool) -> Result<(), Error> {
+        let prot = if allow_writes {
+            libc::PROT_READ | libc::PROT_WRITE
+        } else {
+            libc::PROT_READ
+        };
+        self.mprotect(offset, len, prot)
+    }
+
+    /// Calls `mprotect` on the mapping at the given offset and length, changing
+    /// the protection flags to `prot`.
+    fn mprotect(&self, offset: usize, len: usize, prot: i32) -> Result<(), Error> {
+        self.validate_offset_len(offset, len)?;
+        if prot & !(libc::PROT_READ | libc::PROT_WRITE) != 0 {
+            return Err(Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported protection flags",
+            ));
+        }
+        // SAFETY: The flags and address passed in are guaranteed to be valid.
+        unsafe {
+            if libc::mprotect(self.address.add(offset), len, prot) < 0 {
+                return Err(Error::last_os_error());
+            }
+        }
+        Ok(())
     }
 
     /// Maps a portion of a file mapping at `offset`.

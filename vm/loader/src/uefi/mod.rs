@@ -268,7 +268,6 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
         let new_file_offset = (file_offset + 3) & !3;
         if new_file_offset > file_offset {
             image_offset += new_file_offset - file_offset;
-            volume_offset += new_file_offset - file_offset;
             file_offset += new_file_offset - file_offset;
         }
 
@@ -283,7 +282,6 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
             break;
         }
         image_offset += expand_3byte_integer(sh.size);
-        volume_offset += expand_3byte_integer(sh.size);
         file_offset += expand_3byte_integer(sh.size);
     }
 
@@ -334,6 +332,8 @@ pub enum Error {
     InvalidConfigType(String),
     #[error("Importer error")]
     Importer(#[source] anyhow::Error),
+    #[error("PageTableBuilder: {0}")]
+    PageTableBuilder(#[from] page_table::Error),
 }
 
 #[derive(Debug)]
@@ -371,8 +371,11 @@ pub mod x86_64 {
     use crate::uefi::get_sec_entry_point_offset;
     use hvdef::HV_PAGE_SIZE;
     use page_table::IdentityMapSize;
+    use page_table::x64::IdentityMapBuilder;
+    use page_table::x64::PAGE_TABLE_MAX_BYTES;
+    use page_table::x64::PAGE_TABLE_MAX_COUNT;
+    use page_table::x64::PageTable;
     use page_table::x64::align_up_to_page_size;
-    use page_table::x64::build_page_tables_64;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
 
@@ -404,6 +407,17 @@ pub mod x86_64 {
         //        to map the bottom 4GB of memory with shared visibility.
         //      - Otherwise, build the standard UEFI page tables. Bottom 4GB of address space,
         //        identity mapped with 2 MB pages.
+        let mut page_table_work_buffer: Vec<PageTable> =
+            vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
+        let mut page_tables: Vec<u8> = vec![0; PAGE_TABLE_MAX_BYTES];
+        let page_table_builder = IdentityMapBuilder::new(
+            PAGE_TABLE_GPA_BASE,
+            IdentityMapSize::Size4Gb,
+            page_table_work_buffer.as_mut_slice(),
+            page_tables.as_mut_slice(),
+        )?;
+        let mut shared_vis_page_table_work_buffer: Vec<PageTable> = Vec::new();
+        let mut shared_vis_page_tables: Vec<u8> = Vec::new();
         let (page_tables, shared_vis_page_tables) =
             if isolation.isolation_type == IsolationType::Snp && !isolation.paravisor_present {
                 if let ConfigType::ConfigBlob(_) = config {
@@ -418,28 +432,29 @@ pub mod x86_64 {
                     .ok_or(Error::InvalidSharedGpaBoundary)?;
                 let shared_gpa_boundary = 1 << shared_gpa_boundary_bits;
 
+                shared_vis_page_table_work_buffer
+                    .resize(PAGE_TABLE_MAX_COUNT, PageTable::new_zeroed());
+                shared_vis_page_tables.resize(PAGE_TABLE_MAX_BYTES, 0);
+                let shared_vis_builder = IdentityMapBuilder::new(
+                    shared_vis_page_table_gpa,
+                    IdentityMapSize::Size4Gb,
+                    shared_vis_page_table_work_buffer.as_mut_slice(),
+                    shared_vis_page_tables.as_mut_slice(),
+                )?
+                .with_address_bias(shared_gpa_boundary);
+
                 // The extra page tables are placed after the first config blob
                 // page.  They will be accounted for when the IGVM parameters are
                 // built.
-                let shared_vis_page_tables = build_page_tables_64(
-                    shared_vis_page_table_gpa,
-                    shared_gpa_boundary,
-                    IdentityMapSize::Size4Gb,
-                    None,
-                );
+                let shared_vis_page_tables = shared_vis_builder.build();
 
-                let page_tables = build_page_tables_64(
-                    PAGE_TABLE_GPA_BASE,
-                    0,
-                    IdentityMapSize::Size4Gb,
-                    Some((shared_vis_page_table_gpa, shared_gpa_boundary)),
-                );
+                let page_tables = page_table_builder
+                    .with_pml4e_link((shared_vis_page_table_gpa, shared_gpa_boundary))
+                    .build();
 
                 (page_tables, Some(shared_vis_page_tables))
             } else {
-                let page_tables =
-                    build_page_tables_64(PAGE_TABLE_GPA_BASE, 0, IdentityMapSize::Size4Gb, None);
-
+                let page_tables = page_table_builder.build();
                 (page_tables, None)
             };
 
@@ -466,7 +481,7 @@ pub mod x86_64 {
                 PAGE_TABLE_SIZE / HV_PAGE_SIZE,
                 "uefi-page-tables",
                 BootPageAcceptance::Exclusive,
-                &page_tables,
+                page_tables,
             )
             .map_err(Error::Importer)?;
 
@@ -498,12 +513,9 @@ pub mod x86_64 {
                     importer,
                     CONFIG_BLOB_GPA_BASE / HV_PAGE_SIZE,
                     match isolation.isolation_type {
-                        IsolationType::Snp => {
-                            let table = shared_vis_page_tables
-                                .as_ref()
-                                .expect("should be shared vis page tables");
-                            table
-                        }
+                        IsolationType::Snp => shared_vis_page_tables
+                            .as_ref()
+                            .expect("should be shared vis page tables"),
                         _ => &[],
                     },
                 )?

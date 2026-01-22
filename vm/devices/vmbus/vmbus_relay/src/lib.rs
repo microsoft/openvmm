@@ -47,8 +47,8 @@ use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
 use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::ModifyRequest;
+use vmbus_channel::bus::OfferKey;
 use vmbus_channel::bus::OpenRequest;
-use vmbus_channel::bus::OpenResult;
 use vmbus_client as client;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
@@ -59,7 +59,7 @@ use vmbus_core::protocol::FeatureFlags;
 use vmbus_core::protocol::GpadlId;
 use vmbus_server::HvsockRelayChannelHalf;
 use vmbus_server::MnfUsage;
-use vmbus_server::ModifyConnectionResponse;
+use vmbus_server::ModifyRelayResponse;
 use vmbus_server::OfferInfo;
 use vmbus_server::OfferParamsInternal;
 use vmbus_server::Update;
@@ -87,8 +87,11 @@ const REQUIRED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
 ///
 /// The relay will connect to the host when it first receives a start request through its state
 /// unit, and will remain connected until it is destroyed.
+#[derive(Inspect, Debug)]
 pub struct HostVmbusTransport {
+    #[inspect(skip)]
     _relay_task: Task<()>,
+    #[inspect(flatten, send = "TaskRequest::Inspect")]
     task_send: mesh::Sender<TaskRequest>,
 }
 
@@ -161,18 +164,6 @@ impl HostVmbusTransport {
     }
 }
 
-impl Inspect for HostVmbusTransport {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.task_send.send(TaskRequest::Inspect(req.defer()));
-    }
-}
-
-impl Debug for HostVmbusTransport {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(fmt, "HostVmbusTransport")
-    }
-}
-
 /// State needed to relay host-to-guest interrupts.
 struct InterruptRelay {
     /// Event signaled when the host sends an interrupt.
@@ -204,15 +195,10 @@ impl Debug for RelayChannelRequest {
     }
 }
 
+#[derive(Inspect)]
 struct RelayChannelInfo {
+    #[inspect(flatten, send = "RelayChannelRequest::Inspect")]
     relay_request_send: mesh::Sender<RelayChannelRequest>,
-}
-
-impl Inspect for RelayChannelInfo {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.relay_request_send
-            .send(RelayChannelRequest::Inspect(req.defer()));
-    }
 }
 
 #[derive(Inspect)]
@@ -245,6 +231,8 @@ impl RelayChannelInfo {
 struct RelayChannel {
     /// The Channel Id given to us by the client
     channel_id: ChannelId,
+    /// The identifying key for this channel.
+    key: OfferKey,
     /// Receives requests from the relay.
     #[inspect(skip)]
     relay_request_recv: mesh::Receiver<RelayChannelRequest>,
@@ -282,7 +270,7 @@ struct RelayChannelTask {
 
 impl RelayChannelTask {
     /// Relay open channel request from VTL0 to Host, responding with Open Result
-    async fn handle_open_channel(&mut self, open_request: &OpenRequest) -> Result<OpenResult> {
+    async fn handle_open_channel(&mut self, open_request: &OpenRequest) -> Result<()> {
         // If the guest uses the channel bitmap, the host can't send interrupts
         // directly and they must be relayed.
         let redirect_interrupt = self.channel.use_interrupt_relay.load(Ordering::SeqCst);
@@ -320,9 +308,7 @@ impl RelayChannelTask {
 
         self.channel.is_open = true;
 
-        Ok(OpenResult {
-            guest_to_host_interrupt: opened.guest_to_host_signal,
-        })
+        Ok(())
     }
 
     async fn handle_close_channel(&mut self) {
@@ -348,7 +334,7 @@ impl RelayChannelTask {
 
     fn handle_gpadl_teardown(&mut self, rpc: Rpc<GpadlId, ()>) {
         let (gpadl_id, rpc) = rpc.split();
-        tracing::trace!(gpadl_id = gpadl_id.0, "Tearing down GPADL");
+        tracing::trace!(gpadl_id = gpadl_id.0, key = %self.channel.key, "Tearing down GPADL");
 
         let call = self
             .channel
@@ -359,9 +345,11 @@ impl RelayChannelTask {
         // message immediately, for example if the channel is still open and the host device still
         // has the gpadl mapped. We should not block further requests while waiting for the
         // response.
+        let key = self.channel.key;
         self.channel.gpadls_tearing_down.push(Box::pin(async move {
             if let Err(err) = call.await {
                 tracing::warn!(
+                    %key,
                     error = &err as &dyn std::error::Error,
                     "failed to send gpadl teardown"
                 );
@@ -382,7 +370,7 @@ impl RelayChannelTask {
 
     /// Dispatch requests sent by VTL0
     async fn handle_server_request(&mut self, request: ChannelRequest) -> Result<()> {
-        tracing::trace!(request = ?request, "received channel request");
+        tracing::trace!(key = %self.channel.key, request = ?request, "received channel request");
         match request {
             ChannelRequest::Open(rpc) => {
                 rpc.handle(async |open_request| {
@@ -391,11 +379,12 @@ impl RelayChannelTask {
                         .inspect_err(|err| {
                             tracelimit::error_ratelimited!(
                                 err = err.as_ref() as &dyn std::error::Error,
+                                key = %self.channel.key,
                                 channel_id = self.channel.channel_id.0,
                                 "failed to open channel"
                             );
                         })
-                        .ok()
+                        .is_ok()
                 })
                 .await;
             }
@@ -407,6 +396,7 @@ impl RelayChannelTask {
                         .inspect_err(|err| {
                             tracelimit::error_ratelimited!(
                                 err = err.as_ref() as &dyn std::error::Error,
+                                key = %self.channel.key,
                                 channel_id = self.channel.channel_id.0,
                                 gpadl_id = id.0,
                                 "failed to create gpadl"
@@ -435,6 +425,7 @@ impl RelayChannelTask {
     async fn handle_relay_request(&mut self, request: RelayChannelRequest) {
         tracing::trace!(
             channel_id = self.channel.channel_id.0,
+            key = %self.channel.key,
             ?request,
             "received relay request"
         );
@@ -510,7 +501,11 @@ impl RelayChannelTask {
         // that the channel has been revoked.
         while let Some(()) = self.channel.gpadls_tearing_down.next().await {}
 
-        tracing::debug!(channel_id = %self.channel.channel_id.0, "dropped channel");
+        tracing::debug!(
+            channel_id = %self.channel.channel_id.0,
+            key = %self.channel.key,
+            "dropped channel"
+        );
 
         // Dropping the channel would revoke it, but since that's not synchronized there's a chance
         // we reoffer the channel before the server receives the revoke. Using the request ensures
@@ -523,6 +518,7 @@ impl RelayChannelTask {
         {
             tracing::warn!(
                 channel_id = self.channel.channel_id.0,
+                key = %self.channel.key,
                 err = &err as &dyn std::error::Error,
                 "failed to send revoke request"
             );
@@ -556,7 +552,7 @@ struct RelayTask {
     intercept_channels: HashMap<Guid, mesh::Sender<InterceptChannelRequest>>,
     use_interrupt_relay: Arc<AtomicBool>,
     #[inspect(skip)]
-    server_response_send: mesh::Sender<ModifyConnectionResponse>,
+    server_response_send: mesh::Sender<ModifyRelayResponse>,
     #[inspect(skip)]
     hvsock_relay: HvsockRelayChannelHalf,
     #[inspect(skip)]
@@ -571,7 +567,7 @@ impl RelayTask {
     fn new(
         spawner: Arc<dyn SpawnDriver>,
         vmbus_control: Arc<VmbusServerControl>,
-        server_response_send: mesh::Sender<ModifyConnectionResponse>,
+        server_response_send: mesh::Sender<ModifyRelayResponse>,
         hvsock_relay: HvsockRelayChannelHalf,
         vmbus_client: client::VmbusClientAccess,
         version: VersionInfo,
@@ -647,10 +643,6 @@ impl RelayTask {
     async fn handle_offer(&mut self, offer: client::OfferInfo) -> Result<()> {
         let channel_id = offer.offer.channel_id.0;
 
-        if self.channels.contains_key(&ChannelId(channel_id)) {
-            anyhow::bail!("channel {channel_id} already exists");
-        }
-
         if let Some(intercept) = self.intercept_channels.get(&offer.offer.instance_id) {
             self.channels.insert(
                 ChannelId(channel_id),
@@ -658,6 +650,10 @@ impl RelayTask {
             );
             intercept.send(InterceptChannelRequest::Offer(offer));
             return Ok(());
+        }
+
+        if self.channels.contains_key(&ChannelId(channel_id)) {
+            anyhow::bail!("channel {channel_id} already exists");
         }
 
         // Used to Recv requests from the server.
@@ -689,7 +685,7 @@ impl RelayTask {
             use_mnf,
             // Preserve channel enumeration order from the host within the same
             // interface type.
-            offer_order: Some(channel_id),
+            offer_order: Some(channel_id.into()),
             // Strip the confidential flags for relay channels if the host set them.
             flags: offer
                 .offer
@@ -702,6 +698,7 @@ impl RelayTask {
         let key = params.key();
         let new_offer = OfferInfo {
             params,
+            event: offer.guest_to_host_interrupt,
             request_send,
             server_request_recv,
         };
@@ -722,6 +719,7 @@ impl RelayTask {
             driver: Arc::clone(&self.spawner),
             channel: RelayChannel {
                 channel_id: ChannelId(channel_id),
+                key,
                 relay_request_recv,
                 request_send: offer.request_send,
                 revoke_recv: offer.revoke_recv,
@@ -759,12 +757,12 @@ impl RelayTask {
     async fn handle_modify(
         &mut self,
         request: vmbus_server::ModifyRelayRequest,
-    ) -> ModifyConnectionResponse {
+    ) -> ModifyRelayResponse {
         // If the guest is requesting a version change, check whether that version is not newer
         // than what the host supports.
         if let Some(version) = request.version {
             if (self.version.version as u32) < version {
-                return ModifyConnectionResponse::Unsupported;
+                return ModifyRelayResponse::Unsupported;
             }
         }
 
@@ -792,7 +790,12 @@ impl RelayTask {
             }
         };
 
-        ModifyConnectionResponse::Supported(state, self.version.feature_flags)
+        // Use Supported only for new connections (which have a version).
+        if request.version.is_some() {
+            ModifyRelayResponse::Supported(state, self.version.feature_flags)
+        } else {
+            ModifyRelayResponse::Modified(state)
+        }
     }
 
     async fn handle_server_request(&mut self, request: vmbus_server::ModifyRelayRequest) {
@@ -819,6 +822,7 @@ impl RelayTask {
                 Err(err) => {
                     tracing::error!(
                         error = err.as_ref() as &dyn std::error::Error,
+                        ?request,
                         "failed add hvsock offer"
                     );
                     false
@@ -833,9 +837,11 @@ impl RelayTask {
     }
 
     async fn handle_offer_request(&mut self, request: client::OfferInfo) -> Result<()> {
+        let offer = request.offer;
         if let Err(err) = self.handle_offer(request).await {
             tracing::error!(
                 error = err.as_ref() as &dyn std::error::Error,
+                ?offer,
                 "failed to hot add offer"
             );
         }

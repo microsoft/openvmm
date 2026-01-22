@@ -4,12 +4,14 @@
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::EventLogId;
 use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_BUFFER_SIZE;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use std::sync::Arc;
 use thiserror::Error;
-use tpm::ak_cert::RequestAkCert;
-use tpm::logger::TpmLogEvent;
-use tpm::logger::TpmLogger;
+use tpm_device::ak_cert::RequestAkCert;
+use tpm_device::logger::TpmLogEvent;
+use tpm_device::logger::TpmLogger;
 use underhill_attestation::AttestationType;
 
 #[derive(Debug, Error)]
@@ -56,10 +58,12 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         ek_pub_modulus: &[u8],
         ek_pub_exponent: &[u8],
         guest_input: &[u8],
+        is_attestation_report: bool,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let tee_type = match self.attestation_type {
             AttestationType::Snp => Some(tee_call::TeeType::Snp),
             AttestationType::Tdx => Some(tee_call::TeeType::Tdx),
+            AttestationType::Vbs => Some(tee_call::TeeType::Vbs),
             AttestationType::Host => None,
         };
         let ak_cert_request_helper =
@@ -82,11 +86,19 @@ impl RequestAkCert for TpmRequestAkCertHelper {
             vec![]
         };
 
+        let version = if is_attestation_report {
+            // If this is an attestation report, use the version 1, the stable structure exposed
+            // to the guest via NV index.
+            IgvmAttestRequestVersion::VERSION_1
+        } else {
+            // Otherwise, this is an AK cert request. Use the latest version to get the latest features.
+            IGVM_ATTEST_REQUEST_CURRENT_VERSION
+        };
+
         let request = ak_cert_request_helper
-            .create_request(&attestation_report)
+            .create_request(version, &attestation_report)
             .map_err(TpmAttestationError::CreateAkCertRequest)?;
 
-        // The request will be exposed to the guest (via nv index) for isolated VMs.
         Ok(request)
     }
 
@@ -150,8 +162,8 @@ pub mod resources {
     use mesh::MeshPayload;
     use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
     use std::sync::Arc;
-    use tpm::ak_cert::ResolvedRequestAkCert;
-    use tpm::logger::ResolvedTpmLogger;
+    use tpm_device::ak_cert::ResolvedRequestAkCert;
+    use tpm_device::logger::ResolvedTpmLogger;
     use tpm_resources::RequestAkCertKind;
     use tpm_resources::TpmLoggerKind;
     use underhill_attestation::AttestationType;
@@ -215,6 +227,7 @@ pub mod resources {
             let tee_call: Option<Arc<dyn tee_call::TeeCall>> = match handle.attestation_type {
                 AttestationType::Snp => Some(Arc::new(tee_call::SnpCall)),
                 AttestationType::Tdx => Some(Arc::new(tee_call::TdxCall)),
+                AttestationType::Vbs => Some(Arc::new(tee_call::VbsCall)),
                 AttestationType::Host => None,
             };
 

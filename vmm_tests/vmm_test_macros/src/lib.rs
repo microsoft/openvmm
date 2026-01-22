@@ -40,12 +40,12 @@ enum Firmware {
     Pcat(PcatGuest),
     Uefi(UefiGuest),
     OpenhclLinuxDirect,
+    OpenhclPcat(PcatGuest),
     OpenhclUefi(OpenhclUefiOptions, UefiGuest),
 }
 
 #[derive(Default)]
 struct OpenhclUefiOptions {
-    nvme: bool,
     isolation: Option<IsolationType>,
 }
 
@@ -91,13 +91,12 @@ fn arch_to_tokens(arch: MachineArch) -> TokenStream {
 }
 
 impl Config {
-    fn name_prefix(&self, specific_vmm: Option<Vmm>) -> String {
+    fn name_prefix(&self, resolved_vmm: Vmm) -> String {
         let arch_prefix = arch_to_str(self.arch);
 
-        let vmm_prefix = match (specific_vmm, self.vmm) {
-            (_, Some(Vmm::OpenVmm)) | (Some(Vmm::OpenVmm), None) => "openvmm",
-            (_, Some(Vmm::HyperV)) | (Some(Vmm::HyperV), None) => "hyperv",
-            _ => "",
+        let vmm_prefix = match resolved_vmm {
+            Vmm::OpenVmm => "openvmm",
+            Vmm::HyperV => "hyperv",
         };
 
         let firmware_prefix = match &self.firmware {
@@ -105,12 +104,13 @@ impl Config {
             Firmware::Pcat(_) => "pcat",
             Firmware::Uefi(_) => "uefi",
             Firmware::OpenhclLinuxDirect => "openhcl_linux",
+            Firmware::OpenhclPcat(..) => "openhcl_pcat",
             Firmware::OpenhclUefi(..) => "openhcl_uefi",
         };
 
         let guest_prefix = match &self.firmware {
             Firmware::LinuxDirect | Firmware::OpenhclLinuxDirect => None,
-            Firmware::Pcat(guest) => Some(guest.name_prefix()),
+            Firmware::Pcat(guest) | Firmware::OpenhclPcat(guest) => Some(guest.name_prefix()),
             Firmware::Uefi(guest) | Firmware::OpenhclUefi(_, guest) => guest.name_prefix(),
         };
 
@@ -118,7 +118,8 @@ impl Config {
             Firmware::LinuxDirect
             | Firmware::Pcat(_)
             | Firmware::Uefi(_)
-            | Firmware::OpenhclLinuxDirect => None,
+            | Firmware::OpenhclLinuxDirect
+            | Firmware::OpenhclPcat(_) => None,
             Firmware::OpenhclUefi(opt, _) => opt.name_prefix(),
         };
 
@@ -163,7 +164,7 @@ impl ToTokens for PcatGuest {
 impl UefiGuest {
     fn name_prefix(&self) -> Option<String> {
         match self {
-            UefiGuest::Vhd(known_vhd) => Some(known_vhd.name_prefix.to_owned()),
+            UefiGuest::Vhd(known_vhd) => Some(known_vhd.name_prefix.clone()),
             UefiGuest::GuestTestUefi(arch) => Some(format!("guest_test_{}", arch_to_str(*arch))),
             UefiGuest::None => None,
         }
@@ -207,12 +208,15 @@ impl ToTokens for FirmwareAndArch {
             Firmware::OpenhclLinuxDirect => {
                 quote!(::petri::Firmware::openhcl_linux_direct(resolver, #arch))
             }
-            Firmware::OpenhclUefi(OpenhclUefiOptions { nvme, isolation }, guest) => {
+            Firmware::OpenhclPcat(guest) => {
+                quote!(::petri::Firmware::openhcl_pcat(resolver, #guest))
+            }
+            Firmware::OpenhclUefi(OpenhclUefiOptions { isolation }, guest) => {
                 let isolation = match isolation {
                     Some(i) => quote!(Some(#i)),
                     None => quote!(None),
                 };
-                quote!(::petri::Firmware::openhcl_uefi(resolver, #arch, #guest, #isolation, #nvme))
+                quote!(::petri::Firmware::openhcl_uefi(resolver, #arch, #guest, #isolation))
             }
         })
     }
@@ -276,6 +280,10 @@ impl Parse for Config {
             "uefi_aarch64" => (
                 MachineArch::Aarch64,
                 Firmware::Uefi(parse_uefi_guest(input)?),
+            ),
+            "openhcl_pcat_x64" => (
+                MachineArch::X86_64,
+                Firmware::OpenhclPcat(parse_pcat_guest(input)?),
             ),
             "openhcl_uefi_x64" => (
                 MachineArch::X86_64,
@@ -402,8 +410,26 @@ fn parse_vhd(input: ParseStream<'_>, generation: Generation) -> syn::Result<Imag
                 ::petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64
             )),
         },
-        "ubuntu_2204_server_x64" => Ok(image_info!(
-            ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2204_SERVER_X64
+        "windows_datacenter_core_2025_x64_prepped" => match generation {
+            Generation::Gen1 => Err(Error::new(
+                word.span(),
+                "Windows Server 2025 is not available for PCAT",
+            )),
+            Generation::Gen2 => Ok(image_info!(
+                ::petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED
+            )),
+        },
+        "ubuntu_2404_server_x64" => Ok(image_info!(
+            ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64
+        )),
+        "ubuntu_2504_server_x64" => Ok(image_info!(
+            ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2504_SERVER_X64
+        )),
+        "alpine_3_23_x64" => Ok(image_info!(
+            ::petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64
+        )),
+        "alpine_3_23_aarch64" => Ok(image_info!(
+            ::petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64
         )),
         "ubuntu_2404_server_aarch64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64
@@ -446,13 +472,6 @@ impl OpenhclUefiOptions {
                 IsolationType::Tdx => "tdx",
             });
         }
-        if self.nvme {
-            if !prefix.is_empty() {
-                prefix.push('_');
-            }
-            prefix.push_str("nvme");
-        }
-
         if prefix.is_empty() {
             None
         } else {
@@ -468,9 +487,6 @@ impl Parse for OpenhclUefiOptions {
         let words = input.parse_terminated(|stream| stream.parse::<Ident>(), Token![,])?;
         for word in words {
             match &*word.to_string() {
-                "nvme" => {
-                    options.nvme = true;
-                }
                 "vbs" => {
                     if options.isolation.is_some() {
                         return Err(Error::new(word.span(), "isolation type already specified"));
@@ -534,6 +550,7 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `{vmm}_openhcl_linux_direct_{arch}`: Our provided Linux direct image with OpenHCL
 /// - `{vmm}_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration
 /// - `{vmm}_uefi_{arch}(<UEFI guest>)`: A Gen 2 configuration
+/// - `{vmm}_openhcl_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration with OpenHCL
 /// - `{vmm}_openhcl_uefi_{arch}[list,of,options](<UEFI guest>)`: A Gen 2 configuration with OpenHCL
 ///
 /// Valid VMMs are:
@@ -554,12 +571,17 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `none`: No guest
 ///
 /// Valid x64 VHD options are:
-/// - `ubuntu_2204_server_x64`: Ubuntu Linux 22.04 cloudimg from Canonical
+/// - `alpine_3_23_x64`: Alpine Linux 3.23 cloud image
+/// - `ubuntu_2404_server_x64`: Ubuntu Linux 24.04 cloudimg from Canonical
+/// - `ubuntu_2504_server_x64`: Ubuntu Linux 25.04 cloudimg from Canonical
 /// - `windows_datacenter_core_2022_x64`: Windows Server Datacenter Core 2022 from the Azure Marketplace
 /// - `windows_datacenter_core_2025_x64`: Windows Server Datacenter Core 2025 from the Azure Marketplace
+/// - `windows_datacenter_core_2025_x64_prepped`: Windows Server Datacenter Core 2025 from the Azure Marketplace,
+///   pre-prepped with the pipette guest agent configured.
 /// - `freebsd_13_2_x64`: FreeBSD 13.2 from the FreeBSD Project
 ///
 /// Valid aarch64 VHD options are:
+/// - `alpine_3_23_aarch64`: Alpine Linux 3.23 cloud image
 /// - `ubuntu_2404_server_aarch64`: Ubuntu Linux 24.04 cloudimg from Canonical
 /// - `windows_11_enterprise_aarch64`: Windows 11 Enterprise from the Azure Marketplace
 ///
@@ -625,6 +647,19 @@ pub fn openvmm_test_no_agent(
         .into()
 }
 
+/// Same options as `vmm_test`, but only for Hyper-V tests
+#[proc_macro_attribute]
+pub fn hyperv_test(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let args = parse_macro_input!(attr as Args);
+    let item = parse_macro_input!(item as ItemFn);
+    make_vmm_test(args, item, Some(Vmm::HyperV), true)
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
+}
+
 fn make_vmm_test(
     args: Args,
     item: ItemFn,
@@ -647,8 +682,29 @@ fn make_vmm_test(
     let mut tests = TokenStream::new();
     // FUTURE: compute all this in code instead of in the macro.
     for config in args.configs {
-        let name = format!("{}_{original_name}", config.name_prefix(specific_vmm));
+        // Resolve the VMM backend early by combining specific_vmm and config.vmm
+        let resolved_vmm = match (specific_vmm, config.vmm) {
+            (Some(Vmm::HyperV), Some(Vmm::HyperV))
+            | (Some(Vmm::HyperV), None)
+            | (None, Some(Vmm::HyperV)) => Vmm::HyperV,
+            (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
+            | (Some(Vmm::OpenVmm), None)
+            | (None, Some(Vmm::OpenVmm)) => Vmm::OpenVmm,
+            (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
+            _ => return Err(Error::new(config.span, "vmm mismatch")),
+        };
 
+        let name = format!("{}_{original_name}", config.name_prefix(resolved_vmm));
+
+        // Build requirements based on the configuration and resolved VMM
+        let requirements = build_requirements(&config.firmware, &name, resolved_vmm);
+        let requirements = if let Some(req) = requirements {
+            quote! { Some(#req) }
+        } else {
+            quote! { None }
+        };
+
+        // Now move the values for the FirmwareAndArch and extra_deps
         let extra_deps = config.extra_deps;
 
         let firmware = FirmwareAndArch {
@@ -657,27 +713,20 @@ fn make_vmm_test(
         };
         let arch = arch_to_tokens(config.arch);
 
-        let (cfg_conditions, artifacts, petri_vm_config) = match (specific_vmm, config.vmm) {
-            (Some(Vmm::HyperV), Some(Vmm::HyperV))
-            | (Some(Vmm::HyperV), None)
-            | (None, Some(Vmm::HyperV)) => (
+        let (cfg_conditions, artifacts, petri_vm_config) = match resolved_vmm {
+            Vmm::HyperV => (
                 quote!(#[cfg(windows)]),
                 quote!(::petri::PetriVmArtifacts::<::petri::hyperv::HyperVPetriBackend>),
                 quote!(::petri::PetriVmBuilder::<::petri::hyperv::HyperVPetriBackend>),
             ),
-
-            (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
-            | (Some(Vmm::OpenVmm), None)
-            | (None, Some(Vmm::OpenVmm)) => (
+            Vmm::OpenVmm => (
                 quote!(),
                 quote!(::petri::PetriVmArtifacts::<::petri::openvmm::OpenVmmPetriBackend>),
                 quote!(::petri::PetriVmBuilder::<::petri::openvmm::OpenVmmPetriBackend>),
             ),
-            (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
-            _ => return Err(Error::new(config.span, "vmm mismatch")),
         };
 
-        let petri_vm_config = quote!(#petri_vm_config::new(&params, artifacts, &driver)?);
+        let petri_vm_config = quote!(#petri_vm_config::new(params, artifacts, &driver)?);
 
         let test = quote! {
             #cfg_conditions
@@ -695,7 +744,8 @@ fn make_vmm_test(
                         let config = #petri_vm_config;
                         #original_name(#original_args).await
                     })
-                }
+                },
+                #requirements
             ).into(),
         };
 
@@ -706,4 +756,86 @@ fn make_vmm_test(
         ::petri::multitest!(vec![#tests]);
         #item
     })
+}
+
+// Helper to build requirements TokenStream for firmware and resolved VMM
+fn build_requirements(firmware: &Firmware, name: &str, resolved_vmm: Vmm) -> Option<TokenStream> {
+    let mut requirement_expr: Option<TokenStream> = None;
+    let mut is_vbs = false;
+    // Add isolation requirement if specified
+    if let Firmware::OpenhclUefi(
+        OpenhclUefiOptions {
+            isolation: Some(isolation),
+        },
+        _,
+    ) = firmware
+    {
+        let isolation_requirement = match isolation {
+            IsolationType::Vbs => {
+                is_vbs = true;
+                quote!(::petri::requirements::TestRequirement::Isolation(
+                    ::petri::requirements::IsolationType::Vbs
+                ))
+            }
+            IsolationType::Snp => quote!(::petri::requirements::TestRequirement::Isolation(
+                ::petri::requirements::IsolationType::Snp
+            )),
+            IsolationType::Tdx => quote!(::petri::requirements::TestRequirement::Isolation(
+                ::petri::requirements::IsolationType::Tdx
+            )),
+        };
+
+        requirement_expr = Some(isolation_requirement);
+    }
+
+    // Special case for "servicing" tests
+    if name.contains("servicing") {
+        let servicing_expr = quote!(::petri::requirements::TestRequirement::Not(Box::new(
+            ::petri::requirements::TestRequirement::And(
+                Box::new(::petri::requirements::TestRequirement::Vendor(
+                    ::petri::requirements::Vendor::Amd
+                )),
+                Box::new(
+                    ::petri::requirements::TestRequirement::ExecutionEnvironment(
+                        ::petri::requirements::ExecutionEnvironment::Nested
+                    )
+                )
+            )
+        )));
+
+        requirement_expr = match requirement_expr {
+            Some(existing) => Some(quote!(
+                ::petri::requirements::TestRequirement::And(
+                    Box::new(#existing),
+                    Box::new(#servicing_expr)
+                )
+            )),
+            None => Some(servicing_expr),
+        };
+    }
+
+    let is_hyperv = resolved_vmm == Vmm::HyperV;
+
+    if is_hyperv && is_vbs {
+        let hyperv_vbs_requirement_expr = quote!(
+            ::petri::requirements::TestRequirement::ExecutionEnvironment(
+                ::petri::requirements::ExecutionEnvironment::Baremetal
+            )
+        );
+        requirement_expr = match requirement_expr {
+            Some(existing) => Some(quote!(
+                ::petri::requirements::TestRequirement::And(
+                    Box::new(#existing),
+                    Box::new(#hyperv_vbs_requirement_expr)
+                )
+            )),
+            None => Some(hyperv_vbs_requirement_expr),
+        };
+    }
+
+    if requirement_expr.is_some() {
+        Some(quote!(::petri::requirements::TestCaseRequirements::new(#requirement_expr)))
+    } else {
+        None
+    }
 }

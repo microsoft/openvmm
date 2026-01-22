@@ -10,6 +10,7 @@ use crate::build_openvmm_hcl;
 use crate::build_openvmm_hcl::OpenvmmHclBuildParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile::OpenvmmHclShip;
 use crate::run_cargo_build::common::CommonArch;
+use crate::run_cargo_build::common::CommonPlatform;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::download_gh_artifact;
@@ -21,6 +22,7 @@ flowey_request! {
         pub target: CommonTriple,
         pub done: WriteVar<SideEffect>,
         pub pipeline_name: String,
+        pub job_name: String,
     }
 }
 
@@ -45,24 +47,42 @@ impl SimpleFlowNode for Node {
             target,
             done,
             pipeline_name,
+            job_name,
         } = request;
 
+        let xtask_target = CommonTriple::Common {
+            arch: match ctx.arch() {
+                FlowArch::X86_64 => CommonArch::X86_64,
+                FlowArch::Aarch64 => CommonArch::Aarch64,
+                arch => anyhow::bail!("unsupported arch {arch}"),
+            },
+            platform: match ctx.platform() {
+                FlowPlatform::Windows => CommonPlatform::WindowsMsvc,
+                FlowPlatform::Linux(_) => CommonPlatform::LinuxGnu,
+                FlowPlatform::MacOs => CommonPlatform::MacOs,
+                platform => anyhow::bail!("unsupported platform {platform}"),
+            },
+        };
+
         let xtask = ctx.reqv(|v| crate::build_xtask::Request {
-            target: target.clone(),
+            target: xtask_target,
             xtask: v,
         });
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
-        let gh_token = ctx.get_gh_context_var().global().token();
+        let recipe = match target.common_arch().unwrap() {
+            CommonArch::X86_64 => OpenhclIgvmRecipe::X64,
+            CommonArch::Aarch64 => OpenhclIgvmRecipe::Aarch64,
+        }
+        .recipe_details(true);
 
         let built_openvmm_hcl = ctx.reqv(|v| build_openvmm_hcl::Request {
             build_params: OpenvmmHclBuildParams {
                 target: target.clone(),
                 profile: OpenvmmHclShip,
-                features: (OpenhclIgvmRecipe::X64)
-                    .recipe_details(OpenvmmHclShip)
-                    .openvmm_hcl_features,
+                features: recipe.openvmm_hcl_features,
                 no_split_dbg_info: false,
+                max_trace_level: recipe.max_trace_level,
             },
             openvmm_hcl_output: v,
         });
@@ -78,12 +98,17 @@ impl SimpleFlowNode for Node {
             base_branch: "main".into(),
         });
 
-        let merge_run = ctx.reqv(|v| gh_workflow_id::Request {
-            repo_path: openvmm_repo_path.clone(),
-            github_commit_hash: merge_commit,
-            gh_workflow: v,
-            pipeline_name,
-            gh_token: gh_token.clone(),
+        let merge_run = ctx.reqv(|v| {
+            gh_workflow_id::Request::WithStatusAndJob(gh_workflow_id::QueryWithStatusAndJob {
+                params: gh_workflow_id::WorkflowQueryParams {
+                    github_commit_hash: merge_commit,
+                    repo_path: openvmm_repo_path.clone(),
+                    pipeline_name,
+                    gh_workflow: v,
+                },
+                gh_run_status: gh_workflow_id::GhRunStatus::Completed,
+                gh_run_job_name: job_name,
+            })
         });
 
         let run_id = merge_run.map(ctx, |r| r.id);
@@ -93,7 +118,6 @@ impl SimpleFlowNode for Node {
             file_name: file_name.into(),
             path: old_openhcl,
             run_id,
-            gh_token: gh_token.clone(),
         });
 
         // Publish the built binary as an artifact for offline analysis.

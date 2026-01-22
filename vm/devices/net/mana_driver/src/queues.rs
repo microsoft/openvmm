@@ -3,6 +3,9 @@
 
 //! Types to access work, completion, and event queues.
 
+use crate::save_restore::CqEqSavedState;
+use crate::save_restore::DoorbellSavedState;
+use crate::save_restore::WqSavedState;
 use gdma_defs::CLIENT_OOB_8;
 use gdma_defs::CLIENT_OOB_24;
 use gdma_defs::CLIENT_OOB_32;
@@ -37,6 +40,8 @@ pub trait Doorbell: Send + Sync {
     fn page_count(&self) -> u32;
     /// Write a doorbell value at page `page`, offset `address`.
     fn write(&self, page: u32, address: u32, value: u64);
+    /// Save the doorbell state.
+    fn save(&self, doorbell_id: Option<u64>) -> DoorbellSavedState;
 }
 
 struct NullDoorbell;
@@ -47,6 +52,13 @@ impl Doorbell for NullDoorbell {
     }
 
     fn write(&self, _page: u32, _address: u32, _value: u64) {}
+
+    fn save(&self, _doorbell_id: Option<u64>) -> DoorbellSavedState {
+        DoorbellSavedState {
+            doorbell_id: 0,
+            page_count: 0,
+        }
+    }
 }
 
 /// A single GDMA doorbell page.
@@ -114,12 +126,22 @@ impl CqEq<Cqe> {
     pub fn new_cq(mem: MemoryBlock, doorbell: DoorbellPage, id: u32) -> Self {
         Self::new(GdmaQueueType::GDMA_CQ, DB_CQ, mem, doorbell, id)
     }
+
+    /// Restores an existing completion queue.
+    pub fn restore_cq(mem: MemoryBlock, state: CqEqSavedState, doorbell: DoorbellPage) -> Self {
+        Self::restore(GdmaQueueType::GDMA_CQ, mem, doorbell, state)
+    }
 }
 
 impl CqEq<Eqe> {
     /// Creates a new event queue.
     pub fn new_eq(mem: MemoryBlock, doorbell: DoorbellPage, id: u32) -> Self {
         Self::new(GdmaQueueType::GDMA_EQ, DB_EQ, mem, doorbell, id)
+    }
+
+    /// Restores an existing event queue.
+    pub fn restore_eq(mem: MemoryBlock, state: CqEqSavedState, doorbell: DoorbellPage) -> Self {
+        Self::restore(GdmaQueueType::GDMA_EQ, mem, doorbell, state)
     }
 }
 
@@ -143,6 +165,41 @@ impl<T: IntoBytes + FromBytes + Immutable + KnownLayout> CqEq<T> {
             next: size as u32,
             size: size as u32,
             shift: size.trailing_zeros(),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Save the state of the queue for restoration after servicing.
+    pub fn save(&self) -> CqEqSavedState {
+        CqEqSavedState {
+            doorbell: DoorbellSavedState {
+                doorbell_id: self.doorbell.doorbell_id as u64,
+                page_count: self.doorbell.doorbell.page_count(),
+            },
+            doorbell_addr: self.doorbell_addr,
+            id: self.id,
+            next: self.next,
+            size: self.size,
+            shift: self.shift,
+        }
+    }
+
+    /// Restore a queue from saved state.
+    pub fn restore(
+        queue_type: GdmaQueueType,
+        mem: MemoryBlock,
+        doorbell: DoorbellPage,
+        state: CqEqSavedState,
+    ) -> Self {
+        Self {
+            doorbell,
+            doorbell_addr: state.doorbell_addr,
+            queue_type,
+            mem,
+            id: state.id,
+            next: state.next,
+            size: state.size,
+            shift: state.shift,
             _phantom: PhantomData,
         }
     }
@@ -284,6 +341,59 @@ impl Wq {
         }
     }
 
+    /// Save the state of the Wq for restoration after servicing
+    pub fn save(&self) -> WqSavedState {
+        WqSavedState {
+            doorbell: DoorbellSavedState {
+                doorbell_id: self.doorbell.doorbell_id as u64,
+                page_count: self.doorbell.doorbell.page_count(),
+            },
+            doorbell_addr: self.doorbell_addr,
+            id: self.id,
+            head: self.head,
+            tail: self.tail,
+            mask: self.mask,
+        }
+    }
+
+    /// Restores an existing receive work queue.
+    pub fn restore_rq(
+        mem: MemoryBlock,
+        state: WqSavedState,
+        doorbell: DoorbellPage,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            doorbell,
+            doorbell_addr: state.doorbell_addr,
+            queue_type: GdmaQueueType::GDMA_RQ,
+            mem,
+            id: state.id,
+            head: state.head,
+            tail: state.tail,
+            mask: state.mask,
+            uncommitted_count: 0,
+        })
+    }
+
+    /// Restores an existing send work queue.
+    pub fn restore_sq(
+        mem: MemoryBlock,
+        state: WqSavedState,
+        doorbell: DoorbellPage,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            doorbell,
+            doorbell_addr: state.doorbell_addr,
+            queue_type: GdmaQueueType::GDMA_SQ,
+            mem,
+            id: state.id,
+            head: state.head,
+            tail: state.tail,
+            mask: state.mask,
+            uncommitted_count: 0,
+        })
+    }
+
     /// Returns the queue ID.
     pub fn id(&self) -> u32 {
         self.id
@@ -291,7 +401,7 @@ impl Wq {
 
     /// Advances the head, indicating that `n` more bytes are available in the ring.
     pub fn advance_head(&mut self, n: u32) {
-        assert!(n % WQE_ALIGNMENT as u32 == 0);
+        assert!(n.is_multiple_of(WQE_ALIGNMENT as u32));
         self.head = self.head.wrapping_add(n);
     }
 
@@ -308,7 +418,7 @@ impl Wq {
     }
 
     fn write_tail(&self, offset: u32, data: &[u8]) {
-        assert!(
+        debug_assert!(
             offset as usize % WQE_ALIGNMENT + data.len() <= WQE_ALIGNMENT,
             "can't write more than one queue segment at a time to avoid wrapping"
         );
@@ -321,75 +431,23 @@ impl Wq {
         self.head.wrapping_sub(self.tail)
     }
 
-    /// Computes the size of an entry with `oob_len` OOB bytes and `sge_count`
-    /// scatter-gather entries.
-    pub const fn entry_size(oob_len: usize, sge_count: usize) -> u32 {
-        let len = size_of::<WqeHeader>() + oob_len + size_of::<Sge>() * sge_count;
-        let len = (len + WQE_ALIGNMENT - 1) & !(WQE_ALIGNMENT - 1);
-        len as u32
-    }
-
     /// Pushes a new work queue entry with an inline out-of-band buffer and
     /// external data via a scatter-gather list.
     pub fn push<I: IntoIterator<Item = Sge>>(
         &mut self,
-        oob: &(impl IntoBytes + Immutable + KnownLayout),
+        oob: impl IntoBytes + Immutable + KnownLayout,
         sgl: I,
-        client_oob_in_sgl: Option<u8>,
-        gd_client_unit_data: u16,
-    ) -> Result<u32, QueueFull>
-    where
-        I::IntoIter: ExactSizeIterator,
-    {
-        let sgl = sgl.into_iter();
-        let oob_size = match size_of_val(oob) {
-            0 | 8 => CLIENT_OOB_8,
-            24 => CLIENT_OOB_24,
-            32 => CLIENT_OOB_32,
-            _ => panic!("invalid oob size"),
-        };
-        let len = Self::entry_size(size_of_val(oob), sgl.len());
-        if self.available() < len {
-            return Err(QueueFull);
+    ) -> Result<u32, QueueFull> {
+        let mut builder = self.wqe_builder(oob);
+        for sge in sgl {
+            builder.push_sge(sge);
         }
+        builder.finish()
+    }
 
-        let hdr = WqeHeader {
-            reserved: [0; 3],
-            last_vbytes: client_oob_in_sgl.unwrap_or(0),
-            params: WqeParams::new()
-                .with_num_sgl_entries(sgl.len() as u8)
-                .with_inline_client_oob_size(oob_size)
-                .with_client_oob_in_sgl(client_oob_in_sgl.is_some())
-                .with_gd_client_unit_data(gd_client_unit_data),
-        };
-
-        self.write_tail(0, hdr.as_bytes());
-
-        let offset = match size_of_val(oob) {
-            0 => 16,
-            8 => {
-                self.write_tail(8, oob.as_bytes());
-                16
-            }
-            24 => {
-                self.write_tail(8, oob.as_bytes());
-                32
-            }
-            32 => {
-                self.write_tail(8, &oob.as_bytes()[..24]);
-                self.mem.write_at(32, &oob.as_bytes()[24..]);
-                48
-            }
-            _ => unreachable!(),
-        };
-
-        for (i, sge) in sgl.enumerate() {
-            self.write_tail(offset + i as u32 * 16, sge.as_bytes());
-        }
-
-        self.tail = self.tail.wrapping_add(len);
-        self.uncommitted_count += 1;
-        Ok(len)
+    /// Begins building a work queue entry with an inline out-of-band buffer.
+    pub fn wqe_builder(&mut self, oob: impl IntoBytes + Immutable + KnownLayout) -> WqeBuilder<'_> {
+        WqeBuilder::new(self, oob)
     }
 
     /// Commits all written entries by updating the doorbell value observed by
@@ -410,5 +468,95 @@ impl Wq {
     /// Reports tail value for diagnostics
     pub fn get_tail(&mut self) -> u32 {
         self.tail
+    }
+}
+
+/// A builder for a work queue entry.
+pub struct WqeBuilder<'a> {
+    wq: &'a mut Wq,
+    len: u32,
+    max: u32,
+    hdr: WqeHeader,
+}
+
+impl<'a> WqeBuilder<'a> {
+    fn new(wq: &'a mut Wq, oob: impl IntoBytes + Immutable + KnownLayout) -> Self {
+        let oob_size = match size_of_val(&oob) {
+            0 | 8 => CLIENT_OOB_8,
+            24 => CLIENT_OOB_24,
+            32 => CLIENT_OOB_32,
+            _ => panic!("invalid oob size"),
+        };
+        let max = wq.available();
+        let len =
+            (size_of::<WqeHeader>() + size_of_val(&oob)).next_multiple_of(size_of::<Sge>()) as u32;
+
+        // Save the header to write later.
+        let hdr = WqeHeader {
+            reserved: [0; 3],
+            last_vbytes: 0,
+            params: WqeParams::new().with_inline_client_oob_size(oob_size),
+        };
+
+        // Write the out-of-band data.
+        if len <= max {
+            match size_of_val(&oob) {
+                0 => {}
+                8 | 24 => {
+                    wq.write_tail(8, oob.as_bytes());
+                }
+                32 => {
+                    wq.write_tail(8, &oob.as_bytes()[..24]);
+                    wq.write_tail(32, &oob.as_bytes()[24..]);
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        Self { wq, len, max, hdr }
+    }
+
+    /// Sets that client out-of-band data is provided in the first scatter-gather
+    /// entry, with the specified `last_vbytes` value.
+    pub fn set_client_oob_in_sgl(&mut self, last_vbytes: u8) {
+        self.hdr.last_vbytes = last_vbytes;
+        self.hdr.params.set_client_oob_in_sgl(true);
+    }
+
+    /// Sets the `gd_client_unit_data` field in the header.
+    pub fn set_gd_client_unit_data(&mut self, value: u16) {
+        self.hdr.params.set_gd_client_unit_data(value);
+    }
+
+    /// Appends a scatter-gather entry to the work queue entry.
+    pub fn push_sge(&mut self, sge: Sge) {
+        let offset = self.len;
+        self.len += size_of_val(&sge) as u32;
+        if self.len <= self.max {
+            self.wq.write_tail(offset, sge.as_bytes());
+        }
+        self.hdr
+            .params
+            .set_num_sgl_entries(self.hdr.params.num_sgl_entries() + 1);
+    }
+
+    /// Returns the number of scatter-gather entries added so far.
+    pub fn sge_count(&self) -> u8 {
+        self.hdr.params.num_sgl_entries()
+    }
+
+    /// Finishes building the work queue entry and writes it to the queue,
+    /// updating the tail and returning the total length of the entry.
+    ///
+    /// Call [`Wq::commit`] to notify the device of the new entry.
+    pub fn finish(self) -> Result<u32, QueueFull> {
+        let aligned_len = self.len.next_multiple_of(WQE_ALIGNMENT as u32);
+        if aligned_len > self.max {
+            return Err(QueueFull);
+        }
+        self.wq.write_tail(0, self.hdr.as_bytes());
+        self.wq.tail = self.wq.tail.wrapping_add(aligned_len);
+        self.wq.uncommitted_count += 1;
+        Ok(aligned_len)
     }
 }

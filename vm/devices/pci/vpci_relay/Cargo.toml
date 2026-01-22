@@ -1,0 +1,42 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "vpci_relay"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+chipset_device.workspace = true
+memory_range.workspace = true
+pci_core.workspace = true
+sparse_mmap.workspace = true
+state_unit.workspace = true
+user_driver.workspace = true
+vpci_client.workspace = true
+vpci.workspace = true
+vmbus_client.workspace = true
+vmbus_server.workspace = true
+vmcore.workspace = true
+vmotherboard.workspace = true
+
+inspect.workspace = true
+mesh.workspace = true
+tracelimit.workspace = true
+
+anyhow.workspace = true
+fs-err.workspace = true
+futures.workspace = true
+slab.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+hcl.workspace = true
+hvdef.workspace = true
+
+[dev-dependencies]
+vpci.workspace = true
+mesh.workspace = true
+
+[lints]
+workspace = true

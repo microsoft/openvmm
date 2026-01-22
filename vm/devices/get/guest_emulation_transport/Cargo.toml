@@ -11,6 +11,7 @@ test_utilities = [ "guest_emulation_device/test_utilities" ]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 get_protocol.workspace = true
+guestmem.workspace = true
 guest_emulation_device = { workspace = true, optional = true }
 hvdef.workspace = true
 underhill_config.workspace = true
@@ -18,6 +19,7 @@ user_driver.workspace = true
 vmbus_async.workspace = true
 vmbus_ring.workspace = true
 vm_resource.workspace = true
+vmcore.workspace = true
 vpci.workspace = true
 
 chipset_resources.workspace = true
@@ -35,15 +37,16 @@ futures.workspace = true
 futures-concurrency.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
 tracing.workspace = true
+cvm_tracing.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
 vmbus_user_channel.workspace = true
 
 [dev-dependencies]
-guest_emulation_device.workspace = true
+guest_emulation_device = { workspace = true, features = ["test_utilities"] }
 power_resources.workspace = true
 
 [lints]

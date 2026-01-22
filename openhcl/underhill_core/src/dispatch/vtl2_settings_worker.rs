@@ -4,7 +4,7 @@
 //! Implements VTL2 settings worker
 
 use super::LoadedVm;
-use crate::nvme_manager::NvmeDiskConfig;
+use crate::nvme_manager::manager::NvmeDiskConfig;
 use crate::worker::NicConfig;
 use anyhow::Context;
 use cvm_tracing::CVM_ALLOWED;
@@ -237,6 +237,7 @@ pub struct Vtl2SettingsWorker {
     device_config_send: mesh::Sender<Vtl2ConfigNicRpc>,
     get_client: guest_emulation_transport::GuestEmulationTransportClient,
     interfaces: DeviceInterfaces,
+    modify_timeout_in_seconds: u64,
 }
 
 pub struct DeviceInterfaces {
@@ -251,12 +252,14 @@ impl Vtl2SettingsWorker {
         device_config_send: mesh::Sender<Vtl2ConfigNicRpc>,
         get_client: guest_emulation_transport::GuestEmulationTransportClient,
         interfaces: DeviceInterfaces,
+        modify_timeout_in_seconds: u64,
     ) -> Vtl2SettingsWorker {
         Vtl2SettingsWorker {
             old_settings: initial_settings,
             device_config_send,
             get_client,
             interfaces,
+            modify_timeout_in_seconds,
         }
     }
 
@@ -278,30 +281,38 @@ impl Vtl2SettingsWorker {
         uevent_listener: &UeventListener,
         buf: &[u8],
     ) -> Result<(), Vec<Vtl2SettingsErrorInfo>> {
-        const MODIFY_VTL2_SETTINGS_TIMEOUT_IN_SECONDS: u64 = 5;
-        let mut context = CancelContext::new()
-            .with_timeout(Duration::from_secs(MODIFY_VTL2_SETTINGS_TIMEOUT_IN_SECONDS));
+        let mut context =
+            CancelContext::new().with_timeout(Duration::from_secs(self.modify_timeout_in_seconds));
 
         let old_settings = Vtl2Settings {
             fixed: Default::default(),
             dynamic: self.old_settings.clone(),
         };
-        let vtl2_settings =
-            Vtl2Settings::read_from(buf, old_settings).map_err(|err| match err {
-                underhill_config::schema::ParseError::Json(err) => {
-                    vec![Vtl2SettingsErrorInfo::new(
-                        Vtl2SettingsErrorCode::JsonFormatError,
-                        err.to_string(),
-                    )]
-                }
-                underhill_config::schema::ParseError::Protobuf(err) => {
-                    vec![Vtl2SettingsErrorInfo::new(
-                        Vtl2SettingsErrorCode::ProtobufFormatError,
-                        err.to_string(),
-                    )]
-                }
-                underhill_config::schema::ParseError::Validation(err) => err.errors,
-            })?;
+        let vtl2_settings = Vtl2Settings::read_from(buf, old_settings).map_err(|err| match err {
+            underhill_config::schema::ParseError::Json(err) => {
+                vec![Vtl2SettingsErrorInfo::new(
+                    Vtl2SettingsErrorCode::JsonFormatError,
+                    err.to_string(),
+                )]
+            }
+            underhill_config::schema::ParseError::Protobuf(err) => {
+                vec![Vtl2SettingsErrorInfo::new(
+                    Vtl2SettingsErrorCode::ProtobufFormatError,
+                    err.to_string(),
+                )]
+            }
+            underhill_config::schema::ParseError::Validation(err) => err.errors,
+        });
+
+        tracing::debug!(
+            CVM_ALLOWED,
+            ?buf,
+            ?vtl2_settings,
+            timeout = self.modify_timeout_in_seconds,
+            "VTL2 settings received"
+        );
+
+        let vtl2_settings = vtl2_settings?;
 
         let new_settings = vtl2_settings.dynamic;
 
@@ -319,6 +330,11 @@ impl Vtl2SettingsWorker {
         }
 
         if !errors.is_empty() {
+            tracing::warn!(
+                CVM_ALLOWED,
+                ?errors,
+                "Errors preparing VTL2 configuration changes"
+            );
             return Err(errors);
         }
 
@@ -353,6 +369,11 @@ impl Vtl2SettingsWorker {
         }
 
         if !errors.is_empty() {
+            tracing::warn!(
+                CVM_ALLOWED,
+                ?errors,
+                "Errors applying VTL2 configuration changes"
+            );
             return Err(errors);
         }
 
@@ -1382,6 +1403,22 @@ async fn make_scsi_controller_config(
         scsi_disks.push(disk_cfg);
     }
 
+    // Set poll_mode_queue_depth = 4 for remote disk based on experiment results.
+    // Azure VMs have the fixed SCSI controller ids. Both host and guest agents
+    // rely on the fixed ids. It is assumed that data (remote) disks are attached
+    // to SCSI controller with this specific id.
+    let poll_mode_queue_depth =
+        if instance_id == guid::guid!("f8b3781b-1e82-4818-a1c3-63d806ec15bb") {
+            Some(4)
+        } else {
+            None
+        };
+    tracing::info!(
+        %instance_id,
+        poll_mode_queue_depth,
+        "poll mode queue depth chosen based on controller instance id",
+    );
+
     let (send, recv) = mesh::channel();
     // The choice of max 256 scsi subchannels is somewhat arbitrary. But
     // for now, it provides a decent trade off between unbounded number of
@@ -1393,6 +1430,7 @@ async fn make_scsi_controller_config(
             devices: scsi_disks,
             io_queue_depth: Some(controller.io_queue_depth.unwrap_or(default_io_queue_depth)),
             requests: Some(recv),
+            poll_mode_queue_depth,
         },
         request: send,
         dvds,
@@ -1784,14 +1822,19 @@ impl InitialControllers {
         use_nvme_vfio: bool,
         is_restoring: bool,
         default_io_queue_depth: u32,
+        config_timeout_in_seconds: u64,
     ) -> anyhow::Result<Self> {
-        const VM_CONFIG_TIME_OUT_IN_SECONDS: u64 = 5;
         let mut context =
-            CancelContext::new().with_timeout(Duration::from_secs(VM_CONFIG_TIME_OUT_IN_SECONDS));
+            CancelContext::new().with_timeout(Duration::from_secs(config_timeout_in_seconds));
 
         let vtl2_settings = dps.general.vtl2_settings.as_ref();
 
-        tracing::info!(CVM_ALLOWED, ?vtl2_settings, "Initial VTL2 settings");
+        tracing::info!(
+            CVM_ALLOWED,
+            ?vtl2_settings,
+            config_timeout_in_seconds,
+            "Initial VTL2 settings"
+        );
 
         let fixed = vtl2_settings.map_or_else(Default::default, |s| s.fixed.clone());
         let dynamic = vtl2_settings.map(|s| &s.dynamic);

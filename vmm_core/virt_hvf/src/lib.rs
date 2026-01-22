@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))] // xtask-fmt allow-target-arch sys-crate
+#![cfg(all(target_os = "macos", guest_is_native, guest_arch = "aarch64"))]
 
 //! A hypervisor backend using macos's Hypervisor framework.
 
@@ -369,7 +369,7 @@ impl virt::PartitionMemoryMapper for HvfPartition {
 }
 
 impl virt::PartitionMemoryMap for HvfPartitionInner {
-    fn unmap_range(&self, addr: u64, size: u64) -> Result<(), virt::Error> {
+    fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
         let range = MemoryRange::new(addr..addr + size);
         self.mappings.lock().retain(|mapping| {
             if !range.overlaps(mapping) {
@@ -392,7 +392,7 @@ impl virt::PartitionMemoryMap for HvfPartitionInner {
         addr: u64,
         writable: bool,
         exec: bool,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         let mut mappings = self.mappings.lock();
         let mut flags = abi::HvMemoryFlags::READ.0;
         if writable {
@@ -741,7 +741,7 @@ impl HvfProcessor<'_> {
         }
     }
 
-    fn handle_psci(&mut self, fc: FastCall) -> Result<(), VpHaltReason<Error>> {
+    fn handle_psci(&mut self, fc: FastCall) -> Result<(), VpHaltReason> {
         let mask = if fc.smc64() {
             u64::MAX
         } else {
@@ -819,9 +819,6 @@ impl HvfProcessor<'_> {
 }
 
 impl<'p> Processor for HvfProcessor<'p> {
-    type Error = Error;
-    type RunVpError = Error;
-
     type StateAccess<'a>
         = vp_state::HvfVpStateAccess<'a, 'p>
     where
@@ -831,7 +828,7 @@ impl<'p> Processor for HvfProcessor<'p> {
         &mut self,
         _vtl: Vtl,
         _state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), <vp_state::HvfVpStateAccess<'_, 'p> as AccessVpState>::Error> {
         Ok(())
     }
 
@@ -839,7 +836,7 @@ impl<'p> Processor for HvfProcessor<'p> {
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<Error>> {
+    ) -> Result<Infallible, VpHaltReason> {
         let vp_index = self.inner.vp_info.base.vp_index;
         let mut last_waker = None;
         loop {
@@ -910,7 +907,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                             )
                         }
                         .chk()
-                        .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
+                        .unwrap();
                         self.wfi = false;
                     }
 
@@ -923,7 +920,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                         continue;
                     }
 
-                    break Poll::Ready(Result::<_, VpHaltReason<_>>::Ok(()));
+                    break Poll::Ready(Result::<_, VpHaltReason>::Ok(()));
                 }
             })
             .await?;
@@ -933,14 +930,14 @@ impl<'p> Processor for HvfProcessor<'p> {
                 unsafe {
                     abi::hv_vcpu_set_vtimer_mask(self.vcpu.vcpu, false)
                         .chk()
-                        .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
+                        .unwrap();
                 }
             }
 
             // SAFETY: we are not concurrently accessing `exit`.
             unsafe { abi::hv_vcpu_run(self.vcpu.vcpu) }
                 .chk()
-                .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
+                .map_err(|err| dev.fatal_error(err.into()))?;
 
             match self.vcpu.exit.reason {
                 abi::HvExitReason::CANCELED => {
@@ -963,7 +960,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                         ExceptionClass::DATA_ABORT_LOWER => {
                             let iss = IssDataAbort::from(exception.syndrome.iss());
                             if !iss.isv() {
-                                return Err(VpHaltReason::EmulationFailure(
+                                return Err(dev.fatal_error(
                                     anyhow::anyhow!("can't handle data abort without isv: {iss:?}")
                                         .into(),
                                 ));
@@ -1118,7 +1115,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                             advance(&mut self.vcpu);
                         }
                         class => {
-                            return Err(VpHaltReason::Hypervisor(
+                            return Err(dev.fatal_error(
                                 anyhow::anyhow!(
                                     "unsupported exception class: {class:?} {iss:#x}",
                                     iss = exception.syndrome.iss()
@@ -1132,7 +1129,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                     self.gicr.raise(PPI_VTIMER);
                 }
                 reason => {
-                    return Err(VpHaltReason::Hypervisor(
+                    return Err(dev.fatal_error(
                         anyhow::anyhow!("unsupported exit reason: {reason:?}").into(),
                     ));
                 }
@@ -1140,9 +1137,7 @@ impl<'p> Processor for HvfProcessor<'p> {
         }
     }
 
-    fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
-        Ok(())
-    }
+    fn flush_async_requests(&mut self) {}
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);

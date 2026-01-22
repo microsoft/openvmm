@@ -1917,10 +1917,10 @@ impl LocalNode {
                 })
                 .count();
             if left == 0 {
-                tracing::debug!(node = ?self.id(), "no ports remain");
+                tracing::trace!(node = ?self.id(), "no ports remain");
                 return;
             }
-            tracing::debug!(node = ?self.id(), count = left, "waiting for ports");
+            tracing::trace!(node = ?self.id(), count = left, "waiting for ports");
             let _ = recv.await;
         }
     }
@@ -2168,7 +2168,7 @@ impl LocalNode {
     fn get_remote(&self, id: NodeId) -> Arc<RemoteNode> {
         assert!(id != self.id());
         let mut state = self.inner.state.lock();
-        let remote_node = match state.nodes.entry(id) {
+        match state.nodes.entry(id) {
             hash_map::Entry::Occupied(entry) => entry.get().clone(),
             hash_map::Entry::Vacant(entry) => {
                 let (remote_node, handle) = RemoteNode::new(self.inner.clone(), id);
@@ -2180,8 +2180,7 @@ impl LocalNode {
                 }
                 remote_node
             }
-        };
-        remote_node
+        }
     }
 
     /// Gets the local port with ID `port_id`.
@@ -2280,7 +2279,7 @@ impl LocalNodeInner {
                 drop(state);
 
                 // Trace outside the lock to avoid deadlocks.
-                tracing::debug!(
+                tracing::trace!(
                     local_id = ?self.id,
                     port = ?port.id,
                     remote_id = ?remote_node.id,

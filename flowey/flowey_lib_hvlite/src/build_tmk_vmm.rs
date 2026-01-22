@@ -66,7 +66,7 @@ impl FlowNode for Node {
             let features = if unstable_whp && target == CommonTriple::AARCH64_WINDOWS_MSVC {
                 ["unstable_whp".to_owned()].into()
             } else {
-                [].into()
+                Default::default()
             };
 
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {

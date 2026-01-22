@@ -596,7 +596,7 @@ impl PagePool {
                 SlotState::AllocatedPendingRestore { device_id, tag } => {
                     tracing::warn!(
                         base_pfn = slot.base_pfn,
-                        pfn_bias = slot.size_pages,
+                        pfn_bias = self.inner.pfn_bias,
                         size_pages = slot.size_pages,
                         device_id = device_id,
                         tag = tag.as_str(),
@@ -858,7 +858,7 @@ impl Drop for PagePoolAllocator {
 
 impl user_driver::DmaClient for PagePoolAllocator {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        if len as u64 % PAGE_SIZE != 0 {
+        if !(len as u64).is_multiple_of(PAGE_SIZE) {
             anyhow::bail!("not a page-size multiple");
         }
 

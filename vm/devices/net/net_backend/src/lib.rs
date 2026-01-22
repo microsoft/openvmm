@@ -13,6 +13,7 @@ pub mod resolve;
 pub mod tests;
 
 use async_trait::async_trait;
+use bitfield_struct::bitfield;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::TryFutureExt;
@@ -21,6 +22,7 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::InspectMut;
+use inspect_counters::Counter;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use null::NullEndpoint;
@@ -144,6 +146,12 @@ pub enum TxError {
     #[error("unrecoverable error. {0}")]
     Fatal(#[source] anyhow::Error),
 }
+pub trait BackendQueueStats {
+    fn rx_errors(&self) -> Counter;
+    fn tx_errors(&self) -> Counter;
+    fn rx_packets(&self) -> Counter;
+    fn tx_packets(&self) -> Counter;
+}
 
 /// A trait for sending and receiving network packets.
 #[async_trait]
@@ -172,6 +180,11 @@ pub trait Queue: Send + InspectMut {
 
     /// Get the buffer access.
     fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess>;
+
+    /// Get queue statistics
+    fn queue_stats(&self) -> Option<&dyn BackendQueueStats> {
+        None // Default implementation - not all queues implement stats
+    }
 }
 
 /// A trait for providing access to guest memory buffers.
@@ -298,37 +311,53 @@ pub enum TxSegmentType {
 pub struct TxMetadata {
     /// The transmit ID.
     pub id: TxId,
-    /// The number of segments to follow.
-    pub segment_count: usize,
+    /// The number of segments, including this one.
+    pub segment_count: u8,
+    /// Flags.
+    pub flags: TxFlags,
     /// The total length of the packet in bytes.
-    pub len: usize,
+    pub len: u32,
+    /// The length of the Ethernet frame header. Only guaranteed to be set if
+    /// various offload flags are set.
+    pub l2_len: u8,
+    /// The length of the IP header. Only guaranteed to be set if various
+    /// offload flags are set.
+    pub l3_len: u16,
+    /// The length of the TCP header. Only guaranteed to be set if various
+    /// offload flags are set.
+    pub l4_len: u8,
+    /// The maximum TCP segment size, used for segmentation. Only guaranteed to
+    /// be set if [`TxFlags::offload_tcp_segmentation`] is set.
+    pub max_tcp_segment_size: u16,
+}
+
+/// Flags affecting transmit behavior.
+#[bitfield(u8)]
+pub struct TxFlags {
     /// Offload IPv4 header checksum calculation.
     ///
-    /// l3_protocol, l2_len, and l3_len must be set.
+    /// `l3_protocol`, `l2_len`, and `l3_len` must be set.
     pub offload_ip_header_checksum: bool,
     /// Offload the TCP checksum calculation.
     ///
-    /// l3_protocol, l2_len, and l3_len must be set.
+    /// `l3_protocol`, `l2_len`, and `l3_len` must be set.
     pub offload_tcp_checksum: bool,
     /// Offload the UDP checksum calculation.
     ///
-    /// l3_protocol, l2_len, and l3_len must be set.
+    /// `l3_protocol`, `l2_len`, and `l3_len` must be set.
     pub offload_udp_checksum: bool,
     /// Offload the TCP segmentation, allowing packets to be larger than the
     /// MTU.
     ///
-    /// l3_protocol, l2_len, l3_len, l4_len, and tcp_segment_size must be set.
+    /// `l3_protocol`, `l2_len`, `l3_len`, `l4_len`, and `tcp_segment_size` must
+    /// be set.
     pub offload_tcp_segmentation: bool,
-    /// The L3 protocol, needed when performing any of the offloads.
-    pub l3_protocol: L3Protocol,
-    /// The length of the Ethernet frame header.
-    pub l2_len: u8,
-    /// The length of the IP header.
-    pub l3_len: u16,
-    /// The length of the TCP header.
-    pub l4_len: u8,
-    /// The maximum TCP segment size, used for segmentation.
-    pub max_tcp_segment_size: u16,
+    /// If true, the packet is IPv4.
+    pub is_ipv4: bool,
+    /// If true, the packet is IPv6. Mutually exclusive with `is_ipv4`.
+    pub is_ipv6: bool,
+    #[bits(2)]
+    _reserved: u8,
 }
 
 impl Default for TxMetadata {
@@ -337,11 +366,7 @@ impl Default for TxMetadata {
             id: TxId(0),
             segment_count: 0,
             len: 0,
-            offload_ip_header_checksum: false,
-            offload_tcp_checksum: false,
-            offload_udp_checksum: false,
-            offload_tcp_segmentation: false,
-            l3_protocol: L3Protocol::Unknown,
+            flags: TxFlags::new(),
             l2_len: 0,
             l3_len: 0,
             l4_len: 0,
@@ -368,7 +393,7 @@ pub fn packet_count(mut segments: &[TxSegment]) -> usize {
         let TxSegmentType::Head(metadata) = &head.ty else {
             unreachable!()
         };
-        segments = &segments[metadata.segment_count..];
+        segments = &segments[metadata.segment_count as usize..];
         packet_count += 1;
     }
     packet_count
@@ -382,7 +407,7 @@ pub fn next_packet(segments: &[TxSegment]) -> (&TxMetadata, &[TxSegment], &[TxSe
     } else {
         unreachable!();
     };
-    let (this, rest) = segments.split_at(metadata.segment_count);
+    let (this, rest) = segments.split_at(metadata.segment_count.into());
     (metadata, this, rest)
 }
 
@@ -393,7 +418,7 @@ pub fn linearize(
     segments: &mut &[TxSegment],
 ) -> Result<Vec<u8>, GuestMemoryError> {
     let (head, this, rest) = next_packet(segments);
-    let mut v = vec![0; head.len];
+    let mut v = vec![0; head.len as usize];
     let mut offset = 0;
     let mem = pool.guest_memory();
     for segment in this {
@@ -449,6 +474,10 @@ pub struct DisconnectableEndpoint {
     null_endpoint: Box<dyn Endpoint>,
     cached_state: Option<DisconnectableEndpointCachedState>,
     receive_update: Arc<Mutex<mesh::Receiver<DisconnectableEndpointUpdate>>>,
+    notify_disconnect_complete: Option<(
+        Rpc<(), Option<Box<dyn Endpoint>>>,
+        Option<Box<dyn Endpoint>>,
+    )>,
 }
 
 impl InspectMut for DisconnectableEndpoint {
@@ -469,6 +498,7 @@ impl DisconnectableEndpoint {
                 null_endpoint: Box::new(NullEndpoint::new()),
                 cached_state: None,
                 receive_update: Arc::new(Mutex::new(endpoint_rx)),
+                notify_disconnect_complete: None,
             },
             control,
         )
@@ -545,6 +575,12 @@ impl Endpoint for DisconnectableEndpoint {
     }
 
     async fn wait_for_endpoint_action(&mut self) -> EndpointAction {
+        // If the previous message disconnected the endpoint, notify the caller
+        // that the operation has completed, returning the old endpoint.
+        if let Some((rpc, old_endpoint)) = self.notify_disconnect_complete.take() {
+            rpc.handle(async |_| old_endpoint).await;
+        }
+
         enum Message {
             DisconnectableEndpointUpdate(DisconnectableEndpointUpdate),
             UpdateFromEndpoint(EndpointAction),
@@ -585,8 +621,11 @@ impl Endpoint for DisconnectableEndpoint {
                 DisconnectableEndpointUpdate::EndpointDisconnected(rpc),
             ) => {
                 let old_endpoint = self.endpoint.take();
-                self.endpoint = None;
-                rpc.handle(async |_| old_endpoint).await;
+                // Wait until the next call into this function to notify the
+                // caller that the operation has completed. This makes it more
+                // likely that the endpoint is no longer referenced (old queues
+                // have been disposed, etc.).
+                self.notify_disconnect_complete = Some((rpc, old_endpoint));
                 EndpointAction::RestartRequired
             }
             Message::UpdateFromEndpoint(update) => update,

@@ -12,11 +12,11 @@ test_utilities = ["dep:disklayer_ram"]
 [dependencies]
 get_protocol.workspace = true
 get_resources.workspace = true
+test_igvm_agent_lib.workspace = true
 
 disk_backend.workspace = true
 disklayer_ram = { workspace = true, optional = true }
 guestmem.workspace = true
-openhcl_attestation_protocol.workspace = true
 power_resources.workspace = true
 scsi_buffers.workspace = true
 video_core.workspace = true
@@ -36,7 +36,7 @@ tracelimit.workspace = true
 
 futures.workspace = true
 parking_lot.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
 jiff.workspace = true
 tracing.workspace = true

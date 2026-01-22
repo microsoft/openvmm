@@ -90,7 +90,7 @@ impl Drop for Mapping {
 
 impl LockedMemory {
     pub fn new(len: usize) -> anyhow::Result<Self> {
-        if len % PAGE_SIZE != 0 {
+        if !len.is_multiple_of(PAGE_SIZE) {
             anyhow::bail!("not a page-size multiple");
         }
         let mapping = Mapping::new(len).context("failed to create mapping")?;
@@ -123,6 +123,9 @@ unsafe impl MappedDmaTarget for LockedMemory {
     }
 }
 
+/// A DMA client spawner that allocates memory at arbitrary locations in VTL2's
+/// address space. Use this spawner when you don't care about the PFNs being
+/// contiguous or able to survive an OpenHCL servicing event.
 #[derive(Clone, Inspect)]
 pub struct LockedMemorySpawner;
 

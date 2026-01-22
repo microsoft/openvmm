@@ -5,17 +5,20 @@
 
 use super::PetriVmResourcesOpenVmm;
 use crate::OpenHclServicingFlags;
+use crate::PetriHaltReason;
+use crate::PetriVmFramebufferAccess;
+use crate::PetriVmInspector;
 use crate::PetriVmRuntime;
 use crate::ShutdownKind;
+use crate::VmScreenshotMeta;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::worker::Worker;
 use anyhow::Context;
 use async_trait::async_trait;
-use diag_client::kmsg_stream::KmsgStream;
+use framebuffer::View;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use get_resources::ged::FirmwareEvent;
-use hvlite_defs::rpc::PulseSaveRestoreError;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::CancelContext;
 use mesh::Receiver;
@@ -23,16 +26,14 @@ use mesh::RecvError;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh_process::Mesh;
-use pal_async::DefaultDriver;
+use openvmm_defs::rpc::PulseSaveRestoreError;
 use pal_async::socket::PolledSocket;
-use pal_async::task::Task;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use unix_socket::UnixListener;
 use vmm_core_defs::HaltReason;
 use vtl2_settings_proto::Vtl2Settings;
 
@@ -47,13 +48,13 @@ pub struct PetriVmOpenVmm {
 
 #[async_trait]
 impl PetriVmRuntime for PetriVmOpenVmm {
-    async fn teardown(self) -> anyhow::Result<()> {
-        tracing::info!("cancelling watchdogs");
-        futures::future::join_all(self.inner.watchdog_tasks.into_iter().map(|t| t.cancel())).await;
+    type VmInspector = OpenVmmInspector;
+    type VmFramebufferAccess = OpenVmmFramebufferAccess;
 
-        tracing::info!("Cancelled watchdogs, waiting for worker");
+    async fn teardown(self) -> anyhow::Result<()> {
+        tracing::info!("waiting for worker");
         let worker = Arc::into_inner(self.inner.worker)
-            .expect("Watchdog task was cancelled, we should be the only ref left");
+            .context("all references to the OpenVMM worker have not been closed")?;
         worker.shutdown().await?;
 
         tracing::info!("Worker quit, waiting for mesh");
@@ -67,7 +68,7 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         Ok(())
     }
 
-    async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
+    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
         let halt_reason = if let Some(already) = self.halt.already_received.take() {
             already.map_err(anyhow::Error::from)
         } else {
@@ -79,6 +80,19 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         }?;
 
         tracing::info!(?halt_reason, "Got halt reason");
+
+        let halt_reason = match halt_reason {
+            HaltReason::PowerOff => PetriHaltReason::PowerOff,
+            HaltReason::Reset => PetriHaltReason::Reset,
+            HaltReason::Hibernate => PetriHaltReason::Hibernate,
+            HaltReason::TripleFault { .. } => PetriHaltReason::TripleFault,
+            _ => PetriHaltReason::Other,
+        };
+
+        if allow_reset && halt_reason == PetriHaltReason::Reset {
+            self.reset().await?
+        }
+
         Ok(halt_reason)
     }
 
@@ -86,12 +100,13 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         Self::wait_for_agent(self, set_high_vtl).await
     }
 
-    fn openhcl_diag(&self) -> Option<&OpenHclDiagHandler> {
-        self.inner.resources.openhcl_diag_handler.as_ref()
-    }
-
-    async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
-        Self::wait_for_successful_boot_event(self).await
+    fn openhcl_diag(&self) -> Option<OpenHclDiagHandler> {
+        self.inner.resources.vtl2_vsock_path.as_ref().map(|path| {
+            OpenHclDiagHandler::new(diag_client::DiagClient::from_hybrid_vsock(
+                self.inner.resources.driver.clone(),
+                path,
+            ))
+        })
     }
 
     async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
@@ -113,7 +128,54 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         new_openhcl: &ResolvedArtifact,
         flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()> {
-        Self::restart_openhcl(self, new_openhcl, flags).await
+        Self::save_openhcl(self, new_openhcl, flags).await?;
+        Self::restore_openhcl(self).await
+    }
+
+    async fn save_openhcl(
+        &mut self,
+        new_openhcl: &ResolvedArtifact,
+        flags: OpenHclServicingFlags,
+    ) -> anyhow::Result<()> {
+        Self::save_openhcl(self, new_openhcl, flags).await
+    }
+
+    async fn restore_openhcl(&mut self) -> anyhow::Result<()> {
+        Self::restore_openhcl(self).await
+    }
+
+    async fn update_command_line(&mut self, command_line: &str) -> anyhow::Result<()> {
+        Self::update_command_line(self, command_line).await
+    }
+
+    fn inspector(&self) -> Option<OpenVmmInspector> {
+        Some(OpenVmmInspector {
+            worker: self.inner.worker.clone(),
+        })
+    }
+
+    fn take_framebuffer_access(&mut self) -> Option<OpenVmmFramebufferAccess> {
+        self.inner
+            .framebuffer_view
+            .take()
+            .map(|view| OpenVmmFramebufferAccess { view })
+    }
+
+    async fn reset(&mut self) -> anyhow::Result<()> {
+        Self::reset(self).await
+    }
+
+    async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()> {
+        Self::set_vtl2_settings(self, settings).await
+    }
+
+    async fn set_vmbus_drive(
+        &mut self,
+        _disk: &crate::Drive,
+        _controller_id: &guid::Guid,
+        _controller_location: u32,
+    ) -> anyhow::Result<()> {
+        todo!("openvmm set vmbus drive")
     }
 }
 
@@ -121,7 +183,7 @@ pub(super) struct PetriVmInner {
     pub(super) resources: PetriVmResourcesOpenVmm,
     pub(super) mesh: Mesh,
     pub(super) worker: Arc<Worker>,
-    pub(super) watchdog_tasks: Vec<Task<()>>,
+    pub(super) framebuffer_view: Option<View>,
 }
 
 struct PetriVmHaltReceiver {
@@ -162,34 +224,6 @@ impl PetriVmOpenVmm {
             .context("VM is not configured with OpenHCL")
     }
 
-    /// Wait for the VM to halt, returning the reason for the halt,
-    /// and cleanly tear down the VM.
-    pub async fn wait_for_teardown(mut self) -> anyhow::Result<HaltReason> {
-        let halt_reason = self.wait_for_halt().await?;
-
-        self.teardown().await?;
-
-        Ok(halt_reason)
-    }
-
-    petri_vm_fn!(
-        /// Gets a live core dump of the OpenHCL process specified by 'name' and
-        /// writes it to 'path'
-        pub async fn openhcl_core_dump(&mut self, name: &str, path: &Path) -> anyhow::Result<()>
-    );
-    petri_vm_fn!(
-        /// Crashes the specified openhcl process
-        pub async fn openhcl_crash(&mut self,  name: &str) -> anyhow::Result<()>
-    );
-    petri_vm_fn!(
-        /// Waits for an event emitted by the firmware about its boot status, and
-        /// verifies that it is the expected success value.
-        ///
-        /// * Linux Direct guests do not emit a boot event, so this method immediately returns Ok.
-        /// * PCAT guests may not emit an event depending on the PCAT version, this
-        /// method is best effort for them.
-        pub async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()>
-    );
     petri_vm_fn!(
         /// Waits for an event emitted by the firmware about its boot status, and
         /// returns that status.
@@ -210,11 +244,24 @@ impl PetriVmOpenVmm {
         pub async fn wait_for_kvp(&mut self) -> anyhow::Result<mesh::Sender<hyperv_ic_resources::kvp::KvpRpc>>
     );
     petri_vm_fn!(
-        /// Restarts OpenHCL.
-        pub async fn restart_openhcl(
+        /// Stages the new OpenHCL file and saves the existing state.
+        pub async fn save_openhcl(
             &mut self,
             new_openhcl: &ResolvedArtifact,
             flags: OpenHclServicingFlags
+        ) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Restores OpenHCL from a previously saved state.
+        pub async fn restore_openhcl(
+            &mut self
+        ) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Updates the command line parameters of the running VM.
+        pub async fn update_command_line(
+            &mut self,
+            command_line: &str
         ) -> anyhow::Result<()>
     );
     petri_vm_fn!(
@@ -222,28 +269,12 @@ impl PetriVmOpenVmm {
         pub async fn reset(&mut self) -> anyhow::Result<()>
     );
     petri_vm_fn!(
-        /// Test that we are able to inspect OpenHCL.
-        pub async fn test_inspect_openhcl(&mut self) -> anyhow::Result<()>
-    );
-    petri_vm_fn!(
-        /// Get the kmsg stream from OpenHCL.
-        pub async fn kmsg(&mut self) -> anyhow::Result<KmsgStream>
-    );
-    petri_vm_fn!(
-        /// Wait for VTL 2 to report that it is ready to respond to commands.
-        /// Will fail if the VM is not running OpenHCL.
-        ///
-        /// This should only be necessary if you're doing something manual. All
-        /// Petri-provided methods will wait for VTL 2 to be ready automatically.
-        pub async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()>
-    );
-    petri_vm_fn!(
         /// Wait for a connection from a pipette agent
         pub async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>
     );
     petri_vm_fn!(
-        /// Modifies OpenHCL VTL2 settings.
-        pub async fn modify_vtl2_settings(&mut self, f: impl FnOnce(&mut Vtl2Settings)) -> anyhow::Result<()>
+        /// Set the OpenHCL VTL2 settings.
+        pub async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()>
     );
 
     petri_vm_fn!(pub(crate) async fn resume(&mut self) -> anyhow::Result<()>);
@@ -322,29 +353,6 @@ impl PetriVmOpenVmm {
 }
 
 impl PetriVmInner {
-    async fn openhcl_core_dump(&self, name: &str, path: &Path) -> anyhow::Result<()> {
-        self.openhcl_diag()?.core_dump(name, path).await
-    }
-
-    async fn openhcl_crash(&self, name: &str) -> anyhow::Result<()> {
-        self.openhcl_diag()?.crash(name).await
-    }
-
-    async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
-        if let Some(expected_event) = self.resources.expected_boot_event {
-            let event = self.wait_for_boot_event().await?;
-
-            anyhow::ensure!(
-                event == expected_event,
-                "Did not receive expected successful boot event"
-            );
-        } else {
-            tracing::warn!("Configured firmware does not emit a boot event, skipping");
-        }
-
-        Ok(())
-    }
-
     async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
         self.resources
             .firmware_event_recv
@@ -406,7 +414,7 @@ impl PetriVmInner {
         Ok(send)
     }
 
-    async fn restart_openhcl(
+    async fn save_openhcl(
         &self,
         new_openhcl: &ResolvedArtifact,
         flags: OpenHclServicingFlags,
@@ -419,16 +427,25 @@ impl PetriVmInner {
 
         let igvm_file = fs_err::File::open(new_openhcl).context("failed to open igvm file")?;
         self.worker
-            .restart_openhcl(ged_send, flags, igvm_file.into())
+            .save_openhcl(ged_send, flags, igvm_file.into())
             .await
     }
 
-    async fn modify_vtl2_settings(
-        &mut self,
-        f: impl FnOnce(&mut Vtl2Settings),
-    ) -> anyhow::Result<()> {
-        f(self.resources.vtl2_settings.as_mut().unwrap());
+    async fn update_command_line(&mut self, command_line: &str) -> anyhow::Result<()> {
+        self.worker.update_command_line(command_line).await
+    }
 
+    async fn restore_openhcl(&self) -> anyhow::Result<()> {
+        let ged_send = self
+            .resources
+            .ged_send
+            .as_ref()
+            .context("openhcl not configured")?;
+
+        self.worker.restore_openhcl(ged_send).await
+    }
+
+    async fn set_vtl2_settings(&self, settings: &Vtl2Settings) -> anyhow::Result<()> {
         let ged_send = self
             .resources
             .ged_send
@@ -438,7 +455,7 @@ impl PetriVmInner {
         ged_send
             .call_failable(
                 get_resources::ged::GuestEmulationRequest::ModifyVtl2Settings,
-                prost::Message::encode_to_vec(self.resources.vtl2_settings.as_ref().unwrap()),
+                prost::Message::encode_to_vec(settings),
             )
             .await?;
 
@@ -452,64 +469,37 @@ impl PetriVmInner {
         if let Some(agent) = self.resources.linux_direct_serial_agent.as_mut() {
             agent.reset();
 
-            if self
-                .resources
-                .agent_image
-                .as_ref()
-                .is_some_and(|x| x.contains_pipette())
-            {
+            if self.resources.properties.using_vtl0_pipette {
                 self.launch_linux_direct_pipette().await?;
             }
         }
         Ok(())
     }
 
-    async fn test_inspect_openhcl(&self) -> anyhow::Result<()> {
-        self.openhcl_diag()?.test_inspect().await
-    }
-
-    async fn kmsg(&self) -> anyhow::Result<KmsgStream> {
-        self.openhcl_diag()?.kmsg().await
-    }
-
-    async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()> {
-        self.openhcl_diag()?.wait_for_vtl2().await
-    }
-
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
-        Self::wait_for_agent_core(
-            &self.resources.driver,
-            if set_high_vtl {
-                self.resources
-                    .vtl2_pipette_listener
-                    .as_mut()
-                    .context("VM is not configured with VTL 2")?
-            } else {
-                &mut self.resources.pipette_listener
-            },
-            &self.resources.output_dir,
-        )
-        .await
-    }
+        let listener = if set_high_vtl {
+            self.resources
+                .vtl2_pipette_listener
+                .as_mut()
+                .context("VM is not configured with VTL 2")?
+        } else {
+            &mut self.resources.pipette_listener
+        };
 
-    async fn wait_for_agent_core(
-        driver: &DefaultDriver,
-        listener: &mut PolledSocket<UnixListener>,
-        output_dir: &Path,
-    ) -> anyhow::Result<PipetteClient> {
-        // Wait for the pipette connection.
-        tracing::info!("listening for pipette connection");
+        tracing::info!(set_high_vtl, "listening for pipette connection");
         let (conn, _) = listener
             .accept()
             .await
             .context("failed to accept pipette connection")?;
-
-        tracing::info!("handshaking with pipette");
-        let client = PipetteClient::new(&driver, PolledSocket::new(driver, conn)?, output_dir)
-            .await
-            .context("failed to connect to pipette");
-
-        tracing::info!("completed pipette handshake");
+        tracing::info!(set_high_vtl, "handshaking with pipette");
+        let client = PipetteClient::new(
+            &self.resources.driver,
+            PolledSocket::new(&self.resources.driver, conn)?,
+            &self.resources.output_dir,
+        )
+        .await
+        .context("failed to connect to pipette");
+        tracing::info!(set_high_vtl, "completed pipette handshake");
         client
     }
 
@@ -548,12 +538,53 @@ impl PetriVmInner {
             .await?;
         Ok(())
     }
+}
 
-    fn openhcl_diag(&self) -> anyhow::Result<&OpenHclDiagHandler> {
-        if let Some(ohd) = &self.resources.openhcl_diag_handler {
-            Ok(ohd)
-        } else {
-            anyhow::bail!("VM is not configured with OpenHCL")
+/// Interface for inspecting OpenVMM
+pub struct OpenVmmInspector {
+    worker: Arc<Worker>,
+}
+
+#[async_trait]
+impl PetriVmInspector for OpenVmmInspector {
+    async fn inspect_all(&self) -> anyhow::Result<inspect::Node> {
+        Ok(self.worker.inspect_all().await)
+    }
+}
+
+/// Interface to the OpenVMM framebuffer
+pub struct OpenVmmFramebufferAccess {
+    view: View,
+}
+
+#[async_trait]
+impl PetriVmFramebufferAccess for OpenVmmFramebufferAccess {
+    async fn screenshot(
+        &mut self,
+        image: &mut Vec<u8>,
+    ) -> anyhow::Result<Option<VmScreenshotMeta>> {
+        // Our framebuffer uses 4 bytes per pixel, approximating an
+        // BGRA image, however it only actually contains BGR data.
+        // The fourth byte is effectively noise. We can set the 'alpha'
+        // value to 0xFF to make the image opaque.
+        const BYTES_PER_PIXEL: usize = 4;
+        let (width, height) = self.view.resolution();
+        let (widthsize, heightsize) = (width as usize, height as usize);
+        let len = widthsize * heightsize * BYTES_PER_PIXEL;
+
+        image.resize(len, 0);
+        for (i, line) in (0..height).zip(image.chunks_exact_mut(widthsize * BYTES_PER_PIXEL)) {
+            self.view.read_line(i, line);
+            for pixel in line.chunks_exact_mut(BYTES_PER_PIXEL) {
+                pixel.swap(0, 2);
+                pixel[3] = 0xFF;
+            }
         }
+
+        Ok(Some(VmScreenshotMeta {
+            color: image::ExtendedColorType::Rgba8,
+            width,
+            height,
+        }))
     }
 }

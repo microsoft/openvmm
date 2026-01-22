@@ -74,6 +74,7 @@ fn viz_pipeline_generic(
             platform,
             arch,
             cond_param_idx: _,
+            timeout_minutes: _,
             ref ado_pool,
             ado_variables: _,
             gh_override_if: _,
@@ -102,7 +103,7 @@ fn viz_pipeline_generic(
             "artifacts used: {}",
             artifacts_used
                 .iter()
-                .map(|a| a.name.to_owned())
+                .map(|a| a.name.clone())
                 .collect::<Vec<_>>()
                 .join(",\n    ")
         );
@@ -110,7 +111,7 @@ fn viz_pipeline_generic(
             "artifacts published: {}",
             artifacts_published
                 .iter()
-                .map(|a| a.name.to_owned())
+                .map(|a| a.name.clone())
                 .collect::<Vec<_>>()
                 .join(",\n    ")
         );
@@ -256,6 +257,7 @@ pub fn viz_pipeline_dot(pipeline: ResolvedPipeline, _backend: FlowBackend) -> an
                 platform: _,
                 arch: _,
                 cond_param_idx: _,
+                timeout_minutes: _,
                 ado_pool,
                 ado_variables: _,
                 gh_override_if: _,
@@ -287,7 +289,7 @@ pub fn viz_pipeline_dot(pipeline: ResolvedPipeline, _backend: FlowBackend) -> an
                 "artifacts used: {}",
                 artifacts_used
                     .iter()
-                    .map(|a| a.name.to_owned())
+                    .map(|a| a.name.clone())
                     .collect::<Vec<_>>()
                     .join(",\n    ")
             )?;
@@ -296,7 +298,7 @@ pub fn viz_pipeline_dot(pipeline: ResolvedPipeline, _backend: FlowBackend) -> an
                 "artifacts published: {}",
                 artifacts_published
                     .iter()
-                    .map(|a| a.name.to_owned())
+                    .map(|a| a.name.clone())
                     .collect::<Vec<_>>()
                     .join(",\n    ")
             )?;

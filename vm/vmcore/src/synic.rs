@@ -113,6 +113,19 @@ pub trait SynicPortAccess: Send + Sync {
 pub trait SynicMonitorAccess: SynicPortAccess {
     /// Sets the GPA of the monitor page currently in use.
     fn set_monitor_page(&self, vtl: Vtl, gpa: Option<MonitorPageGpas>) -> anyhow::Result<()>;
+
+    /// Allocates monitor pages and sets them as currently in use. If allocating monitor pages is
+    /// not supported, returns `Ok(None)`.
+    ///
+    /// The pages will be deallocated if the monitor page is subsequently changed or cleared using
+    /// [`SynicMonitorAccess::set_monitor_page`].
+    ///
+    /// Allocating a host-to-guest monitor page is optional so [`MonitorPageGpas::parent_to_child`]
+    /// may be zero.
+    fn allocate_monitor_page(&self, vtl: Vtl) -> anyhow::Result<Option<MonitorPageGpas>> {
+        let _ = vtl;
+        Ok(None)
+    }
 }
 
 /// A guest event port, created by [`SynicPortAccess::new_guest_event_port`].

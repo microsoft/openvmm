@@ -100,6 +100,12 @@ open_enum! {
         DELETE_INTERRUPT2 = 0x42490018,
         /// Bus relations information (version 2)
         BUS_RELATIONS2 = 0x42490019,
+        /// Assigned resources notification (version 3)
+        ASSIGNED_RESOURCES3 = 0x4249001a,
+        /// Create an interrupt for a device (version 3)
+        CREATE_INTERRUPT3 = 0x4249001b,
+        /// Reset a device
+        RESET_DEVICE = 0x4249001c,
     }
 }
 
@@ -145,6 +151,12 @@ open_enum! {
         RS1 = 0x00010002,
         /// Windows VB version
         VB = 0x00010003,
+        /// Windows FE version (adds wider vector types for ARM64 interrupts)
+        FE = 0x00010004,
+        /// Windows GE version (adds device reset)
+        GE = 0x00010005,
+        /// Windows DT version (allows Windows guests to dynamically map interrupts)
+        DT = 0x00010006,
     }
 }
 
@@ -176,6 +188,8 @@ open_enum! {
         REVISION_MISMATCH = 0xC0000059,
         /// Bad data provided
         BAD_DATA = 0xC000090B,
+        /// Operation not supported
+        NOT_SUPPORTED = 0xC00000BB,
     }
 }
 
@@ -428,7 +442,7 @@ pub struct MsiResourceDescriptor {
     /// Interrupt vector number
     pub vector: u8,
     /// Interrupt delivery mode
-    pub delivery_mode: u8,
+    pub delivery_mode: DeliveryMode,
     /// Number of interrupt vectors requested
     pub vector_count: u16,
     /// Reserved fields
@@ -447,7 +461,7 @@ pub struct MsiResourceDescriptor2 {
     /// Interrupt vector number
     pub vector: u8,
     /// Interrupt delivery mode
-    pub delivery_mode: u8,
+    pub delivery_mode: DeliveryMode,
     /// Number of interrupt vectors requested
     pub vector_count: u16,
     /// Number of processors in the processor_array
@@ -456,6 +470,17 @@ pub struct MsiResourceDescriptor2 {
     pub processor_array: [u16; 32],
     /// Reserved field
     pub reserved: u16,
+}
+
+open_enum! {
+    /// Interrupt delivery mode
+    #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+    pub enum DeliveryMode: u8 {
+        /// Fixed priority delivery mode
+        FIXED = 0,
+        /// Lowest priority delivery mode (x86 only)
+        LOWEST_PRIORITY = 1,
+    }
 }
 
 /// MSI resource descriptor (version 3).
@@ -467,7 +492,7 @@ pub struct MsiResourceDescriptor3 {
     /// 32-bit interrupt vector number
     pub vector: u32,
     /// Interrupt delivery mode
-    pub delivery_mode: u8,
+    pub delivery_mode: DeliveryMode,
     /// Reserved field
     pub reserved: u8,
     /// Number of interrupt vectors requested
@@ -716,6 +741,21 @@ pub struct CreateInterrupt2 {
     pub slot: SlotNumber,
     /// MSI descriptor for the requested interrupt
     pub interrupt: MsiResourceDescriptor2,
+}
+
+/// Message to create an interrupt for a device (version 2).
+///
+/// Enhanced version that supports specifying individual processors
+/// rather than using a bit mask.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct CreateInterrupt3 {
+    /// Type of message (must be CREATE_INTERRUPT3)
+    pub message_type: MessageType,
+    /// PCI slot number of the target device
+    pub slot: SlotNumber,
+    /// MSI descriptor for the requested interrupt
+    pub interrupt: MsiResourceDescriptor3,
 }
 
 /// Message to delete an interrupt for a device.

@@ -66,7 +66,7 @@ impl StorageBackend for VmgsStorageBackend {
     async fn restore(&mut self) -> Result<Option<Vec<u8>>, StorageBackendError> {
         match self.vmgs.read_file(self.file_id).await {
             Ok(buf) => Ok(Some(buf)),
-            Err(vmgs::Error::FileInfoAllocated) => Ok(None),
+            Err(vmgs::Error::FileInfoNotAllocated) => Ok(None),
             Err(e) => Err(StorageBackendError::new(e)),
         }
     }

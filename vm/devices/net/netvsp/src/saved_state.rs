@@ -120,6 +120,8 @@ pub struct ReadyPrimary {
     pub guest_link_down: bool,
     #[mesh(15)]
     pub pending_link_action: Option<bool>,
+    #[mesh(16)]
+    pub packet_filter: Option<u32>,
 }
 
 #[derive(Debug, Protobuf)]

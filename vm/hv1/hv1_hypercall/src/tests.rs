@@ -916,7 +916,7 @@ impl TestController {
     where
         InputHeaderT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
-        assert!(size_of::<InputHeaderT>() % 8 == 0);
+        assert!(size_of::<InputHeaderT>().is_multiple_of(8));
         *InputHeaderT::ref_from_bytes(vec![FILL_PATTERN; size_of::<TestInput>() / 8].as_bytes())
             .unwrap()
     }
@@ -946,7 +946,7 @@ impl TestController {
     where
         OutputT: IntoBytes + FromBytes + FromZeros + Sized + Copy + Immutable + KnownLayout,
     {
-        assert!(size_of::<TestOutput>() % 16 == 0);
+        assert!(size_of::<TestOutput>().is_multiple_of(16));
         *OutputT::ref_from_bytes(vec![!FILL_PATTERN; size_of::<TestOutput>() / 8].as_bytes())
             .unwrap()
     }
@@ -1223,9 +1223,9 @@ where
     OutputT: IntoBytes + FromBytes + Sized + Immutable + KnownLayout,
     OutRepT: IntoBytes + FromBytes + Sized + Immutable + KnownLayout,
 {
-    assert!(size_of::<InputT>() % 8 == 0);
-    assert!(size_of::<OutputT>() % 8 == 0);
-    assert!(var_header.len() % 8 == 0);
+    assert!(size_of::<InputT>().is_multiple_of(8));
+    assert!(size_of::<OutputT>().is_multiple_of(8));
+    assert!(var_header.len().is_multiple_of(8));
     assert!(params.in_offset < PAGE_SIZE);
     assert!(params.out_offset < PAGE_SIZE);
     assert!(size_of::<OutputT>() == 0 || output_reps.is_empty());
@@ -1672,14 +1672,16 @@ fn hypercall_rep(test_params: TestParams) {
     );
 
     let elements_processed = test_params.test_result.expected_elements_processed();
-    let elements_processed =
-        if test_params.fast && elements_processed % 2 != 0 && elements_processed < rep_count {
-            // Since only 16 byte writes are supported, the top 8 bytes are 0s.
-            assert_eq!(output_reps[elements_processed], 0);
-            elements_processed + 1
-        } else {
-            elements_processed
-        };
+    let elements_processed = if test_params.fast
+        && !elements_processed.is_multiple_of(2)
+        && elements_processed < rep_count
+    {
+        // Since only 16 byte writes are supported, the top 8 bytes are 0s.
+        assert_eq!(output_reps[elements_processed], 0);
+        elements_processed + 1
+    } else {
+        elements_processed
+    };
 
     assert_eq!(
         output_reps[elements_processed..].as_bytes(),
@@ -1692,11 +1694,13 @@ fn hypercall_rep(test_params: TestParams) {
             .as_bytes()
             .len();
 
-        if (rep_start * size_of::<u64>()) % 16 != 0 {
+        if !(rep_start * size_of::<u64>()).is_multiple_of(16) {
             expected_output_size += (rep_start * size_of::<u64>()) % 16;
         }
 
-        if (test_params.test_result.expected_elements_processed() * size_of::<u64>()) % 16 != 0 {
+        if !(test_params.test_result.expected_elements_processed() * size_of::<u64>())
+            .is_multiple_of(16)
+        {
             expected_output_size += 16
                 - ((test_params.test_result.expected_elements_processed() * size_of::<u64>()) % 16);
         }
@@ -1862,14 +1866,16 @@ fn hypercall_variable_rep(test_params: TestParams) {
     );
 
     let elements_processed = test_params.test_result.expected_elements_processed();
-    let elements_processed =
-        if test_params.fast && elements_processed % 2 != 0 && elements_processed < rep_count {
-            // Since only 16 byte writes are supported, the top 8 bytes are 0s.
-            assert_eq!(output_reps[elements_processed], 0);
-            elements_processed + 1
-        } else {
-            elements_processed
-        };
+    let elements_processed = if test_params.fast
+        && !elements_processed.is_multiple_of(2)
+        && elements_processed < rep_count
+    {
+        // Since only 16 byte writes are supported, the top 8 bytes are 0s.
+        assert_eq!(output_reps[elements_processed], 0);
+        elements_processed + 1
+    } else {
+        elements_processed
+    };
 
     assert_eq!(
         output_reps[elements_processed..].as_bytes(),
@@ -1881,11 +1887,13 @@ fn hypercall_variable_rep(test_params: TestParams) {
         .as_bytes()
         .len();
 
-    if (rep_start * size_of::<u64>()) % 16 != 0 {
+    if !(rep_start * size_of::<u64>()).is_multiple_of(16) {
         expected_output_size += (rep_start * size_of::<u64>()) % 16;
     }
 
-    if (test_params.test_result.expected_elements_processed() * size_of::<u64>()) % 16 != 0 {
+    if !(test_params.test_result.expected_elements_processed() * size_of::<u64>())
+        .is_multiple_of(16)
+    {
         expected_output_size +=
             16 - ((test_params.test_result.expected_elements_processed() * size_of::<u64>()) % 16);
     }
@@ -2264,7 +2272,7 @@ fn max_test_fast_rep_count(abi: &TestHypercallAbi) -> usize {
     // of that is for the input reps (8 bytes each in our tests) and half is for the output
     // reps. However output must be on a 16 byte alignment.
     let mut max_rep_count = (abi.max_fast_output_size() - size_of::<TestInput>()) / (8 + 8);
-    if max_rep_count % 2 != 0 {
+    if !max_rep_count.is_multiple_of(2) {
         max_rep_count -= 1;
     }
 

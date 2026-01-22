@@ -37,6 +37,8 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
@@ -44,6 +46,7 @@ use vmbus_async::async_dgram::AsyncRecv;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::ModifyRequest;
+use vmbus_channel::bus::OfferKey;
 use vmbus_channel::bus::OpenData;
 use vmbus_channel::gpadl::GpadlId;
 use vmbus_core::HvsockConnectRequest;
@@ -105,9 +108,13 @@ pub trait PollPostMessage: Send {
     ) -> Poll<()>;
 }
 
+#[derive(Inspect)]
 pub struct VmbusClient {
+    #[inspect(flatten, send = "TaskRequest::Inspect")]
     task_send: mesh::Sender<TaskRequest>,
+    #[inspect(skip)]
     access: VmbusClientAccess,
+    #[inspect(skip)]
     task: Task<ClientTask>,
 }
 
@@ -275,12 +282,6 @@ impl VmbusClient {
     }
 }
 
-impl Inspect for VmbusClient {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.task_send.send(TaskRequest::Inspect(req.defer()));
-    }
-}
-
 #[derive(Debug)]
 pub struct ConnectResult {
     pub version: VersionInfo,
@@ -336,7 +337,6 @@ pub enum ChannelRequest {
 pub struct OpenOutput {
     // FUTURE: remove this once it's part of the saved state.
     pub redirected_event_flag: Option<u16>,
-    pub guest_to_host_signal: Interrupt,
 }
 
 impl std::fmt::Display for ChannelRequest {
@@ -382,6 +382,8 @@ pub enum RestoreError {
 #[derive(Debug, Inspect)]
 pub struct OfferInfo {
     pub offer: protocol::OfferChannel,
+    #[inspect(skip)]
+    pub guest_to_host_interrupt: Interrupt,
     #[inspect(skip)]
     pub request_send: mesh::Sender<ChannelRequest>,
     #[inspect(skip)]
@@ -510,7 +512,6 @@ enum ChannelState {
     Offered,
     /// The channel has requested the server to be opened.
     Opening {
-        connection_id: u32,
         redirected_event_flag: Option<u16>,
         #[inspect(skip)]
         redirected_event: Option<Event>,
@@ -521,7 +522,6 @@ enum ChannelState {
     Restored,
     /// The channel has been successfully opened.
     Opened {
-        connection_id: u32,
         redirected_event_flag: Option<u16>,
         #[inspect(skip)]
         redirected_event: Option<Event>,
@@ -555,6 +555,7 @@ struct Channel {
     #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|x| x.0)")]
     gpadls: HashMap<GpadlId, GpadlState>,
     is_client_released: bool,
+    connection_id: Arc<AtomicU32>,
 }
 
 impl Channel {
@@ -755,6 +756,7 @@ impl ClientTask {
         let (request_send, request_recv) = mesh::channel();
         let (revoke_send, revoke_recv) = mesh::oneshot();
 
+        let connection_id = Arc::new(AtomicU32::new(0));
         self.channels.0.insert(
             offer.channel_id,
             Channel {
@@ -764,6 +766,7 @@ impl ClientTask {
                 modify_response_send: None,
                 gpadls: HashMap::new(),
                 is_client_released: false,
+                connection_id: connection_id.clone(),
             },
         );
 
@@ -773,6 +776,7 @@ impl ClientTask {
 
         Ok(OfferInfo {
             offer,
+            guest_to_host_interrupt: self.inner.synic.guest_to_host_interrupt(connection_id),
             revoke_recv,
             request_send,
         })
@@ -807,13 +811,16 @@ impl ClientTask {
     }
 
     fn handle_rescind(&mut self, rescind: protocol::RescindChannelOffer) -> TriedRelease {
-        tracing::info!(state = %self.state, channel_id = rescind.channel_id.0, "received rescind");
-
         let mut channel = self.channels.get_mut(rescind.channel_id);
+        tracing::info!(
+            state = %self.state,
+            channel_id = rescind.channel_id.0,
+            key = %OfferKey::from(&channel.offer),
+            "received rescind"
+        );
         let event_flag = match std::mem::replace(&mut channel.state, ChannelState::Revoked) {
             ChannelState::Offered => None,
             ChannelState::Opening {
-                connection_id: _,
                 redirected_event_flag,
                 redirected_event: _,
                 rpc,
@@ -823,7 +830,6 @@ impl ClientTask {
             }
             ChannelState::Restored => None,
             ChannelState::Opened {
-                connection_id: _,
                 redirected_event_flag,
                 redirected_event: _,
             } => redirected_event_flag,
@@ -897,24 +903,24 @@ impl ClientTask {
     }
 
     fn handle_open_result(&mut self, result: protocol::OpenResult) {
+        let mut channel = self.channels.get_mut(result.channel_id);
         tracing::debug!(
             channel_id = result.channel_id.0,
+            key = %OfferKey::from(&channel.offer),
             result = result.status,
             "received open result"
         );
 
-        let mut channel = self.channels.get_mut(result.channel_id);
-
         let channel_opened = result.status == protocol::STATUS_SUCCESS as u32;
         let old_state = std::mem::replace(&mut channel.state, ChannelState::Offered);
         let ChannelState::Opening {
-            connection_id,
             redirected_event_flag,
             redirected_event,
             rpc,
         } = old_state
         else {
             tracing::warn!(
+                key = %OfferKey::from(&channel.offer),
                 old_state = ?channel.state,
                 channel_opened,
                 "invalid state for open result"
@@ -932,14 +938,12 @@ impl ClientTask {
         }
 
         channel.state = ChannelState::Opened {
-            connection_id,
             redirected_event_flag,
             redirected_event,
         };
 
         rpc.complete(Ok(OpenOutput {
             redirected_event_flag,
-            guest_to_host_signal: self.inner.synic.guest_to_host_interrupt(connection_id),
         }));
     }
 
@@ -948,13 +952,14 @@ impl ClientTask {
             panic!("gpadl {:#x} not in teardown list", request.gpadl_id.0);
         };
 
+        let mut channel = self.channels.get_mut(channel_id);
         tracing::debug!(
             gpadl_id = request.gpadl_id.0,
             channel_id = channel_id.0,
+            key = %OfferKey::from(&channel.offer),
             "Received GpadlTorndown"
         );
 
-        let mut channel = self.channels.get_mut(channel_id);
         let gpadl_state = channel
             .gpadls
             .remove(&request.gpadl_id)
@@ -1018,6 +1023,13 @@ impl ClientTask {
         tracing::trace!(?msg, "received client message from synic");
 
         match msg {
+            Message::VersionResponse3(version_response, ..) => {
+                // The client never sends the server-specified monitor pages feature flag, but
+                // since version response messages are distinguished only by size, the response can
+                // still look like `VersionResponse3` if the size was not set exactly by the server.
+                // Since the feature flag can't be set, the extra data can be ignored.
+                self.handle_version_response(version_response.version_response2);
+            }
             Message::VersionResponse2(version_response, ..) => {
                 self.handle_version_response(version_response);
             }
@@ -1103,7 +1115,12 @@ impl ClientTask {
             }
         }
 
-        tracing::info!(channel_id = channel_id.0, "opening channel on host");
+        tracing::info!(
+            channel_id = channel_id.0,
+            key = %OfferKey::from(&channel.offer),
+            "opening channel on host"
+        );
+
         let (request, rpc) = rpc.split();
         let open_data = &request.open_data;
 
@@ -1177,8 +1194,10 @@ impl ClientTask {
             self.inner.messages.send(&open_channel);
         }
 
+        channel
+            .connection_id
+            .store(connection_id, Ordering::Release);
         channel.state = ChannelState::Opening {
-            connection_id,
             redirected_event_flag: (request.incoming_event.is_some()).then_some(event_flag),
             redirected_event: request.incoming_event,
             rpc,
@@ -1206,17 +1225,15 @@ impl ClientTask {
             self.inner.synic.restore_event_flag(flag, event)?;
         }
 
+        channel
+            .connection_id
+            .store(request.connection_id, Ordering::Release);
         channel.state = ChannelState::Opened {
-            connection_id: request.connection_id,
             redirected_event_flag: request.redirected_event_flag,
             redirected_event: request.incoming_event,
         };
         Ok(OpenOutput {
             redirected_event_flag: request.redirected_event_flag,
-            guest_to_host_signal: self
-                .inner
-                .synic
-                .guest_to_host_interrupt(request.connection_id),
         })
     }
 
@@ -1236,6 +1253,7 @@ impl ClientTask {
 
         tracing::trace!(
             channel_id = channel_id.0,
+            key = %OfferKey::from(&channel.offer),
             gpadl_id = request.id.0,
             count = request.count,
             len = request.buf.len(),
@@ -1281,6 +1299,7 @@ impl ClientTask {
             tracing::warn!(
                 gpadl_id = gpadl_id.0,
                 channel_id = channel_id.0,
+                key = %OfferKey::from(&channel.offer),
                 "Gpadl teardown for unknown gpadl or revoked channel"
             );
             return;
@@ -1291,6 +1310,7 @@ impl ClientTask {
                 tracing::warn!(
                     gpadl_id = gpadl_id.0,
                     channel_id = channel_id.0,
+                    key = %OfferKey::from(&channel.offer),
                     "gpadl teardown for offered gpadl"
                 );
             }
@@ -1383,6 +1403,7 @@ impl ClientTask {
         if let ChannelState::Opened { .. } = channel.state {
             tracing::warn!(
                 channel_id = channel_id.0,
+                key = %OfferKey::from(&channel.offer),
                 "Channel dropped without closing first"
             );
             self.inner.close_channel(channel_id, &mut channel);
@@ -1571,12 +1592,19 @@ impl ClientTaskInner {
             if let Some(flag) = redirected_event_flag {
                 self.synic.free_event_flag(flag);
             }
-            tracing::info!(channel_id = channel_id.0, "closing channel on host");
+            tracing::info!(
+                channel_id = channel_id.0,
+                key = %OfferKey::from(&channel.offer),
+                "closing channel on host"
+            );
+
             self.messages.send(&protocol::CloseChannel { channel_id });
             channel.state = ChannelState::Offered;
+            channel.connection_id.store(0, Ordering::Release);
         } else {
             tracing::warn!(
-                id = %channel_id.0,
+                channel_id = channel_id.0,
+                key = %OfferKey::from(&channel.offer),
                 channel_state = %channel.state,
                 "invalid channel state for close channel"
             );
@@ -1738,7 +1766,7 @@ struct TriedRelease(());
 
 impl ChannelRef<'_> {
     /// If the channel has been fully released (revoked, released by the client,
-    /// no pending requests), notifes the server and removes this channel from
+    /// no pending requests), notifies the server and removes this channel from
     /// the map.
     fn try_release(self, messages: &mut OutgoingMessages) -> TriedRelease {
         if self.is_client_released
@@ -1746,7 +1774,12 @@ impl ChannelRef<'_> {
             && self.pending_request().is_none()
         {
             let channel_id = *self.0.key();
-            tracelimit::info_ratelimited!(channel_id = channel_id.0, "releasing channel");
+            tracelimit::info_ratelimited!(
+                channel_id = channel_id.0,
+                key = %OfferKey::from(&self.offer),
+                "releasing channel"
+            );
+
             messages.send(&protocol::RelIdReleased { channel_id });
             self.0.remove();
         }
@@ -1790,10 +1823,16 @@ impl ChannelList {
 }
 
 impl SynicState {
-    fn guest_to_host_interrupt(&self, connection_id: u32) -> Interrupt {
+    fn guest_to_host_interrupt(&self, connection_id: Arc<AtomicU32>) -> Interrupt {
         Interrupt::from_fn({
             let event_client = self.event_client.clone();
             move || {
+                let connection_id = connection_id.load(Ordering::Acquire);
+                if connection_id == 0 {
+                    tracing::debug!("interrupt signal after close");
+                    return;
+                }
+
                 if let Err(err) = event_client.signal_event(connection_id, 0) {
                     tracelimit::warn_ratelimited!(
                         error = &err as &dyn std::error::Error,

@@ -20,6 +20,7 @@ members = [
   "tmk/tmk_vmm",
   "tmk/simple_tmk",
   # VMM tests
+  "vmm_tests/prep_steps",
   "vmm_tests/vmm_tests",
   # hyper-v tooling
   "hyperv/tools/hypestv",
@@ -43,9 +44,13 @@ members = [
   # tools
   "petri/make_imc_hive",
   "petri/petri-tool",
+  "vm/devices/get/test_igvm_agent_rpc_server",
+  "vm/devices/tpm/tpm_guest_tests",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
+  # opentmk
+  "opentmk",
 ]
 exclude = [
   "xsync",
@@ -53,8 +58,8 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.88"
-edition = "2021"
+rust-version = "1.91"
+edition = "2024"
 
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
@@ -66,17 +71,18 @@ flowey_lib_common = { path = "flowey/flowey_lib_common" }
 flowey_lib_hvlite = { path = "flowey/flowey_lib_hvlite" }
 schema_ado_yaml = { path = "flowey/schema_ado_yaml" }
 
-hvlite_core = { path = "openvmm/hvlite_core" }
-hvlite_defs = { path = "openvmm/hvlite_defs" }
+openvmm_core = { path = "openvmm/openvmm_core" }
+openvmm_defs = { path = "openvmm/openvmm_defs" }
 openvmm_entry = { path = "openvmm/openvmm_entry" }
-hvlite_helpers = { path = "openvmm/hvlite_helpers" }
-hvlite_pcat_locator = { path = "openvmm/hvlite_pcat_locator" }
+openvmm_helpers = { path = "openvmm/openvmm_helpers" }
+openvmm_pcat_locator = { path = "openvmm/openvmm_pcat_locator" }
 openvmm_resources = { path = "openvmm/openvmm_resources" }
-hvlite_ttrpc_vmservice = { path = "openvmm/hvlite_ttrpc_vmservice" }
+openvmm_ttrpc_vmservice = { path = "openvmm/openvmm_ttrpc_vmservice" }
 membacking = { path = "openvmm/membacking" }
 
 petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact_resolver_openvmm_known_paths" }
 petri_artifacts_vmm_test = { path = "vmm_tests/petri_artifacts_vmm_test" }
+vmm_test_igvm_agent = { path = "vmm_tests/vmm_test_igvm_agent" }
 vmm_test_images = { path = "vmm_tests/vmm_test_images" }
 vmm_test_macros = { path = "vmm_tests/vmm_test_macros" }
 
@@ -99,6 +105,7 @@ console_relay = { path = "support/console_relay" }
 safe_intrinsics = { path = "support/safe_intrinsics" }
 debug_ptr = { path = "support/debug_ptr" }
 user_driver_emulated_mock = { path = "vm/devices/user_driver_emulated_mock" }
+fast_memcpy = { path = "support/fast_memcpy" }
 fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }
@@ -110,6 +117,7 @@ inspect_proto = { path = "support/inspect_proto" }
 inspect_rlimit = { path = "support/inspect_rlimit" }
 inspect_task = { path = "support/inspect_task" }
 kmsg = { path = "support/kmsg" }
+kmsg_writer = { path = "support/kmsg_writer" }
 loan_cell = { path = "support/loan_cell" }
 local_clock = { path = "support/local_clock" }
 mesh = { path = "support/mesh" }
@@ -125,6 +133,7 @@ mesh_rpc = { path = "support/mesh/mesh_rpc" }
 mesh_worker = { path = "support/mesh/mesh_worker" }
 mesh_tracing = { path = "support/mesh_tracing" }
 minircu = { path = "support/minircu" }
+nostd_spin_channel = { path = "support/nostd_spin_channel"}
 open_enum = { path = "support/open_enum" }
 openssl_kdf = { path = "support/openssl_kdf" }
 openssl_crypto_only = { path = "support/openssl_crypto_only" }
@@ -139,14 +148,15 @@ safeatomic = { path = "support/safeatomic" }
 serde_helpers = { path = "support/serde_helpers" }
 sev_guest_device = { path = "support/sev_guest_device" }
 sparse_mmap = { path = "support/sparse_mmap" }
+string_page_buf = { path = "support/string_page_buf" }
 task_control = { path = "support/task_control" }
 tdx_guest_device = { path = "support/tdx_guest_device" }
-tee_call = { path = "support/tee_call" }
 term = { path = "support/term" }
 test_with_tracing = { path = "support/test_with_tracing" }
 test_with_tracing_macro = { path = "support/test_with_tracing/test_with_tracing_macro" }
 tracelimit = { path = "support/tracelimit" }
 tracing_helpers = { path = "support/tracing_helpers" }
+trycopy = { path = "support/trycopy" }
 ucs2 = { path = "support/ucs2" }
 uevent = { path = "support/uevent" }
 unix_socket = { path = "support/unix_socket" }
@@ -168,6 +178,7 @@ minimal_rt_build = { path = "openhcl/minimal_rt_build" }
 openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
+tee_call = { path = "openhcl/tee_call" }
 underhill_attestation = { path = "openhcl/underhill_attestation" }
 underhill_confidentiality = { path = "openhcl/underhill_confidentiality" }
 underhill_core = { path = "openhcl/underhill_core" }
@@ -215,6 +226,7 @@ get_protocol = { path = "vm/devices/get/get_protocol" }
 get_resources = { path = "vm/devices/get/get_resources" }
 guest_crash_device = { path = "vm/devices/get/guest_crash_device" }
 guest_emulation_device = { path = "vm/devices/get/guest_emulation_device" }
+test_igvm_agent_lib = { path = "vm/devices/get/test_igvm_agent_lib" }
 guest_emulation_log = { path = "vm/devices/get/guest_emulation_log" }
 guest_emulation_transport = { path = "vm/devices/get/guest_emulation_transport" }
 vtl2_settings_proto = { path = "vm/devices/get/vtl2_settings_proto" }
@@ -248,13 +260,17 @@ nvme_common = { path = "vm/devices/storage/nvme_common" }
 nvme_driver = { path = "vm/devices/storage/disk_nvme/nvme_driver" }
 nvme_resources = { path = "vm/devices/storage/nvme_resources" }
 nvme_spec = { path = "vm/devices/storage/nvme_spec" }
+nvme_test = { path = "vm/devices/storage/nvme_test" }
 storage_string = { path = "vm/devices/storage/storage_string" }
 vmswitch = { path = "vm/devices/net/vmswitch" }
 pci_bus = { path = "vm/devices/pci/pci_bus" }
 pci_core = { path = "vm/devices/pci/pci_core" }
 pci_resources = { path = "vm/devices/pci/pci_resources" }
+pcie = { path = "vm/devices/pci/pcie" }
 vpci = { path = "vm/devices/pci/vpci" }
+vpci_client = { path = "vm/devices/pci/vpci_client" }
 vpci_protocol = { path = "vm/devices/pci/vpci_protocol" }
+vpci_relay = { path = "vm/devices/pci/vpci_relay" }
 disk_backend = { path = "vm/devices/storage/disk_backend" }
 disk_backend_resources = { path = "vm/devices/storage/disk_backend_resources" }
 disk_blob = { path = "vm/devices/storage/disk_blob" }
@@ -300,9 +316,11 @@ serial_core = { path = "vm/devices/serial/serial_core" }
 serial_pl011 = { path = "vm/devices/serial/serial_pl011" }
 serial_pl011_resources = { path = "vm/devices/serial/serial_pl011_resources" }
 serial_socket = { path = "vm/devices/serial/serial_socket" }
-tpm = { path = "vm/devices/tpm" }
+tpm_device = { path = "vm/devices/tpm/tpm_device" }
+tpm_lib = { path = "vm/devices/tpm/tpm_lib" }
+tpm_protocol = { path = "vm/devices/tpm/tpm_protocol" }
 tpm_resources = { path = "vm/devices/tpm_resources" }
-mcr_resources = { path = "vm/devices/mcr_resources" } # TODO MCR: move to closed-source
+mcr_resources = { path = "vm/devices/mcr_resources" }
 uidevices = { path = "vm/devices/uidevices" }
 uidevices_resources = { path = "vm/devices/uidevices_resources" }
 user_driver = { path = "vm/devices/user_driver" }
@@ -383,6 +401,8 @@ vmm_core_defs = { path = "vmm_core/vmm_core_defs" }
 vmotherboard = { path = "vmm_core/vmotherboard" }
 
 # workers
+chipset_device_worker = { path = "workers/chipset_device_worker" }
+chipset_device_worker_defs = { path = "workers/chipset_device_worker_defs" }
 debug_worker = { path = "workers/debug_worker" }
 debug_worker_defs = { path = "workers/debug_worker_defs" }
 vnc_worker = { path = "workers/vnc_worker" }
@@ -400,17 +420,17 @@ async-trait = "0.1"
 awaitgroup = "0.7"
 base64 = "0.22.1"
 base64-serde = "0.8"
-bitfield-struct = "0.10.1"
+bitfield-struct = "0.11.0"
 bitvec = { version = "1.1", default-features = false }
 blocking = "1.2"
 caps = "0.5"
 cargo_toml = "0.22"
-cc = "1.0"
+cc = "1.2.34"
 cfg-if = "1"
 clap = "4.2"
 crc32fast = { version = "1.3.2", default-features = false }
-criterion = { version = "0.5", default-features = false }
-crossterm = "0.28.1"
+criterion = { version = "0.7", default-features = false }
+crossterm = { version = "0.29.0", default-features = false }
 ctrlc = "3.4.0"
 der = "0.7"
 dirs = "6.0"
@@ -420,7 +440,7 @@ env_logger = "0.11.7"
 event-listener = "5.3"
 expect-test = "1.5"
 fatfs = { version = "0.3.6", default-features = false }
-filepath = "0.1"
+filepath = "0.2"
 fs-err = "3.1"
 fscommon = "0.1.1"
 futures = "0.3.31"
@@ -433,7 +453,7 @@ gdbstub = "0.6"
 gdbstub_arch = "0.2"
 getrandom = "0.3"
 glob = "0.3"
-gptman = "1.0"
+gptman = "2.0"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 h2 = "0.4"
@@ -453,29 +473,30 @@ iced-x86 = { version = "1.17", default-features = false, features = [
   "no_d3now",
 ] }
 ignore = "0.4"
-igvm = {git = "https://github.com/microsoft/igvm", rev = "365065d7e31da0a0116e7934de3ecd85f00bab70"}
-igvm_defs = {git = "https://github.com/microsoft/igvm", rev = "365065d7e31da0a0116e7934de3ecd85f00bab70", default-features = false, features = [ "unstable" ]}
+igvm = "0.4.0"
+igvm_defs = { version = "0.4.0", default-features = false }
 image = { version = "0.25.1", default-features = false }
 io-uring = "0.7.4"
 jiff = "0.2.14"
-kvm-bindings = "0.11.1"
+kvm-bindings = "0.14.0"
 # Use of these specific REPO will go away when changes are taken upstream.
 landlock = "0.4.1"
+lazy_static = "1.4.0"
 libc = "0.2"
 libfuzzer-sys = "0.4"
 libtest-mimic = "0.8"
+linked_list_allocator = "0.10.5"
 linkme = "0.3.9"
 log = "0.4"
 loom = "0.7.2"
 macaddr = "1.0"
-mbrman = "0.5"
 mimalloc = { version = "0.1.39", default-features = false }
 ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
-mshv-bindings = "0.3.4"
-mshv-ioctls = "0.3.4"
-nix = { version = "0.27", default-features = false }
+mshv-bindings = "0.6.0"
+mshv-ioctls = "0.6.0"
+nix = { version = "0.30.1", default-features = false }
 ntapi = "0.4"
-object = { version = "0.36.7", default-features = false }
+object = { version = "0.37.3", default-features = false }
 once_cell = "1.7"
 openssl = "0.10.72"
 openssl-sys = "0.9"
@@ -485,7 +506,7 @@ pbjson = "0.5"
 pbjson-build = "0.5"
 pbjson-types = "0.5"
 pcap-file = "2.0.0"
-petgraph = "0.7.1"
+petgraph = "0.8.0"
 proc-macro2 = "1.0"
 prost = "0.11"
 prost-build = "0.11"
@@ -495,12 +516,13 @@ range_map_vec = "0.2.0"
 rayon = "1.5"
 resolv-conf = "0.7"
 rlimit = "0.10.1"
-rusqlite = "0.34"
+rsa = "0.9.10"
+rusqlite = "0.37"
 rustc-hash = "2.1.1"
-rustyline = "13"
+rustyline = "17"
 seccompiler = "0.5"
-serde = "1.0.185"
-serde_json = "1.0"
+serde = { version = "1.0.185", default-features = false }
+serde_json = { version = "1.0", default-features = false }
 serde_yaml = "0.9"
 sha2 = { version = "0.10.8", default-features = false }
 shell-words = "1.1"
@@ -509,7 +531,8 @@ slab = "0.4"
 smallbox = "0.8"
 smallvec = "1.8"
 smoltcp = { version = "0.8", default-features = false }
-socket2 = "0.5"
+socket2 = "0.6"
+spin = "0.10.0"
 stackfuture = "0.3"
 static_assertions = "1.1"
 syn = "2"
@@ -517,34 +540,31 @@ target-lexicon = "0.13.2"
 tempfile = "3.2"
 thiserror = { version = "2", default-features = false }
 time = "0.3"
-toml_edit = "0.22"
+toml_edit = "0.23"
 tracing = "0.1"
-tracing-core = "=0.1.30" # Pin to avoid binary size increase https://github.com/tokio-rs/tracing/issues/3182
-tracing-subscriber = "0.3.16"
-typed-path = "0.10"
-uefi = "0.34.1"
+tracing-subscriber = "0.3.20"
+typed-path = "0.11"
+uefi = "0.35.0"
 unicycle = "0.10.2"
 urlencoding = "2.1.3"
 vergen = "8.2"
-vfio-bindings = "0.3.1"
+vfio-bindings = "0.4.0"
 walkdir = "2.3"
 wchar = "0.11"
-which = "7"
+which = "8"
 widestring = "1.0"
-win_etw_tracing = "0.1.3"
+win_etw_provider = "0.1.11"
+win_etw_tracing = "0.1.4"
 winapi = "0.3"
-windows = "0.59"
+windows = "0.62"
 windows-service = "0.8"
-windows-sys = "0.59"
+windows-sys = "0.61"
+windows-version = "0.1.4"
+x86_64 = { version = "0.15.2", default-features = false }
 xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshell/issues/63
 xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
-#zerocopy = { version = "0.7.32", features = ["derive"]}
-zerocopy = { version = "0.8.14", features = ["derive"]}
-
-[workspace.metadata.xtask.unused-deps]
-# Pulled in through "tracing", but we need to pin the version
-ignored = ["tracing-core"]
+zerocopy = { version = "0.8.25", features = ["derive"]}
 
 [profile.release]
 panic = 'abort'
@@ -596,9 +616,16 @@ lto = 'fat'
 [profile.dev.package.minimal_rt]
 opt-level = 1
 
-# Optimize loom even in the dev profile, as otherwise tests just take too long.
+# Optimize loom and its main dependency even in the dev profile, as otherwise tests just take too long.
 [profile.dev.package.loom]
 opt-level = 3
+[profile.dev.package.generator]
+opt-level = 3
+
+# memcpy needs to be optimized heavily regardless of the build profile
+[profile.dev.package.fast_memcpy]
+opt-level = 3
+overflow-checks = false
 
 [patch.crates-io]
 # Pending <https://github.com/ferrilab/bitvec/pull/273>
@@ -610,12 +637,6 @@ pbjson-build = { git = "https://github.com/jstarks/pbjson", branch = "aliases" }
 # Lint groups need a priority lower than individual lints so they get applied first.
 future_incompatible = { level = "deny", priority = -2 }
 rust_2018_idioms = { level = "warn", priority = -2 }
-
-rust-2024-compatibility = { level = "warn", priority = -1 }
-edition_2024_expr_fragment_specifier = "allow"
-# TODO: Fix all of the below, https://github.com/microsoft/openvmm/issues/288
-tail-expr-drop-order = "allow"
-if-let-rescope = "allow"
 
 unused_qualifications = "warn"
 missing_docs = "warn"
@@ -632,6 +653,7 @@ dbg_macro = "warn"
 debug_assert_with_mut_call = "warn"
 filter_map_next = "warn"
 fn_params_excessive_bools = "warn"
+implicit_clone = "warn"
 imprecise_flops = "warn"
 inefficient_to_string = "warn"
 linkedlist = "warn"
@@ -643,7 +665,6 @@ ptr_cast_constness = "warn"
 ref_as_ptr = "warn"
 ref_option_ref = "warn"
 rest_pat_in_fully_bound_structs = "warn"
-string_to_string = "warn"
 suboptimal_flops = "warn"
 undocumented_unsafe_blocks = "warn"
 unnecessary_box_returns = "warn"

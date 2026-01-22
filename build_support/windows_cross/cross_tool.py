@@ -22,6 +22,7 @@ import sys
 import tempfile
 import glob
 import argparse
+import re
 
 tools = ['clang-cl', 'lld-link', 'llvm-lib', 'llvm-dlltool', 'llvm-rc', 'midlrt.exe']
 
@@ -68,6 +69,8 @@ def sdk_paths(arch):
     roots = wslpath(
         reg('HKLM\\SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots'))
     versions = os.listdir(f'{roots}/Lib')
+    pattern = re.compile(r'^[\d.]+$')
+    versions = [v for v in versions if pattern.fullmatch(v)]
     versions.sort()
     version = versions[-1]
     lib = [f'{roots}/Lib/{version}/{dir}/{arch}' for dir in ['ucrt', 'um']]

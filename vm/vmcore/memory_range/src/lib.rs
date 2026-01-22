@@ -66,7 +66,7 @@ pub struct InvalidMemoryRange {
 
 impl MemoryRange {
     /// The maximum address that can be represented by a `MemoryRange`.
-    pub const MAX_ADDRESS: u64 = u64::MAX & !(PAGE_SIZE - 1);
+    pub const MAX_ADDRESS: u64 = !(PAGE_SIZE - 1);
 
     /// Returns a new range for the given guest address range.
     ///
@@ -232,7 +232,7 @@ impl MemoryRange {
     #[track_caller]
     pub fn split_at_offset(&self, offset: u64) -> (Self, Self) {
         assert!(offset <= self.len());
-        assert!(offset % PAGE_SIZE == 0);
+        assert!(offset.is_multiple_of(PAGE_SIZE));
         (
             Self {
                 start: self.start,

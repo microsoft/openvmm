@@ -1,9 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg(guest_arch = "x86_64")]
-
-use super::UhRunVpError;
 use crate::UhProcessor;
 use crate::processor::HardwareIsolatedBacking;
 use cvm_tracing::CVM_ALLOWED;
@@ -16,20 +13,18 @@ use virt_support_apic::ApicWork;
 pub(crate) trait ApicBacking<'b, B: HardwareIsolatedBacking> {
     fn vp(&mut self) -> &mut UhProcessor<'b, B>;
 
-    fn handle_init(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
+    fn handle_init(&mut self, vtl: GuestVtl) {
         let vp_info = self.vp().inner.vp_info;
         let mut access = self.vp().access_state(vtl.into());
-        virt::vp::x86_init(&mut access, &vp_info).map_err(UhRunVpError::State)?;
-        Ok(())
+        virt::vp::x86_init(&mut access, &vp_info).unwrap();
     }
 
-    fn handle_sipi(&mut self, vtl: GuestVtl, cs: SegmentRegister) -> Result<(), UhRunVpError>;
-    fn handle_nmi(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError>;
-    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError>;
+    fn handle_sipi(&mut self, vtl: GuestVtl, cs: SegmentRegister);
+    fn handle_nmi(&mut self, vtl: GuestVtl);
+    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8);
 
-    fn handle_extint(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
+    fn handle_extint(&mut self, vtl: GuestVtl) {
         tracelimit::warn_ratelimited!(CVM_ALLOWED, ?vtl, "extint not supported");
-        Ok(())
     }
 }
 
@@ -37,7 +32,7 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
     apic_backing: &mut T,
     vtl: GuestVtl,
     scan_irr: bool,
-) -> Result<(), UhRunVpError> {
+) {
     // Check for interrupt requests from the host and kernel offload.
     if vtl == GuestVtl::Vtl0 {
         if let Some(irr) = apic_backing.vp().runner.proxy_irr_vtl0() {
@@ -69,7 +64,7 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
             .cvm_partition()
             .is_lower_vtl_startup_denied()
         {
-            apic_backing.handle_init(vtl)?;
+            apic_backing.handle_init(vtl);
         }
     }
 
@@ -90,7 +85,7 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
                         selector,
                         attributes: 0x9b,
                     },
-                )?;
+                );
             }
         }
     }
@@ -100,17 +95,15 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
     if lapic.activity != MpState::WaitForSipi {
         if nmi || lapic.nmi_pending {
             lapic.nmi_pending = true;
-            apic_backing.handle_nmi(vtl)?;
+            apic_backing.handle_nmi(vtl);
         }
 
         if let Some(vector) = interrupt {
-            apic_backing.handle_interrupt(vtl, vector)?;
+            apic_backing.handle_interrupt(vtl, vector);
         }
 
         if extint {
-            apic_backing.handle_extint(vtl)?;
+            apic_backing.handle_extint(vtl);
         }
     }
-
-    Ok(())
 }

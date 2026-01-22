@@ -295,14 +295,35 @@ struct JsonDisplay<'a>(&'a Node);
 impl fmt::Display for JsonDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
-            Node::Unevaluated | Node::Failed(_) => f.write_str("null"),
+            Node::Unevaluated => f.write_str("null"),
+            // Errors are serialized using a key that should not occur in valid output, since those
+            // are normally valid Rust identifiers.
+            Node::Failed(error) => write!(f, r#"{{"$error":{:?}}}"#, error.to_string()),
             Node::Value(value) => match &value.kind {
-                ValueKind::Signed(v) => write!(f, "{}", v),
-                ValueKind::Unsigned(v) => write!(f, "{}", v),
-                ValueKind::Float(v) => write!(f, "{}", v),
-                ValueKind::Double(v) => write!(f, "{}", v),
-                ValueKind::Bool(v) => write!(f, "{}", v),
-                ValueKind::String(v) => write!(f, "{:?}", v),
+                ValueKind::Signed(v) => {
+                    // For human readability, values that should be hex or binary are serialized as
+                    // strings.
+                    if value.flags.hex() {
+                        write!(f, r#""{v:#x}""#)
+                    } else if value.flags.binary() {
+                        write!(f, r#""{v:#b}""#)
+                    } else {
+                        write!(f, "{v}")
+                    }
+                }
+                ValueKind::Unsigned(v) => {
+                    if value.flags.hex() {
+                        write!(f, r#""{v:#x}""#)
+                    } else if value.flags.binary() {
+                        write!(f, r#""{v:#b}""#)
+                    } else {
+                        write!(f, "{v}")
+                    }
+                }
+                ValueKind::Float(v) => write!(f, "{v}"),
+                ValueKind::Double(v) => write!(f, "{v}"),
+                ValueKind::Bool(v) => write!(f, "{v}"),
+                ValueKind::String(v) => write!(f, "{v:?}"),
                 ValueKind::Bytes(b) => {
                     // Use base64 encoding to match typical JSON conventions.
                     write!(

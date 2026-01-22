@@ -10,7 +10,6 @@ use crate::bus::OfferInput;
 use crate::bus::OfferParams;
 use crate::bus::OfferResources;
 use crate::bus::OpenRequest;
-use crate::bus::OpenResult;
 use crate::bus::ParentBus;
 use crate::gpadl::GpadlMap;
 use crate::gpadl::GpadlMapView;
@@ -163,8 +162,11 @@ impl ChannelControl {
 ///
 /// The channel will be revoked when this is dropped.
 #[must_use]
+#[derive(Inspect)]
 pub(crate) struct GenericChannelHandle {
+    #[inspect(flatten, send = "StateRequest::Inspect")]
     state_req: mesh::Sender<StateRequest>,
+    #[inspect(skip)]
     task: Task<Box<dyn VmbusDevice>>,
 }
 
@@ -239,12 +241,6 @@ impl GenericChannelHandle {
             .await
             .expect("critical channel failure")
             .map_err(|err| err.into())
-    }
-}
-
-impl Inspect for GenericChannelHandle {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.state_req.send(StateRequest::Inspect(req.defer()));
     }
 }
 
@@ -334,6 +330,7 @@ async fn offer_generic(
 
     let request = OfferInput {
         params: offer,
+        event: events[0].clone().interrupt(),
         request_send,
         server_request_recv,
     };
@@ -592,22 +589,21 @@ impl Device {
         channel: &mut dyn VmbusDevice,
         channel_idx: usize,
         open_request: OpenRequest,
-    ) -> Option<OpenResult> {
+    ) -> bool {
         assert!(!self.open[channel_idx]);
         // N.B. Any asynchronous GPADL requests will block while in
         //      open(). This should be fine for all known devices.
-        let opened = if let Err(error) = channel.open(channel_idx as u16, &open_request).await {
-            tracelimit::error_ratelimited!(
-                error = error.as_ref() as &dyn std::error::Error,
-                "failed to open channel"
-            );
-            None
-        } else {
-            Some(OpenResult {
-                guest_to_host_interrupt: self.events[channel_idx].clone().interrupt(),
+        let opened = channel
+            .open(channel_idx as u16, &open_request)
+            .await
+            .inspect_err(|error| {
+                tracelimit::error_ratelimited!(
+                    error = error.as_ref() as &dyn std::error::Error,
+                    "failed to open channel"
+                );
             })
-        };
-        self.open[channel_idx] = opened.is_some();
+            .is_ok();
+        self.open[channel_idx] = opened;
         opened
     }
 
@@ -643,8 +639,10 @@ impl Device {
     }
 
     fn handle_gpadl(&mut self, id: GpadlId, count: u16, buf: Vec<u64>, channel_idx: usize) {
-        self.gpadl_map
-            .add(id, MultiPagedRangeBuf::new(count.into(), buf).unwrap());
+        self.gpadl_map.add(
+            id,
+            MultiPagedRangeBuf::from_range_buffer(count.into(), buf).unwrap(),
+        );
         if channel_idx > 0 {
             self.subchannel_gpadls[channel_idx - 1].insert(id);
         }
@@ -764,6 +762,7 @@ impl Device {
                     subchannel_index: subchannel_idx as u16,
                     ..offer.clone()
                 },
+                event: self.events[subchannel_idx].clone().interrupt(),
                 request_send,
                 server_request_recv,
             };
@@ -800,31 +799,30 @@ impl Device {
             .map_err(ChannelRestoreError::EnablingSubchannels)?;
 
         let mut results = Vec::with_capacity(states.len());
-        for (channel_idx, (open, event)) in states.iter().copied().zip(&self.events).enumerate() {
-            let open_result = open.then(|| OpenResult {
-                guest_to_host_interrupt: event.clone().interrupt(),
-            });
+        for (channel_idx, open) in states.iter().copied().enumerate() {
             let result = self.server_requests[channel_idx]
-                .call_failable(ChannelServerRequest::Restore, open_result)
+                .call_failable(ChannelServerRequest::Restore, open)
                 .await
                 .map_err(|err| ChannelRestoreError::RestoreError(err.into()))?;
 
             assert!(open == result.open_request.is_some());
 
             for gpadl in result.gpadls {
-                let buf =
-                    match MultiPagedRangeBuf::new(gpadl.request.count.into(), gpadl.request.buf) {
-                        Ok(buf) => buf,
-                        Err(err) => {
-                            if gpadl.accepted {
-                                return Err(ChannelRestoreError::GpadlError(err));
-                            } else {
-                                // The GPADL will be reoffered later and we can fail
-                                // it then.
-                                continue;
-                            }
+                let buf = match MultiPagedRangeBuf::from_range_buffer(
+                    gpadl.request.count.into(),
+                    gpadl.request.buf,
+                ) {
+                    Ok(buf) => buf,
+                    Err(err) => {
+                        if gpadl.accepted {
+                            return Err(ChannelRestoreError::GpadlError(err));
+                        } else {
+                            // The GPADL will be reoffered later and we can fail
+                            // it then.
+                            continue;
                         }
-                    };
+                    }
+                };
                 self.gpadl_map.add(gpadl.request.id, buf);
                 if channel_idx > 0 {
                     self.subchannel_gpadls[channel_idx - 1].insert(gpadl.request.id);

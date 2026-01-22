@@ -32,9 +32,9 @@ This *non-exhaustive* list provides a broad overview of some notable features,
 devices, and scenarios OpenVMM currently supports.
 
 - Boot modes
-    - UEFI - via [`microsoft/mu_msvm`](https://github.com/microsoft/mu_msvm) firmware
-    - BIOS - via the [Hyper-V PCAT BIOS](../reference/devices/firmware/pcat_bios.md) firmware
-    - Linux Direct Boot
+  - UEFI - via [`microsoft/mu_msvm`](https://github.com/microsoft/mu_msvm) firmware
+  - BIOS - via the [Hyper-V PCAT BIOS](../reference/devices/firmware/pcat_bios.md) firmware
+  - Linux Direct Boot
 - Devices
   - Paravirtualized
     - [Virtio](https://wiki.osdev.org/Virtio)
@@ -103,5 +103,4 @@ application.
 ```
 
 [^dlls]: though, depending on the platform and compiled-in feature-set, some
-    additional DLLs and/or system libraries may need to be installed (notably:
-    `lxutil.dll` on Windows).
+    additional DLLs and/or system libraries may need to be installed.

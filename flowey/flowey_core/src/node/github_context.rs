@@ -119,7 +119,12 @@ impl GhContextVarReader<'_, state::Global> {
 
     /// `github.token`
     pub fn token(self) -> ReadVar<String> {
-        self.read_var("github.token", true, false)
+        // TODO: change is_secret parameter to true.
+        // N.B. Flowey core treats all variables as secrets after a secret variable is read from. Secrecy is viral this way.
+        // This causes unintended consequences in the job, as all subsequent variables are also treated as secrets.
+        // We don't have a good way of fixing this issue yet. Hence, the change in parameter value here.
+        // GitHub redacts access tokens from being printed to logs anyways, so by flipping the is_secret parameter to false, the token won't be leaked.
+        self.read_var("github.token", false, false)
     }
 }
 

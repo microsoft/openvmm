@@ -3,7 +3,6 @@
 
 //! The shutdown IC client.
 
-#![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
 
 pub use hyperv_ic_protocol::shutdown::INSTANCE_ID;
@@ -305,7 +304,13 @@ impl ShutdownGuestChannel {
         };
 
         // Notify the internal listener and wait for a response.
-        let result = ic.send_shutdown_notification.call(|x| x, params).await;
+        let status = match ic.send_shutdown_notification.call(|x| x, params).await {
+            Ok(ShutdownResult::Ok) => Status::SUCCESS,
+            Ok(ShutdownResult::Failed(x)) => Status(x),
+            Ok(ShutdownResult::NotReady) | Ok(ShutdownResult::AlreadyInProgress) | Err(_) => {
+                Status::FAIL
+            }
+        };
 
         // Respond to the request.
         let response = hyperv_ic_protocol::Header {
@@ -313,11 +318,7 @@ impl ShutdownGuestChannel {
             message_version: *message_version,
             message_type: hyperv_ic_protocol::MessageType::SHUTDOWN,
             message_size: 0,
-            status: if result.is_ok() {
-                Status::SUCCESS
-            } else {
-                Status::FAIL
-            },
+            status,
             transaction_id: header.transaction_id,
             flags: hyperv_ic_protocol::HeaderFlags::new()
                 .with_transaction(header.flags.transaction())

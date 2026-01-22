@@ -17,10 +17,7 @@ pub struct MeshInputSource<T> {
 }
 
 impl<T: 'static + Send> InputSource<T> for MeshInputSource<T> {
-    fn set_active(
-        &mut self,
-        active: bool,
-    ) -> Pin<Box<dyn '_ + std::future::Future<Output = ()> + Send>> {
+    fn set_active(&mut self, active: bool) -> Pin<Box<dyn '_ + Future<Output = ()> + Send>> {
         Box::pin(async move {
             if *self.active.get() != active {
                 self.active.set(active).await;

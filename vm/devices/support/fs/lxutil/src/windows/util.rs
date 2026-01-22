@@ -1,11 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::api;
 use super::fs;
 use super::macros::file_information_classes;
 use crate::SetAttributes;
 use crate::SetTime;
+use crate::windows::path;
 use ::windows::Wdk;
 use ::windows::Wdk::Storage::FileSystem;
 use ::windows::Wdk::System::SystemServices;
@@ -13,26 +13,20 @@ use ::windows::Win32::Foundation;
 use ::windows::Win32::Security;
 use ::windows::Win32::Security as W32Sec;
 use ::windows::Win32::Storage::FileSystem as W32Fs;
+use ::windows::Win32::System::Ioctl;
 use ::windows::Win32::System::SystemServices as W32Ss;
 use ::windows::Win32::System::Threading;
+use ::windows::core::PCWSTR;
 use headervec::HeaderVec;
-use ntapi::ntioapi;
-use ntapi::ntrtl::RtlIsDosDeviceName_U;
 use pal::windows;
 use std::ffi;
 use std::mem;
+use std::mem::offset_of;
 use std::os::windows::prelude::*;
 use std::path::Path;
 use std::ptr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use winapi::shared::basetsd;
-use winapi::shared::ntdef;
-use winapi::shared::ntstatus;
-use winapi::um::winioctl;
-use winapi::um::winnt;
-use zerocopy::FromBytes;
-use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
@@ -43,8 +37,9 @@ use zerocopy::KnownLayout;
 static LX_UTIL_FS_SECURITY_DESCRIPTOR_SIZE: AtomicUsize = AtomicUsize::new(256);
 
 // Minimum permissions needed to access a file's metadata.
-pub const MINIMUM_PERMISSIONS: u32 =
-    winnt::FILE_READ_ATTRIBUTES | winnt::FILE_READ_EA | winnt::READ_CONTROL;
+pub const MINIMUM_PERMISSIONS: W32Fs::FILE_ACCESS_RIGHTS = W32Fs::FILE_ACCESS_RIGHTS(
+    W32Fs::FILE_READ_ATTRIBUTES.0 | W32Fs::FILE_READ_EA.0 | W32Fs::READ_CONTROL.0,
+);
 
 // The following constant is a bias that offsets the NT time to the
 // POSIX time origin. From C:
@@ -53,6 +48,8 @@ const LX_POSIX_EPOCH_OFFSET: i64 = 0xd53e8000 + (0x019db1de << 32);
 
 const LX_UTIL_NT_UNIT_PER_SEC: i64 = 10000000;
 const LX_UTIL_NANO_SEC_PER_NT_UNIT: i64 = 100;
+
+const LX_UTIL_NT_SYMLINK_ESCAPE_TARGET: u32 = 0x1;
 
 /// A trait that maps a file information struct for calling into `NtSetInformationFile`, `NtQueryInformationFile` and
 /// other methods that accept a `FileInformationClass`.
@@ -67,7 +64,7 @@ pub trait FileInformationClass: Default {
     /// padding bytes which would be UB in Rust.
     fn as_ptr_len(&self) -> (*const u8, usize);
 
-    /// A prt and len describing this struct to be used for `FileInformation` in different NT methods.
+    /// A ptr and len describing this struct to be used for `FileInformation` in different NT methods.
     ///
     /// # Safety
     /// The intention for these methods are to be used directly with the C API. The ptr, len combo returned may access
@@ -77,6 +74,7 @@ pub trait FileInformationClass: Default {
 
 file_information_classes!(
     FileSystem::FILE_BASIC_INFORMATION = FileSystem::FileBasicInformation;
+    FileSystem::FILE_STANDARD_INFORMATION = FileSystem::FileStandardInformation;
     SystemServices::FILE_ATTRIBUTE_TAG_INFORMATION = FileSystem::FileAttributeTagInformation;
     FileSystem::FILE_DISPOSITION_INFORMATION = FileSystem::FileDispositionInformation;
     FileSystem::FILE_DISPOSITION_INFORMATION_EX = FileSystem::FileDispositionInformationEx;
@@ -84,66 +82,68 @@ file_information_classes!(
     FileSystem::FILE_STAT_LX_INFORMATION = FileSystem::FileStatLxInformation;
     FileSystem::FILE_ALL_INFORMATION = FileSystem::FileAllInformation;
     FileSystem::FILE_CASE_SENSITIVE_INFORMATION = FileSystem::FileCaseSensitiveInformation;
+    SystemServices::FILE_END_OF_FILE_INFORMATION = FileSystem::FileEndOfFileInformation;
 );
 
 // Open a file using NtCreateFile.
 // Returns the create result from the IO_STATUS_BLOCK along with the handle.
+// N.B. The handle will always be opened synchronously.
 pub fn open_relative_file(
     root: Option<&OwnedHandle>,
     path: &Path,
-    desired_access: winnt::ACCESS_MASK,
-    creation_disposition: ntdef::ULONG,
-    file_attributes: ntdef::ULONG,
-    create_options: ntdef::ULONG,
+    desired_access: W32Fs::FILE_ACCESS_RIGHTS,
+    creation_disposition: FileSystem::NTCREATEFILE_CREATE_DISPOSITION,
+    file_attributes: W32Fs::FILE_FLAGS_AND_ATTRIBUTES,
+    create_options: FileSystem::NTCREATEFILE_CREATE_OPTIONS,
     ea_buffer: Option<&[u8]>,
-) -> lx::Result<(OwnedHandle, basetsd::ULONG_PTR)> {
+) -> lx::Result<(OwnedHandle, usize)> {
     let path = dos_to_nt_path(root, path)?;
     let mut oa = windows::ObjectAttributes::new();
-    oa.name(&path).attributes(ntdef::OBJ_CASE_INSENSITIVE);
+    oa.name(&path)
+        .attributes(Foundation::OBJ_CASE_INSENSITIVE.0);
     if let Some(handle) = root {
         oa.root(handle.as_handle());
     }
 
+    let mut handle = Default::default();
+    let mut iosb = Default::default();
+    let (ea_ptr, ea_len) = if let Some(ea) = ea_buffer {
+        (Some(ea.as_ptr().cast()), ea.len() as u32)
+    } else {
+        (None, 0)
+    };
     unsafe {
-        let mut iosb = mem::zeroed();
-        let mut handle = ptr::null_mut();
-        let (ea_ptr, ea_len) = if let Some(ea) = ea_buffer {
-            (ea.as_ptr() as *mut ffi::c_void, ea.len() as u32)
-        } else {
-            (ptr::null_mut(), 0)
-        };
-
-        let status = ntioapi::NtCreateFile(
+        let status = FileSystem::NtCreateFile(
             &mut handle,
-            desired_access,
-            oa.as_ptr(),
+            desired_access | W32Fs::SYNCHRONIZE,
+            oa.as_ptr().cast(),
             &mut iosb,
-            ptr::null_mut(),
+            None,
             file_attributes,
-            winnt::FILE_SHARE_READ | winnt::FILE_SHARE_WRITE | winnt::FILE_SHARE_DELETE,
+            W32Fs::FILE_SHARE_READ | W32Fs::FILE_SHARE_WRITE | W32Fs::FILE_SHARE_DELETE,
             creation_disposition,
-            create_options,
+            create_options | FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
             ea_ptr,
             ea_len,
         );
 
-        let _ = check_status(Foundation::NTSTATUS(status))?;
-        Ok((OwnedHandle::from_raw_handle(handle), iosb.Information))
+        let _ = check_status(status)?;
+        Ok((OwnedHandle::from_raw_handle(handle.0), iosb.Information))
     }
 }
 
 // Reopen an existing file handle with different permissions.
 pub fn reopen_file(
     file: &OwnedHandle,
-    desired_access: winnt::ACCESS_MASK,
+    desired_access: W32Fs::FILE_ACCESS_RIGHTS,
 ) -> lx::Result<OwnedHandle> {
     let (handle, _) = open_relative_file(
         Some(file),
         "".as_ref(),
         desired_access,
-        ntioapi::FILE_OPEN,
-        0,
-        ntioapi::FILE_OPEN_REPARSE_POINT,
+        FileSystem::FILE_OPEN,
+        Default::default(),
+        FileSystem::FILE_OPEN_REPARSE_POINT,
         None,
     )?;
 
@@ -236,7 +236,10 @@ fn get_token_for_access_check() -> lx::Result<OwnedHandle> {
 
 // Check if the user has the requested permissions on a file and
 // return the granted access.
-pub fn check_security(file: &OwnedHandle, desired_access: u32) -> lx::Result<u32> {
+pub fn check_security(
+    file: &OwnedHandle,
+    desired_access: W32Fs::FILE_ACCESS_RIGHTS,
+) -> lx::Result<u32> {
     let initial_size = LX_UTIL_FS_SECURITY_DESCRIPTOR_SIZE.load(Ordering::Relaxed);
 
     // NtQuerySecurityObject returns a SECURITY_DESCRIPTOR in self-relative form, so allocate a buffer
@@ -289,14 +292,14 @@ pub fn check_security(file: &OwnedHandle, desired_access: u32) -> lx::Result<u32
     let mut privilege_set = W32Sec::PRIVILEGE_SET::default();
     let mut privilege_set_length = size_of::<W32Sec::PRIVILEGE_SET>() as u32;
     let mut granted_access = 0;
-    let mut access_status = Foundation::BOOL::default();
+    let mut access_status = ::windows::core::BOOL::default();
 
     // SAFETY: calling Win32 API as documented.
     unsafe {
         W32Sec::AccessCheck(
             Security::PSECURITY_DESCRIPTOR(sd.as_mut_ptr().cast()),
             Foundation::HANDLE(client_token.as_raw_handle()),
-            desired_access,
+            desired_access.0,
             &generic_mapping,
             Some(ptr::from_mut::<W32Sec::PRIVILEGE_SET>(&mut privilege_set)),
             &mut privilege_set_length,
@@ -325,27 +328,24 @@ pub fn get_attributes_by_handle(
     state: &super::VolumeState,
     handle: &OwnedHandle,
 ) -> lx::Result<LxStatInformation> {
-    unsafe {
-        let stat = fs::query_stat_lx_information(handle, fs_context)?;
+    let stat = fs::query_stat_lx_information(handle, fs_context)?;
 
-        // For NT symlinks and V2 LX symlinks, the size of the file is not correct, and must be
-        // determined based on the reparse data.
-        let symlink_len = if is_symlink(stat.FileAttributes, stat.ReparseTag) && stat.EndOfFile == 0
-        {
-            // Return 0 here on failure to duplicate LxUtil behavior
-            Some(fs::read_link_length(handle, state).unwrap_or(0))
-        } else {
-            None
-        };
-        let is_app_execution_alias = stat.EndOfFile.eq(&0)
-            && api::LxUtilFsIsAppExecLink(stat.FileAttributes, stat.ReparseTag) != 0;
+    // For NT symlinks and V2 LX symlinks, the size of the file is not correct, and must be
+    // determined based on the reparse data.
+    let symlink_len = if is_symlink(stat.FileAttributes, stat.ReparseTag) && stat.EndOfFile == 0 {
+        // Return 0 here on failure to duplicate LxUtil behavior
+        Some(fs::read_link_length(handle, state).unwrap_or(0))
+    } else {
+        None
+    };
+    let is_app_execution_alias =
+        stat.EndOfFile == 0 && fs::is_app_exec_link(stat.FileAttributes, stat.ReparseTag);
 
-        Ok(LxStatInformation {
-            stat,
-            symlink_len,
-            is_app_execution_alias,
-        })
-    }
+    Ok(LxStatInformation {
+        stat,
+        symlink_len,
+        is_app_execution_alias,
+    })
 }
 
 // Get file attributes from a file name.
@@ -365,49 +365,47 @@ pub fn get_attributes(
     if fs_context.compatibility_flags.supports_query_by_name() {
         let pathu = dos_to_nt_path(root_handle, path)?;
 
-        unsafe {
-            let stat = fs::query_stat_lx_information_by_name(fs_context, root_handle, &pathu)?;
+        let stat = fs::query_stat_lx_information_by_name(fs_context, root_handle, &pathu)?;
 
-            // For NT symlinks and V2 LX symlinks, the size of the file is not correct, and must be
-            // determined based on the reparse data, which requires opening the file.
-            let symlink_len =
-                if is_symlink(stat.FileAttributes, stat.ReparseTag) && stat.EndOfFile == 0 {
-                    let symlink_len = if let Ok((handle, _)) = open_relative_file(
-                        root_handle,
-                        path,
-                        MINIMUM_PERMISSIONS,
-                        ntioapi::FILE_OPEN,
-                        0,
-                        ntioapi::FILE_OPEN_REPARSE_POINT,
-                        None,
-                    ) {
-                        // Return 0 here on failure to duplicate LxUtil behavior
-                        fs::read_link_length(&handle, state).unwrap_or(0)
-                    } else {
-                        0
-                    };
-                    Some(symlink_len)
-                } else {
-                    None
-                };
-            let is_app_execution_alias = stat.EndOfFile.eq(&0)
-                && api::LxUtilFsIsAppExecLink(stat.FileAttributes, stat.ReparseTag) != 0;
+        // For NT symlinks and V2 LX symlinks, the size of the file is not correct, and must be
+        // determined based on the reparse data, which requires opening the file.
+        let symlink_len = if is_symlink(stat.FileAttributes, stat.ReparseTag) && stat.EndOfFile == 0
+        {
+            let symlink_len = if let Ok((handle, _)) = open_relative_file(
+                root_handle,
+                path,
+                MINIMUM_PERMISSIONS,
+                FileSystem::FILE_OPEN,
+                Default::default(),
+                FileSystem::FILE_OPEN_REPARSE_POINT,
+                None,
+            ) {
+                // Return 0 here on failure to duplicate LxUtil behavior
+                fs::read_link_length(&handle, state).unwrap_or(0)
+            } else {
+                0
+            };
+            Some(symlink_len)
+        } else {
+            None
+        };
+        let is_app_execution_alias =
+            stat.EndOfFile.eq(&0) && fs::is_app_exec_link(stat.FileAttributes, stat.ReparseTag);
 
-            Ok(LxStatInformation {
-                stat,
-                symlink_len,
-                is_app_execution_alias,
-            })
-        }
+        Ok(LxStatInformation {
+            stat,
+            symlink_len,
+            is_app_execution_alias,
+        })
     } else {
         // If NtQueryInformationByName is not supported, open the file to query attributes.
         let (handle, _) = open_relative_file(
             root_handle,
             path,
             MINIMUM_PERMISSIONS,
-            ntioapi::FILE_OPEN,
-            0,
-            ntioapi::FILE_OPEN_REPARSE_POINT,
+            FileSystem::FILE_OPEN,
+            Default::default(),
+            FileSystem::FILE_OPEN_REPARSE_POINT,
             None,
         )?;
 
@@ -418,7 +416,8 @@ pub fn get_attributes(
 // Determine if a name is a reserved legacy DOS device name
 pub fn is_dos_device_name(name: &ffi::OsStr) -> lx::Result<bool> {
     let nameu = widestring::U16CString::from_os_str(name).map_err(|_| lx::Error::EINVAL)?;
-    if unsafe { RtlIsDosDeviceName_U(nameu.as_slice_with_nul().as_ptr().cast_mut()) } == 0 {
+    if unsafe { FileSystem::RtlIsDosDeviceName_U(PCWSTR(nameu.as_slice_with_nul().as_ptr())) } == 0
+    {
         Ok(false)
     } else {
         Ok(true)
@@ -426,11 +425,11 @@ pub fn is_dos_device_name(name: &ffi::OsStr) -> lx::Result<bool> {
 }
 
 // Determine if a file is symlink based on its reparse tag.
-pub fn is_symlink(attributes: ntdef::ULONG, reparse_tag: ntdef::ULONG) -> bool {
-    attributes & winnt::FILE_ATTRIBUTE_REPARSE_POINT != 0
-        && (reparse_tag == winnt::IO_REPARSE_TAG_SYMLINK
-            || reparse_tag == winnt::IO_REPARSE_TAG_MOUNT_POINT
-            || reparse_tag == api::IO_REPARSE_TAG_LX_SYMLINK)
+pub fn is_symlink(attributes: u32, reparse_tag: u32) -> bool {
+    attributes & W32Fs::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+        && (reparse_tag == W32Ss::IO_REPARSE_TAG_SYMLINK
+            || reparse_tag == W32Ss::IO_REPARSE_TAG_MOUNT_POINT
+            || reparse_tag == FileSystem::IO_REPARSE_TAG_LX_SYMLINK as u32)
 }
 
 // Convert an NTSTATUS into an lx::Result.
@@ -444,34 +443,15 @@ pub fn check_status(status: Foundation::NTSTATUS) -> lx::Result<Foundation::NTST
 }
 
 // Same as check_status, but used for read/write operations to handle EBADF and EOF.
-pub fn check_status_rw(status: ntdef::NTSTATUS) -> lx::Result<ntdef::NTSTATUS> {
-    if status < 0 {
+pub fn check_status_rw(status: Foundation::NTSTATUS) -> lx::Result<Foundation::NTSTATUS> {
+    if status.0 < 0 {
         match status {
-            ntstatus::STATUS_ACCESS_DENIED => Err(lx::Error::EBADF),
-            ntstatus::STATUS_END_OF_FILE => Ok(0),
-            _ => Err(nt_status_to_lx(Foundation::NTSTATUS(status))),
+            Foundation::STATUS_ACCESS_DENIED => Err(lx::Error::EBADF),
+            Foundation::STATUS_END_OF_FILE => Ok(Foundation::STATUS_SUCCESS),
+            _ => Err(nt_status_to_lx(status)),
         }
     } else {
         Ok(status)
-    }
-}
-
-// Convert an LX error code to an lx::Result.
-pub fn check_lx_error(result: i32) -> lx::Result<()> {
-    if result < 0 {
-        Err(lx::Error::from_lx(-result))
-    } else {
-        Ok(())
-    }
-}
-
-// Checks if a size is negative, and if so returns it as an error; otherwise, returns the positive
-// value.
-pub fn check_lx_error_size(result: isize) -> lx::Result<usize> {
-    if result < 0 {
-        Err(lx::Error::from_lx(-result as i32))
-    } else {
-        Ok(result as usize)
     }
 }
 
@@ -497,57 +477,62 @@ pub fn dos_to_nt_path(
 }
 
 // Convert Linux open flags o a Windows access mask.
-pub fn open_flags_to_access_mask(flags: i32) -> winnt::ACCESS_MASK {
+pub fn open_flags_to_access_mask(flags: i32) -> W32Fs::FILE_ACCESS_RIGHTS {
     let mut mask = MINIMUM_PERMISSIONS;
     mask |= match flags & lx::O_ACCESS_MASK {
-        lx::O_RDONLY => winnt::FILE_GENERIC_READ,
-        lx::O_WRONLY => winnt::FILE_GENERIC_WRITE,
-        lx::O_RDWR => winnt::FILE_GENERIC_READ | winnt::FILE_GENERIC_WRITE,
-        _ => 0,
+        lx::O_RDONLY => W32Fs::FILE_GENERIC_READ,
+        lx::O_WRONLY => W32Fs::FILE_GENERIC_WRITE,
+        lx::O_RDWR => W32Fs::FILE_GENERIC_READ | W32Fs::FILE_GENERIC_WRITE,
+        _ => Default::default(),
     };
 
     if flags & lx::O_APPEND != 0 {
         // Remove the write permission; the generic permission already includes FILE_APPEND_DATA.
-        mask &= !winnt::FILE_WRITE_DATA;
+        mask &= !W32Fs::FILE_WRITE_DATA;
     }
 
     if flags & lx::O_TRUNC != 0 {
         // Truncate on Linux is allowed with O_RDONLY, but requires write access on Windows.
-        mask |= winnt::FILE_WRITE_DATA;
+        mask |= W32Fs::FILE_WRITE_DATA;
     }
 
     mask
 }
 
 // Convert Linux open flags to file attributes and create options.
-pub fn open_flags_to_attributes_options(flags: i32) -> (ntdef::ULONG, ntdef::ULONG) {
-    let mut file_attributes = 0;
-    let mut create_options = 0;
+pub fn open_flags_to_attributes_options(
+    flags: i32,
+) -> (
+    W32Fs::FILE_FLAGS_AND_ATTRIBUTES,
+    FileSystem::NTCREATEFILE_CREATE_OPTIONS,
+) {
+    let mut file_attributes = Default::default();
+    let mut create_options = Default::default();
 
     if flags & lx::O_DIRECTORY != 0 {
-        file_attributes |= winnt::FILE_ATTRIBUTE_DIRECTORY;
-        create_options |= ntioapi::FILE_DIRECTORY_FILE;
+        file_attributes |= W32Fs::FILE_ATTRIBUTE_DIRECTORY;
+        create_options |= FileSystem::FILE_DIRECTORY_FILE;
     } else {
-        file_attributes |= winnt::FILE_ATTRIBUTE_NORMAL;
+        file_attributes |= W32Fs::FILE_ATTRIBUTE_NORMAL;
     }
 
     if flags & lx::O_NOFOLLOW != 0 {
-        create_options |= ntioapi::FILE_OPEN_REPARSE_POINT;
+        create_options |= FileSystem::FILE_OPEN_REPARSE_POINT;
     }
 
     (file_attributes, create_options)
 }
 
 // Convert Linux open flags to a create disposition.
-pub fn open_flags_to_disposition(flags: i32) -> ntdef::ULONG {
+pub fn open_flags_to_disposition(flags: i32) -> FileSystem::NTCREATEFILE_CREATE_DISPOSITION {
     if flags & lx::O_CREAT != 0 {
         if flags & lx::O_EXCL != 0 {
-            ntioapi::FILE_CREATE
+            FileSystem::FILE_CREATE
         } else {
-            ntioapi::FILE_OPEN_IF
+            FileSystem::FILE_OPEN_IF
         }
     } else {
-        ntioapi::FILE_OPEN
+        FileSystem::FILE_OPEN
     }
 }
 
@@ -567,12 +552,12 @@ pub fn file_info_to_stat(
     fs_context: &fs::FsContext,
     information: &mut LxStatInformation,
     options: &crate::LxVolumeOptions,
-    block_size: ntdef::ULONG,
-) -> lx::Result<lx::Stat> {
+    block_size: u32,
+) -> lx::Result<lx::StatEx> {
     let mut stat = fs::get_lx_attr(
         fs_context,
         &mut information.stat,
-        api::LX_UTIL_FS_CALLER_HAS_TRAVERSE_PRIVILEGE,
+        fs::LX_UTIL_FS_CALLER_HAS_TRAVERSE_PRIVILEGE,
         block_size,
         options.default_uid,
         options.default_gid,
@@ -589,63 +574,89 @@ pub fn file_info_to_stat(
         stat.gid = gid;
     }
     if let Some(mode) = options.mode {
-        stat.mode = override_mode(stat.mode, mode);
+        stat.mode = override_mode(stat.mode as u32, mode) as u16;
     }
     if let Some(symlink_len) = information.symlink_len {
         stat.file_size = symlink_len as u64;
     } else if information.is_app_execution_alias {
-        stat.file_size = api::LX_UTIL_PE_HEADER_SIZE as u64;
+        stat.file_size = fs::LX_UTIL_PE_HEADER_SIZE as u64;
     }
     Ok(stat)
 }
 
-// Create the reparse buffer for an LX symlink.
-pub fn create_link_reparse_buffer(target: &lx::LxStr) -> lx::Result<windows::RtlHeapBuffer> {
-    let link_target = create_ansi_string(target)?;
-
-    let mut size = 0;
-    unsafe {
-        let data = api::LxUtilFsCreateLinkReparseBuffer(link_target.as_ref(), &mut size);
-        Ok(windows::RtlHeapBuffer::from_raw(
-            data.cast::<u8>(),
-            size as usize,
-        ))
-    }
-}
-
 // Create the reparse buffer for an NT symlink.
-pub fn create_nt_link_reparse_buffer(target: &ffi::OsStr) -> lx::Result<windows::RtlHeapBuffer> {
-    let link_target: windows::UnicodeString = target.try_into().map_err(|_| lx::Error::EINVAL)?;
+pub fn create_nt_link_reparse_buffer(target: &ffi::OsStr, flags: u32) -> lx::Result<Vec<u8>> {
+    let mut link_target: windows::UnicodeString =
+        target.try_into().map_err(|_| lx::Error::EINVAL)?;
 
-    let mut size = 0;
-    unsafe {
-        let data = api::LxUtilFsCreateNtLinkReparseBuffer(link_target.as_ptr(), 0, &mut size);
-        Ok(windows::RtlHeapBuffer::from_raw(
-            data.cast::<u8>(),
-            size as usize,
-        ))
+    // The buffer contains the target name twice, once for the actual target name
+    // and once for the display name.
+    let local_size = offset_of!(FileSystem::REPARSE_DATA_BUFFER, Anonymous)
+        + offset_of!(FileSystem::REPARSE_DATA_BUFFER_0_0, PathBuffer)
+        + (link_target.length() * 2);
+
+    if local_size > u16::MAX as usize {
+        return Err(lx::Error::ENAMETOOLONG);
     }
+
+    let mut reparse = vec![0; local_size];
+
+    // SAFETY: The buffer is large enough to hold the reparse data.
+    // This is necessary because unfortunately the Windows types don't
+    // implement the necessary traits to use zerocopy.
+    unsafe {
+        *(reparse.as_mut_ptr().cast()) = FileSystem::REPARSE_DATA_BUFFER {
+            ReparseTag: W32Ss::IO_REPARSE_TAG_SYMLINK,
+            ReparseDataLength: ((local_size
+                - offset_of!(FileSystem::REPARSE_DATA_BUFFER, Anonymous))
+                as u16),
+            Reserved: 0,
+            Anonymous: FileSystem::REPARSE_DATA_BUFFER_0 {
+                SymbolicLinkReparseBuffer: FileSystem::REPARSE_DATA_BUFFER_0_0 {
+                    SubstituteNameOffset: link_target.length() as u16,
+                    SubstituteNameLength: link_target.length() as u16,
+                    PrintNameOffset: 0,
+                    PrintNameLength: link_target.length() as u16,
+                    Flags: FileSystem::SYMLINK_FLAG_RELATIVE,
+                    PathBuffer: [0; 1], // Actual data follows
+                },
+            },
+        };
+    }
+
+    if flags & LX_UTIL_NT_SYMLINK_ESCAPE_TARGET != 0 {
+        path::unescape_path_in_place(link_target.as_mut_slice());
+    }
+
+    let path_buffer = &mut reparse[offset_of!(FileSystem::REPARSE_DATA_BUFFER, Anonymous)
+        + offset_of!(FileSystem::REPARSE_DATA_BUFFER_0_0, PathBuffer)..];
+
+    let link_bytes = link_target.as_slice().as_bytes();
+    path_buffer[..link_bytes.len()].copy_from_slice(link_bytes);
+    path_buffer[link_bytes.len()..(link_bytes.len() * 2)].copy_from_slice(link_bytes);
+
+    Ok(reparse)
 }
 
 // Applies a reparse point to a file.
 pub fn set_reparse_point(handle: &OwnedHandle, reparse_buffer: &[u8]) -> lx::Result<()> {
+    let mut iosb = Default::default();
     unsafe {
-        let mut iosb = mem::zeroed();
-        let _ = check_status(Foundation::NTSTATUS(ntioapi::NtFsControlFile(
-            handle.as_raw_handle(),
-            ptr::null_mut(),
+        let _ = check_status(FileSystem::NtFsControlFile(
+            Foundation::HANDLE(handle.as_raw_handle()),
             None,
-            ptr::null_mut(),
+            None,
+            None,
             &mut iosb,
-            winioctl::FSCTL_SET_REPARSE_POINT,
-            reparse_buffer.as_ptr() as *mut ffi::c_void,
+            Ioctl::FSCTL_SET_REPARSE_POINT,
+            Some(reparse_buffer.as_ptr().cast()),
             reparse_buffer
                 .len()
                 .try_into()
                 .map_err(|_| lx::Error::EINVAL)?,
-            ptr::null_mut(),
+            None,
             0,
-        )))?;
+        ))?;
     }
 
     Ok(())
@@ -921,7 +932,7 @@ pub fn set_attr_check_kill_priv(
     let old_attr = state.get_attributes_by_handle(handle)?;
 
     // If the file has no mode or no set-user-ID or set-group-ID bits, nothing to be done.
-    if old_attr.stat.LxFlags & api::LX_FILE_METADATA_HAS_MODE == 0
+    if old_attr.stat.LxFlags & FileSystem::LX_FILE_METADATA_HAS_MODE == 0
         || old_attr.stat.LxMode & (lx::S_ISUID | lx::S_ISGID) == 0
     {
         return Ok(());
@@ -966,66 +977,49 @@ pub fn set_attr_core(
     state: &super::VolumeState,
     attr: &SetAttributes,
 ) -> lx::Result<()> {
-    unsafe {
-        if let Some(size) = attr.size {
-            check_lx_error(api::LxUtilFsTruncate(
-                truncate_handle.as_raw_handle(),
-                size as u64,
-            ))?;
-        }
-
-        if state.options.metadata
-            && (attr.mode.is_some() || attr.uid.is_some() || attr.gid.is_some())
-        {
-            let mode = match attr.mode {
-                Some(mode) => {
-                    if mode & lx::S_IFMT == 0 {
-                        return Err(lx::Error::EINVAL);
-                    }
-
-                    mode
-                }
-                None => lx::MODE_INVALID,
-            };
-
-            let uid = attr.uid.unwrap_or(lx::UID_INVALID);
-            let gid = attr.gid.unwrap_or(lx::GID_INVALID);
-            check_lx_error(api::LxUtilFsUpdateLxAttributes(
-                handle.as_raw_handle(),
-                uid,
-                gid,
-                mode,
-            ))?;
-        }
-
-        // Read-only flag update is done with or without metadata.
-        if let Some(mode) = attr.mode {
-            fs::chmod(handle, mode)?;
-        }
-
-        if !attr.atime.is_omit() || !attr.mtime.is_omit() || !attr.ctime.is_omit() {
-            let atime = set_time_to_timespec(&attr.atime);
-            let mtime = set_time_to_timespec(&attr.mtime);
-            let ctime = set_time_to_timespec(&attr.ctime);
-            check_lx_error(api::LxUtilFsSetTimes(
-                handle.as_raw_handle(),
-                &atime,
-                &mtime,
-                &ctime,
-            ))?;
-        }
-
-        Ok(())
+    if let Some(size) = attr.size {
+        fs::truncate(truncate_handle, size as u64)?;
     }
+
+    if state.options.metadata && (attr.mode.is_some() || attr.uid.is_some() || attr.gid.is_some()) {
+        let mode = match attr.mode {
+            Some(mode) => {
+                if mode & lx::S_IFMT == 0 {
+                    return Err(lx::Error::EINVAL);
+                }
+
+                mode
+            }
+            None => lx::MODE_INVALID,
+        };
+
+        let uid = attr.uid.unwrap_or(lx::UID_INVALID);
+        let gid = attr.gid.unwrap_or(lx::GID_INVALID);
+        fs::update_lx_attributes(handle, uid, gid, mode)?;
+    }
+
+    // Read-only flag update is done with or without metadata.
+    if let Some(mode) = attr.mode {
+        fs::chmod(handle, mode)?;
+    }
+
+    if !attr.atime.is_omit() || !attr.mtime.is_omit() || !attr.ctime.is_omit() {
+        let atime = set_time_to_timespec(&attr.atime);
+        let mtime = set_time_to_timespec(&attr.mtime);
+        let ctime = set_time_to_timespec(&attr.ctime);
+        fs::set_file_times(handle, &atime, &mtime, &ctime)?;
+    }
+
+    Ok(())
 }
 
 /// Returns the permissions required to change attributes.
-pub fn permissions_for_set_attr(attr: &SetAttributes, metadata: bool) -> winnt::ACCESS_MASK {
-    let mut access = MINIMUM_PERMISSIONS | winnt::FILE_WRITE_ATTRIBUTES;
+pub fn permissions_for_set_attr(attr: &SetAttributes, metadata: bool) -> W32Fs::FILE_ACCESS_RIGHTS {
+    let mut access = MINIMUM_PERMISSIONS | W32Fs::FILE_WRITE_ATTRIBUTES;
 
     // Truncate needs write data access.
     if attr.size.is_some() {
-        access |= winnt::FILE_WRITE_DATA;
+        access |= W32Fs::FILE_WRITE_DATA;
     }
 
     // Changing metadata requires write EA access.
@@ -1037,10 +1031,27 @@ pub fn permissions_for_set_attr(attr: &SetAttributes, metadata: bool) -> winnt::
             || attr.gid.is_some()
             || (attr.size.is_some() && attr.thread_uid != 0))
     {
-        access |= winnt::FILE_WRITE_EA;
+        access |= W32Fs::FILE_WRITE_EA;
     }
 
     access
+}
+
+/// Set the EAs on a file.
+pub fn set_extended_attr(handle: &OwnedHandle, ea_buffer: &[u8]) -> lx::Result<()> {
+    let mut iosb = Default::default();
+
+    // SAFETY: Calling NtSetEaFile as documented.
+    unsafe {
+        let _ = check_status(FileSystem::NtSetEaFile(
+            Foundation::HANDLE(handle.as_raw_handle()),
+            &mut iosb,
+            ea_buffer.as_ptr() as *mut ffi::c_void,
+            ea_buffer.len() as u32,
+        ))?;
+
+        Ok(())
+    }
 }
 
 /// Create a hard link for a file.
@@ -1055,9 +1066,9 @@ pub fn create_link(
     // at the end removed. u8 arrays are used for fields to remove the need for padding and repr(packed).
     #[expect(non_snake_case)]
     #[repr(C)]
-    #[derive(Debug, Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    #[derive(Debug, Clone, Copy, IntoBytes, Immutable, KnownLayout)]
     struct FILE_LINK_INFORMATION {
-        ReplaceIfExists: ntdef::BOOLEAN,
+        ReplaceIfExists: bool,
         pad: [u8; 7],
         RootDirectory: zerocopy::U64<zerocopy::NativeEndian>, // HANDLE
         FileNameLength: zerocopy::U32<zerocopy::NativeEndian>,
@@ -1069,13 +1080,13 @@ pub fn create_link(
     // all-zero repr is not a semantically valid default + Immutable + KnownLayout)
     impl Default for FILE_LINK_INFORMATION {
         fn default() -> Self {
-            Self::new_zeroed()
+            unsafe { mem::zeroed() }
         }
     }
 
     // TODO: It would be great if we could do this as a static assert, but offset_of is not a const macro.
     assert_eq!(
-        std::mem::offset_of!(ntioapi::FILE_LINK_INFORMATION, FileName),
+        std::mem::offset_of!(FileSystem::FILE_LINK_INFORMATION, FileName),
         size_of::<FILE_LINK_INFORMATION>()
     );
 
@@ -1086,7 +1097,7 @@ pub fn create_link(
         .map_err(|_| lx::Error::EINVAL)?;
 
     let link = FILE_LINK_INFORMATION {
-        ReplaceIfExists: ntdef::FALSE,
+        ReplaceIfExists: false,
         RootDirectory: (link_root.as_raw_handle() as u64).into(),
         FileNameLength: file_name_length.into(),
         ..Default::default()
@@ -1137,7 +1148,7 @@ pub fn rename(
 ) -> lx::Result<()> {
     // If necessary, escape the path, then convert it into a Vec<u16>
     let target_name: Vec<u16> = if flags.escape_name() {
-        super::path::path_from_lx(target_path.as_os_str().as_encoded_bytes())?
+        path::path_from_lx(target_path.as_os_str().as_encoded_bytes())?
             .as_os_str()
             .encode_wide()
             .collect()
@@ -1278,6 +1289,36 @@ pub fn nt_time_to_timespec(nt_time: i64, absolute_time: bool) -> lx::Timespec {
     lx::Timespec {
         seconds: (nt_time / LX_UTIL_NT_UNIT_PER_SEC) as usize,
         nanoseconds: ((nt_time % LX_UTIL_NT_UNIT_PER_SEC) * LX_UTIL_NANO_SEC_PER_NT_UNIT) as usize,
+    }
+}
+
+/// Returns the NT equivalent (100ns units) to time in nanoseconds.
+pub fn nanoseconds_to_nt_time(nanoseconds: i64) -> i64 {
+    (nanoseconds + LX_UTIL_NANO_SEC_PER_NT_UNIT - 1) / LX_UTIL_NANO_SEC_PER_NT_UNIT
+}
+
+/// Return the supplied timespec in equivalent 100ns units. If the unit conversion causes an overflow,
+/// the returned value will be the maximum allowed timeout value.
+pub fn timespec_to_nt_time(timespec: &lx::Timespec, absolute_time: bool) -> i64 {
+    let nt_units = (timespec.seconds as i64)
+        .saturating_mul(LX_UTIL_NT_UNIT_PER_SEC)
+        .saturating_add(nanoseconds_to_nt_time(timespec.nanoseconds as i64));
+
+    if absolute_time {
+        nt_units.saturating_add(LX_POSIX_EPOCH_OFFSET)
+    } else {
+        nt_units
+    }
+}
+
+/// Convert a timespec that can optionally use the `UTIME_OMIT` or `UTIME_NOW` values.
+pub fn timespec_utime_to_nt_time(timespec: &lx::Timespec, current_time: i64) -> Option<i64> {
+    if timespec.nanoseconds == lx::UTIME_NOW {
+        Some(current_time)
+    } else if timespec.nanoseconds != lx::UTIME_OMIT {
+        Some(timespec_to_nt_time(timespec, true))
+    } else {
+        None
     }
 }
 

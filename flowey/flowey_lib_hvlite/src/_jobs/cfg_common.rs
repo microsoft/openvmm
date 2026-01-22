@@ -42,9 +42,8 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::download_lxutil::Node>();
         ctx.import::<crate::download_openhcl_kernel_package::Node>();
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::init_openvmm_cargo_config_deny_warnings::Node>();
@@ -54,7 +53,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
         ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
         ctx.import::<flowey_lib_common::download_nuget_exe::Node>();
-        ctx.import::<flowey_lib_common::download_protoc::Node>();
+        ctx.import::<flowey_lib_common::resolve_protoc::Node>();
         ctx.import::<flowey_lib_common::git_checkout::Node>();
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
@@ -87,6 +86,10 @@ impl SimpleFlowNode for Node {
             ctx.req(flowey_lib_common::install_rust::Request::IgnoreVersion(
                 false,
             ));
+            let token = ctx.get_gh_context_var().global().token();
+            ctx.req(flowey_lib_common::use_gh_cli::Request::WithAuth(
+                flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(token),
+            ));
         } else if matches!(ctx.backend(), FlowBackend::Ado) {
             if local_only.is_some() {
                 anyhow::bail!("can only set `local_only` params when using Local backend");
@@ -94,6 +97,10 @@ impl SimpleFlowNode for Node {
 
             ctx.req(flowey_lib_common::install_azure_cli::Request::AutoInstall(
                 true,
+            ));
+            ctx.req(flowey_lib_common::install_rust::Request::AutoInstall(true));
+            ctx.req(flowey_lib_common::install_rust::Request::IgnoreVersion(
+                false,
             ));
         } else if matches!(ctx.backend(), FlowBackend::Local) {
             let local_only =

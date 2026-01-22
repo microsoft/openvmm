@@ -38,6 +38,7 @@ open_enum! {
         APIC = 0x0,
         IO_APIC = 0x1,
         INTERRUPT_SOURCE_OVERRIDE = 0x2,
+        LOCAL_NMI_SOURCE = 0x4,
         X2APIC = 0x9,
         GICC = 0xb,
         GICD = 0xc,
@@ -175,6 +176,31 @@ impl MadtInterruptSourceOverride {
                 Some(InterruptTriggerMode::Edge) => 1,
                 Some(InterruptTriggerMode::Level) => 3,
             } << 2),
+        }
+    }
+}
+
+// EFI_ACPI_6_2_LOCAL_APIC_NMI_STRUCTURE
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct MadtLocalNmiSource {
+    pub typ: MadtType,
+    pub length: u8,
+    pub acpi_processor_uid: u8,
+    pub flags: u16,
+    pub local_apic_lint: u8,
+}
+
+const_assert_eq!(size_of::<MadtLocalNmiSource>(), 6);
+
+impl MadtLocalNmiSource {
+    pub fn new() -> Self {
+        Self {
+            typ: MadtType::LOCAL_NMI_SOURCE,
+            length: size_of::<Self>() as u8,
+            acpi_processor_uid: 1, // 0xFF indicates all processors. UID 1 is the BSP
+            flags: 0,
+            local_apic_lint: 1,
         }
     }
 }

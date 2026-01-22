@@ -17,6 +17,7 @@ guestmem.workspace = true
 vmcore.workspace = true
 
 inspect = { workspace = true, features = ["std"] }
+inspect_counters.workspace = true
 pal_async.workspace = true
 safeatomic.workspace = true
 

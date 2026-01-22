@@ -30,7 +30,7 @@ fn mov_regvalue_to_memory_sse() {
             |asm| instr(asm, xmmword_ptr(0x200), xmm15),
             |cpu| {
                 cpu.valid_gva = 0x200;
-                let _ = cpu.set_xmm(15, 0x1234567890abcdef13579ace24680bdf);
+                cpu.set_xmm(15, 0x1234567890abcdef13579ace24680bdf);
             },
         );
 
@@ -75,7 +75,7 @@ fn movaps_unaligned() {
         |asm| asm.movaps(xmmword_ptr(0x205), xmm15),
         |cpu| {
             cpu.valid_gva = 0x205;
-            let _ = cpu.set_xmm(15, 0x1234567890abcdef13579ace24680bdf);
+            cpu.set_xmm(15, 0x1234567890abcdef13579ace24680bdf);
         },
     );
 }
@@ -88,7 +88,7 @@ fn movapd_unaligned() {
         |asm| asm.movapd(xmmword_ptr(0x205), xmm15),
         |cpu| {
             cpu.valid_gva = 0x205;
-            let _ = cpu.set_xmm(15, 0x1234567890abcdef13579ace24680bdf);
+            cpu.set_xmm(15, 0x1234567890abcdef13579ace24680bdf);
         },
     );
 }
@@ -101,7 +101,7 @@ fn movdqa_unaligned() {
         |asm| asm.movdqa(xmmword_ptr(0x205), xmm15),
         |cpu| {
             cpu.valid_gva = 0x205;
-            let _ = cpu.set_xmm(15, 0x1234567890abcdef13579ace24680bdf);
+            cpu.set_xmm(15, 0x1234567890abcdef13579ace24680bdf);
         },
     );
 }

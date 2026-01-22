@@ -26,7 +26,7 @@ windows = { workspace = true, features = [
     "Win32_System_IO",
     "Win32_System_Ioctl"
 ] }
-windows-sys.workspace = true
 zerocopy.workspace = true
+
 [lints]
 workspace = true

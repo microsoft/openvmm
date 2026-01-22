@@ -111,7 +111,7 @@ impl Builder {
     pub fn append(&mut self, table: &Table<'_>) -> u64 {
         let addr = self.base_addr + self.v.len() as u64;
         let len = table.append_to_vec(&self.oem, &mut self.v);
-        if len % 8 != 0 {
+        if !len.is_multiple_of(8) {
             self.v.extend_from_slice(&[0; 8][..8 - len % 8]);
         }
         if table.signature != *b"XSDT" && table.signature != *b"DSDT" {
@@ -127,7 +127,7 @@ impl Builder {
             self.tables.push(self.base_addr + offset);
         }
         self.v.extend_from_slice(data);
-        if data.len() % 8 != 0 {
+        if !data.len().is_multiple_of(8) {
             self.v.extend_from_slice(&[0; 8][..8 - data.len() % 8]);
         }
         self.base_addr + offset

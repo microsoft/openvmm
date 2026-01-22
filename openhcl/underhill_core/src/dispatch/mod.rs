@@ -10,7 +10,8 @@ use self::vtl2_settings_worker::DeviceInterfaces;
 use crate::ControlRequest;
 use crate::emuplat::EmuplatServicing;
 use crate::emuplat::netvsp::RuntimeSavedState;
-use crate::nvme_manager::NvmeManager;
+use crate::nvme_manager::manager::NvmeManager;
+use crate::options::KeepAliveConfig;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -34,10 +35,12 @@ use hyperv_ic_resources::shutdown::ShutdownRpc;
 use hyperv_ic_resources::shutdown::ShutdownType;
 use igvm_defs::MemoryMapEntryType;
 use inspect::Inspect;
+use mana_driver::save_restore::ManaSavedState;
 use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
 use mesh::rpc::FailableRpc;
+use mesh::rpc::PendingRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh_worker::WorkerRpc;
@@ -86,10 +89,11 @@ pub enum UhVmRpc {
 pub trait LoadedVmNetworkSettings: Inspect {
     /// Callback to prepare for guest hibernation. This should remove any
     /// directly assigned devices before the guest saves state.
-    ///
-    /// When rollback is 'true' it means the hibernate request was vetoed, so
-    /// any changes can be undone.
-    async fn prepare_for_hibernate(&self, rollback: bool);
+    async fn prepare_for_hibernate(&self);
+
+    /// Callback to cancel preparation for guest hibernation. This should
+    /// restore any state updated via prepare_for_hibernate().
+    async fn cancel_prepare_for_hibernate(&self);
 
     /// Callback when network settings are modified externally.
     async fn modify_network_settings(
@@ -112,6 +116,8 @@ pub trait LoadedVmNetworkSettings: Inspect {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
+        keepalive_mode: KeepAliveConfig,
+        mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState>;
 
     /// Callback when network is removed externally.
@@ -125,6 +131,9 @@ pub trait LoadedVmNetworkSettings: Inspect {
         &self,
         mut params: PacketCaptureParams<Socket>,
     ) -> anyhow::Result<PacketCaptureParams<Socket>>;
+
+    /// Save the network state for restoration after servicing.
+    async fn save(&mut self) -> Option<Vec<ManaSavedState>>;
 }
 
 /// A VM that has been loaded and can be run.
@@ -135,7 +144,7 @@ pub(crate) struct LoadedVm {
     pub firmware_type: FirmwareType,
     pub isolation: IsolationType,
     // contain task handles which must be kept live
-    pub _chipset_devices: ChipsetDevices,
+    pub chipset_devices: ChipsetDevices,
     // keep the unit task alive
     pub _vmtime: SpawnedUnit<VmTimeKeeper>,
     pub _halt_task: Task<()>,
@@ -145,6 +154,8 @@ pub(crate) struct LoadedVm {
     pub emuplat_servicing: EmuplatServicing,
     pub device_interfaces: Option<DeviceInterfaces>,
     pub vmbus_client: Option<vmbus_client::VmbusClient>,
+    pub vmbus_filter: Option<vmbus_client::filter::ClientFilter>,
+    pub vpci_relay: Option<vpci_relay::VpciRelay>,
     /// Memory map with IGVM types for each range.
     pub vtl0_memory_map: Vec<(MemoryRangeWithNode, MemoryMapEntryType)>,
 
@@ -156,7 +167,6 @@ pub(crate) struct LoadedVm {
     pub host_vmbus_relay: Option<VmbusRelayHandle>,
     // channels are revoked when dropped, so make sure to keep them alive
     pub _vmbus_devices: Vec<SpawnedUnit<ChannelUnit<dyn VmbusDevice>>>,
-    pub _vmbus_intercept_devices: Vec<mesh::OneshotSender<()>>,
     pub _ide_accel_devices: Vec<SpawnedUnit<ChannelUnit<storvsp::StorageDevice>>>,
     pub network_settings: Option<Box<dyn LoadedVmNetworkSettings>>,
     pub shutdown_relay: Option<(
@@ -165,7 +175,7 @@ pub(crate) struct LoadedVm {
     )>,
 
     pub vmgs: Option<(
-        vmgs_broker::VmgsThinClient,
+        vmgs_broker::VmgsClient,
         disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
         Task<()>,
     )>,
@@ -183,9 +193,11 @@ pub(crate) struct LoadedVm {
 
     pub _periodic_telemetry_task: Task<()>,
 
-    pub nvme_keep_alive: bool,
+    pub nvme_keep_alive: KeepAliveConfig,
+    pub mana_keep_alive: KeepAliveConfig,
     pub test_configuration: Option<TestScenarioConfig>,
     pub dma_manager: OpenhclDmaManager,
+    pub config_timeout_in_seconds: u64,
 }
 
 pub struct LoadedVmState<T> {
@@ -224,6 +236,7 @@ impl LoadedVm {
                 device_config_send,
                 self.get_client.clone(),
                 self.device_interfaces.take().unwrap(),
+                self.config_timeout_in_seconds,
             );
 
             threadpool.spawn("VTL2 settings services", {
@@ -238,6 +251,14 @@ impl LoadedVm {
             .await
             .expect("no failure");
 
+        struct PendingShutdown {
+            guest_response: PendingRpc<ShutdownResult>,
+            send_result: Rpc<(), ShutdownResult>,
+            is_hibernate: bool,
+        }
+
+        let mut pending_shutdown_response: Option<PendingShutdown> = None;
+
         let state = loop {
             enum Event<T> {
                 WorkerRpc(WorkerRpc<T>),
@@ -247,6 +268,8 @@ impl LoadedVm {
                 VtlCrash(VtlCrash),
                 ServicingRequest(GuestSaveRequest),
                 ShutdownRequest(Rpc<ShutdownParams, ShutdownResult>),
+                ShutdownResponse(<PendingRpc<ShutdownResult> as Future>::Output),
+                VpciRelayReady,
             }
 
             let event: Event<T> = futures::select! { // merge semantics
@@ -255,6 +278,13 @@ impl LoadedVm {
                 message = vm_rpc.select_next_some() => Event::UhVmRpc(message),
                 message = self.crash_notification_recv.select_next_some() => Event::VtlCrash(message),
                 message = save_request_recv.select_next_some() => Event::ServicingRequest(message),
+                _ = async {
+                    if let Some(vpci_relay) = &mut self.vpci_relay {
+                        vpci_relay.wait_ready().await
+                    } else {
+                        std::future::pending().await
+                    }
+                }.fuse() => Event::VpciRelayReady,
                 message = async {
                     if self.shutdown_relay.is_none() {
                         std::future::pending::<()>().await;
@@ -262,6 +292,13 @@ impl LoadedVm {
                     let (recv, _) = self.shutdown_relay.as_mut().unwrap();
                     recv.select_next_some().await
                 }.fuse() => Event::ShutdownRequest(message),
+                message = async {
+                    if let Some(PendingShutdown{guest_response, ..}) = &mut pending_shutdown_response {
+                        guest_response.await
+                    } else {
+                        std::future::pending().await
+                    }
+                }.fuse() => Event::ShutdownResponse(message),
             };
 
             match event {
@@ -271,7 +308,10 @@ impl LoadedVm {
                     WorkerRpc::Restart(rpc) => {
                         let state = async {
                             let running = self.stop().await;
-                            match self.save(None, false).await {
+                            match self
+                                .save(None, KeepAliveConfig::Disabled, KeepAliveConfig::Disabled)
+                                .await
+                            {
                                 Ok(servicing_state) => Some((rpc, servicing_state)),
                                 Err(err) => {
                                     if running {
@@ -312,6 +352,10 @@ impl LoadedVm {
                         );
                         resp.field("memory", &self.memory);
                         resp.field("dma_manager", &self.dma_manager);
+                        resp.field("vmbus_client", &self.vmbus_client);
+                        resp.field("vmbus_filter", &self.vmbus_filter);
+                        resp.field("vpci_relay", &self.vpci_relay);
+                        resp.field("mana_keepalive_mode", &self.mana_keep_alive);
                     }),
                 },
                 Event::Vtl2ConfigNicRpc(message) => {
@@ -333,7 +377,9 @@ impl LoadedVm {
                     UhVmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| {
                             let running = self.stop().await;
-                            let r = self.save(None, false).await;
+                            let r = self
+                                .save(None, KeepAliveConfig::Disabled, KeepAliveConfig::Disabled)
+                                .await;
                             if running {
                                 self.start(None).await;
                             }
@@ -360,11 +406,15 @@ impl LoadedVm {
                     // Explicitly destructure the message for easier tracking of its changes.
                     let GuestSaveRequest {
                         correlation_id,
-                        deadline,
+                        timeout_hint,
                         capabilities_flags,
                     } = message;
                     match self
-                        .handle_servicing_request(correlation_id, deadline, capabilities_flags)
+                        .handle_servicing_request(
+                            correlation_id,
+                            std::time::Instant::now() + timeout_hint,
+                            capabilities_flags,
+                        )
                         .await
                     {
                         Ok(true) => {
@@ -386,33 +436,67 @@ impl LoadedVm {
                     }
                 }
                 Event::ShutdownRequest(rpc) => {
-                    rpc.handle(async |msg| {
-                        if matches!(msg.shutdown_type, ShutdownType::Hibernate) {
-                            self.handle_hibernate_request(false).await;
+                    if pending_shutdown_response.is_some() {
+                        rpc.complete(ShutdownResult::AlreadyInProgress);
+                        continue;
+                    }
+                    let (msg, send_result) = rpc.split();
+                    let is_hibernate = matches!(msg.shutdown_type, ShutdownType::Hibernate);
+                    if is_hibernate {
+                        self.handle_hibernate_request().await;
+                    }
+                    let (_, send_guest) =
+                        self.shutdown_relay.as_mut().expect("active shutdown_relay");
+                    tracing::info!(CVM_ALLOWED, params = ?msg, "Relaying shutdown message");
+                    pending_shutdown_response = Some(PendingShutdown {
+                        guest_response: send_guest.call(ShutdownRpc::Shutdown, msg),
+                        send_result,
+                        is_hibernate,
+                    });
+                }
+                Event::ShutdownResponse(result) => {
+                    let response = match result {
+                        Ok(result) => result,
+                        Err(err) => {
+                            tracing::error!(
+                                CVM_ALLOWED,
+                                error = &err as &dyn std::error::Error,
+                                "Failed to relay shutdown notification to guest"
+                            );
+                            ShutdownResult::Failed(0x80004005)
                         }
-                        let (_, send_guest) =
-                            self.shutdown_relay.as_mut().expect("active shutdown_relay");
-                        tracing::info!(CVM_ALLOWED, params = ?msg, "Relaying shutdown message");
-                        let result = match send_guest.call(ShutdownRpc::Shutdown, msg).await {
-                            Ok(result) => result,
-                            Err(err) => {
-                                tracing::error!(
-                                    CVM_ALLOWED,
-                                    error = &err as &dyn std::error::Error,
-                                    "Failed to relay shutdown notification to guest"
-                                );
-                                ShutdownResult::Failed(0x80000001)
-                            }
-                        };
-                        if !matches!(result, ShutdownResult::Ok) {
-                            tracing::warn!(CVM_ALLOWED, ?result, "Shutdown request failed");
-                            self.handle_hibernate_request(true).await;
+                    };
+                    let PendingShutdown {
+                        send_result,
+                        is_hibernate,
+                        ..
+                    } = pending_shutdown_response
+                        .take()
+                        .expect("no pending shutdown response");
+                    if !matches!(response, ShutdownResult::Ok) {
+                        tracing::warn!(CVM_ALLOWED, ?response, "Shutdown request failed");
+                        if is_hibernate {
+                            self.cancel_hibernate_request().await;
                         }
-                        result
-                    })
-                    .await
+                    }
+                    send_result.complete(response);
                 }
                 Event::VtlCrash(vtl_crash) => self.notify_of_vtl_crash(vtl_crash),
+                Event::VpciRelayReady => {
+                    if let Err(err) = self
+                        .vpci_relay
+                        .as_mut()
+                        .unwrap()
+                        .process(&self.chipset_devices, &mut self.state_units)
+                        .await
+                    {
+                        tracing::error!(
+                            CVM_ALLOWED,
+                            error = err.as_ref() as &dyn std::error::Error,
+                            "failed to process VPCI relay"
+                        );
+                    }
+                }
             }
         };
 
@@ -500,7 +584,13 @@ impl LoadedVm {
 
         // NOTE: This is set via the corresponding env arg, as this feature is
         // experimental.
-        let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
+        if !capabilities_flags.enable_nvme_keepalive() {
+            self.nvme_keep_alive = KeepAliveConfig::Disabled
+        };
+
+        if !capabilities_flags.enable_mana_keepalive() {
+            self.mana_keep_alive = KeepAliveConfig::Disabled
+        };
 
         // Do everything before the log flush under a span.
         let r = async {
@@ -515,7 +605,13 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
-            let mut state = self.save(Some(deadline), nvme_keepalive).await?;
+            let mut state = self
+                .save(
+                    Some(deadline),
+                    self.nvme_keep_alive.clone(),
+                    self.mana_keep_alive.clone(),
+                )
+                .await?;
             state.init_state.correlation_id = Some(correlation_id);
 
             // Unload any network devices.
@@ -523,7 +619,9 @@ impl LoadedVm {
                 if let Some(network_settings) = self.network_settings.as_mut() {
                     network_settings
                         .unload_for_servicing()
-                        .instrument(tracing::info_span!("shutdown_mana", CVM_ALLOWED))
+                        .instrument(
+                            tracing::info_span!("shutdown_mana", CVM_ALLOWED, %correlation_id),
+                        )
                         .await;
                 }
             };
@@ -532,8 +630,13 @@ impl LoadedVm {
             let shutdown_nvme = async {
                 if let Some(nvme_manager) = self.nvme_manager.take() {
                     nvme_manager
-                        .shutdown(nvme_keepalive)
-                        .instrument(tracing::info_span!("shutdown_nvme_vfio", CVM_ALLOWED, %correlation_id, %nvme_keepalive))
+                        .shutdown(self.nvme_keep_alive.is_enabled())
+                        .instrument(tracing::info_span!(
+                            "shutdown_nvme_vfio",
+                            CVM_ALLOWED,
+                            correlation_id = %correlation_id,
+                            nvme_keep_alive_enabled = self.nvme_keep_alive.is_enabled()
+                        ))
                         .await;
                 }
             };
@@ -542,9 +645,24 @@ impl LoadedVm {
             // restart.
             let shutdown_pci = async {
                 pci_shutdown::shutdown_pci_devices()
-                    .instrument(tracing::info_span!("shutdown_pci_devices", CVM_ALLOWED))
+                    .instrument(
+                        tracing::info_span!("shutdown_pci_devices", CVM_ALLOWED, %correlation_id),
+                    )
                     .await
             };
+
+            // Save the persisted state used by the next openhcl_boot.
+            // In the future, this could be extended to include other devices (e.g. MANA).
+            let nvme_vp_interrupt_state =
+                crate::nvme_manager::save_restore_helpers::nvme_interrupt_state(
+                    state.init_state.nvme_state.as_ref().map(|n| &n.nvme_state),
+                );
+
+            crate::loader::vtl2_config::write_persisted_info(
+                self.runtime_params.parsed_openhcl_boot(),
+                nvme_vp_interrupt_state,
+            )
+            .context("failed to write persisted info")?;
 
             let (r, (), ()) = (shutdown_pci, shutdown_mana, shutdown_nvme).join().await;
             r?;
@@ -594,25 +712,27 @@ impl LoadedVm {
         Ok(state)
     }
 
-    async fn handle_hibernate_request(&self, rollback: bool) {
+    async fn handle_hibernate_request(&self) {
         if let Some(network_settings) = &self.network_settings {
-            if !rollback {
-                network_settings
-                    .prepare_for_hibernate(rollback)
-                    .instrument(tracing::info_span!(
-                        "prepare_for_guest_hibernate",
-                        CVM_ALLOWED
-                    ))
-                    .await;
-            } else {
-                network_settings
-                    .prepare_for_hibernate(rollback)
-                    .instrument(tracing::info_span!(
-                        "rollback_prepare_for_guest_hibernate",
-                        CVM_ALLOWED
-                    ))
-                    .await;
-            };
+            network_settings
+                .prepare_for_hibernate()
+                .instrument(tracing::info_span!(
+                    "prepare_for_guest_hibernate",
+                    CVM_ALLOWED
+                ))
+                .await;
+        }
+    }
+
+    async fn cancel_hibernate_request(&self) {
+        if let Some(network_settings) = &self.network_settings {
+            network_settings
+                .cancel_prepare_for_hibernate()
+                .instrument(tracing::info_span!(
+                    "rollback_prepare_for_guest_hibernate",
+                    CVM_ALLOWED
+                ))
+                .await;
         }
     }
 
@@ -675,17 +795,39 @@ impl LoadedVm {
     async fn save(
         &mut self,
         _deadline: Option<std::time::Instant>,
-        vf_keepalive_flag: bool,
+        nvme_keepalive_mode: KeepAliveConfig,
+        mana_keepalive_mode: KeepAliveConfig,
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
 
+        // Only save dma manager state if we are expected to keep VF devices
+        // alive across save. Otherwise, don't persist the state at all, as
+        // there should be no live DMA across save.
+        //
+        // This has to happen before saving the network state, otherwise its allocations
+        // are marked as Free and are unable to be restored.
+        let dma_manager_state =
+            if nvme_keepalive_mode.is_enabled() || mana_keepalive_mode.is_enabled() {
+                use vmcore::save_restore::SaveRestore;
+                Some(self.dma_manager.save().context("dma_manager save failed")?)
+            } else {
+                None
+            };
+
         // Only save NVMe state when there are NVMe controllers and keep alive
         // was enabled.
         let nvme_state = if let Some(n) = &self.nvme_manager {
-            n.save(vf_keepalive_flag)
-                .instrument(tracing::info_span!("nvme_manager_save", CVM_ALLOWED))
+            // DEVNOTE: A subtlety here is that the act of saving the NVMe state also causes the driver
+            // to enter a state where subsequent teardown operations will noop. There is a STRONG
+            // correlation between save/restore and keepalive.
+            n.save(nvme_keepalive_mode.is_enabled())
+                .instrument(tracing::info_span!(
+                    "nvme_manager_save",
+                    nvme_keepalive_mode = %nvme_keepalive_mode.is_enabled(),
+                    CVM_ALLOWED
+                ))
                 .await
                 .map(|s| NvmeSavedState { nvme_state: s })
         } else {
@@ -693,21 +835,20 @@ impl LoadedVm {
         };
 
         let units = self.save_units().await.context("state unit save failed")?;
+
+        let mana_state = if let Some(network_settings) = &mut self.network_settings
+            && mana_keepalive_mode.is_enabled()
+        {
+            network_settings.save().await
+        } else {
+            None
+        };
+
         let vmgs = if let Some((vmgs_thin_client, vmgs_disk_metadata, _)) = self.vmgs.as_ref() {
             Some((
                 vmgs_thin_client.save().await.context("vmgs save failed")?,
                 vmgs_disk_metadata.clone(),
             ))
-        } else {
-            None
-        };
-
-        // Only save dma manager state if we are expected to keep VF devices
-        // alive across save. Otherwise, don't persist the state at all, as
-        // there should be no live DMA across save.
-        let dma_manager_state = if vf_keepalive_flag {
-            use vmcore::save_restore::SaveRestore;
-            Some(self.dma_manager.save().context("dma_manager save failed")?)
         } else {
             None
         };
@@ -731,6 +872,7 @@ impl LoadedVm {
                 nvme_state,
                 dma_manager_state,
                 vmbus_client,
+                mana_state,
             },
             units,
         };
@@ -797,6 +939,8 @@ impl LoadedVm {
                 &self.vmbus_server,
                 self.dma_manager.client_spawner(),
                 self.isolation.is_isolated(),
+                self.mana_keep_alive.clone(),
+                None, // No existing mana state
             )
             .await?;
 

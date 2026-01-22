@@ -17,6 +17,7 @@ use hvdef::HvAarch64PendingEventType;
 use hvdef::HvInterceptAccessType;
 use hvdef::HvMapGpaFlags;
 use thiserror::Error;
+use virt::EmulatorMonitorSupport;
 use virt::VpHaltReason;
 use virt::io::CpuIo;
 use vm_topology::processor::VpIndex;
@@ -25,9 +26,6 @@ use zerocopy::IntoBytes;
 
 /// Support routines for the emulator.
 pub trait EmulatorSupport: AccessCpuState {
-    /// The hypervisor error type.
-    type Error: 'static + std::error::Error + Send + Sync;
-
     /// The current VP index.
     fn vp_index(&self) -> VpIndex;
 
@@ -46,23 +44,21 @@ pub trait EmulatorSupport: AccessCpuState {
         &mut self,
         gpa: u64,
         mode: TranslateMode,
-    ) -> Result<(), EmuCheckVtlAccessError<Self::Error>>;
+    ) -> Result<(), EmuCheckVtlAccessError>;
 
     /// Translates a GVA to a GPA.
     fn translate_gva(
         &mut self,
         gva: u64,
         mode: TranslateMode,
-    ) -> Result<Result<EmuTranslateResult, EmuTranslateError>, Self::Error>;
+    ) -> Result<EmuTranslateResult, EmuTranslateError>;
 
     /// Generates an event (exception, guest nested page fault, etc.) in the guest.
     fn inject_pending_event(&mut self, event_info: HvAarch64PendingEvent);
 
-    /// Check if the specified write is wholly inside the monitor page, and signal the associated
-    /// connected ID if it is.
-    fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
-        let _ = (gpa, bytes);
-        false
+    /// Get access to monitor support for the emulator, if it supports it.
+    fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
+        None
     }
 
     /// Returns true if `gpa` is mapped for the specified permissions.
@@ -109,9 +105,7 @@ pub struct InitialTranslation {
 }
 
 #[derive(Error, Debug)]
-pub enum EmuCheckVtlAccessError<E> {
-    #[error(transparent)]
-    Hypervisor(#[from] E),
+pub enum EmuCheckVtlAccessError {
     #[error("failed vtl permissions access for vtl {vtl:?} and access flags {denied_flags:?}")]
     AccessDenied {
         vtl: hvdef::Vtl,
@@ -159,14 +153,14 @@ impl TryFrom<HvInterceptAccessType> for TranslateMode {
 }
 
 #[derive(Debug, Error)]
-enum EmulationError<E> {
+enum EmulationError {
     #[error("an interrupt caused the memory access exit")]
     InterruptionPending,
     #[error("emulator error (instruction {bytes:02x?})")]
     Emulator {
         bytes: Vec<u8>,
         #[source]
-        error: aarch64emu::Error<E>,
+        error: aarch64emu::Error<Error>,
     },
 }
 
@@ -174,9 +168,20 @@ enum EmulationError<E> {
 pub async fn emulate<T: EmulatorSupport>(
     support: &mut T,
     intercept_state: &InterceptState,
+    emu_mem: &GuestMemory,
+    dev: &impl CpuIo,
+) -> Result<(), VpHaltReason> {
+    emulate_core(support, intercept_state, emu_mem, dev)
+        .await
+        .map_err(|e| dev.fatal_error(e.into()))
+}
+
+async fn emulate_core<T: EmulatorSupport>(
+    support: &mut T,
+    intercept_state: &InterceptState,
     gm: &GuestMemory,
     dev: &impl CpuIo,
-) -> Result<(), VpHaltReason<T::Error>> {
+) -> Result<(), EmulationError> {
     tracing::trace!(physical_address = support.physical_address(), "emulating");
 
     if support.interruption_pending() {
@@ -193,9 +198,7 @@ pub async fn emulate<T: EmulatorSupport>(
         // cause an infinite loop (as the processor tries to get the trap
         // vector out of the mmio-ed vector table).  Just give up.
 
-        return Err(VpHaltReason::EmulationFailure(
-            EmulationError::<T::Error>::InterruptionPending.into(),
-        ));
+        return Err(EmulationError::InterruptionPending);
     }
 
     let mut cpu = EmulatorCpu::new(gm, dev, support, intercept_state.syndrome);
@@ -218,13 +221,10 @@ pub async fn emulate<T: EmulatorSupport>(
                 if inject_memory_access_fault(addr, &err, support, intercept_state.syndrome) {
                     return Ok(());
                 } else {
-                    return Err(VpHaltReason::EmulationFailure(
-                        EmulationError::Emulator {
-                            bytes: instruction_bytes,
-                            error: aarch64emu::Error::MemoryAccess(addr, kind, err),
-                        }
-                        .into(),
-                    ));
+                    return Err(EmulationError::Emulator {
+                        bytes: instruction_bytes,
+                        error: aarch64emu::Error::MemoryAccess(addr, kind, err),
+                    });
                 };
             }
             err => {
@@ -270,9 +270,7 @@ struct EmulatorCpu<'a, T, U> {
 }
 
 #[derive(Debug, Error)]
-enum Error<E> {
-    #[error(transparent)]
-    Hypervisor(#[from] E),
+enum Error {
     #[error("translation error")]
     Translate(#[source] TranslateGvaError, Option<EsrEl2>),
     #[error("vtl permissions denied access for gpa {gpa}")]
@@ -335,7 +333,7 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
         }
     }
 
-    pub fn translate_gva(&mut self, gva: u64, mode: TranslateMode) -> Result<u64, Error<T::Error>> {
+    pub fn translate_gva(&mut self, gva: u64, mode: TranslateMode) -> Result<u64, Error> {
         type TranslateCode = hvdef::hypercall::TranslateGvaResultCode;
 
         // Note about invalid accesses at user mode: the exception code will
@@ -363,7 +361,7 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
         };
 
         match self.support.translate_gva(gva, mode) {
-            Ok(Ok(EmuTranslateResult { gpa, overlay_page })) => {
+            Ok(EmuTranslateResult { gpa, overlay_page }) => {
                 if overlay_page.is_some()
                     && overlay_page
                         .expect("should've already checked that the overlay page has value")
@@ -380,7 +378,7 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
                 self.cached_translation = Some(new_cache_entry);
                 Ok(gpa)
             }
-            Ok(Err(EmuTranslateError { code, event_info })) => match code {
+            Err(EmuTranslateError { code, event_info }) => match code {
                 TranslateCode::INTERCEPT => {
                     tracing::trace!("translate gva to gpa returned an intercept event");
                     Err(Error::Translate(TranslateGvaError::Intercept, event_info))
@@ -415,22 +413,13 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
                     Err(Error::Translate(TranslateGvaError::UnknownCode(code), None))
                 }
             },
-            Err(e) => {
-                tracing::trace!("translate error {:?}", e);
-                Err(Error::Hypervisor(e))
-            }
         }
     }
 
-    pub fn check_vtl_access(
-        &mut self,
-        gpa: u64,
-        mode: TranslateMode,
-    ) -> Result<(), Error<T::Error>> {
+    pub fn check_vtl_access(&mut self, gpa: u64, mode: TranslateMode) -> Result<(), Error> {
         self.support
             .check_vtl_access(gpa, mode)
             .map_err(|e| match e {
-                EmuCheckVtlAccessError::Hypervisor(hv_err) => Error::Hypervisor(hv_err),
                 EmuCheckVtlAccessError::AccessDenied { vtl, denied_flags } => Error::NoVtlAccess {
                     gpa,
                     intercepting_vtl: vtl,
@@ -438,10 +427,26 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
                 },
             })
     }
+
+    fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
+        if let Some(monitor_support) = self.support.monitor_support() {
+            monitor_support.check_write(gpa, bytes)
+        } else {
+            false
+        }
+    }
+
+    fn check_monitor_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
+        if let Some(monitor_support) = self.support.monitor_support() {
+            monitor_support.check_read(gpa, bytes)
+        } else {
+            false
+        }
+    }
 }
 
 impl<T: EmulatorSupport, U: CpuIo> aarch64emu::Cpu for EmulatorCpu<'_, T, U> {
-    type Error = Error<T::Error>;
+    type Error = Error;
 
     async fn read_instruction(&mut self, gva: u64, bytes: &mut [u8]) -> Result<(), Self::Error> {
         let gpa = match self.translate_gva(gva, TranslateMode::Execute) {
@@ -466,14 +471,16 @@ impl<T: EmulatorSupport, U: CpuIo> aarch64emu::Cpu for EmulatorCpu<'_, T, U> {
     ) -> Result<(), Self::Error> {
         self.check_vtl_access(gpa, TranslateMode::Read)?;
 
-        if self.support.is_gpa_mapped(gpa, false) {
-            self.gm.read_at(gpa, bytes).map_err(Self::Error::Memory)?;
+        if self.check_monitor_read(gpa, bytes) {
+            Ok(())
+        } else if self.support.is_gpa_mapped(gpa, false) {
+            self.gm.read_at(gpa, bytes).map_err(Self::Error::Memory)
         } else {
             self.dev
                 .read_mmio(self.support.vp_index(), gpa, bytes)
                 .await;
+            Ok(())
         }
-        Ok(())
     }
 
     async fn write_memory(&mut self, gva: u64, bytes: &[u8]) -> Result<(), Self::Error> {
@@ -511,19 +518,43 @@ impl<T: EmulatorSupport, U: CpuIo> aarch64emu::Cpu for EmulatorCpu<'_, T, U> {
 
         self.check_vtl_access(gpa, TranslateMode::Write)?;
 
-        if self.support.check_monitor_write(gpa, new) {
+        if self.check_monitor_write(gpa, new) {
             *success = true;
             Ok(())
         } else if self.support.is_gpa_mapped(gpa, true) {
-            let buf = &mut [0; 16][..current.len()];
-            buf.copy_from_slice(current);
-            match self.gm.compare_exchange_bytes(gpa, buf, new) {
-                Ok(swapped) => {
-                    *success = swapped;
-                    Ok(())
-                }
-                Err(e) => Err(Self::Error::Memory(e)),
+            *success = match (current.len(), new.len()) {
+                (1, 1) => self
+                    .gm
+                    .compare_exchange(gpa, current[0], new[0])
+                    .map(|r| r.is_ok()),
+                (2, 2) => self
+                    .gm
+                    .compare_exchange(
+                        gpa,
+                        u16::from_ne_bytes(current.try_into().unwrap()),
+                        u16::from_ne_bytes(new.try_into().unwrap()),
+                    )
+                    .map(|r| r.is_ok()),
+                (4, 4) => self
+                    .gm
+                    .compare_exchange(
+                        gpa,
+                        u32::from_ne_bytes(current.try_into().unwrap()),
+                        u32::from_ne_bytes(new.try_into().unwrap()),
+                    )
+                    .map(|r| r.is_ok()),
+                (8, 8) => self
+                    .gm
+                    .compare_exchange(
+                        gpa,
+                        u64::from_ne_bytes(current.try_into().unwrap()),
+                        u64::from_ne_bytes(new.try_into().unwrap()),
+                    )
+                    .map(|r| r.is_ok()),
+                _ => panic!("unsupported size for compare and write memory"),
             }
+            .map_err(Self::Error::Memory)?;
+            Ok(())
         } else {
             // Ignore the comparison aspect for device MMIO.
             *success = true;
@@ -626,7 +657,7 @@ pub fn make_exception_event(syndrome: EsrEl2, fault_address: u64) -> HvAarch64Pe
 #[must_use]
 fn inject_memory_access_fault<T: EmulatorSupport>(
     gva: u64,
-    result: &Error<T::Error>,
+    result: &Error,
     support: &mut T,
     syndrome: EsrEl2,
 ) -> bool {
@@ -661,7 +692,7 @@ fn inject_memory_access_fault<T: EmulatorSupport>(
             support.inject_pending_event(event);
             true
         }
-        Error::Hypervisor(_) | Error::Memory(_) => false,
+        Error::Memory(_) => false,
     }
 }
 

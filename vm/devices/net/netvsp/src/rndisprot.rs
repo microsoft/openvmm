@@ -751,6 +751,7 @@ open_enum! {
         DEFAULT = 0x80,
         RSS_CAPABILITIES = 0x88,
         RSS_PARAMETERS = 0x89,
+        OID_REQUEST = 0x96,
         OFFLOAD = 0xA7,
         OFFLOAD_ENCAPSULATION = 0xA8,
     }
@@ -953,6 +954,10 @@ pub struct Ipv6ChecksumOffload {
 }
 
 pub const NDIS_ENCAPSULATION_IEEE_802_3: u32 = 2;
+// Use the same minimum as vmswitch.
+pub const LSO_MIN_SEGMENT_COUNT: u32 = 2;
+// Use the same maximum as vmswitch.
+pub const LSO_MAX_OFFLOAD_SIZE: u32 = 0xF53C;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
@@ -1082,3 +1087,14 @@ open_enum! {
         BINARY = 4,
     }
 }
+
+pub type RndisPacketFilterOidValue = u32;
+
+// Rndis Packet Filter Flags (OID_GEN_CURRENT_PACKET_FILTER)
+pub const NDIS_PACKET_TYPE_NONE: u32 = 0x00000000;
+pub const NDIS_PACKET_TYPE_DIRECTED: u32 = 0x00000001;
+pub const NDIS_PACKET_TYPE_MULTICAST: u32 = 0x00000002;
+pub const NDIS_PACKET_TYPE_ALL_MULTICAST: u32 = 0x00000004;
+pub const NDIS_PACKET_TYPE_BROADCAST: u32 = 0x00000008;
+pub const NPROTO_PACKET_FILTER: u32 =
+    NDIS_PACKET_TYPE_DIRECTED | NDIS_PACKET_TYPE_ALL_MULTICAST | NDIS_PACKET_TYPE_BROADCAST;

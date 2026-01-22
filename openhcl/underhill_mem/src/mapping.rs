@@ -404,7 +404,8 @@ impl GuestMemoryBitmap {
     }
 
     fn init(&mut self, range: MemoryRange, state: bool) -> Result<(), MappingError> {
-        if range.start() % (PAGE_SIZE as u64 * 8) != 0 || range.end() % (PAGE_SIZE as u64 * 8) != 0
+        if !range.start().is_multiple_of(PAGE_SIZE as u64 * 8)
+            || !range.end().is_multiple_of(PAGE_SIZE as u64 * 8)
         {
             return Err(MappingError::BadAlignment(range));
         }
@@ -418,9 +419,14 @@ impl GuestMemoryBitmap {
         // TODO SNP: map some pre-reserved lower VTL memory into the
         // bitmap. Or just figure out how to hot add that memory to the
         // kernel. Or have the boot loader reserve it at boot time.
+        //
+        // Be careful, though--if we do that, we have to remember which
+        // pages were already allocated and initialized; otherwise, we will
+        // zero them again. To avoid tracking this as is, just update
+        // the page protections on the existing zero-mapped pages.
         self.bitmap
-            .alloc(bitmap_page_start * PAGE_SIZE, page_count * PAGE_SIZE)
-            .map_err(MappingError::BitmapAlloc)?;
+            .set_writable(bitmap_page_start * PAGE_SIZE, page_count * PAGE_SIZE, true)
+            .map_err(MappingError::BitmapProtect)?;
 
         // Set the initial bitmap state.
         if state {
@@ -481,8 +487,8 @@ pub enum MappingError {
     BitmapReserve(#[source] std::io::Error),
     #[error("failed to map zero pages for bitmap")]
     BitmapMap(#[source] std::io::Error),
-    #[error("failed to allocate pages for bitmap")]
-    BitmapAlloc(#[source] std::io::Error),
+    #[error("failed to make pages writable for bitmap")]
+    BitmapProtect(#[source] std::io::Error),
     #[error("memory map entry {0} has insufficient alignment to support a bitmap")]
     BadAlignment(MemoryRange),
     #[error("failed to open device")]
@@ -746,5 +752,31 @@ impl GuestMemoryMapping {
     ) -> Result<(), sparse_mmap::SparseMappingError> {
         self.mapping
             .fill_at(range.start() as usize, 0, range.len() as usize)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::mapping::GuestValidMemory;
+    use crate::mapping::GuestValidMemoryType;
+    use memory_range::MemoryRange;
+    use vm_topology::memory::MemoryLayout;
+    use vm_topology::memory::MemoryRangeWithNode;
+
+    // Ensure a bitmap initialized with ranges whose bitmap backings overlap
+    // does not cause any issues.
+    #[test]
+    fn test_overlapping_bitmap() {
+        let memory_ranges = [0..1, 1..2, 3..4].map(|r| MemoryRangeWithNode {
+            range: MemoryRange::from_4k_gpn_range(r.start * 8..r.end * 8),
+            vnode: 0,
+        });
+        let memory_layout = MemoryLayout::new_from_ranges(&memory_ranges, &[])
+            .expect("Failed to create memory layout");
+        let guest_valid_mem =
+            GuestValidMemory::new(&memory_layout, GuestValidMemoryType::Encrypted, true).unwrap();
+        for (i, &b) in [true, true, false, true, false].iter().enumerate() {
+            assert_eq!(guest_valid_mem.check_valid(i as u64 * 8), b, "{i}");
+        }
     }
 }

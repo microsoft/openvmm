@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use self::bnic_defs::CQE_TX_GDMA_ERR;
 use self::bnic_defs::CQE_TX_OKAY;
 use self::bnic_defs::MANA_CQE_COMPLETION;
 use self::bnic_defs::ManaCommandCode;
@@ -41,7 +42,6 @@ use guestmem::MemoryWrite;
 use inspect::InspectMut;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
-use net_backend::L3Protocol;
 use net_backend::Queue;
 use net_backend::QueueConfig;
 use net_backend::RxBufferSegment;
@@ -533,19 +533,14 @@ impl TxRxTask {
         let total_len: usize = sqe.sgl().iter().map(|sge| sge.size as usize).sum();
         let mut meta = TxMetadata {
             id: TxId(0),
-            segment_count: sqe.sgl().len(),
-            len: total_len,
-            offload_ip_header_checksum: oob.s_oob.comp_iphdr_csum(),
-            offload_tcp_checksum: oob.s_oob.comp_tcp_csum(),
-            offload_udp_checksum: oob.s_oob.comp_udp_csum(),
-            offload_tcp_segmentation: false,
-            l3_protocol: if oob.s_oob.is_outer_ipv4() {
-                L3Protocol::Ipv4
-            } else if oob.s_oob.is_outer_ipv6() {
-                L3Protocol::Ipv6
-            } else {
-                L3Protocol::Unknown
-            },
+            segment_count: sqe.sgl().len().try_into().unwrap(),
+            len: total_len.try_into().unwrap(),
+            flags: net_backend::TxFlags::new()
+                .with_offload_ip_header_checksum(oob.s_oob.comp_iphdr_csum())
+                .with_offload_tcp_checksum(oob.s_oob.comp_tcp_csum())
+                .with_offload_udp_checksum(oob.s_oob.comp_udp_csum())
+                .with_is_ipv4(oob.s_oob.is_outer_ipv4())
+                .with_is_ipv6(oob.s_oob.is_outer_ipv6() && !oob.s_oob.is_outer_ipv4()),
             l2_len: 14,
             l3_len: oob.s_oob.trans_off().clamp(14, 255) - 14,
             l4_len: 0,
@@ -557,7 +552,31 @@ impl TxRxTask {
                 sge0.size
                     .saturating_sub(meta.l2_len as u32 + meta.l3_len as u32) as u8;
             meta.max_tcp_segment_size = sqe.header.params.gd_client_unit_data();
-            meta.offload_tcp_segmentation = true;
+            meta.flags.set_offload_tcp_segmentation(true);
+        }
+
+        // With LSO, the first SGE is the header and the rest are the payload.
+        // For LSO, the requirements by the GDMA hardware are:
+        // - The first SGE must be the header and must be <= 256 bytes.
+        // - There should be at least two SGEs.
+        // Possible test improvement: Disable the Queue to mimick the hardware behavior.
+        if meta.flags.offload_tcp_segmentation() {
+            if sqe.sgl().len() < 2 {
+                tracelimit::error_ratelimited!(
+                    sgl_count = sqe.sgl().len(),
+                    "LSO enabled, but only one SGE"
+                );
+                self.post_tx_completion_error();
+                return Ok(());
+            }
+            if sge0.size > 256 {
+                tracelimit::error_ratelimited!(
+                    sge0_size = sge0.size,
+                    "LSO enabled and SGE[0] size > 256 bytes"
+                );
+                self.post_tx_completion_error();
+                return Ok(());
+            }
         }
 
         let tx_segments = &mut self.tx_segment_buffer;
@@ -580,6 +599,20 @@ impl TxRxTask {
             self.post_tx_completion();
         }
         Ok(())
+    }
+
+    // Possible test improvement: provide proper OOB data for the GDMA error.
+    fn post_tx_completion_error(&mut self) {
+        let tx_oob = ManaTxCompOob {
+            cqe_hdr: ManaCqeHeader::new()
+                .with_client_type(MANA_CQE_COMPLETION)
+                .with_cqe_type(CQE_TX_GDMA_ERR),
+            tx_data_offset: 0,
+            offsets: ManaTxCompOobOffsets::new(),
+            reserved: [0; 12],
+        };
+        self.queues
+            .post_cq(self.sq_cq_id, tx_oob.as_bytes(), self.sq_id, true);
     }
 
     fn post_tx_completion(&mut self) {

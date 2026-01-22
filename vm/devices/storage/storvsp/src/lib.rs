@@ -16,7 +16,6 @@ mod test_helpers;
 pub mod resolver;
 mod save_restore;
 
-use crate::ring::gparange::GpnList;
 use crate::ring::gparange::MultiPagedRangeBuf;
 use anyhow::Context as _;
 use async_trait::async_trait;
@@ -57,6 +56,8 @@ use std::future::Future;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering::Relaxed;
 use std::task::Context;
 use std::task::Poll;
 use storvsp_resources::ScsiPath;
@@ -98,6 +99,12 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+/// The IO queue depth at which the controller switches from guest-signal-driven
+/// to poll-mode operation. This optimization reduces the guest exit rate by
+/// relying on (typically-interrupt-driven) IO completions to drive polling for
+/// new IO requests.
+const DEFAULT_POLL_MODE_QUEUE_DEPTH: u32 = 1;
+
 pub struct StorageDevice {
     instance_id: Guid,
     ide_path: Option<ScsiPath>,
@@ -136,6 +143,10 @@ impl InspectMut for StorageDevice {
                 .iter()
                 .filter(|task| task.worker.has_state())
                 .enumerate(),
+        )
+        .field(
+            "poll_mode_queue_depth",
+            inspect::AtomicMut(&self.controller.poll_mode_queue_depth),
         );
     }
 }
@@ -308,16 +319,12 @@ enum PacketError {
 
 #[derive(Debug, Default, Clone)]
 struct Range {
-    buf: MultiPagedRangeBuf<GpnList>,
     len: usize,
     is_write: bool,
 }
 
 impl Range {
-    fn new(
-        buf: MultiPagedRangeBuf<GpnList>,
-        request: &storvsp_protocol::ScsiRequest,
-    ) -> Option<Self> {
+    fn new(buf: &MultiPagedRangeBuf, request: &storvsp_protocol::ScsiRequest) -> Option<Self> {
         let len = request.data_transfer_length as usize;
         let is_write = request.data_in != 0;
         // Ensure there is exactly one range and it's large enough, or there are
@@ -325,11 +332,15 @@ impl Range {
         if buf.range_count() > 1 || (len > 0 && buf.first()?.len() < len) {
             return None;
         }
-        Some(Self { buf, len, is_write })
+        Some(Self { len, is_write })
     }
 
-    fn buffer<'a>(&'a self, guest_memory: &'a GuestMemory) -> RequestBuffers<'a> {
-        let mut range = self.buf.first().unwrap_or_else(PagedRange::empty);
+    fn buffer<'a>(
+        &'a self,
+        buf: &'a MultiPagedRangeBuf,
+        guest_memory: &'a GuestMemory,
+    ) -> RequestBuffers<'a> {
+        let mut range = buf.first().unwrap_or_else(PagedRange::empty);
         range.truncate(self.len);
         RequestBuffers::new(guest_memory, range, self.is_write)
     }
@@ -391,6 +402,7 @@ fn parse_packet<T: RingMem>(
             let mut full_request = pool.pop().unwrap_or_else(|| {
                 Arc::new(ScsiRequestAndRange {
                     external_data: Range::default(),
+                    external_data_buf: MultiPagedRangeBuf::new(),
                     request: storvsp_protocol::ScsiRequest::new_zeroed(),
                     request_size,
                 })
@@ -401,10 +413,14 @@ fn parse_packet<T: RingMem>(
                 let request_buf = &mut full_request.request.as_mut_bytes()[..request_size];
                 reader.read(request_buf).map_err(PacketError::Access)?;
 
-                let buf = packet.read_external_ranges().map_err(PacketError::Range)?;
+                full_request.external_data_buf.clear();
+                packet
+                    .read_external_ranges(&mut full_request.external_data_buf)
+                    .map_err(PacketError::Range)?;
 
-                full_request.external_data = Range::new(buf, &full_request.request)
-                    .ok_or(PacketError::InvalidDataTransferLength)?;
+                full_request.external_data =
+                    Range::new(&full_request.external_data_buf, &full_request.request)
+                        .ok_or(PacketError::InvalidDataTransferLength)?;
             }
 
             PacketData::ExecuteScsi(full_request)
@@ -525,13 +541,12 @@ struct ScsiCommandQueue {
 }
 
 impl ScsiCommandQueue {
-    async fn execute_scsi(
-        &self,
-        external_data: &Range,
-        request: &storvsp_protocol::ScsiRequest,
-    ) -> ScsiResult {
+    async fn execute_scsi(&self, full_request: &ScsiRequestAndRange) -> ScsiResult {
+        let request = &full_request.request;
         let op = ScsiOp(request.payload[0]);
-        let external_data = external_data.buffer(&self.mem);
+        let external_data = full_request
+            .external_data
+            .buffer(&full_request.external_data_buf, &self.mem);
 
         tracing::trace!(
             path_id = request.path_id,
@@ -1121,6 +1136,7 @@ impl WorkerInner {
         let (mut reader, mut writer) = queue.split();
         let mut total_completions = 0;
         let mut total_submissions = 0;
+        let poll_mode_queue_depth = self.controller.poll_mode_queue_depth.load(Relaxed) as usize;
 
         loop {
             // Drive IOs forward and collect completions.
@@ -1164,7 +1180,7 @@ impl WorkerInner {
                 if self.scsi_requests_states.len() >= self.max_io_queue_depth {
                     break;
                 }
-                let mut batch = if self.scsi_requests_states.is_empty() {
+                let mut batch = if self.scsi_requests_states.len() < poll_mode_queue_depth {
                     if let Poll::Ready(batch) = reader.poll_read_batch(cx) {
                         batch.map_err(WorkerError::Queue)?
                     } else {
@@ -1356,9 +1372,7 @@ impl WorkerInner {
             .pop()
             .unwrap_or_else(|| OversizedBox::new(()));
         let future = OversizedBox::refill(future, async move {
-            scsi_queue
-                .execute_scsi(&full_request.external_data, &full_request.request)
-                .await
+            scsi_queue.execute_scsi(full_request.as_ref()).await
         });
         let request = ScsiRequest::new(request_id, oversized_box::coerce!(future));
         self.scsi_requests.push(request);
@@ -1390,6 +1404,7 @@ struct ScsiRequestState {
 #[derive(Debug)]
 struct ScsiRequestAndRange {
     external_data: Range,
+    external_data_buf: MultiPagedRangeBuf,
     request: storvsp_protocol::ScsiRequest,
     request_size: usize,
 }
@@ -1573,6 +1588,7 @@ impl ScsiControllerDisk {
 struct ScsiControllerState {
     disks: RwLock<HashMap<ScsiPath, ScsiControllerDisk>>,
     rescan_notification_source: Mutex<Vec<futures::channel::mpsc::Sender<()>>>,
+    poll_mode_queue_depth: AtomicU32,
 }
 
 pub struct ScsiController {
@@ -1581,10 +1597,17 @@ pub struct ScsiController {
 
 impl ScsiController {
     pub fn new() -> Self {
+        Self::new_with_poll_mode_queue_depth(None)
+    }
+
+    pub fn new_with_poll_mode_queue_depth(poll_mode_queue_depth: Option<u32>) -> Self {
         Self {
             state: Arc::new(ScsiControllerState {
                 disks: Default::default(),
                 rescan_notification_source: Mutex::new(Vec::new()),
+                poll_mode_queue_depth: AtomicU32::new(
+                    poll_mode_queue_depth.unwrap_or(DEFAULT_POLL_MODE_QUEUE_DEPTH),
+                ),
             }),
         }
     }

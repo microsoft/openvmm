@@ -36,7 +36,7 @@ pub enum VmgsError {
     InvalidFileSize = 7,
     InvalidString = 8,
     InvalidVmgs = 9,
-    FileInfoAllocated = 10,
+    FileInfoNotAllocated = 10,
     DecryptionFailed = 11,
     EncryptionFailed = 12,
     WriteFailed = 13,
@@ -128,12 +128,11 @@ async fn do_read(
 
     let info = vmgs
         .get_file_info(file_id)
-        .map_err(|_| VmgsError::FileInfoAllocated)?;
+        .map_err(|_| VmgsError::FileInfoNotAllocated)?;
     let data_size = info.valid_bytes;
 
     if let Some(encryption_key) = key {
-        let _key_index = vmgs
-            .unlock_with_encryption_key(encryption_key)
+        vmgs.unlock_with_encryption_key(encryption_key)
             .await
             .map_err(|_| VmgsError::DecryptionFailed)?;
     }
@@ -298,7 +297,9 @@ async fn do_create(
         }
     }
 
-    if file_size != 0 && file_size < (VMGS_BYTES_PER_BLOCK * 4) as u64 || file_size % 512 != 0 {
+    if file_size != 0 && file_size < (VMGS_BYTES_PER_BLOCK * 4) as u64
+        || !file_size.is_multiple_of(512)
+    {
         return Err(VmgsError::InvalidFileSize);
     }
     let file_size = if file_size == 0 {
@@ -326,7 +327,7 @@ async fn do_create(
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
     if let Some(encryption_key) = key {
-        vmgs.add_new_encryption_key(encryption_key, EncryptionAlgorithm::AES_GCM)
+        vmgs.update_encryption_key(encryption_key, EncryptionAlgorithm::AES_GCM)
             .await
             .map_err(|_| VmgsError::EncryptionFailed)?;
     }
@@ -374,7 +375,7 @@ async fn do_query_size(file_path: &str, file_id: FileId) -> Result<u64, VmgsErro
 
     let info = vmgs
         .get_file_info(file_id)
-        .map_err(|_| VmgsError::FileInfoAllocated)?;
+        .map_err(|_| VmgsError::FileInfoNotAllocated)?;
 
     Ok(info.valid_bytes)
 }

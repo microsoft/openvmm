@@ -13,7 +13,7 @@ vm_resource::register_static_resolvers! {
     chipset::i8042::resolver::I8042Resolver,
     missing_dev::resolver::MissingDevResolver,
     #[cfg(feature = "tpm")]
-    tpm::resolver::TpmDeviceResolver,
+    tpm_device::resolver::TpmDeviceResolver,
     #[cfg(guest_arch = "x86_64")]
     serial_16550::resolver::Serial16550Resolver,
     #[cfg(guest_arch = "x86_64")]
@@ -24,6 +24,7 @@ vm_resource::register_static_resolvers! {
 
     // Non-volatile stores
     vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreResolver,
+    vmgs_broker::resolver::VmgsFileResolver,
 
     // Serial ports
     serial_core::disconnected::resolver::DisconnectedSerialBackendResolver,
@@ -61,6 +62,7 @@ vm_resource::register_static_resolvers! {
     // PCI devices
     gdma::resolver::GdmaDeviceResolver,
     nvme::resolver::NvmeControllerResolver,
+    nvme_test::resolver::NvmeFaultControllerResolver,
     virtio::resolver::VirtioPciResolver,
 
     // SCSI
@@ -90,7 +92,7 @@ vm_resource::register_static_resolvers! {
 
 // Workers.
 mesh_worker::register_workers! {
-    hvlite_core::VmWorker,
+    openvmm_core::VmWorker,
     vnc_worker::VncWorker<std::net::TcpListener>,
 
     #[cfg(feature = "gdb")]

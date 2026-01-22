@@ -62,15 +62,21 @@ impl SimpleFlowNode for Node {
             profile,
             recipe,
             custom_target,
-        } in igvm_files
+        } in &igvm_files
         {
             let (read_built_openvmm_hcl, built_openvmm_hcl) = ctx.new_var();
             let (read_built_openhcl_boot, built_openhcl_boot) = ctx.new_var();
             let (read_built_openhcl_igvm, built_openhcl_igvm) = ctx.new_var();
             let (read_built_sidecar, built_sidecar) = ctx.new_var();
             ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
-                custom_target,
-                profile,
+                custom_target: custom_target.clone(),
+                build_profile: *profile,
+                release_cfg: match profile {
+                    OpenvmmHclBuildProfile::Debug => false,
+                    OpenvmmHclBuildProfile::Release | OpenvmmHclBuildProfile::OpenvmmHclShip => {
+                        true
+                    }
+                },
                 recipe: recipe.clone(),
                 built_openvmm_hcl,
                 built_openhcl_boot,
@@ -121,12 +127,34 @@ impl SimpleFlowNode for Node {
         }));
 
         if let Some(sizecheck_artifact) = artifact_openhcl_verify_size_baseline {
-            did_publish.push(
-                ctx.reqv(|v| build_and_publish_openvmm_hcl_baseline::Request {
-                    artifact_dir: sizecheck_artifact,
-                    done: v,
-                }),
-            );
+            // Validate that all custom_target values are equal (or all None)
+            let mut unique_target: Option<CommonTriple> = None;
+            let mut all_same = true;
+            for params in &igvm_files {
+                match (&unique_target, &params.custom_target) {
+                    (None, Some(t)) => unique_target = Some(t.clone()),
+                    (Some(u), Some(t)) if u != t => {
+                        all_same = false;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if all_same {
+                if let Some(custom_target) = unique_target {
+                    did_publish.push(ctx.reqv(|v| {
+                        build_and_publish_openvmm_hcl_baseline::Request {
+                            target: custom_target,
+                            artifact_dir: sizecheck_artifact,
+                            done: v,
+                        }
+                    }));
+                }
+            } else {
+                return Err(anyhow::anyhow!(
+                    "All igvm_files must have the same custom_target for baseline build, but found differing targets."
+                ));
+            }
         }
 
         ctx.emit_side_effect_step(did_publish, [done]);

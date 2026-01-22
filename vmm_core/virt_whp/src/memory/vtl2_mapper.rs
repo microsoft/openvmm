@@ -60,7 +60,7 @@ pub enum MappingState {
     ///
     /// The main purpose of this mode is to help test isolated guests for local
     /// dev and CI, since VBS and SNP are not yet supported for real in any
-    /// hvlite virt implementations yet.
+    /// OpenVMM virt implementations yet.
     EmulatedIsolation {
         /// Current visibility of addresses. A page in this map is accepted.
         #[inspect(with = "inspect_helpers::inspect_range_map")]
@@ -133,7 +133,7 @@ impl VtlMemoryMapper {
         &self,
         partition: &dyn SimpleMemoryMap,
         mapping: &DeferredMapping,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         let DeferredMapping {
             process,
             data,
@@ -170,7 +170,7 @@ fn map_subset(
     writable: bool,
     exec: bool,
     allowed_ranges: impl Iterator<Item = RangeInclusive<u64>>,
-) -> Result<RangeMap<u64, ()>, virt::Error> {
+) -> anyhow::Result<RangeMap<u64, ()>> {
     let total_range_inclusive = addr..=(addr + size as u64 - 1);
     let mut unmapped_ranges: RangeMap<u64, ()> = RangeMap::new();
     unmapped_ranges.insert(total_range_inclusive, ());
@@ -227,7 +227,7 @@ impl MemoryMapper for VtlMemoryMapper {
         addr: u64,
         writable: bool,
         exec: bool,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         let mut state = self.mapping_state.lock();
         let total_range_inclusive = addr..=(addr + size as u64 - 1);
 
@@ -396,7 +396,7 @@ impl MemoryMapper for VtlMemoryMapper {
         partition: &dyn SimpleMemoryMap,
         addr: u64,
         size: u64,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         let mut state = self.mapping_state.lock();
         let mapped_ranges = match state.deref_mut() {
             MappingState::Deferred { .. } => {
@@ -418,7 +418,7 @@ impl MemoryMapper for VtlMemoryMapper {
                 //
                 // However, these calls occur during VMM teardown, so allow it
                 // for now with a log message since it requires further
-                // rearchitecting hvlite to support this correctly.
+                // rearchitecting OpenVMM to support this correctly.
                 if let Some((start, end, vis)) =
                     current_vis.get_range_entry(addr..=(addr + size - 1))
                 {
@@ -511,7 +511,7 @@ impl MemoryMapper for VtlMemoryMapper {
         }
     }
 
-    fn map_deferred(&self, partition: &dyn SimpleMemoryMap) -> Result<(), virt::Error> {
+    fn map_deferred(&self, partition: &dyn SimpleMemoryMap) -> anyhow::Result<()> {
         let mut state = self.mapping_state.lock();
         let prev_state = std::mem::replace(state.deref_mut(), MappingState::StateChanging);
 
@@ -562,7 +562,7 @@ impl MemoryMapper for VtlMemoryMapper {
         addr: u64,
         size: u64,
         access: VtlAccess,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         let mut state = self.mapping_state.lock();
 
         let mapped_ranges = match state.deref_mut() {
@@ -668,7 +668,7 @@ impl MemoryMapper for VtlMemoryMapper {
         Ok(())
     }
 
-    fn reset_mappings(&self, partition: &dyn SimpleMemoryMap) -> Result<(), virt::Error> {
+    fn reset_mappings(&self, partition: &dyn SimpleMemoryMap) -> anyhow::Result<()> {
         let mut state = self.mapping_state.lock();
         let prev_state = std::mem::replace(state.deref_mut(), MappingState::StateChanging);
 
@@ -803,7 +803,7 @@ impl MemoryMapper for VtlMemoryMapper {
         partition: &dyn SimpleMemoryMap,
         range: &MemoryRange,
         visibility: PageVisibility,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         match self.mapping_state.lock().deref_mut() {
             MappingState::Deferred { .. } | MappingState::Mapped { .. } => unimplemented!(),
             MappingState::StateChanging => unreachable!(),
@@ -889,7 +889,7 @@ impl MemoryMapper for VtlMemoryMapper {
         _partition: &dyn SimpleMemoryMap,
         range: &MemoryRange,
         visibility: PageVisibility,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         match self.mapping_state.lock().deref_mut() {
             MappingState::Deferred { .. } | MappingState::Mapped { .. } => unimplemented!(),
             MappingState::StateChanging => unreachable!(),

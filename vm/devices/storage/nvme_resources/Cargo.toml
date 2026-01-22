@@ -8,10 +8,12 @@ rust-version.workspace = true
 
 [dependencies]
 vm_resource.workspace = true
-
+nvme_spec.workspace = true
 mesh.workspace = true
-
 guid = { workspace = true, features = ["mesh"] }
+
+[dev-dependencies]
+zerocopy.workspace = true
 
 [lints]
 workspace = true

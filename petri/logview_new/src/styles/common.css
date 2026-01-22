@@ -1,0 +1,267 @@
+/* Copyright (c) Microsoft Corporation. */
+/* Licensed under the MIT License. */
+
+.common-page-display {
+  padding: 0rem 1rem;
+  /* max-width: 2500px; */
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+}
+
+.common-page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 1rem;
+  position: sticky;
+  background-color: white;
+  z-index: 997;
+  top: 0;
+  height: 3rem;
+  min-width: 56rem;
+}
+
+.common-header-filter-buttons {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.common-header-filter-btn {
+  font-size: 1rem;
+  padding: 0.45rem 1rem;
+  border: none;
+  background: #f4f4f4;
+  color: #3a3a3a;
+  cursor: pointer;
+  border-radius: 8px;
+  font-weight: 600;
+  user-select: none;
+  position: relative;
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+  align-items: center;
+}
+
+.common-header-filter-btn:hover {
+  background-color: #d2d2d2;
+  color: #222222;
+  box-shadow: none;
+}
+
+.common-header-filter-btn.active {
+  background-color: #d2d2d2;
+  color: #000000;
+  box-shadow: none;
+}
+
+.common-header-filter-btn.active:hover {
+  color: #000000;
+}
+
+/* Breadcrumb / page path link */
+.common-header-path {
+  color: #000000;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.common-header-path:hover {
+  text-decoration: underline;
+}
+
+.common-header-path-long {
+  color: #000000;
+  text-decoration: none;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 6rem;
+  flex-shrink: 2;
+  max-width: 100%;
+}
+
+.common-header-path-long:hover {
+  text-decoration: underline;
+}
+
+.common-sub-header {
+  flex-shrink: 0.3;
+  color: #888;
+  font-size: 0.6em;
+  font-weight: normal;
+  margin-left: 0.4rem;
+  line-height: 1.1;
+  padding-left: 0.4rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.common-status-cell {
+  text-align: center;
+}
+
+.common-status-pass {
+  display: inline-block;
+  width: 0.8rem;
+  height: 0.8rem;
+  background-color: #27ae60;
+  border-radius: 50%;
+}
+
+.common-status-fail {
+  display: inline-block;
+  width: 0.8rem;
+  height: 0.8rem;
+  background-color: #e74c3c;
+  border-radius: 50%;
+}
+
+.common-header-left {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  align-self: center;
+  flex-wrap: nowrap;
+  gap: 1rem;
+}
+
+.common-header-title {
+  color: #000000;
+  font-size: 1.44rem;
+  font-weight: 600;
+  vertical-align: center;
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.common-header-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.common-result-count {
+  color: #666;
+  white-space: nowrap;
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+}
+
+.common-no-data {
+  padding: 20px;
+  text-align: center;
+  font-style: italic;
+  color: #888;
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+  font-size: 1.2rem;
+  position: relative;
+}
+
+.common-search-clear-btn {
+  position: relative;
+  left: -17px;
+  top: 1px;
+  background: none;
+  border: none;
+  font-size: 1.4rem;
+  color: #888;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.common-search-input {
+  padding: 0.4rem 1rem;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 1.1rem;
+  width: 220px;
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+}
+
+.common-search-input:focus {
+  outline: none;
+  border-color: #1976d2;
+  box-shadow: 0 0 0 1px rgba(25, 118, 210, 0.1);
+}
+
+.common-table-link {
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+  color: #1976d2;
+  text-decoration: none;
+  border-radius: 4px;
+  word-break: break-word;
+}
+
+.common-table-link:hover {
+  text-decoration: underline;
+}
+
+.common-failed-count {
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+  color: #000000;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.common-total-count {
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+  color: #000000;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+/* Header loading indicator */
+.header-loading-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-left: 1rem;
+}
+
+.header-loading-spinner {
+  width: 15px;
+  height: 15px;
+  border: 3px solid #f3f3f3;
+  border-top: 3px solid #1976d2;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.header-loading-text {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #555;
+  text-wrap: nowrap;
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+}
+
+.common-architecture-name {
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+  color: #000000;
+  word-break: break-word;
+}

@@ -334,29 +334,18 @@ impl DiagServiceHandler {
 
         // HACK: A hack to fix segfault caused by glibc bug in L1 TDX VMM.
         // Should be removed after glibc update or a clean CPUID virtualization solution.
-        // Please refer to https://github.com/microsoft/HvLite/issues/872 for more information.
-        let tdx_isolated = if cfg!(guest_arch = "x86_64") {
-            // xtask-fmt allow-target-arch cpu-intrinsic
-            #[cfg(target_arch = "x86_64")]
-            {
-                let result = safe_intrinsics::cpuid(
-                    hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION,
-                    0,
-                );
-                // Value 3 means TDX.
-                (result.ebx & 0xF) == 3
+        // Please refer to https://github.com/microsoft/openvmm-deps/issues/21 for more information.
+        // xtask-fmt allow-target-arch cpu-intrinsic
+        #[cfg(target_arch = "x86_64")]
+        {
+            let result =
+                safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION, 0);
+            // Value 3 means TDX.
+            let tdx_isolated = (result.ebx & 0xF) == 3;
+            if tdx_isolated {
+                builder.env("GLIBC_TUNABLES", "glibc.cpu.x86_non_temporal_threshold=0x11a000:glibc.cpu.x86_rep_movsb_threshold=0x4000");
             }
-            // xtask-fmt allow-target-arch cpu-intrinsic
-            #[cfg(not(target_arch = "x86_64"))]
-            {
-                false
-            }
-        } else {
-            false
         };
-        if tdx_isolated {
-            builder.env("GLIBC_TUNABLES", "glibc.cpu.x86_non_temporal_threshold=0x11a000:glibc.cpu.x86_rep_movsb_threshold=0x4000");
-        }
 
         let mut stdin_relay = None;
         let mut stdout_relay = None;
@@ -533,9 +522,7 @@ impl DiagServiceHandler {
         let mut inspection = InspectionBuilder::new(&request.path)
             .depth(Some(request.depth as usize))
             .sensitivity(self.inspect_sensitivity_level)
-            .inspect(inspect::adhoc(|req| {
-                self.request_send.send(DiagRequest::Inspect(req.defer()));
-            }));
+            .inspect(inspect::send(&self.request_send, DiagRequest::Inspect));
 
         // Don't return early on cancel, as we want to return the partial
         // inspection results.
@@ -555,9 +542,7 @@ impl DiagServiceHandler {
             .sensitivity(self.inspect_sensitivity_level)
             .update(
                 &request.value,
-                inspect::adhoc(|req| {
-                    self.request_send.send(DiagRequest::Inspect(req.defer()));
-                }),
+                inspect::send(&self.request_send, DiagRequest::Inspect),
             )
             .await?;
         Ok(UpdateResponse2 { new_value })

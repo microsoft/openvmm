@@ -1,31 +1,57 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+# IMPORTANT: nextest processes this file in linear order. The
+# first override to set any setting wins. Order any overrides
+# from most-to-least specific.
+#
+# Take the following config items by example:
+#
+# [[profile.default.overrides]] # <-- override 1
+# filter = 'package(~vmm_tests)'
+# threads-required = 3
+#
+# [[profile.default.overrides]] # <-- override 2
+# filter = 'package(~vmm_tests) and test(very_heavy)'
+# threads-required = 35
+#
+# If a test is named "my_very_heavy_test", nextest will
+# apply ***threads-required = 3***, since override 1
+# is first in the file and matches.
+#
+# See:
+# https://nexte.st/docs/configuration/per-test-overrides/#override-precedence
+# https://nexte.st/docs/configuration/?h=hierar#hierarchical-configuration
+
 [[profile.default.overrides]]
+# use fuzzy-matching for the package() to allow out-of-tree tests to use the
+# same profile
+filter = 'package(~vmm_tests) and test(very_heavy)'
+# Mark very heavy tests as extra very heavy, as they include up to 32 vps.
+# However most of these vps should spend most of their time idle.
+threads-required = 32
+
+[[profile.default.overrides]]
+# use fuzzy-matching for the package() to allow out-of-tree tests to use the
+# same profile
+filter = 'package(~vmm_tests) and test(heavy) and not (test(very_heavy))'
+# Mark heavy tests as extra heavy, as they include up to 16 vps.
+# However most of these vps should spend most of their time idle.
+threads-required = 8
+
+[[profile.default.overrides]]
+# use fuzzy-matching for the package() to allow out-of-tree tests to use the
+# same profile
 filter = 'package(~vmm_tests)'
 # Mark VMM tests as heavy and requiring more threads due to their memory and CPU
 # usage. For local dev runs, you may need to manually restrict the number of
 # threads running via the -j cli arg.
-threads-required = 2
-
-[[profile.default.overrides]]
-# use fuzzy-matching for the package() to allow out-of-tree tests to use the
-# same profile
-filter = 'package(~vmm_tests) and test(openhcl)'
-# Mark OpenHCL VMM tests as extra heavy, as they have to also simulate VTL2.
-threads-required = 4
-
-[[profile.default.overrides]]
-# use fuzzy-matching for the package() to allow out-of-tree tests to use the
-# same profile
-filter = 'package(~vmm_tests) and test(heavy)'
-# Mark heavy tests as extra heavy, as they include up to 16 vps.
-threads-required = 16
+threads-required = 3
 
 # Profile for CI runs.
 [profile.ci]
-# Set the default timeout to 1 second, with tests terminated after 5 seconds
-slow-timeout = { period = "1s", terminate-after = 5 }
+# Set the default timeout to 1 second, with tests terminated after 10 seconds
+slow-timeout = { period = "1s", terminate-after = 10 }
 # Print out output for failing tests at the end of the run.
 failure-output = "final"
 # Do not cancel the test run on the first failure.
@@ -44,18 +70,6 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile
 filter = 'package(~vmm_tests)'
-# Allow VMM tests longer timeouts.
-# Important Note: Petri's watchdogs need to know this value too.
-# If you change it here then change it there!
-slow-timeout = { period = "3m", terminate-after = 2 }
-
-# TEMP (hopefully): For reasons that continue to befuddle, running Windows
-# release-mode unit tests in flowey CI is resulting in seemingly-random
-# tests occationally stalling by up to ~10 seconds.
-#
-# This did not occur in the "legacy" non-flowey CI, and so the question becomes:
-# what subtle different in execution environments between the new pipeline and
-# the old pipeline is causing this different behavior?
-[[profile.ci.overrides]]
-platform = 'cfg(windows)'
-slow-timeout = { period = "1s", terminate-after = 30 }
+# VMM tests contain their own watchdog timer, but keep an extra long timer
+# here as a backup.
+slow-timeout = { period = "10m", terminate-after = 2 }

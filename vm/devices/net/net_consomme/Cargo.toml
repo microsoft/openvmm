@@ -15,6 +15,7 @@ vm_resource.workspace = true
 
 inspect.workspace = true
 inspect_counters.workspace = true
+mesh.workspace = true
 pal_async.workspace = true
 thiserror.workspace = true
 

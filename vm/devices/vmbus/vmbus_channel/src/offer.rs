@@ -12,7 +12,6 @@ use crate::bus::OfferInput;
 use crate::bus::OfferParams;
 use crate::bus::OfferResources;
 use crate::bus::OpenRequest;
-use crate::bus::OpenResult;
 use crate::bus::ParentBus;
 use crate::gpadl::GpadlMap;
 use crate::gpadl::GpadlMapView;
@@ -71,6 +70,7 @@ impl Offer {
         let result = bus
             .add_child(OfferInput {
                 params: offer_params,
+                event: Interrupt::from_event(event.clone()),
                 request_send,
                 server_request_recv,
             })
@@ -122,23 +122,21 @@ impl Offer {
                         .store(true, Ordering::Relaxed);
                     event.signal();
                 }
-                ChannelRequest::Gpadl(rpc) => {
-                    rpc.handle_sync(|gpadl| {
-                        match MultiPagedRangeBuf::new(gpadl.count.into(), gpadl.buf) {
-                            Ok(buf) => {
-                                gpadls.add(gpadl.id, buf);
-                                true
-                            }
-                            Err(err) => {
-                                tracelimit::error_ratelimited!(
-                                    error = &err as &dyn std::error::Error,
-                                    "failed to parse gpadl"
-                                );
-                                false
-                            }
+                ChannelRequest::Gpadl(rpc) => rpc.handle_sync(|gpadl| {
+                    match MultiPagedRangeBuf::from_range_buffer(gpadl.count.into(), gpadl.buf) {
+                        Ok(buf) => {
+                            gpadls.add(gpadl.id, buf);
+                            true
                         }
-                    })
-                }
+                        Err(err) => {
+                            tracelimit::error_ratelimited!(
+                                error = &err as &dyn std::error::Error,
+                                "failed to parse gpadl"
+                            );
+                            false
+                        }
+                    }
+                }),
                 ChannelRequest::TeardownGpadl(rpc) => {
                     let (id, response_send) = rpc.split();
                     if let Some(f) = gpadls.remove(
@@ -156,10 +154,10 @@ impl Offer {
     }
 
     /// Accepts a channel open request from the guest.
-    pub async fn accept(
+    pub async fn wait_for_open(
         &mut self,
         driver: &(impl Driver + ?Sized),
-    ) -> Result<OpenChannelResources, Error> {
+    ) -> Result<OpeningChannel, Error> {
         let message = self.open_recv.next().await.ok_or(Error::Revoked)?;
 
         let (in_ring, out_ring) = make_rings(
@@ -181,16 +179,35 @@ impl Offer {
             channel,
             gpadl_map: self.gpadl_map.clone(),
         };
-        message.response.respond(Some(OpenResult {
-            guest_to_host_interrupt: self.event.clone().interrupt(),
-        }));
-        Ok(resources)
+        Ok(OpeningChannel {
+            resources,
+            response: message.response,
+        })
     }
 
     /// Revokes the channel.
     pub async fn revoke(self) {
         drop(self.open_recv);
         self.task.await;
+    }
+}
+
+/// An in-progress channel opening, returned by [`Offer::wait_for_open`].
+pub struct OpeningChannel {
+    resources: OpenChannelResources,
+    response: OpenResponse,
+}
+
+impl OpeningChannel {
+    /// Accepts the channel open request.
+    pub fn accept(self) -> OpenChannelResources {
+        self.response.respond(true);
+        self.resources
+    }
+
+    /// Rejects the channel open request.
+    pub fn reject(self) {
+        self.response.respond(false);
     }
 }
 
@@ -222,18 +239,18 @@ struct OpenMessage {
     response: OpenResponse,
 }
 
-struct OpenResponse(Option<Rpc<(), Option<OpenResult>>>);
+struct OpenResponse(Option<Rpc<(), bool>>);
 
 impl OpenResponse {
-    fn respond(mut self, result: Option<OpenResult>) {
-        self.0.take().unwrap().complete(result)
+    fn respond(mut self, open: bool) {
+        self.0.take().unwrap().complete(open)
     }
 }
 
 impl Drop for OpenResponse {
     fn drop(&mut self) {
         if let Some(rpc) = self.0.take() {
-            rpc.complete(None);
+            rpc.complete(false);
         }
     }
 }

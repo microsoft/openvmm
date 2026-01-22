@@ -3,15 +3,15 @@
 
 use crate::OpenHclServicingFlags;
 use get_resources::ged::GuestServicingFlags;
-use hvlite_defs::config::Config;
-use hvlite_defs::rpc::PulseSaveRestoreError;
-use hvlite_defs::rpc::VmRpc;
-use hvlite_defs::worker::VM_WORKER;
-use hvlite_defs::worker::VmWorkerParameters;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh_worker::WorkerHandle;
 use mesh_worker::WorkerHost;
+use openvmm_defs::config::Config;
+use openvmm_defs::rpc::PulseSaveRestoreError;
+use openvmm_defs::rpc::VmRpc;
+use openvmm_defs::worker::VM_WORKER;
+use openvmm_defs::worker::VmWorkerParameters;
 use vmm_core_defs::HaltReason;
 
 pub(crate) struct Worker {
@@ -58,28 +58,42 @@ impl Worker {
         self.rpc.call_failable(VmRpc::PulseSaveRestore, ()).await
     }
 
-    pub(crate) async fn restart_openhcl(
+    pub(crate) async fn save_openhcl(
         &self,
         send: &mesh::Sender<get_resources::ged::GuestEmulationRequest>,
         flags: OpenHclServicingFlags,
         file: std::fs::File,
     ) -> anyhow::Result<()> {
-        hvlite_helpers::underhill::service_underhill(
+        openvmm_helpers::underhill::save_underhill(
             &self.rpc,
             send,
             GuestServicingFlags {
                 nvme_keepalive: flags.enable_nvme_keepalive,
+                mana_keepalive: flags.enable_mana_keepalive,
             },
             file,
         )
         .await
     }
 
-    pub(crate) async fn inspect_all(&self) -> String {
+    pub(crate) async fn restore_openhcl(
+        &self,
+        send: &mesh::Sender<get_resources::ged::GuestEmulationRequest>,
+    ) -> anyhow::Result<()> {
+        openvmm_helpers::underhill::restore_underhill(&self.rpc, send).await
+    }
+
+    pub(crate) async fn update_command_line(&self, command_line: &str) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::UpdateCliParams, command_line.to_string())
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn inspect_all(&self) -> inspect::Node {
         let mut inspection = inspect::inspect("", &self.handle);
         inspection.resolve().await;
-        let results = inspection.results();
-        format!("{results:#}",)
+        inspection.results()
     }
 
     pub(crate) async fn shutdown(mut self) -> anyhow::Result<()> {

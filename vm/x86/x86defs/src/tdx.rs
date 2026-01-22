@@ -478,7 +478,7 @@ impl TdxContextCode {
 pub const TDX_FIELD_CODE_L2_CTLS_VM1: TdxExtendedFieldCode =
     TdxExtendedFieldCode(0xA020000300000051);
 pub const TDX_FIELD_CODE_L2_CTLS_VM2: TdxExtendedFieldCode =
-    TdxExtendedFieldCode(0xA020000300000051);
+    TdxExtendedFieldCode(0xA020000300000052);
 
 /// Extended field code for TDG.VP.WR and TDG.VP.RD
 #[bitfield(u64)]

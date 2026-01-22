@@ -40,6 +40,8 @@ vnc_worker_defs.workspace = true
 chipset.workspace = true
 chipset_device.workspace = true
 chipset_device_resources.workspace = true
+chipset_device_worker.workspace = true
+chipset_device_worker_defs.workspace = true
 closeable_mutex.workspace = true
 profiler_worker = { workspace = true, optional = true }
 chipset_legacy.workspace = true
@@ -50,6 +52,7 @@ disk_get_vmgs.workspace = true
 disk_nvme.workspace = true
 firmware_uefi.workspace = true
 firmware_uefi_custom_vars.workspace = true
+gdma_defs.workspace = true
 hyperv_ic_guest.workspace = true
 hyperv_ic_resources.workspace = true
 hyperv_secure_boot_templates.workspace = true
@@ -63,6 +66,7 @@ ide.workspace = true
 ide_resources.workspace = true
 input_core.workspace = true
 kmsg_defs.workspace = true
+kmsg_writer.workspace = true
 hcl.workspace = true
 mana_driver.workspace = true
 mcr_resources.workspace = true
@@ -82,7 +86,7 @@ storage_string.workspace = true
 storvsp.workspace = true
 storvsp_resources.workspace = true
 tpm_resources.workspace = true
-tpm = { workspace = true, features = ["tpm"] }
+tpm_device = { workspace = true, features = ["tpm"] }
 tracelimit.workspace = true
 uefi_nvram_storage.workspace = true
 uidevices_resources.workspace = true
@@ -108,6 +112,7 @@ vmbus_relay_intercept_device.workspace = true
 vmbus_serial_guest.workspace = true
 vmbus_server.workspace = true
 vpci.workspace = true
+vpci_relay.workspace = true
 watchdog_core.workspace = true
 watchdog_vmgs_format.workspace = true
 scsi_buffers.workspace = true
@@ -136,6 +141,7 @@ inspect.workspace = true
 kmsg.workspace = true
 local_clock.workspace = true
 mesh_process.workspace = true
+mesh_protobuf.workspace = true
 mesh_worker.workspace = true
 mesh.workspace = true
 mesh_tracing.workspace = true
@@ -143,6 +149,7 @@ pal_async.workspace = true
 pal_uring.workspace = true
 pal.workspace = true
 sparse_mmap.workspace = true
+string_page_buf.workspace = true
 tracing_helpers.workspace = true
 tee_call.workspace = true
 uevent.workspace = true
@@ -161,7 +168,7 @@ libc.workspace = true
 parking_lot.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_helpers.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 socket2.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 time = { workspace = true, features = ["macros"] }
@@ -174,6 +181,7 @@ firmware_pcat.workspace = true
 [dev-dependencies]
 guest_emulation_transport = { workspace = true, features = ["test_utilities"] }
 test_with_tracing.workspace = true
+nvme_spec.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

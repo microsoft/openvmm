@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+use guid::Guid;
 use inspect::Inspect;
 use mesh::MeshPayload;
 use vm_resource::Resource;
@@ -30,6 +31,10 @@ pub struct TpmDeviceHandle {
     pub guest_secret_key: Option<Vec<u8>>,
     /// Optional logger to send event to the host
     pub logger: Option<Resource<TpmLoggerKind>>,
+    /// Whether or not the TPM is in a confidential VM
+    pub is_confidential_vm: bool,
+    /// BIOS GUID (for logging purposes)
+    pub bios_guid: Guid,
 }
 
 impl ResourceId<ChipsetDeviceHandleKind> for TpmDeviceHandle {
@@ -48,13 +53,18 @@ impl ResourceKind for RequestAkCertKind {
 pub enum TpmAkCertTypeResource {
     /// No Ak cert.
     None,
-    /// Authorized AK cert that is not hardware-attested.
+    /// Authorized AK cert that is not hardware-attested. Optional bool controls
+    /// whether OpenHCL handles renewal.
     /// Used by TVM
-    Trusted(Resource<RequestAkCertKind>),
+    Trusted(Resource<RequestAkCertKind>, Option<bool>),
     /// Authorized and hardware-attested AK cert (backed by
     /// a TEE attestation report).
     /// Used by CVM
     HwAttested(Resource<RequestAkCertKind>),
+    /// Authorized and software-attested AK cert (backed by
+    /// a software-based VM attestation report).
+    /// Used by Vbs VM
+    SwAttested(Resource<RequestAkCertKind>),
 }
 
 /// The vTPM control area register layout

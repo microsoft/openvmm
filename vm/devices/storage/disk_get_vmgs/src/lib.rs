@@ -123,7 +123,7 @@ impl GetVmgsDisk {
             Err(NewGetVmgsDiskError::InvalidPhysicalSectorSize)
         } else if sector_count.checked_mul(sector_size as u64).is_none() {
             Err(NewGetVmgsDiskError::InvalidSectorCount)
-        } else if sector_count % (physical_sector_size / sector_size) as u64 != 0 {
+        } else if !sector_count.is_multiple_of((physical_sector_size / sector_size) as u64) {
             Err(NewGetVmgsDiskError::IncompletePhysicalSector)
         } else if max_transfer_size < physical_sector_size {
             Err(NewGetVmgsDiskError::InvalidMaxTransferSize)
@@ -291,7 +291,7 @@ mod tests {
     use vmgs_broker::spawn_vmgs_broker;
 
     async fn spawn_vmgs(driver: &DefaultDriver) -> (VmgsClient, TestGet, Task<()>) {
-        let get = new_transport_pair(driver, None, ProtocolVersion::NICKEL_REV2).await;
+        let get = new_transport_pair(driver, None, ProtocolVersion::NICKEL_REV2, None, None).await;
         let vmgs_get = GetVmgsDisk::new(get.client.clone()).await.unwrap();
         let vmgs = Vmgs::format_new(Disk::new(vmgs_get).unwrap(), None)
             .await
@@ -399,7 +399,7 @@ mod tests {
 
     #[async_test]
     async fn test_read_write_encryption(driver: DefaultDriver) {
-        let get = new_transport_pair(&driver, None, ProtocolVersion::NICKEL_REV2).await;
+        let get = new_transport_pair(&driver, None, ProtocolVersion::NICKEL_REV2, None, None).await;
         let vmgs_get = GetVmgsDisk::new(get.client.clone()).await.unwrap();
         let mut vmgs = Vmgs::format_new(Disk::new(vmgs_get).unwrap(), None)
             .await
@@ -407,7 +407,7 @@ mod tests {
         let file_id = FileId::BIOS_NVRAM;
         let encryption_key = vec![1; 32];
 
-        vmgs.add_new_encryption_key(&encryption_key, vmgs::EncryptionAlgorithm::AES_GCM)
+        vmgs.update_encryption_key(&encryption_key, vmgs::EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
 

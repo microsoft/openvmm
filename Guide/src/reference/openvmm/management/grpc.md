@@ -25,4 +25,4 @@ In other words: This API is _very_ WIP, and user discretion is advised.
 * ModifyResource
 * Quit
 
-[`vmservice.proto`]: https://github.com/microsoft/openvmm/blob/main/openvmm/hvlite_ttrpc_vmservice/src/vmservice.proto
+[`vmservice.proto`]: https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_ttrpc_vmservice/src/vmservice.proto

@@ -7,6 +7,7 @@ use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclKernelPackage;
+use flowey_lib_hvlite::build_openvmm_hcl::MaxTraceLevel;
 use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
 use std::path::PathBuf;
 
@@ -50,13 +51,17 @@ where
     /// into a VTL2 initrd, what `igvmfilegen` manifest is being used, etc...
     pub recipe: Recipe,
 
-    /// Build using release variants of all constituent components.
+    /// Build using release variants of all constituent binary components.
     ///
     /// Uses --profile=boot-release for openhcl_boot, --profile=openhcl-ship
-    /// when building openvmm_hcl, `--min-interactive` vtl2 initrd
-    /// configuration, `-release.json` manifest variant, etc...
+    /// when building openvmm_hcl, etc...
     #[clap(long)]
     pub release: bool,
+
+    /// Configure the IGVM file with the appropriate `-release.json`
+    /// manifest variant, and disable debug-only features.
+    #[clap(long)]
+    pub release_cfg: bool,
 
     /// pass `--verbose` to cargo
     #[clap(long)]
@@ -165,6 +170,24 @@ pub struct BuildIgvmCliCustomizations {
     /// will be built.
     #[clap(long, requires = "with_sidecar")]
     pub custom_sidecar: Option<PathBuf>,
+
+    /// The maximum trace level to set for the openvmm_hcl build. Defaults
+    /// to `trace` for debug builds and `debug` for release builds.
+    #[clap(long)]
+    pub max_trace_level: Option<MaxTraceLevelCli>,
+
+    /// (experimental) Only use local dependencies to build. Keeps flowey from
+    /// downloading any dependencies from the internet.
+    #[clap(long, requires_all = ["custom_openvmm_deps", "custom_protoc"])]
+    pub use_local_deps: bool,
+
+    /// Use a custom openvmm_deps directory.
+    #[clap(long)]
+    pub custom_openvmm_deps: Option<PathBuf>,
+
+    /// Use a custom protoc directory.
+    #[clap(long)]
+    pub custom_protoc: Option<PathBuf>,
 }
 
 #[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
@@ -177,6 +200,35 @@ pub enum KernelPackageKindCli {
     Dev,
     /// CVM kernel from the hcl-dev brnach
     CvmDev,
+}
+
+#[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
+pub enum MaxTraceLevelCli {
+    /// All trace events.
+    Trace,
+    /// Debug and higher.
+    Debug,
+    /// Info and higher.
+    Info,
+    /// Warn and higher.
+    Warn,
+    /// Error events only.
+    Error,
+    /// No tracing.
+    Off,
+}
+
+impl From<MaxTraceLevelCli> for MaxTraceLevel {
+    fn from(cli: MaxTraceLevelCli) -> Self {
+        match cli {
+            MaxTraceLevelCli::Trace => MaxTraceLevel::Trace,
+            MaxTraceLevelCli::Debug => MaxTraceLevel::Debug,
+            MaxTraceLevelCli::Info => MaxTraceLevel::Info,
+            MaxTraceLevelCli::Warn => MaxTraceLevel::Warn,
+            MaxTraceLevelCli::Error => MaxTraceLevel::Error,
+            MaxTraceLevelCli::Off => MaxTraceLevel::Off,
+        }
+    }
 }
 
 #[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
@@ -230,6 +282,7 @@ impl IntoPipeline for BuildIgvmCli {
         let Self {
             recipe,
             release,
+            release_cfg,
             verbose,
             locked,
             install_missing_deps,
@@ -253,93 +306,126 @@ impl IntoPipeline for BuildIgvmCli {
                     with_sidecar,
                     custom_sidecar,
                     mut custom_extra_rootfs,
+                    max_trace_level,
+                    custom_openvmm_deps,
+                    custom_protoc,
+                    use_local_deps: _, // Clap already validated that all required fields are present
                 },
         } = self;
 
         if with_perf_tools {
-            custom_extra_rootfs.push(
-                crate::repo_root()
-                    .join("openhcl/perftoolsfs.config")
-                    .clone(),
-            );
+            custom_extra_rootfs.push(crate::repo_root().join("openhcl/perftoolsfs.config"));
         }
 
         let mut pipeline = Pipeline::new();
 
         let (pub_out_dir, _) = pipeline.new_artifact("build-igvm");
 
-        pipeline
-            .new_job(
-                FlowPlatform::host(backend_hint),
-                FlowArch::host(backend_hint),
-                "build-igvm",
-            )
-            .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request {})
-            .dep_on(
-                |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
-                    hvlite_repo_source: openvmm_repo,
-                },
-            )
-            .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_common::Params {
-                local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
-                    interactive: true,
-                    auto_install: install_missing_deps,
-                    force_nuget_mono: false, // no oss nuget packages
-                    external_nuget_auth: false,
-                    ignore_rust_version: true,
+        // Determine the architecture from the recipe
+        let recipe_arch = match recipe {
+            OpenhclRecipeCli::X64
+            | OpenhclRecipeCli::X64Devkern
+            | OpenhclRecipeCli::X64Cvm
+            | OpenhclRecipeCli::X64CvmDevkern
+            | OpenhclRecipeCli::X64TestLinuxDirect
+            | OpenhclRecipeCli::X64TestLinuxDirectDevkern => CommonArch::X86_64,
+            OpenhclRecipeCli::Aarch64 | OpenhclRecipeCli::Aarch64Devkern => CommonArch::Aarch64,
+        };
+
+        let mut job = pipeline.new_job(
+            FlowPlatform::host(backend_hint),
+            FlowArch::host(backend_hint),
+            "build-igvm",
+        );
+
+        // Initialize cfg_versions job, this makes sure everything will be downloaded
+        // and versions are set up correctly unless overriden by other parameters.
+        job = job.dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init);
+
+        // Override openvmm_deps with a local path if specified
+        if let Some(openvmm_deps_path) = custom_openvmm_deps {
+            job = job.dep_on(move |_| {
+                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalOpenvmmDeps(
+                    recipe_arch,
+                    openvmm_deps_path,
+                )
+            });
+        }
+
+        // Override protoc with a local path if specified
+        if let Some(protoc_path) = custom_protoc {
+            job = job.dep_on(move |_| {
+                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalProtoc(protoc_path)
+            });
+        }
+
+        job.dep_on(
+            |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
+                hvlite_repo_source: openvmm_repo,
+            },
+        )
+        .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_common::Params {
+            local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
+                interactive: true,
+                auto_install: install_missing_deps,
+                force_nuget_mono: false, // no oss nuget packages
+                external_nuget_auth: false,
+                ignore_rust_version: true,
+            }),
+            verbose: ReadVar::from_static(verbose),
+            locked,
+            deny_warnings: false,
+        })
+        .dep_on(|ctx| flowey_lib_hvlite::_jobs::local_build_igvm::Params {
+            artifact_dir: ctx.publish_artifact(pub_out_dir),
+            done: ctx.new_done_handle(),
+
+            base_recipe: match recipe {
+                OpenhclRecipeCli::X64 => OpenhclIgvmRecipe::X64,
+                OpenhclRecipeCli::X64Devkern => OpenhclIgvmRecipe::X64Devkern,
+                OpenhclRecipeCli::X64TestLinuxDirect => OpenhclIgvmRecipe::X64TestLinuxDirect,
+                OpenhclRecipeCli::X64TestLinuxDirectDevkern => {
+                    OpenhclIgvmRecipe::X64TestLinuxDirectDevkern
+                }
+                OpenhclRecipeCli::X64Cvm => OpenhclIgvmRecipe::X64Cvm,
+                OpenhclRecipeCli::X64CvmDevkern => OpenhclIgvmRecipe::X64CvmDevkern,
+                OpenhclRecipeCli::Aarch64 => OpenhclIgvmRecipe::Aarch64,
+                OpenhclRecipeCli::Aarch64Devkern => OpenhclIgvmRecipe::Aarch64Devkern,
+            },
+            release,
+            release_cfg,
+
+            customizations: flowey_lib_hvlite::_jobs::local_build_igvm::Customizations {
+                build_label,
+                override_arch: override_arch.map(|a| match a {
+                    BuildIgvmArch::X86_64 => CommonArch::X86_64,
+                    BuildIgvmArch::Aarch64 => CommonArch::Aarch64,
                 }),
-                verbose: ReadVar::from_static(verbose),
-                locked,
-                deny_warnings: false,
-            })
-            .dep_on(|ctx| flowey_lib_hvlite::_jobs::local_build_igvm::Params {
-                artifact_dir: ctx.publish_artifact(pub_out_dir),
-                done: ctx.new_done_handle(),
-
-                base_recipe: match recipe {
-                    OpenhclRecipeCli::X64 => OpenhclIgvmRecipe::X64,
-                    OpenhclRecipeCli::X64Devkern => OpenhclIgvmRecipe::X64Devkern,
-                    OpenhclRecipeCli::X64TestLinuxDirect => OpenhclIgvmRecipe::X64TestLinuxDirect,
-                    OpenhclRecipeCli::X64TestLinuxDirectDevkern => {
-                        OpenhclIgvmRecipe::X64TestLinuxDirectDevkern
-                    }
-                    OpenhclRecipeCli::X64Cvm => OpenhclIgvmRecipe::X64Cvm,
-                    OpenhclRecipeCli::X64CvmDevkern => OpenhclIgvmRecipe::X64CvmDevkern,
-                    OpenhclRecipeCli::Aarch64 => OpenhclIgvmRecipe::Aarch64,
-                    OpenhclRecipeCli::Aarch64Devkern => OpenhclIgvmRecipe::Aarch64Devkern,
-                },
-                release,
-
-                customizations: flowey_lib_hvlite::_jobs::local_build_igvm::Customizations {
-                    build_label,
-                    override_arch: override_arch.map(|a| match a {
-                        BuildIgvmArch::X86_64 => CommonArch::X86_64,
-                        BuildIgvmArch::Aarch64 => CommonArch::Aarch64,
-                    }),
-                    with_perf_tools,
-                    with_debuginfo,
-                    override_kernel_pkg: override_kernel_pkg.map(|p| match p {
-                        KernelPackageKindCli::Main => OpenhclKernelPackage::Main,
-                        KernelPackageKindCli::Cvm => OpenhclKernelPackage::Cvm,
-                        KernelPackageKindCli::Dev => OpenhclKernelPackage::Dev,
-                        KernelPackageKindCli::CvmDev => OpenhclKernelPackage::CvmDev,
-                    }),
-                    with_sidecar,
-                    custom_extra_rootfs,
-                    override_openvmm_hcl_feature,
-                    custom_sidecar,
-                    override_manifest,
-                    custom_openvmm_hcl,
-                    custom_openhcl_boot,
-                    custom_uefi,
-                    custom_kernel,
-                    custom_kernel_modules,
-                    custom_vtl0_kernel,
-                    custom_layer,
-                    custom_directory,
-                },
-            })
-            .finish();
+                with_perf_tools,
+                with_debuginfo,
+                override_kernel_pkg: override_kernel_pkg.map(|p| match p {
+                    KernelPackageKindCli::Main => OpenhclKernelPackage::Main,
+                    KernelPackageKindCli::Cvm => OpenhclKernelPackage::Cvm,
+                    KernelPackageKindCli::Dev => OpenhclKernelPackage::Dev,
+                    KernelPackageKindCli::CvmDev => OpenhclKernelPackage::CvmDev,
+                }),
+                with_sidecar,
+                custom_extra_rootfs,
+                override_openvmm_hcl_feature,
+                custom_sidecar,
+                override_manifest,
+                override_max_trace_level: max_trace_level.map(Into::into),
+                custom_openvmm_hcl,
+                custom_openhcl_boot,
+                custom_uefi,
+                custom_kernel,
+                custom_kernel_modules,
+                custom_vtl0_kernel,
+                custom_layer,
+                custom_directory,
+            },
+        })
+        .finish();
 
         Ok(pipeline)
     }

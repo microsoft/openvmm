@@ -10,8 +10,7 @@ use super::Scope;
 #[cfg(minimal_rt)]
 mod entry {
     core::arch::global_asm! {
-        ".weak _DYNAMIC",
-        ".hidden _DYNAMIC",
+        ".extern _DYNAMIC",
         ".globl _start",
         "_start:",
         "mov x19, x0",

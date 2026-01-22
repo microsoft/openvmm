@@ -10,12 +10,12 @@ use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
 use super::UhEmulationState;
 use super::UhHypercallHandler;
-use super::UhRunVpError;
 use super::hardware_cvm;
 use super::vp_state;
 use super::vp_state::UhVpStateAccess;
 use crate::BackingShared;
 use crate::GuestVtl;
+use crate::IsolationType;
 use crate::TlbFlushLockAccess;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
@@ -23,6 +23,7 @@ use crate::UhPartitionInner;
 use crate::UhPartitionNewParams;
 use crate::UhProcessor;
 use crate::WakeReason;
+use crate::get_tsc_frequency;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::GuestMemory;
@@ -52,9 +53,11 @@ use inspect::InspectMut;
 use inspect_counters::Counter;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
+use thiserror::Error;
 use tlb_flush::FLUSH_GVA_LIST_SIZE;
 use tlb_flush::TdxFlushState;
 use tlb_flush::TdxPartitionFlushState;
+use virt::EmulatorMonitorSupport;
 use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -157,6 +160,18 @@ const MSR_ALLOWED_READ_WRITE: &[u32] = &[
     x86defs::X86X_IA32_MSR_XFD,
     x86defs::X86X_IA32_MSR_XFD_ERR,
 ];
+
+#[derive(Debug, Error)]
+#[error("unknown exit {0:#x?}")]
+struct UnknownVmxExit(VmxExit);
+
+#[derive(Debug, Error)]
+#[error("bad guest state on VP.ENTER")]
+struct VmxBadGuestState;
+
+#[derive(Debug, Error)]
+#[error("failed to run")]
+struct TdxRunVpError(#[source] hcl::ioctl::Error);
 
 #[derive(Debug)]
 struct TdxExit<'a>(&'a tdx_tdg_vp_enter_exit_info);
@@ -360,6 +375,133 @@ impl VirtualRegister {
     }
 }
 
+/// Interface for managing lower VTL timer deadlines via TDX L2-VM TSC Deadline
+/// Timer capability.
+///
+/// This allows VTL2 to set an execution deadline for lower VTLs, in absolute
+/// virtual TSC units. If the lower VTL is running when the deadline time
+/// arrives, it exits to VTL2 with exit reason `VmxExitBasic::TIMER_EXPIRED`.
+/// If the TSC deadline is in the past during entry into lower VTL (i.e., TSC
+/// deadline value is lower than the current virtual TSC value), it will immediately
+/// exit back to VTL2 with exit reason `VmxExitBasic::TIMER_EXPIRED`.
+///
+/// The TSC deadline is set using `TDG.VP.WR` for `TDVPS.TSC_DEADLINE[L2-VM Index]`.
+/// The actual `TDG.VP.WR` call to set the deadline is made by the `mshv_vtl` driver
+///  before entering the lower VTL.
+struct TdxTscDeadlineService {
+    // Fixed-point scale factor to convert 100ns to TSC units.
+    tsc_scale_100ns: u128,
+}
+
+impl TdxTscDeadlineService {
+    /// Convert hypervisor reference time (in 100ns) to TSC units.
+    fn ref_time_to_tsc(&self, ref_time: u64) -> u64 {
+        // Use fixed-point multiplication to calculate:
+        // tsc_ticks = (time_100ns /  10_000_000) * tsc_frequency
+        ((ref_time as u128 * self.tsc_scale_100ns) >> 64) as u64
+    }
+
+    /// Returns true if `ref_time` is before `ref_time_last`.
+    ///
+    /// Note that this uses wrapping arithmetic to handle 64-bit timestamp wraparound
+    ///  and hence this is not transitive: if `a` is before `b`, and `b` is before `c`,
+    /// `a` may still appear after `c` if they are too far apart in the circular space.
+    fn is_before(ref_time: u64, ref_time_last: u64) -> bool {
+        let delta = ref_time.wrapping_sub(ref_time_last);
+        (delta as i64) < 0
+    }
+}
+
+impl hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked> for TdxTscDeadlineService {
+    fn is_hardware_virtualized(&self) -> bool {
+        true
+    }
+
+    /// Update the virtual timer deadline in the processor's context shared with kernel.
+    /// This deadline will be set by `mshv_vtl` using
+    /// `TDG.VP.WR(TDVPS.TSC_DEADLINE[L2-VM Index])` before entering into lower VTL.
+    fn update_deadline(
+        &self,
+        vp: &mut UhProcessor<'_, TdxBacked>,
+        ref_time_now: u64,
+        ref_time_next: u64,
+    ) {
+        let vp_state = vp
+            .backing
+            .tsc_deadline_state
+            .as_mut()
+            .expect("TdxTscDeadlineService requires tsc_deadline_state");
+
+        // Update needed only if no deadline is set or the new time is earlier.
+        if vp_state
+            .deadline_100ns
+            .is_none_or(|last| Self::is_before(ref_time_next, last))
+        {
+            // Record the new reference time.
+            vp_state.deadline_100ns = Some(ref_time_next);
+
+            let state = vp.runner.tdx_l2_tsc_deadline_state_mut();
+            if vp_state
+                .last_deadline_100ns
+                .is_none_or(|last| last != ref_time_next)
+            {
+                let ref_time_from_now = ref_time_next.saturating_sub(ref_time_now);
+                let tsc_delta = self.ref_time_to_tsc(ref_time_from_now);
+                let deadline = safe_intrinsics::rdtsc().wrapping_add(tsc_delta);
+
+                state.deadline = deadline;
+                state.update_deadline = 1;
+
+                tracing::trace!(
+                    ref_time_from_now,
+                    tsc_delta,
+                    deadline,
+                    "updating deadline for TDX L2-VM TSC deadline timer"
+                );
+            } else {
+                state.update_deadline = 0;
+            }
+        }
+    }
+
+    /// Clears the virtual timer deadline in the processor context.
+    fn clear_deadline(&self, vp: &mut UhProcessor<'_, TdxBacked>) {
+        let vp_state = vp
+            .backing
+            .tsc_deadline_state
+            .as_mut()
+            .expect("TdxTscDeadlineService requires tsc_deadline_state");
+
+        vp_state.deadline_100ns = None;
+
+        let state = vp.runner.tdx_l2_tsc_deadline_state_mut();
+        state.update_deadline = 0;
+    }
+
+    /// Synchronize armed deadline state in the processor context.
+    fn sync_deadline_state(&self, vp: &mut UhProcessor<'_, TdxBacked>) {
+        let vp_state = vp
+            .backing
+            .tsc_deadline_state
+            .as_mut()
+            .expect("TdxTscDeadlineService requires tsc_deadline_state");
+
+        vp_state.last_deadline_100ns = vp_state.deadline_100ns;
+    }
+}
+
+/// Per-VP state for TDX L2-VM TSC deadline timer.
+#[derive(Inspect, Default)]
+struct TdxTscDeadline {
+    /// Next deadline to be armed (in 100ns units).
+    #[inspect(hex)]
+    deadline_100ns: Option<u64>,
+    /// Deadline (in 100ns units) armed by `mshv_vtl` driver during previous entry
+    /// into lower VTL.
+    #[inspect(hex)]
+    last_deadline_100ns: Option<u64>,
+}
+
 /// Backing for TDX partitions.
 #[derive(InspectMut)]
 pub struct TdxBacked {
@@ -376,6 +518,10 @@ pub struct TdxBacked {
 
     #[inspect(flatten)]
     cvm: UhCvmVpState,
+
+    /// Per-processor state for [`TdxTscDeadlineService`].
+    #[inspect(flatten)]
+    tsc_deadline_state: Option<TdxTscDeadline>,
 }
 
 #[derive(InspectMut)]
@@ -445,6 +591,7 @@ struct ExitStats {
     needs_interrupt_reinject: Counter,
     exception: Counter,
     descriptor_table: Counter,
+    timer_expired: Counter,
 }
 
 enum UhDirectOverlay {
@@ -500,7 +647,7 @@ impl HardwareIsolatedBacking for TdxBacked {
     }
 
     fn tlb_flush_lock_access<'a>(
-        vp_index: VpIndex,
+        vp_index: Option<VpIndex>,
         partition: &'a UhPartitionInner,
         shared: &'a Self::Shared,
     ) -> impl TlbFlushLockAccess + 'a {
@@ -730,6 +877,16 @@ impl HardwareIsolatedBacking for TdxBacked {
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         self.untrusted_synic.as_mut()
     }
+
+    fn update_deadline(this: &mut UhProcessor<'_, Self>, ref_time_now: u64, next_ref_time: u64) {
+        this.shared
+            .guest_timer
+            .update_deadline(this, ref_time_now, next_ref_time);
+    }
+
+    fn clear_deadline(this: &mut UhProcessor<'_, Self>) {
+        this.shared.guest_timer.clear_deadline(this);
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.
@@ -746,6 +903,9 @@ pub struct TdxBackedShared {
     active_vtl: Vec<AtomicU8>,
     /// CR4 bits that the guest is allowed to set to 1.
     cr4_allowed_bits: u64,
+    /// Accessor for managing lower VTL timer deadlines.
+    #[inspect(skip)]
+    guest_timer: Box<dyn hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked>>,
 }
 
 impl TdxBackedShared {
@@ -766,15 +926,38 @@ impl TdxBackedShared {
         let cr4_allowed_bits =
             (ShadowedRegister::Cr4.guest_owned_mask() | X64_CR4_MCE) & cr4_fixed1;
 
+        let cvm = params.cvm_state.unwrap();
+
+        // Configure timer interface for lower VTLs.
+        let guest_timer: Box<dyn hardware_cvm::HardwareIsolatedGuestTimer<TdxBacked>> =
+            match params.lower_vtl_timer_virt_available {
+                true => {
+                    // Use TDX L2-VM TSC deadline timer service. Calculate scale factor
+                    // for fixed-point conversion from 100ns to TSC units.
+                    let tsc_frequency = get_tsc_frequency(IsolationType::Tdx).unwrap();
+                    const NUM_100NS_IN_SEC: u128 = 10_000_000;
+                    let tsc_scale_100ns = ((tsc_frequency as u128) << 64) / NUM_100NS_IN_SEC;
+
+                    tracing::info!(CVM_ALLOWED, "enabling TDX L2-VM TSC deadline timer service");
+
+                    Box::new(TdxTscDeadlineService { tsc_scale_100ns })
+                }
+                false => {
+                    // Fall back to [`VmTime`] interface.
+                    Box::new(hardware_cvm::VmTimeGuestTimer)
+                }
+            };
+
         Ok(Self {
             untrusted_synic,
             flush_state: VtlArray::from_fn(|_| TdxPartitionFlushState::new()),
-            cvm: params.cvm_state.unwrap(),
+            cvm,
             // VPs start in VTL 2.
             active_vtl: std::iter::repeat_n(2, partition_params.topology.vp_count() as usize)
                 .map(AtomicU8::new)
                 .collect(),
             cr4_allowed_bits,
+            guest_timer,
         })
     }
 
@@ -856,20 +1039,18 @@ impl BackingPrivate for TdxBacked {
                 .into(),
         );
 
+        let controls = TdxL2Ctls::new()
+            // Configure L2 controls to permit shared memory.
+            .with_enable_shared_ept(!shared.cvm.hide_isolation)
+            // If the synic is to be managed by the hypervisor, then enable TDVMCALLs.
+            .with_enable_tdvmcall(shared.untrusted_synic.is_none() && !shared.cvm.hide_isolation);
+
+        params
+            .runner
+            .set_l2_ctls(GuestVtl::Vtl0, controls)
+            .map_err(crate::Error::FailedToSetL2Ctls)?;
+
         for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
-            let controls = TdxL2Ctls::new()
-                // Configure L2 controls to permit shared memory.
-                .with_enable_shared_ept(!shared.cvm.hide_isolation)
-                // If the synic is to be managed by the hypervisor, then enable TDVMCALLs.
-                .with_enable_tdvmcall(
-                    shared.untrusted_synic.is_none() && !shared.cvm.hide_isolation,
-                );
-
-            params
-                .runner
-                .set_l2_ctls(vtl, controls)
-                .map_err(crate::Error::FailedToSetL2Ctls)?;
-
             // Set guest/host masks for CR0 and CR4. These enable shadowing these
             // registers since TDX requires certain bits to be set at all times.
             let initial_cr0 = params
@@ -999,6 +1180,10 @@ impl BackingPrivate for TdxBacked {
                 params.vp_info,
                 UhDirectOverlay::Count as usize,
             )?,
+            tsc_deadline_state: shared
+                .guest_timer
+                .is_hardware_virtualized()
+                .then(TdxTscDeadline::default),
         })
     }
 
@@ -1093,16 +1278,12 @@ impl BackingPrivate for TdxBacked {
         this: &mut UhProcessor<'_, Self>,
         dev: &impl CpuIo,
         _stop: &mut virt::StopVp<'_>,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         this.run_vp_tdx(dev).await
     }
 
-    fn poll_apic(
-        this: &mut UhProcessor<'_, Self>,
-        vtl: GuestVtl,
-        scan_irr: bool,
-    ) -> Result<(), UhRunVpError> {
-        if !this.try_poll_apic(vtl, scan_irr)? {
+    fn poll_apic(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, scan_irr: bool) {
+        if !this.try_poll_apic(vtl, scan_irr) {
             tracing::info!(CVM_ALLOWED, "disabling APIC offload due to auto EOI");
             let page = this.runner.tdx_apic_page_mut(vtl);
             let (irr, isr) = pull_apic_offload(page);
@@ -1111,10 +1292,8 @@ impl BackingPrivate for TdxBacked {
                 .lapic
                 .disable_offload(&irr, &isr);
             this.set_apic_offload(vtl, false);
-            this.try_poll_apic(vtl, false)?;
+            this.try_poll_apic(vtl, false);
         }
-
-        Ok(())
     }
 
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {
@@ -1137,10 +1316,7 @@ impl BackingPrivate for TdxBacked {
         Some(&mut self.cvm.hv[vtl])
     }
 
-    fn handle_vp_start_enable_vtl_wake(
-        this: &mut UhProcessor<'_, Self>,
-        vtl: GuestVtl,
-    ) -> Result<(), UhRunVpError> {
+    fn handle_vp_start_enable_vtl_wake(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
         this.hcvm_handle_vp_start_enable_vtl(vtl)
     }
 
@@ -1153,7 +1329,7 @@ impl BackingPrivate for TdxBacked {
         scan_irr: VtlArray<bool, 2>,
         first_scan_irr: &mut bool,
         dev: &impl CpuIo,
-    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
+    ) -> bool {
         this.cvm_process_interrupts(scan_irr, first_scan_irr, dev)
     }
 }
@@ -1161,7 +1337,7 @@ impl BackingPrivate for TdxBacked {
 impl UhProcessor<'_, TdxBacked> {
     /// Returns `Ok(false)` if the APIC offload needs to be disabled and the
     /// poll retried.
-    fn try_poll_apic(&mut self, vtl: GuestVtl, scan_irr: bool) -> Result<bool, UhRunVpError> {
+    fn try_poll_apic(&mut self, vtl: GuestVtl, scan_irr: bool) -> bool {
         let mut scan = TdxApicScanner {
             processor_controls: self.backing.vtls[vtl]
                 .processor_controls
@@ -1172,7 +1348,7 @@ impl UhProcessor<'_, TdxBacked> {
         };
 
         // TODO TDX: filter proxy IRRs by setting the `proxy_irr_blocked` field of the run page
-        hardware_cvm::apic::poll_apic_core(&mut scan, vtl, scan_irr)?;
+        hardware_cvm::apic::poll_apic_core(&mut scan, vtl, scan_irr);
 
         let TdxApicScanner {
             vp: _,
@@ -1258,7 +1434,7 @@ impl UhProcessor<'_, TdxBacked> {
             if let Err(OffloadNotSupported) = r {
                 // APIC needs offloading to be disabled to support auto-EOI. The caller
                 // will disable offload and try again.
-                return Ok(false);
+                return false;
             }
 
             if update_rvi {
@@ -1288,7 +1464,7 @@ impl UhProcessor<'_, TdxBacked> {
             self.backing.cvm.lapics[vtl].activity = MpState::Running;
         }
 
-        Ok(true)
+        true
     }
 
     fn access_apic_without_offload<R>(
@@ -1362,7 +1538,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
         self.vp
     }
 
-    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
+    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) {
         // Exit idle when an interrupt is received, regardless of IF
         if self.vp.backing.cvm.lapics[vtl].activity == MpState::Idle {
             self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
@@ -1377,7 +1553,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
                 != INTERRUPT_TYPE_EXTERNAL
         {
             self.processor_controls.set_interrupt_window_exiting(true);
-            return Ok(());
+            return;
         }
 
         // Ensure the interrupt is not blocked by RFLAGS.IF or interrupt shadow.
@@ -1393,14 +1569,14 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
             || interruptibility.blocked_by_movss()
         {
             self.processor_controls.set_interrupt_window_exiting(true);
-            return Ok(());
+            return;
         }
 
         let priority = vector >> 4;
         let apic = self.vp.runner.tdx_apic_page(vtl);
         if (apic.tpr.value as u8 >> 4) >= priority {
             self.tpr_threshold = priority;
-            return Ok(());
+            return;
         }
 
         self.vp.backing.vtls[vtl].interruption_information = InterruptionInformation::new()
@@ -1409,10 +1585,9 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
             .with_interruption_type(INTERRUPT_TYPE_EXTERNAL);
 
         self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
-        Ok(())
     }
 
-    fn handle_nmi(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
+    fn handle_nmi(&mut self, vtl: GuestVtl) {
         // Exit idle when an interrupt is received, regardless of IF
         // TODO: Investigate lifting more activity management into poll_apic_core
         if self.vp.backing.cvm.lapics[vtl].activity == MpState::Idle {
@@ -1428,7 +1603,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
                 != INTERRUPT_TYPE_EXTERNAL
         {
             self.processor_controls.set_nmi_window_exiting(true);
-            return Ok(());
+            return;
         }
 
         let interruptibility: Interruptibility = self
@@ -1442,7 +1617,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
             || interruptibility.blocked_by_movss()
         {
             self.processor_controls.set_nmi_window_exiting(true);
-            return Ok(());
+            return;
         }
 
         self.vp.backing.vtls[vtl].interruption_information = InterruptionInformation::new()
@@ -1451,20 +1626,17 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
             .with_interruption_type(INTERRUPT_TYPE_NMI);
 
         self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
-        Ok(())
     }
 
-    fn handle_sipi(&mut self, vtl: GuestVtl, cs: SegmentRegister) -> Result<(), UhRunVpError> {
+    fn handle_sipi(&mut self, vtl: GuestVtl, cs: SegmentRegister) {
         self.vp.write_segment(vtl, TdxSegmentReg::Cs, cs).unwrap();
         self.vp.backing.vtls[vtl].private_regs.rip = 0;
         self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
-
-        Ok(())
     }
 }
 
 impl UhProcessor<'_, TdxBacked> {
-    async fn run_vp_tdx(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
+    async fn run_vp_tdx(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason> {
         let next_vtl = self.backing.cvm.exit_vtl;
 
         if self.backing.vtls[next_vtl].interruption_information.valid() {
@@ -1567,7 +1739,7 @@ impl UhProcessor<'_, TdxBacked> {
         let has_intercept = self
             .runner
             .run()
-            .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Run(e)))?;
+            .map_err(|e| dev.fatal_error(TdxRunVpError(e).into()))?;
 
         // TLB flushes can only target lower VTLs, so it is fine to use a relaxed
         // ordering here. The worst that can happen is some spurious wakes, due
@@ -1577,6 +1749,9 @@ impl UhProcessor<'_, TdxBacked> {
         let entered_from_vtl = next_vtl;
         self.runner
             .read_private_regs(&mut self.backing.vtls[entered_from_vtl].private_regs);
+
+        // Synchronize timer deadline state
+        self.shared.guest_timer.sync_deadline_state(self);
 
         // Kernel offload may have set or cleared the halt/idle states
         if offload_enabled && kernel_known_state {
@@ -1659,13 +1834,13 @@ impl UhProcessor<'_, TdxBacked> {
         &mut self,
         dev: &impl CpuIo,
         intercepted_vtl: GuestVtl,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
 
         // First, check that the VM entry was even successful.
         let vmx_exit = exit_info.code().vmx_exit();
         if vmx_exit.vm_enter_failed() {
-            return Err(self.handle_vm_enter_failed(intercepted_vtl, vmx_exit));
+            return Err(self.handle_vm_enter_failed(dev, intercepted_vtl, vmx_exit));
         }
 
         let next_interruption = exit_info.idt_vectoring_info();
@@ -2021,9 +2196,7 @@ impl UhProcessor<'_, TdxBacked> {
                     ) {
                         self.runner
                             .set_vp_register(intercepted_vtl, HvX64RegisterName::Xfem, value.into())
-                            .map_err(|err| {
-                                VpHaltReason::Hypervisor(UhRunVpError::EmulationState(err))
-                            })?;
+                            .unwrap();
                         self.advance_to_next_instruction(intercepted_vtl);
                     }
                 } else {
@@ -2184,10 +2357,12 @@ impl UhProcessor<'_, TdxBacked> {
                     .exit_stats
                     .descriptor_table
             }
+            VmxExitBasic::TIMER_EXPIRED => {
+                // Loop around to reevaluate pending interrupts.
+                &mut self.backing.vtls[intercepted_vtl].exit_stats.timer_expired
+            }
             _ => {
-                return Err(VpHaltReason::Hypervisor(UhRunVpError::UnknownVmxExit(
-                    exit_info.code().vmx_exit(),
-                )));
+                return Err(dev.fatal_error(UnknownVmxExit(exit_info.code().vmx_exit()).into()));
             }
         };
         stat.increment();
@@ -2195,7 +2370,7 @@ impl UhProcessor<'_, TdxBacked> {
         // Breakpoint exceptions may return a non-fatal error.
         // We dispatch here to correctly increment the counter.
         if cfg!(feature = "gdb") && breakpoint_debug_exception {
-            self.handle_debug_exception(intercepted_vtl)?;
+            self.handle_debug_exception(dev, intercepted_vtl)?;
         }
 
         Ok(())
@@ -2411,9 +2586,10 @@ impl UhProcessor<'_, TdxBacked> {
 
     fn handle_vm_enter_failed(
         &self,
+        dev: &impl CpuIo,
         vtl: GuestVtl,
         vmx_exit: VmxExit,
-    ) -> VpHaltReason<UhRunVpError> {
+    ) -> VpHaltReason {
         assert!(vmx_exit.vm_enter_failed());
         match vmx_exit.basic_reason() {
             VmxExitBasic::BAD_GUEST_STATE => {
@@ -2422,10 +2598,9 @@ impl UhProcessor<'_, TdxBacked> {
                 tracing::error!(CVM_ALLOWED, "VP.ENTER failed with bad guest state");
                 self.trace_processor_state(vtl);
 
-                // TODO: panic instead?
-                VpHaltReason::Hypervisor(UhRunVpError::VmxBadGuestState)
+                dev.fatal_error(VmxBadGuestState.into())
             }
-            _ => VpHaltReason::Hypervisor(UhRunVpError::UnknownVmxExit(vmx_exit)),
+            _ => dev.fatal_error(UnknownVmxExit(vmx_exit).into()),
         }
     }
 
@@ -2791,15 +2966,12 @@ impl UhProcessor<'_, TdxBacked> {
 }
 
 impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
-    type Error = UhRunVpError;
-
     fn vp_index(&self) -> VpIndex {
         self.vp.vp_index()
     }
 
-    fn flush(&mut self) -> Result<(), Self::Error> {
+    fn flush(&mut self) {
         // no cached registers are modifiable by the emulator for TDX
-        Ok(())
     }
 
     fn vendor(&self) -> x86defs::cpuid::Vendor {
@@ -2818,9 +2990,8 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         u128::from_ne_bytes(self.vp.runner.fx_state().xmm[index])
     }
 
-    fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, index: usize, v: u128) {
         self.vp.runner.fx_state_mut().xmm[index] = v.to_ne_bytes();
-        Ok(())
     }
 
     fn rip(&mut self) -> u64 {
@@ -2921,7 +3092,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         &mut self,
         _gpa: u64,
         _mode: TranslateMode,
-    ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
+    ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError> {
         // Nothing to do here, the guest memory object will handle the check.
         Ok(())
     }
@@ -2931,11 +3102,8 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         gva: u64,
         mode: TranslateMode,
     ) -> Result<
-        Result<
-            virt_support_x86emu::emulate::EmuTranslateResult,
-            virt_support_x86emu::emulate::EmuTranslateError,
-        >,
-        Self::Error,
+        virt_support_x86emu::emulate::EmuTranslateResult,
+        virt_support_x86emu::emulate::EmuTranslateError,
     > {
         emulate_translate_gva(self, gva, mode)
     }
@@ -2993,6 +3161,10 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
                 vtl: self.vtl,
             })
             .mmio_write(address, data);
+    }
+
+    fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
+        Some(self)
     }
 }
 
@@ -3186,7 +3358,7 @@ impl UhProcessor<'_, TdxBacked> {
         &mut self,
         vtl: GuestVtl,
         dev: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
         assert_eq!(
             exit_info.code().vmx_exit().basic_reason(),
@@ -3292,7 +3464,7 @@ impl UhProcessor<'_, TdxBacked> {
         &mut self,
         vtl: GuestVtl,
         dev: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
         assert_eq!(
             exit_info.code().vmx_exit().basic_reason(),
@@ -4260,7 +4432,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
 
         // Send flush IPIs to the specified VPs.
         TdxTlbLockFlushAccess {
-            vp_index: self.vp.vp_index(),
+            vp_index: Some(self.vp.vp_index()),
             partition: self.vp.partition,
             shared: self.vp.shared,
         }
@@ -4315,7 +4487,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
 
         // Send flush IPIs to the specified VPs.
         TdxTlbLockFlushAccess {
-            vp_index: self.vp.vp_index(),
+            vp_index: Some(self.vp.vp_index()),
             partition: self.vp.partition,
             shared: self.vp.shared,
         }
@@ -4390,9 +4562,7 @@ impl TdxTlbLockFlushAccess<'_> {
         std::sync::atomic::fence(Ordering::SeqCst);
         self.partition.hcl.kick_cpus(
             processors.into_iter().filter(|&vp| {
-                vp != self.vp_index.index()
-                    && self.shared.active_vtl[vp as usize].load(Ordering::Relaxed)
-                        == target_vtl as u8
+                self.shared.active_vtl[vp as usize].load(Ordering::Relaxed) == target_vtl as u8
             }),
             true,
             true,
@@ -4401,7 +4571,7 @@ impl TdxTlbLockFlushAccess<'_> {
 }
 
 struct TdxTlbLockFlushAccess<'a> {
-    vp_index: VpIndex,
+    vp_index: Option<VpIndex>,
     partition: &'a UhPartitionInner,
     shared: &'a TdxBackedShared,
 }
@@ -4429,11 +4599,13 @@ impl TlbFlushLockAccess for TdxTlbLockFlushAccess<'_> {
     }
 
     fn set_wait_for_tlb_locks(&mut self, vtl: GuestVtl) {
-        hardware_cvm::tlb_lock::TlbLockAccess {
-            vp_index: self.vp_index,
-            cvm_partition: &self.shared.cvm,
+        if let Some(vp_index) = self.vp_index {
+            hardware_cvm::tlb_lock::TlbLockAccess {
+                vp_index,
+                cvm_partition: &self.shared.cvm,
+            }
+            .set_wait_for_tlb_locks(vtl);
         }
-        .set_wait_for_tlb_locks(vtl);
     }
 }
 

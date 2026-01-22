@@ -19,6 +19,7 @@ pub use self::base_chipset::BaseChipsetDeviceInterfaces;
 pub use self::base_chipset::options;
 pub use self::chipset::Chipset;
 pub use self::chipset::ChipsetDevices;
+pub use self::chipset::DynamicDeviceUnit;
 
 // API wart: future changes should avoid exposing the `ChipsetBuilder`, and move
 // _all_ device instantiation into `vmotherboard` itself.
@@ -39,7 +40,7 @@ use vmcore::save_restore::ProtobufSaveRestore;
 /// InspectMut and SaveRestore.
 ///
 /// We don't want to put these bounds on `ChipsetDevice` directly, as that would
-/// tightly couple `ChipsetDevice` devices with HvLite-specific infrastructure,
+/// tightly couple `ChipsetDevice` devices with OpenVMM-specific infrastructure,
 /// making it difficult to share device implementations across VMMs.
 pub trait VmmChipsetDevice:
     ChipsetDevice + InspectMut + ProtobufSaveRestore + ChangeDeviceState
@@ -94,10 +95,21 @@ impl<T> BusId<T> {
 pub mod bus_kind {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub enum Pci {}
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum PcieEnumerator {}
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum PcieDownstreamPort {}
 }
 
 /// Type-safe PCI bus ID.
 pub type BusIdPci = BusId<bus_kind::Pci>;
+
+/// Type-safe ID for the internal "bus" of a PCIe root
+/// complex or switch.
+pub type BusIdPcieEnumerator = BusId<bus_kind::PcieEnumerator>;
+
+/// Type-safe ID for a downstream PCIe port.
+pub type BusIdPcieDownstreamPort = BusId<bus_kind::PcieDownstreamPort>;
 
 /// A handle to instantiate a chipset device.
 #[derive(MeshPayload, Debug)]

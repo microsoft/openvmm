@@ -6,10 +6,12 @@ use super::process_loop::msg::IgvmAttestRequestData;
 use crate::api::GuestSaveRequest;
 use crate::api::platform_settings;
 use chipset_resources::battery::HostBatteryUpdate;
+use cvm_tracing::CVM_ALLOWED;
 use get_protocol::RegisterState;
 use get_protocol::TripleFaultType;
 use guid::Guid;
 use inspect::Inspect;
+use mesh::MeshPayload;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use std::sync::Arc;
@@ -17,28 +19,30 @@ use user_driver::DmaClient;
 use vpci::bus_control::VpciBusEvent;
 use zerocopy::IntoBytes;
 
+/// Operation types for provisioning telemetry.
+#[derive(Debug)]
+enum LogOpType {
+    BeginGspCallback,
+    GspCallback,
+}
+
 /// Guest-side client for the GET.
 ///
 /// A new client is created from [`spawn_get_worker`](crate::spawn_get_worker),
 /// which initializes the GET worker and returns an instance of the client,
 /// which can then be cloned to any objects / devices that need to communicate
 /// over the GET.
-#[derive(Inspect, Debug, Clone)]
+#[derive(Inspect, Debug, Clone, MeshPayload)]
 pub struct GuestEmulationTransportClient {
     #[inspect(flatten)]
-    control: Arc<ProcessLoopControl>,
+    control: ProcessLoopControl,
     #[inspect(debug)]
+    #[mesh(encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
     version: get_protocol::ProtocolVersion,
 }
 
-#[derive(Debug)]
-struct ProcessLoopControl(mesh::Sender<msg::Msg>);
-
-impl Inspect for ProcessLoopControl {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.0.send(msg::Msg::Inspect(req.defer()));
-    }
-}
+#[derive(Debug, Inspect, Clone, MeshPayload)]
+struct ProcessLoopControl(#[inspect(flatten, send = "msg::Msg::Inspect")] mesh::Sender<msg::Msg>);
 
 impl ProcessLoopControl {
     async fn call<I, R: 'static + Send>(
@@ -78,7 +82,7 @@ impl GuestEmulationTransportClient {
         version: get_protocol::ProtocolVersion,
     ) -> GuestEmulationTransportClient {
         GuestEmulationTransportClient {
-            control: Arc::new(ProcessLoopControl(control)),
+            control: ProcessLoopControl(control),
             version,
         }
     }
@@ -110,7 +114,7 @@ impl GuestEmulationTransportClient {
                 },
             )
             .await
-            .map_err(|e| crate::error::VmgsIoError(e.status))
+            .map_err(|e| crate::error::VmgsIoError(e.0.status))
     }
 
     /// Sends a VMGS write request over the GET device
@@ -137,14 +141,14 @@ impl GuestEmulationTransportClient {
                 },
             )
             .await
-            .map_err(|e| crate::error::VmgsIoError(e.status))
+            .map_err(|e| crate::error::VmgsIoError(e.0.status))
     }
 
     /// Sends a VMGS get device info over the GET device
     pub async fn vmgs_get_device_info(
         &self,
     ) -> Result<crate::api::VmgsGetDeviceInfo, crate::error::VmgsIoError> {
-        let response = self.control.call(msg::Msg::VmgsGetDeviceInfo, ()).await;
+        let response = self.control.call(msg::Msg::VmgsGetDeviceInfo, ()).await.0;
 
         if response.status != get_protocol::VmgsIoStatus::SUCCESS {
             return Err(crate::error::VmgsIoError(response.status));
@@ -173,7 +177,7 @@ impl GuestEmulationTransportClient {
 
     /// Sends a VMGS flush request over the GET device
     pub async fn vmgs_flush(&self) -> Result<(), crate::error::VmgsIoError> {
-        let response = self.control.call(msg::Msg::VmgsFlush, ()).await;
+        let response = self.control.call(msg::Msg::VmgsFlush, ()).await.0;
 
         if response.status != get_protocol::VmgsIoStatus::SUCCESS {
             return Err(crate::error::VmgsIoError(response.status));
@@ -336,7 +340,10 @@ impl GuestEmulationTransportClient {
                 firmware_mode_is_pcat: json.v2.r#static.firmware_mode_is_pcat,
                 imc_enabled: json.v2.r#static.imc_enabled,
                 cxl_memory_enabled: json.v2.r#static.cxl_memory_enabled,
+                efi_diagnostics_log_level: json.v2.r#static.efi_diagnostics_log_level,
                 guest_state_lifetime: json.v2.r#static.guest_state_lifetime,
+                guest_state_encryption_policy: json.v2.r#static.guest_state_encryption_policy,
+                management_vtl_features: json.v2.r#static.management_vtl_features,
             },
             acpi_tables: json.v2.dynamic.acpi_tables,
         })
@@ -349,7 +356,14 @@ impl GuestEmulationTransportClient {
         gsp_extended_status: crate::api::GspExtendedStatusFlags,
     ) -> crate::api::GuestStateProtection {
         let mut buffer = [0; get_protocol::GSP_CLEARTEXT_MAX as usize * 2];
+        let start_time = std::time::SystemTime::now();
         getrandom::fill(&mut buffer).expect("rng failure");
+
+        tracing::info!(
+            CVM_ALLOWED,
+            op_type = ?LogOpType::BeginGspCallback,
+            "Getting guest state protection data"
+        );
 
         let gsp_request = get_protocol::GuestStateProtectionRequest::new(
             buffer,
@@ -359,8 +373,18 @@ impl GuestEmulationTransportClient {
 
         let response = self
             .control
-            .call(msg::Msg::GuestStateProtection, Box::new(gsp_request))
-            .await;
+            .call(msg::Msg::GuestStateProtection, Box::new(gsp_request.into()))
+            .await
+            .0;
+
+        tracing::info!(
+            CVM_ALLOWED,
+            op_type = ?LogOpType::GspCallback,
+            latency = std::time::SystemTime::now()
+                .duration_since(start_time)
+                .map_or(0, |d| d.as_millis()),
+            "Got guest state protection data"
+        );
 
         crate::api::GuestStateProtection {
             encrypted_gsp: response.encrypted_gsp,
@@ -377,7 +401,13 @@ impl GuestEmulationTransportClient {
     /// future once a central DMA API is made.
     pub fn set_gpa_allocator(&mut self, gpa_allocator: Arc<dyn DmaClient>) {
         self.control
-            .notify(msg::Msg::SetGpaAllocator(gpa_allocator));
+            .notify(msg::Msg::SetGpaAllocator(gpa_allocator.into()));
+    }
+
+    /// Set the the callback to trigger the debug interrupt.
+    pub fn set_debug_interrupt_callback(&mut self, callback: Box<dyn Fn(u8) + Send + Sync>) {
+        self.control
+            .notify(msg::Msg::SetDebugInterruptCallback(callback.into()));
     }
 
     /// Send the attestation request to the IGVM agent on the host.
@@ -444,7 +474,7 @@ impl GuestEmulationTransportClient {
     /// Not doing so may result in message loss due to the GET worker being
     /// shutdown prior to having processed all outstanding requests.
     pub fn event_log(&self, event_log_id: crate::api::EventLogId) {
-        self.control.notify(msg::Msg::EventLog(event_log_id));
+        self.control.notify(msg::Msg::EventLog(event_log_id.into()));
     }
 
     /// This async method will only resolve after all outstanding event logs
@@ -462,7 +492,7 @@ impl GuestEmulationTransportClient {
     /// the host before the OpenHCL tears down. For non-fatal event, use
     /// [`event_log`](Self::event_log).
     pub async fn event_log_fatal(&self, event_log_id: crate::api::EventLogId) {
-        self.control.notify(msg::Msg::EventLog(event_log_id));
+        self.control.notify(msg::Msg::EventLog(event_log_id.into()));
         self.control.call(msg::Msg::FlushWrites, ()).await
     }
 
@@ -470,8 +500,8 @@ impl GuestEmulationTransportClient {
     pub async fn host_time(&self) -> crate::api::Time {
         let response = self.control.call(msg::Msg::HostTime, ()).await;
         crate::api::Time {
-            utc: response.utc,
-            time_zone: response.time_zone,
+            utc: response.0.utc,
+            time_zone: response.0.time_zone,
         }
     }
 
@@ -483,7 +513,8 @@ impl GuestEmulationTransportClient {
         let response = self
             .control
             .call(msg::Msg::GuestStateProtectionById, ())
-            .await;
+            .await
+            .0;
 
         if response.seed.length > response.seed.buffer.len() as u32 {
             return Err(crate::error::GuestStateProtectionByIdError(
@@ -507,10 +538,13 @@ impl GuestEmulationTransportClient {
 
             if let Some(error_msg) = error_msg {
                 // If we sent an error to the host, Underhill expects to be
-                // terminated/halted. If this doesn't occur in 30 seconds, then
-                // surface a panic to force a guest crash.
+                // terminated/halted. If this doesn't occur in 2 minutes, then
+                // surface a panic to force a guest crash. Make sure our timeout
+                // is longer than any host-side timeouts to avoid false positives.
+                // Currently known host timeouts:
+                // Vdev/VF removal: 1 minute
                 mesh::CancelContext::new()
-                    .with_timeout(std::time::Duration::from_secs(30))
+                    .with_timeout(std::time::Duration::from_mins(2))
                     .until_cancelled(std::future::pending::<()>())
                     .await
                     .unwrap_or_else(|_| {
@@ -524,7 +558,7 @@ impl GuestEmulationTransportClient {
 
     /// Map the framebuffer
     pub async fn map_framebuffer(&self, gpa: u64) -> Result<(), crate::error::MapFramebufferError> {
-        let response = self.control.call(msg::Msg::MapFramebuffer, gpa).await;
+        let response = self.control.call(msg::Msg::MapFramebuffer, gpa).await.0;
         match response.status {
             get_protocol::MapFramebufferStatus::SUCCESS => Ok(()),
             _ => Err(crate::error::MapFramebufferError(response.status)),
@@ -533,7 +567,7 @@ impl GuestEmulationTransportClient {
 
     /// Unmap the framebuffer
     pub async fn unmap_framebuffer(&self) -> Result<(), crate::error::UnmapFramebufferError> {
-        let response = self.control.call(msg::Msg::UnmapFramebuffer, ()).await;
+        let response = self.control.call(msg::Msg::UnmapFramebuffer, ()).await.0;
         match response.status {
             get_protocol::UnmapFramebufferStatus::SUCCESS => Ok(()),
             _ => Err(crate::error::UnmapFramebufferError(response.status)),
@@ -550,11 +584,12 @@ impl GuestEmulationTransportClient {
             .call(
                 msg::Msg::VpciDeviceControl,
                 msg::VpciDeviceControlInput {
-                    code: get_protocol::VpciDeviceControlCode::OFFER,
+                    code: get_protocol::VpciDeviceControlCode::OFFER.into(),
                     bus_instance_id,
                 },
             )
-            .await;
+            .await
+            .0;
         if response.status != get_protocol::VpciDeviceControlStatus::SUCCESS {
             Err(crate::error::VpciControlError(response.status))
         } else {
@@ -572,11 +607,12 @@ impl GuestEmulationTransportClient {
             .call(
                 msg::Msg::VpciDeviceControl,
                 msg::VpciDeviceControlInput {
-                    code: get_protocol::VpciDeviceControlCode::REVOKE,
+                    code: get_protocol::VpciDeviceControlCode::REVOKE.into(),
                     bus_instance_id,
                 },
             )
-            .await;
+            .await
+            .0;
         if response.status != get_protocol::VpciDeviceControlStatus::SUCCESS {
             Err(crate::error::VpciControlError(response.status))
         } else {
@@ -599,7 +635,8 @@ impl GuestEmulationTransportClient {
                     binding_state,
                 },
             )
-            .await;
+            .await
+            .0;
         if response.status != get_protocol::VpciDeviceControlStatus::SUCCESS {
             Err(crate::error::VpciControlError(response.status))
         } else {
@@ -639,6 +676,7 @@ impl GuestEmulationTransportClient {
         self.control
             .call(msg::Msg::TakeVtl2SettingsReceiver, ())
             .await
+            .0
     }
 
     /// Take the generation id recv channel. Returns `None` if the channel has already been taken.
@@ -655,7 +693,7 @@ impl GuestEmulationTransportClient {
 
     /// Read a PCI config space value from the proxied VGA device.
     pub async fn vga_proxy_pci_read(&self, offset: u16) -> u32 {
-        let response = self.control.call(msg::Msg::VgaProxyPciRead, offset).await;
+        let response = self.control.call(msg::Msg::VgaProxyPciRead, offset).await.0;
         response.value
     }
 
@@ -687,10 +725,11 @@ impl GuestEmulationTransportClient {
                     gpa_start,
                     gpa_count,
                     gpa_offset,
-                    flags,
+                    flags: flags.into(),
                 },
             )
-            .await;
+            .await
+            .0;
         if response.status != get_protocol::CreateRamGpaRangeStatus::SUCCESS {
             Err(crate::error::CreateRamGpaRangeError(response.status))
         } else {
@@ -772,7 +811,7 @@ impl GuestEmulationTransportClient {
         parameters: [u64; get_protocol::VTL_CRASH_PARAMETERS],
     ) {
         self.control.notify(msg::Msg::VtlCrashNotification(
-            get_protocol::VtlCrashNotification::new(vp_index, last_vtl, control, parameters),
+            get_protocol::VtlCrashNotification::new(vp_index, last_vtl, control, parameters).into(),
         ));
     }
 
