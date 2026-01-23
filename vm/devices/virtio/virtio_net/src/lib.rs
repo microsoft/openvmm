@@ -82,35 +82,39 @@ struct NetworkFeaturesBank0 {
     #[bits(8)]
     _unavailable: u8,
 }
-// #[bitfield(u32)]
-// #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-// struct NetworkFeaturesBank1 {
-//     pub device_stats: bool, // VIRTIO_NET_F_DEVICE_STATS(50)
-//     pub hash_tunnel: bool,
-//     pub vq_notf_coal: bool,
-//     pub notf_coal: bool,
-//     pub guest_uso4: bool,
-//     pub guest_uso6: bool,
-//     pub host_uso: bool,
-//     pub hash_report: bool,
-//     _reserved: bool,
-//     pub guest_hdrlen: bool,
-//     pub rss: bool,
-//     pub rsc_ext: bool,
-//     pub standby: bool,
-//     pub speed_duplex: bool,
-// }
-// #[bitfield(u32)]
-// #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-// struct NetworkFeaturesBank2 {
-//     pub rss_context: bool // VIRTIO_NET_F_RSS_CONTEXT(64)
-//     pub guest_udp_tunnel_gso: bool,
-//     pub guest_udp_tunnel_gso_csum: bool,
-//     pub host_udp_tunnel_gso: bool,
-//     pub host_udp_tunnel_gso_csum: bool,
-//     pub out_net_header: bool,
-//     pub ipsec: bool,
-// }
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+struct NetworkFeaturesBank1 {
+    #[bits(18)]
+    _unused: u32,
+    pub device_stats: bool, // VIRTIO_NET_F_DEVICE_STATS(50)
+    pub hash_tunnel: bool,
+    pub vq_notf_coal: bool,
+    pub notf_coal: bool,
+    pub guest_uso4: bool,
+    pub guest_uso6: bool,
+    pub host_uso: bool,
+    pub hash_report: bool,
+    _reserved: bool,
+    pub guest_hdrlen: bool,
+    pub rss: bool,
+    pub rsc_ext: bool,
+    pub standby: bool,
+    pub speed_duplex: bool,
+}
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+struct NetworkFeaturesBank2 {
+    pub rss_context: bool, // VIRTIO_NET_F_RSS_CONTEXT(64)
+    pub guest_udp_tunnel_gso: bool,
+    pub guest_udp_tunnel_gso_csum: bool,
+    pub host_udp_tunnel_gso: bool,
+    pub host_udp_tunnel_gso_csum: bool,
+    pub out_net_header: bool,
+    pub ipsec: bool,
+    #[bits(25)]
+    _unused: u32,
+}
 
 // These correspond to VIRTIO_NET_S_ flags.
 #[bitfield(u16)]
