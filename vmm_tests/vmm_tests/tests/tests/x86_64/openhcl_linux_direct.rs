@@ -21,6 +21,7 @@ use petri::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
 use petri::vtl2_settings::Vtl2StorageControllerBuilder;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 use vmm_test_macros::openvmm_test;
+use zerocopy::FromBytes;
 
 /// Today this only tests that the nic can get an IP address via consomme's DHCP
 /// implementation.
@@ -272,12 +273,54 @@ async fn openhcl_linux_vtl2_ram_self_allocate(
     Ok(())
 }
 
-fn read_sysfs_dt<T>(agent: &PipetteClient, path: &str) -> Result<T, anyhow::Error> {
-    todo!()
+async fn read_sysfs_dt_string(agent: &PipetteClient, path: &str) -> Result<String, anyhow::Error> {
+    agent
+        .unix_shell()
+        .read_file(format!("/sys/firmware/devicetree/base/{}", path))
+        .await
 }
 
-fn parse_vmbus_mmio(agent: &PipetteClient, path: &str) -> Result<Vec<MemoryRange>, anyhow::Error> {
-    todo!()
+async fn read_sysfs_dt_raw(agent: &PipetteClient, path: &str) -> Result<Vec<u8>, anyhow::Error> {
+    agent
+        .unix_shell()
+        .read_file_raw(format!("/sys/firmware/devicetree/base/{}", path))
+        .await
+}
+
+async fn read_sysfs_dt<T: FromBytes>(
+    agent: &PipetteClient,
+    path: &str,
+) -> Result<T, anyhow::Error> {
+    let raw = read_sysfs_dt_raw(agent, path).await?;
+    T::read_from_bytes(&raw).map_err(|_| {
+        anyhow::anyhow!(
+            "failed to read value of type {} from sysfs dt path {}",
+            std::any::type_name::<T>(),
+            path
+        )
+    })
+}
+
+async fn parse_vmbus_mmio(
+    agent: &PipetteClient,
+    path: &str,
+) -> Result<Vec<MemoryRange>, anyhow::Error> {
+    // Read the raw ranges which are u64 (start, start, len) tuples.
+    let raw = read_sysfs_dt_raw(agent, format!("{}/ranges", path).as_str()).await?;
+    let mut mmio_ranges = Vec::new();
+    let raw_u64 = <[u64]>::ref_from_bytes_with_elems(&raw, raw.len() / 8).map_err(|_| {
+        anyhow::anyhow!(
+            "failed to read mmio ranges from sysfs dt path {}/ranges",
+            path
+        )
+    })?;
+    for chunk in raw_u64.chunks_exact(3) {
+        let start = chunk[0];
+        let end = start + chunk[2];
+        mmio_ranges.push(MemoryRange::new(start..end));
+    }
+
+    Ok(mmio_ranges)
 }
 
 /// Test VTL2 memory allocation mode, and validate that VTL0 saw the correct
@@ -306,10 +349,10 @@ async fn openhcl_linux_vtl2_mmio_self_allocate(
     // VTL0 mmio ranges are as expected, along with the allocated mmio size
     // being 128 MB.
     let memory_allocation_mode: String =
-        read_sysfs_dt(&vtl2_agent, "openhcl/memory-allocation-mode")?;
+        read_sysfs_dt_string(&vtl2_agent, "openhcl/memory-allocation-mode").await?;
     assert_eq!(memory_allocation_mode, "vtl2");
 
-    let mmio_size: u64 = read_sysfs_dt(&vtl2_agent, "openhcl/mmio-size")?;
+    let mmio_size: u64 = read_sysfs_dt(&vtl2_agent, "openhcl/mmio-size").await?;
     // NOTE: This value is hardcoded in openvmm today to report this to the
     // guest provided device tree.
     const EXPECTED_MMIO_SIZE: u64 = 128 * 1024 * 1024;
@@ -317,13 +360,13 @@ async fn openhcl_linux_vtl2_mmio_self_allocate(
 
     // Read the bootloader provided dt via sysfs to verify the VTL0 and VTL2
     // mmio ranges are as expected.
-    let vtl2_mmio = parse_vmbus_mmio(&agent, "bus/vmbus")?;
+    let vtl2_mmio = parse_vmbus_mmio(&agent, "bus/vmbus").await?;
     assert_eq!(vtl2_mmio, expected_mmio_ranges[2..]);
-    let vtl0_mmio = parse_vmbus_mmio(&vtl2_agent, "bus/vmbus")?;
+    let vtl0_mmio = parse_vmbus_mmio(&vtl2_agent, "bus/vmbus").await?;
     assert_eq!(vtl0_mmio, expected_mmio_ranges[..2]);
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
 
-    todo!()
+    Ok(())
 }
