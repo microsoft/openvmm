@@ -414,7 +414,7 @@ async fn _servicing_keepalive_with_missed_get_log_page(
         .with_timeout(Duration::from_secs(30))
         .until_cancelled(identify_verify_recv)
         .await
-        .expect("IDENTIFY command was observed within 30 seconds of vm restore after servicing with namespace change")
+        .expect("IDENTIFY command was NOT observed within 30 seconds of vm restore after servicing with namespace change")
         .expect("IDENTIFY verification completed");
 
     fault_start_updater.set(false).await;
