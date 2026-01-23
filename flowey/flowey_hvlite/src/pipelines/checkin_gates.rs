@@ -1057,7 +1057,7 @@ impl IntoPipeline for CheckinGatesCli {
             // required by the servicing tests. For now, we will exclude servicing tests from running
             // in the internal mirror.
             if !matches!(backend_hint, PipelineBackendHint::Ado) {
-                filter.push_str("+ test(servicing)");
+                filter.push_str(" + test(servicing)");
             }
             filter
         };

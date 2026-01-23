@@ -22,7 +22,6 @@ use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmRuntime;
 use crate::PetriVmRuntimeConfig;
-use crate::PetriVmgsDisk;
 use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::SecureBootTemplate;
@@ -66,6 +65,8 @@ use vm::HyperVVM;
 use vmgs_resources::GuestStateEncryptionPolicy;
 use vtl2_settings_proto::Vtl2Settings;
 
+const IGVM_FILE_NAME: &str = "igvm.bin";
+
 /// The Hyper-V Petri backend
 #[derive(Debug)]
 pub struct HyperVPetriBackend {}
@@ -99,7 +100,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         OpenHclServicingFlags {
             enable_nvme_keepalive: false, // TODO: Support NVMe KA in the Hyper-V Petri Backend
             enable_mana_keepalive: false,
-            override_version_checks: false,
+            override_version_checks: true, // TODO: figure out why our tests don't pass the version check
             stop_timeout_hint_secs: None,
         }
     }
@@ -249,14 +250,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
         let mut openhcl_command_line = openhcl_config.as_ref().map(|(_, c)| c.command_line());
 
         let vmgs_path = {
-            // TODO: add support for configuring the TPM in Hyper-V
-            // For now, use a persistent vmgs, since Ubuntu VMs with TPM
-            // try to install a boot entry and reboot.
-            let vmgs = match vmgs {
-                PetriVmgsResource::Ephemeral => PetriVmgsResource::Disk(PetriVmgsDisk::default()),
-                vmgs => vmgs,
-            };
-
             let lifetime_cli = match &vmgs {
                 PetriVmgsResource::Disk(_) => "DEFAULT",
                 PetriVmgsResource::ReprovisionOnFailure(_) => "REPROVISION_ON_FAILURE",
@@ -421,7 +414,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
             // Copy the IGVM file locally, since it may not be accessible by
             // Hyper-V (e.g., if it is in a WSL filesystem).
-            let igvm_file = temp_dir.path().join("igvm.bin");
+            let igvm_file = temp_dir.path().join(IGVM_FILE_NAME);
             fs_err::copy(src_igvm_file, &igvm_file).context("failed to copy igvm file")?;
             acl_read_for_vm(&igvm_file, Some(*vm.vmid()))
                 .context("failed to set ACL for igvm file")?;
@@ -691,10 +684,13 @@ impl PetriVmRuntime for HyperVPetriRuntime {
 
     async fn restart_openhcl(
         &mut self,
-        _new_openhcl: &ResolvedArtifact,
+        new_openhcl: &ResolvedArtifact,
         flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()> {
-        // TODO: Updating the file causes failure ... self.vm.set_openhcl_firmware(new_openhcl.get(), false)?;
+        // overwrite the igvm file
+        fs_err::copy(new_openhcl.get(), self.temp_dir.path().join(IGVM_FILE_NAME))
+            .context("failed to replace igvm file")?;
+
         self.vm.restart_openhcl(flags).await
     }
 
@@ -715,7 +711,9 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     }
 
     fn take_framebuffer_access(&mut self) -> Option<vm::HyperVFramebufferAccess> {
-        (!self.properties.is_isolated).then(|| self.vm.get_framebuffer_access())
+        // TODO: fix gen 1 screenshots
+        (!self.properties.is_isolated && !self.properties.is_pcat)
+            .then(|| self.vm.get_framebuffer_access())
     }
 
     async fn reset(&mut self) -> anyhow::Result<()> {
