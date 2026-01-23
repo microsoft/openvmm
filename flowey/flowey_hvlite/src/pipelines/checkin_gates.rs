@@ -1004,31 +1004,25 @@ impl IntoPipeline for CheckinGatesCli {
             needs_prep_run: bool,
         }
 
-        let standard_filter = {
-            // Standard VM-based CI machines should be able to run all tests except
-            // those that require special hardware features (tdx/snp) or need to be
-            // run on a baremetal host (hyper-v vbs doesn't seem to work nested).
-            //
-            // Run "very_heavy" tests that require lots of VPs on the self-hosted
-            // CVM runners that have more cores.
-            //
-            // Even though OpenVMM + VBS + Windows tests can run on standard CI
-            // machines, we exclude them here to avoid needing to run prep_steps
-            // on non-self-hosted runners. This saves several minutes of CI time
-            // that would be used for very few tests. We need to run prep_steps
-            // on CVM runners anyways, so we might as well run those tests there.
-            //
-            // Our standard runners need to be updated to support Hyper-V OpenHCL
-            // PCAT, so run those tests on the CVM runners for now.
-            let mut filter = "all() & !test(very_heavy) & !test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs) & !test(hyperv_openhcl_pcat)".to_string();
-            // Currently, we don't have a good way for ADO runners to authenticate in GitHub
-            // (that don't involve PATs) which is a requirement to download GH Workflow Artifacts
-            // required by the servicing tests. For now, we will exclude servicing tests from running
+        // Standard VM-based CI machines should be able to run all tests except
+        // those that require special hardware features (tdx/snp) or need to be
+        // run on a baremetal host (hyper-v vbs doesn't seem to work nested).
+        //
+        // Run "very_heavy" tests that require lots of VPs on the self-hosted
+        // CVM runners that have more cores.
+        //
+        // Even though OpenVMM + VBS + Windows tests can run on standard CI
+        // machines, we exclude them here to avoid needing to run prep_steps
+        // on non-self-hosted runners. This saves several minutes of CI time
+        // that would be used for very few tests. We need to run prep_steps
+        // on CVM runners anyways, so we might as well run those tests there.
+        let standard_filter = match backend_hint {
+            PipelineBackendHint::Github | PipelineBackendHint::Local => "all() & !test(very_heavy) & !test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)".to_string(),
+            // Currently, we don't have a good way for ADO runners to authenticate in GitHub 
+            // (that don't involve PATs) which is a requirement to download GH Workflow Artifacts 
+            // required by the servicing tests. For now, we will exclude servicing tests from running 
             // in the internal mirror.
-            if matches!(backend_hint, PipelineBackendHint::Ado) {
-                filter.push_str(" & !test(servicing)");
-            }
-            filter
+            PipelineBackendHint::Ado => "all() & !test(very_heavy) & !test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs) & !test(servicing)".to_string(),
         };
 
         let standard_x64_test_artifacts = vec![
@@ -1044,11 +1038,10 @@ impl IntoPipeline for CheckinGatesCli {
 
         let cvm_filter = |arch| {
             format!(
-                "test({arch}) + (test(vbs) & test(hyperv)) + test(very_heavy) + test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs) + test(hyperv_openhcl_pcat)"
+                "test({arch}) + (test(vbs) & test(hyperv)) + test(very_heavy) + test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)"
             )
         };
         let cvm_x64_test_artifacts = vec![
-            KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
             KnownTestArtifacts::Ubuntu2504ServerX64Vhd,

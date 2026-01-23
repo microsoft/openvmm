@@ -94,7 +94,6 @@ pub fn build_vtl2_storage_backing_physical_devices(
 /// these requirements.)
 #[derive(Debug, PartialEq, Eq)]
 pub struct Vtl2LunBuilder {
-    channel: Option<u32>,
     location: u32,
     device_id: Guid,
     vendor_id: String,
@@ -112,7 +111,6 @@ impl Vtl2LunBuilder {
     /// opposed to NOT a DVD.
     pub fn disk() -> Self {
         Self {
-            channel: None,
             location: 0,
             device_id: Guid::new_random(),
             vendor_id: "OpenVMM".to_string(),
@@ -133,12 +131,6 @@ impl Vtl2LunBuilder {
         s.is_dvd = true;
         s.product_id = "DVD".to_string();
         s
-    }
-
-    /// Guest visible IDE controller number
-    pub fn with_channel(mut self, channel: u32) -> Self {
-        self.channel = Some(channel);
-        self
     }
 
     /// Guest visible location of the device (aka a guest "LUN")
@@ -174,7 +166,6 @@ impl Vtl2LunBuilder {
     /// Builds the LUN into the protobuf type used by VTL2 settings.
     pub fn build(self) -> vtl2_settings_proto::Lun {
         vtl2_settings_proto::Lun {
-            channel: self.channel,
             location: self.location,
             device_id: self.device_id.to_string(),
             vendor_id: self.vendor_id,
@@ -205,13 +196,12 @@ pub struct Vtl2StorageControllerBuilder {
 }
 
 impl Vtl2StorageControllerBuilder {
-    /// Creates a new storage controller builder with default values
-    /// (arbitrary `instance_id` and no disks) and the specified guest-visible
-    /// controller type.
-    pub fn new(protocol: ControllerType) -> Self {
+    /// Creates a new storage controller builder with default values (a SCSI
+    /// controller, with arbitrary `instance_id` and no disks).
+    pub fn scsi() -> Self {
         Self {
             instance_id: Guid::new_random(),
-            protocol,
+            protocol: ControllerType::Scsi,
             luns: Vec::new(),
             io_queue_depth: None,
         }
@@ -220,6 +210,12 @@ impl Vtl2StorageControllerBuilder {
     /// Set the guest-visible instance GUID.
     pub fn with_instance_id(mut self, instance_id: Guid) -> Self {
         self.instance_id = instance_id;
+        self
+    }
+
+    /// Change the guest-visible protocol.
+    pub fn with_protocol(mut self, protocol: ControllerType) -> Self {
+        self.protocol = protocol;
         self
     }
 

@@ -22,6 +22,7 @@ use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use vm_resource::IntoResource;
 use vmotherboard::ChipsetDeviceHandle;
+use vtl2_settings_proto::Vtl2Settings;
 
 impl PetriVmConfigOpenVmm {
     /// Enable the VTL0 alias map.
@@ -38,7 +39,7 @@ impl PetriVmConfigOpenVmm {
 
     /// Enable the battery for the VM.
     pub fn with_battery(mut self) -> Self {
-        if self.resources.properties.is_openhcl {
+        if self.firmware.is_openhcl() {
             self.ged.as_mut().unwrap().enable_battery = true;
         } else {
             self.config.chipset_devices.push(ChipsetDeviceHandle {
@@ -61,7 +62,7 @@ impl PetriVmConfigOpenVmm {
 
     /// Set test config for the GED's IGVM attest request handler
     pub fn with_igvm_attest_test_config(mut self, config: IgvmAttestTestConfig) -> Self {
-        if !self.resources.properties.is_openhcl {
+        if !self.firmware.is_openhcl() {
             panic!("IGVM Attest test config is only supported for OpenHCL.")
         };
 
@@ -78,7 +79,7 @@ impl PetriVmConfigOpenVmm {
     pub fn with_nic(mut self) -> Self {
         let endpoint =
             net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
-        if let Some(vtl2_settings) = self.runtime_config.vtl2_settings.as_mut() {
+        if self.resources.vtl2_settings.is_some() {
             self.config.vpci_devices.push(VpciDeviceConfig {
                 vtl: DeviceVtl::Vtl2,
                 instance_id: MANA_INSTANCE,
@@ -91,13 +92,19 @@ impl PetriVmConfigOpenVmm {
                 .into_resource(),
             });
 
-            vtl2_settings.dynamic.as_mut().unwrap().nic_devices.push(
-                vtl2_settings_proto::NicDeviceLegacy {
+            self.resources
+                .vtl2_settings
+                .as_mut()
+                .unwrap()
+                .dynamic
+                .as_mut()
+                .unwrap()
+                .nic_devices
+                .push(vtl2_settings_proto::NicDeviceLegacy {
                     instance_id: MANA_INSTANCE.to_string(),
                     subordinate_instance_id: None,
                     max_sub_channels: None,
-                },
-            );
+                });
         } else {
             const NETVSP_INSTANCE: guid::Guid = guid::guid!("c6c46cc3-9302-4344-b206-aef65e5bd0a2");
             self.config.vmbus_devices.push((
@@ -112,6 +119,18 @@ impl PetriVmConfigOpenVmm {
             ));
         }
 
+        self
+    }
+
+    /// Add custom VTL 2 settings.
+    // TODO: At some point we want to replace uses of this with nicer with_disk,
+    // with_nic, etc. methods.
+    pub fn with_custom_vtl2_settings(mut self, f: impl FnOnce(&mut Vtl2Settings)) -> Self {
+        f(self
+            .resources
+            .vtl2_settings
+            .as_mut()
+            .expect("Custom VTL 2 settings are only supported with OpenHCL."));
         self
     }
 

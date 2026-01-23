@@ -19,19 +19,10 @@ use std::ops::Range;
 use std::path::Path;
 
 /// The description and artifacts needed to build a pipette disk image for a VM.
-#[derive(Debug)]
 pub struct AgentImage {
     os_flavor: OsFlavor,
     pipette: Option<ResolvedArtifact>,
     extras: Vec<(String, ResolvedArtifact)>,
-}
-
-/// Disk image type
-pub enum ImageType {
-    /// Raw image
-    Raw,
-    /// Fixed VHD1
-    Vhd,
 }
 
 impl AgentImage {
@@ -86,7 +77,7 @@ impl AgentImage {
 
     /// Builds a disk image containing pipette and any files needed for the guest VM
     /// to run pipette.
-    pub fn build(&self, image_type: ImageType) -> anyhow::Result<Option<tempfile::NamedTempFile>> {
+    pub fn build(&self) -> anyhow::Result<Option<tempfile::NamedTempFile>> {
         let mut files = self
             .extras
             .iter()
@@ -138,23 +129,12 @@ impl AgentImage {
         if files.is_empty() {
             Ok(None)
         } else {
-            let mut image_file = match image_type {
-                ImageType::Raw => tempfile::NamedTempFile::new()?,
-                ImageType::Vhd => tempfile::Builder::new().suffix(".vhd").tempfile()?,
-            };
-
+            let mut image_file = tempfile::NamedTempFile::new()?;
             image_file
                 .as_file()
                 .set_len(64 * 1024 * 1024)
                 .context("failed to set file size")?;
-
             build_fat32_disk_image(&mut image_file, "CIDATA", volume_label, &files)?;
-
-            if matches!(image_type, ImageType::Vhd) {
-                disk_vhd1::Vhd1Disk::make_fixed(image_file.as_file())
-                    .context("failed to make vhd for agent image")?;
-            }
-
             Ok(Some(image_file))
         }
     }
