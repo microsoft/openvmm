@@ -361,6 +361,8 @@ async fn servicing_keepalive_with_namespace_update(
     Ok(())
 }
 
+/// Verifies behavior when a GET_LOG_PAGE command is delayed during servicing, simulating a
+/// scenario where an AER could be missed after OpenHCL restart.
 // #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn _servicing_keepalive_with_missed_get_log_page(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
