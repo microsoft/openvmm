@@ -861,8 +861,8 @@ mod tests {
         // padding: u32 = 0
 
         // Name: 256 'a' characters (0x61) starting at byte 40
-        for i in 40..296 {
-            data[i] = 0x61; // 'a'
+        for item in data.iter_mut().take(296).skip(40) {
+            *item = 0x61; // 'a'
         }
         // Null terminator at byte 296
         data[296] = 0x00;
