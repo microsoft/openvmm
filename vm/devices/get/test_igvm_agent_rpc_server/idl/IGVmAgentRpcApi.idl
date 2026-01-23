@@ -1,0 +1,87 @@
+/*++
+
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+
+Abstract:
+
+    IGVM Agent RPC Interface Definition File.
+
+--*/
+
+cpp_quote("static WCHAR IGVM_AGENT_RPC_ENDPOINT[] = L\"IGVM_AGENT_RPC_SERVER\";")
+
+import "oaidl.idl";
+import "ocidl.idl";
+
+[
+    uuid(4f92949d-e1b6-468d-b6ba-731b591edccf),
+    version(1.0),
+    pointer_default(unique)
+]
+interface IGVmAgentRpcApi
+{
+    const UINT32 GspMaxClearSize = 64;
+    const UINT32 GspMaxCipherSize = 512;
+    const UINT32 GspMaxCount = 2;
+    const UINT32 StatusFlagNoError = 0x0;
+    const UINT32 StatusFlagStateRefreshRequest = 0x1;
+    const UINT32 StatusFlagSupportsAgentRequired = 0x2;
+
+    typedef struct
+    {
+        UINT32 Length;
+        BYTE   Buffer[GspMaxClearSize];
+    } GspClear;
+
+    typedef struct
+    {
+        UINT32 Length;
+        BYTE   Buffer[GspMaxCipherSize];
+    } GspCipher;
+
+    typedef struct
+    {
+        GspClear  NewGsp;
+        GspCipher EncryptedGsp[GspMaxCount];
+        UINT32    SupportedStatusFlags;
+    } GspRequestInfo;
+
+    typedef struct
+    {
+        GspCipher EncryptedGsp;
+        GspClear  DecryptedGsp[GspMaxCount];
+        UINT32    ResponseStatusFlags;
+    } GspResponseInfo;
+
+    HRESULT
+    RpcIGVmAttest(
+        [in]    handle_t                    BindingHandle,
+        [in]    GUID                        VmId,
+        [in]    GUID                        RequestId,
+        [in,  ref, string]
+                LPCWSTR                     VmName,
+        [in, range(0, 2048)]
+                UINT32                      AgentDataSize,
+        [in,  ref, size_is(AgentDataSize)]
+                BYTE*                       AgentData,
+                UINT32                      ReportSize,
+        [in,  ref, size_is(ReportSize)]
+                BYTE*                       Report,
+        [in, range(0, 65536)]
+                UINT32                      ResponseBufferSize,
+        [out]   UINT32*                     ResponseWrittenSize,
+        [out, ref, size_is(ResponseBufferSize), length_is(*ResponseWrittenSize)]
+                BYTE*                       Response
+        );
+
+    HRESULT
+    RpcVmGspRequest(
+        [in]    handle_t                BindingHandle,
+        [in]    GUID                    VmId,
+        [in,  ref, string]
+                LPCWSTR                 VmName,
+        [in]    GspRequestInfo*         RequestData,
+        [out]   GspResponseInfo*        ResponseData
+        );
+}

@@ -61,6 +61,7 @@ fuse_operations! {
     FUSE_SETUPMAPPING SetupMapping arg:fuse_setupmapping_in;
     FUSE_REMOVEMAPPING RemoveMapping arg:fuse_removemapping_in mappings:[u8];
     FUSE_SYNCFS SyncFs _arg:fuse_syncfs_in;
+    FUSE_STATX StatX arg:fuse_statx_in;
     FUSE_CANONICAL_PATH CanonicalPath;
 }
 
@@ -75,7 +76,6 @@ impl Request {
     pub fn new(mut reader: impl RequestReader) -> lx::Result<Self> {
         let header: fuse_in_header = reader.read_type()?;
         let operation = Self::read_operation(&header, reader);
-
         Ok(Self { header, operation })
     }
 
@@ -136,7 +136,6 @@ impl Request {
                 len = reader.remaining_len() + size_of_val(header),
                 "Invalid message length",
             );
-
             return FuseOperation::Invalid;
         }
 
@@ -149,7 +148,6 @@ impl Request {
                     error = &e as &dyn std::error::Error,
                     "Invalid message payload",
                 );
-
                 FuseOperation::Invalid
             }
         }
@@ -247,6 +245,34 @@ pub(crate) mod tests {
         if let FuseOperation::GetAttr { arg } = request.operation {
             assert_eq!(arg.fh, 0);
             assert_eq!(arg.getattr_flags, 0);
+        } else {
+            panic!("Incorrect operation {:?}", request.operation);
+        }
+    }
+
+    #[test]
+    fn parse_statx() {
+        let request = Request::new(FUSE_STATX_REQUEST).unwrap();
+        check_header(&request, 2, FUSE_STATX, 1);
+        if let FuseOperation::StatX { arg } = request.operation {
+            assert_eq!(arg.fh, 0);
+            assert_eq!(arg.getattr_flags, 0);
+            let mask = lx::StatExMask::new()
+                .with_file_type(true)
+                .with_mode(true)
+                .with_nlink(true)
+                .with_uid(true)
+                .with_gid(true)
+                .with_atime(true)
+                .with_mtime(true)
+                .with_ctime(true)
+                .with_ino(true)
+                .with_size(true)
+                .with_blocks(true)
+                .with_btime(true);
+            assert_eq!(arg.mask, mask.into_bits());
+            let flags = StatxFlags::new().with_dont_sync(true);
+            assert_eq!(arg.flags.into_bits(), flags.into_bits());
         } else {
             panic!("Incorrect operation {:?}", request.operation);
         }
@@ -428,5 +454,11 @@ pub(crate) mod tests {
         64, 0, 0, 0, 29, 0, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 136, 1, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0,
+    ];
+
+    const FUSE_STATX_REQUEST: &[u8] = &[
+        64, 0, 0, 0, 52, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 203, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0,
+        0, 255, 15, 0, 0,
     ];
 }

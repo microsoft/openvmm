@@ -803,6 +803,7 @@ dependencies = [
  "inspect_counters",
  "libc",
  "pal_async",
+ "parking_lot",
  "resolv-conf",
  "smoltcp",
  "socket2",
@@ -2068,6 +2069,7 @@ checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 name = "fuse"
 version = "0.0.0"
 dependencies = [
+ "bitfield-struct 0.11.0",
  "libc",
  "lx",
  "parking_lot",
@@ -2656,7 +2658,6 @@ name = "guest_emulation_device"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
  "disk_backend",
  "disklayer_ram",
  "futures",
@@ -2667,15 +2668,13 @@ dependencies = [
  "inspect",
  "jiff",
  "mesh",
- "openhcl_attestation_protocol",
  "pal_async",
  "parking_lot",
  "power_resources",
- "rsa",
  "scsi_buffers",
  "serde_json",
- "sha2",
  "task_control",
+ "test_igvm_agent_lib",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -3820,7 +3819,10 @@ dependencies = [
 name = "lx"
 version = "0.0.0"
 dependencies = [
+ "bitfield-struct 0.11.0",
+ "static_assertions",
  "thiserror 2.0.16",
+ "zerocopy 0.8.27",
 ]
 
 [[package]]
@@ -4547,11 +4549,10 @@ dependencies = [
 
 [[package]]
 name = "num-bigint-dig"
-version = "0.8.4"
+version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc84195820f291c7697304f3cbdadd1cb7199c0efc917ff5eafd71225c136151"
+checksum = "e661dda6640fad38e827a6d4a310ff4763082116fe217f279885c97f511bb0b7"
 dependencies = [
- "byteorder",
  "lazy_static",
  "libm",
  "num-integer",
@@ -4881,6 +4882,7 @@ dependencies = [
  "hvdef",
  "igvm_defs",
  "loader_defs",
+ "log",
  "memory_range",
  "mesh_protobuf",
  "minimal_rt",
@@ -6261,9 +6263,9 @@ dependencies = [
 
 [[package]]
 name = "rsa"
-version = "0.9.8"
+version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78928ac1ed176a5ca1d17e578a1825f3d81ca54cf41053a592584b020cfd691b"
+checksum = "b8573f03f5883dcaebdfcf4725caa1ecb9c15b2ef50c43a07b816e06799bb12d"
 dependencies = [
  "const-oid",
  "digest",
@@ -7249,6 +7251,40 @@ checksum = "60b8cb979cb11c32ce1603f8137b22262a9d131aaa5c37b5678025f22b8becd0"
 dependencies = [
  "rustix 1.0.8",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "test_igvm_agent_lib"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "get_resources",
+ "inspect",
+ "openhcl_attestation_protocol",
+ "rsa",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.16",
+ "tracing",
+ "zerocopy 0.8.27",
+]
+
+[[package]]
+name = "test_igvm_agent_rpc_server"
+version = "0.0.0"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "clap",
+ "get_resources",
+ "guid",
+ "parking_lot",
+ "serde_json",
+ "test_igvm_agent_lib",
+ "tracing",
+ "tracing-subscriber",
+ "winapi",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -9423,6 +9459,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vmm_test_igvm_agent"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "pal",
+ "tracing",
+]
+
+[[package]]
 name = "vmm_test_images"
 version = "0.0.0"
 dependencies = [
@@ -9482,6 +9527,7 @@ dependencies = [
  "virtio_resources",
  "vm_resource",
  "vmgs_resources",
+ "vmm_test_igvm_agent",
  "vmm_test_macros",
  "zerocopy 0.8.27",
 ]

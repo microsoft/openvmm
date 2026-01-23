@@ -660,16 +660,11 @@ impl TcpConnection {
         }
 
         // Handle the tx path.
-        if self.socket.is_some() {
+        if let Some(socket) = &mut self.socket {
             if self.state.tx_fin() {
-                if let Poll::Ready(events) = self
-                    .socket
-                    .as_mut()
-                    .unwrap()
-                    .poll_ready(cx, PollEvents::EMPTY)
-                {
+                if let Poll::Ready(events) = socket.poll_ready(cx, PollEvents::EMPTY) {
                     if events.has_err() {
-                        let err = take_socket_error(self.socket.as_ref().unwrap());
+                        let err = take_socket_error(socket);
                         match err.kind() {
                             ErrorKind::BrokenPipe | ErrorKind::ConnectionReset => {}
                             _ => tracing::warn!(
@@ -688,9 +683,7 @@ impl TcpConnection {
                 while !self.tx_buffer.is_full() {
                     let (a, b) = self.tx_buffer.unwritten_slices_mut();
                     let mut bufs = [IoSliceMut::new(a), IoSliceMut::new(b)];
-                    match Pin::new(&mut *self.socket.as_mut().unwrap())
-                        .poll_read_vectored(cx, &mut bufs)
-                    {
+                    match Pin::new(&mut *socket).poll_read_vectored(cx, &mut bufs) {
                         Poll::Ready(Ok(n)) => {
                             if n == 0 {
                                 self.close();
@@ -719,11 +712,11 @@ impl TcpConnection {
         }
 
         // Handle the rx path.
-        if self.socket.is_some() {
+        if let Some(socket) = &mut self.socket {
             while !self.rx_buffer.is_empty() {
                 let (a, b) = self.rx_buffer.as_slices();
                 let bufs = [IoSlice::new(a), IoSlice::new(b)];
-                match Pin::new(&mut *self.socket.as_mut().unwrap()).poll_write_vectored(cx, &bufs) {
+                match Pin::new(&mut *socket).poll_write_vectored(cx, &bufs) {
                     Poll::Ready(Ok(n)) => {
                         self.rx_buffer.drain(..n);
                     }
@@ -744,13 +737,7 @@ impl TcpConnection {
                 }
             }
             if self.rx_buffer.is_empty() && self.state.rx_fin() && !self.is_shutdown {
-                if let Err(err) = self
-                    .socket
-                    .as_ref()
-                    .unwrap()
-                    .get()
-                    .shutdown(Shutdown::Write)
-                {
+                if let Err(err) = socket.get().shutdown(Shutdown::Write) {
                     tracing::warn!(error = &err as &dyn std::error::Error, "shutdown error");
                     sender.rst(self.tx_send, Some(self.rx_seq));
                     return false;

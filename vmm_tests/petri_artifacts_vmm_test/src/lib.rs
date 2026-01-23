@@ -54,6 +54,16 @@ pub mod artifacts {
         }
     }
 
+    /// Host-side tools used by the VMM tests.
+    pub mod host_tools {
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// Windows x86_64 build of the `test_igvm_agent_rpc_server` executable.
+            TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64,
+        }
+    }
+
     /// Loadable artifacts
     pub mod loadable {
         use petri_artifacts_common::tags::IsLoadable;
@@ -383,6 +393,50 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2504_SERVER_X64 {
             const FILENAME: &'static str = "ubuntu-25.04-server-cloudimg-amd64.vhd";
             const SIZE: u64 = 3758211584;
+        }
+
+        declare_artifacts! {
+            /// Alpine Linux 3.23.2 x64 UEFI nocloud cloud-init
+            /// NOTE: The image on the alpine website is qcow2 and must be converted to a fixed vhd.
+            ALPINE_3_23_X64
+        }
+
+        impl IsTestVhd for ALPINE_3_23_X64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
+            const ARCH: MachineArch = MachineArch::X86_64;
+            fn quirks() -> GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    ..Default::default()
+                })
+            }
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for ALPINE_3_23_X64 {
+            const FILENAME: &'static str = "nocloud_alpine-3.23.2-x86_64-uefi-cloudinit-r0.vhd";
+            const SIZE: u64 = 224494080;
+        }
+
+        declare_artifacts! {
+            /// Alpine Linux 3.23.2 aarch64 UEFI nocloud cloud-init
+            /// NOTE: The image on the alpine website is qcow2 and must be converted to a fixed vhd.
+            ALPINE_3_23_AARCH64
+        }
+
+        impl IsTestVhd for ALPINE_3_23_AARCH64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
+            const ARCH: MachineArch = MachineArch::Aarch64;
+            fn quirks() -> GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    ..Default::default()
+                })
+            }
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for ALPINE_3_23_AARCH64 {
+            const FILENAME: &'static str = "nocloud_alpine-3.23.2-aarch64-uefi-cloudinit-r0.vhd";
+            const SIZE: u64 = 258015744;
         }
 
         declare_artifacts! {

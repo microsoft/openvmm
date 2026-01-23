@@ -235,8 +235,8 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
             .await
             .map_err(|err| StorvscError(StorvscErrorInner::CompletionError(err)))?;
 
-        if resp.completion.is_some() {
-            Ok(resp.completion.unwrap())
+        if let Some(completion) = resp.completion {
+            Ok(completion)
         } else {
             Err(StorvscError(StorvscErrorInner::Cancelled))
         }
