@@ -523,7 +523,7 @@ unsafe fn install_signal_handlers() {
     // SAFETY: installing signal handlers as documented.
     unsafe {
         let act = libc::sigaction {
-            sa_sigaction: handle_signal as usize,
+            sa_sigaction: handle_signal as *const () as usize,
             sa_flags: libc::SA_SIGINFO,
             ..core::mem::zeroed()
         };

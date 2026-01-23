@@ -1047,6 +1047,7 @@ impl IntoPipeline for CheckinGatesCli {
         };
 
         let standard_x64_test_artifacts = vec![
+            KnownTestArtifacts::Alpine323X64Vhd,
             KnownTestArtifacts::FreeBsd13_2X64Vhd,
             KnownTestArtifacts::FreeBsd13_2X64Iso,
             KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,
@@ -1145,6 +1146,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_aarch64,
                 nextest_filter_expr: "all()".to_string(),
                 test_artifacts: vec![
+                    KnownTestArtifacts::Alpine323Aarch64Vhd,
                     KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,
                     KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx,
                     KnownTestArtifacts::VmgsWithBootEntry,

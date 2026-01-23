@@ -853,11 +853,8 @@ impl AerHandler for AdminAerHandler {
     }
 
     fn update_awaiting_cid(&mut self, cid: u16) {
-        if self.await_aen_cid.is_some() {
-            panic!(
-                "already awaiting on AEN with cid {}",
-                self.await_aen_cid.unwrap()
-            );
+        if let Some(await_aen_cid) = self.await_aen_cid {
+            panic!("already awaiting on AEN with cid {}", await_aen_cid);
         }
         self.await_aen_cid = Some(cid);
     }

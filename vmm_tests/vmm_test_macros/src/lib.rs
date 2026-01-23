@@ -425,6 +425,12 @@ fn parse_vhd(input: ParseStream<'_>, generation: Generation) -> syn::Result<Imag
         "ubuntu_2504_server_x64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2504_SERVER_X64
         )),
+        "alpine_3_23_x64" => Ok(image_info!(
+            ::petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64
+        )),
+        "alpine_3_23_aarch64" => Ok(image_info!(
+            ::petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64
+        )),
         "ubuntu_2404_server_aarch64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64
         )),
@@ -565,6 +571,7 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `none`: No guest
 ///
 /// Valid x64 VHD options are:
+/// - `alpine_3_23_x64`: Alpine Linux 3.23 cloud image
 /// - `ubuntu_2404_server_x64`: Ubuntu Linux 24.04 cloudimg from Canonical
 /// - `ubuntu_2504_server_x64`: Ubuntu Linux 25.04 cloudimg from Canonical
 /// - `windows_datacenter_core_2022_x64`: Windows Server Datacenter Core 2022 from the Azure Marketplace
@@ -574,6 +581,7 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `freebsd_13_2_x64`: FreeBSD 13.2 from the FreeBSD Project
 ///
 /// Valid aarch64 VHD options are:
+/// - `alpine_3_23_aarch64`: Alpine Linux 3.23 cloud image
 /// - `ubuntu_2404_server_aarch64`: Ubuntu Linux 24.04 cloudimg from Canonical
 /// - `windows_11_enterprise_aarch64`: Windows 11 Enterprise from the Azure Marketplace
 ///
