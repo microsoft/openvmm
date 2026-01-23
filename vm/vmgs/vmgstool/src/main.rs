@@ -1466,7 +1466,8 @@ mod tests {
 
         // Type name "VMFW" at 0x18: length (4) + UTF-16LE
         pe[rsrc_base + 0x18..rsrc_base + 0x1a].copy_from_slice(&4u16.to_le_bytes());
-        pe[rsrc_base + 0x1a..rsrc_base + 0x22].copy_from_slice(&[b'V', 0, b'M', 0, b'F', 0, b'W', 0]);
+        pe[rsrc_base + 0x1a..rsrc_base + 0x22]
+            .copy_from_slice(&[b'V', 0, b'M', 0, b'F', 0, b'W', 0]);
 
         // Type directory at 0x28
         pe[rsrc_base + 0x28 + 14..rsrc_base + 0x28 + 16].copy_from_slice(&1u16.to_le_bytes()); // NumberOfIdEntries
@@ -1485,7 +1486,8 @@ mod tests {
         // Resource data entry at 0x58
         let data_rva = 0x1000u32 + 0x68; // RVA of payload
         pe[rsrc_base + 0x58..rsrc_base + 0x5c].copy_from_slice(&data_rva.to_le_bytes());
-        pe[rsrc_base + 0x5c..rsrc_base + 0x60].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        pe[rsrc_base + 0x5c..rsrc_base + 0x60]
+            .copy_from_slice(&(payload.len() as u32).to_le_bytes());
 
         // Copy payload at 0x68
         let payload_offset = rsrc_base + 0x68;
@@ -1514,9 +1516,7 @@ mod tests {
             .await
             .unwrap();
 
-        let buf = read_igvmfile(dll_path, ResourceCode::Snp)
-            .await
-            .unwrap();
+        let buf = read_igvmfile(dll_path, ResourceCode::Snp).await.unwrap();
 
         assert_eq!(buf, expected_payload);
 
