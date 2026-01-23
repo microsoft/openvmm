@@ -439,7 +439,6 @@ impl DirectoryEnumerator {
         fs_context: &fs::FsContext,
         offset: u64,
     ) -> lx::Result<()> {
-
         // Check if cache is valid.
         if offset != 0 && self.cursor.contains(offset) {
             return Ok(());
@@ -479,7 +478,6 @@ impl DirectoryEnumerator {
         fs_context: &fs::FsContext,
         offset: u64,
     ) -> lx::Result<()> {
-
         // Re-check.
         if !self.cursor.needs_more(offset) {
             return Ok(());
@@ -836,7 +834,10 @@ impl DirEntrySource for WindowsDirEntrySource<'_> {
 
         // Skip entries until we reach the requested offset.
         while (self.enumerator.next_read_index as u64) < offset {
-            match self.enumerator.read_current(self.handle, self.enumerator.next_read_index == 0)? {
+            match self
+                .enumerator
+                .read_current(self.handle, self.enumerator.next_read_index == 0)?
+            {
                 Some(file_info) => {
                     // Skip . and .. entries.
                     if !util::is_self_relative_unicode_path(&file_info.file_name) {
@@ -852,7 +853,6 @@ impl DirEntrySource for WindowsDirEntrySource<'_> {
 
         let mut did_first_read = false;
         loop {
-
             // Only restart scan on the very first read of the main loop
             let should_restart = self.enumerator.next_read_index == 0 && !did_first_read;
             did_first_read = true;
@@ -868,18 +868,15 @@ impl DirEntrySource for WindowsDirEntrySource<'_> {
                     self.enumerator.next_read_index += 1;
 
                     // Determine the file type.
-                    let entry_type =
-                        if !self.fs_context.compatibility_flags.server_reparse_points()
-                            && file_info.file_attributes & W32Fs::FILE_ATTRIBUTE_REPARSE_POINT.0
-                                != 0
-                        {
-                            util::reparse_tag_to_file_type(file_info.reparse_tag)
-                        } else if file_info.file_attributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0
-                        {
-                            lx::DT_DIR
-                        } else {
-                            lx::DT_REG
-                        };
+                    let entry_type = if !self.fs_context.compatibility_flags.server_reparse_points()
+                        && file_info.file_attributes & W32Fs::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+                    {
+                        util::reparse_tag_to_file_type(file_info.reparse_tag)
+                    } else if file_info.file_attributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+                        lx::DT_DIR
+                    } else {
+                        lx::DT_REG
+                    };
 
                     // Unescape the LX path.
                     let file_name = path::unescape_path(file_info.file_name.as_slice())?;

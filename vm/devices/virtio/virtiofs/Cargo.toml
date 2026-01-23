@@ -22,7 +22,6 @@ pal_async.workspace = true
 task_control.workspace = true
 
 anyhow.workspace = true
-arrayvec.workspace = true
 async-trait.workspace = true
 event-listener.workspace = true
 futures.workspace = true
