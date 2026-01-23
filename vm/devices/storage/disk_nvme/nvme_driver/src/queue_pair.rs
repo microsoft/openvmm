@@ -561,12 +561,10 @@ impl Issuer {
     }
 
     pub async fn issue_get_aen(&self) -> Result<AsynchronousEventRequestDw0, RequestError> {
-        match self.send.call(Req::NextAen, ()).await {
-            Ok(aen_response) => match aen_response {
-                AenResponse::Success(aen_response) => Ok(aen_response),
-                AenResponse::Failure(err) => Err(err),
-            },
-            Err(err) => Err(RequestError::Gone(err)),
+        match self.send.call_failable(Req::NextAen, ()).await {
+            Ok(aen_completion) => Ok(aen_completion),
+            Err(RpcError::Call(e)) => Err(e),
+            Err(RpcError::Channel(e)) => Err(RequestError::Gone(RpcError::Channel(e))),
         }
     }
 
@@ -752,20 +750,12 @@ struct PendingCommand {
     respond: Rpc<(), spec::Completion>,
 }
 
-/// Response to an AEN request. Failure case is returned with a RequestError
-/// containing the NVMe error status code.
-#[derive(Debug)]
-pub enum AenResponse {
-    Success(AsynchronousEventRequestDw0),
-    Failure(RequestError),
-}
-
 enum Req {
     Command(Rpc<spec::Command, spec::Completion>),
     Inspect(inspect::Deferred),
     Save(Rpc<(), Result<QueueHandlerSavedState, anyhow::Error>>),
     SendAer(),
-    NextAen(Rpc<(), AenResponse>),
+    NextAen(Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>),
 }
 
 /// Functionality for an AER handler. The default implementation
@@ -778,7 +768,11 @@ pub trait AerHandler: Send + Sync + 'static {
     fn handle_completion(&mut self, _completion: &nvme_spec::Completion) {}
     /// Handle a request from the driver to get the most-recent undelivered AEN
     /// or wait for the next one.
-    fn handle_aen_request(&mut self, _rpc: Rpc<(), AenResponse>) {}
+    fn handle_aen_request(
+        &mut self,
+        _rpc: Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>,
+    ) {
+    }
     /// Update the CID that the handler is awaiting an AEN on.
     fn update_awaiting_cid(&mut self, _cid: u16) {}
     /// Returns whether an AER needs to sent to the controller or not. Since
@@ -798,7 +792,7 @@ pub trait AerHandler: Send + Sync + 'static {
 pub struct AdminAerHandler {
     last_aen: Option<AsynchronousEventRequestDw0>,
     await_aen_cid: Option<u16>,
-    send_aen: Option<Rpc<(), AenResponse>>, // Channel to return AENs on.
+    send_aen: Option<Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>>, // Channel to return AENs on.
     failed_status: Option<spec::Status>, // If the failed state is reached, it will stop looping until save/restore.
 }
 
@@ -827,29 +821,28 @@ impl AerHandler for AdminAerHandler {
                 let failed_status = spec::Status(completion.status.status());
                 self.failed_status = Some(failed_status);
                 if let Some(send_aen) = self.send_aen.take() {
-                    send_aen.complete(AenResponse::Failure(RequestError::Nvme(NvmeError(
-                        failed_status,
-                    ))));
+                    send_aen.complete(Err(RequestError::Nvme(NvmeError(failed_status))));
                 }
                 return;
             }
             // Complete the AEN or pend it.
             let aen = AsynchronousEventRequestDw0::from_bits(completion.dw0);
             if let Some(send_aen) = self.send_aen.take() {
-                send_aen.complete(AenResponse::Success(aen));
+                send_aen.complete(Ok(aen));
             } else {
                 self.last_aen = Some(aen);
             }
         }
     }
 
-    fn handle_aen_request(&mut self, rpc: Rpc<(), AenResponse>) {
+    fn handle_aen_request(
+        &mut self,
+        rpc: Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>,
+    ) {
         if let Some(aen) = self.last_aen.take() {
-            rpc.complete(AenResponse::Success(aen));
+            rpc.complete(Ok(aen));
         } else if let Some(failed_status) = self.failed_status {
-            rpc.complete(AenResponse::Failure(RequestError::Nvme(NvmeError(
-                failed_status,
-            ))));
+            rpc.complete(Err(RequestError::Nvme(NvmeError(failed_status))));
         } else {
             self.send_aen = Some(rpc); // Save driver request to be completed later.
         }
@@ -891,7 +884,10 @@ impl AerHandler for AdminAerHandler {
 /// No-op AER handler. Should be only used for IO queues.
 pub struct NoOpAerHandler;
 impl AerHandler for NoOpAerHandler {
-    fn handle_aen_request(&mut self, _rpc: Rpc<(), AenResponse>) {
+    fn handle_aen_request(
+        &mut self,
+        _rpc: Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>,
+    ) {
         panic!(
             "no-op aer handler should never receive an aen request. This is likely a bug in the driver."
         );

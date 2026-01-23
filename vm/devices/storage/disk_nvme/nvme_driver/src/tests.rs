@@ -4,7 +4,6 @@
 use crate::NvmeDriver;
 use crate::RequestError;
 use crate::queue_pair::AdminAerHandler;
-use crate::queue_pair::AenResponse;
 use crate::queue_pair::AerHandler;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
@@ -26,6 +25,7 @@ use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::IoQueueFaultBehavior;
 use nvme_resources::fault::IoQueueFaultConfig;
 use nvme_spec::AdminOpcode;
+use nvme_spec::AsynchronousEventRequestDw0;
 use nvme_spec::Cap;
 use nvme_spec::Command;
 use nvme_spec::nvm;
@@ -60,7 +60,7 @@ use zerocopy::IntoBytes;
 async fn test_admin_aer_handler_failed_completion(_driver: DefaultDriver) {
     // ARRANGE
     enum TestReq {
-        Aen(Rpc<(), AenResponse>),
+        Aen(Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>),
     }
 
     let cid = 0;
@@ -97,7 +97,7 @@ async fn test_admin_aer_handler_failed_completion(_driver: DefaultDriver) {
         .expect("got response before timeout")
         .expect("aen rpc completed");
     match response {
-        AenResponse::Failure(RequestError::Nvme(err)) => {
+        Err(RequestError::Nvme(err)) => {
             assert_eq!(err.status(), nvme_spec::Status(failure_status));
         }
         other => panic!("unexpected aen response: {other:?}"),
