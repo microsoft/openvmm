@@ -923,6 +923,12 @@ impl HclNetworkVFManagerWorker {
                     if self.is_shutdown_active
                         || matches!(vtl2_device_state, Vtl2DeviceState::Missing)
                     {
+                        tracing::debug!(
+                            is_shutdown_active = self.is_shutdown_active,
+                            vtl2_device_state_mising =
+                                matches!(vtl2_device_state, Vtl2DeviceState::Missing),
+                            "Skipping VF reconfiguration during shutdown or when device is missing"
+                        );
                         continue;
                     }
 
