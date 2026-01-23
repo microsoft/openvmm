@@ -5,6 +5,7 @@
 
 use crate::x86_64::storage::new_test_vtl2_nvme_device;
 use guid::Guid;
+use memory_range::MemoryRange;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use petri::MemoryConfig;
 use petri::OpenvmmLogConfig;
@@ -269,4 +270,60 @@ async fn openhcl_linux_vtl2_ram_self_allocate(
     vm.wait_for_clean_teardown().await?;
 
     Ok(())
+}
+
+fn read_sysfs_dt<T>(agent: &PipetteClient, path: &str) -> Result<T, anyhow::Error> {
+    todo!()
+}
+
+fn parse_vmbus_mmio(agent: &PipetteClient, path: &str) -> Result<Vec<MemoryRange>, anyhow::Error> {
+    todo!()
+}
+
+/// Test VTL2 memory allocation mode, and validate that VTL0 saw the correct
+/// amount of mmio, when the host provides a VTL2 mmio range.
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn openhcl_linux_vtl2_mmio_self_allocate(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    // Use the OpenVMM default which has a 1GB mmio gap for VTL2. This should
+    // cause the whole gap to be given to VTL2, as we should report 128MB for
+    // self allocation.
+    let expected_mmio_ranges: Vec<MemoryRange> =
+        openvmm_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into();
+    let (mut vm, agent) = config
+        .with_memory(MemoryConfig {
+            mmio_gaps: petri::MmioConfig::Custom(expected_mmio_ranges.clone()),
+            ..Default::default()
+        })
+        .with_vtl2_base_address_type(Vtl2BaseAddressType::Vtl2Allocate { size: None })
+        .run()
+        .await?;
+
+    let vtl2_agent = vm.wait_for_vtl2_agent().await?;
+
+    // Read the bootloader provided fdt via sysfs to verify that the VTL2 and
+    // VTL0 mmio ranges are as expected, along with the allocated mmio size
+    // being 128 MB.
+    let memory_allocation_mode: String =
+        read_sysfs_dt(&vtl2_agent, "openhcl/memory-allocation-mode")?;
+    assert_eq!(memory_allocation_mode, "vtl2");
+
+    let mmio_size: u64 = read_sysfs_dt(&vtl2_agent, "openhcl/mmio-size")?;
+    // NOTE: This value is hardcoded in openvmm today to report this to the
+    // guest provided device tree.
+    const EXPECTED_MMIO_SIZE: u64 = 128 * 1024 * 1024;
+    assert_eq!(mmio_size, EXPECTED_MMIO_SIZE);
+
+    // Read the bootloader provided dt via sysfs to verify the VTL0 and VTL2
+    // mmio ranges are as expected.
+    let vtl2_mmio = parse_vmbus_mmio(&agent, "bus/vmbus")?;
+    assert_eq!(vtl2_mmio, expected_mmio_ranges[2..]);
+    let vtl0_mmio = parse_vmbus_mmio(&vtl2_agent, "bus/vmbus")?;
+    assert_eq!(vtl0_mmio, expected_mmio_ranges[..2]);
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    todo!()
 }

@@ -434,28 +434,34 @@ fn topology_from_host_dt(
     //
     // For isolated guests, or when VTL2 has been asked to carve out its own
     // memory, first check if the host provided a VTL2 mmio range. If so, the
-    // mmio range must be large enough or we will instead panic. Otherwise,
-    // choose to carve out a range from the VTL0 allotment.
+    // mmio range must be large enough. Otherwise, choose to carve out a range
+    // from the VTL0 allotment.
     let (vtl0_mmio, vtl2_mmio) = if params.isolation_type != IsolationType::None
         || matches!(
             parsed.memory_allocation_mode,
             MemoryAllocationMode::Vtl2 { .. }
         ) {
-        // Decide the amount of mmio VTL2 should allocate.
-        let mmio_size = max(
-            match parsed.memory_allocation_mode {
-                MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
-                _ => 0,
-            },
-            calculate_default_mmio_size(parsed)?,
-        );
-
-        log::info!("allocating vtl2 mmio size {mmio_size:#x} bytes");
-
-        let vmbus_vtl0 = parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?;
+        // Decide the amount of mmio VTL2 should allocate, which is different
+        // depending on the heuristic used. On a newer host where a vtl2 mmio
+        // range is provided, use the size provided by the host. If the host did
+        // not provide a vtl2 mmio range, then use the maximum of the host
+        // provided value and the calculated default.
+        let host_provided_size = match parsed.memory_allocation_mode {
+            MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
+            _ => 0,
+        };
         let vmbus_vtl2 = parsed.vmbus_vtl2.as_ref().ok_or(DtError::Vtl2Vmbus)?;
         let vmbus_vtl2_mmio_size = vmbus_vtl2.mmio.iter().map(|r| r.len()).sum::<u64>();
-        log::info!("host provided vtl2 mmio size is {vmbus_vtl2_mmio_size:#x} bytes");
+        let mmio_size = if vmbus_vtl2_mmio_size != 0 {
+            host_provided_size
+        } else {
+            max(host_provided_size, calculate_default_mmio_size(parsed)?)
+        };
+
+        log::info!("allocating vtl2 mmio size {mmio_size:#x} bytes");
+        log::info!("host provided vtl2 mmio ranges are {vmbus_vtl2_mmio_size:#x} bytes");
+
+        let vmbus_vtl0 = parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?;
         if vmbus_vtl2_mmio_size != 0 {
             // Verify the host provided mmio is large enough.
             if vmbus_vtl2_mmio_size < mmio_size {
