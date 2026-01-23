@@ -1181,8 +1181,7 @@ async fn vmgs_file_copy_igvmfile(
 async fn read_igvmfile(dll_path: PathBuf, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
     use std::io::{Read, Seek, SeekFrom};
 
-    let file = File::open(dll_path)
-        .map_err(Error::DataFile)?;
+    let file = File::open(dll_path).map_err(Error::DataFile)?;
 
     // Try to find the resource in the DLL
     let descriptor = resource_dll_parser::DllResourceDescriptor::new(b"VMFW", resource_code as u32);
