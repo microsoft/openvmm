@@ -69,7 +69,10 @@ pub enum DtError {
     Vtl0Vmbus,
     /// Host provided high MMIO range is insufficient to cover VTL0 and VTL2.
     #[error("host provided high MMIO range is insufficient to cover VTL0 and VTL2")]
-    NotEnoughMmio,
+    NotEnoughVtl0Mmio,
+    /// Host provided MMIO range is insufficient to cover VTL2.
+    #[error("host provided MMIO range is insufficient to cover VTL2")]
+    NotEnoughVtl2Mmio,
 }
 
 /// Allocate VTL2 ram from the partition's memory map.
@@ -430,7 +433,9 @@ fn topology_from_host_dt(
     // guests when it also provides the ram VTL2 should use.
     //
     // For isolated guests, or when VTL2 has been asked to carve out its own
-    // memory, carve out a range from the VTL0 allotment.
+    // memory, first check if the host provided a VTL2 mmio range. If so, the
+    // mmio range must be large enough or we will instead panic. Otherwise,
+    // choose to carve out a range from the VTL0 allotment.
     let (vtl0_mmio, vtl2_mmio) = if params.isolation_type != IsolationType::None
         || matches!(
             parsed.memory_allocation_mode,
@@ -447,29 +452,45 @@ fn topology_from_host_dt(
 
         log::info!("allocating vtl2 mmio size {mmio_size:#x} bytes");
 
-        // Decide what mmio vtl2 should use.
-        let mmio = &parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?.mmio;
-        let selected_vtl2_mmio = select_vtl2_mmio_range(mmio, mmio_size)?;
+        let vmbus_vtl0 = parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?;
+        let vmbus_vtl2 = parsed.vmbus_vtl2.as_ref().ok_or(DtError::Vtl2Vmbus)?;
+        let vmbus_vtl2_mmio_size = vmbus_vtl2.mmio.iter().map(|r| r.len()).sum::<u64>();
+        log::info!("host provided vtl2 mmio size is {vmbus_vtl2_mmio_size:#x} bytes");
+        if vmbus_vtl2_mmio_size != 0 {
+            // Verify the host provided mmio is large enough.
+            if vmbus_vtl2_mmio_size < mmio_size {
+                return Err(DtError::NotEnoughVtl2Mmio);
+            }
 
-        // Update vtl0 mmio to exclude vtl2 mmio.
-        let vtl0_mmio = subtract_ranges(mmio.iter().cloned(), [selected_vtl2_mmio])
-            .collect::<ArrayVec<MemoryRange, 2>>();
-        let vtl2_mmio = [selected_vtl2_mmio]
-            .into_iter()
-            .collect::<ArrayVec<MemoryRange, 2>>();
+            log::info!("using host provided vtl2 mmio: {:x?}", vmbus_vtl2.mmio);
+            (vmbus_vtl0.mmio.clone(), vmbus_vtl2.mmio.clone())
+        } else {
+            // Allocate vtl2 mmio from vtl0 mmio.
+            log::info!("no vtl2 mmio provided by host, allocating from vtl0 mmio");
+            let selected_vtl2_mmio = select_vtl2_mmio_range(&vmbus_vtl0.mmio, mmio_size)?;
 
-        // TODO: For now, if we have only a single vtl0_mmio range left,
-        // panic. In the future decide if we want to report this as a start
-        // failure in usermode, change allocation strategy, or something
-        // else.
-        assert_eq!(
-            vtl0_mmio.len(),
-            2,
-            "vtl0 mmio ranges are not 2 {:#x?}",
-            vtl0_mmio
-        );
+            // Update vtl0 mmio to exclude vtl2 mmio.
+            let vtl0_mmio = subtract_ranges(vmbus_vtl0.mmio.iter().cloned(), [selected_vtl2_mmio])
+                .collect::<ArrayVec<MemoryRange, 2>>();
+            let vtl2_mmio = [selected_vtl2_mmio]
+                .into_iter()
+                .collect::<ArrayVec<MemoryRange, 2>>();
 
-        (vtl0_mmio, vtl2_mmio)
+            // TODO: For now, if we have only a single vtl0_mmio range left,
+            // panic. In the future decide if we want to report this as a start
+            // failure in usermode, change allocation strategy, or something
+            // else.
+            assert_eq!(
+                vtl0_mmio.len(),
+                2,
+                "vtl0 mmio ranges are not 2 {:#x?}",
+                vtl0_mmio
+            );
+
+            log::info!("vtl0 mmio: {vtl0_mmio:x?}, vtl2 mmio: {vtl2_mmio:x?}");
+
+            (vtl0_mmio, vtl2_mmio)
+        }
     } else {
         (
             parsed
