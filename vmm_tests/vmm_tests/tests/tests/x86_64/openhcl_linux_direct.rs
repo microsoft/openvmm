@@ -274,10 +274,12 @@ async fn openhcl_linux_vtl2_ram_self_allocate(
 }
 
 async fn read_sysfs_dt_string(agent: &PipetteClient, path: &str) -> Result<String, anyhow::Error> {
-    agent
+    let string = agent
         .unix_shell()
         .read_file(format!("/sys/firmware/devicetree/base/{}", path))
-        .await
+        .await?;
+    // Strip the ending null terminator.
+    Ok(string.trim_end_matches('\0').to_owned())
 }
 
 async fn read_sysfs_dt_raw(agent: &PipetteClient, path: &str) -> Result<Vec<u8>, anyhow::Error> {
@@ -308,23 +310,64 @@ async fn parse_vmbus_mmio(
     // Read the raw ranges which are u64 (start, start, len) tuples.
     let raw = read_sysfs_dt_raw(agent, format!("{}/ranges", path).as_str()).await?;
     let mut mmio_ranges = Vec::new();
-    let raw_u64 = <[u64]>::ref_from_bytes_with_elems(&raw, raw.len() / 8).map_err(|_| {
-        anyhow::anyhow!(
-            "failed to read mmio ranges from sysfs dt path {}/ranges",
-            path
-        )
-    })?;
+    let raw_u64 = <[zerocopy::big_endian::U64]>::ref_from_bytes_with_elems(&raw, raw.len() / 8)
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "failed to read mmio ranges from sysfs dt path {}/ranges",
+                path
+            )
+        })?;
     for chunk in raw_u64.chunks_exact(3) {
-        let start = chunk[0];
-        let end = start + chunk[2];
+        let start: u64 = chunk[0].into();
+        let len: u64 = chunk[2].into();
+        let end = start + len;
         mmio_ranges.push(MemoryRange::new(start..end));
     }
 
     Ok(mmio_ranges)
 }
 
+async fn parse_openhcl_memory_node(
+    agent: &PipetteClient,
+    start: u64,
+) -> Result<MemoryRange, anyhow::Error> {
+    // Read the openhcl memory node with format "memory@start", with a u64 reg field of (start, len).
+    // The openhcl memory type should be 5 (VTL0_MMIO).
+    let raw = read_sysfs_dt_raw(agent, format!("openhcl/memory@{:x}/reg", start).as_str()).await?;
+    let raw_u64 = <[zerocopy::big_endian::U64]>::ref_from_bytes_with_elems(&raw, raw.len() / 8)
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "failed to read mmio range from sysfs dt path openhcl/memory@{:x}/reg",
+                start
+            )
+        })?;
+    if raw_u64.len() != 2 {
+        return Err(anyhow::anyhow!(
+            "expected 2 u64 values in reg field, got {}",
+            raw_u64.len()
+        ));
+    }
+
+    let memory_type: u32 = read_sysfs_dt::<zerocopy::big_endian::U32>(
+        agent,
+        format!("openhcl/memory@{:x}/openhcl,memory-type", start).as_str(),
+    )
+    .await?
+    .into();
+    const VTL0_MMIO: u32 = 5;
+    assert_eq!(memory_type, VTL0_MMIO);
+
+    let range_start: u64 = raw_u64[0].into();
+    let range_len: u64 = raw_u64[1].into();
+    let range_end = range_start + range_len;
+    Ok(MemoryRange::new(range_start..range_end))
+}
+
 /// Test VTL2 memory allocation mode, and validate that VTL0 saw the correct
 /// amount of mmio, when the host provides a VTL2 mmio range.
+///
+/// TODO: onboard Hyper-V support in petri for custom mmio config once Hyper-V
+/// supports this.
 #[openvmm_test(openhcl_linux_direct_x64)]
 async fn openhcl_linux_vtl2_mmio_self_allocate(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -352,7 +395,10 @@ async fn openhcl_linux_vtl2_mmio_self_allocate(
         read_sysfs_dt_string(&vtl2_agent, "openhcl/memory-allocation-mode").await?;
     assert_eq!(memory_allocation_mode, "vtl2");
 
-    let mmio_size: u64 = read_sysfs_dt(&vtl2_agent, "openhcl/mmio-size").await?;
+    let mmio_size: u64 =
+        read_sysfs_dt::<zerocopy::big_endian::U64>(&vtl2_agent, "openhcl/mmio-size")
+            .await?
+            .into();
     // NOTE: This value is hardcoded in openvmm today to report this to the
     // guest provided device tree.
     const EXPECTED_MMIO_SIZE: u64 = 128 * 1024 * 1024;
@@ -360,9 +406,13 @@ async fn openhcl_linux_vtl2_mmio_self_allocate(
 
     // Read the bootloader provided dt via sysfs to verify the VTL0 and VTL2
     // mmio ranges are as expected.
-    let vtl2_mmio = parse_vmbus_mmio(&agent, "bus/vmbus").await?;
+    let vtl2_mmio = parse_vmbus_mmio(&vtl2_agent, "bus/vmbus").await?;
     assert_eq!(vtl2_mmio, expected_mmio_ranges[2..]);
-    let vtl0_mmio = parse_vmbus_mmio(&vtl2_agent, "bus/vmbus").await?;
+    let mut vtl0_mmio = Vec::new();
+    for range_start in expected_mmio_ranges[..2].iter().map(|r| r.start()) {
+        let range = parse_openhcl_memory_node(&vtl2_agent, range_start).await?;
+        vtl0_mmio.push(range);
+    }
     assert_eq!(vtl0_mmio, expected_mmio_ranges[..2]);
 
     agent.power_off().await?;
