@@ -93,8 +93,8 @@ enum Error {
     GspUnknown,
     #[error("VMGS file is using an unknown encryption algorithm")]
     EncryptionUnknown,
-    #[error("Unable to read IGVM file with Error: {0}")]
-    UnableToReadIgvmFile(String),
+    #[error("Unable to parse IGVM file")]
+    IgvmFile(#[source] anyhow::Error),
 }
 
 impl From<vmgs::Error> for Error {
@@ -127,7 +127,7 @@ enum ExitCode {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[repr(i32)]
+#[repr(u32)]
 enum ResourceCode {
     NonConfidential = 13510,
     Snp = 13515,
@@ -333,11 +333,11 @@ fn parse_encryption_algorithm(algorithm: &str) -> Result<EncryptionAlgorithm, &'
 
 fn parse_resource_code(resource_code: &str) -> Result<ResourceCode, &'static str> {
     match resource_code {
-        "nonconfidential" => Ok(ResourceCode::NonConfidential),
-        "snp" => Ok(ResourceCode::Snp),
-        "snp_no_hcl" => Ok(ResourceCode::SnpNoHcl),
-        "tdx" => Ok(ResourceCode::Tdx),
-        "tdx_no_hcl" => Ok(ResourceCode::TdxNoHcl),
+        "NONCONFIDENTIAL" => Ok(ResourceCode::NonConfidential),
+        "SNP" => Ok(ResourceCode::Snp),
+        "SNP_NO_HCL" => Ok(ResourceCode::SnpNoHcl),
+        "TDX" => Ok(ResourceCode::Tdx),
+        "TDX_NO_HCL" => Ok(ResourceCode::TdxNoHcl),
         _ => Err("Resource code not supported"),
     }
 }
@@ -1169,7 +1169,7 @@ async fn vmgs_file_copy_igvmfile(
     let encrypt = key_path.is_some();
     let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadWrite).await?;
 
-    eprintln!("Reading IGVMfile from: {}", data_path.as_ref().display());
+    eprintln!("Reading IGVM file from: {}", data_path.as_ref().display());
 
     let bytes = read_igvmfile(data_path.as_ref().to_path_buf(), resource_code).await?;
 
@@ -1189,27 +1189,25 @@ async fn read_igvmfile(dll_path: PathBuf, resource_code: ResourceCode) -> Result
     use std::io::{Read, Seek, SeekFrom};
 
     let file = File::open(dll_path)
-        .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to open DLL file: {}", e)))?;
+        .map_err(Error::DataFile)?;
 
     // Try to find the resource in the DLL
     let descriptor = resource_dll_parser::DllResourceDescriptor::new(b"VMFW", resource_code as u32);
     let (start, len) = resource_dll_parser::try_find_resource_from_dll(&file, &descriptor)
-        .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to parse DLL: {}", e)))?
+        .map_err(|e| Error::IgvmFile(anyhow::anyhow!("Failed to parse DLL: {}", e)))?
         .ok_or_else(|| {
-            Error::UnableToReadIgvmFile(
-                "File is not a valid PE DLL or resource not found".to_string(),
-            )
+            Error::IgvmFile(anyhow::anyhow!(
+                "File is not a valid PE DLL or resource not found"
+            ))
         })?;
     // Read the resource data
     let mut file = file;
-    file.seek(SeekFrom::Start(start))
-        .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to seek to resource: {}", e)))?;
+    file.seek(SeekFrom::Start(start)).map_err(Error::DataFile)?;
 
     let mut bytes = vec![0u8; len];
-    file.read_exact(&mut bytes)
-        .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to read resource data: {}", e)))?;
+    file.read_exact(&mut bytes).map_err(Error::DataFile)?;
 
-    eprintln!("Successfully loaded IGVMfile from DLL");
+    eprintln!("Successfully loaded IGVM file from DLL");
     eprintln!("Read {} bytes", bytes.len());
 
     Ok(bytes)
@@ -1619,7 +1617,7 @@ mod tests {
     #[cfg(with_encryption)]
     #[async_test]
     async fn read_write_igvmfile_encrypted() {
-        // Should be able to read and write IGVMfile to an encrypted VMGS
+        // Should be able to read and write IGVM file to an encrypted VMGS
         let (_dir, path) = new_path();
         let encryption_key = vec![5; 32];
 
@@ -1660,7 +1658,7 @@ mod tests {
 
         assert_eq!(buf, read_buf);
 
-        // try normal write IGVMfile to encrypted VMGS (unencrypted write, allow overwrite)
+        // try normal write IGVM file to encrypted VMGS (unencrypted write, allow overwrite)
         let buf2 = read_igvmfile(dll_path, ResourceCode::Snp).await.unwrap();
 
         vmgs_write(&mut vmgs, FileId::GUEST_FIRMWARE, &buf2, false, true)
