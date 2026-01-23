@@ -281,21 +281,17 @@ enum Options {
         #[clap(subcommand)]
         operation: TestOperation,
     },
-    /// Copy the IGVM file from a dll into file ID 8 of the VMGS file.
-    ///
-    /// The proper key file must be specified to write encrypted data.
+    /// Copy the IGVM file from a DLL into file ID 8 of the VMGS file.
     CopyIgvmfile {
         #[command(flatten)]
         file_path: FilePathArg,
         /// DLL file path to read
         #[clap(short = 'd', long, alias = "datapath")]
         data_path: PathBuf,
-        #[command(flatten)]
-        key_path: KeyPathArg,
         /// Overwrite the VMGS data at `fileid 8`, even if it already exists with nonzero size
         #[clap(long, alias = "allowoverwrite")]
         allow_overwrite: bool,
-        /// Resource code. Supported values: nonconfidential, snp, tdx, snp_no_hcl, and tdx_no_hcl
+        /// Resource code. Supported values: NONCONFIDENTIAL, SNP, TDX, SNP_NO_HCL, and TDX_NO_HCL
         #[clap(short = 'r', long, alias = "resourcecode", value_parser = parse_resource_code)]
         resource_code: ResourceCode,
     },
@@ -513,14 +509,12 @@ async fn do_main() -> Result<(), Error> {
         Options::CopyIgvmfile {
             file_path,
             data_path,
-            key_path,
             allow_overwrite,
             resource_code,
         } => {
             vmgs_file_copy_igvmfile(
                 file_path.file_path,
                 data_path,
-                key_path.key_path,
                 allow_overwrite,
                 resource_code,
             )
@@ -1162,12 +1156,10 @@ fn vhdfiledisk_open(file: File, open_mode: OpenMode) -> Result<Disk, Error> {
 async fn vmgs_file_copy_igvmfile(
     file_path: impl AsRef<Path>,
     data_path: impl AsRef<Path>,
-    key_path: Option<impl AsRef<Path>>,
     allow_overwrite: bool,
     resource_code: ResourceCode,
 ) -> Result<(), Error> {
-    let encrypt = key_path.is_some();
-    let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadWrite).await?;
+    let mut vmgs = vmgs_file_open(file_path, None::<PathBuf>, OpenMode::ReadWrite).await?;
 
     eprintln!("Reading IGVM file from: {}", data_path.as_ref().display());
 
@@ -1177,7 +1169,8 @@ async fn vmgs_file_copy_igvmfile(
         &mut vmgs,
         FileId::GUEST_FIRMWARE,
         &bytes,
-        encrypt,
+        // IGVM file is not encrypted
+        false,
         allow_overwrite,
     )
     .await?;
@@ -1612,58 +1605,6 @@ mod tests {
             .unwrap();
 
         assert!(read_buf == buf_1);
-    }
-
-    #[cfg(with_encryption)]
-    #[async_test]
-    async fn read_write_igvmfile_encrypted() {
-        // Should be able to read and write IGVM file to an encrypted VMGS
-        let (_dir, path) = new_path();
-        let encryption_key = vec![5; 32];
-
-        // Create a test DLL with VMFW resource
-        let expected_payload = b"ENCRYPTED_TEST_IGVM_FIRMWARE_PAYLOAD";
-        let dll_data = create_test_vmfw_dll(expected_payload, ResourceCode::Snp as u32);
-
-        // Write the test DLL to a temp file
-        let dll_path = _dir.path().join("test_vmfw.dll");
-        fs_err::write(&dll_path, &dll_data).unwrap();
-
-        test_vmgs_create(
-            &path,
-            Some(ONE_MEGA_BYTE * 8),
-            false,
-            Some((EncryptionAlgorithm::AES_GCM, &encryption_key)),
-        )
-        .await
-        .unwrap();
-
-        let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWrite, Some(&encryption_key))
-            .await
-            .unwrap();
-
-        let buf = read_igvmfile(dll_path.clone(), ResourceCode::Snp)
-            .await
-            .unwrap();
-
-        assert_eq!(buf, expected_payload);
-
-        vmgs_write(&mut vmgs, FileId::GUEST_FIRMWARE, &buf, true, false)
-            .await
-            .unwrap();
-
-        let read_buf = vmgs_read(&mut vmgs, FileId::GUEST_FIRMWARE, true)
-            .await
-            .unwrap();
-
-        assert_eq!(buf, read_buf);
-
-        // try normal write IGVM file to encrypted VMGS (unencrypted write, allow overwrite)
-        let buf2 = read_igvmfile(dll_path, ResourceCode::Snp).await.unwrap();
-
-        vmgs_write(&mut vmgs, FileId::GUEST_FIRMWARE, &buf2, false, true)
-            .await
-            .unwrap();
     }
 
     #[async_test]
