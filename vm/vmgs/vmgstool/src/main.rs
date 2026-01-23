@@ -165,7 +165,6 @@ enum Options {
     /// `keypath` and `encryptionalgorithm` must both be specified if encrypted
     /// guest state is required.
     Create {
-        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// VMGS file size, default = 4194816 (~4MB)
@@ -195,7 +194,6 @@ enum Options {
     ///
     /// The proper key file must be specified to write encrypted data.
     Write {
-        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// Data file path to read
@@ -215,7 +213,6 @@ enum Options {
     /// is encrypted and no key is specified, the data will be dumped without
     /// decrypting.
     Dump {
-        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// Data file path to write
@@ -231,13 +228,11 @@ enum Options {
     },
     /// Dump headers of the VMGS file at `filepath` to the console.
     DumpHeaders {
-        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
     },
     /// Get the size of the specified `fileid` within the VMGS file
     QuerySize {
-        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         #[command(flatten)]
@@ -247,7 +242,6 @@ enum Options {
     ///
     /// Both key files must contain a key that is 32 bytes long.
     UpdateKey {
-        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// Current encryption key file path.
@@ -262,7 +256,6 @@ enum Options {
     },
     /// Encrypt an existing VMGS file
     Encrypt {
-        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// Encryption key file path. The file must contain a key that is 32 bytes long.
@@ -274,7 +267,6 @@ enum Options {
     },
     /// Query whether a VMGS file is encrypted
     QueryEncryption {
-        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
     },
@@ -293,7 +285,6 @@ enum Options {
     ///
     /// The proper key file must be specified to write encrypted data.
     CopyIgvmfile {
-        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// DLL file path to read
@@ -1401,36 +1392,137 @@ mod tests {
         assert_eq!(buf_3, read_buf_3);
     }
 
-    #[cfg(all(windows, guest_arch = "x86_64"))]
+    /// Creates a minimal PE64 DLL with a VMFW resource for testing.
+    /// The resource contains `payload` at the specified `resource_id`.
+    fn create_test_vmfw_dll(payload: &[u8], resource_id: u32) -> Vec<u8> {
+        // PE Header constants
+        const DOS_HEADER_SIZE: usize = 64;
+        const PE_SIG_SIZE: usize = 4;
+        const COFF_HEADER_SIZE: usize = 20;
+        const OPTIONAL_HEADER_SIZE: usize = 240;
+        const HEADERS_SIZE: usize = 0x200; // File-aligned
+        const RSRC_SECTION_SIZE: usize = 0x200;
+
+        let mut pe = vec![0u8; HEADERS_SIZE + RSRC_SECTION_SIZE];
+
+        // DOS Header
+        pe[0..2].copy_from_slice(b"MZ"); // e_magic
+        pe[60..64].copy_from_slice(&64u32.to_le_bytes()); // e_lfanew
+
+        let mut offset = DOS_HEADER_SIZE;
+
+        // PE Signature
+        pe[offset..offset + PE_SIG_SIZE].copy_from_slice(b"PE\0\0");
+        offset += PE_SIG_SIZE;
+
+        // COFF File Header (20 bytes)
+        pe[offset..offset + 2].copy_from_slice(&0x8664u16.to_le_bytes()); // Machine: AMD64
+        pe[offset + 2..offset + 4].copy_from_slice(&1u16.to_le_bytes()); // NumberOfSections
+        pe[offset + 16..offset + 18].copy_from_slice(&240u16.to_le_bytes()); // SizeOfOptionalHeader
+        pe[offset + 18..offset + 20].copy_from_slice(&0x2022u16.to_le_bytes()); // Characteristics
+        offset += COFF_HEADER_SIZE;
+
+        // Optional Header PE32+ (240 bytes)
+        let opt_start = offset;
+        pe[opt_start..opt_start + 2].copy_from_slice(&0x20bu16.to_le_bytes()); // Magic: PE32+
+        pe[opt_start + 56..opt_start + 60].copy_from_slice(&0x3000u32.to_le_bytes()); // SizeOfImage
+        pe[opt_start + 60..opt_start + 64].copy_from_slice(&0x200u32.to_le_bytes()); // SizeOfHeaders
+        pe[opt_start + 108..opt_start + 112].copy_from_slice(&16u32.to_le_bytes()); // NumberOfRvaAndSizes
+
+        // Data directory entry 2: Resource directory (RVA=0x1000, Size=0x200)
+        let rsrc_dir_offset = opt_start + 112 + 2 * 8;
+        pe[rsrc_dir_offset..rsrc_dir_offset + 4].copy_from_slice(&0x1000u32.to_le_bytes());
+        pe[rsrc_dir_offset + 4..rsrc_dir_offset + 8].copy_from_slice(&0x200u32.to_le_bytes());
+        offset += OPTIONAL_HEADER_SIZE;
+
+        // Section Header for .rsrc
+        pe[offset..offset + 8].copy_from_slice(b".rsrc\0\0\0");
+        pe[offset + 8..offset + 12].copy_from_slice(&0x200u32.to_le_bytes()); // VirtualSize
+        pe[offset + 12..offset + 16].copy_from_slice(&0x1000u32.to_le_bytes()); // VirtualAddress
+        pe[offset + 16..offset + 20].copy_from_slice(&0x200u32.to_le_bytes()); // SizeOfRawData
+        pe[offset + 20..offset + 24].copy_from_slice(&0x200u32.to_le_bytes()); // PointerToRawData
+        pe[offset + 36..offset + 40].copy_from_slice(&0x40000040u32.to_le_bytes()); // Characteristics
+
+        // Resource section starts at file offset 0x200 (maps to RVA 0x1000)
+        let rsrc_base = HEADERS_SIZE;
+
+        // Resource directory layout:
+        // 0x00: Root directory (16 bytes) - 1 named entry for "VMFW"
+        // 0x10: Root entry (8 bytes) - name RVA + subdirectory RVA
+        // 0x18: Type name "VMFW" in UTF-16LE with length prefix (10 bytes)
+        // 0x28: Type directory (16 bytes) - 1 ID entry
+        // 0x38: Type entry (8 bytes) - ID + subdirectory RVA
+        // 0x40: Language directory (16 bytes) - 1 ID entry
+        // 0x50: Language entry (8 bytes) - language ID + data entry RVA
+        // 0x58: Resource data entry (16 bytes)
+        // 0x68: Actual payload data
+
+        // Root directory
+        pe[rsrc_base + 12..rsrc_base + 14].copy_from_slice(&1u16.to_le_bytes()); // NumberOfNamedEntries
+
+        // Root entry: name offset with high bit set, subdirectory offset with high bit set
+        pe[rsrc_base + 0x10..rsrc_base + 0x14].copy_from_slice(&0x80000018u32.to_le_bytes());
+        pe[rsrc_base + 0x14..rsrc_base + 0x18].copy_from_slice(&0x80000028u32.to_le_bytes());
+
+        // Type name "VMFW" at 0x18: length (4) + UTF-16LE
+        pe[rsrc_base + 0x18..rsrc_base + 0x1a].copy_from_slice(&4u16.to_le_bytes());
+        pe[rsrc_base + 0x1a..rsrc_base + 0x22].copy_from_slice(&[b'V', 0, b'M', 0, b'F', 0, b'W', 0]);
+
+        // Type directory at 0x28
+        pe[rsrc_base + 0x28 + 14..rsrc_base + 0x28 + 16].copy_from_slice(&1u16.to_le_bytes()); // NumberOfIdEntries
+
+        // Type entry at 0x38: resource ID + subdirectory offset
+        pe[rsrc_base + 0x38..rsrc_base + 0x3c].copy_from_slice(&resource_id.to_le_bytes());
+        pe[rsrc_base + 0x3c..rsrc_base + 0x40].copy_from_slice(&0x80000040u32.to_le_bytes());
+
+        // Language directory at 0x40
+        pe[rsrc_base + 0x40 + 14..rsrc_base + 0x40 + 16].copy_from_slice(&1u16.to_le_bytes()); // NumberOfIdEntries
+
+        // Language entry at 0x50: language ID + data entry offset (no high bit = data)
+        pe[rsrc_base + 0x50..rsrc_base + 0x54].copy_from_slice(&0x0409u32.to_le_bytes()); // English US
+        pe[rsrc_base + 0x54..rsrc_base + 0x58].copy_from_slice(&0x58u32.to_le_bytes());
+
+        // Resource data entry at 0x58
+        let data_rva = 0x1000u32 + 0x68; // RVA of payload
+        pe[rsrc_base + 0x58..rsrc_base + 0x5c].copy_from_slice(&data_rva.to_le_bytes());
+        pe[rsrc_base + 0x5c..rsrc_base + 0x60].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+
+        // Copy payload at 0x68
+        let payload_offset = rsrc_base + 0x68;
+        pe[payload_offset..payload_offset + payload.len()].copy_from_slice(payload);
+
+        pe
+    }
+
     #[async_test]
     async fn read_write_igvmfile() {
         let (_dir, path) = new_path();
-        let data_path = PathBuf::from("C:\\Windows\\System32\\vmfirmwarehcl.dll");
+
+        // Create a test DLL with VMFW resource
+        let expected_payload = b"TEST_IGVM_FIRMWARE_PAYLOAD_DATA";
+        let dll_data = create_test_vmfw_dll(expected_payload, ResourceCode::Snp as u32);
+
+        // Write the test DLL to a temp file
+        let dll_path = _dir.path().join("test_vmfw.dll");
+        fs_err::write(&dll_path, &dll_data).unwrap();
 
         test_vmgs_create(&path, Some(ONE_MEGA_BYTE * 8), false, None)
             .await
             .unwrap();
 
-        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWrite, None)
+        let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWrite, None)
             .await
             .unwrap();
 
-        let buf = read_igvmfile(data_path.clone(), ResourceCode::Snp)
+        let buf = read_igvmfile(dll_path, ResourceCode::Snp)
             .await
             .unwrap();
 
-        // write_igvmfile(&mut vmgs, false, false, data_path, ResourceCode::Snp)
-        //     .await
-        //     .unwrap();
+        assert_eq!(buf, expected_payload);
 
-        vmgs_write(
-            &mut vmgs,
-            FileId::GUEST_FIRMWARE,
-            &buf,
-            false,
-            false,
-        )
-        .await.unwrap();
+        vmgs_write(&mut vmgs, FileId::GUEST_FIRMWARE, &buf, false, false)
+            .await
+            .unwrap();
 
         let read_buf = vmgs_read(&mut vmgs, FileId::GUEST_FIRMWARE, false)
             .await
@@ -1524,13 +1616,20 @@ mod tests {
         assert!(read_buf == buf_1);
     }
 
-    #[cfg(all(windows, with_encryption, guest_arch = "x86_64"))]
+    #[cfg(with_encryption)]
     #[async_test]
     async fn read_write_igvmfile_encrypted() {
         // Should be able to read and write IGVMfile to an encrypted VMGS
         let (_dir, path) = new_path();
-        let data_path = PathBuf::from("C:\\Windows\\System32\\vmfirmwarehcl.dll");
         let encryption_key = vec![5; 32];
+
+        // Create a test DLL with VMFW resource
+        let expected_payload = b"ENCRYPTED_TEST_IGVM_FIRMWARE_PAYLOAD";
+        let dll_data = create_test_vmfw_dll(expected_payload, ResourceCode::Snp as u32);
+
+        // Write the test DLL to a temp file
+        let dll_path = _dir.path().join("test_vmfw.dll");
+        fs_err::write(&dll_path, &dll_data).unwrap();
 
         test_vmgs_create(
             &path,
@@ -1541,27 +1640,19 @@ mod tests {
         .await
         .unwrap();
 
-        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWrite, Some(&encryption_key))
+        let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWrite, Some(&encryption_key))
             .await
             .unwrap();
 
-        let buf = read_igvmfile(data_path.clone(), ResourceCode::Snp)
+        let buf = read_igvmfile(dll_path.clone(), ResourceCode::Snp)
             .await
             .unwrap();
 
-        // write_igvmfile(&mut vmgs, true, false, data_path, ResourceCode::Snp)
-        //     .await
-        //     .unwrap();
+        assert_eq!(buf, expected_payload);
 
-        vmgs_write(
-            &mut vmgs,
-            FileId::GUEST_FIRMWARE,
-            &buf,
-            true,
-            false,
-        )
-        .await
-        .unwrap();
+        vmgs_write(&mut vmgs, FileId::GUEST_FIRMWARE, &buf, true, false)
+            .await
+            .unwrap();
 
         let read_buf = vmgs_read(&mut vmgs, FileId::GUEST_FIRMWARE, true)
             .await
@@ -1569,20 +1660,12 @@ mod tests {
 
         assert_eq!(buf, read_buf);
 
-        // try normal write IGVMfile to encrypted VMGS
-        // write_igvmfile(&mut vmgs, false, false, data_path, ResourceCode::Snp)
-        //     .await
-        //     .unwrap();
-        let bytes = read_igvmfile(data_path.as_ref().to_path_buf(), ResourceCode::Snp).await?;
+        // try normal write IGVMfile to encrypted VMGS (unencrypted write, allow overwrite)
+        let buf2 = read_igvmfile(dll_path, ResourceCode::Snp).await.unwrap();
 
-        vmgs_write(
-            &mut vmgs,
-            FileId::GUEST_FIRMWARE,
-            &bytes,
-            false,
-            false,
-        )
-        .await?;
+        vmgs_write(&mut vmgs, FileId::GUEST_FIRMWARE, &buf2, false, true)
+            .await
+            .unwrap();
     }
 
     #[async_test]
