@@ -275,33 +275,50 @@ pub fn chmod(file_handle: &OwnedHandle, mode: lx::mode_t) -> lx::Result<()> {
     }
 }
 
+/// Result of analyzing a delete file error to determine how to proceed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteErrorAction {
+    /// The error should be returned as-is without attempting any workarounds.
+    ReturnError(lx::Error),
+    /// The error might be due to a read-only attribute; try clearing it and retrying.
+    TryReadOnlyWorkaround,
+}
+
+/// Analyzes an error from a delete file operation to determine the appropriate action.
+pub fn analyze_delete_error(error: lx::Error, file_handle: &OwnedHandle) -> DeleteErrorAction {
+    // Skip the read-only file workaround for these specific errors that are unrelated to file permissions.
+    // For errors like ENOTEMPTY (directory not empty), preserve the original error.
+    if error.value() == lx::ENOTEMPTY
+        || error.value() == lx::ENOENT
+        || error.value() == lx::ENOTDIR
+        || error.value() == lx::EISDIR
+    {
+        DeleteErrorAction::ReturnError(error)
+    } else if error.value() == lx::EIO {
+        // EIO can come from STATUS_CANNOT_DELETE, which for directories means
+        // the directory is not empty. Check if this is a directory and return
+        // ENOTEMPTY in that case.
+        if is_directory(file_handle) {
+            DeleteErrorAction::ReturnError(lx::Error::ENOTEMPTY)
+        } else {
+            DeleteErrorAction::ReturnError(error)
+        }
+    } else {
+        DeleteErrorAction::TryReadOnlyWorkaround
+    }
+}
+
 pub fn delete_file(fs_context: &FsContext, file_handle: &OwnedHandle) -> lx::Result<()> {
     let result = delete_file_core(fs_context, file_handle);
 
     match result {
         Ok(_) => result,
-        Err(e) => {
-            // Skip the read-only file workaround for these specific errors that are unrelated to file permissions.
-            // For errors like ENOTEMPTY (directory not empty), preserve the original error.
-            if e.value() == lx::ENOTEMPTY
-                || e.value() == lx::ENOENT
-                || e.value() == lx::ENOTDIR
-                || e.value() == lx::EISDIR
-            {
-                result
-            } else if e.value() == lx::EIO {
-                // EIO can come from STATUS_CANNOT_DELETE, which for directories means
-                // the directory is not empty. Check if this is a directory and return
-                // ENOTEMPTY in that case.
-                if is_directory(file_handle) {
-                    Err(lx::Error::ENOTEMPTY)
-                } else {
-                    result
-                }
-            } else {
+        Err(e) => match analyze_delete_error(e, file_handle) {
+            DeleteErrorAction::ReturnError(err) => Err(err),
+            DeleteErrorAction::TryReadOnlyWorkaround => {
                 delete_read_only_file(fs_context, file_handle)
             }
-        }
+        },
     }
 }
 

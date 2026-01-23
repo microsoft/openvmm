@@ -969,17 +969,9 @@ impl LxVolume {
 
         match result {
             Ok(_) => result,
-            Err(e) => {
-                // Skip the read-only file workaround for these specific errors that are unrelated to file permissions.
-                // For errors like ENOTEMPTY (directory not empty), preserve the original error.
-                if e.value() == lx::EIO
-                    || e.value() == lx::ENOTEMPTY
-                    || e.value() == lx::ENOENT
-                    || e.value() == lx::ENOTDIR
-                    || e.value() == lx::EISDIR
-                {
-                    result
-                } else {
+            Err(e) => match fs::analyze_delete_error(e, handle) {
+                fs::DeleteErrorAction::ReturnError(err) => Err(err),
+                fs::DeleteErrorAction::TryReadOnlyWorkaround => {
                     // Reopen with the correct permissions to query and clear the read-only attribute,
                     // and try again.
                     let handle = util::reopen_file(
@@ -989,7 +981,7 @@ impl LxVolume {
 
                     fs::delete_read_only_file(&self.state.fs_context, &handle)
                 }
-            }
+            },
         }
     }
 
