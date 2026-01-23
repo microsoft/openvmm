@@ -833,7 +833,7 @@ impl MonitorPageRequest {
     }
 }
 
-#[derive(Debug, Copy, PartialEq, Eq, Clone, Protobuf)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
 pub struct SignalInfo {
     #[mesh(1)]
