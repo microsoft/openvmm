@@ -87,6 +87,28 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
     Ok(())
 }
 
+/// Basic boot test for images that require small amounts of ram, like alpine.
+#[vmm_test(
+    openvmm_uefi_x64(vhd(alpine_3_23_x64)),
+    openvmm_openhcl_uefi_x64(vhd(alpine_3_23_x64)),
+    hyperv_openhcl_uefi_x64(vhd(alpine_3_23_x64)),
+    openvmm_uefi_aarch64(vhd(alpine_3_23_aarch64)),
+    openvmm_openhcl_uefi_aarch64(vhd(alpine_3_23_aarch64)),
+    hyperv_openhcl_uefi_aarch64(vhd(alpine_3_23_aarch64))
+)]
+async fn boot_small<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_memory(MemoryConfig {
+            startup_bytes: SIZE_1_GB,
+            ..Default::default()
+        })
+        .run()
+        .await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Basic boot test without agent
 #[vmm_test_no_agent(
     openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
