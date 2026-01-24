@@ -495,6 +495,30 @@ pub fn find_msix_irq(pci_id: &str, index: u32) -> anyhow::Result<u32> {
     Ok(irq)
 }
 
+pub fn print_relevant_params() {
+    #[derive(Debug)]
+    struct Param {
+        _name: &'static str,
+        _value: Option<String>,
+    }
+
+    let vfio_params = [
+        "/sys/module/vfio/parameters/enable_unsafe_noiommu_mode",
+        "/sys/module/driver/parameters/async_probe",
+    ]
+    .iter()
+    .map(|path| Param {
+        _name: path,
+        _value: fs::read_to_string(path).ok().map(|s| s.trim().to_string()),
+    })
+    .collect::<Vec<_>>();
+
+    tracing::debug!(
+        vfio_params = ?vfio_params,
+        "Relevant VFIO module parameters"
+    );
+}
+
 pub struct MappedRegion {
     addr: *mut c_void,
     len: usize,
