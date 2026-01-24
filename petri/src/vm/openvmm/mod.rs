@@ -21,6 +21,7 @@ use crate::Disk;
 use crate::Firmware;
 use crate::ModifyFn;
 use crate::OpenHclServicingFlags;
+use crate::OpenvmmLogConfig;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
@@ -145,6 +146,7 @@ pub struct PetriVmConfigOpenVmm {
     // Direct configuration related information.
     runtime_config: PetriVmRuntimeConfig,
     arch: MachineArch,
+    host_log_levels: Option<OpenvmmLogConfig>,
     config: Config,
 
     // Runtime resources
