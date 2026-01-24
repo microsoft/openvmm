@@ -39,8 +39,6 @@ pub enum QueueError {
     DoubleIndirect,
     #[error("a descriptor chain is too long or has a cycle")]
     TooLong,
-    #[error("completed descriptor index {0} not found")]
-    CompletedDescriptorIndexNotFound(u16),
     #[error("Invalid queue size {0}. Must be a power of 2.")]
     InvalidQueueSize(u16),
 }
@@ -306,11 +304,12 @@ impl SplitQueueGetWork {
         } else {
             self.set_used_flags(spec::UsedFlags::new().with_no_notify(true))?;
         }
+        let next_avail_index = self.last_avail_index;
+        self.last_avail_index = self.last_avail_index.wrapping_add(1);
         // Ensure available index read is ordered before subsequent descriptor
         // reads.
         atomic::fence(atomic::Ordering::Acquire);
-        self.last_avail_index = self.last_avail_index.wrapping_add(1);
-        Ok(Some(self.last_avail_index % self.queue_size))
+        Ok(Some(next_avail_index % self.queue_size))
     }
 
     pub fn get_available_descriptor_index(&self, wrapped_index: u16) -> Result<u16, QueueError> {
@@ -518,8 +517,10 @@ impl<'a> DescriptorChain<'a> {
                     .map_err(QueueError::Memory)?,
             );
             self.descriptor_index = Some(0);
-            self.queue_size = std::cmp::min(u16::MAX as u32, descriptor.length) as u16
-                / size_of::<SplitDescriptor>() as u16;
+            self.queue_size = std::cmp::min(
+                (descriptor.length / size_of::<SplitDescriptor>() as u32) as u16,
+                self.queue_size,
+            );
             self.max_desc_chain = std::cmp::min(self.queue_size, Self::MAX_DESC_CHAIN);
             self.queue.descriptor(indirect_queue, 0)?
         };
