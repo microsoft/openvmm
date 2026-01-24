@@ -1795,9 +1795,6 @@ impl OpenHclConfig {
     pub fn command_line(&self) -> String {
         let mut cmdline = self.custom_command_line.clone();
 
-        // Enable MANA keep-alive by default for all tests
-        append_cmdline(&mut cmdline, "OPENHCL_MANA_KEEP_ALIVE=host,privatepool");
-
         match &self.log_levels {
             OpenvmmLogConfig::TestDefault => {
                 let default_log_levels = {
