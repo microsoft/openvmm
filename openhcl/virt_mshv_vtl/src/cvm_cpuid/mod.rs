@@ -696,15 +696,54 @@ impl CpuidResults {
             .leaf_result_mut_ref(CpuidFunction::ExtendedFeatures, Some(0))
             .expect("validated this leaf exists");
 
-        extended_features0_entry.ebx &= !u32::from(clear_extended_features0_ebx);
-        extended_features0_entry.ecx &= !u32::from(clear_extended_features0_ecx);
-        extended_features0_entry.edx &= !u32::from(clear_extended_features0_edx);
+        let clearing_ebx = cpuid::ExtendedFeatureSubleaf0Ebx::from(
+            extended_features0_entry.ebx & clear_extended_features0_ebx.into_bits(),
+        );
+
+        let clearing_ecx = cpuid::ExtendedFeatureSubleaf0Ecx::from(
+            extended_features0_entry.ecx & clear_extended_features0_ecx.into_bits(),
+        );
+
+        let clearing_edx = cpuid::ExtendedFeatureSubleaf0Edx::from(
+            extended_features0_entry.edx & clear_extended_features0_edx.into_bits(),
+        );
+
+        if (clearing_ebx.into_bits() != 0)
+            || (clearing_ecx.into_bits() != 0)
+            || (clearing_edx.into_bits() != 0)
+        {
+            tracing::warn!(
+                CVM_ALLOWED,
+                ?clearing_ebx,
+                ?clearing_ecx,
+                ?clearing_edx,
+                ?xsave_support,
+                "Disabling features in cpuid leaf 7.0 due to missing xsave support.",
+            );
+        }
+
+        extended_features0_entry.ebx &= !clear_extended_features0_ebx.into_bits();
+        extended_features0_entry.ecx &= !clear_extended_features0_ecx.into_bits();
+        extended_features0_entry.edx &= !clear_extended_features0_edx.into_bits();
 
         let version_and_features = self
             .leaf_result_mut_ref(CpuidFunction::VersionAndFeatures, None)
             .expect("validated this leaf exists");
 
-        version_and_features.ecx &= !u32::from(clear_version_and_features0_ecx);
+        let clearing_ecx = cpuid::VersionAndFeaturesEcx::from(
+            version_and_features.ecx & clear_version_and_features0_ecx.into_bits(),
+        );
+
+        if clearing_ecx.into_bits() != 0 {
+            tracing::warn!(
+                CVM_ALLOWED,
+                ?clearing_ecx,
+                ?xsave_support,
+                "Disabling features in cpuid leaf 1.0 due to missing xsave support.",
+            );
+        }
+
+        version_and_features.ecx &= !clear_version_and_features0_ecx.into_bits();
 
         arch_initializer.update_xsave_dependencies(xsave_support, self);
     }

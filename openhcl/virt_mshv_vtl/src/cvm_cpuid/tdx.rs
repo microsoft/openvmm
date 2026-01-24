@@ -400,12 +400,44 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
             .leaf_result_mut_ref(CpuidFunction::ExtendedFeatures, Some(0))
             .expect("validated this leaf exists");
 
-        extended_features0_entry.edx &= !u32::from(clear_extended_features0_edx);
+        let clearing_edx = cpuid::ExtendedFeatureSubleaf0Edx::from(
+            extended_features0_entry.edx & clear_extended_features0_edx.into_bits(),
+        );
+
+        if clearing_edx.into_bits() != 0 {
+            tracing::warn!(
+                CVM_ALLOWED,
+                ?clear_extended_features0_edx,
+                ?xsave_support,
+                "Disabling features in cpuid leaf 7.0 due to missing xsave support.",
+            );
+        }
+
+        extended_features0_entry.edx &= !clear_extended_features0_edx.into_bits();
 
         let extended_features1_entry = results
             .leaf_result_mut_ref(CpuidFunction::ExtendedFeatures, Some(1))
             .expect("validated this leaf exists");
-        extended_features1_entry.eax &= !u32::from(clear_extended_features1_eax);
-        extended_features1_entry.edx &= !u32::from(clear_extended_features1_edx);
+
+        let clearing_eax = cpuid::ExtendedFeatureSubleaf1Eax::from(
+            extended_features1_entry.eax & u32::from(clear_extended_features1_eax),
+        );
+
+        let clearing_edx = cpuid::ExtendedFeatureSubleaf1Edx::from(
+            extended_features1_entry.edx & u32::from(clear_extended_features1_edx),
+        );
+
+        if (clearing_eax.into_bits() != 0) || (clearing_edx.into_bits() != 0) {
+            tracing::warn!(
+                CVM_ALLOWED,
+                ?clear_extended_features1_eax,
+                ?clear_extended_features1_edx,
+                ?xsave_support,
+                "Disabling features in cpuid leaf 7.1 due to missing xsave support.",
+            );
+        }
+
+        extended_features1_entry.eax &= !clear_extended_features1_eax.into_bits();
+        extended_features1_entry.edx &= !clear_extended_features1_edx.into_bits();
     }
 }
