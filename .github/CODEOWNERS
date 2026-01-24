@@ -1,7 +1,7 @@
 # File containing policy for file ownership
 
 # Reviewers for all files in the repository
-* @microsoft/openvmm-reviewers
+* @microsoft/openvmm-maintain
 
 # Any CI changes require special approval
 /ci/ @microsoft/openvmm-ci-reviewers

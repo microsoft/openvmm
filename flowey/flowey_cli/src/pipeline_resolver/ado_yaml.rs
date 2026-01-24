@@ -961,7 +961,9 @@ EOF
                     bash_commands.push_minor(cmd);
                 }
             }
-            Step::GitHubYaml { .. } => anyhow::bail!("GitHub YAML not supported in ADO"),
+            Step::GitHubYaml { label, .. } => {
+                anyhow::bail!("GitHub YAML not supported in ADO: {label}")
+            }
         }
     }
 

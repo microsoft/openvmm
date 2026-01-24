@@ -28,7 +28,7 @@ pub const NODEJS: &str = "18.x";
 // N.B. Kernel version numbers for dev and stable branches are not directly
 //      comparable. They originate from separate branches, and the fourth digit
 //      increases with each release from the respective branch.
-pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.12.52.1";
+pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.12.52.4";
 pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.12.52.4";
 pub const OPENVMM_DEPS: &str = "0.1.0-20250403.3";
 pub const PROTOC: &str = "27.1";
@@ -78,9 +78,7 @@ impl FlowNode for Node {
         ctx.req(flowey_lib_common::download_protoc::Request::Version(PROTOC.into()));
         ctx.req(flowey_lib_common::install_azure_cli::Request::Version(AZURE_CLI.into()));
         ctx.req(flowey_lib_common::install_nodejs::Request::Version(NODEJS.into()));
-        if !matches!(ctx.backend(), FlowBackend::Ado) {
-            ctx.req(flowey_lib_common::install_rust::Request::Version(RUSTUP_TOOLCHAIN.into()));
-        }
+        ctx.req(flowey_lib_common::install_rust::Request::Version(RUSTUP_TOOLCHAIN.into()));
         Ok(())
     }
 }
