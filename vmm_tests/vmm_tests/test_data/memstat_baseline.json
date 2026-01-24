@@ -23,7 +23,7 @@
                 },
                 "openvmm_hcl": {
                     "Pss": {
-                        "base": 10624,
+                        "base": 11162,
                         "threshold": 512
                     },
                     "Pss_Anon": {

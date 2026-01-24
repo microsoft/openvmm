@@ -108,6 +108,7 @@ impl PetriVmConfigOpenVmm {
         let PetriVmConfig {
             name: _,
             arch,
+            host_log_levels,
             firmware,
             memory,
             proc_topology,
@@ -470,6 +471,7 @@ impl PetriVmConfigOpenVmm {
         Ok(Self {
             runtime_config: firmware.into_runtime_config(vmbus_storage_controllers),
             arch,
+            host_log_levels,
             config,
 
             resources: PetriVmResourcesOpenVmm {
