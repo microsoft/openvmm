@@ -202,6 +202,9 @@ pub async fn socket_tests(driver: impl Driver) {
 
 #[cfg(windows)]
 pub mod windows {
+    // UNSAFETY: needed to use `OverlappedFile`.
+    #![allow(unsafe_code)]
+
     //! Windows-specific executor tests.
 
     use crate::driver::Driver;
@@ -223,7 +226,8 @@ pub mod windows {
                 .attributes(FILE_FLAG_OVERLAPPED)
                 .open(temp_file.path())
                 .unwrap();
-            let file = OverlappedFile::new(&driver, file).unwrap();
+            // SAFETY: file is owned exclusively by the caller.
+            let file = unsafe { OverlappedFile::new(&driver, file).unwrap() };
             file.write_at(0x1000, &b"abcdefg"[..]).await.0.unwrap();
             let b = vec![0u8; 7];
             let (r, b) = file.read_at(0, b).await;
@@ -254,8 +258,10 @@ pub mod windows {
 
             let server_pipe = fut.next().await.unwrap().unwrap();
 
-            let client_pipe = OverlappedFile::new(&driver, client_pipe).unwrap();
-            let server_pipe = OverlappedFile::new(&driver, server_pipe).unwrap();
+            // SAFETY: file is owned exclusively by the caller.
+            let client_pipe = unsafe { OverlappedFile::new(&driver, client_pipe).unwrap() };
+            // SAFETY: file is owned exclusively by the caller.
+            let server_pipe = unsafe { OverlappedFile::new(&driver, server_pipe).unwrap() };
 
             // Drop case.
             let mut read = server_pipe.read_at(0, vec![0; 256]);
@@ -281,6 +287,11 @@ pub mod windows {
             let n = n.unwrap();
             assert_eq!(n, data.len());
             assert_eq!(&buf[..n], data);
+
+            // Drop with pending IO.
+            let mut read = server_pipe.read_at(0, vec![0; 256]);
+            assert!(futures::poll!(&mut read).is_pending());
+            drop(server_pipe);
         }
     }
 }
