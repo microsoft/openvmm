@@ -381,6 +381,7 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
             clear_extended_features1_eax.set_avx_ifma(true);
 
             clear_extended_features1_edx.set_avx_vnni_int8(true);
+            clear_extended_features1_edx.set_avx_vnni_int16(true);
             clear_extended_features1_edx.set_avx_ne_convert(true);
 
             disable_avx_512 = true;
