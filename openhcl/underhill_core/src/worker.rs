@@ -312,6 +312,9 @@ pub struct UnderhillEnvCfg {
     pub disable_proxy_redirect: bool,
     /// Disable lower VTL timer virtualization
     pub disable_lower_vtl_timer_virt: bool,
+    /// The timeout in seconds for VM config operations, both the initial configuration
+    /// and then subsequent modifications.
+    pub config_timeout_in_seconds: u64,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -2109,6 +2112,7 @@ async fn new_underhill_vm(
         env_cfg.nvme_vfio,
         is_restoring,
         default_io_queue_depth,
+        env_cfg.config_timeout_in_seconds,
     )
     .instrument(tracing::info_span!("new_initial_controllers", CVM_ALLOWED))
     .await
@@ -3549,6 +3553,7 @@ async fn new_underhill_vm(
         mana_keep_alive: env_cfg.mana_keep_alive,
         test_configuration: env_cfg.test_configuration,
         dma_manager,
+        config_timeout_in_seconds: env_cfg.config_timeout_in_seconds,
     };
 
     Ok(loaded_vm)

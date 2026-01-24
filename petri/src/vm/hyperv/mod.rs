@@ -8,17 +8,20 @@ use vmsocket::VmAddress;
 use vmsocket::VmSocket;
 
 use super::ProcessorTopology;
-use crate::BootDeviceType;
+use crate::Disk;
+use crate::Drive;
 use crate::Firmware;
 use crate::IsolationType;
+use crate::ModifyFn;
 use crate::NoPetriVmInspector;
 use crate::OpenHclConfig;
 use crate::OpenHclServicingFlags;
-use crate::PetriDiskType;
+use crate::OpenvmmLogConfig;
 use crate::PetriHaltReason;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmRuntime;
+use crate::PetriVmRuntimeConfig;
 use crate::PetriVmgsDisk;
 use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
@@ -26,18 +29,19 @@ use crate::SecureBootTemplate;
 use crate::ShutdownKind;
 use crate::TpmConfig;
 use crate::UefiConfig;
+use crate::VmbusStorageType;
 use crate::VmmQuirks;
-use crate::disk_image::AgentImage;
-use crate::hyperv::hvc::VmState;
 use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::kmsg_log_task;
 use crate::openhcl_diag::OpenHclDiagHandler;
+use crate::vm::PetriVmProperties;
 use crate::vm::append_cmdline;
 use anyhow::Context;
 use async_trait::async_trait;
 use disk_backend::sync_wrapper::BlockingDisk;
 use disk_vhdmp::VhdmpDisk;
 use get_resources::ged::FirmwareEvent;
+use guid::Guid;
 use pal_async::DefaultDriver;
 use pal_async::pipe::PolledPipe;
 use pal_async::socket::PolledSocket;
@@ -56,95 +60,29 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tempfile::TempDir;
 use tempfile::TempPath;
 use vm::HyperVVM;
 use vmgs_resources::GuestStateEncryptionPolicy;
+use vtl2_settings_proto::Vtl2Settings;
 
 /// The Hyper-V Petri backend
-pub struct HyperVPetriBackend {}
-
-/// Represents a SCSI Controller addeded to a VM.
 #[derive(Debug)]
-pub struct HyperVScsiController {
-    /// An identifier provided by the test to identify this controller.
-    pub test_id: String,
-
-    /// The controller number assigned by Hyper-V.
-    pub controller_number: u32,
-
-    /// The target VTL this controller is mapped to (supplied by test).
-    pub target_vtl: u32,
-
-    /// The VSID assigned by Hyper-V for this controller.
-    pub vsid: guid::Guid,
-}
+pub struct HyperVPetriBackend {}
 
 /// Resources needed at runtime for a Hyper-V Petri VM
 pub struct HyperVPetriRuntime {
     vm: HyperVVM,
     log_tasks: Vec<Task<anyhow::Result<()>>>,
-    temp_dir: tempfile::TempDir,
+    temp_dir: TempDir,
+    output_dir: PathBuf,
     driver: DefaultDriver,
-
-    is_openhcl: bool,
-    is_isolated: bool,
-
-    /// Last VTL2 settings set on this VM.
-    vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
-
-    /// Test-added SCSI controllers.
-    /// TODO (future PR): push this into `PetriVmConfig` and use in
-    /// openvmm as well.
-    additional_scsi_controllers: Vec<HyperVScsiController>,
-}
-
-/// Additional configuration for a Hyper-V VM.
-#[derive(Default, Debug)]
-pub struct HyperVPetriConfig {
-    /// VTL2 settings to configure on the VM before petri powers it on.
-    initial_vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
-
-    /// Test-added SCSI controllers (targeting specific VTLs).
-    /// A tuple if test-identifier and targetvtl. Test-identifier
-    /// is used so that the test can find a specific controller, if that
-    /// is important to the test. These are resolved into a list of
-    /// [`HyperVScsiController`] objects stored in the runtime.
-    additional_scsi_controllers: Vec<(String, u32)>,
-}
-
-impl HyperVPetriConfig {
-    /// Add custom VTL 2 settings.
-    // TODO: At some point we want to replace uses of this with nicer with_disk,
-    // with_nic, etc. methods. And unify this with the same function definition
-    // as the openvmm backend.
-    pub fn with_custom_vtl2_settings(
-        mut self,
-        f: impl FnOnce(&mut vtl2_settings_proto::Vtl2Settings),
-    ) -> Self {
-        if self.initial_vtl2_settings.is_none() {
-            self.initial_vtl2_settings = Some(vtl2_settings_proto::Vtl2Settings {
-                version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
-                fixed: None,
-                dynamic: Some(Default::default()),
-                namespace_settings: Default::default(),
-            });
-        }
-
-        f(self.initial_vtl2_settings.as_mut().unwrap());
-        self
-    }
-
-    /// Add an additional SCSI controller to the VM.
-    /// Will be added before the VM starts.
-    pub fn with_additional_scsi_controller(mut self, test_id: String, target_vtl: u32) -> Self {
-        self.additional_scsi_controllers.push((test_id, target_vtl));
-        self
-    }
+    properties: PetriVmProperties,
 }
 
 #[async_trait]
 impl PetriVmmBackend for HyperVPetriBackend {
-    type VmmConfig = HyperVPetriConfig;
+    type VmmConfig = ();
     type VmRuntime = HyperVPetriRuntime;
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
@@ -225,50 +163,49 @@ impl PetriVmmBackend for HyperVPetriBackend {
     async fn run(
         self,
         config: PetriVmConfig,
-        modify_vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
+        _modify_vmm_config: Option<ModifyFn<Self::VmmConfig>>,
         resources: &PetriVmResources,
-    ) -> anyhow::Result<Self::VmRuntime> {
+        properties: PetriVmProperties,
+    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
         let PetriVmConfig {
             name,
             arch,
+            host_log_levels,
             firmware,
             memory,
             proc_topology,
-            agent_image,
-            openhcl_agent_image,
-            boot_device_type,
             vmgs,
             tpm,
-            guest_crash_disk,
+            vmbus_storage_controllers,
         } = config;
 
         let PetriVmResources { driver, log_source } = resources;
 
+        assert!(matches!(
+            host_log_levels,
+            None | Some(OpenvmmLogConfig::TestDefault)
+        )); // Custom host log levels not supported in HyperV backend yet.
+
         let temp_dir = tempfile::tempdir()?;
 
-        let (
-            guest_state_isolation_type,
-            generation,
-            guest_artifact,
-            uefi_config,
-            mut openhcl_config,
-        ) = match &firmware {
+        let (guest_state_isolation_type, generation, uefi_config, openhcl_config) = match &firmware
+        {
             Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => {
                 todo!("linux direct not supported on hyper-v")
             }
             Firmware::Pcat {
-                guest,
+                guest: _,
                 bios_firmware: _, // TODO
                 svga_firmware: _, // TODO
+                ide_controllers: _,
             } => (
                 powershell::HyperVGuestStateIsolationType::Disabled,
                 powershell::HyperVGeneration::One,
-                Some(guest.artifact()),
                 None,
                 None,
             ),
             Firmware::OpenhclPcat {
-                guest,
+                guest: _,
                 igvm_path,
                 bios_firmware: _, // TODO
                 svga_firmware: _, // TODO
@@ -276,23 +213,21 @@ impl PetriVmmBackend for HyperVPetriBackend {
             } => (
                 powershell::HyperVGuestStateIsolationType::OpenHCL,
                 powershell::HyperVGeneration::One,
-                Some(guest.artifact()),
                 None,
-                Some((igvm_path, openhcl_config.clone())),
+                Some((igvm_path, openhcl_config)),
             ),
             Firmware::Uefi {
-                guest,
+                guest: _,
                 uefi_firmware: _, // TODO
                 uefi_config,
             } => (
                 powershell::HyperVGuestStateIsolationType::Disabled,
                 powershell::HyperVGeneration::Two,
-                guest.artifact(),
                 Some(uefi_config),
                 None,
             ),
             Firmware::OpenhclUefi {
-                guest,
+                guest: _,
                 isolation,
                 igvm_path,
                 uefi_config,
@@ -306,11 +241,12 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     None => powershell::HyperVGuestStateIsolationType::TrustedLaunch,
                 },
                 powershell::HyperVGeneration::Two,
-                guest.artifact(),
                 Some(uefi_config),
-                Some((igvm_path, openhcl_config.clone())),
+                Some((igvm_path, openhcl_config)),
             ),
         };
+
+        let mut openhcl_command_line = openhcl_config.as_ref().map(|(_, c)| c.command_line());
 
         let vmgs_path = {
             // TODO: add support for configuring the TPM in Hyper-V
@@ -346,31 +282,21 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
             // TODO: Error for non-OpenHCL Hyper-V VMs if not supported
             // TODO: Use WMI interfaces when possible
-            if let Some((_, config)) = openhcl_config.as_mut() {
+            if properties.is_openhcl {
                 append_cmdline(
-                    &mut config.command_line,
+                    &mut openhcl_command_line,
                     format!("HCL_GUEST_STATE_LIFETIME={lifetime_cli}"),
                 );
                 append_cmdline(
-                    &mut config.command_line,
+                    &mut openhcl_command_line,
                     format!("HCL_GUEST_STATE_ENCRYPTION_POLICY={encryption_cli}"),
                 );
                 if strict {
-                    append_cmdline(&mut config.command_line, "HCL_STRICT_ENCRYPTION_POLICY=1");
+                    append_cmdline(&mut openhcl_command_line, "HCL_STRICT_ENCRYPTION_POLICY=1");
                 }
             };
 
-            match disk {
-                None | Some(PetriDiskType::Memory) => None,
-                Some(PetriDiskType::Differencing(parent_path)) => {
-                    let diff_disk_path = temp_dir
-                        .path()
-                        .join(parent_path.file_name().context("path has no filename")?);
-                    make_temp_diff_disk(&diff_disk_path, &parent_path).await?;
-                    Some(diff_disk_path)
-                }
-                Some(PetriDiskType::Persistent(path)) => Some(path),
-            }
+            petri_disk_to_hyperv(disk.as_ref(), &temp_dir).await?
         };
 
         let mut log_tasks = Vec::new();
@@ -421,6 +347,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             secure_boot_template,
             disable_frontpage,
             default_boot_always_attempt,
+            enable_vpci_boot,
         }) = uefi_config
         {
             vm.set_secure_boot(
@@ -436,102 +363,57 @@ impl PetriVmmBackend for HyperVPetriBackend {
             )
             .await?;
 
-            if *disable_frontpage {
-                // TODO: Disable frontpage for non-OpenHCL Hyper-V VMs
-                if let Some((_, config)) = openhcl_config.as_mut() {
-                    append_cmdline(&mut config.command_line, "OPENHCL_DISABLE_UEFI_FRONTPAGE=1");
-                };
+            // TODO: Disable frontpage for non-OpenHCL Hyper-V VMs
+            if *disable_frontpage && properties.is_openhcl {
+                append_cmdline(
+                    &mut openhcl_command_line,
+                    "OPENHCL_DISABLE_UEFI_FRONTPAGE=1",
+                );
             }
 
-            if let Some((_, config)) = openhcl_config.as_mut() {
+            if properties.is_openhcl {
                 append_cmdline(
-                    &mut config.command_line,
+                    &mut openhcl_command_line,
                     format!(
                         "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT={}",
                         if *default_boot_always_attempt { 1 } else { 0 }
                     ),
                 );
             };
-        }
 
-        // Share a single scsi controller for all petri-added drives.
-        let petri_vtl0_scsi = vm.add_scsi_controller(0).await?.0;
-
-        if let Some((controller_type, controller_number)) = match boot_device_type {
-            BootDeviceType::None => None,
-            BootDeviceType::Ide => Some((powershell::ControllerType::Ide, 0)),
-            BootDeviceType::Scsi => Some((powershell::ControllerType::Scsi, petri_vtl0_scsi)),
-            BootDeviceType::Nvme => todo!("NVMe boot device not yet supported for Hyper-V"),
-        } {
-            if let Some(artifact) = guest_artifact {
-                let controller_location = super::PETRI_VTL0_SCSI_BOOT_LUN;
-                let vhd = artifact.get();
-                let diff_disk_path = temp_dir.path().join(format!(
-                    "{}_{}_{}",
-                    controller_number,
-                    controller_location,
-                    vhd.file_name()
-                        .context("path has no filename")?
-                        .to_string_lossy()
-                ));
-
-                make_temp_diff_disk(&diff_disk_path, vhd).await?;
-
-                vm.add_vhd(
-                    &diff_disk_path,
-                    controller_type,
-                    Some(controller_location),
-                    Some(controller_number),
-                )
-                .await?;
+            if *enable_vpci_boot {
+                todo!("hyperv nvme boot");
             }
         }
 
-        if let Some(agent_image) = agent_image {
-            // Construct the agent disk.
-            let agent_disk_path = temp_dir.path().join("cidata.vhd");
-
-            if build_and_persist_agent_image(&agent_image, &agent_disk_path)
-                .context("vtl0 agent disk")?
+        if properties.using_vtl0_pipette
+            && matches!(properties.os_flavor, OsFlavor::Windows)
+            && !properties.is_isolated
+        {
+            // Make a file for the IMC hive. It's not guaranteed to be at a fixed
+            // location at runtime.
+            let imc_hive = temp_dir.path().join("imc.hiv");
             {
-                if agent_image.contains_pipette()
-                    && matches!(firmware.os_flavor(), OsFlavor::Windows)
-                    && firmware.isolation().is_none()
-                {
-                    // Make a file for the IMC hive. It's not guaranteed to be at a fixed
-                    // location at runtime.
-                    let imc_hive = temp_dir.path().join("imc.hiv");
-                    {
-                        let mut imc_hive_file = fs_err::File::create_new(&imc_hive)?;
-                        imc_hive_file
-                            .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
-                            .context("failed to write imc hive")?;
-                    }
-
-                    // Set the IMC
-                    vm.set_imc(&imc_hive).await?;
-                }
-
-                vm.add_vhd(
-                    &agent_disk_path,
-                    powershell::ControllerType::Scsi,
-                    Some(super::PETRI_VTL0_SCSI_PIPETTE_LUN),
-                    Some(petri_vtl0_scsi),
-                )
-                .await?;
+                let mut imc_hive_file = fs_err::File::create_new(&imc_hive)?;
+                imc_hive_file
+                    .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
+                    .context("failed to write imc hive")?;
             }
+
+            // Set the IMC
+            vm.set_imc(&imc_hive).await?;
         }
 
         if let Some((
             src_igvm_file,
             OpenHclConfig {
-                vtl2_nvme_boot: _, // TODO, see #1649.
                 vmbus_redirect,
-                command_line: _,
+                custom_command_line: _,
                 log_levels: _,
                 vtl2_base_address_type,
+                vtl2_settings,
             },
-        )) = &openhcl_config
+        )) = openhcl_config
         {
             if vtl2_base_address_type.is_some() {
                 todo!("custom VTL2 base address type not yet supported for Hyper-V")
@@ -557,28 +439,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
             )
             .await?;
 
-            let command_line = openhcl_config.as_ref().unwrap().1.command_line();
-
-            vm.set_vm_firmware_command_line(&command_line).await?;
+            vm.set_vm_firmware_command_line(openhcl_command_line.as_ref().unwrap())
+                .await?;
 
             vm.set_vmbus_redirect(*vmbus_redirect).await?;
-
-            if let Some(agent_image) = openhcl_agent_image {
-                let agent_disk_path = temp_dir.path().join("paravisor_cidata.vhd");
-
-                if build_and_persist_agent_image(&agent_image, &agent_disk_path)
-                    .context("vtl2 agent disk")?
-                {
-                    let controller_number = vm.add_scsi_controller(2).await?.0;
-                    vm.add_vhd(
-                        &agent_disk_path,
-                        powershell::ControllerType::Scsi,
-                        Some(0),
-                        Some(controller_number),
-                    )
-                    .await?;
-                }
-            }
 
             // Attempt to enable COM3 and use that to get KMSG logs, otherwise
             // fall back to use diag_client.
@@ -630,16 +494,11 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     ),
                 ));
             }
-        }
 
-        if let Some(guest_crash_disk) = guest_crash_disk {
-            vm.add_vhd(
-                &guest_crash_disk,
-                powershell::ControllerType::Scsi,
-                Some(super::PETRI_VTL0_SCSI_CRASH_LUN),
-                Some(petri_vtl0_scsi),
-            )
-            .await?;
+            // Set the VTL2 settings if necessary
+            if let Some(settings) = &vtl2_settings {
+                vm.set_base_vtl2_settings(settings).await?;
+            }
         }
 
         let serial_pipe_path = vm.set_vm_com_port(1).await?;
@@ -649,29 +508,49 @@ impl PetriVmmBackend for HyperVPetriBackend {
             hyperv_serial_log_task(driver.clone(), serial_pipe_path, serial_log_file),
         ));
 
-        let mut added_controllers = Vec::new();
-        let mut vtl2_settings = None;
+        // Add IDE storage
+        if let Some(ide_controllers) = firmware.ide_controllers() {
+            for (controller_number, controller) in ide_controllers.iter().enumerate() {
+                for (controller_location, disk) in controller.iter().enumerate() {
+                    if let Some(disk) = disk {
+                        let path = petri_disk_to_hyperv(disk.disk.as_ref(), &temp_dir).await?;
 
-        // TODO: If OpenHCL is being used, then translate storage through it.
-        // (requires changes above where VHDs are added)
-        if let Some(modify_vmm_config) = modify_vmm_config {
-            let config = modify_vmm_config(HyperVPetriConfig::default());
-
-            tracing::debug!(?config, "additional hyper-v config");
-
-            for (test_id, target_vtl) in config.additional_scsi_controllers {
-                let (controller_number, vsid) = vm.add_scsi_controller(target_vtl).await?;
-                added_controllers.push(HyperVScsiController {
-                    test_id,
-                    controller_number,
-                    target_vtl,
-                    vsid,
-                });
+                        vm.set_drive_ide(
+                            controller_number as u32,
+                            controller_location as u8,
+                            path.as_deref(),
+                            disk.is_dvd,
+                            false,
+                        )
+                        .await?;
+                    }
+                }
             }
+        }
 
-            if let Some(settings) = &config.initial_vtl2_settings {
-                vm.set_base_vtl2_settings(settings).await?;
-                vtl2_settings = Some(settings.clone());
+        // Add VMBus storage
+        for (vsid, controller) in &vmbus_storage_controllers {
+            match controller.controller_type {
+                VmbusStorageType::Scsi => {
+                    vm.add_scsi_controller(vsid, controller.target_vtl as u32)
+                        .await?;
+
+                    for (controller_location, drive) in controller.drives.iter() {
+                        let path = petri_disk_to_hyperv(drive.disk.as_ref(), &temp_dir).await?;
+
+                        vm.set_drive_scsi(
+                            vsid,
+                            (*controller_location)
+                                .try_into()
+                                .context("invalid scsi lun")?,
+                            path.as_deref(),
+                            false,
+                            false,
+                        )
+                        .await?;
+                    }
+                }
+                VmbusStorageType::Nvme => todo!(),
             }
         }
 
@@ -680,12 +559,12 @@ impl PetriVmmBackend for HyperVPetriBackend {
             no_persistent_secrets,
         }) = tpm
         {
-            if firmware.is_pcat() {
+            if generation == powershell::HyperVGeneration::One {
                 anyhow::bail!("hyper-v gen 1 VMs do not support a TPM");
             }
             vm.enable_tpm().await?;
 
-            if firmware.is_openhcl() {
+            if properties.is_openhcl {
                 vm.set_guest_state_isolation_mode(if no_persistent_secrets {
                     powershell::HyperVGuestStateIsolationMode::NoPersistentSecrets
                 } else {
@@ -701,67 +580,17 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         vm.start().await?;
 
-        Ok(HyperVPetriRuntime {
-            vm,
-            log_tasks,
-            temp_dir,
-            driver: driver.clone(),
-            is_openhcl: openhcl_config.is_some(),
-            is_isolated: firmware.isolation().is_some(),
-            additional_scsi_controllers: added_controllers,
-            vtl2_settings,
-        })
-    }
-}
-
-impl HyperVPetriRuntime {
-    /// Gets the VTL2 settings in the `Base` namespace.
-    ///
-    /// TODO: For now, this is just a copy of whatever was last set via petri.
-    /// The function signature (`async`, return `Result`) is to allow for
-    /// future changes to actually query the VM for the current settings.
-    pub async fn get_base_vtl2_settings(
-        &self,
-    ) -> anyhow::Result<Option<vtl2_settings_proto::Vtl2Settings>> {
-        Ok(self.vtl2_settings.clone())
-    }
-
-    /// Get the list of additional SCSI controllers added to this VM (those
-    /// configured to be added by the test, as opposed to the petri framework).
-    pub fn get_additional_scsi_controllers(&self) -> &[HyperVScsiController] {
-        &self.additional_scsi_controllers
-    }
-
-    /// Set the VTL2 settings in the `Base` namespace (fixed settings, storage
-    /// settings, etc).
-    pub async fn set_base_vtl2_settings(
-        &mut self,
-        settings: &vtl2_settings_proto::Vtl2Settings,
-    ) -> anyhow::Result<()> {
-        let r = self.vm.set_base_vtl2_settings(settings).await;
-        if r.is_ok() {
-            self.vtl2_settings = Some(settings.clone());
-        }
-        r
-    }
-
-    /// Adds a VHD with the optionally specified location (a.k.a LUN) to the
-    /// optionally specified controller.
-    pub async fn add_vhd(
-        &mut self,
-        vhd: impl AsRef<Path>,
-        controller_type: powershell::ControllerType,
-        controller_location: Option<u8>,
-        controller_number: Option<u32>,
-    ) -> anyhow::Result<()> {
-        self.vm
-            .add_vhd(
-                vhd.as_ref(),
-                controller_type,
-                controller_location,
-                controller_number,
-            )
-            .await
+        Ok((
+            HyperVPetriRuntime {
+                vm,
+                log_tasks,
+                temp_dir,
+                output_dir: log_source.output_dir().to_owned(),
+                driver: driver.clone(),
+                properties,
+            },
+            firmware.into_runtime_config(vmbus_storage_controllers),
+        ))
     }
 }
 
@@ -780,7 +609,8 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     }
 
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
-        let client_core = async || {
+        let driver = self.driver.clone();
+        let client_core = async move |vm: &HyperVVM| {
             let socket = VmSocket::new().context("failed to create AF_HYPERV socket")?;
             // Extend the default timeout of 2 seconds, as tests are often run
             // in parallel on a host, causing very heavy load on the overall
@@ -795,50 +625,46 @@ impl PetriVmRuntime for HyperVPetriRuntime {
                 .set_high_vtl(set_high_vtl)
                 .context("failed to set socket for VTL0")?;
 
-            let mut socket = PolledSocket::new(&self.driver, socket)
+            let mut socket = PolledSocket::new(&driver, socket)
                 .context("failed to create polled client socket")?
                 .convert();
             socket
                 .connect(
-                    &VmAddress::hyperv_vsock(*self.vm.vmid(), pipette_client::PIPETTE_VSOCK_PORT)
-                        .into(),
+                    &VmAddress::hyperv_vsock(*vm.vmid(), pipette_client::PIPETTE_VSOCK_PORT).into(),
                 )
                 .await
                 .context("failed to connect")
                 .map(|()| socket)
         };
 
-        let mut timer = PolledTimer::new(&self.driver);
-        loop {
-            tracing::debug!(set_high_vtl, "attempting to connect to pipette server");
-            // Even if the VM is rebooting or otherwise transitioning power states
-            // it should never be considered fully "off". If it is, something has
-            // gone wrong.
-            if let Err(_) | Ok(VmState::Off) = self.vm.state().await {
-                anyhow::bail!("VM is no longer running, cannot connect to pipette");
-            }
-            match client_core().await {
-                Ok(socket) => {
-                    tracing::info!(set_high_vtl, "handshaking with pipette");
-                    let c = PipetteClient::new(&self.driver, socket, self.temp_dir.path())
-                        .await
-                        .context("failed to handshake with pipette");
-                    tracing::info!(set_high_vtl, "completed pipette handshake");
-                    return c;
+        let driver = self.driver.clone();
+        let output_dir = self.output_dir.clone();
+        self.vm
+            .wait_for_off_or_internal(async move |vm: &HyperVVM| {
+                tracing::debug!(set_high_vtl, "attempting to connect to pipette server");
+                match client_core(vm).await {
+                    Ok(socket) => {
+                        tracing::info!(set_high_vtl, "handshaking with pipette");
+                        let c = PipetteClient::new(&driver, socket, &output_dir)
+                            .await
+                            .context("failed to handshake with pipette");
+                        tracing::info!(set_high_vtl, "completed pipette handshake");
+                        Ok(Some(c?))
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            err = err.as_ref() as &dyn std::error::Error,
+                            "failed to connect to pipette server, retrying",
+                        );
+                        Ok(None)
+                    }
                 }
-                Err(err) => {
-                    tracing::debug!(
-                        err = err.as_ref() as &dyn std::error::Error,
-                        "failed to connect to pipette server, retrying",
-                    );
-                    timer.sleep(Duration::from_secs(1)).await;
-                }
-            }
-        }
+            })
+            .await
     }
 
     fn openhcl_diag(&self) -> Option<OpenHclDiagHandler> {
-        self.is_openhcl.then(|| {
+        self.properties.is_openhcl.then(|| {
             OpenHclDiagHandler::new(diag_client::DiagClient::from_hyperv_id(
                 self.driver.clone(),
                 *self.vm.vmid(),
@@ -889,7 +715,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     }
 
     fn take_framebuffer_access(&mut self) -> Option<vm::HyperVFramebufferAccess> {
-        (!self.is_isolated).then(|| self.vm.get_framebuffer_access())
+        (!self.properties.is_isolated).then(|| self.vm.get_framebuffer_access())
     }
 
     async fn reset(&mut self) -> anyhow::Result<()> {
@@ -899,9 +725,32 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
         Ok(Some(self.vm.get_guest_state_file().await?))
     }
+
+    async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()> {
+        self.vm.set_base_vtl2_settings(settings).await
+    }
+
+    async fn set_vmbus_drive(
+        &mut self,
+        drive: &Drive,
+        controller_id: &Guid,
+        controller_location: u32,
+    ) -> anyhow::Result<()> {
+        self.vm
+            .set_drive_scsi(
+                controller_id,
+                controller_location.try_into().context("invalid scsi lun")?,
+                petri_disk_to_hyperv(drive.disk.as_ref(), &self.temp_dir)
+                    .await?
+                    .as_deref(),
+                false,
+                false,
+            )
+            .await
+    }
 }
 
-fn acl_read_for_vm(path: &Path, id: Option<guid::Guid>) -> anyhow::Result<()> {
+fn acl_read_for_vm(path: &Path, id: Option<Guid>) -> anyhow::Result<()> {
     let sid_arg = format!(
         "NT VIRTUAL MACHINE\\{name}:R",
         name = if let Some(id) = id {
@@ -921,22 +770,6 @@ fn acl_read_for_vm(path: &Path, id: Option<guid::Guid>) -> anyhow::Result<()> {
         anyhow::bail!("icacls failed: {stderr}");
     }
     Ok(())
-}
-
-fn build_and_persist_agent_image(
-    agent_image: &AgentImage,
-    agent_disk_path: &Path,
-) -> anyhow::Result<bool> {
-    Ok(
-        if let Some(agent_disk) = agent_image.build().context("failed to build agent image")? {
-            disk_vhd1::Vhd1Disk::make_fixed(agent_disk.as_file())
-                .context("failed to make vhd for agent image")?;
-            agent_disk.persist(agent_disk_path)?;
-            true
-        } else {
-            false
-        },
-    )
 }
 
 async fn hyperv_serial_log_task(
@@ -986,4 +819,23 @@ async fn make_temp_diff_disk(
     tracing::debug!(?path, ?parent_path, "creating differencing vhd");
     blocking::unblock(move || disk_vhdmp::Vhd::create_diff(&path, &parent_path)).await?;
     Ok(())
+}
+
+async fn petri_disk_to_hyperv(
+    disk: Option<&Disk>,
+    temp_dir: &TempDir,
+) -> anyhow::Result<Option<PathBuf>> {
+    Ok(match disk {
+        None => None,
+        Some(Disk::Memory(_)) => None, // TODO: Hyper-V memory disk
+        Some(Disk::Differencing(parent_path)) => {
+            let diff_disk_path = temp_dir
+                .path()
+                .join(parent_path.file_name().context("path has no filename")?);
+            make_temp_diff_disk(&diff_disk_path, &parent_path).await?;
+            Some(diff_disk_path)
+        }
+        Some(Disk::Persistent(path)) => Some(path.clone()),
+        Some(Disk::Temporary(path)) => Some(path.to_path_buf()),
+    })
 }
