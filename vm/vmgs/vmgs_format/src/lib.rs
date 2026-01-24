@@ -14,6 +14,7 @@ use core::ops::IndexMut;
 use inspect::Inspect;
 use open_enum::open_enum;
 use static_assertions::const_assert;
+use tpm_protocol::TpmVersion;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -49,6 +50,7 @@ open_enum! {
         HIBERNATION_FIRMWARE = 14,
         PLATFORM_SEED = 15,
         PROVENANCE_DOC = 16,
+        PROVISIONING_MARKER = 17,
 
         EXTENDED_FILE_TABLE = 63,
     }
@@ -214,6 +216,46 @@ open_enum! {
         AES_GCM = 1,
     }
 }
+
+open_enum! {
+    /// Entities that can provision a new VMGS file.
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum VmgsProvisioner: u32 {
+        HCL = 1,
+        OPENHCL = 2,
+        HOST_AGENT_VMGSTOOL = 3,
+        CPS_VMGSTOOL_CVM = 4,
+        CPS_VMGSTOOL_TVM = 5,
+        HCL_POST_PROVISIONING = 6,
+    }
+}
+
+/// Current version of the VMGS provisioning diagnostic marker.
+pub const PROVISIONING_MARKER_CURRENT_VERSION: u32 = 1;
+
+/// Length of HCL version field.
+pub const HCL_VERSION_LENGTH: usize = 40;
+
+/// Diagnostic marker that describes how a VMGS file was provisioned.
+#[repr(C, packed)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ProvisioningMarker {
+    pub marker_version: u32,
+    pub provisioner: VmgsProvisioner,
+    pub reset_by_gsl_flag: u8,
+    pub _reserved1: [u8; 3],
+    pub vtpm_version: TpmVersion,
+    pub vtpm_nvram_size: u32,
+    pub vtpm_akcert_size: u32,
+    pub vtpm_akcert_attrs: u32,
+    // provisioner == OPENHCL: string representation of commit hash; otherwise undefined
+    pub hcl_version: [u8; HCL_VERSION_LENGTH],
+    pub _reserved2: [u8; 956],
+}
+
+// Size of the provisioning marker.
+const PROVISIONING_MARKER_SIZE: usize = 1024;
+static_assertions::const_assert_eq!(PROVISIONING_MARKER_SIZE, size_of::<ProvisioningMarker>());
 
 /// Markers used internally to indicate how the VMGS should be treated
 #[cfg_attr(feature = "inspect", derive(Inspect))]

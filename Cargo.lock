@@ -7633,6 +7633,7 @@ name = "tpm_protocol"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
+ "open_enum",
  "thiserror 2.0.16",
  "zerocopy 0.8.27",
 ]
@@ -8081,6 +8082,7 @@ dependencies = [
  "thiserror 2.0.16",
  "time",
  "tpm_device",
+ "tpm_protocol",
  "tpm_resources",
  "tracelimit",
  "tracing",
@@ -8116,6 +8118,7 @@ dependencies = [
  "vmcore",
  "vmgs",
  "vmgs_broker",
+ "vmgs_format",
  "vmgs_resources",
  "vmm_core",
  "vmm_core_defs",
@@ -9340,6 +9343,7 @@ dependencies = [
  "inspect",
  "open_enum",
  "static_assertions",
+ "tpm_protocol",
  "zerocopy 0.8.27",
 ]
 

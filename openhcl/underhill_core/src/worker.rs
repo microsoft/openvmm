@@ -166,6 +166,8 @@ use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmgs::Vmgs;
 use vmgs_broker::spawn_vmgs_broker;
+use vmgs_format::ProvisioningMarker;
+use vmgs_format::VmgsProvisioner;
 use vmgs_resources::VmgsFileHandle;
 use vmm_core::input_distributor::InputDistributor;
 use vmm_core::partition_unit::Halt;
@@ -186,6 +188,7 @@ use vmotherboard::options::BaseChipsetFoundation;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
 use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 pub(crate) const PM_BASE: u16 = 0x400;
 pub(crate) const SYSTEM_IRQ_ACPI: u32 = 9;
@@ -1750,6 +1753,38 @@ async fn new_underhill_vm(
             Some((meta, vmgs))
         }
     };
+
+    if let Some((_, ref mut vmgs)) = vmgs {
+        if vmgs.was_provisioned_this_boot() {
+            let mut rev = [0u8; vmgs_format::HCL_VERSION_LENGTH];
+            let rev_bytes = build_info::get().scm_revision().as_bytes();
+            let rev_len = rev_bytes.len().min(40);
+            rev[..rev_len].copy_from_slice(&rev_bytes[..rev_len]);
+
+            let reset_by_gsl_flag = (matches!(
+                dps.general.guest_state_lifetime,
+                GuestStateLifetime::Reprovision
+            ) || (matches!(
+                dps.general.guest_state_lifetime,
+                GuestStateLifetime::ReprovisionOnFailure
+            ) && vmgs.was_formatted_on_failure())) as u8;
+
+            let marker = ProvisioningMarker {
+                marker_version: vmgs_format::PROVISIONING_MARKER_CURRENT_VERSION,
+                provisioner: VmgsProvisioner::OPENHCL,
+                reset_by_gsl_flag,
+                vtpm_version: tpm_protocol::TPM_DEFAULT_VERSION,
+                vtpm_nvram_size: tpm_protocol::TPM_DEFAULT_SIZE,
+                vtpm_akcert_size: tpm_protocol::TPM_DEFAULT_AKCERT_SIZE,
+                vtpm_akcert_attrs: tpm_protocol::platform_akcert_attributes().into(),
+                hcl_version: rev,
+                ..FromZeros::new_zeroed()
+            };
+
+            vmgs.write_file(vmgs::FileId::PROVISIONING_MARKER, marker.as_bytes())
+                .await?;
+        }
+    }
 
     // Determine if the VTL0 alias map is in use.
     let vtl0_alias_map_bit =

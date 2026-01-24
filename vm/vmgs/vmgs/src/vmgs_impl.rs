@@ -114,6 +114,7 @@ pub struct Vmgs {
     encrypted_metadata_keys: [VmgsEncryptionKey; 2],
     reprovisioned: bool,
     provisioned_this_boot: bool,
+    formatted_on_failure: bool,
 
     #[cfg_attr(feature = "inspect", inspect(skip))]
     logger: Option<Arc<dyn VmgsLogger>>,
@@ -178,7 +179,10 @@ impl Vmgs {
             }
             Err(err) if format_on_failure => {
                 tracing::warn!(CVM_ALLOWED, ?err, "vmgs initialization error, reformatting");
-                Self::format_new(disk, logger).await
+                Self::format_new(disk, logger).await.map(|mut vmgs| {
+                    vmgs.formatted_on_failure = true;
+                    vmgs
+                })
             }
             Err(err) => {
                 let event_log_id = match err {
@@ -364,6 +368,7 @@ impl Vmgs {
             encrypted_metadata_keys,
             reprovisioned,
             provisioned_this_boot: false,
+            formatted_on_failure: false,
 
             #[cfg(feature = "inspect")]
             stats: Default::default(),
@@ -1524,6 +1529,12 @@ impl Vmgs {
         self.provisioned_this_boot
     }
 
+    /// Whether the VMGS file was reprovisioned during the most recent boot
+    /// because it was corrupted
+    pub fn was_formatted_on_failure(&self) -> bool {
+        self.formatted_on_failure
+    }
+
     fn prepare_new_header(&self, file_table_fcb: &ResolvedFileControlBlock) -> VmgsHeader {
         VmgsHeader {
             signature: VMGS_SIGNATURE,
@@ -2023,6 +2034,7 @@ pub mod save_restore {
                 }),
                 reprovisioned,
                 provisioned_this_boot: false,
+                formatted_on_failure: false,
                 logger,
             }
         }
@@ -2052,6 +2064,7 @@ pub mod save_restore {
                 logger: _,
                 reprovisioned,
                 provisioned_this_boot: _,
+                formatted_on_failure: _,
             } = self;
 
             state::SavedVmgsState {

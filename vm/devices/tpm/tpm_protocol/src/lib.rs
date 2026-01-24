@@ -7,12 +7,18 @@
 
 pub mod tpm20proto;
 
+use open_enum::open_enum;
 use tpm20proto::NV_INDEX_RANGE_BASE_PLATFORM_MANUFACTURER;
 use tpm20proto::NV_INDEX_RANGE_BASE_TCG_ASSIGNED;
 use tpm20proto::ReservedHandle;
 use tpm20proto::TPM20_HT_PERSISTENT;
+use tpm20proto::TpmaNvBits;
 use tpm20proto::TpmaObject;
 use tpm20proto::TpmaObjectBits;
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // --- Reserved handles for Storage Primary Key ranges from 0x81000000 – 0x810000ff ---
 
@@ -55,3 +61,34 @@ pub fn expected_ak_attributes() -> TpmaObject {
         .with_sign_encrypt(true)
         .into()
 }
+
+/// Expected NVRAM index attributes for a platform-created AKCert index.
+pub fn platform_akcert_attributes() -> TpmaNvBits {
+    TpmaNvBits::new()
+        .with_nv_authread(true)
+        .with_nv_authwrite(true)
+        .with_nv_ownerread(true)
+        .with_nv_platformcreate(true)
+        .with_nv_no_da(true)
+}
+
+open_enum! {
+    /// vTPM versions whose state can be provisioned in a new VMGS file. Note that
+    /// these constants are part of the VMGS diagnostic provisioning marker format
+    /// defined in vmgs_format.
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum TpmVersion: u32 {
+        /// TPM version 1.38
+        VER_138 = 1,
+    }
+}
+
+/// Default vTPM version provisioned for a new VMGS.
+pub const TPM_DEFAULT_VERSION: TpmVersion = TpmVersion::VER_138;
+
+/// Default vTPM NVRAM size provisioned for a new VMGS.
+pub const TPM_DEFAULT_SIZE: u32 = 32768;
+
+// TODO: combine this with MAX_NV_INDEX_SIZE
+/// Default NVRAM index size provisioned for AKCert.
+pub const TPM_DEFAULT_AKCERT_SIZE: u32 = 4096;
