@@ -233,7 +233,7 @@ impl HyperVVM {
     /// Waits for an event emitted by the firmware about its boot status, and
     /// returns that status.
     pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
-        self.wait_for_some(Self::boot_event).await
+        self.wait_for_off_or_internal(Self::boot_event).await
     }
 
     async fn boot_event(&self) -> anyhow::Result<Option<FirmwareEvent>> {
@@ -300,36 +300,54 @@ impl HyperVVM {
     }
 
     /// Add a SCSI controller
-    pub async fn add_scsi_controller(&mut self, target_vtl: u32) -> anyhow::Result<(u32, Guid)> {
-        let (controller_number, vsid) =
-            powershell::run_add_vm_scsi_controller(&self.ps_mod, &self.vmid).await?;
-        if target_vtl != 0 {
-            powershell::run_set_vm_scsi_controller_target_vtl(
-                &self.ps_mod,
-                &self.vmid,
-                controller_number,
-                target_vtl,
-            )
-            .await?;
-        }
-        Ok((controller_number, vsid))
+    pub async fn add_scsi_controller(
+        &mut self,
+        vsid: &Guid,
+        target_vtl: u32,
+    ) -> anyhow::Result<()> {
+        powershell::run_add_vm_scsi_controller_with_id(&self.ps_mod, &self.vmid, vsid, target_vtl)
+            .await
     }
 
-    /// Add a VHD
-    pub async fn add_vhd(
+    /// Add a drive to the scsi controller
+    pub async fn set_drive_scsi(
         &mut self,
-        path: &Path,
-        controller_type: powershell::ControllerType,
-        controller_location: Option<u8>,
-        controller_number: Option<u32>,
+        controller_vsid: &Guid,
+        controller_location: u8,
+        path: Option<&Path>,
+        dvd: bool,
+        allow_modify_existing: bool,
     ) -> anyhow::Result<()> {
-        powershell::run_add_vm_hard_disk_drive(powershell::HyperVAddVMHardDiskDriveArgs {
-            vmid: &self.vmid,
-            controller_type,
+        powershell::run_set_vm_drive_scsi(
+            &self.ps_mod,
+            &self.vmid,
+            controller_vsid,
             controller_location,
+            path,
+            dvd,
+            allow_modify_existing,
+        )
+        .await
+    }
+
+    /// Add a drive to the ide controller
+    pub async fn set_drive_ide(
+        &mut self,
+        controller_number: u32,
+        controller_location: u8,
+        path: Option<&Path>,
+        dvd: bool,
+        allow_modify_existing: bool,
+    ) -> anyhow::Result<()> {
+        powershell::run_set_vm_drive_ide(
+            &self.ps_mod,
+            &self.vmid,
             controller_number,
-            path: Some(path),
-        })
+            controller_location,
+            path,
+            dvd,
+            allow_modify_existing,
+        )
         .await
     }
 
@@ -338,7 +356,7 @@ impl HyperVVM {
         powershell::run_set_initial_machine_configuration(&self.vmid, &self.ps_mod, imc_hive).await
     }
 
-    pub(crate) async fn state(&self) -> anyhow::Result<VmState> {
+    async fn state(&self) -> anyhow::Result<VmState> {
         hvc::hvc_state(&self.vmid).await
     }
 
@@ -404,10 +422,38 @@ impl HyperVVM {
 
     /// Wait for the VM to stop
     pub async fn wait_for_halt(&mut self, _allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
-        let (halt_reason, timestamp) = self.wait_for_some(Self::halt_event).await?;
+        // Allow CVMs some time for the VM to be off after reset.
+        const CVM_ALLOWED_OFF_TIME: Duration = Duration::from_secs(15);
+
+        let (halt_reason, timestamp) = self.wait_for_off_or_internal(Self::halt_event).await?;
+
         if halt_reason == PetriHaltReason::Reset {
             // add 1ms to avoid getting the same event again
             self.last_start_time = Some(timestamp.checked_add(Duration::from_millis(1))?);
+
+            // wait for the CVM to start again
+            if self.is_isolated {
+                let mut timer = PolledTimer::new(&self.driver);
+                loop {
+                    match self.state().await? {
+                        VmState::Off | VmState::Stopping | VmState::Resetting => {}
+                        VmState::Running | VmState::Starting => break,
+                        VmState::Saved
+                        | VmState::Paused
+                        | VmState::Saving
+                        | VmState::Pausing
+                        | VmState::Resuming => anyhow::bail!("Unexpected vm state"),
+                    }
+
+                    if Timestamp::now().duration_since(timestamp).unsigned_abs()
+                        > CVM_ALLOWED_OFF_TIME
+                    {
+                        anyhow::bail!("VM did not start after reset in the required time");
+                    }
+
+                    timer.sleep(Duration::from_secs(1)).await;
+                }
+            }
         }
         Ok(halt_reason)
     }
@@ -423,19 +469,6 @@ impl HyperVVM {
             anyhow::bail!("Got more than one halt event");
         }
         let event = events.first();
-
-        if event.is_some_and(|e| e.id == powershell::MSVM_VMMS_VM_TERMINATE_ERROR) {
-            tracing::error!("hyper-v worker process crashed");
-            // Get 5 seconds of non-vm-specific hyper-v logs preceding the crash
-            const COLLECT_HYPERV_CRASH_LOGS_SECONDS: u64 = 5;
-            let start_time = event
-                .unwrap()
-                .time_created
-                .checked_sub(Duration::from_secs(COLLECT_HYPERV_CRASH_LOGS_SECONDS))?;
-            for event in powershell::hyperv_event_logs(None, &start_time).await? {
-                self.log_winevent(&event);
-            }
-        }
 
         event
             .map(|e| {
@@ -466,9 +499,11 @@ impl HyperVVM {
 
     /// Wait for the VM shutdown ic
     pub async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()> {
-        self.wait_for(Self::shutdown_ic_status, powershell::VmShutdownIcStatus::Ok)
-            .await
-            .context("wait_for_enlightened_shutdown_ready")
+        self.wait_for_off_or_internal(async move |s| {
+            Ok((s.shutdown_ic_status().await? == powershell::VmShutdownIcStatus::Ok).then_some(()))
+        })
+        .await
+        .context("wait_for_enlightened_shutdown_ready")
     }
 
     async fn shutdown_ic_status(&self) -> anyhow::Result<powershell::VmShutdownIcStatus> {
@@ -483,42 +518,41 @@ impl HyperVVM {
         Ok(())
     }
 
-    async fn wait_for<T: std::fmt::Debug + PartialEq>(
+    pub(crate) async fn wait_for_off_or_internal<T>(
         &mut self,
-        f: impl AsyncFn(&Self) -> anyhow::Result<T>,
-        target: T,
-    ) -> anyhow::Result<()> {
+        f: impl AsyncFn(&Self) -> anyhow::Result<Option<T>>,
+    ) -> anyhow::Result<T> {
         // flush the logs every time we start waiting for something in case
         // they don't get flushed when the VM is destroyed.
         // TODO: run this periodically in a task.
         self.flush_logs().await?;
-        loop {
-            let state = f(self).await?;
-            if state == target {
-                break;
-            }
-            PolledTimer::new(&self.driver)
-                .sleep(Duration::from_secs(1))
-                .await;
-        }
 
-        Ok(())
-    }
+        // Even if the VM is rebooting or otherwise transitioning power states
+        // it should never be considered fully off. The only exception is if we
+        // are waiting for the VM to turn off, and we haven't detected the halt
+        // event yet. To avoid this race condition, allow for one more attempt
+        // a second after the VM turns off.
+        let mut last_off = false;
 
-    async fn wait_for_some<T: std::fmt::Debug + PartialEq>(
-        &mut self,
-        f: impl AsyncFn(&Self) -> anyhow::Result<Option<T>>,
-    ) -> anyhow::Result<T> {
-        // see comment in `wait_for` above
-        self.flush_logs().await?;
+        let mut timer = PolledTimer::new(&self.driver);
         loop {
-            let state = f(self).await?;
-            if let Some(state) = state {
-                return Ok(state);
+            if let Some(output) = f(self).await? {
+                return Ok(output);
             }
-            PolledTimer::new(&self.driver)
-                .sleep(Duration::from_secs(1))
-                .await;
+
+            let off = self.state().await? == VmState::Off;
+            if last_off && off {
+                if let Some((halt_event, _)) = self.halt_event().await? {
+                    anyhow::bail!("Unexpected halt event: {halt_event:?}");
+                } else {
+                    anyhow::bail!(
+                        "The VM is no longer running, but no known halt event was received."
+                    );
+                }
+            }
+            last_off = off;
+
+            timer.sleep(Duration::from_secs(1)).await;
         }
     }
 
