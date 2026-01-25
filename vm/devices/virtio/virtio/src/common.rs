@@ -5,6 +5,7 @@ use crate::queue::QueueCore;
 use crate::queue::QueueError;
 use crate::queue::QueueParams;
 use crate::queue::VirtioQueuePayload;
+use crate::spec::VirtioDeviceFeatures;
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures::Stream;
@@ -234,7 +235,7 @@ pub struct VirtioQueue {
 
 impl VirtioQueue {
     pub fn new(
-        features: u64,
+        features: VirtioDeviceFeatures,
         params: QueueParams,
         mem: GuestMemory,
         notify: Interrupt,
@@ -305,7 +306,7 @@ impl Stream for VirtioQueue {
 enum VirtioQueueStateInner {
     Initializing {
         mem: GuestMemory,
-        features: u64,
+        features: VirtioDeviceFeatures,
         params: QueueParams,
         event: Event,
         notify: Interrupt,
@@ -339,7 +340,7 @@ impl VirtioQueueWorker {
         self,
         name: impl Into<String>,
         mem: GuestMemory,
-        features: u64,
+        features: VirtioDeviceFeatures,
         queue_resources: QueueResources,
         exit_event: event_listener::EventListener,
     ) -> TaskControl<VirtioQueueWorker, VirtioQueueState> {
@@ -424,7 +425,7 @@ impl AsyncRun<VirtioQueueState> for VirtioQueueWorker {
 }
 
 pub struct VirtioRunningState {
-    pub features: u64,
+    pub features: VirtioDeviceFeatures,
     pub enabled_queues: Vec<bool>,
 }
 
@@ -467,10 +468,10 @@ pub struct DeviceTraitsSharedMemory {
     pub size: u64,
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct DeviceTraits {
     pub device_id: u16,
-    pub device_features: u64,
+    pub device_features: VirtioDeviceFeatures,
     pub max_queues: u16,
     pub device_register_length: u32,
     pub shared_memory: DeviceTraitsSharedMemory,
@@ -499,7 +500,7 @@ pub struct QueueResources {
 }
 
 pub struct Resources {
-    pub features: u64,
+    pub features: VirtioDeviceFeatures,
     pub queues: Vec<QueueResources>,
     pub shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
     pub shared_memory_size: u64,
@@ -541,7 +542,7 @@ impl<T: LegacyVirtioDevice> VirtioDevice for LegacyWrapper<T> {
 
     fn enable(&mut self, resources: Resources) {
         let running_state = VirtioRunningState {
-            features: resources.features,
+            features: resources.features.clone(),
             enabled_queues: resources
                 .queues
                 .iter()
@@ -566,7 +567,7 @@ impl<T: LegacyVirtioDevice> VirtioDevice for LegacyWrapper<T> {
                 Some(worker.into_running_task(
                     "virtio-queue".to_string(),
                     self.mem.clone(),
-                    resources.features,
+                    resources.features.clone(),
                     queue_resources,
                     self.exit_event.listen(),
                 ))
