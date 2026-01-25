@@ -4,6 +4,7 @@
 //! Core virtio queue implementation, without any notification mechanisms, async
 //! support, or other transport-specific details.
 
+use crate::spec::VirtioDeviceFeatures;
 use crate::spec::queue as spec;
 use crate::spec::u16_le;
 use guestmem::GuestMemory;
@@ -41,9 +42,11 @@ pub struct QueueParams {
 }
 
 impl QueueCore {
-    pub fn new(features: u64, mem: GuestMemory, params: QueueParams) -> Result<Self, QueueError> {
-        let use_ring_event_index = (features & crate::spec::VIRTIO_F_RING_EVENT_IDX as u64) != 0;
-
+    pub fn new(
+        features: VirtioDeviceFeatures,
+        mem: GuestMemory,
+        params: QueueParams,
+    ) -> Result<Self, QueueError> {
         let queue_avail = mem
             .subrange(
                 params.avail_addr,
@@ -77,7 +80,7 @@ impl QueueCore {
             queue_desc,
             queue_avail,
             queue_used,
-            use_ring_event_index,
+            use_ring_event_index: features.bank0().ring_event_idx(),
             mem,
         })
     }
