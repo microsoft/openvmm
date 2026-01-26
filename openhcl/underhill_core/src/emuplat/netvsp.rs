@@ -868,11 +868,13 @@ impl HclNetworkVFManagerWorker {
                     assert!(self.is_shutdown_active);
                     drop(self.messages.take().unwrap());
                     rpc.handle(async |_| {
-                        tracing::info!("saving state");
                         self.disconnect_all_endpoints().await;
 
                         if let Some(device) = self.mana_device.take() {
-                            let (saved_state, device) = device.save().await;
+                            let (saved_state, device) = device
+                                .save()
+                                .instrument(tracing::info_span!("saving mana device state"))
+                                .await;
 
                             // Closing the VFIO device handle can take a long time.
                             // Leak the handle by stashing it away.
