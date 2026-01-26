@@ -33,7 +33,7 @@ use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
 use pci_core::cfg_space_emu::IntxInterrupt;
-use pci_core::msi::RegisterMsi;
+use pci_core::msi::MsiTarget;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
@@ -50,7 +50,7 @@ use vmcore::save_restore::SaveRestore;
 
 /// What kind of PCI interrupts [`VirtioPciDevice`] should use.
 pub enum PciInterruptModel<'a> {
-    Msix(&'a mut dyn RegisterMsi),
+    Msix(&'a MsiTarget),
     IntX(PciInterruptPin, LineInterrupt),
 }
 

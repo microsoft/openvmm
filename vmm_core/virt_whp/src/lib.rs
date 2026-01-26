@@ -543,10 +543,10 @@ impl virt::Partition for WhpPartition {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn msi_interrupt_target(
+    fn as_signal_msi(
         self: &Arc<Self>,
         minimum_vtl: Vtl,
-    ) -> Option<Arc<dyn pci_core::msi::MsiInterruptTarget>> {
+    ) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
         Some(self.with_vtl(minimum_vtl).clone())
     }
 

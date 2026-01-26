@@ -37,7 +37,7 @@ use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
-use pci_core::msi::RegisterMsi;
+use pci_core::msi::MsiTarget;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
@@ -116,7 +116,7 @@ impl NvmeFaultController {
     pub fn new(
         driver_source: &VmTaskDriverSource,
         guest_memory: GuestMemory,
-        register_msi: &mut dyn RegisterMsi,
+        register_msi: &MsiTarget,
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeFaultControllerCaps,
         mut fault_configuration: FaultConfiguration,

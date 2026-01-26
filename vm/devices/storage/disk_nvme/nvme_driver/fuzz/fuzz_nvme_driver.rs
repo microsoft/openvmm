@@ -16,7 +16,7 @@ use nvme_driver::NvmeDriver;
 use nvme_spec::nvm::DsmRange;
 use page_pool_alloc::PagePoolAllocator;
 use pal_async::DefaultDriver;
-use pci_core::msi::MsiInterruptSet;
+use pci_core::msi::MsiTargetControl;
 use scsi_buffers::OwnedRequestBuffers;
 use std::convert::TryFrom;
 use std::sync::Arc;
@@ -44,13 +44,13 @@ impl FuzzNvmeDriver {
 
         // Nvme device and driver setup
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-        let mut msi_set = MsiInterruptSet::new();
+        let mut msi_set = MsiTargetControl::new(1);
 
         let guid = arbitrary_guid()?;
         let nvme = NvmeController::new(
             &driver_source,
             mem.guest_memory().clone(),
-            &mut msi_set,
+            msi_set.target(),
             &mut ExternallyManagedMmioIntercepts,
             NvmeControllerCaps {
                 msix_count: 2,     // TODO: [use-arbitrary-input]

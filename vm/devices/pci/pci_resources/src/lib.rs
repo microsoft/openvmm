@@ -11,7 +11,7 @@ use chipset_device_resources::ResolvedChipsetDevice;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::MemoryMapper;
-use pci_core::msi::RegisterMsi;
+use pci_core::msi::MsiTarget;
 use std::sync::Arc;
 use vm_resource::CanResolveTo;
 use vm_resource::kind::PciDeviceHandleKind;
@@ -33,7 +33,7 @@ impl<T: Into<ResolvedChipsetDevice>> From<T> for ResolvedPciDevice {
 /// Parameters used when resolving a resource with kind [`PciDeviceHandleKind`].
 pub struct ResolvePciDeviceHandleParams<'a> {
     /// The target for MSI interrupts.
-    pub register_msi: &'a mut dyn RegisterMsi,
+    pub register_msi: &'a MsiTarget,
     /// An object with which to register MMIO regions.
     pub register_mmio: &'a mut (dyn RegisterMmioIntercept + Send),
     /// The VM's task driver source.
