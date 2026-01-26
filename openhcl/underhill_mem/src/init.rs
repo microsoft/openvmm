@@ -290,9 +290,9 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 // accessors, or something.
                 0
             }
-            IsolationType::Snp => {
-                // SNP has two mappings for each shared page: one below and one
-                // above VTOM. So, unlike for TDX, for SNP we could choose to
+            IsolationType::Snp | IsolationType::Cca => {
+                // SNP and CCA have two mappings for each shared page: one below and one
+                // above VTOM. So, unlike for TDX, we could choose to
                 // register memory twice, allowing the kernel to operate on
                 // either shared or encrypted memory. But, for consistency with
                 // TDX, just register the shared mapping.

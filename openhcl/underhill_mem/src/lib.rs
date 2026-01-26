@@ -42,6 +42,7 @@ use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;
 use registrar::RegisterMemory;
+use rsi::CcaMemPermIndex;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -121,6 +122,9 @@ enum GpaVtlPermissions {
     Vbs(HvMapGpaFlags),
     Snp(SevRmpAdjust),
     Tdx(TdgMemPageGpaAttr, TdgMemPageAttrWriteR8),
+    // TODO: CCA: we need to use the 'vtl' and 'protections' below to get the correct index
+    // This implies that we've set up the index list properly, and we just select the right one here
+    Cca(CcaMemPermIndex),
 }
 
 impl GpaVtlPermissions {
@@ -136,6 +140,11 @@ impl GpaVtlPermissions {
             IsolationType::Tdx => {
                 let mut vtl_permissions =
                     GpaVtlPermissions::Tdx(TdgMemPageGpaAttr::new(), TdgMemPageAttrWriteR8::new());
+                vtl_permissions.set(vtl, protections);
+                vtl_permissions
+            }
+            IsolationType::Cca => {
+                let mut vtl_permissions = GpaVtlPermissions::Cca(CcaMemPermIndex::default());
                 vtl_permissions.set(vtl, protections);
                 vtl_permissions
             }
@@ -181,6 +190,9 @@ impl GpaVtlPermissions {
 
                 *attributes = new_attributes;
                 *mask = new_mask;
+            }
+            GpaVtlPermissions::Cca(_index) => {
+                // TODO: CCA: implement me!
             }
         }
     }
@@ -249,6 +261,10 @@ impl MemoryAcceptor {
                     .tdx_accept_pages(range, Some((attributes, mask)))
                     .map_err(|err| AcceptPagesError::Tdx { error: err, range })
             }
+            IsolationType::Cca => {
+                // TODO: CCA: do we need to set RIPAS here?
+                Ok(())
+            }
         }
     }
 
@@ -274,6 +290,9 @@ impl MemoryAcceptor {
 
             IsolationType::Tdx => {
                 // Nothing to do for TDX.
+            }
+            IsolationType::Cca => {
+                // TODO: CCA: anything to do here?
             }
         }
     }
@@ -342,6 +361,13 @@ impl MemoryAcceptor {
                         permissions: attributes,
                         vtl: vtl.into(),
                     })
+            }
+            GpaVtlPermissions::Cca(_index) => {
+                // TODO: CCA: call new ioctl to set perms index
+                // TODO: CCA: next
+                todo!(
+                    "Apply CCA permissions for vtl {vtl:?} on range {range:?} with index {_index:?}"
+                );
             }
         }
     }

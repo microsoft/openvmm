@@ -108,7 +108,9 @@ impl BackingPrivate for HypervisorBackedArm64 {
     type Shared = HypervisorBackedArm64Shared;
 
     fn shared(shared: &BackingShared) -> &Self::Shared {
-        let BackingShared::Hypervisor(shared) = shared;
+        let BackingShared::Hypervisor(shared) = shared else {
+            unreachable!()
+        };
         shared
     }
 
