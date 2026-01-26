@@ -42,6 +42,12 @@ impl<T> MappedPage<T> {
         // it will only every point to a T, and UnsafeCell allows interior mutability.
         unsafe { self.0.as_ref() }
     }
+
+    pub fn as_mut(&mut self) -> &mut UnsafeCell<T> {
+        // SAFETY: The pointer is valid and mapped for the lifetime of the struct,
+        // it will only every point to a T, and UnsafeCell allows interior mutability.
+        unsafe { self.0.as_mut() }
+    }
 }
 
 impl<T> std::fmt::Debug for MappedPage<T> {
