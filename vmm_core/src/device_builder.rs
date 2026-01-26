@@ -8,7 +8,7 @@ use chipset_device_resources::ErasedChipsetDevice;
 use closeable_mutex::CloseableMutex;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
-use pci_core::msi::MsiTargetControl;
+use pci_core::msi::MsiConnection;
 use pci_core::msi::SignalMsi;
 use std::sync::Arc;
 use vm_resource::Resource;
@@ -42,7 +42,7 @@ pub async fn build_vpci_device(
         .arc_mutex_device(device_name)
         .with_external_pci();
 
-    let (device, msi_set) = resolve_and_add_pci_device(
+    let (device, msi_conn) = resolve_and_add_pci_device(
         device_builder,
         driver_source,
         resolver,
@@ -66,7 +66,7 @@ pub async fn build_vpci_device(
                         instance_id.data3 as u64 & 0xfff8
                     ))?;
 
-                msi_set.connect(0, msi_controller);
+                msi_conn.connect(0, msi_controller);
 
                 let bus = vpci::bus::VpciBus::new(
                     driver_source,
@@ -105,7 +105,7 @@ pub async fn build_pcie_device(
         .arc_mutex_device(dev_name)
         .on_pcie_port(vmotherboard::BusId::new(&port_name));
 
-    let (_, msi_set) = resolve_and_add_pci_device(
+    let (_, msi_conn) = resolve_and_add_pci_device(
         device_builder,
         driver_source,
         resolver,
@@ -117,7 +117,7 @@ pub async fn build_pcie_device(
     .await?;
 
     if let Some(target) = interrupt_target {
-        msi_set.connect(0, target);
+        msi_conn.connect(0, target);
     }
 
     Ok(())
@@ -132,8 +132,8 @@ pub async fn resolve_and_add_pci_device(
     resource: Resource<PciDeviceHandleKind>,
     doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
     mapper: Option<&dyn guestmem::MemoryMapper>,
-) -> anyhow::Result<(Arc<CloseableMutex<ErasedChipsetDevice>>, MsiTargetControl)> {
-    let mut msi_set = MsiTargetControl::new(1);
+) -> anyhow::Result<(Arc<CloseableMutex<ErasedChipsetDevice>>, MsiConnection)> {
+    let msi_conn = MsiConnection::new(1);
 
     let device = {
         device_builder
@@ -142,7 +142,7 @@ pub async fn resolve_and_add_pci_device(
                     .resolve(
                         resource,
                         pci_resources::ResolvePciDeviceHandleParams {
-                            register_msi: msi_set.target(),
+                            msi_target: msi_conn.target(),
                             register_mmio: &mut services.register_mmio(),
                             driver_source,
                             guest_memory,
@@ -156,5 +156,5 @@ pub async fn resolve_and_add_pci_device(
             .await?
     };
 
-    Ok((device, msi_set))
+    Ok((device, msi_conn))
 }

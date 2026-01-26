@@ -16,7 +16,7 @@ use nvme_driver::NvmeDriver;
 use page_pool_alloc::PagePoolAllocator;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
-use pci_core::msi::MsiTargetControl;
+use pci_core::msi::MsiConnection;
 use scsi_buffers::OwnedRequestBuffers;
 use scsi_buffers::RequestBuffers;
 use scsi_core::AsyncScsiDisk;
@@ -55,11 +55,11 @@ impl ScsiDvdNvmeTest {
         let dma_client = mem.dma_client();
         let payload_mem = mem.payload_mem();
 
-        let mut msi_set = MsiTargetControl::new(1);
+        let msi_conn = MsiConnection::new(1);
         let nvme = NvmeController::new(
             &driver_source,
             guest_mem.clone(),
-            msi_set.target(),
+            msi_conn.target(),
             &mut ExternallyManagedMmioIntercepts,
             NvmeControllerCaps {
                 msix_count: MSIX_COUNT,
@@ -79,7 +79,7 @@ impl ScsiDvdNvmeTest {
             .await
             .unwrap();
 
-        let device = EmulatedDevice::new(nvme, msi_set, dma_client.clone());
+        let device = EmulatedDevice::new(nvme, msi_conn, dma_client.clone());
         let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
             .await
             .unwrap();

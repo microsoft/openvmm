@@ -16,7 +16,7 @@ use gdma_defs::GdmaQueueType;
 use net_backend::null::NullEndpoint;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
-use pci_core::msi::MsiTargetControl;
+use pci_core::msi::MsiConnection;
 use std::sync::Arc;
 use test_with_tracing::test;
 use user_driver::DeviceBacking;
@@ -29,11 +29,11 @@ use vmcore::vm_task::VmTaskDriverSource;
 #[async_test]
 async fn test_gdma(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_gdma");
-    let msi_set = MsiTargetControl::new(1);
+    let msi_conn = MsiConnection::new(1);
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        msi_set.target(),
+        msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(NullEndpoint::new()),
@@ -41,7 +41,7 @@ async fn test_gdma(driver: DefaultDriver) {
         &mut ExternallyManagedMmioIntercepts,
     );
     let dma_client = mem.dma_client();
-    let device = EmulatedDevice::new(device, msi_set, dma_client);
+    let device = EmulatedDevice::new(device, msi_conn, dma_client);
     let dma_client = device.dma_client();
     let buffer = dma_client.allocate_dma_buffer(6 * PAGE_SIZE).unwrap();
 
@@ -167,11 +167,11 @@ async fn test_gdma(driver: DefaultDriver) {
 #[async_test]
 async fn test_gdma_save_restore(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_gdma");
-    let mut msi_set = MsiTargetControl::new(1);
+    let msi_conn = MsiConnection::new(1);
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        msi_set.target(),
+        msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(NullEndpoint::new()),
@@ -180,7 +180,7 @@ async fn test_gdma_save_restore(driver: DefaultDriver) {
     );
     let dma_client = mem.dma_client();
 
-    let device = EmulatedDevice::new(device, msi_set, dma_client);
+    let device = EmulatedDevice::new(device, msi_conn, dma_client);
     let cloned_device = device.clone();
 
     let dma_client = device.dma_client();
@@ -207,11 +207,11 @@ async fn test_gdma_save_restore(driver: DefaultDriver) {
 #[async_test]
 async fn test_gdma_reconfig_vf(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_gdma");
-    let mut msi_set = MsiTargetControl::new(1);
+    let msi_conn = MsiConnection::new(1);
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        msi_set.target(),
+        msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(NullEndpoint::new()),
@@ -219,7 +219,7 @@ async fn test_gdma_reconfig_vf(driver: DefaultDriver) {
         &mut ExternallyManagedMmioIntercepts,
     );
     let dma_client = mem.dma_client();
-    let device = EmulatedDevice::new(device, msi_set, dma_client);
+    let device = EmulatedDevice::new(device, msi_conn, dma_client);
     let dma_client = device.dma_client();
     let buffer = dma_client.allocate_dma_buffer(6 * PAGE_SIZE).unwrap();
 

@@ -116,12 +116,12 @@ impl NvmeFaultController {
     pub fn new(
         driver_source: &VmTaskDriverSource,
         guest_memory: GuestMemory,
-        register_msi: &MsiTarget,
+        msi_target: &MsiTarget,
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeFaultControllerCaps,
         mut fault_configuration: FaultConfiguration,
     ) -> Self {
-        let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, register_msi);
+        let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, msi_target);
         let bars = DeviceBars::new()
             .bar0(
                 BAR0_LEN,

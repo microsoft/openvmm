@@ -36,7 +36,7 @@ use pal_async::async_test;
 use pal_async::timer::PolledTimer;
 use pal_event::Event;
 use parking_lot::Mutex;
-use pci_core::msi::MsiTargetControl;
+use pci_core::msi::MsiConnection;
 use pci_core::spec::caps::CapabilityId;
 use pci_core::spec::cfg_space;
 use pci_core::test_helpers::TestPciInterruptController;
@@ -831,7 +831,7 @@ impl VirtioPciTestDevice {
     ) -> Self {
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
         let mem = GuestMemory::new("test", test_mem.clone());
-        let mut msi_set = MsiTargetControl::new(1);
+        let msi_conn = MsiConnection::new(1);
 
         let dev = VirtioPciDevice::new(
             Box::new(LegacyWrapper::new(
@@ -848,7 +848,7 @@ impl VirtioPciTestDevice {
                 ),
                 &mem,
             )),
-            PciInterruptModel::Msix(msi_set.target()),
+            PciInterruptModel::Msix(msi_conn.target()),
             Some(doorbell_registration),
             &mut ExternallyManagedMmioIntercepts,
             None,
@@ -856,7 +856,7 @@ impl VirtioPciTestDevice {
         .unwrap();
 
         let test_intc = Arc::new(TestPciInterruptController::new());
-        msi_set.connect(0, test_intc.signal_msi());
+        msi_conn.connect(0, test_intc.signal_msi());
 
         Self {
             pci_device: dev,

@@ -33,7 +33,7 @@ impl<T: Into<ResolvedChipsetDevice>> From<T> for ResolvedPciDevice {
 /// Parameters used when resolving a resource with kind [`PciDeviceHandleKind`].
 pub struct ResolvePciDeviceHandleParams<'a> {
     /// The target for MSI interrupts.
-    pub register_msi: &'a MsiTarget,
+    pub msi_target: &'a MsiTarget,
     /// An object with which to register MMIO regions.
     pub register_mmio: &'a mut (dyn RegisterMmioIntercept + Send),
     /// The VM's task driver source.

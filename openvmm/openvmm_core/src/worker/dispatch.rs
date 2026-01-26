@@ -78,7 +78,7 @@ use pal_async::local::block_with_io;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pci_core::PciInterruptPin;
-use pci_core::msi::MsiTargetControl;
+use pci_core::msi::MsiConnection;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
@@ -1984,14 +1984,14 @@ impl InitializedVm {
             let (vpci_device_name, device_name, instance_id, device_id) =
                 make_ids(device_name, None);
 
-            let msi_set = MsiTargetControl::new(1);
+            let msi_conn = MsiConnection::new(1);
             let device = chipset_builder
                 .arc_mutex_device(device_name)
                 .with_external_pci()
                 .try_add(|services| {
                     VirtioPciDevice::new(
                         device,
-                        PciInterruptModel::Msix(msi_set.target()),
+                        PciInterruptModel::Msix(msi_conn.target()),
                         partition.clone().into_doorbell_registration(Vtl::Vtl0),
                         &mut services.register_mmio(),
                         Some(mapper),
@@ -2010,7 +2010,7 @@ impl InitializedVm {
 
                     let msi_controller = hv_device.clone().target();
                     let interrupt_mapper = hv_device.clone().interrupt_mapper();
-                    msi_set.connect(0, msi_controller);
+                    msi_conn.connect(0, msi_controller);
 
                     let bus = VpciBus::new(
                         driver_source,

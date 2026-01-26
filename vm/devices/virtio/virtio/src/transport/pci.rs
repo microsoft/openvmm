@@ -100,7 +100,7 @@ pub struct VirtioPciDevice {
 impl VirtioPciDevice {
     pub fn new(
         device: Box<dyn VirtioDevice>,
-        mut interrupt_model: PciInterruptModel<'_>,
+        interrupt_model: PciInterruptModel<'_>,
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
         mmio_registration: &mut dyn RegisterMmioIntercept,
         shared_mem_mapper: Option<&dyn MemoryMapper>,
@@ -161,10 +161,10 @@ impl VirtioPciDevice {
             ),
         );
 
-        let msix: Option<MsixEmulator> = if let PciInterruptModel::Msix(register_msi) =
-            &mut interrupt_model
+        let msix: Option<MsixEmulator> = if let PciInterruptModel::Msix(msi_target) =
+            interrupt_model
         {
-            let (msix, msix_capability) = MsixEmulator::new(2, 64, *register_msi);
+            let (msix, msix_capability) = MsixEmulator::new(2, 64, msi_target);
             // setting msix as the first cap so that we don't have to update unit tests
             // i.e: there's no reason why this can't be a .push() instead of .insert()
             caps.insert(0, Box::new(msix_capability));

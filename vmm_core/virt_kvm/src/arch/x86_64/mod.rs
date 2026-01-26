@@ -14,7 +14,6 @@ use crate::KvmPartition;
 use crate::KvmPartitionInner;
 use crate::KvmProcessorBinder;
 use crate::KvmRunVpError;
-use crate::gsi;
 use crate::gsi::GsiRouting;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
@@ -37,6 +36,7 @@ use kvm::kvm_ioeventfd_flag_nr_deassign;
 use pal_event::Event;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
+use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
 use std::future::poll_fn;
 use std::io;
@@ -1323,7 +1323,7 @@ impl GuestEventPort for KvmGuestEventPort {
 struct KvmMsiTarget(Arc<KvmPartitionInner>);
 
 impl SignalMsi for KvmPartitionInner {
-    fn signal_msi(&self, rid: u32, address: u64, data: u32) {
+    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
         let request = MsiRequest { address, data };
         let KvmMsi {
             address_lo,
@@ -1331,49 +1331,20 @@ impl SignalMsi for KvmPartitionInner {
             data,
         } = KvmMsi::new(request);
 
-        if let Err(err) = self.0.kvm.request_msi(
-            rid,
-            &kvm::kvm_msi {
-                address_lo,
-                address_hi,
-                data,
-                flags: 0,
-                devid: 0,
-                pad: [0; 12],
-            },
-        ) {
+        if let Err(err) = self.kvm.request_msi(&kvm::kvm_msi {
+            address_lo,
+            address_hi,
+            data,
+            flags: 0,
+            devid: 0,
+            pad: [0; 12],
+        }) {
             tracelimit::warn_ratelimited!(
-                rid,
                 address = request.address,
                 data = request.data,
                 error = &err as &dyn std::error::Error,
                 "failed to signal MSI"
             );
         }
-    }
-}
-
-impl MsiControl for GsiMsi {
-    fn enable(&mut self, address: u64, data: u32) {
-        let request = MsiRequest { address, data };
-        let KvmMsi {
-            address_lo,
-            address_hi,
-            data,
-        } = KvmMsi::new(request);
-
-        self.gsi.enable(kvm::RoutingEntry::Msi {
-            address_lo,
-            address_hi,
-            data,
-        });
-    }
-
-    fn disable(&mut self) {
-        self.gsi.disable();
-    }
-
-    fn signal(&mut self, _address: u64, _data: u32) {
-        self.gsi.irqfd_event().unwrap().signal()
     }
 }

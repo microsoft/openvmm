@@ -36,6 +36,7 @@ impl TestPciInterruptController {
         self.inner.msi_requests.lock().pop_front()
     }
 
+    /// Returns an `Arc<dyn SignalMsi>` to this controller.
     pub fn signal_msi(&self) -> Arc<dyn SignalMsi> {
         self.inner.clone()
     }
