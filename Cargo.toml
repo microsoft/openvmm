@@ -210,6 +210,7 @@ tmk_tests = { path = "tmk/tmk_tests" }
 
 aarch64defs = { path = "vm/aarch64/aarch64defs" }
 aarch64emu = { path = "vm/aarch64/aarch64emu" }
+rsi = { path = "vm/aarch64/rsi" }
 acpi = { path = "vm/acpi" }
 acpi_spec = { path = "vm/acpi_spec" }
 chipset_arc_mutex_device = { path = "vm/chipset_arc_mutex_device" }

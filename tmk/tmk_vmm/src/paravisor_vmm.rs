@@ -15,6 +15,11 @@ use virt_mshv_vtl::UhLateParams;
 use virt_mshv_vtl::UhPartitionNewParams;
 use virt_mshv_vtl::UhProcessorBox;
 
+use openhcl_dma_manager::AllocationVisibility;
+use openhcl_dma_manager::DmaClientParameters;
+use openhcl_dma_manager::LowerVtlPermissionPolicy;
+use openhcl_dma_manager::OpenhclDmaManager;
+
 impl RunContext<'_> {
     pub async fn run_paravisor_vmm(
         &mut self,
@@ -37,13 +42,34 @@ impl RunContext<'_> {
             // TODO: match openhcl defaults when TDX is supported.
             disable_lower_vtl_timer_virt: true,
         };
+
         let p = virt_mshv_vtl::UhProtoPartition::new(params, |_| self.state.driver.clone())?;
+
+        let vtom = if cfg!(guest_arch = "aarch64") {
+            Some((1 as u64) << (p.realm_config().ipa_width() - 1))
+        } else {
+            None
+        };
+
+        if cfg!(guest_arch = "aarch64") {
+            p.cca_set_mem_perm(
+                self.state.mmemory.as_ref().unwrap().startpa,
+                self.state.mmemory.as_ref().unwrap().endpa,
+            )
+            .expect("failed to set CCA memory permissions");
+
+            p.cca_set_mem_perm(
+                self.state.shared_address_start,
+                self.state.shared_address_start + 0x200000,
+            )
+            .expect("failed to set CCA memory permissions");
+        }
 
         let m = underhill_mem::init(&underhill_mem::Init {
             processor_topology: &self.state.processor_topology,
             isolation,
             vtl0_alias_map_bit: None,
-            vtom: None,
+            vtom,
             mem_layout: &self.state.memory_layout,
             complete_memory_layout: &self.state.memory_layout,
             boot_init: None,
@@ -51,6 +77,37 @@ impl RunContext<'_> {
             maximum_vtl: hvdef::Vtl::Vtl0,
         })
         .await?;
+
+        let dma_manager = OpenhclDmaManager::new(
+            &[],
+            &self
+                .state
+                .memory_layout
+                .ram()
+                .iter()
+                .map(|r| r.range)
+                .collect::<Vec<_>>(),
+            vtom.unwrap_or(0),
+            isolation,
+        )
+        .expect("failed to create global dma manager");
+        // Needed because if we use the same DMA manager for both below,
+        // the shared manager will end up allocating some pages at the start of the address space,
+        // which will conflict with the private allocations and erase some of the ELF sections
+        // of the TMK.
+        let shared_dma_manager = OpenhclDmaManager::new(
+            &[],
+            &self
+                .state
+                .shared_memory_layout
+                .ram()
+                .iter()
+                .map(|r| r.range)
+                .collect::<Vec<_>>(),
+            vtom.unwrap_or(0),
+            isolation,
+        )
+        .expect("failed to create global dma manager");
 
         let (partition, vps) = p
             .build(UhLateParams {
@@ -65,9 +122,28 @@ impl RunContext<'_> {
                 cpuid: Vec::new(),
                 crash_notification_send: mesh::channel().0,
                 vmtime: self.vmtime_source,
-                cvm_params: None,
+                cvm_params: Some(virt_mshv_vtl::CvmLateParams {
+                    shared_gm: m.cvm_memory().unwrap().shared_gm.clone(),
+                    isolated_memory_protector: m.cvm_memory().unwrap().protector.clone(),
+                    shared_dma_client: shared_dma_manager.new_client(DmaClientParameters {
+                        device_name: "partition-shared".into(),
+                        lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                        allocation_visibility: AllocationVisibility::Private,
+                        persistent_allocations: true,
+                    })?,
+                    private_dma_client: dma_manager.new_client(DmaClientParameters {
+                        device_name: "partition-private".into(),
+                        lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                        allocation_visibility: AllocationVisibility::Private,
+                        persistent_allocations: true,
+                    })?,
+                }),
                 vmbus_relay: false,
-            })
+            },
+            self.state.shared_address_start,
+            self.state.shared_virtual_address_start,
+            self.state.shared_address_start_command,
+            self.state.shared_virtual_address_start_command,)
             .await?;
 
         let partition = Arc::new(partition);
@@ -100,6 +176,13 @@ async fn start_vp(
         let pool = pal_uring::IoUringPool::new("vp", 256).unwrap();
         let driver = pool.client().initiator().clone();
         pool.client().set_idle_task(async move |mut control| {
+
+            #[cfg(guest_arch = "aarch64")]
+            let vp = vp
+                .bind_processor::<virt_mshv_vtl::CcaBacked>(&driver, Some(&mut control))
+                .unwrap();
+
+            #[cfg(guest_arch = "x86_64")]
             let vp = vp
                 .bind_processor::<virt_mshv_vtl::HypervisorBacked>(&driver, Some(&mut control))
                 .unwrap();

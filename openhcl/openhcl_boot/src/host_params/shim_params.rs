@@ -28,6 +28,7 @@ impl IsolationType {
             IsolationType::Vbs => false,
             IsolationType::Snp => true,
             IsolationType::Tdx => true,
+            IsolationType::Cca => true,
         }
     }
 }

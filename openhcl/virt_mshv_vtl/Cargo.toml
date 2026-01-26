@@ -29,6 +29,7 @@ sidecar_client.workspace = true
 vmcore.workspace = true
 x86defs.workspace = true
 x86emu.workspace = true
+rsi.workspace = true
 
 atomic_ringbuf.workspace = true
 cvm_tracing.workspace = true

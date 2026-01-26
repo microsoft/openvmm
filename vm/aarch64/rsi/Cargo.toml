@@ -1,0 +1,23 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "rsi"
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+tracing = ["dep:tracing"]
+
+[dependencies]
+hvdef.workspace = true
+memory_range.workspace = true
+aarch64defs.workspace = true
+bitfield-struct.workspace = true
+open_enum.workspace = true
+
+tracing = { workspace = true, optional = true }
+
+[lints]
+workspace = true
