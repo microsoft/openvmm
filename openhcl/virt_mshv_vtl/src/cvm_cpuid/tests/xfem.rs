@@ -634,7 +634,7 @@ fn xfem_xss_mask() {
             CpuidResult {
                 eax: 0,
                 ebx: 0,
-                ecx: 0x1a405fe6,
+                ecx: 0x1A4000A4,
                 edx: 0
             }
         );
@@ -718,7 +718,7 @@ fn xfem_masked_out() {
             CpuidResult {
                 eax: 0,
                 ebx: 0,
-                ecx: 0x1a405f66,
+                ecx: 0x1A400024,
                 edx: 0
             }
         );
