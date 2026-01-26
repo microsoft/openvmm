@@ -65,25 +65,25 @@ impl FlowNode for Node {
 
                 match (platform, target.operating_system) {
                     (FlowPlatform::Linux(_), target_lexicon::OperatingSystem::Linux) => {
-                        let (gcc_pkg, bin) = match target.architecture {
+                        let (gcc_pkg, bin): (Option<&str>, String) = match target.architecture {
                             Architecture::X86_64 => match platform {
                                 FlowPlatform::Linux(linux_distribution) => {
                                     let pkg = match linux_distribution {
-                                        FlowPlatformLinuxDistro::Fedora => "gcc-x86_64-linux-gnu",
-                                        FlowPlatformLinuxDistro::Ubuntu => "gcc-x86-64-linux-gnu",
+                                        FlowPlatformLinuxDistro::Fedora => {
+                                            Some("gcc-x86_64-linux-gnu")
+                                        }
+                                        FlowPlatformLinuxDistro::Ubuntu => {
+                                            Some("gcc-x86-64-linux-gnu")
+                                        }
                                         FlowPlatformLinuxDistro::Arch => {
-                                            match_arch!(host_arch, FlowArch::X86_64, "gcc")
+                                            match_arch!(host_arch, FlowArch::X86_64, Some("gcc"))
                                         }
-                                        FlowPlatformLinuxDistro::Nix => {
-                                            anyhow::bail!(
-                                                "Cross-compilation for Linux is not yet supported in Nix environments"
-                                            )
-                                        }
+                                        FlowPlatformLinuxDistro::Nix => None,
                                         FlowPlatformLinuxDistro::Unknown => {
                                             anyhow::bail!("Unknown Linux distribution")
                                         }
                                     };
-                                    (pkg.to_string(), "x86_64-linux-gnu-gcc".to_string())
+                                    (pkg, "x86_64-linux-gnu-gcc".to_string())
                                 }
                                 _ => anyhow::bail!("Unsupported platform"),
                             },
@@ -92,23 +92,19 @@ impl FlowNode for Node {
                                     let pkg = match linux_distribution {
                                         FlowPlatformLinuxDistro::Fedora
                                         | FlowPlatformLinuxDistro::Ubuntu => {
-                                            "gcc-aarch64-linux-gnu"
+                                            Some("gcc-aarch64-linux-gnu")
                                         }
                                         FlowPlatformLinuxDistro::Arch => match_arch!(
                                             host_arch,
                                             FlowArch::X86_64,
-                                            "aarch64-linux-gnu-gcc"
+                                            Some("aarch64-linux-gnu-gcc")
                                         ),
-                                        FlowPlatformLinuxDistro::Nix => {
-                                            anyhow::bail!(
-                                                "Cross-compilation for Linux is not yet supported in Nix environments"
-                                            )
-                                        }
+                                        FlowPlatformLinuxDistro::Nix => None,
                                         FlowPlatformLinuxDistro::Unknown => {
                                             anyhow::bail!("Unknown Linux distribution")
                                         }
                                     };
-                                    (pkg.to_string(), "aarch64-linux-gnu-gcc".to_string())
+                                    (pkg, "aarch64-linux-gnu-gcc".to_string())
                                 }
                                 _ => anyhow::bail!("Unsupported platform"),
                             },
@@ -124,12 +120,16 @@ impl FlowNode for Node {
                         // * The only Rust `aarch64` targets that produce
                         //   position-independent static ELF binaries with no std are
                         //   `aarch64-unknown-linux-*`.
-                        pre_build_deps.push(ctx.reqv(|v| {
-                            flowey_lib_common::install_dist_pkg::Request::Install {
-                                package_names: vec![gcc_pkg],
-                                done: v,
-                            }
-                        }));
+                        //
+                        // Skip package installation for Nix (shell.nix provides cross-compilers)
+                        if let Some(gcc_pkg) = gcc_pkg {
+                            pre_build_deps.push(ctx.reqv(|v| {
+                                flowey_lib_common::install_dist_pkg::Request::Install {
+                                    package_names: vec![gcc_pkg.into()],
+                                    done: v,
+                                }
+                            }));
+                        }
 
                         // when cross compiling for gnu linux, explicitly set the
                         // linker being used.

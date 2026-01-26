@@ -197,6 +197,12 @@ impl FlowNode for Node {
                     for (_, arch) in local_reqs {
                         let (kernel_path, modules_path) = local_paths.get(&arch).unwrap();
 
+                        log::info!(
+                            "using local kernel at {:?} and modules at {:?}",
+                            kernel_path,
+                            modules_path
+                        );
+
                         // Write kernel paths for all kinds matching this arch
                         for kind in [
                             OpenhclKernelPackageKind::Main,

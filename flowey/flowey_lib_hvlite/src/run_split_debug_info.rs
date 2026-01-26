@@ -49,7 +49,7 @@ impl SimpleFlowNode for Node {
                     FlowPlatformLinuxDistro::Arch => {
                         match_arch!(host_arch, FlowArch::X86_64, (Some("binutils"), "objcopy"))
                     }
-                    FlowPlatformLinuxDistro::Nix => (None, "objcopy"),
+                    FlowPlatformLinuxDistro::Nix => (None, "x86_64-linux-gnu-objcopy"),
                     FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
                 },
                 _ => anyhow::bail!("Unsupported platform"),
