@@ -126,13 +126,18 @@ enum ExitCode {
     ErrorGspUnknown = 7,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
 #[repr(u32)]
 enum ResourceCode {
+    #[value(name = "NONCONFIDENTIAL")]
     NonConfidential = 13510,
+    #[value(name = "SNP")]
     Snp = 13515,
+    #[value(name = "SNP_NO_HCL")]
     SnpNoHcl = 13516,
+    #[value(name = "TDX")]
     Tdx = 13520,
+    #[value(name = "TDX_NO_HCL")]
     TdxNoHcl = 13521,
 }
 
@@ -291,8 +296,8 @@ enum Options {
         /// Overwrite the VMGS data at `fileid 8`, even if it already exists with nonzero size
         #[clap(long, alias = "allowoverwrite")]
         allow_overwrite: bool,
-        /// Resource code. Supported values: NONCONFIDENTIAL, SNP, TDX, SNP_NO_HCL, and TDX_NO_HCL
-        #[clap(short = 'r', long, alias = "resourcecode", value_parser = parse_resource_code)]
+        /// Resource code
+        #[clap(short = 'r', long, alias = "resourcecode", value_enum)]
         resource_code: ResourceCode,
     },
 }
@@ -324,17 +329,6 @@ fn parse_encryption_algorithm(algorithm: &str) -> Result<EncryptionAlgorithm, &'
     match algorithm {
         "AES_GCM" => Ok(EncryptionAlgorithm::AES_GCM),
         _ => Err("Encryption algorithm not supported"),
-    }
-}
-
-fn parse_resource_code(resource_code: &str) -> Result<ResourceCode, &'static str> {
-    match resource_code {
-        "NONCONFIDENTIAL" => Ok(ResourceCode::NonConfidential),
-        "SNP" => Ok(ResourceCode::Snp),
-        "SNP_NO_HCL" => Ok(ResourceCode::SnpNoHcl),
-        "TDX" => Ok(ResourceCode::Tdx),
-        "TDX_NO_HCL" => Ok(ResourceCode::TdxNoHcl),
-        _ => Err("Resource code not supported"),
     }
 }
 
