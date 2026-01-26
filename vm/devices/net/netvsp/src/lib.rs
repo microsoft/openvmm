@@ -1255,14 +1255,6 @@ impl VmbusDevice for Nic {
             // The coordinator will restart any stopped workers.
             self.coordinator.start();
         }
-        if let Err(err) = &r {
-            tracing::error!(
-                error = err as &dyn std::error::Error,
-                channel_idx,
-                instance_id = %self.instance_id,
-                "vmbus channel open failed"
-            );
-        }
         r?;
         Ok(())
     }
@@ -2619,13 +2611,7 @@ impl<T: RingMem> NetChannel<T> {
                         tracing::error!(len, "failed to write vf association message");
                         WorkerError::OutOfSpace
                     }
-                    queue::TryWriteError::Queue(err) => {
-                        tracing::error!(
-                            error = &err as &dyn std::error::Error,
-                            "failed to notify guest about the vf association"
-                        );
-                        WorkerError::Queue(err)
-                    }
+                    queue::TryWriteError::Queue(err) => WorkerError::Queue(err),
                 })?;
             Ok(true)
         } else {
