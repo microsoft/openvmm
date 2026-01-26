@@ -148,7 +148,6 @@ pub struct SevVirtualInterruptControl {
     pub vector: u8,
     #[bits(23)]
     _rsvd3: u64,
-    #[bits(1)]
     pub guest_busy: bool,
 }
 

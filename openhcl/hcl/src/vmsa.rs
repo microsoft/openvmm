@@ -169,10 +169,11 @@ impl<T: DerefMut<Target = SevVmsa>> VmsaWrapper<'_, T> {
     /// Atomically test and set the guest busy bit in v_intr_cntrl.
     pub fn guest_busy_bit_test_and_set(&mut self) -> bool {
         const VINTR_GUEST_BUSYBIT_MASK: u64 = 1u64 << 63;
-        let prev = self.v_intr_cntrl_atomic().fetch_or(VINTR_GUEST_BUSYBIT_MASK, Ordering::SeqCst);
+        let prev = self
+            .v_intr_cntrl_atomic()
+            .fetch_or(VINTR_GUEST_BUSYBIT_MASK, Ordering::SeqCst);
         (prev & VINTR_GUEST_BUSYBIT_MASK) != 0
     }
-
 }
 
 /// Check bitmap to see if a register is included in masking.
