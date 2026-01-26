@@ -810,6 +810,9 @@ impl MshvHvcall {
     ///
     /// Returns on error, the hypervisor error and the number of pages
     /// processed.
+    ///
+    /// VBS FUTURE TODO: For defense in depth it could be useful to prevent usermode from
+    /// changing visibility of a VTL2 kernel page in the kernel.
     pub fn modify_gpa_visibility(
         &self,
         host_visibility: HostVisibilityType,
