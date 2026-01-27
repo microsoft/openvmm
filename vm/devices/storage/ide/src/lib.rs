@@ -764,6 +764,8 @@ impl Channel {
                     }
                 };
 
+                tracing::trace!(entry = ?cur_desc_table_entry, "read dma desc");
+
                 dma.transfer_bytes_left = cur_desc_table_entry.byte_count.into();
                 // A zero byte length implies 64Kb
                 if cur_desc_table_entry.byte_count == 0 {
