@@ -6,7 +6,6 @@ use crate::logger::VmgsLogEvent;
 use crate::logger::VmgsLogger;
 use crate::storage::VmgsStorage;
 use anyhow::Context;
-#[cfg(with_encryption)]
 use anyhow::anyhow;
 use cvm_tracing::CVM_ALLOWED;
 use disk_backend::Disk;
@@ -182,7 +181,7 @@ impl ResolvedFileControlBlock {
         }
     }
 
-    #[cfg(with_encryption)]
+    #[cfg_attr(not(with_encryption), expect(dead_code))]
     fn update_extended_data(&mut self, extended_file_entry: &VmgsExtendedFileEntry) {
         self.attributes = extended_file_entry.attributes;
         self.encryption_key = extended_file_entry.encryption_key;
@@ -318,11 +317,6 @@ impl<'a> AllocRequest<'a> {
 
         let block_offset = allocate_helper(allocation_list, block_count, block_capacity)?;
 
-        allocation_list.push(AllocationBlock {
-            block_offset,
-            allocated_blocks: block_count,
-        });
-
         let fcb =
             ResolvedFileControlBlock::new(block_offset, block_count, valid_bytes, self.encrypt);
 
@@ -380,8 +374,8 @@ struct VmgsState {
     active_datastore_key_index: Option<usize>,
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
     datastore_keys: [VmgsDatastoreKey; 2],
-    // unused, retained for save-restore backwards compatibility
-    metadata_key: VmgsDatastoreKey,
+    /// unused, retained for save-restore backwards compatibility
+    unused_metadata_key: VmgsDatastoreKey,
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
     encrypted_metadata_keys: [VmgsEncryptionKey; 2],
     reprovisioned: bool,
@@ -564,7 +558,7 @@ impl Vmgs {
             .await?;
         vmgs.state.fcbs = initialize_file_metadata(
             VmgsFileTable::ref_from_bytes(&file_table_buffer)
-                .map_err(|_| anyhow::anyhow!("incorrect file table size"))?,
+                .map_err(|_| anyhow!("incorrect file table size"))?,
             vmgs.state.version,
             vmgs.storage.block_capacity(),
         )?;
@@ -1000,7 +994,7 @@ impl Vmgs {
                     error = &errs[1].take().unwrap() as &dyn std::error::Error,
                     "second index failed to decrypt",
                 );
-                return Err(Error::Other(anyhow::anyhow!(
+                return Err(Error::Other(anyhow!(
                     "failed to use the root key provided to decrypt VMGS metadata key"
                 )));
             }
@@ -1243,7 +1237,7 @@ impl VmgsState {
             datastore_key_count: 0,
             active_datastore_key_index: None,
             datastore_keys: [VmgsDatastoreKey::new_zeroed(); 2],
-            metadata_key: VmgsDatastoreKey::new_zeroed(),
+            unused_metadata_key: VmgsDatastoreKey::new_zeroed(),
             encrypted_metadata_keys: std::array::from_fn(|_| VmgsEncryptionKey::new_zeroed()),
             reprovisioned: false,
             provisioned_this_boot: true,
@@ -1328,7 +1322,7 @@ impl VmgsState {
             .context("missing extended file table")?
             .encryption_key;
 
-        self.metadata_key.copy_from_slice(metadata_key);
+        self.unused_metadata_key.copy_from_slice(metadata_key);
 
         if is_empty_key(&self.encrypted_metadata_keys[current_index].nonce) {
             self.encrypted_metadata_keys[current_index]
@@ -1709,11 +1703,10 @@ struct AllocationBlock {
 /// maps out the used/unused space in the file and finds the smallest
 /// unused space to allocate new data.
 fn allocate_helper(
-    allocation_list: &mut [AllocationBlock],
+    allocation_list: &mut Vec<AllocationBlock>,
     block_count: u32,
     block_capacity: u32,
 ) -> Result<u32, Error> {
-    // TODO: this will get removed when allocation_list is re-written
     // sort by block offset
     allocation_list.sort_by_key(|a| a.block_offset);
 
@@ -1745,6 +1738,11 @@ fn allocate_helper(
     if !found {
         return Err(Error::InsufficientResources);
     }
+
+    allocation_list.push(AllocationBlock {
+        block_offset: best_offset,
+        allocated_blocks: block_count,
+    });
     Ok(best_offset)
 }
 
@@ -1896,7 +1894,7 @@ pub mod save_restore {
                     datastore_key_count,
                     active_datastore_key_index,
                     datastore_keys,
-                    metadata_key,
+                    unused_metadata_key: metadata_key,
                     encrypted_metadata_keys: encrypted_metadata_keys.map(|k| {
                         let state::SavedVmgsEncryptionKey {
                             nonce,
@@ -1941,7 +1939,7 @@ pub mod save_restore {
                         datastore_key_count,
                         active_datastore_key_index,
                         datastore_keys,
-                        metadata_key,
+                        unused_metadata_key: metadata_key,
                         encrypted_metadata_keys,
                         reprovisioned,
                         provisioned_this_boot: _,
@@ -2368,30 +2366,35 @@ mod tests {
         assert!(round_up_count(4097, 4096) == 8192);
     }
 
-    // #[async_test]
-    // async fn test_header_sequence_overflow() {
-    //     let disk = new_test_file();
-    //     let mut vmgs = Vmgs::format_new(disk, None).await.unwrap();
+    #[async_test]
+    async fn test_header_sequence_overflow() {
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk, None).await.unwrap();
 
-    //     vmgs.state.active_header_sequence_number = u32::MAX;
+        vmgs.state.active_header_sequence_number = u32::MAX;
 
-    //     // write
-    //     let buf = b"hello world";
-    //     vmgs.write_file(FileId::BIOS_NVRAM, buf).await.unwrap();
+        // write
+        let buf = b"hello world";
+        vmgs.write_file(FileId::BIOS_NVRAM, buf).await.unwrap();
 
-    //     assert_eq!(vmgs.state.active_header_index, 1);
-    //     assert_eq!(vmgs.state.active_header_sequence_number, 0);
+        assert_eq!(vmgs.state.active_header_index, 1);
+        assert_eq!(vmgs.state.active_header_sequence_number, 0);
 
-    //     vmgs.set_active_header(0, u32::MAX);
+        vmgs.state.active_header_index = 0;
+        vmgs.state.active_header_sequence_number = u32::MAX;
 
-    //     let mut new_header = VmgsHeader::new_zeroed();
+        let mut temp_state = vmgs.temp_state();
 
-    //     vmgs.update_header_inner(&mut new_header).await.unwrap();
+        let (new_header, index) = temp_state.make_header();
+        vmgs.write_header_internal(&new_header, index)
+            .await
+            .unwrap();
+        vmgs.apply(temp_state);
 
-    //     assert_eq!(vmgs.state.active_header_index, 1);
-    //     assert_eq!(vmgs.state.active_header_sequence_number, 0);
-    //     assert_eq!(new_header.sequence, 0);
-    // }
+        assert_eq!(vmgs.state.active_header_index, 1);
+        assert_eq!(vmgs.state.active_header_sequence_number, 0);
+        assert_eq!(new_header.sequence, 0);
+    }
 
     #[cfg(with_encryption)]
     #[async_test]
@@ -2791,5 +2794,59 @@ mod tests {
         // Read the file again
         let read_buf = vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap();
         assert_eq!(buf, read_buf);
+    }
+
+    #[test]
+    fn test_allocate_helper() {
+        let block_capacity =
+            (vmgs_format::VMGS_DEFAULT_CAPACITY / (VMGS_BYTES_PER_BLOCK as u64)) as u32;
+        // this test assumes the block capacity is 1024
+        assert_eq!(block_capacity, 1024);
+
+        let mut allocation_list = Vec::new();
+
+        // add some "files"
+        assert_eq!(
+            allocate_helper(&mut allocation_list, 3, block_capacity).unwrap(),
+            2
+        );
+        assert_eq!(
+            allocate_helper(&mut allocation_list, 95, block_capacity).unwrap(),
+            5
+        );
+        assert_eq!(
+            allocate_helper(&mut allocation_list, 2, block_capacity).unwrap(),
+            100
+        );
+
+        // remove the first one and make sure subsequent "files" are placed there
+        allocation_list.remove(0);
+
+        assert_eq!(
+            allocate_helper(&mut allocation_list, 1, block_capacity).unwrap(),
+            2
+        );
+        assert_eq!(
+            allocate_helper(&mut allocation_list, 3, block_capacity).unwrap(),
+            102
+        );
+        assert_eq!(
+            allocate_helper(&mut allocation_list, 2, block_capacity).unwrap(),
+            3
+        );
+
+        // Make sure we error correctly when dealing with large files
+        let mut allocation_list = Vec::new();
+
+        allocate_helper(&mut allocation_list, 1025, block_capacity).unwrap_err();
+        assert_eq!(
+            allocate_helper(&mut allocation_list, 511, block_capacity).unwrap(),
+            2
+        );
+        assert_eq!(
+            allocate_helper(&mut allocation_list, 511, block_capacity).unwrap(),
+            513
+        );
+        allocate_helper(&mut allocation_list, 1, block_capacity).unwrap_err();
     }
 }
