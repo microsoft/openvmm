@@ -283,8 +283,6 @@ enum Options {
         file_path: FilePathArg,
         #[command(flatten)]
         file_id: FileIdArg,
-        #[command(flatten)]
-        key_path: KeyPathArg,
     },
     /// Dump information about all the File IDs allocated in the VMGS file.
     DumpFileTable {
@@ -517,11 +515,9 @@ async fn do_main() -> Result<(), Error> {
             )
             .await
         }
-        Options::Delete {
-            file_path,
-            file_id,
-            key_path,
-        } => vmgs_file_delete(file_path.file_path, file_id.file_id, key_path.key_path).await,
+        Options::Delete { file_path, file_id } => {
+            vmgs_file_delete(file_path.file_path, file_id.file_id).await
+        }
         Options::DumpFileTable {
             file_path,
             key_path,
@@ -857,13 +853,13 @@ async fn vmgs_move(
     Ok(())
 }
 
-async fn vmgs_file_delete(
-    file_path: impl AsRef<Path>,
-    file_id: FileId,
-    key_path: Option<impl AsRef<Path>>,
-) -> Result<(), Error> {
-    // TODO: do we need to decrypt?
-    let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadWriteIgnore).await?;
+async fn vmgs_file_delete(file_path: impl AsRef<Path>, file_id: FileId) -> Result<(), Error> {
+    let mut vmgs = vmgs_file_open(
+        file_path,
+        None as Option<PathBuf>,
+        OpenMode::ReadWriteIgnore,
+    )
+    .await?;
 
     vmgs_delete(&mut vmgs, file_id).await
 }
@@ -1791,5 +1787,116 @@ mod tests {
 
         let encryption_algorithm = test_vmgs_query_encryption(&path).await.unwrap();
         assert_eq!(encryption_algorithm, EncryptionAlgorithm::AES_GCM);
+    }
+
+    #[async_test]
+    async fn move_delete_file() {
+        let (_dir, path) = new_path();
+        let buf = b"Plain text data".to_vec();
+
+        test_vmgs_create(&path, None, false, None).await.unwrap();
+
+        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWriteRequire, None)
+            .await
+            .unwrap();
+
+        vmgs_write(&mut vmgs, FileId::TPM_NVRAM, &buf, false, false)
+            .await
+            .unwrap();
+        let read_buf = vmgs_read(&mut vmgs, FileId::TPM_NVRAM, false)
+            .await
+            .unwrap();
+        assert_eq!(buf, read_buf);
+
+        vmgs_move(
+            &mut vmgs,
+            FileId::TPM_NVRAM,
+            FileId::TPM_NVRAM_BACKUP,
+            false,
+        )
+        .await
+        .unwrap();
+        vmgs_read(&mut vmgs, FileId::TPM_NVRAM, false)
+            .await
+            .unwrap_err();
+        let read_buf = vmgs_read(&mut vmgs, FileId::TPM_NVRAM_BACKUP, false)
+            .await
+            .unwrap();
+        assert_eq!(buf, read_buf);
+        vmgs_delete(&mut vmgs, FileId::TPM_NVRAM_BACKUP)
+            .await
+            .unwrap();
+        vmgs_read(&mut vmgs, FileId::TPM_NVRAM_BACKUP, false)
+            .await
+            .unwrap_err();
+    }
+
+    #[async_test]
+    async fn move_delete_file_encrypted() {
+        let (_dir, path) = new_path();
+        let encryption_key = vec![5; 32];
+        let buf_1 = b"123".to_vec();
+        let buf_2 = b"456".to_vec();
+
+        test_vmgs_create(
+            &path,
+            None,
+            false,
+            Some((EncryptionAlgorithm::AES_GCM, &encryption_key)),
+        )
+        .await
+        .unwrap();
+
+        {
+            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWriteRequire, Some(&encryption_key))
+                .await
+                .unwrap();
+
+            vmgs_write(&mut vmgs, FileId::BIOS_NVRAM, &buf_2, true, false)
+                .await
+                .unwrap();
+            vmgs_write(&mut vmgs, FileId::TPM_NVRAM, &buf_1, true, false)
+                .await
+                .unwrap();
+            let read_buf = vmgs_read(&mut vmgs, FileId::TPM_NVRAM, true).await.unwrap();
+            assert!(read_buf == buf_1);
+
+            vmgs_move(
+                &mut vmgs,
+                FileId::TPM_NVRAM,
+                FileId::TPM_NVRAM_BACKUP,
+                false,
+            )
+            .await
+            .unwrap();
+            let read_buf = vmgs_read(&mut vmgs, FileId::TPM_NVRAM_BACKUP, true)
+                .await
+                .unwrap();
+            assert!(read_buf == buf_1);
+        }
+
+        // delete the file without decrypting, as the cmdline tool would do
+        {
+            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWriteIgnore, None)
+                .await
+                .unwrap();
+            vmgs_delete(&mut vmgs, FileId::TPM_NVRAM_BACKUP)
+                .await
+                .unwrap();
+            vmgs_read(&mut vmgs, FileId::TPM_NVRAM_BACKUP, false)
+                .await
+                .unwrap_err();
+        }
+
+        // make sure the file is not corrupted
+        {
+            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWriteRequire, Some(&encryption_key))
+                .await
+                .unwrap();
+            let read_buf = vmgs_read(&mut vmgs, FileId::BIOS_NVRAM, true)
+                .await
+                .unwrap();
+            assert!(read_buf == buf_2);
+        }
     }
 }
