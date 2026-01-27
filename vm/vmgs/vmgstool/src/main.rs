@@ -396,9 +396,34 @@ fn parse_legacy_args() -> Vec<String> {
     args
 }
 
+/// Initialize tracing
+pub fn init_tracing(verbose: bool) {
+    use tracing::level_filters::LevelFilter;
+    use tracing_subscriber::filter::Targets;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let targets = if verbose {
+        Targets::new().with_default(LevelFilter::DEBUG)
+    } else {
+        Targets::new()
+            .with_default(LevelFilter::OFF)
+            .with_target("vmgstool", LevelFilter::INFO)
+    };
+
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .log_internal_errors(true)
+        .with_max_level(LevelFilter::DEBUG)
+        .with_timer(tracing_subscriber::fmt::time::uptime())
+        .finish()
+        .with(targets)
+        .init();
+}
+
 fn main() {
     DefaultPool::run_with(async |_| match do_main().await {
-        Ok(_) => eprintln!("The operation completed successfully."),
+        Ok(_) => tracing::info!("The operation completed successfully."),
         Err(e) => {
             let exit_code = match e {
                 Error::NotEncrypted => ExitCode::ErrorNotEncrypted,
@@ -426,6 +451,7 @@ fn main() {
 
 async fn do_main() -> Result<(), Error> {
     let opt = Options::parse_from(parse_legacy_args());
+    init_tracing(false);
 
     match opt {
         Options::Create {

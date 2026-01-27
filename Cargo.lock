@@ -9568,6 +9568,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.16",
+ "tracing",
+ "tracing-subscriber",
  "ucs2 0.0.0",
  "uefi_nvram_specvars",
  "uefi_nvram_storage",
