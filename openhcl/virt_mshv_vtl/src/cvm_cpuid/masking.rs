@@ -207,24 +207,6 @@ impl CpuidResults {
                             .into(),
                         is_subleaf: true,
                     })
-                } else if subleaf == 1 {
-                    Some(CpuidResultMask {
-                        mask_eax: cpuid::ExtendedFeatureSubleaf1Eax::new()
-                            .with_avx_vnni(true)
-                            .with_avx512_bfloat16(true)
-                            .with_fzlrep_movsb(true)
-                            .with_fsrep_stosb(true)
-                            .with_fsrep_cmpsb(true)
-                            .with_avx_ifma(true)
-                            .into(),
-                        mask_ebx: 0,
-                        mask_ecx: 0,
-                        mask_edx: cpuid::ExtendedFeatureSubleaf1Edx::new()
-                            .with_avx_vnni_int8(true)
-                            .with_avx_ne_convert(true)
-                            .into(),
-                        is_subleaf: true,
-                    })
                 } else {
                     None
                 }
