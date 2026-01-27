@@ -4,7 +4,6 @@
 mod partition_memory_map;
 
 pub use partition_memory_map::PartitionMemoryMap;
-use pci_core::msi::SignalMsi;
 pub use vm_topology::processor::VpIndex;
 
 use crate::CpuidLeaf;
@@ -21,6 +20,7 @@ use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
+use pci_core::msi::SignalMsi;
 use std::cell::Cell;
 use std::convert::Infallible;
 use std::fmt::Debug;
