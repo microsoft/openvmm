@@ -365,7 +365,7 @@ async fn vmgs_file_remove_boot_entries(
     dry_run: bool,
 ) -> Result<(), Error> {
     let mut nvram_storage =
-        vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadWriteIgnore).await?;
+        vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadWriteRequire).await?;
 
     if dry_run {
         eprintln!("Printing Boot Entries (Dry-run)");
@@ -422,7 +422,7 @@ async fn vmgs_file_remove_nvram_entry(
     vendor: String,
 ) -> Result<(), Error> {
     let mut nvram_storage =
-        vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadWriteIgnore).await?;
+        vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadWriteRequire).await?;
 
     eprintln!("Removing variable with name {name} and vendor {vendor}");
 

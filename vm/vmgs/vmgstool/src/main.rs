@@ -70,7 +70,7 @@ enum Error {
     InvalidKeySize(u64, u64),
     #[error("File is not encrypted")]
     NotEncrypted,
-    #[error("File is must be decrypted to perform this operation but no key was provided")]
+    #[error("File must be decrypted to perform this operation but no key was provided")]
     EncryptedNoKey,
     #[error("File is VMGSv1 format")]
     V1Format,
@@ -277,7 +277,7 @@ enum Options {
         #[clap(long, alias = "allowoverwrite")]
         allow_overwrite: bool,
     },
-    /// Move data to a new file id
+    /// Delete a file id
     Delete {
         #[command(flatten)]
         file_path: FilePathArg,
@@ -322,6 +322,7 @@ fn parse_file_id(file_id: &str) -> Result<FileId, std::num::ParseIntError> {
         "HIBERNATION_FIRMWARE" => FileId::HIBERNATION_FIRMWARE,
         "PLATFORM_SEED" => FileId::PLATFORM_SEED,
         "PROVENANCE_DOC" => FileId::PROVENANCE_DOC,
+        "TPM_NVRAM_BACKUP" => FileId::TPM_NVRAM_BACKUP,
         "EXTENDED_FILE_TABLE" => FileId::EXTENDED_FILE_TABLE,
         v => FileId(v.parse::<u32>()?),
     })
@@ -1091,12 +1092,13 @@ fn vmgs_dump_headers(header1: &VmgsHeader, header2: &VmgsHeader) -> Result<(), E
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[expect(clippy::enum_variant_names)]
 enum OpenMode {
     /// Open read-only. Ignore encryption status.
     ReadOnlyIgnore,
     /// Open read-only. Warn if encrypted and no key was provided.
     ReadOnlyWarn,
-    /// Open read-write. Ignore enryption status.
+    /// Open read-write. Ignore encryption status.
     ReadWriteIgnore,
     /// Open read-write. Fail if encrypted and no key was provided.
     ReadWriteRequire,
