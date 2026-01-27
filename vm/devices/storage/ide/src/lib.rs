@@ -772,7 +772,7 @@ impl Channel {
                     dma.transfer_bytes_left = 0x10000;
                 }
 
-                // Check that the every page starting from the base address is within
+                // Check that every page starting from the base address is within
                 // the guest's physical address space.
                 // This is a sanity check, the guest should not be able to program the DMA
                 // controller with an invalid page access.
@@ -2072,6 +2072,14 @@ mod tests {
             .unwrap();
     }
 
+    fn get_dma_state(ide_controller: &mut IdeDevice, dev_path: &IdePath) -> bool {
+        // Returns true if DMA state exists, false if None
+        ide_controller.channels[dev_path.channel as usize]
+            .bus_master_state
+            .dma_state
+            .is_some()
+    }
+
     fn prep_ide_channel(ide_controller: &mut IdeDevice, drive_type: DriveType, dev_path: &IdePath) {
         match drive_type {
             DriveType::Hard => {
@@ -2404,11 +2412,11 @@ mod tests {
 
     #[async_test]
     async fn enlightened_cmd_test_invalid_dma_base() {
-        /*
-        This is a negative test case where the DMA base address is invalid.
-        The test sets the DMA base address to an out-of-bounds memory
-        address of the guest range and expects the device to not read any data.
-        */
+
+        // This is a negative test case where the DMA base address is invalid.
+        // The test sets the DMA base address to an out-of-bounds memory
+        // address of the guest range and expects the device to not read any data.
+
         const SECTOR_COUNT: u16 = 8;
         const BYTE_COUNT: u16 = SECTOR_COUNT * protocol::HARD_DRIVE_SECTOR_BYTES as u16;
 
@@ -2468,6 +2476,14 @@ mod tests {
             }
             _ => panic!("{:?}", r),
         }
+
+        // Since there is only one IO in the test and no pending IOs, dma_error bit isn't set.
+        // Hence using the dma_state to verify the test.
+        let dma_state = get_dma_state(&mut ide_device, &dev_path);
+        assert!(
+            !dma_state,
+            "Expected DMA state to be cleared after validation failure."
+        );
     }
 
     #[async_test]
