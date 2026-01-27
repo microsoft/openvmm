@@ -786,34 +786,27 @@ impl Channel {
                     let end_gpn = Self::gpa_to_gpn(end_gpa.into());
                     let gpns: Vec<u64> = (start_gpn..=end_gpn).collect();
 
-                    let paged_range = PagedRange::new(0, gpns.len() * PAGE_SIZE64 as usize, &gpns).unwrap();
+                    let paged_range =
+                        PagedRange::new(0, gpns.len() * PAGE_SIZE64 as usize, &gpns).unwrap();
                     Some(match dma_type.unwrap() {
-                        DmaType::Read => {
-                            self.guest_memory
-                                .probe_gpn_readable_range(&paged_range)
-                        },
-                        DmaType::Write => {
-                            self.guest_memory
-                                .probe_gpn_writable_range(&paged_range)
-                        },
+                        DmaType::Read => self.guest_memory.probe_gpn_readable_range(&paged_range),
+                        DmaType::Write => self.guest_memory.probe_gpn_writable_range(&paged_range),
                     })
                 } else {
                     None
                 };
 
                 if r.is_some_and(|res| res.is_err()) || end_gpa.is_none() {
-                        // If there is an error and there is no other IO in parallel,
-                        // we need to stop the current DMA transfer and set the error bit
-                        // in the Bus Master Status register.
-                        self.bus_master_state.dma_state = None;
-                        if !drive.handle_read_dma_descriptor_error() {
-                            self.bus_master_state.dma_error = true;
-                        }
+                    // If there is an error and there is no other IO in parallel,
+                    // we need to stop the current DMA transfer and set the error bit
+                    // in the Bus Master Status register.
+                    self.bus_master_state.dma_state = None;
+                    if !drive.handle_read_dma_descriptor_error() {
+                        self.bus_master_state.dma_error = true;
+                    }
 
-                        tracelimit::error_ratelimited!(
-                            "dma base address out-of-range error"
-                        );
-                        return;
+                    tracelimit::error_ratelimited!("dma base address out-of-range error");
+                    return;
                 }
 
                 dma.transfer_base_addr = cur_desc_table_entry.mem_physical_base.into();
@@ -2412,7 +2405,6 @@ mod tests {
 
     #[async_test]
     async fn enlightened_cmd_test_invalid_dma_base() {
-
         // This is a negative test case where the DMA base address is invalid.
         // The test sets the DMA base address to an out-of-bounds memory
         // address of the guest range and expects the device to not read any data.
