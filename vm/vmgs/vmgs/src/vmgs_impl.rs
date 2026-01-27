@@ -940,7 +940,7 @@ impl Vmgs {
         self.write_file_inner(file_id, buf, true, true).await
     }
 
-    /// Move a file to a new fileid
+    /// Move a file to a new file_id
     pub async fn move_file(
         &mut self,
         src: FileId,
@@ -977,7 +977,7 @@ impl Vmgs {
         Ok(())
     }
 
-    /// Move a file to a new fileid
+    /// Delete a file
     pub async fn delete_file(&mut self, file_id: FileId) -> Result<(), Error> {
         if matches!(file_id, FileId::FILE_TABLE | FileId::EXTENDED_FILE_TABLE) {
             return Err(Error::FileId);

@@ -1833,6 +1833,7 @@ mod tests {
             .unwrap_err();
     }
 
+    #[cfg(with_encryption)]
     #[async_test]
     async fn move_delete_file_encrypted() {
         let (_dir, path) = new_path();
