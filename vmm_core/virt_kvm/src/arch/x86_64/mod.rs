@@ -1322,27 +1322,6 @@ impl GuestEventPort for KvmGuestEventPort {
 
 impl SignalMsi for KvmPartitionInner {
     fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
-        let request = MsiRequest { address, data };
-        let KvmMsi {
-            address_lo,
-            address_hi,
-            data,
-        } = KvmMsi::new(request);
-
-        if let Err(err) = self.kvm.request_msi(&kvm::kvm_msi {
-            address_lo,
-            address_hi,
-            data,
-            flags: 0,
-            devid: 0,
-            pad: [0; 12],
-        }) {
-            tracelimit::warn_ratelimited!(
-                address = request.address,
-                data = request.data,
-                error = &err as &dyn std::error::Error,
-                "failed to signal MSI"
-            );
-        }
+        self.request_msi(MsiRequest { address, data });
     }
 }
