@@ -13,7 +13,6 @@ pub mod build_test_results_website;
 pub mod cfg_common;
 pub mod cfg_gh_azure_login;
 pub mod cfg_hvlite_reposource;
-pub mod cfg_rustup_version;
 pub mod cfg_versions;
 pub mod check_clippy;
 pub mod check_openvmm_hcl_size;
