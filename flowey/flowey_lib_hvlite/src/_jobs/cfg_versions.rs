@@ -35,17 +35,10 @@ pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.12.52.4";
 pub const OPENVMM_DEPS: &str = "0.1.0-20250403.3";
 pub const PROTOC: &str = "27.1";
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct InitParams {
-    /// This should be set to true, unless you expect the rustup toolchain to
-    /// be configured by a different node.
-    pub should_set_rustup_toolchain: bool,
-}
-
 flowey_request! {
     pub enum Request {
         /// Initialize the node, defaults to downloading everything
-        Init(InitParams),
+        Init,
         /// Override openvmm_deps with a local path for this architecture
         LocalOpenvmmDeps(CommonArch, PathBuf),
         /// Override protoc with a local path
@@ -68,6 +61,7 @@ impl FlowNode for Node {
         ctx.import::<crate::resolve_openhcl_kernel_package::Node>();
         ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
+        ctx.import::<crate::_jobs::cfg_rustup_version::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
         ctx.import::<flowey_lib_common::download_cargo_fuzz::Node>();
         ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
@@ -78,7 +72,6 @@ impl FlowNode for Node {
         ctx.import::<flowey_lib_common::resolve_protoc::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
-        ctx.import::<flowey_lib_common::install_rust::Node>();
     }
 
     #[rustfmt::skip]
@@ -86,12 +79,11 @@ impl FlowNode for Node {
         let mut local_openvmm_deps: BTreeMap<CommonArch, PathBuf> = BTreeMap::new();
         let mut local_protoc: Option<PathBuf> = None;
         let mut local_kernel: BTreeMap<CommonArch, (PathBuf, PathBuf)> = BTreeMap::new();
-        let mut should_set_rustup_toolchain = true;
 
         for req in requests {
             match req {
-                Request::Init(params) => {
-                    should_set_rustup_toolchain = params.should_set_rustup_toolchain;
+                Request::Init => {
+                    // No-op, just ensures the node runs with defaults
                 }
                 Request::LocalOpenvmmDeps(arch, path) => {
                     // Check that for every arch that shows up, the path is always the same
@@ -187,9 +179,7 @@ impl FlowNode for Node {
         }
         ctx.req(flowey_lib_common::install_azure_cli::Request::Version(AZURE_CLI.into()));
         ctx.req(flowey_lib_common::install_nodejs::Request::Version(NODEJS.into()));
-        if should_set_rustup_toolchain {
-            ctx.req(flowey_lib_common::install_rust::Request::Version(RUSTUP_TOOLCHAIN.into()));
-        }
+        ctx.req(crate::_jobs::cfg_rustup_version::Request::Init);
         Ok(())
     }
 }

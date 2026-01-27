@@ -142,13 +142,7 @@ impl IntoPipeline for VmmTestsCli {
             "build vmm test dependencies",
         );
 
-        job = job.dep_on(|_| {
-            flowey_lib_hvlite::_jobs::cfg_versions::Request::Init(
-                flowey_lib_hvlite::_jobs::cfg_versions::InitParams {
-                    should_set_rustup_toolchain: true,
-                },
-            )
-        });
+        job = job.dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init);
 
         // Override kernel with local paths if both kernel and modules are specified
         if let (Some(kernel_path), Some(modules_path)) =

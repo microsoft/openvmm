@@ -132,9 +132,7 @@ impl IntoPipeline for CheckinGatesCli {
         pipeline.inject_all_jobs_with(move |job| {
             let mut job = job
                 .dep_on(&cfg_common_params)
-                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init(flowey_lib_hvlite::_jobs::cfg_versions::InitParams {
-                    should_set_rustup_toolchain: true,
-                }))
+                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
                 .dep_on(
                     |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
                         hvlite_repo_source: openvmm_repo_source.clone(),

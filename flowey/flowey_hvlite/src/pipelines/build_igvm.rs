@@ -340,13 +340,7 @@ impl IntoPipeline for BuildIgvmCli {
 
         // Initialize cfg_versions job, this makes sure everything will be downloaded
         // and versions are set up correctly unless overriden by other parameters.
-        job = job.dep_on(|_| {
-            flowey_lib_hvlite::_jobs::cfg_versions::Request::Init(
-                flowey_lib_hvlite::_jobs::cfg_versions::InitParams {
-                    should_set_rustup_toolchain: true,
-                },
-            )
-        });
+        job = job.dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init);
 
         // Override openvmm_deps with a local path if specified
         if let Some(openvmm_deps_path) = custom_openvmm_deps {
