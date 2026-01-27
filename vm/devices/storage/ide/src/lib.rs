@@ -784,7 +784,7 @@ impl Channel {
                 let r = if let Some(end_gpa) = end_gpa {
                     let start_gpn = Self::gpa_to_gpn(cur_desc_table_entry.mem_physical_base.into());
                     let end_gpn = Self::gpa_to_gpn(end_gpa.into());
-                    let gpns: Vec<u64> = (start_gpn..end_gpn).collect();
+                    let gpns: Vec<u64> = (start_gpn..=end_gpn).collect();
 
                     let paged_range = PagedRange::new(0, gpns.len() * PAGE_SIZE64 as usize, &gpns).unwrap();
                     Some(match dma_type.unwrap() {
@@ -2432,7 +2432,7 @@ mod tests {
         let byte_count = 0;
 
         let eint13_command = protocol::EnlightenedInt13Command {
-            command: IdeCommand::WRITE_DMA_ALT,
+            command: IdeCommand::READ_DMA_ALT,
             device_head: DeviceHeadReg::new().with_lba(true),
             flags: 0,
             result_status: 0,
