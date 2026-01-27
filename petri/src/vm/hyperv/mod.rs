@@ -687,7 +687,10 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         new_openhcl: &ResolvedArtifact,
         flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()> {
-        // overwrite the igvm file
+        // Overwrite the IGVM file currently in use by the VM. Hyper-V does not
+        // support changing the firmware file path while the VM is running, but
+        // it will pick up changes to the currently configured file when OpenHCL
+        // is restarted.
         fs_err::copy(new_openhcl.get(), self.temp_dir.path().join(IGVM_FILE_NAME))
             .context("failed to replace igvm file")?;
 
