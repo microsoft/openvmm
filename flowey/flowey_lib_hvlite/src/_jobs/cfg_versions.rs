@@ -37,6 +37,8 @@ pub const PROTOC: &str = "27.1";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct InitParams {
+    /// This should be set to true, unless you expect the rustup toolchain to
+    /// be configured by a different node.
     pub should_set_rustup_toolchain: bool,
 }
 
