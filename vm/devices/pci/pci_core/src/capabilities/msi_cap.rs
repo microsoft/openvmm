@@ -375,10 +375,10 @@ mod tests {
 
     #[test]
     fn msi_check() {
-        let msi_conn = MsiConnection::new(1);
+        let msi_conn = MsiConnection::new();
         let mut cap = MsiCapability::new(2, true, false, msi_conn.target()); // 4 messages max, 64-bit, no masking
         let msi_controller = TestPciInterruptController::new();
-        msi_conn.connect(0, msi_controller.signal_msi());
+        msi_conn.connect(msi_controller.signal_msi());
 
         // Check initial capabilities register
         // Capability ID (0x05) + MMC=2 (4 messages) + 64-bit capable
@@ -412,10 +412,10 @@ mod tests {
 
     #[test]
     fn msi_32bit_check() {
-        let msi_conn = MsiConnection::new(1);
+        let msi_conn = MsiConnection::new();
         let mut cap = MsiCapability::new(1, false, false, msi_conn.target()); // 2 messages max, 32-bit, no masking
         let msi_controller = TestPciInterruptController::new();
-        msi_conn.connect(0, msi_controller.signal_msi());
+        msi_conn.connect(msi_controller.signal_msi());
 
         // Check initial capabilities register (no 64-bit bit set)
         assert_eq!(cap.read_u32(0), 0x00020005); // MMC=1 (2 messages) + Capability ID
@@ -432,10 +432,10 @@ mod tests {
     fn test_msi_save_restore() {
         use vmcore::save_restore::SaveRestore;
 
-        let msi_conn = MsiConnection::new(1);
+        let msi_conn = MsiConnection::new();
         let mut cap = MsiCapability::new(2, true, false, msi_conn.target()); // 4 messages max, 64-bit, no masking
         let msi_controller = TestPciInterruptController::new();
-        msi_conn.connect(0, msi_controller.signal_msi());
+        msi_conn.connect(msi_controller.signal_msi());
 
         // Configure MSI capability with specific values
         cap.write_u32(4, 0x12345678); // Address low
@@ -473,10 +473,10 @@ mod tests {
     fn test_msi_save_restore_32bit_with_masking() {
         use vmcore::save_restore::SaveRestore;
 
-        let msi_conn = MsiConnection::new(1);
+        let msi_conn = MsiConnection::new();
         let mut cap = MsiCapability::new(3, false, true, msi_conn.target()); // 8 messages max, 32-bit, with masking
         let msi_controller = TestPciInterruptController::new();
-        msi_conn.connect(0, msi_controller.signal_msi());
+        msi_conn.connect(msi_controller.signal_msi());
 
         // Configure MSI capability with specific values
         cap.write_u32(4, 0x87654321); // Address (32-bit)
@@ -523,10 +523,10 @@ mod tests {
     fn test_msi_save_restore_mme_clamping() {
         use vmcore::save_restore::SaveRestore;
 
-        let msi_conn = MsiConnection::new(1);
+        let msi_conn = MsiConnection::new();
         let mut cap = MsiCapability::new(1, true, false, msi_conn.target()); // Only 2 messages max (MMC=1)
         let msi_controller = TestPciInterruptController::new();
-        msi_conn.connect(0, msi_controller.signal_msi());
+        msi_conn.connect(msi_controller.signal_msi());
 
         // Configure with MME=3 (8 messages), but device only supports MMC=1 (2 messages)
         cap.write_u32(4, 0x12345678); // Address low

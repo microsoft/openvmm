@@ -29,7 +29,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 #[async_test]
 async fn test_gdma(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_gdma");
-    let msi_conn = MsiConnection::new(1);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
@@ -167,7 +167,7 @@ async fn test_gdma(driver: DefaultDriver) {
 #[async_test]
 async fn test_gdma_save_restore(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_gdma");
-    let msi_conn = MsiConnection::new(1);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
@@ -207,7 +207,7 @@ async fn test_gdma_save_restore(driver: DefaultDriver) {
 #[async_test]
 async fn test_gdma_reconfig_vf(driver: DefaultDriver) {
     let mem = DeviceTestMemory::new(128, false, "test_gdma");
-    let msi_conn = MsiConnection::new(1);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),

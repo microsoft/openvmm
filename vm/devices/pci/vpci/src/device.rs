@@ -1700,7 +1700,7 @@ mod tests {
 
     #[async_test]
     async fn verify_simple_capability(driver: DefaultDriver) {
-        let msi_conn = MsiConnection::new(1);
+        let msi_conn = MsiConnection::new();
         let pci_config = HardwareIds {
             vendor_id: 0x123,
             device_id: 0x789,
@@ -1715,7 +1715,7 @@ mod tests {
             pci_core::capabilities::msix::MsixEmulator::new(0, 64, msi_conn.target());
 
         let msi_controller = TestVpciInterruptController::new();
-        msi_conn.connect(0, msi_controller.signal_msi());
+        msi_conn.connect(msi_controller.signal_msi());
 
         let pci = Arc::new(CloseableMutex::new(NullDevice {
             config_space: ConfigSpaceType0Emulator::new(

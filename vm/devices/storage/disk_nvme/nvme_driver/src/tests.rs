@@ -221,7 +221,7 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
 
     // Controller Driver Setup
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let msi_conn = MsiConnection::new(1);
+    let msi_conn = MsiConnection::new();
     let nvme = nvme::NvmeController::new(
         &driver_source,
         guest_mem,
@@ -258,7 +258,7 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
     let dma_client = device_test_memory.dma_client();
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let msi_conn = MsiConnection::new(1);
+    let msi_conn = MsiConnection::new();
     let nvme = nvme::NvmeController::new(
         &driver_source,
         guest_mem,
@@ -314,7 +314,7 @@ async fn test_nvme_driver(driver: DefaultDriver, config: NvmeTestConfig) {
 
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let msi_conn = MsiConnection::new(1);
+    let msi_conn = MsiConnection::new();
     let nvme = nvme::NvmeController::new(
         &driver_source,
         guest_mem.clone(),
@@ -458,7 +458,7 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
 
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let msi_conn = MsiConnection::new(1);
+    let msi_conn = MsiConnection::new();
     let nvme = nvme_test::NvmeFaultController::new(
         &driver_source,
         guest_mem.clone(),

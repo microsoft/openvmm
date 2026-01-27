@@ -55,7 +55,7 @@ impl PcieDownstreamPort {
             None => (false, None),
         };
 
-        let msi_conn = MsiConnection::new(1);
+        let msi_conn = MsiConnection::new();
         // Create MSI capability with 1 message (multiple_message_capable=0), 64-bit addressing, no per-vector masking
         let msi_capability = MsiCapability::new(0, true, false, msi_conn.target());
 

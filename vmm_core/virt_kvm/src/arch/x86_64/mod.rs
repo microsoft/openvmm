@@ -1320,8 +1320,6 @@ impl GuestEventPort for KvmGuestEventPort {
     }
 }
 
-struct KvmMsiTarget(Arc<KvmPartitionInner>);
-
 impl SignalMsi for KvmPartitionInner {
     fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
         let request = MsiRequest { address, data };

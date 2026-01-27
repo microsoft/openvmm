@@ -1984,7 +1984,7 @@ impl InitializedVm {
             let (vpci_device_name, device_name, instance_id, device_id) =
                 make_ids(device_name, None);
 
-            let msi_conn = MsiConnection::new(1);
+            let msi_conn = MsiConnection::new();
             let device = chipset_builder
                 .arc_mutex_device(device_name)
                 .with_external_pci()
@@ -2010,7 +2010,7 @@ impl InitializedVm {
 
                     let msi_controller = hv_device.clone().target();
                     let interrupt_mapper = hv_device.clone().interrupt_mapper();
-                    msi_conn.connect(0, msi_controller);
+                    msi_conn.connect(msi_controller);
 
                     let bus = VpciBus::new(
                         driver_source,

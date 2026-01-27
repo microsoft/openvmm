@@ -831,7 +831,7 @@ impl VirtioPciTestDevice {
     ) -> Self {
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
         let mem = GuestMemory::new("test", test_mem.clone());
-        let msi_conn = MsiConnection::new(1);
+        let msi_conn = MsiConnection::new();
 
         let dev = VirtioPciDevice::new(
             Box::new(LegacyWrapper::new(
@@ -856,7 +856,7 @@ impl VirtioPciTestDevice {
         .unwrap();
 
         let test_intc = Arc::new(TestPciInterruptController::new());
-        msi_conn.connect(0, test_intc.signal_msi());
+        msi_conn.connect(test_intc.signal_msi());
 
         Self {
             pci_device: dev,

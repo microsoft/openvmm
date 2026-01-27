@@ -112,7 +112,7 @@ impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
 
         // Connect an interrupt controller.
         let controller = Arc::new(MsiController::new(msix_table_size));
-        msi_conn.connect(0, controller.clone());
+        msi_conn.connect(controller.clone());
 
         // Enable MSIX.
         for i in 0u64..64 {

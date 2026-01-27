@@ -40,7 +40,7 @@ fn instantiate_controller(
 ) -> NvmeFaultController {
     let mut mmio_reg = TestNvmeMmioRegistration {};
     let vm_task_driver = &VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let msi_conn = MsiConnection::new(1);
+    let msi_conn = MsiConnection::new();
     let controller = NvmeFaultController::new(
         vm_task_driver,
         gm.clone(),
@@ -55,7 +55,7 @@ fn instantiate_controller(
     );
 
     if let Some(intc) = int_controller {
-        msi_conn.connect(0, intc.signal_msi());
+        msi_conn.connect(intc.signal_msi());
     }
     controller
 }

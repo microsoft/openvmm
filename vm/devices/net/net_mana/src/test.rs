@@ -546,7 +546,7 @@ async fn test_multi_mixed_packet(driver: DefaultDriver) {
 async fn test_vport_with_query_filter_state(driver: DefaultDriver) {
     let pages = 512; // 2MB
     let mem = DeviceTestMemory::new(pages, false, "test_vport_with_query_filter_state");
-    let msi_conn = MsiConnection::new(1);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
@@ -709,7 +709,7 @@ async fn test_endpoint(
     let data_to_send = pkt_builder.packet_data();
     let tx_segments = pkt_builder.segments();
 
-    let msi_conn = MsiConnection::new(1);
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),

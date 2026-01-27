@@ -508,10 +508,10 @@ mod tests {
 
     #[test]
     fn msix_check() {
-        let msi_conn = MsiConnection::new(1);
+        let msi_conn = MsiConnection::new();
         let (mut msix, mut cap) = MsixEmulator::new(2, 64, msi_conn.target());
         let msi_controller = TestPciInterruptController::new();
-        msi_conn.connect(0, msi_controller.signal_msi());
+        msi_conn.connect(msi_controller.signal_msi());
         // check capabilities
         assert_eq!(cap.read_u32(0), 0x3f0011);
         assert_eq!(cap.read_u32(4), 2);

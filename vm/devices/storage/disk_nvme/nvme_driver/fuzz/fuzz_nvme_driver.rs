@@ -44,7 +44,7 @@ impl FuzzNvmeDriver {
 
         // Nvme device and driver setup
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-        let msi_conn = MsiConnection::new(1);
+        let msi_conn = MsiConnection::new();
 
         let guid = arbitrary_guid()?;
         let nvme = NvmeController::new(

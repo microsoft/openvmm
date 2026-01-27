@@ -66,7 +66,7 @@ pub async fn build_vpci_device(
                         instance_id.data3 as u64 & 0xfff8
                     ))?;
 
-                msi_conn.connect(0, msi_controller);
+                msi_conn.connect(msi_controller);
 
                 let bus = vpci::bus::VpciBus::new(
                     driver_source,
@@ -117,7 +117,7 @@ pub async fn build_pcie_device(
     .await?;
 
     if let Some(target) = interrupt_target {
-        msi_conn.connect(0, target);
+        msi_conn.connect(target);
     }
 
     Ok(())
@@ -133,7 +133,7 @@ pub async fn resolve_and_add_pci_device(
     doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
     mapper: Option<&dyn guestmem::MemoryMapper>,
 ) -> anyhow::Result<(Arc<CloseableMutex<ErasedChipsetDevice>>, MsiConnection)> {
-    let msi_conn = MsiConnection::new(1);
+    let msi_conn = MsiConnection::new();
 
     let device = {
         device_builder
