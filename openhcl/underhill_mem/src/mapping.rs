@@ -416,7 +416,7 @@ impl GuestMemoryBitmap {
         let bitmap_page_end = bitmap_end / PAGE_SIZE;
         let page_count = bitmap_page_end + 1 - bitmap_page_start;
 
-        // TODO SNP: map some pre-reserved lower VTL memory into the
+        // TODO CVM FUTURE: map some pre-reserved lower VTL memory into the
         // bitmap. Or just figure out how to hot add that memory to the
         // kernel. Or have the boot loader reserve it at boot time.
         //

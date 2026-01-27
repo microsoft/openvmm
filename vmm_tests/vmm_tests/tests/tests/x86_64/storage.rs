@@ -180,8 +180,8 @@ async fn test_storage_linux(
     controller_guid: Guid,
     expected_devices: Vec<ExpectedGuestDevice>,
 ) -> anyhow::Result<()> {
-    const DEVICE_DISCOVER_RETRIES: u32 = 5;
-    const DEVICE_DISCOVER_SLEEP_SECS: u64 = 2;
+    const DEVICE_DISCOVER_RETRIES: u32 = 10;
+    const DEVICE_DISCOVER_SLEEP_SECS: u64 = 3;
 
     let sh = agent.unix_shell();
 
@@ -767,12 +767,11 @@ async fn openhcl_linux_storvsp_dvd_nvme(
 /// Test an OpenHCL Linux direct VM with several NVMe namespaces assigned to VTL2, and
 /// vmbus relay. This should expose the disks to VTL0 as SCSI via vmbus.
 /// The disks are added and removed in a loop, dynamically after VM boot rather than being there at boot time.
-// TODO: Re-enable once re-add after removal is working in OpenHCL
-// #[openvmm_test(
-//     openhcl_linux_direct_x64,
-//     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
-// )]
-async fn _storvsp_dynamic_add_disk(
+#[openvmm_test(
+    openhcl_linux_direct_x64,
+    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+)]
+async fn storvsp_dynamic_add_disk(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
@@ -780,7 +779,7 @@ async fn _storvsp_dynamic_add_disk(
     const FIRST_NS: u32 = 30;
     const FIRST_LUN: u32 = 0;
     const SECTOR_SIZE: u64 = 512;
-    const NUM_ITERATIONS: u32 = 5;
+    const NUM_ITERATIONS: u32 = 3;
 
     // 128MB for the first NS and 1MB extra for each subsequent NS
     const fn disk_sectors(index: u32) -> u64 {

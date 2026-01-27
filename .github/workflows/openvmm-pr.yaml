@@ -540,10 +540,10 @@ jobs:
         flowey e 10 flowey_lib_hvlite::run_cargo_build 5
         flowey e 10 flowey_lib_hvlite::build_openhcl_boot 0
       shell: bash
-    - name: unpack kernel package
+    - name: extract and resolve kernel package
       run: |-
-        flowey e 10 flowey_lib_hvlite::download_openhcl_kernel_package 2
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 30
+        flowey e 10 flowey_lib_hvlite::resolve_openhcl_kernel_package 2
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 28
       shell: bash
     - name: unpack openvmm-deps archive
       run: flowey e 10 flowey_lib_hvlite::resolve_openvmm_deps 0
@@ -558,20 +558,19 @@ jobs:
         flowey e 10 flowey_lib_common::run_cargo_build 2
         flowey e 10 flowey_lib_hvlite::run_cargo_build 6
         flowey e 10 flowey_lib_hvlite::build_openvmm_hcl 0
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 26
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 24
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 10 flowey_lib_hvlite::run_split_debug_info 4
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 27
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 28
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 31
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 25
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 26
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 29
       shell: bash
     - name: building openhcl initrd
       run: |-
         flowey e 10 flowey_lib_hvlite::build_openhcl_initrd 4
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 32
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 33
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 30
         flowey e 10 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build igvmfilegen
@@ -584,81 +583,78 @@ jobs:
         flowey e 10 flowey_lib_hvlite::run_split_debug_info 9
         flowey e 10 flowey_lib_hvlite::run_cargo_build 1
         flowey e 10 flowey_lib_hvlite::build_igvmfilegen 0
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 34
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 35
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 31
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 32
       shell: bash
     - name: building igvm file
       run: |-
         flowey e 10 flowey_lib_hvlite::run_igvmfilegen 4
         flowey e 10 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 2
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 42
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 38
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 39
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 35
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 10 flowey_lib_hvlite::run_split_debug_info 0
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 39
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 36
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 37
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 40
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 43
       shell: bash
-    - name: unpack kernel package
-      run: flowey e 10 flowey_lib_hvlite::download_openhcl_kernel_package 0
+    - name: extract and resolve kernel package
+      run: flowey e 10 flowey_lib_hvlite::resolve_openhcl_kernel_package 0
       shell: bash
     - name: building openhcl initrd
       run: |-
         flowey e 10 flowey_lib_hvlite::build_openhcl_initrd 0
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 44
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 45
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 46
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 47
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 41
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 42
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 43
       shell: bash
     - name: building igvm file
       run: |-
         flowey e 10 flowey_lib_hvlite::run_igvmfilegen 0
         flowey e 10 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 4
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 54
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 50
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 46
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 10 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 10 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 47
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 48
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 51
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 52
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 55
       shell: bash
     - name: building openhcl initrd
       run: |-
         flowey e 10 flowey_lib_hvlite::build_openhcl_initrd 1
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 56
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 57
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 58
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 59
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 52
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 53
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 54
       shell: bash
     - name: building igvm file
       run: |-
         flowey e 10 flowey_lib_hvlite::run_igvmfilegen 1
         flowey e 10 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 6
       shell: bash
-    - name: unpack kernel package
+    - name: extract and resolve kernel package
       run: |-
-        flowey e 10 flowey_lib_hvlite::download_openhcl_kernel_package 1
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 18
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 14
+        flowey e 10 flowey_lib_hvlite::resolve_openhcl_kernel_package 1
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 17
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 13
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 10 flowey_lib_hvlite::run_split_debug_info 3
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 14
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 15
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 16
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 19
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 18
       shell: bash
     - name: building openhcl initrd
       run: |-
         flowey e 10 flowey_lib_hvlite::build_openhcl_initrd 3
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 19
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 20
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 21
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23
       shell: bash
     - name: building igvm file
       run: |-
@@ -669,7 +665,7 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 10 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 10 flowey_lib_hvlite::run_split_debug_info 2
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 3
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 4
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 7
@@ -680,7 +676,6 @@ jobs:
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 8
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 9
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11
       shell: bash
     - name: building igvm file
       run: |-
@@ -691,21 +686,21 @@ jobs:
     - name: copying OpenHCL igvm files to artifact dir
       run: |-
         flowey e 10 flowey_lib_common::copy_to_artifact_dir 1
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 24
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 29
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 25
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 27
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23
         flowey e 10 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 3
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 41
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 37
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 36
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 38
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 34
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 33
         flowey e 10 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 5
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 53
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 49
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 48
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 45
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 44
         flowey e 10 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 7
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 17
-        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 13
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 16
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 12
+        flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11
         flowey e 10 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 9
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 5
         flowey e 10 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 1
@@ -6288,10 +6283,10 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 5
         flowey e 8 flowey_lib_hvlite::build_openhcl_boot 0
       shell: bash
-    - name: unpack kernel package
+    - name: extract and resolve kernel package
       run: |-
-        flowey e 8 flowey_lib_hvlite::download_openhcl_kernel_package 1
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 18
+        flowey e 8 flowey_lib_hvlite::resolve_openhcl_kernel_package 1
+        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 17
       shell: bash
     - name: unpack openvmm-deps archive
       run: flowey e 8 flowey_lib_hvlite::resolve_openvmm_deps 0
@@ -6306,20 +6301,19 @@ jobs:
         flowey e 8 flowey_lib_common::run_cargo_build 2
         flowey e 8 flowey_lib_hvlite::run_cargo_build 6
         flowey e 8 flowey_lib_hvlite::build_openvmm_hcl 0
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 14
+        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 13
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 8 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 14
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 15
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 16
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 19
+        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 18
       shell: bash
     - name: building openhcl initrd
       run: |-
         flowey e 8 flowey_lib_hvlite::build_openhcl_initrd 1
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 20
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 21
+        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 19
         flowey e 8 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build igvmfilegen
@@ -6332,14 +6326,18 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_split_debug_info 5
         flowey e 8 flowey_lib_hvlite::run_cargo_build 1
         flowey e 8 flowey_lib_hvlite::build_igvmfilegen 0
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23
+        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 20
+        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 21
       shell: bash
     - name: building igvm file
       run: |-
         flowey e 8 flowey_lib_hvlite::run_igvmfilegen 1
         flowey e 8 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 2
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 6
+      shell: bash
+    - name: extract and resolve kernel package
+      run: |-
+        flowey e 8 flowey_lib_hvlite::resolve_openhcl_kernel_package 0
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 2
       shell: bash
     - name: split debug symbols
@@ -6349,16 +6347,12 @@ jobs:
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 4
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 7
       shell: bash
-    - name: unpack kernel package
-      run: flowey e 8 flowey_lib_hvlite::download_openhcl_kernel_package 0
-      shell: bash
     - name: building openhcl initrd
       run: |-
         flowey e 8 flowey_lib_hvlite::build_openhcl_initrd 0
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 8
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 9
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11
       shell: bash
     - name: building igvm file
       run: |-
@@ -6369,9 +6363,9 @@ jobs:
     - name: copying OpenHCL igvm files to artifact dir
       run: |-
         flowey e 8 flowey_lib_common::copy_to_artifact_dir 1
+        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11
+        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 16
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 12
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 17
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 13
         flowey e 8 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 3
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 5
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 1
