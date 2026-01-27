@@ -629,6 +629,18 @@ impl Vmgs {
             .file_info())
     }
 
+    /// Get info about all the files currently in the file table
+    pub fn dump_file_table(&self) -> Vec<(FileId, VmgsFileInfo)> {
+        let mut file_table = self
+            .state
+            .fcbs
+            .iter()
+            .map(|(file_id, fcb)| (*file_id, fcb.file_info()))
+            .collect::<Vec<_>>();
+        file_table.sort_by_key(|(file_id, _)| *file_id);
+        file_table
+    }
+
     /// Writes `buf` to a file_id, optionally encrypting or overwriting
     /// encrypted data with plaintext. Updates file tables as appropriate.
     async fn write_file_inner(
@@ -926,6 +938,67 @@ impl Vmgs {
     #[cfg(with_encryption)]
     pub async fn write_file_encrypted(&mut self, file_id: FileId, buf: &[u8]) -> Result<(), Error> {
         self.write_file_inner(file_id, buf, true, true).await
+    }
+
+    /// Move a file to a new file_id
+    pub async fn move_file(
+        &mut self,
+        src: FileId,
+        dst: FileId,
+        allow_overwrite: bool,
+    ) -> Result<(), Error> {
+        if [src, dst]
+            .iter()
+            .any(|id| matches!(*id, FileId::FILE_TABLE | FileId::EXTENDED_FILE_TABLE))
+        {
+            return Err(Error::FileId);
+        }
+
+        if !allow_overwrite && self.state.fcbs.contains_key(&dst) {
+            return Err(Error::OverwriteMove);
+        }
+
+        let mut temp_state = self.temp_state();
+
+        // move the fcb to a different file id
+        let fcb = temp_state
+            .fcbs
+            .remove(&src)
+            .ok_or(Error::FileInfoNotAllocated)?;
+        temp_state.fcbs.insert(dst, fcb);
+
+        // write the new file table(s)
+        self.write_files_internal(BTreeMap::new(), Some(&mut temp_state))
+            .await?;
+
+        // Update the header
+        self.write_header_and_apply(temp_state).await?;
+
+        Ok(())
+    }
+
+    /// Delete a file
+    pub async fn delete_file(&mut self, file_id: FileId) -> Result<(), Error> {
+        if matches!(file_id, FileId::FILE_TABLE | FileId::EXTENDED_FILE_TABLE) {
+            return Err(Error::FileId);
+        }
+
+        let mut temp_state = self.temp_state();
+
+        // delete the fcb
+        temp_state
+            .fcbs
+            .remove(&file_id)
+            .ok_or(Error::FileInfoNotAllocated)?;
+
+        // write the new file table(s)
+        self.write_files_internal(BTreeMap::new(), Some(&mut temp_state))
+            .await?;
+
+        // Update the header
+        self.write_header_and_apply(temp_state).await?;
+
+        Ok(())
     }
 
     /// Decrypts the extended file table by the encryption_key and
@@ -2122,6 +2195,32 @@ mod tests {
         assert_eq!(buf, read_buf);
         assert_eq!(vmgs.state.active_header_index, 1);
         assert_eq!(vmgs.state.active_header_sequence_number, 4);
+    }
+
+    #[async_test]
+    async fn move_delete() {
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk, None).await.unwrap();
+
+        // write
+        let buf = b"hello world";
+        vmgs.write_file(FileId::TPM_NVRAM, buf).await.unwrap();
+
+        // read
+        let read_buf = vmgs.read_file(FileId::TPM_NVRAM).await.unwrap();
+        assert_eq!(buf, &*read_buf);
+
+        // move
+        vmgs.move_file(FileId::TPM_NVRAM, FileId::ATTEST, false)
+            .await
+            .unwrap();
+        vmgs.read_file(FileId::TPM_NVRAM).await.unwrap_err();
+        let read_buf = vmgs.read_file(FileId::ATTEST).await.unwrap();
+        assert_eq!(buf, &*read_buf);
+
+        // delete
+        vmgs.delete_file(FileId::ATTEST).await.unwrap();
+        vmgs.read_file(FileId::ATTEST).await.unwrap_err();
     }
 
     #[async_test]

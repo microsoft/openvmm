@@ -16,6 +16,9 @@ encryption_ossl = ["vmgs/encryption_ossl"]
 
 test_helpers = ["vmgs/test_helpers", "getrandom"]
 
+# run windows encryption unit tests in CI
+ci = ["encryption_win"]
+
 [dependencies]
 disk_backend.workspace = true
 disk_vhd1.workspace = true

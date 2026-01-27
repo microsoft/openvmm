@@ -20,6 +20,9 @@ encryption_ossl = ["dep:openssl"]
 
 test_helpers = []
 
+# run windows encryption unit tests in CI
+ci = ["encryption_win"]
+
 [dependencies]
 disk_backend.workspace = true
 guestmem.workspace = true
