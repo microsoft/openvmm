@@ -95,7 +95,7 @@ impl MshvVtl {
     /// Execute the rmpadjust instruction on the specified memory range.
     ///
     /// The range must not be mapped in the kernel as RAM.
-    /// 
+    ///
     /// Note: The VMSA pages for VTL0 and VTL1 are converted to a VMSA page
     /// in the RMP by the kernel, in mshv_configure_vmsa_page. The VTL2 VMSA
     /// page is converted via SNP_LAUNCH_UPDATE.
