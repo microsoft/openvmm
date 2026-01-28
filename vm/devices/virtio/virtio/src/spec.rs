@@ -153,14 +153,14 @@ pub mod queue {
 
     #[repr(C)]
     #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
-    pub struct Descriptor {
+    pub struct SplitDescriptor {
         pub address: u64_le,
         pub length: u32_le,
         pub flags_raw: u16_le,
         pub next: u16_le,
     }
 
-    impl Descriptor {
+    impl SplitDescriptor {
         pub fn flags(&self) -> DescriptorFlags {
             self.flags_raw.get().into()
         }
