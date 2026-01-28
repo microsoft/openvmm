@@ -574,7 +574,6 @@ impl Issuer {
         guest_memory: &GuestMemory,
         mem: PagedRange<'_>,
     ) -> Result<spec::Completion, RequestError> {
-        let mut double_buffer_pages = None;
         let opcode = spec::Opcode(command.cdw0.opcode());
         assert!(
             opcode.transfer_controller_to_host()
@@ -582,60 +581,39 @@ impl Issuer {
                 || mem.is_empty()
         );
 
-        // Ensure the memory is currently mapped.
         guest_memory
             .probe_gpns(mem.gpns())
             .map_err(RequestError::Memory)?;
 
-        let prp = if mem
-            .gpns()
-            .iter()
-            .all(|&gpn| guest_memory.iova(gpn * PAGE_SIZE64).is_some())
-        {
-            // Guest memory is available to the device, so issue the IO directly.
-            self.make_prp(
-                mem.offset() as u64,
-                mem.gpns()
-                    .iter()
-                    .map(|&gpn| guest_memory.iova(gpn * PAGE_SIZE64).unwrap()),
-            )
-            .await
-        } else {
-            tracing::debug!(opcode = opcode.0, size = mem.len(), "double buffering");
+        let dma_manager = GlobalDmaManager::get_instance();
+        let dma_client = dma_manager.create_client(self.pinning_threshold);
 
-            // Guest memory is not accessible by the device. Double buffer
-            // through an allocation.
-            let double_buffer_pages = double_buffer_pages.insert(
-                self.alloc
-                    .alloc_bytes(mem.len())
-                    .await
-                    .ok_or(RequestError::TooLarge)?,
-            );
-
-            if opcode.transfer_host_to_controller() {
-                double_buffer_pages
-                    .copy_from_guest_memory(guest_memory, mem)
-                    .map_err(RequestError::Memory)?;
-            }
-
-            self.make_prp(
-                0,
-                (0..double_buffer_pages.page_count())
-                    .map(|i| double_buffer_pages.physical_address(i)),
-            )
-            .await
+        // Force bounce buffer for all transactions in this example
+        let options = DmaMapOptions {
+            force_bounce_buffer: true,
         };
 
-        command.dptr = prp.dptr;
-        let r = self.issue_raw(command).await;
-        if let Some(double_buffer_pages) = double_buffer_pages {
-            if r.is_ok() && opcode.transfer_controller_to_host() {
-                double_buffer_pages
-                    .copy_to_guest_memory(guest_memory, mem)
-                    .map_err(RequestError::Memory)?;
-            }
-        }
-        r
+        let dma_transactions = dma_client
+            .map_dma_ranges(
+                mem.gpns().iter().map(|&gpn| guest_memory.range(gpn)).collect::<Vec<_>>(),
+                Some(&options),
+            )
+            .map_err(|_| RequestError::Memory)?;
+
+        command.dptr = self
+            .make_prp(
+                dma_transactions.transactions[0].dma_addr as u64,
+                dma_transactions.transactions.iter().map(|t| t.dma_addr),
+            )
+            .await;
+
+        let result = self.issue_raw(command).await;
+
+        dma_client
+            .unmap_dma_ranges(&dma_transactions.transactions)
+            .map_err(|_| RequestError::Memory)?;
+
+        result
     }
 
     async fn make_prp(
