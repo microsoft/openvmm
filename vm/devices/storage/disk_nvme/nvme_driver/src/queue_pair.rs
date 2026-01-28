@@ -184,7 +184,7 @@ struct QueueHandlerLoop<A: AerHandler, D: DeviceBacking> {
     queue_handler: QueueHandler<A>,
     registers: Arc<DeviceRegisters<D>>,
     recv_req: Option<mesh::Receiver<Req>>,
-    recv_cmd: Option<mesh::Receiver<Command>>,
+    recv_cmd: Option<mesh::Receiver<Cmd>>,
     interrupt: DeviceInterrupt,
 }
 
@@ -550,7 +550,7 @@ impl std::fmt::Display for NvmeError {
 #[derive(Debug, Inspect)]
 pub struct Issuer {
     #[inspect(skip)]
-    send_cmd: mesh::Sender<Command>,
+    send_cmd: mesh::Sender<Cmd>,
     #[inspect(skip)]
     send_req: mesh::Sender<Req>,
     alloc: PageAllocator,
@@ -561,7 +561,7 @@ impl Issuer {
         &self,
         command: spec::Command,
     ) -> Result<spec::Completion, RequestError> {
-        match self.send_cmd.call(Command::Command, command).await {
+        match self.send_cmd.call(Cmd::Command, command).await {
             Ok(completion) if completion.status.status() == 0 => Ok(completion),
             Ok(completion) => Err(RequestError::Nvme(NvmeError(spec::Status(
                 completion.status.status(),
@@ -768,7 +768,7 @@ enum Req {
 }
 
 // Commands that need to be written to the submission queue.
-enum Command {
+enum Cmd {
     Command(Rpc<spec::Command, spec::Completion>),
     SendAer(),
 }
@@ -934,32 +934,35 @@ impl<A: AerHandler> QueueHandler<A> {
     async fn run(
         &mut self,
         registers: &DeviceRegisters<impl DeviceBacking>,
-        mut req: mesh::Receiver<Req>,
-        mut command: mesh::Receiver<Command>,
+        mut recv_req: mesh::Receiver<Req>,
+        mut recv_cmd: mesh::Receiver<Cmd>,
         interrupt: &mut DeviceInterrupt,
     ) {
         loop {
             enum Event {
-                Req(Req),
-                Command(Command),
+                Request(Req),
+                Command(Cmd),
                 Completion(spec::Completion),
             }
 
             let event = if !self.drain_after_restore {
                 // Normal processing of the requests and completions.
                 poll_fn(|cx| {
+                    // Look for NVME commands
                     if !self.sq.is_full() && !self.commands.is_full() {
                         // Prioritize sending AERs to keep the cycle going
                         if self.aer_handler.poll_send_aer() {
-                            return Event::Command(Command::SendAer()).into();
+                            return Event::Command(Cmd::SendAer()).into();
                         }
-                        if let Poll::Ready(Some(cmd)) = command.poll_next_unpin(cx) {
+                        if let Poll::Ready(Some(cmd)) = recv_cmd.poll_next_unpin(cx) {
                             return Event::Command(cmd).into();
                         }
                     }
-                    if let Poll::Ready(Some(req)) = req.poll_next_unpin(cx) {
-                        return Event::Req(req).into();
+                    // Look for control plane requests like Save/Inspect
+                    if let Poll::Ready(Some(req)) = recv_req.poll_next_unpin(cx) {
+                        return Event::Request(req).into();
                     }
+                    // Look for completions
                     while !self.commands.is_empty() {
                         if let Some(completion) = self.cq.read() {
                             return Event::Completion(completion).into();
@@ -993,7 +996,7 @@ impl<A: AerHandler> QueueHandler<A> {
             };
 
             match event {
-                Event::Req(req) => match req {
+                Event::Request(req) => match req {
                     Req::Save(queue_state) => {
                         queue_state.complete(self.save().await);
                         // Do not allow any more processing after save completed.
@@ -1005,13 +1008,13 @@ impl<A: AerHandler> QueueHandler<A> {
                     }
                 },
                 Event::Command(cmd) => match cmd {
-                    Command::Command(rpc) => {
+                    Cmd::Command(rpc) => {
                         let (mut command, respond) = rpc.split();
                         self.commands.insert(&mut command, respond);
                         self.sq.write(command).unwrap();
                         self.stats.issued.increment();
                     }
-                    Command::SendAer() => {
+                    Cmd::SendAer() => {
                         let mut command = admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST);
                         self.commands.insert(&mut command, Rpc::detached(()));
                         self.aer_handler.update_awaiting_cid(command.cdw0.cid());
