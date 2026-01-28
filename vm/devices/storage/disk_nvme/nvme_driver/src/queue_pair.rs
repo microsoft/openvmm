@@ -67,7 +67,7 @@ const SQ_ENTRIES_PER_PAGE: usize = PAGE_SIZE / SQ_ENTRY_SIZE;
 pub(crate) struct QueuePair<A: AerHandler, D: DeviceBacking> {
     #[inspect(skip)]
     task: TaskControl<QueueHandlerLoop<A, D>, ()>,
-    #[inspect(flatten, with = "|x| inspect::send(&x.send, Req::Inspect)")]
+    #[inspect(flatten, with = "|x| inspect::send(&x.send_req, Req::Inspect)")]
     issuer: Arc<Issuer>,
     #[inspect(skip)]
     mem: MemoryBlock,
@@ -183,7 +183,8 @@ impl PendingCommands {
 struct QueueHandlerLoop<A: AerHandler, D: DeviceBacking> {
     queue_handler: QueueHandler<A>,
     registers: Arc<DeviceRegisters<D>>,
-    recv: Option<mesh::Receiver<Req>>,
+    recv_req: Option<mesh::Receiver<Req>>,
+    recv_cmd: Option<mesh::Receiver<Command>>,
     interrupt: DeviceInterrupt,
 }
 
@@ -197,7 +198,8 @@ impl<A: AerHandler, D: DeviceBacking> AsyncRun<()> for QueueHandlerLoop<A, D> {
             self.queue_handler
                 .run(
                     &self.registers,
-                    self.recv.take().unwrap(),
+                    self.recv_req.take().unwrap(),
+                    self.recv_cmd.take().unwrap(),
                     &mut self.interrupt,
                 )
                 .await;
@@ -337,11 +339,13 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
             }
         };
 
-        let (send, recv) = mesh::channel();
+        let (send_req, recv_req) = mesh::channel();
+        let (send_cmd, recv_cmd) = mesh::channel();
         let mut task = TaskControl::new(QueueHandlerLoop {
             queue_handler,
             registers,
-            recv: Some(recv),
+            recv_req: Some(recv_req),
+            recv_cmd: Some(recv_cmd),
             interrupt,
         });
         task.insert(spawner, "nvme-queue", ());
@@ -374,7 +378,11 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
 
         Ok(Self {
             task,
-            issuer: Arc::new(Issuer { send, alloc }),
+            issuer: Arc::new(Issuer {
+                send_req,
+                send_cmd,
+                alloc,
+            }),
             mem,
             qid,
             sq_entries,
@@ -419,7 +427,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
         }
         // Send an RPC request to QueueHandler thread to save its data.
         // QueueHandler stops any other processing after completing Save request.
-        let handler_data = self.issuer.send.call(Req::Save, ()).await??;
+        let handler_data = self.issuer.send_req.call(Req::Save, ()).await??;
 
         Ok(QueuePairSavedState {
             mem_len: self.mem.len(),
@@ -542,7 +550,9 @@ impl std::fmt::Display for NvmeError {
 #[derive(Debug, Inspect)]
 pub struct Issuer {
     #[inspect(skip)]
-    send: mesh::Sender<Req>,
+    send_cmd: mesh::Sender<Command>,
+    #[inspect(skip)]
+    send_req: mesh::Sender<Req>,
     alloc: PageAllocator,
 }
 
@@ -551,7 +561,7 @@ impl Issuer {
         &self,
         command: spec::Command,
     ) -> Result<spec::Completion, RequestError> {
-        match self.send.call(Req::Command, command).await {
+        match self.send_cmd.call(Command::Command, command).await {
             Ok(completion) if completion.status.status() == 0 => Ok(completion),
             Ok(completion) => Err(RequestError::Nvme(NvmeError(spec::Status(
                 completion.status.status(),
@@ -561,7 +571,7 @@ impl Issuer {
     }
 
     pub async fn issue_get_aen(&self) -> Result<AsynchronousEventRequestDw0, RequestError> {
-        match self.send.call_failable(Req::NextAen, ()).await {
+        match self.send_req.call_failable(Req::NextAen, ()).await {
             Ok(aen_completion) => Ok(aen_completion),
             Err(RpcError::Call(e)) => Err(e),
             Err(RpcError::Channel(e)) => Err(RequestError::Gone(RpcError::Channel(e))),
@@ -750,12 +760,17 @@ struct PendingCommand {
     respond: Rpc<(), spec::Completion>,
 }
 
+// Requests that can be processed regardless of submission queue state.
 enum Req {
-    Command(Rpc<spec::Command, spec::Completion>),
-    Inspect(inspect::Deferred),
     Save(Rpc<(), Result<QueueHandlerSavedState, anyhow::Error>>),
-    SendAer(),
+    Inspect(inspect::Deferred),
     NextAen(Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>),
+}
+
+// Commands that need to be written to the submission queue.
+enum Command {
+    Command(Rpc<spec::Command, spec::Completion>),
+    SendAer(),
 }
 
 /// Functionality for an AER handler. The default implementation
@@ -919,12 +934,14 @@ impl<A: AerHandler> QueueHandler<A> {
     async fn run(
         &mut self,
         registers: &DeviceRegisters<impl DeviceBacking>,
-        mut recv: mesh::Receiver<Req>,
+        mut req: mesh::Receiver<Req>,
+        mut command: mesh::Receiver<Command>,
         interrupt: &mut DeviceInterrupt,
     ) {
         loop {
             enum Event {
-                Request(Req),
+                Req(Req),
+                Command(Command),
                 Completion(spec::Completion),
             }
 
@@ -934,11 +951,14 @@ impl<A: AerHandler> QueueHandler<A> {
                     if !self.sq.is_full() && !self.commands.is_full() {
                         // Prioritize sending AERs to keep the cycle going
                         if self.aer_handler.poll_send_aer() {
-                            return Poll::Ready(Event::Request(Req::SendAer()));
+                            return Event::Command(Command::SendAer()).into();
                         }
-                        if let Poll::Ready(Some(req)) = recv.poll_next_unpin(cx) {
-                            return Event::Request(req).into();
+                        if let Poll::Ready(Some(cmd)) = command.poll_next_unpin(cx) {
+                            return Event::Command(cmd).into();
                         }
+                    }
+                    if let Poll::Ready(Some(req)) = req.poll_next_unpin(cx) {
+                        return Event::Req(req).into();
                     }
                     while !self.commands.is_empty() {
                         if let Some(completion) = self.cq.read() {
@@ -973,23 +993,25 @@ impl<A: AerHandler> QueueHandler<A> {
             };
 
             match event {
-                Event::Request(req) => match req {
-                    Req::Command(rpc) => {
-                        let (mut command, respond) = rpc.split();
-                        self.commands.insert(&mut command, respond);
-                        self.sq.write(command).unwrap();
-                        self.stats.issued.increment();
-                    }
-                    Req::Inspect(deferred) => deferred.inspect(&self),
+                Event::Req(req) => match req {
                     Req::Save(queue_state) => {
                         queue_state.complete(self.save().await);
                         // Do not allow any more processing after save completed.
                         break;
                     }
+                    Req::Inspect(deferred) => deferred.inspect(&self),
                     Req::NextAen(rpc) => {
                         self.aer_handler.handle_aen_request(rpc);
                     }
-                    Req::SendAer() => {
+                },
+                Event::Command(cmd) => match cmd {
+                    Command::Command(rpc) => {
+                        let (mut command, respond) = rpc.split();
+                        self.commands.insert(&mut command, respond);
+                        self.sq.write(command).unwrap();
+                        self.stats.issued.increment();
+                    }
+                    Command::SendAer() => {
                         let mut command = admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST);
                         self.commands.insert(&mut command, Rpc::detached(()));
                         self.aer_handler.update_awaiting_cid(command.cdw0.cid());
