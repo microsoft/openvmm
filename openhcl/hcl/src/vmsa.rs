@@ -7,6 +7,8 @@
 use std::array;
 use std::ops::Deref;
 use std::ops::DerefMut;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use x86defs::snp::SevEventInjectInfo;
 use x86defs::snp::SevFeatures;
 use x86defs::snp::SevSelector;
@@ -156,6 +158,21 @@ impl<T: DerefMut<Target = SevVmsa>> VmsaWrapper<'_, T> {
             let val = self.set_u64(*new_v, base + (i * 8));
             self.vmsa.x87_registers[i] = val;
         }
+    }
+
+    /// Gets an atomic reference to the v_intr_cntrl field.
+    pub fn v_intr_cntrl_atomic(&self) -> &AtomicU64 {
+        // SAFETY: caller responsible for synchronizing with any non-atomic access.
+        unsafe { &*(core::ptr::from_ref(&self.vmsa.v_intr_cntrl) as *const AtomicU64) }
+    }
+
+    /// Atomically test and set the guest busy bit in v_intr_cntrl.
+    pub fn guest_busy_bit_test_and_set(&mut self) -> bool {
+        const VINTR_GUEST_BUSYBIT_MASK: u64 = 1u64 << 63;
+        let prev = self
+            .v_intr_cntrl_atomic()
+            .fetch_or(VINTR_GUEST_BUSYBIT_MASK, Ordering::SeqCst);
+        (prev & VINTR_GUEST_BUSYBIT_MASK) != 0
     }
 }
 
