@@ -761,7 +761,8 @@ struct PendingCommand {
 }
 
 // "ControlPlane" requests sent to the QueueHandler. These can be processed at
-// any time; regardless of whether submission queue is full or not.
+// any time; regardless of whether submission queue is full or not and will be
+// prioritized over IO completions to keep the save path responsive.
 enum Req {
     Save(Rpc<(), Result<QueueHandlerSavedState, anyhow::Error>>),
     Inspect(inspect::Deferred),
