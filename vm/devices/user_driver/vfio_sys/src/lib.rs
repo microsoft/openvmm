@@ -9,8 +9,6 @@
 use anyhow::Context;
 use bitfield_struct::bitfield;
 use libc::c_void;
-use pal_async::driver::Driver;
-use pal_async::timer::PolledTimer;
 use std::ffi::CString;
 use std::fs;
 use std::fs::File;
@@ -85,6 +83,21 @@ mod ioctl {
     );
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum VfioErrata {
+    None,
+    DelayWorkaround,
+}
+
+impl VfioErrata {
+    pub fn from_error(observed: &anyhow::Error) -> Self {
+        if observed.downcast_ref::<nix::errno::Errno>() == Some(&nix::errno::Errno::ENODEV) {
+            return VfioErrata::DelayWorkaround;
+        }
+        return VfioErrata::None;
+    }
+}
+
 pub struct Container {
     file: File,
 }
@@ -151,30 +164,12 @@ impl Group {
         Ok(group)
     }
 
-    pub async fn open_device(
-        &self,
-        device_id: &str,
-        driver: &(impl ?Sized + Driver),
-    ) -> anyhow::Result<Device> {
+    pub async fn open_device(&self, device_id: &str) -> anyhow::Result<Device> {
         let id = CString::new(device_id)?;
         // SAFETY: The file descriptor is valid and the string is null-terminated.
         let file = unsafe {
-            let fd = ioctl::vfio_group_get_device_fd(self.file.as_raw_fd(), id.as_ptr());
-            // There is a small race window in the 6.1 kernel between when the
-            // vfio device is visible to userspace, and when it is added to its
-            // internal list. Try one more time on ENODEV failure after a brief
-            // sleep.
-            let fd = match fd {
-                Err(nix::errno::Errno::ENODEV) => {
-                    tracing::warn!(pci_id = device_id, "Retrying vfio open_device after delay");
-                    PolledTimer::new(driver)
-                        .sleep(std::time::Duration::from_millis(250))
-                        .await;
-                    ioctl::vfio_group_get_device_fd(self.file.as_raw_fd(), id.as_ptr())
-                }
-                _ => fd,
-            };
-            let fd = fd.with_context(|| format!("failed to get device fd for {device_id}"))?;
+            let fd = ioctl::vfio_group_get_device_fd(self.file.as_raw_fd(), id.as_ptr())
+                .with_context(|| format!("failed to get device fd for {device_id}"))?;
             File::from_raw_fd(fd)
         };
 
@@ -206,39 +201,13 @@ impl Group {
     /// Skip VFIO device reset when kernel is reloaded during servicing.
     /// This feature is non-upstream version of our kernel and will be
     /// eventually replaced with iommufd.
-    pub async fn set_keep_alive(
-        &self,
-        device_id: &str,
-        driver: &(impl ?Sized + Driver),
-    ) -> anyhow::Result<()> {
+    pub async fn set_keep_alive(&self, device_id: &str) -> anyhow::Result<()> {
         // SAFETY: The file descriptor is valid and a correctly constructed struct is being passed.
         unsafe {
             let id = CString::new(device_id)?;
-            let r = ioctl::vfio_group_set_keep_alive(self.file.as_raw_fd(), id.as_ptr());
-            match r {
-                Ok(_) => Ok(()),
-                Err(nix::errno::Errno::ENODEV) => {
-                    // There is a small race window in the kernel between when the
-                    // vfio device is visible to userspace, and when it is added to its
-                    // internal list. Try one more time on ENODEV failure after a brief
-                    // sleep.
-                    tracing::warn!(
-                        pci_id = device_id,
-                        "vfio keepalive got ENODEV, retrying after delay"
-                    );
-                    PolledTimer::new(driver)
-                        .sleep(std::time::Duration::from_millis(250))
-                        .await;
-                    ioctl::vfio_group_set_keep_alive(self.file.as_raw_fd(), id.as_ptr())
-                        .with_context(|| {
-                            format!("failed to set keep-alive after delay for {device_id}")
-                        })
-                        .map(|_| ())
-                }
-                Err(_) => r
-                    .with_context(|| format!("failed to set keep-alive for {device_id}"))
-                    .map(|_| ()),
-            }
+            ioctl::vfio_group_set_keep_alive(self.file.as_raw_fd(), id.as_ptr())
+                .with_context(|| format!("failed to set keep-alive for {device_id}"))
+                .map(|_| ())
         }
     }
 }
