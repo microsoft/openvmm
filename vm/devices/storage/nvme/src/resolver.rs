@@ -6,10 +6,15 @@
 use crate::NsidConflict;
 use crate::NvmeController;
 use crate::NvmeControllerCaps;
+use crate::NvmeControllerClient;
+use anyhow::Context;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
+use futures::StreamExt;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
+use nvme_resources::NvmeControllerRequest;
+use pal_async::task::Spawn;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
 use thiserror::Error;
@@ -18,6 +23,7 @@ use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::PciDeviceHandleKind;
+use vmcore::vm_task::VmTaskDriverSource;
 
 /// Resource resolver for [`NvmeControllerHandle`].
 pub struct NvmeControllerResolver;
@@ -85,6 +91,72 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeControllerHandle> for NvmeCon
                 .await
                 .map_err(Error::NsidConflict)?;
         }
+
+        if let Some(requests) = resource.requests {
+            let driver = input.driver_source.simple();
+            driver
+                .spawn(
+                    "nvme-requests",
+                    handle_requests(
+                        input.driver_source.clone(),
+                        controller.client(),
+                        resolver.clone(),
+                        requests,
+                    ),
+                )
+                .detach();
+        }
+
         Ok(controller.into())
+    }
+}
+
+async fn handle_requests(
+    driver_source: VmTaskDriverSource,
+    client: NvmeControllerClient,
+    resolver: ResourceResolver,
+    mut requests: mesh::Receiver<NvmeControllerRequest>,
+) {
+    while let Some(req) = requests.next().await {
+        match req {
+            NvmeControllerRequest::AddNamespace(rpc) => {
+                rpc.handle_failable(
+                    async |NamespaceDefinition {
+                               nsid,
+                               read_only,
+                               disk,
+                           }| {
+                        let disk = resolver
+                            .resolve(
+                                disk,
+                                ResolveDiskParameters {
+                                    read_only,
+                                    driver_source: &driver_source,
+                                },
+                            )
+                            .await
+                            .context("failed to resolve disk")?;
+
+                        client
+                            .add_namespace(nsid, disk.0)
+                            .await
+                            .context("failed to add namespace")?;
+
+                        anyhow::Ok(())
+                    },
+                )
+                .await
+            }
+            NvmeControllerRequest::RemoveNamespace(rpc) => {
+                rpc.handle_failable(async |nsid| {
+                    let removed = client.remove_namespace(nsid).await;
+                    if !removed {
+                        anyhow::bail!("namespace {nsid} not found");
+                    }
+                    anyhow::Ok(())
+                })
+                .await
+            }
+        }
     }
 }

@@ -4699,6 +4699,7 @@ dependencies = [
 name = "nvme"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chipset_device",
  "device_emulators",
