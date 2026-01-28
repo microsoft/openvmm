@@ -550,9 +550,10 @@ impl HclNetworkVFManagerWorker {
         .await
         {
             Ok(mut device) => {
+                // Subscribe to VF reconfigure events before starting notification task
+                self.vf_reconfig_receiver = Some(device.subscribe_vf_reconfig().await);
                 // Resubscribe to notifications from the MANA device.
                 device.start_notification_task(&self.driver_source).await;
-                self.vf_reconfig_receiver = Some(device.subscribe_vf_reconfig().await);
 
                 self.mana_device = Some(device);
                 self.connect_endpoints().await.is_ok()
@@ -875,6 +876,12 @@ impl HclNetworkVFManagerWorker {
                     if self.is_shutdown_active
                         || matches!(vtl2_device_state, Vtl2DeviceState::Missing)
                     {
+                        tracing::debug!(
+                            is_shutdown_active = self.is_shutdown_active,
+                            vtl2_device_state_missing =
+                                matches!(vtl2_device_state, Vtl2DeviceState::Missing),
+                            "Skipping VF reconfiguration during shutdown or when device is missing"
+                        );
                         continue;
                     }
 
@@ -1200,8 +1207,9 @@ impl HclNetworkVFManager {
         // Now that the endpoints are connected, start the device notification task that will
         // listen for and relay endpoint actions.
         let device = worker.mana_device.as_mut().unwrap();
-        device.start_notification_task(driver_source).await;
+        // Subscribe to VF reconfig events before starting notification task
         worker.vf_reconfig_receiver = Some(device.subscribe_vf_reconfig().await);
+        device.start_notification_task(driver_source).await;
         let endpoints = endpoints
             .into_iter()
             .zip(mac_addresses)
