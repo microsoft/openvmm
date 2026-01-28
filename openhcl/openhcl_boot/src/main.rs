@@ -597,7 +597,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         can_trust_host,
     ) {
         Ok(val) => val,
-        Err(e) => panic!("unable to read device tree params {}", e),
+        Err(e) => panic!("unable to read device tree params {:?}", e),
     };
 
     // Enable logging ASAP. This is fine even when isolated, as we don't have
