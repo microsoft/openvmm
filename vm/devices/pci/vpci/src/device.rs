@@ -1335,7 +1335,7 @@ mod tests {
     use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
     use pci_core::cfg_space_emu::DeviceBars;
     use pci_core::chipset_device_ext::PciChipsetDeviceExt;
-    use pci_core::msi::MsiInterruptSet;
+    use pci_core::msi::MsiConnection;
     use pci_core::spec::hwid::ClassCode;
     use pci_core::spec::hwid::HardwareIds;
     use pci_core::spec::hwid::ProgrammingInterface;
@@ -1700,7 +1700,7 @@ mod tests {
 
     #[async_test]
     async fn verify_simple_capability(driver: DefaultDriver) {
-        let mut msi_set = MsiInterruptSet::new();
+        let msi_conn = MsiConnection::new();
         let pci_config = HardwareIds {
             vendor_id: 0x123,
             device_id: 0x789,
@@ -1712,10 +1712,10 @@ mod tests {
             type0_sub_system_id: 0x1,
         };
         let (_msix, msix_capability) =
-            pci_core::capabilities::msix::MsixEmulator::new(0, 64, &mut msi_set);
+            pci_core::capabilities::msix::MsixEmulator::new(0, 64, msi_conn.target());
 
         let msi_controller = TestVpciInterruptController::new();
-        msi_set.connect(msi_controller.as_ref());
+        msi_conn.connect(msi_controller.signal_msi());
 
         let pci = Arc::new(CloseableMutex::new(NullDevice {
             config_space: ConfigSpaceType0Emulator::new(

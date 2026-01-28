@@ -3,14 +3,13 @@
 
 //! Mock types for unit-testing various PCI behaviors.
 
-use crate::msi::MsiControl;
-use crate::msi::MsiInterruptTarget;
+use crate::msi::SignalMsi;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
 /// A test-only interrupt controller that simply stashes incoming interrupt
-/// requests in a FIFO queue. Implements [`MsiInterruptTarget`].
+/// requests in a FIFO queue. Implements [`SignalMsi`].
 #[derive(Debug, Clone)]
 pub struct TestPciInterruptController {
     inner: Arc<TestPciInterruptControllerInner>,
@@ -36,11 +35,16 @@ impl TestPciInterruptController {
     pub fn get_next_interrupt(&self) -> Option<(u64, u32)> {
         self.inner.msi_requests.lock().pop_front()
     }
+
+    /// Returns an `Arc<dyn SignalMsi>` to this controller.
+    pub fn signal_msi(&self) -> Arc<dyn SignalMsi> {
+        self.inner.clone()
+    }
 }
 
-impl MsiInterruptTarget for TestPciInterruptController {
-    fn new_interrupt(&self) -> Box<dyn MsiControl> {
-        let controller = self.inner.clone();
-        Box::new(move |address, data| controller.msi_requests.lock().push_back((address, data)))
+impl SignalMsi for TestPciInterruptControllerInner {
+    fn signal_msi(&self, rid: u32, address: u64, data: u32) {
+        assert_eq!(rid, 0);
+        self.msi_requests.lock().push_back((address, data));
     }
 }

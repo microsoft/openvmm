@@ -437,24 +437,23 @@ impl Drop for WhpDoorbellEntry {
 #[cfg(guest_arch = "x86_64")]
 mod x86 {
     use crate::WhpPartitionAndVtl;
-    use pci_core::msi::MsiInterruptTarget;
+    use pci_core::msi::SignalMsi;
     use tracing_helpers::ErrorValueExt;
     use virt::irqcon::MsiRequest;
 
-    impl MsiInterruptTarget for WhpPartitionAndVtl {
-        fn new_interrupt(&self) -> Box<dyn pci_core::msi::MsiControl> {
-            let partition = self.partition.clone();
-            let vtl = self.vtl;
-            Box::new(move |address, data| {
-                if let Err(err) = partition.interrupt(vtl, MsiRequest { address, data }) {
-                    tracelimit::warn_ratelimited!(
-                        address,
-                        data,
-                        error = err.as_error(),
-                        "failed to deliver MSI"
-                    );
-                }
-            })
+    impl SignalMsi for WhpPartitionAndVtl {
+        fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+            if let Err(err) = self
+                .partition
+                .interrupt(self.vtl, MsiRequest { address, data })
+            {
+                tracelimit::warn_ratelimited!(
+                    address,
+                    data,
+                    error = err.as_error(),
+                    "failed to deliver MSI"
+                );
+            }
         }
     }
 }

@@ -23,7 +23,7 @@ use net_backend::TxSegment;
 use net_backend::loopback::LoopbackEndpoint;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
-use pci_core::msi::MsiInterruptSet;
+use pci_core::msi::MsiConnection;
 use std::future::poll_fn;
 use std::time::Duration;
 use test_with_tracing::test;
@@ -546,11 +546,11 @@ async fn test_multi_mixed_packet(driver: DefaultDriver) {
 async fn test_vport_with_query_filter_state(driver: DefaultDriver) {
     let pages = 512; // 2MB
     let mem = DeviceTestMemory::new(pages, false, "test_vport_with_query_filter_state");
-    let mut msi_set = MsiInterruptSet::new();
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        &mut msi_set,
+        msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(LoopbackEndpoint::new()),
@@ -558,7 +558,7 @@ async fn test_vport_with_query_filter_state(driver: DefaultDriver) {
         &mut ExternallyManagedMmioIntercepts,
     );
     let dma_client = mem.dma_client();
-    let device = EmulatedDevice::new(device, msi_set, dma_client);
+    let device = EmulatedDevice::new(device, msi_conn, dma_client);
     let cap_flags1 = gdma_defs::bnic::BasicNicDriverFlags::new().with_query_filter_state(1);
     let dev_config = ManaQueryDeviceCfgResp {
         pf_cap_flags1: cap_flags1,
@@ -709,18 +709,18 @@ async fn test_endpoint(
     let data_to_send = pkt_builder.packet_data();
     let tx_segments = pkt_builder.segments();
 
-    let mut msi_set = MsiInterruptSet::new();
+    let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
-        &mut msi_set,
+        msi_conn.target(),
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(LoopbackEndpoint::new()),
         }],
         &mut ExternallyManagedMmioIntercepts,
     );
-    let device = EmulatedDevice::new(device, msi_set, mem.dma_client());
+    let device = EmulatedDevice::new(device, msi_conn, mem.dma_client());
     let dev_config = ManaQueryDeviceCfgResp {
         pf_cap_flags1: 0.into(),
         pf_cap_flags2: 0,

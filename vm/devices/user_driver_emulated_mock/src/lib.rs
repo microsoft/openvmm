@@ -21,9 +21,8 @@ use page_pool_alloc::PagePoolAllocator;
 use page_pool_alloc::TestMapper;
 use parking_lot::Mutex;
 use pci_core::chipset_device_ext::PciChipsetDeviceExt;
-use pci_core::msi::MsiControl;
-use pci_core::msi::MsiInterruptSet;
-use pci_core::msi::MsiInterruptTarget;
+use pci_core::msi::MsiConnection;
+use pci_core::msi::SignalMsi;
 use std::sync::Arc;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
@@ -59,18 +58,18 @@ impl MsiController {
     }
 }
 
-impl MsiInterruptTarget for MsiController {
-    fn new_interrupt(&self) -> Box<dyn MsiControl> {
-        let events = self.events.clone();
-        Box::new(move |address, _data| {
-            let index = address as usize;
-            if let Some(event) = events.get(index) {
-                tracing::debug!(index, "signaling interrupt");
-                event.signal_uncached();
-            } else {
-                tracing::info!("interrupt ignored");
-            }
-        })
+impl SignalMsi for MsiController {
+    fn signal_msi(&self, rid: u32, address: u64, _data: u32) {
+        let index = address as usize;
+        if rid != 0 {
+            return;
+        }
+        if let Some(event) = self.events.get(index) {
+            tracing::debug!(index, "signaling interrupt");
+            event.signal_uncached();
+        } else {
+            tracing::info!("interrupt ignored");
+        }
     }
 }
 
@@ -88,12 +87,7 @@ impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> Clone for EmulatedDevice<T
 impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
     /// Creates a new emulated device, wrapping `device` of type T, using the provided MSI Interrupt Set. Dma_client should point to memory
     /// shared with the device.
-    pub fn new(mut device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
-        // Connect an interrupt controller.
-        let controller = MsiController::new(msi_set.len());
-        msi_set.connect(&controller);
-        let controller = Arc::new(controller);
-
+    pub fn new(mut device: T, msi_conn: MsiConnection, dma_client: Arc<U>) -> Self {
         let bars = device.probe_bar_masks();
         let bar0_len = !(bars[0] & !0xf) as usize + 1;
 
@@ -108,6 +102,17 @@ impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
                     .into_bits() as u32,
             )
             .unwrap();
+
+        // Determine the number of MSI-X vectors.
+        let msix_table_size = {
+            let mut n = 0;
+            device.pci_cfg_read(0x40, &mut n).unwrap();
+            ((n >> 16) & 0x7ff) + 1
+        } as usize;
+
+        // Connect an interrupt controller.
+        let controller = Arc::new(MsiController::new(msix_table_size));
+        msi_conn.connect(controller.clone());
 
         // Enable MSIX.
         for i in 0u64..64 {

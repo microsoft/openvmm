@@ -1301,11 +1301,10 @@ struct UhInterruptTarget {
     vtl: GuestVtl,
 }
 
-impl pci_core::msi::MsiInterruptTarget for UhInterruptTarget {
-    fn new_interrupt(&self) -> Box<dyn pci_core::msi::MsiControl> {
-        let partition = self.partition.clone();
-        let vtl = self.vtl;
-        Box::new(move |address, data| partition.request_msi(vtl, MsiRequest { address, data }))
+impl pci_core::msi::SignalMsi for UhInterruptTarget {
+    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+        self.partition
+            .request_msi(self.vtl, MsiRequest { address, data });
     }
 }
 

@@ -18,7 +18,7 @@ use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
-use pci_core::msi::MsiInterruptTarget;
+use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
 use std::sync::Arc;
 #[cfg(guest_arch = "aarch64")]
@@ -90,8 +90,8 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
         minimum_vtl: Vtl,
     ) -> Option<Arc<dyn DoorbellRegistration>>;
 
-    /// Gets the [`MsiInterruptTarget`] interface for a particular VTL.
-    fn into_msi_target(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn MsiInterruptTarget>>;
+    /// Gets the [`SignalMsi`] interface for a particular VTL.
+    fn into_signal_msi(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>>;
 
     /// Returns whether virtual devices are supported.
     fn supports_virtual_devices(&self) -> bool;
@@ -207,8 +207,8 @@ where
         self.doorbell_registration(minimum_vtl)
     }
 
-    fn into_msi_target(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn MsiInterruptTarget>> {
-        self.msi_interrupt_target(minimum_vtl)
+    fn into_signal_msi(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+        self.as_signal_msi(minimum_vtl)
     }
 
     fn supports_virtual_devices(&self) -> bool {
@@ -278,16 +278,16 @@ pub trait VpciDevice {
     /// table entries.
     fn interrupt_mapper(self: Arc<Self>) -> VpciInterruptMapper;
 
-    /// Gets the [`MsiInterruptTarget`] interface to signal interrupts.
-    fn target(self: Arc<Self>) -> Arc<dyn MsiInterruptTarget>;
+    /// Gets the [`SignalMsi`] interface to signal interrupts.
+    fn target(self: Arc<Self>) -> Arc<dyn SignalMsi>;
 }
 
-impl<T: 'static + MapVpciInterrupt + MsiInterruptTarget> VpciDevice for T {
+impl<T: 'static + MapVpciInterrupt + SignalMsi> VpciDevice for T {
     fn interrupt_mapper(self: Arc<Self>) -> VpciInterruptMapper {
         VpciInterruptMapper::new(self)
     }
 
-    fn target(self: Arc<Self>) -> Arc<dyn MsiInterruptTarget> {
+    fn target(self: Arc<Self>) -> Arc<dyn SignalMsi> {
         self
     }
 }

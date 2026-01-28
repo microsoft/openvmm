@@ -57,7 +57,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeFaultControllerHandle>
         let controller = NvmeFaultController::new(
             input.driver_source,
             input.guest_memory.clone(),
-            input.register_msi,
+            input.msi_target,
             input.register_mmio,
             NvmeFaultControllerCaps {
                 msix_count: resource.msix_count,
