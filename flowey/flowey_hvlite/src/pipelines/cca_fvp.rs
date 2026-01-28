@@ -60,20 +60,16 @@ pub struct CcaFvpCli {
 
 impl IntoPipeline for CcaFvpCli {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
-        if !matches!(backend_hint, PipelineBackendHint::Local) {
-            anyhow::bail!("cca-fvp is for local use only");
-        }
-
         let Self {
             dir,
             platform,
             overlay,
             btvar,
-            rootfs,
-            rtvar,
+            rootfs: _,
+            rtvar: _,
             build_arg,
-            run_arg,
-            timeout_sec,
+            run_arg: _,
+            timeout_sec: _,
             install_missing_deps,
             update_shrinkwrap_repo,
             verbose,
@@ -135,14 +131,6 @@ impl IntoPipeline for CcaFvpCli {
                 })
             }
         }).collect();
-
-        let rootfs = std::fs::canonicalize(&rootfs).unwrap_or_else(|_| {
-            if rootfs.is_absolute() {
-                rootfs.clone()
-            } else {
-                std::env::current_dir().unwrap().join(&rootfs)
-            }
-        });
 
         // Create separate jobs to ensure proper ordering
         let install_job = pipeline
