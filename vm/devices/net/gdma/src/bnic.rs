@@ -153,10 +153,10 @@ impl BufferAccess for GuestBuffers {
         };
 
         // Test hook leveraged by test_rx_error_handling in net_mana tests.
-        // Returns an error CQE for packets with metadata.len == 1234
+        // Returns an error CQE for packets with a specific length.
         #[cfg(feature = "test_hooks")]
-        if metadata.len == 1234 {
-            tracing::debug!(
+        if metadata.len == gdma_defs::test_hooks::RX_ERROR_TRIGGER_PACKET_LEN {
+            tracing::warn!(
                 metadata_len = metadata.len,
                 "Returning CQE_RX_ERR_DISABLED_QUEUE to test rx error handling"
             );

@@ -576,10 +576,11 @@ async fn test_vport_with_query_filter_state(driver: DefaultDriver) {
 #[async_test]
 async fn test_rx_error_handling(driver: DefaultDriver) {
     // The GDMA BNic emulator provides a test hook: an RX completion where
-    // metadata length == 1234 returns CQE_RX_ERR_DISABLED_QUEUE.
-    let expected_num_rx_packets = 0;
+    // metadata length equals RX_ERROR_TRIGGER_PACKET_LEN returns CQE_RX_ERR_DISABLED_QUEUE.
+    let expected_num_tx_packets = 1; // One packet sent
+    let expected_num_rx_packets = 0; // But RX fails due to the error hook
     let num_segments = 1;
-    let packet_len = 1234;
+    let packet_len = gdma_defs::test_hooks::RX_ERROR_TRIGGER_PACKET_LEN as usize;
 
     let mut pkt_builder = TxPacketBuilder::new();
     build_tx_segments(packet_len, num_segments, false, &mut pkt_builder);
@@ -588,7 +589,7 @@ async fn test_rx_error_handling(driver: DefaultDriver) {
         driver,
         GuestDmaMode::DirectDma,
         &pkt_builder,
-        0, // Irrelevant when expected RX is 0.
+        expected_num_tx_packets,
         expected_num_rx_packets,
         ManaTestConfiguration::default(),
     )
@@ -596,6 +597,7 @@ async fn test_rx_error_handling(driver: DefaultDriver) {
 
     assert_eq!(stats.rx_errors.get(), 1, "rx_errors increase");
     assert_eq!(stats.rx_packets.get(), 0, "rx_packets stay the same");
+    assert_eq!(stats.tx_packets.get(), 1, "tx_packets increases");
 }
 
 async fn send_test_packet(
@@ -645,8 +647,8 @@ async fn send_test_packet_multi(
         driver,
         dma_mode,
         pkt_builder,
-        expected_stats.rx_packets.get() as usize,
         expected_stats.tx_packets.get() as usize,
+        expected_stats.rx_packets.get() as usize,
         test_config,
     )
     .await;
@@ -787,7 +789,23 @@ async fn test_endpoint(
     let mut rx_packets_n = 0;
     let mut tx_done = vec![TxId(0); expected_num_send_packets.max(2)];
     let mut tx_done_n = 0;
-    while rx_packets_n == 0 {
+
+    // Wait until we have received the expected number of RX packets,
+    // or until we have completed the expected TX packets (for error cases where RX fails).
+    let done = |rx_n: usize, tx_n: usize| -> bool {
+        if expected_num_received_packets > 0 {
+            // Normal case: wait for RX packets
+            rx_n >= expected_num_received_packets
+        } else if expected_num_send_packets > 0 {
+            // Error case: RX is expected to fail, wait for TX completion instead
+            tx_n >= expected_num_send_packets
+        } else {
+            // Both are 0: nothing to wait for, done
+            true
+        }
+    };
+
+    loop {
         let mut context = CancelContext::new().with_timeout(Duration::from_secs(1));
         match context
             .until_cancelled(poll_fn(|cx| queues[0].poll_ready(cx)))
@@ -803,11 +821,12 @@ async fn test_endpoint(
         rx_packets_n += queues[0].rx_poll(&mut rx_packets[rx_packets_n..]).unwrap();
         // GDMA Errors generate a TryReturn error, ignored here.
         tx_done_n += queues[0].tx_poll(&mut tx_done[tx_done_n..]).unwrap_or(0);
-        if expected_num_received_packets == 0 {
+        if done(rx_packets_n, tx_done_n) {
             break;
         }
     }
     assert_eq!(rx_packets_n, expected_num_received_packets);
+    assert_eq!(tx_done_n, expected_num_send_packets);
 
     if expected_num_received_packets == 0 {
         // If no packets were received, exit.
@@ -817,8 +836,6 @@ async fn test_endpoint(
         return stats;
     }
 
-    // Check tx
-    assert_eq!(tx_done_n, expected_num_send_packets);
     // GDMA emulator always returns TxId(1) for completed packets.
     for done in tx_done.iter().take(expected_num_send_packets) {
         assert_eq!(done.0, 1);

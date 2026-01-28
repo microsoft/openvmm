@@ -32,6 +32,7 @@ zerocopy.workspace = true
 [dev-dependencies]
 chipset_device.workspace = true
 gdma = { workspace = true, features = ["test_hooks"] }
+gdma_defs = { workspace = true, features = ["test_hooks"] }
 pci_core.workspace = true
 test_with_tracing.workspace = true
 user_driver_emulated_mock.workspace = true

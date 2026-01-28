@@ -38,4 +38,4 @@ workspace = true
 
 [features]
 default = []
-test_hooks = []
+test_hooks = ["gdma_defs/test_hooks"]
