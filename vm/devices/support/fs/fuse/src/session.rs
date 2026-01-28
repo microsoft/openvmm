@@ -130,6 +130,11 @@ impl Session {
                 // so send an error reply.
                 return Err(lx::Error::EIO.into());
             }
+            FuseOperation::Error(e) => {
+                // This indicates the request was parsed but contained invalid data (e.g., a name
+                // that was too long). Return the specific error.
+                return Err((*e).into());
+            }
             FuseOperation::Lookup { name } => {
                 let out = self.fs.lookup(&request, name)?;
                 sender.send_arg(request.unique(), out)?;
@@ -619,6 +624,39 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn dispatch_error_name_too_long() {
+        let fs = TestFs::default();
+        let session = Session::new(fs);
+
+        // Initialize the session first
+        let mut init_sender = MockSender::default();
+        session.dispatch(
+            Request::new(FUSE_INIT_REQUEST).unwrap(),
+            &mut init_sender,
+            None,
+        );
+        assert!(session.is_initialized());
+
+        // Create a LOOKUP request with a name that's too long (256 bytes, exceeds NAME_MAX of 255)
+        let mut error_sender = ErrorCheckingSender::default();
+        let lookup_data = make_lookup_name_too_long();
+        let request = Request::new(lookup_data.as_slice()).unwrap();
+
+        // Verify the operation is Error(ENAMETOOLONG)
+        assert!(
+            matches!(request.operation(), FuseOperation::Error(e) if *e == lx::Error::ENAMETOOLONG)
+        );
+
+        session.dispatch(request, &mut error_sender, None);
+
+        // Verify that an error reply was sent with ENAMETOOLONG (36)
+        assert_eq!(
+            error_sender.last_error,
+            Some(lx::Error::ENAMETOOLONG.value())
+        );
+    }
+
+    #[test]
     fn dispatch() {
         let mut sender = MockSender::default();
         let fs = TestFs::default();
@@ -753,4 +791,82 @@ mod tests {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 164, 129, 0,
         0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ];
+
+    /// A ReplySender that tracks error responses for testing
+    #[derive(Default)]
+    struct ErrorCheckingSender {
+        last_error: Option<i32>,
+    }
+
+    impl ReplySender for ErrorCheckingSender {
+        fn send(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
+            // Parse the fuse_out_header to check for errors
+            let flat: Vec<u8> = bufs.iter().flat_map(|s| s.iter()).copied().collect();
+            if flat.len() >= 16 {
+                // fuse_out_header: len (4), error (4), unique (8)
+                let error = i32::from_ne_bytes([flat[4], flat[5], flat[6], flat[7]]);
+                if error != 0 {
+                    self.last_error = Some(-error); // Error is stored as negative in header
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// Creates a FUSE_LOOKUP request with a name that's too long (256 bytes, exceeds NAME_MAX of 255)
+    fn make_lookup_name_too_long() -> Vec<u8> {
+        let mut data = vec![0u8; 297]; // 40 byte header + 256 byte name + 1 null terminator
+
+        // fuse_in_header (40 bytes):
+        // len: u32 = 297 (0x129)
+        data[0] = 0x29;
+        data[1] = 0x01;
+        data[2] = 0x00;
+        data[3] = 0x00;
+
+        // opcode: u32 = 1 (FUSE_LOOKUP)
+        data[4] = 0x01;
+        data[5] = 0x00;
+        data[6] = 0x00;
+        data[7] = 0x00;
+
+        // unique: u64 = 99
+        data[8] = 99;
+        data[9] = 0x00;
+        data[10] = 0x00;
+        data[11] = 0x00;
+        data[12] = 0x00;
+        data[13] = 0x00;
+        data[14] = 0x00;
+        data[15] = 0x00;
+
+        // nodeid: u64 = 1
+        data[16] = 0x01;
+        data[17] = 0x00;
+        data[18] = 0x00;
+        data[19] = 0x00;
+        data[20] = 0x00;
+        data[21] = 0x00;
+        data[22] = 0x00;
+        data[23] = 0x00;
+
+        // uid: u32 = 0
+        // gid: u32 = 0
+        // pid: u32 = 971 (0x3CB)
+        data[32] = 0xCB;
+        data[33] = 0x03;
+        data[34] = 0x00;
+        data[35] = 0x00;
+
+        // padding: u32 = 0
+
+        // Name: 256 'a' characters (0x61) starting at byte 40
+        for item in data.iter_mut().take(296).skip(40) {
+            *item = 0x61; // 'a'
+        }
+        // Null terminator at byte 296
+        data[296] = 0x00;
+
+        data
+    }
 }

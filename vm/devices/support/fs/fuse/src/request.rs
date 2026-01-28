@@ -148,7 +148,7 @@ impl Request {
                     error = &e as &dyn std::error::Error,
                     "Invalid message payload",
                 );
-                FuseOperation::Invalid
+                FuseOperation::Error(e)
             }
         }
     }
@@ -192,11 +192,17 @@ pub trait RequestReader: io::Read {
         Ok(lx::LxString::from_vec(buffer))
     }
 
+    /// Maximum length of a file name component (NAME_MAX on Linux).
+    const NAME_MAX: usize = 255;
+
     /// Read a NULL-terminated string and ensure it's a valid path name component.
     fn name(&mut self) -> lx::Result<lx::LxString> {
         let name = self.string()?;
         if name.is_empty() || name == "." || name == ".." || name.as_bytes().contains(&b'/') {
             return Err(lx::Error::EINVAL);
+        }
+        if name.len() > Self::NAME_MAX {
+            return Err(lx::Error::ENAMETOOLONG);
         }
 
         Ok(name)
@@ -461,4 +467,16 @@ pub(crate) mod tests {
         0, 0, 203, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0,
         0, 255, 15, 0, 0,
     ];
+
+    #[test]
+    fn name_too_long_returns_enametoolong() {
+        // Create a name with 256 characters (exceeds NAME_MAX of 255) + null terminator
+        let mut data = vec![b'a'; 256];
+        data.push(0); // null terminator
+
+        let mut reader: &[u8] = &data;
+        let result = reader.name();
+
+        assert_eq!(result, Err(lx::Error::ENAMETOOLONG));
+    }
 }

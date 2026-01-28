@@ -9,6 +9,9 @@ macro_rules! fuse_operations {
             /// An operation where the header could be parsed, but the remainder of the message
             /// could not.
             Invalid,
+            /// An operation where parsing failed with a specific error that should be returned
+            /// to the client.
+            Error(lx::Error),
             $(
                 $name {
                     $($arg_name: fuse_operations!(@to_type $arg_type),)*
@@ -45,6 +48,7 @@ macro_rules! fuse_operations {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 match self {
                     FuseOperation::Invalid => f.write_str("Invalid"),
+                    FuseOperation::Error(e) => f.debug_tuple("Error").field(e).finish(),
                     $(
                         FuseOperation::$name { $($arg_name,)* } => {
                             let mut d = f.debug_struct(stringify!($name));
