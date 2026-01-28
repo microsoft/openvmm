@@ -198,6 +198,7 @@ pub(crate) struct LoadedVm {
     pub test_configuration: Option<TestScenarioConfig>,
     pub dma_manager: OpenhclDmaManager,
     pub config_timeout_in_seconds: u64,
+    pub servicing_timeout_dump_collection_in_ms: u64,
 }
 
 pub struct LoadedVmState<T> {
@@ -581,6 +582,44 @@ impl LoadedVm {
         if self.isolation.is_isolated() {
             anyhow::bail!("Servicing is not yet supported for isolated VMs");
         }
+
+        // Start a servicing timeout thread on its own executor in a new thread.
+        // Do this to avoid any tasks that may block the current threadpool
+        // executor, and drop the task when this function returns which will
+        // dismiss the timeout panic.
+        //
+        // This helps catch issues where save may hang, and allows the existing
+        // machinery to send the dump to the host when this process crashes.
+        // Note that we choose to not use a livedump call like the firmware
+        // watchdog handlers, as we expect any hang to be a fatal error for
+        // OpenHCL, whereas the firmware watchdog is a failure inside the guest,
+        // not necessarily inside OpenHCL.
+        let (_servicing_timeout_thread, timeout_driver) =
+            pal_async::DefaultPool::spawn_on_thread("servicing-timeout-executor");
+        let dump_collection_duration =
+            Duration::from_millis(self.servicing_timeout_dump_collection_in_ms);
+        let _servicing_timeout =
+            timeout_driver
+                .clone()
+                .spawn("servicing-timeout-task", async move {
+                    let mut timer = pal_async::timer::PolledTimer::new(&timeout_driver);
+                    // Subtract the configured dump collection duration from the
+                    // host provided timeout hint to allow for time for the dump
+                    // to be sent to the host before termination.
+                    //
+                    // This has a default value of 500ms - see
+                    // `OPENHCL_SERVICING_TIMEOUT_DUMP_COLLECTION_IN_MS`.
+                    let duration = deadline
+                        .checked_duration_since(std::time::Instant::now())
+                        .map(|d| d.saturating_sub(dump_collection_duration))
+                        .unwrap_or(Duration::from_secs(0));
+                    timer.sleep(duration).await;
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        "servicing operation timed out, triggering panic"
+                    );
+                    panic!("servicing operation timed out");
+                });
 
         // NOTE: This is set via the corresponding env arg, as this feature is
         // experimental.
