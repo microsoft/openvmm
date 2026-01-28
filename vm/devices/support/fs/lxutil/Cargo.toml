@@ -21,6 +21,7 @@ tracing.workspace = true
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+arrayvec.workspace = true
 bitfield-struct.workspace = true
 headervec.workspace = true
 parking_lot.workspace = true
