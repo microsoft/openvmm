@@ -760,14 +760,16 @@ struct PendingCommand {
     respond: Rpc<(), spec::Completion>,
 }
 
-// Requests that can be processed regardless of submission queue state.
+// "ControlPlane" requests sent to the QueueHandler. These can be processed at
+// any time; regardless of whether submission queue is full or not.
 enum Req {
     Save(Rpc<(), Result<QueueHandlerSavedState, anyhow::Error>>),
     Inspect(inspect::Deferred),
     NextAen(Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>),
 }
 
-// Commands that need to be written to the submission queue.
+// "DataPlane" commands sent to the QueueHandler. Actual NVMe commands that
+// require space in the submission queue.
 enum Cmd {
     Command(Rpc<spec::Command, spec::Completion>),
     SendAer(),
