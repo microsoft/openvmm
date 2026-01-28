@@ -628,8 +628,8 @@ function Restart-OpenHCL
         [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
         [System.Object] $Vm,
 
-        [int] $TimeoutHintSeconds = 15, # Ends up as the deadline in GuestSaveRequest (see the handling of
-                                        # SaveGuestVtl2StateNotification in guest_emulation_transport). Keep O(15 seconds).
+        [int] $TimeoutHintSeconds = 30, # Ends up as the deadline in GuestSaveRequest (see the handling of
+                                        # SaveGuestVtl2StateNotification in guest_emulation_transport).
                                         #
                                         # Also used as the hint for how long to wait (in this cmdlet) for the
                                         # ReloadManagementVtl method to complete.
