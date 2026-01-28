@@ -1355,6 +1355,16 @@ fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
     let caps = hcl.get_vsm_capabilities().map_err(Error::GetReg)?;
     let hardware_isolated = hcl.isolation().is_hardware_isolated();
     let isolated = hcl.isolation().is_isolated();
+    let result =
+        safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
+    let restore_partition_time_available = hvdef::HvEnlightenmentInformation::from(
+        result.eax as u128
+            | (result.ebx as u128) << 32
+            | (result.ecx as u128) << 64
+            | (result.edx as u128) << 96,
+    )
+    .restore_time_on_resume();
+    tracing::info!(restore_partition_time_available, "restore_partition_time");
 
     let config = HvRegisterVsmPartitionConfig::new()
         .with_default_vtl_protection_mask(0xF)
@@ -1366,7 +1376,8 @@ fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
         .with_intercept_not_present(caps.intercept_not_present_available() && !isolated)
         .with_intercept_acceptance(isolated)
         .with_intercept_enable_vtl_protection(isolated && !hardware_isolated)
-        .with_intercept_system_reset(caps.intercept_system_reset_available());
+        .with_intercept_system_reset(caps.intercept_system_reset_available())
+        .with_intercept_restore_partition_time(restore_partition_time_available);
 
     hcl.set_vtl2_vsm_partition_config(config)
         .map_err(Error::SetReg)
