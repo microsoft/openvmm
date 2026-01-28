@@ -9,4 +9,5 @@ fn main() {
     if cfg!(feature = "encryption_ossl") || cfg!(feature = "encryption_win") {
         println!("cargo:rustc-cfg=with_encryption")
     }
+    build_rs_guest_arch::emit_guest_arch()
 }

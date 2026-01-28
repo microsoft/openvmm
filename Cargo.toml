@@ -144,6 +144,7 @@ pal_async_test = { path = "support/pal/pal_async_test" }
 pal_event = { path = "support/pal/pal_event" }
 pal_uring = { path = "support/pal/pal_uring" }
 powershell_builder = { path = "support/powershell_builder" }
+resource_dll_parser = { path = "support/resource_dll_parser" }
 safeatomic = { path = "support/safeatomic" }
 serde_helpers = { path = "support/serde_helpers" }
 sev_guest_device = { path = "support/sev_guest_device" }
