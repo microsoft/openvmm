@@ -156,7 +156,7 @@ impl BufferAccess for GuestBuffers {
         // Returns an error CQE for packets with metadata.len == 1234
         #[cfg(feature = "test_hooks")]
         if metadata.len == 1234 {
-            tracing::error!(
+            tracing::debug!(
                 metadata_len = metadata.len,
                 "Returning CQE_RX_ERR_DISABLED_QUEUE to test rx error handling"
             );
