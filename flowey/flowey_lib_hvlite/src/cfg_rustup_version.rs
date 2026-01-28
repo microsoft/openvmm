@@ -1,6 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! A configuration node that configures the Rust toolchain version to use in
+//! OpenVMM pipelines. Having a separate node dedicated for this allows us to
+//! patch this node internally where the rustup toolchain is not available.
+//! This node also allows us to decouple the rustup version used in oss/internal.
+
 use flowey::node::prelude::*;
 
 pub const RUSTUP_TOOLCHAIN: &str = "1.91.1";
