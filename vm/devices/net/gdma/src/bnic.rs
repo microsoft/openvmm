@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#[cfg(feature = "test_hooks")]
+use self::bnic_defs::CQE_RX_ERR_DISABLED_QUEUE;
 use self::bnic_defs::CQE_TX_GDMA_ERR;
 use self::bnic_defs::CQE_TX_OKAY;
 use self::bnic_defs::MANA_CQE_COMPLETION;
@@ -149,6 +151,24 @@ impl BufferAccess for GuestBuffers {
             flags,
             ..FromZeros::new_zeroed()
         };
+
+        // Test hook leveraged by test_rx_error_handling in net_mana tests.
+        // Returns an error CQE for packets with metadata.len == 1234
+        #[cfg(feature = "test_hooks")]
+        if metadata.len == 1234 {
+            tracing::error!(
+                metadata_len = metadata.len,
+                "Returning CQE_RX_ERR_DISABLED_QUEUE to test rx error handling"
+            );
+            packet.oob = ManaRxcompOob {
+                cqe_hdr: ManaCqeHeader::new()
+                    .with_cqe_type(CQE_RX_ERR_DISABLED_QUEUE)
+                    .with_client_type(MANA_CQE_COMPLETION),
+                rx_wqe_offset: packet.wqe_offset,
+                flags,
+                ..FromZeros::new_zeroed()
+            };
+        }
         packet.oob.ppi[0].pkt_len = metadata.len as u16;
     }
 }

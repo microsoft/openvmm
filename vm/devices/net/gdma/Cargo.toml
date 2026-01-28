@@ -35,3 +35,7 @@ tracing.workspace = true
 zerocopy.workspace = true
 [lints]
 workspace = true
+
+[features]
+default = []
+test_hooks = []

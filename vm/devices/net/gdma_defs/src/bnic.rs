@@ -257,6 +257,7 @@ pub const CQE_RX_OKAY: u8 = 1;
 pub const CQE_RX_COALESCED_4: u8 = 2;
 pub const CQE_RX_OBJECT_FENCE: u8 = 3;
 pub const CQE_RX_TRUNCATED: u8 = 4;
+pub const CQE_RX_ERR_DISABLED_QUEUE: u8 = 5;
 
 pub const CQE_TX_OKAY: u8 = 32;
 pub const CQE_TX_SA_DROP: u8 = 33;

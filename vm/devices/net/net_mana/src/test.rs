@@ -573,6 +573,31 @@ async fn test_vport_with_query_filter_state(driver: DefaultDriver) {
     let _ = thing.new_vport(0, None, &dev_config).await.unwrap();
 }
 
+#[async_test]
+async fn test_rx_error_handling(driver: DefaultDriver) {
+    // The GDMA BNic emulator provides a test hook: an RX completion where
+    // metadata length == 1234 returns CQE_RX_ERR_DISABLED_QUEUE.
+    let expected_num_rx_packets = 0;
+    let num_segments = 1;
+    let packet_len = 1234;
+
+    let mut pkt_builder = TxPacketBuilder::new();
+    build_tx_segments(packet_len, num_segments, false, &mut pkt_builder);
+
+    let stats = test_endpoint(
+        driver,
+        GuestDmaMode::DirectDma,
+        &pkt_builder,
+        0, // Irrelevant when expected RX is 0.
+        expected_num_rx_packets,
+        ManaTestConfiguration::default(),
+    )
+    .await;
+
+    assert_eq!(stats.rx_errors.get(), 1, "rx_errors increase");
+    assert_eq!(stats.rx_packets.get(), 0, "rx_packets stay the same");
+}
+
 async fn send_test_packet(
     driver: DefaultDriver,
     dma_mode: GuestDmaMode,
