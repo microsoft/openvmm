@@ -87,6 +87,9 @@ mod state {
         pub vmbus_client: Option<vmbus_client::SavedState>,
         #[mesh(10003)]
         pub mana_state: Option<Vec<ManaSavedState>>,
+        /// Index of the next network adapter to create.
+        #[mesh(10004)]
+        pub network_adapter_index: Option<u32>,
     }
 
     #[derive(Protobuf)]
@@ -207,6 +210,8 @@ pub mod transposed {
         pub nvme_state: Option<Option<NvmeSavedState>>,
         pub dma_manager_state: Option<Option<OpenhclDmaManagerState>>,
         pub vmbus_client: Option<Option<vmbus_client::SavedState>>,
+        /// Index of the next network adapter to create.
+        pub network_adapter_index: Option<u32>,
     }
 
     /// A transposed `Option<EmuplatSavedState>`, where each field of
@@ -238,6 +243,7 @@ pub mod transposed {
                     mana_state,
                     dma_manager_state,
                     vmbus_client,
+                    network_adapter_index,
                 } = state;
 
                 OptionServicingInitState {
@@ -255,6 +261,7 @@ pub mod transposed {
                     mana_state,
                     dma_manager_state: Some(dma_manager_state),
                     vmbus_client: Some(vmbus_client),
+                    network_adapter_index,
                 }
             } else {
                 OptionServicingInitState::default()
