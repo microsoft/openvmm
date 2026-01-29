@@ -580,7 +580,7 @@ async fn test_rx_error_handling(driver: DefaultDriver) {
     let expected_num_tx_packets = 1; // One packet sent
     let expected_num_rx_packets = 0; // But RX fails due to the error hook
     let num_segments = 1;
-    let packet_len = gdma_defs::test_hooks::RX_ERROR_TRIGGER_PACKET_LEN as usize;
+    let packet_len = gdma_defs::test_hooks::RX_ERROR_TRIGGER_PACKET_LEN;
 
     let mut pkt_builder = TxPacketBuilder::new();
     build_tx_segments(packet_len, num_segments, false, &mut pkt_builder);
