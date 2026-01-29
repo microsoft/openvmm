@@ -245,9 +245,6 @@ impl DirEntryCursor {
         if self.entries.is_empty() {
             return false;
         }
-        if offset == 0 {
-            return self.window_start == 0;
-        }
         // Cache is valid if offset is within [window_start, last_entry.offset]
         offset >= self.window_start && offset < self.entries.last().map_or(0, |e| e.offset + 1)
     }
@@ -255,6 +252,7 @@ impl DirEntryCursor {
     /// Find the index of the first entry to serve for the given offset.
     /// Returns the index of the first entry with offset > given offset.
     fn find_start_index(&self, offset: u64) -> usize {
+        assert!(offset >= self.window_start);
         self.entries
             .binary_search_by(|e| e.offset.cmp(&offset))
             .map_or_else(|idx| idx, |idx| idx + 1)
@@ -268,7 +266,7 @@ impl DirEntryCursor {
 
     /// Check if we need more entries (at end of window but not complete).
     fn needs_more(&self, offset: u64) -> bool {
-        !self.complete && self.find_start_index(offset) >= self.entries.len()
+        !self.complete && self.entries.last().map_or(true, |e| e.offset <= offset)
     }
 
     /// Populate the cache window starting from the given offset.
@@ -826,9 +824,7 @@ impl DirEntrySource for WindowsDirEntrySource<'_> {
     where
         F: FnMut(DirEntryInfo) -> lx::Result<bool>,
     {
-        let restart_scan = offset == 0;
-
-        if restart_scan {
+        if offset == 0 {
             self.enumerator.next_read_index = 0;
         }
 
