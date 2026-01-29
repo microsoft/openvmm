@@ -5187,6 +5187,7 @@ dependencies = [
  "pal",
  "pal_async",
  "parking_lot",
+ "pcie_remote_resources",
  "prost",
  "rustyline",
  "scsidisk_resources",
@@ -5624,6 +5625,15 @@ dependencies = [
  "tracing",
  "vmcore",
  "zerocopy 0.8.27",
+]
+
+[[package]]
+name = "pcie_remote_resources"
+version = "0.0.0"
+dependencies = [
+ "guid",
+ "mesh",
+ "vm_resource",
 ]
 
 [[package]]

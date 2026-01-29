@@ -321,6 +321,7 @@ tpm_lib = { path = "vm/devices/tpm/tpm_lib" }
 tpm_protocol = { path = "vm/devices/tpm/tpm_protocol" }
 tpm_resources = { path = "vm/devices/tpm_resources" }
 mcr_resources = { path = "vm/devices/mcr_resources" }
+pcie_remote_resources = { path = "vm/devices/pcie_remote_resources" }
 uidevices = { path = "vm/devices/uidevices" }
 uidevices_resources = { path = "vm/devices/uidevices_resources" }
 user_driver = { path = "vm/devices/user_driver" }
