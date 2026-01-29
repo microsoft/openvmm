@@ -258,11 +258,9 @@ impl<T: Client> Access<'_, T> {
                     }
                 }
 
-                let guest_addr =
-                    SocketAddr::V4(SocketAddrV4::new(addrs.src_addr, udp.src_port));
+                let guest_addr = SocketAddr::V4(SocketAddrV4::new(addrs.src_addr, udp.src_port));
 
-                let dst_sock_addr =
-                    SocketAddr::V4(SocketAddrV4::new(addrs.dst_addr, udp.dst_port));
+                let dst_sock_addr = SocketAddr::V4(SocketAddrV4::new(addrs.dst_addr, udp.dst_port));
 
                 (guest_addr, dst_sock_addr)
             }

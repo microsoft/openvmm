@@ -342,18 +342,8 @@ impl<T: Client> Access<'_, T> {
                 src: SocketAddr::V4(SocketAddrV4::new(addresses.src_addr, tcp.src_port)),
             },
             IpAddresses::V6(addresses) => FourTuple {
-                dst: SocketAddr::V6(SocketAddrV6::new(
-                    addresses.dst_addr,
-                    tcp.dst_port,
-                    0,
-                    0,
-                )),
-                src: SocketAddr::V6(SocketAddrV6::new(
-                    addresses.src_addr,
-                    tcp.src_port,
-                    0,
-                    0,
-                )),
+                dst: SocketAddr::V6(SocketAddrV6::new(addresses.dst_addr, tcp.dst_port, 0, 0)),
+                src: SocketAddr::V6(SocketAddrV6::new(addresses.src_addr, tcp.src_port, 0, 0)),
             },
         };
         tracing::trace!(?tcp, "tcp packet");
