@@ -98,7 +98,12 @@ enum SnpGhcbError {
 
 #[derive(Debug, Error)]
 #[error("failed to run")]
-struct SnpRunVpError(#[source] hcl::ioctl::Error);
+enum SnpRunVpError {
+    #[error("Guest AVIC backing page is not validated or cannot be accessed.")]
+    VpNotRestartableError,
+    #[error("failed to run")]
+    RunVpError(#[source] hcl::ioctl::Error),
+}
 
 /// A backing for SNP partitions.
 #[derive(InspectMut)]
@@ -1252,7 +1257,7 @@ impl UhProcessor<'_, SnpBacked> {
         let mut has_intercept = self
             .runner
             .run()
-            .map_err(|e| dev.fatal_error(SnpRunVpError(e).into()))?;
+            .map_err(|e| dev.fatal_error(SnpRunVpError::RunVpError(e).into()))?;
 
         let entered_from_vtl = next_vtl;
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
@@ -1268,18 +1273,16 @@ impl UhProcessor<'_, SnpBacked> {
                 match sev_error_code {
                     SevExitCode::NOT_RESTARTABLE => {
                         // The guest APIC backing page is not validated in the RMP.
-                        return Err(VpHaltReason::TripleFault {
-                            vtl: entered_from_vtl.into(),
-                        });
+                        return Err(dev.fatal_error(SnpRunVpError::VpNotRestartableError.into()));
                     }
                     SevExitCode::NPF => {
                         let exit_info = SevNpfInfo::from(vmsa.exit_info1());
                         if exit_info.not_restartable() {
                             // An access to the guest's APIC backing page by AVIC hardware resulted
                             // in a nested page fault.
-                            return Err(VpHaltReason::TripleFault {
-                                vtl: entered_from_vtl.into(),
-                            });
+                            return Err(
+                                dev.fatal_error(SnpRunVpError::VpNotRestartableError.into())
+                            );
                         }
                     }
                     _ => {}
@@ -1309,6 +1312,9 @@ impl UhProcessor<'_, SnpBacked> {
                     _ => Some(exit_int_info),
                 };
 
+                // Since the exit interrupt information was processed, it must be
+                // cleared so that it is not examined again on a subsequent reentry to
+                // the HCL.
                 vmsa.set_exit_int_info(0);
 
                 if let Some(inject) = inject {
