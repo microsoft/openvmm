@@ -92,6 +92,12 @@ impl VirtioFsInode {
         Ok(util::stat_to_fuse_attr(&stat))
     }
 
+    /// Retrieves the extended attributes of this inode.
+    pub fn get_statx(&self) -> lx::Result<fuse_statx> {
+        let statx = self.volume.statx(&*self.get_path())?;
+        Ok(util::statx_to_fuse_statx(&statx))
+    }
+
     /// Sets the attributes of this inode.
     pub fn set_attr(&self, arg: &fuse_setattr_in, request_uid: lx::uid_t) -> lx::Result<fuse_attr> {
         let attr = util::fuse_set_attr_to_lxutil(arg, request_uid);
@@ -123,7 +129,7 @@ impl VirtioFsInode {
         let options = LxCreateOptions::new(mode, uid, gid);
         let flags = (flags as i32) | lx::O_CREAT | lx::O_NOFOLLOW;
         let file = self.volume.open(&path, flags, Some(options))?;
-        let stat = file.fstat()?;
+        let stat = file.fstat()?.into();
         let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat);
         let attr = util::stat_to_fuse_attr(&stat);
         Ok((inode, attr, file))

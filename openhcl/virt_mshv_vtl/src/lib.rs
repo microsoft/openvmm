@@ -1737,7 +1737,9 @@ impl<'a> UhProtoPartition<'a> {
             hcl.register_intercept(
                 HvInterceptType::HvInterceptTypeException,
                 HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-                HvInterceptParameters::new_exception(0x1D),
+                HvInterceptParameters::new_exception(
+                    x86defs::Exception::SEV_VMM_COMMUNICATION.0 as u16,
+                ),
             )
             .map_err(|err| {
                 Error::InstallIntercept(HvInterceptType::HvInterceptTypeException, err)

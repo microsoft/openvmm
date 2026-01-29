@@ -28,20 +28,28 @@ impl FlowNode for Node {
         let host_arch = ctx.arch();
 
         let native = |target: &target_lexicon::Triple| -> bool {
-            let platform = match target.operating_system {
-                target_lexicon::OperatingSystem::Windows => FlowPlatform::Windows,
-                target_lexicon::OperatingSystem::Linux => {
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
-                }
-                target_lexicon::OperatingSystem::Darwin(_) => FlowPlatform::MacOs,
-                _ => return false,
+            // Check if the target matches the host platform, treat Linux distros as equivalent
+            let os_matches = matches!(
+                (host_platform, target.operating_system),
+                (
+                    FlowPlatform::Linux(_),
+                    target_lexicon::OperatingSystem::Linux
+                ) | (
+                    FlowPlatform::Windows,
+                    target_lexicon::OperatingSystem::Windows
+                ) | (
+                    FlowPlatform::MacOs,
+                    target_lexicon::OperatingSystem::Darwin(_)
+                )
+            );
+
+            let arch_matches = match target.architecture {
+                Architecture::X86_64 => host_arch == FlowArch::X86_64,
+                Architecture::Aarch64(_) => host_arch == FlowArch::Aarch64,
+                _ => false,
             };
-            let arch = match target.architecture {
-                Architecture::X86_64 => FlowArch::X86_64,
-                Architecture::Aarch64(_) => FlowArch::Aarch64,
-                _ => return false,
-            };
-            host_platform == platform && host_arch == arch
+
+            os_matches && arch_matches
         };
 
         for Request {
@@ -66,6 +74,11 @@ impl FlowNode for Node {
                                         FlowPlatformLinuxDistro::Arch => {
                                             match_arch!(host_arch, FlowArch::X86_64, "gcc")
                                         }
+                                        FlowPlatformLinuxDistro::Nix => {
+                                            anyhow::bail!(
+                                                "Cross-compilation for Linux is not yet supported in Nix environments"
+                                            )
+                                        }
                                         FlowPlatformLinuxDistro::Unknown => {
                                             anyhow::bail!("Unknown Linux distribution")
                                         }
@@ -86,6 +99,11 @@ impl FlowNode for Node {
                                             FlowArch::X86_64,
                                             "aarch64-linux-gnu-gcc"
                                         ),
+                                        FlowPlatformLinuxDistro::Nix => {
+                                            anyhow::bail!(
+                                                "Cross-compilation for Linux is not yet supported in Nix environments"
+                                            )
+                                        }
                                         FlowPlatformLinuxDistro::Unknown => {
                                             anyhow::bail!("Unknown Linux distribution")
                                         }

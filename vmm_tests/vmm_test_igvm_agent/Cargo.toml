@@ -1,0 +1,15 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "vmm_test_igvm_agent"
+edition.workspace = true
+rust-version.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+anyhow.workspace = true
+pal.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

@@ -1262,8 +1262,7 @@ fn new_x86_topology(
         vps
     };
 
-    // TODO SNP: Topology information should probably be passed in via device
-    // params. The topology needs to also be validated.
+    // Query the processor topology from the CPUID leaves.
     TopologyBuilder::from_host_topology()
         .context("failed to build topology from host")?
         .x2apic(x2apic)

@@ -77,7 +77,7 @@ pub mod user_facing {
     /// fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
     ///     let mut version = None;
     ///     let mut ensure_installed = Vec::new();
-    ///     
+    ///
     ///     for req in requests {
     ///         match req {
     ///             Request::Version(v) => {
@@ -89,9 +89,9 @@ pub mod user_facing {
     ///             }
     ///         }
     ///     }
-    ///     
+    ///
     ///     let version = version.ok_or(anyhow::anyhow!("Missing required request: Version"))?;
-    ///     
+    ///
     ///     // ... emit steps using aggregated requests
     ///     Ok(())
     /// }
@@ -953,6 +953,8 @@ pub enum FlowPlatformLinuxDistro {
     Ubuntu,
     /// Arch Linux (including WSL2)
     Arch,
+    /// Nix environment (detected via IN_NIX_SHELL env var or having a `/nix/store` in PATH)
+    Nix,
     /// An unknown distribution
     Unknown,
 }
@@ -2597,18 +2599,18 @@ macro_rules! new_flow_node_base {
 ///
 /// impl FlowNode for Node {
 ///     type Request = Request;
-///     
+///
 ///     fn imports(ctx: &mut ImportCtx<'_>) {
 ///         // Declare node dependencies
 ///         ctx.import::<other_node::Node>();
 ///     }
-///     
+///
 ///     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
 ///         // 1. Aggregate and validate requests
 ///         let mut version = None;
 ///         let mut ensure_installed = Vec::new();
 ///         let mut get_cargo_home = Vec::new();
-///         
+///
 ///         for req in requests {
 ///             match req {
 ///                 Request::InstallRust(v) => {
@@ -2618,9 +2620,9 @@ macro_rules! new_flow_node_base {
 ///                 Request::GetCargoHome(var) => get_cargo_home.push(var),
 ///             }
 ///         }
-///         
+///
 ///         let version = version.ok_or(anyhow::anyhow!("Version not specified"))?;
-///         
+///
 ///         // 2. Emit steps to do the work
 ///         ctx.emit_rust_step("install rust", |ctx| {
 ///             let ensure_installed = ensure_installed.claim(ctx);
@@ -2637,7 +2639,7 @@ macro_rules! new_flow_node_base {
 ///                 Ok(())
 ///             }
 ///         });
-///         
+///
 ///         Ok(())
 ///     }
 /// }

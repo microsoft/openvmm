@@ -305,7 +305,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         let boot_device_type = match artifacts.firmware {
             Firmware::LinuxDirect { .. } => BootDeviceType::None,
             Firmware::OpenhclLinuxDirect { .. } => BootDeviceType::None,
-            Firmware::Pcat { .. } | Firmware::OpenhclPcat { .. } => BootDeviceType::Ide,
+            Firmware::Pcat { .. } => BootDeviceType::Ide,
+            Firmware::OpenhclPcat { .. } => BootDeviceType::IdeViaScsi,
             Firmware::Uefi {
                 guest: UefiGuest::None,
                 ..
@@ -2010,6 +2011,23 @@ impl Firmware {
             bios_firmware: resolver.try_require(PCAT_FIRMWARE_X64).erase(),
             svga_firmware: resolver.try_require(SVGA_FIRMWARE_X64).erase(),
             ide_controllers: [[None, None], [None, None]],
+        }
+    }
+
+    /// Constructs a standard [`Firmware::OpenhclPcat`] configuration.
+    pub fn openhcl_pcat(resolver: &ArtifactResolver<'_>, guest: PcatGuest) -> Self {
+        use petri_artifacts_vmm_test::artifacts::loadable::*;
+        use petri_artifacts_vmm_test::artifacts::openhcl_igvm::*;
+        Firmware::OpenhclPcat {
+            guest,
+            igvm_path: resolver.require(LATEST_STANDARD_X64).erase(),
+            bios_firmware: resolver.try_require(PCAT_FIRMWARE_X64).erase(),
+            svga_firmware: resolver.try_require(SVGA_FIRMWARE_X64).erase(),
+            openhcl_config: OpenHclConfig {
+                // VMBUS redirect is necessary for IDE to be provided by VTL2
+                vmbus_redirect: true,
+                ..Default::default()
+            },
         }
     }
 
