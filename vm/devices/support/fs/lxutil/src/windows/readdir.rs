@@ -266,7 +266,7 @@ impl DirEntryCursor {
 
     /// Check if we need more entries (at end of window but not complete).
     fn needs_more(&self, offset: u64) -> bool {
-        !self.complete && self.entries.last().map_or(true, |e| e.offset <= offset)
+        !self.complete && self.entries.last().is_none_or(|e| e.offset <= offset)
     }
 
     /// Populate the cache window starting from the given offset.
