@@ -259,10 +259,10 @@ impl<T: Client> Access<'_, T> {
                 }
 
                 let guest_addr =
-                    SocketAddr::V4(SocketAddrV4::new(addrs.src_addr.into(), udp.src_port));
+                    SocketAddr::V4(SocketAddrV4::new(addrs.src_addr, udp.src_port));
 
                 let dst_sock_addr =
-                    SocketAddr::V4(SocketAddrV4::new(addrs.dst_addr.into(), udp.dst_port));
+                    SocketAddr::V4(SocketAddrV4::new(addrs.dst_addr, udp.dst_port));
 
                 (guest_addr, dst_sock_addr)
             }
@@ -285,10 +285,10 @@ impl<T: Client> Access<'_, T> {
                 }
 
                 let guest_addr =
-                    SocketAddr::V6(SocketAddrV6::new(addrs.src_addr.into(), udp.src_port, 0, 0));
+                    SocketAddr::V6(SocketAddrV6::new(addrs.src_addr, udp.src_port, 0, 0));
 
                 let dst_sock_addr =
-                    SocketAddr::V6(SocketAddrV6::new(addrs.dst_addr.into(), udp.dst_port, 0, 0));
+                    SocketAddr::V6(SocketAddrV6::new(addrs.dst_addr, udp.dst_port, 0, 0));
 
                 (guest_addr, dst_sock_addr)
             }

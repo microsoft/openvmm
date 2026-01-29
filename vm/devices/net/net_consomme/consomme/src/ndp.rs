@@ -31,7 +31,8 @@ use smoltcp::wire::NdiscRouterFlags;
 use smoltcp::wire::RawHardwareAddress;
 
 const NETWORK_PREFIX_BASE: Ipv6Address = Ipv6Address::new(0x2001, 0xabcd, 0, 0, 0, 0, 0, 0);
-const LINK_LOCAL_ALL_NODES: Ipv6Address = Ipv6Address::from_octets([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+const LINK_LOCAL_ALL_NODES: Ipv6Address =
+    Ipv6Address::from_octets([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
 #[derive(Debug)]
 pub enum NdpMessageType {
@@ -122,14 +123,7 @@ impl<T: Client> Access<'_, T> {
             // Multicast IPv6 to Ethernet address mapping (RFC 2464)
             // 33:33:xx:xx:xx:xx where xx:xx:xx:xx are the low-order 32 bits of the IPv6 multicast address
             let octets = reply_dst_addr.octets();
-            EthernetAddress([
-                0x33,
-                0x33,
-                octets[12],
-                octets[13],
-                octets[14],
-                octets[15],
-            ])
+            EthernetAddress([0x33, 0x33, octets[12], octets[13], octets[14], octets[15]])
         } else {
             frame.src_addr
         };
@@ -197,10 +191,7 @@ impl<T: Client> Access<'_, T> {
 
         let mut icmpv6_packet = Icmpv6Packet::new_unchecked(ipv6_packet.payload_mut());
         ndp_repr.emit(&mut icmpv6_packet);
-        icmpv6_packet.fill_checksum(
-            &ipv6_repr.src_addr,
-            &ipv6_repr.dst_addr,
-        );
+        icmpv6_packet.fill_checksum(&ipv6_repr.src_addr, &ipv6_repr.dst_addr);
 
         let total_len = eth_repr.buffer_len() + ipv6_repr.buffer_len() + ndp_repr.buffer_len();
 
@@ -348,10 +339,7 @@ impl<T: Client> Access<'_, T> {
 
         let mut icmpv6_packet = Icmpv6Packet::new_unchecked(ipv6_packet.payload_mut());
         ndp_repr.emit(&mut icmpv6_packet);
-        icmpv6_packet.fill_checksum(
-            &ipv6_repr.src_addr,
-            &ipv6_repr.dst_addr,
-        );
+        icmpv6_packet.fill_checksum(&ipv6_repr.src_addr, &ipv6_repr.dst_addr);
 
         let total_len = eth_repr.buffer_len() + ipv6_repr.buffer_len() + ndp_repr.buffer_len();
 

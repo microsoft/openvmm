@@ -34,7 +34,6 @@ const DHCPV6_ALL_AGENTS_MULTICAST: Ipv6Address =
 pub const DHCPV6_SERVER: u16 = 547;
 pub const DHCPV6_CLIENT: u16 = 546;
 
-
 open_enum::open_enum! {
     #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     /// DHCPv6 message types (RFC 8415)
@@ -43,7 +42,6 @@ open_enum::open_enum! {
         REPLY = 7,
     }
 }
-
 
 open_enum::open_enum! {
     #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
@@ -114,14 +112,17 @@ impl Message {
 
         while unparsed_bytes.len() >= size_of::<DhcpV6Option>() {
             let option_offset = message_bytes.len() - unparsed_bytes.len();
-            let (option_header, after_option_header) = Ref::<_, DhcpV6Option>::from_prefix(unparsed_bytes)
-                .map_err(|_| DhcpV6Error::MalformedOption(option_offset))?;
+            let (option_header, after_option_header) =
+                Ref::<_, DhcpV6Option>::from_prefix(unparsed_bytes)
+                    .map_err(|_| DhcpV6Error::MalformedOption(option_offset))?;
 
             let option_code = option_header.code.get();
             let option_len = option_header.len.get() as usize;
 
             if option_len > after_option_header.len() {
-                return Err(DhcpV6Error::MalformedOption(message_bytes.len() - after_option_header.len()));
+                return Err(DhcpV6Error::MalformedOption(
+                    message_bytes.len() - after_option_header.len(),
+                ));
             }
 
             let option_value = &after_option_header[..option_len];
@@ -136,16 +137,16 @@ impl Message {
                     options.insert(code, DhcpOption::ServerId(option_value.to_vec()));
                 }
                 OptionCode::DNS_SERVERS => {
-                        // DNS servers option contains a list of IPv6 addresses (16 bytes each)
-                        if !option_len.is_multiple_of(16) {
-                            return Err(DhcpV6Error::InvalidDnsServerOption(option_len));
-                        }
-                        let mut dns_servers = Vec::new();
-                        for i in (0..option_len).step_by(16) {
-                            let mut addr_bytes = [0u8; 16];
-                            addr_bytes.copy_from_slice(&option_value[i..i + 16]);
-                            dns_servers.push(std::net::Ipv6Addr::from(addr_bytes));
-                        }
+                    // DNS servers option contains a list of IPv6 addresses (16 bytes each)
+                    if !option_len.is_multiple_of(16) {
+                        return Err(DhcpV6Error::InvalidDnsServerOption(option_len));
+                    }
+                    let mut dns_servers = Vec::new();
+                    for i in (0..option_len).step_by(16) {
+                        let mut addr_bytes = [0u8; 16];
+                        addr_bytes.copy_from_slice(&option_value[i..i + 16]);
+                        dns_servers.push(std::net::Ipv6Addr::from(addr_bytes));
+                    }
                     options.insert(code, DhcpOption::DnsServers(dns_servers));
                 }
                 _ => {
@@ -262,7 +263,6 @@ impl<T: Client> Access<'_, T> {
                             || matches!(octets[0], 0xfc | 0xfd) // Is unique local address
                             || octets.starts_with(&[0xfe, 0xc0])) // Is synthetic DNS server
                     })
-                    .map(|addr| addr.into())
                     .collect();
 
                 if !dns_servers.is_empty() {

@@ -106,7 +106,7 @@ impl IcmpConnection {
                     eth.set_src_addr(state.params.gateway_mac);
                     eth.set_dst_addr(self.guest_mac);
                     let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
-                    ipv4.set_dst_addr((*dst_addr.ip()).into());
+                    ipv4.set_dst_addr(*dst_addr.ip());
                     ipv4.fill_checksum();
                     let len = ETHERNET_HEADER_LEN + n;
                     client.recv(&eth.as_ref()[..len], &ChecksumState::IPV4_ONLY);
@@ -160,7 +160,7 @@ impl<T: Client> Access<'_, T> {
         hop_limit: u8,
     ) -> Result<(), DropReason> {
         let icmp_packet = smoltcp::wire::Icmpv4Packet::new_unchecked(payload);
-        let guest_addr = SocketAddrV4::new(addresses.src_addr.into(), 0);
+        let guest_addr = SocketAddrV4::new(addresses.src_addr, 0);
 
         let entry = self.inner.icmp.connections.entry(guest_addr);
         let conn = match entry {
@@ -196,7 +196,7 @@ impl<T: Client> Access<'_, T> {
         };
 
         let send_buffer = icmp_packet.into_inner();
-        let ip4_addr = Ipv4Addr::from(addresses.dst_addr);
+        let ip4_addr = addresses.dst_addr;
         match conn.send_to(ip4_addr, send_buffer, hop_limit) {
             Ok(_) => {
                 conn.stats.tx_packets.increment();

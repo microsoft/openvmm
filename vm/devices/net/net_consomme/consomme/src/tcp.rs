@@ -238,11 +238,11 @@ impl<T: Client> Access<'_, T> {
                         let ft = match other_addr {
                             SocketAddr::V4(_) => FourTuple {
                                 dst: other_addr,
-                                src: SocketAddr::V4(SocketAddrV4::new(self.inner.state.params.client_ip.into(), *port)),
+                                src: SocketAddr::V4(SocketAddrV4::new(self.inner.state.params.client_ip, *port)),
                             },
                             SocketAddr::V6(_) => {
                                 let client_ipv6 = match self.inner.state.params.client_ip_ipv6 {
-                                    Some(ip) => ip.into(),
+                                    Some(ip) => ip,
                                     None => {
                                         tracing::warn!("Received IPv6 connection but client IPv6 address is not known");
                                         return true;
@@ -338,18 +338,18 @@ impl<T: Client> Access<'_, T> {
 
         let ft = match addresses {
             IpAddresses::V4(addresses) => FourTuple {
-                dst: SocketAddr::V4(SocketAddrV4::new(addresses.dst_addr.into(), tcp.dst_port)),
-                src: SocketAddr::V4(SocketAddrV4::new(addresses.src_addr.into(), tcp.src_port)),
+                dst: SocketAddr::V4(SocketAddrV4::new(addresses.dst_addr, tcp.dst_port)),
+                src: SocketAddr::V4(SocketAddrV4::new(addresses.src_addr, tcp.src_port)),
             },
             IpAddresses::V6(addresses) => FourTuple {
                 dst: SocketAddr::V6(SocketAddrV6::new(
-                    addresses.dst_addr.into(),
+                    addresses.dst_addr,
                     tcp.dst_port,
                     0,
                     0,
                 )),
                 src: SocketAddr::V6(SocketAddrV6::new(
-                    addresses.src_addr.into(),
+                    addresses.src_addr,
                     tcp.src_port,
                     0,
                     0,
