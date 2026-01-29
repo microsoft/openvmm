@@ -19,7 +19,6 @@ use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
 use smoltcp::wire::HardwareAddress;
 use smoltcp::wire::Icmpv6Packet;
-use smoltcp::wire::IpAddress;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv6Address;
 use smoltcp::wire::Ipv6Packet;
@@ -32,6 +31,7 @@ use smoltcp::wire::NdiscRouterFlags;
 use smoltcp::wire::RawHardwareAddress;
 
 const NETWORK_PREFIX_BASE: Ipv6Address = Ipv6Address::new(0x2001, 0xabcd, 0, 0, 0, 0, 0, 0);
+const LINK_LOCAL_ALL_NODES: Ipv6Address = Ipv6Address::from_octets([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
 #[derive(Debug)]
 pub enum NdpMessageType {
@@ -114,20 +114,21 @@ impl<T: Client> Access<'_, T> {
         let reply_dst_addr = if lladdr.is_some() && !ipv6_src_addr.is_unspecified() {
             ipv6_src_addr
         } else {
-            Ipv6Address::LINK_LOCAL_ALL_NODES
+            LINK_LOCAL_ALL_NODES
         };
 
         // Determine Ethernet destination
         let eth_dst_addr = if reply_dst_addr.is_multicast() {
             // Multicast IPv6 to Ethernet address mapping (RFC 2464)
             // 33:33:xx:xx:xx:xx where xx:xx:xx:xx are the low-order 32 bits of the IPv6 multicast address
+            let octets = reply_dst_addr.octets();
             EthernetAddress([
                 0x33,
                 0x33,
-                reply_dst_addr.0[12],
-                reply_dst_addr.0[13],
-                reply_dst_addr.0[14],
-                reply_dst_addr.0[15],
+                octets[12],
+                octets[13],
+                octets[14],
+                octets[15],
             ])
         } else {
             frame.src_addr
@@ -197,8 +198,8 @@ impl<T: Client> Access<'_, T> {
         let mut icmpv6_packet = Icmpv6Packet::new_unchecked(ipv6_packet.payload_mut());
         ndp_repr.emit(&mut icmpv6_packet);
         icmpv6_packet.fill_checksum(
-            &IpAddress::Ipv6(ipv6_repr.src_addr),
-            &IpAddress::Ipv6(ipv6_repr.dst_addr),
+            &ipv6_repr.src_addr,
+            &ipv6_repr.dst_addr,
         );
 
         let total_len = eth_repr.buffer_len() + ipv6_repr.buffer_len() + ndp_repr.buffer_len();
@@ -261,7 +262,7 @@ impl<T: Client> Access<'_, T> {
         // When the client performs address resolution using their SLAAC-configured
         // global address, we learn it here. We only learn global unicast addresses
         // (not link-local, multicast, or unspecified).
-        if !ipv6_src_addr.is_link_local()
+        if !ipv6_src_addr.is_unicast_link_local()
             && !ipv6_src_addr.is_multicast()
             && !ipv6_src_addr.is_unspecified()
         {
@@ -348,8 +349,8 @@ impl<T: Client> Access<'_, T> {
         let mut icmpv6_packet = Icmpv6Packet::new_unchecked(ipv6_packet.payload_mut());
         ndp_repr.emit(&mut icmpv6_packet);
         icmpv6_packet.fill_checksum(
-            &IpAddress::Ipv6(ipv6_repr.src_addr),
-            &IpAddress::Ipv6(ipv6_repr.dst_addr),
+            &ipv6_repr.src_addr,
+            &ipv6_repr.dst_addr,
         );
 
         let total_len = eth_repr.buffer_len() + ipv6_repr.buffer_len() + ndp_repr.buffer_len();
@@ -367,13 +368,13 @@ impl<T: Client> Access<'_, T> {
             return addr;
         }
 
-        let addr_u128 = u128::from_be_bytes(addr.0);
+        let addr_u128 = u128::from_be_bytes(addr.octets());
         let mask = if prefix_len == 0 {
             0u128
         } else {
             (!0u128) << (128 - prefix_len)
         };
 
-        Ipv6Address((addr_u128 & mask).to_be_bytes())
+        Ipv6Address::from_octets((addr_u128 & mask).to_be_bytes())
     }
 }

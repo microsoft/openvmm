@@ -28,56 +28,30 @@ use zerocopy::Ref;
 use zerocopy::big_endian::U16;
 
 const DHCPV6_ALL_AGENTS_MULTICAST: Ipv6Address =
-    Ipv6Address([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2]);
+    Ipv6Address::from_octets([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2]);
 
 // DHCPv6 ports
 pub const DHCPV6_SERVER: u16 = 547;
 pub const DHCPV6_CLIENT: u16 = 546;
 
-/// DHCPv6 message types (RFC 8415)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum MessageType {
-    InformationRequest = 11,
-    Reply = 7,
-    Unknown(u8),
-}
 
-impl MessageType {
-    fn from_u8(value: u8) -> Self {
-        match value {
-            11 => MessageType::InformationRequest,
-            7 => MessageType::Reply,
-            other => MessageType::Unknown(other),
-        }
-    }
-
-    fn to_u8(self) -> u8 {
-        match self {
-            MessageType::InformationRequest => 11,
-            MessageType::Reply => 7,
-            MessageType::Unknown(v) => v,
-        }
+open_enum::open_enum! {
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    /// DHCPv6 message types (RFC 8415)
+    pub enum MessageType: u8 {
+        INFORMATION_REQUEST = 11,
+        REPLY = 7,
     }
 }
 
-/// DHCPv6 option codes (RFC 8415)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u16)]
-enum OptionCode {
-    ClientId = 1,
-    ServerId = 2,
-    DnsServers = 23,
-}
 
-impl OptionCode {
-    fn from_u16(value: u16) -> Option<Self> {
-        match value {
-            1 => Some(OptionCode::ClientId),
-            2 => Some(OptionCode::ServerId),
-            23 => Some(OptionCode::DnsServers),
-            _ => None,
-        }
+open_enum::open_enum! {
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    /// DHCPv6 option codes (RFC 8415)
+    pub enum OptionCode: u16 {
+        CLIENT_ID = 1,
+        SERVER_ID = 2,
+        DNS_SERVERS = 23,
     }
 }
 
@@ -129,40 +103,39 @@ impl Message {
         }
     }
 
-    fn decode(data: &[u8]) -> Result<Self, DhcpV6Error> {
-        // Parse header using zerocopy
-        let (header, mut remaining) = Ref::<_, DhcpV6Header>::from_prefix(data)
-            .map_err(|_| DhcpV6Error::MessageTooShort(data.len()))?;
+    fn decode(message_bytes: &[u8]) -> Result<Self, DhcpV6Error> {
+        let (header, mut unparsed_bytes) = Ref::<_, DhcpV6Header>::from_prefix(message_bytes)
+            .map_err(|_| DhcpV6Error::MessageTooShort(message_bytes.len()))?;
 
-        let msg_type = MessageType::from_u8(header.msg_type);
+        let msg_type = MessageType(header.msg_type);
         let transaction_id = header.transaction_id;
 
         let mut options = HashMap::new();
 
-        // Parse options using zerocopy
-        while remaining.len() >= size_of::<DhcpV6Option>() {
-            let (option_header, rest) = Ref::<_, DhcpV6Option>::from_prefix(remaining)
-                .map_err(|_| DhcpV6Error::MalformedOption(data.len() - remaining.len()))?;
+        while unparsed_bytes.len() >= size_of::<DhcpV6Option>() {
+            let option_offset = message_bytes.len() - unparsed_bytes.len();
+            let (option_header, after_option_header) = Ref::<_, DhcpV6Option>::from_prefix(unparsed_bytes)
+                .map_err(|_| DhcpV6Error::MalformedOption(option_offset))?;
 
             let option_code = option_header.code.get();
             let option_len = option_header.len.get() as usize;
 
-            if option_len > rest.len() {
-                return Err(DhcpV6Error::MalformedOption(data.len() - remaining.len()));
+            if option_len > after_option_header.len() {
+                return Err(DhcpV6Error::MalformedOption(message_bytes.len() - after_option_header.len()));
             }
 
-            let option_data = &rest[..option_len];
-            remaining = &rest[option_len..];
+            let option_value = &after_option_header[..option_len];
+            unparsed_bytes = &after_option_header[option_len..];
 
-            if let Some(code) = OptionCode::from_u16(option_code) {
-                match code {
-                    OptionCode::ClientId => {
-                        options.insert(code, DhcpOption::ClientId(option_data.to_vec()));
-                    }
-                    OptionCode::ServerId => {
-                        options.insert(code, DhcpOption::ServerId(option_data.to_vec()));
-                    }
-                    OptionCode::DnsServers => {
+            let code = OptionCode(option_code);
+            match code {
+                OptionCode::CLIENT_ID => {
+                    options.insert(code, DhcpOption::ClientId(option_value.to_vec()));
+                }
+                OptionCode::SERVER_ID => {
+                    options.insert(code, DhcpOption::ServerId(option_value.to_vec()));
+                }
+                OptionCode::DNS_SERVERS => {
                         // DNS servers option contains a list of IPv6 addresses (16 bytes each)
                         if !option_len.is_multiple_of(16) {
                             return Err(DhcpV6Error::InvalidDnsServerOption(option_len));
@@ -170,14 +143,15 @@ impl Message {
                         let mut dns_servers = Vec::new();
                         for i in (0..option_len).step_by(16) {
                             let mut addr_bytes = [0u8; 16];
-                            addr_bytes.copy_from_slice(&option_data[i..i + 16]);
+                            addr_bytes.copy_from_slice(&option_value[i..i + 16]);
                             dns_servers.push(std::net::Ipv6Addr::from(addr_bytes));
                         }
-                        options.insert(code, DhcpOption::DnsServers(dns_servers));
-                    }
+                    options.insert(code, DhcpOption::DnsServers(dns_servers));
+                }
+                _ => {
+                    // Skip unknown options
                 }
             }
-            // Skip unknown options
         }
 
         Ok(Self {
@@ -191,12 +165,12 @@ impl Message {
         let mut buffer = Vec::new();
 
         // Message type (1 byte) + transaction ID (3 bytes)
-        buffer.push(self.msg_type.to_u8());
+        buffer.push(self.msg_type.0);
         buffer.extend_from_slice(&self.transaction_id);
 
         // Encode options
         for (code, option) in &self.options {
-            let code_bytes = (*code as u16).to_be_bytes();
+            let code_bytes = code.0.to_be_bytes();
             buffer.extend_from_slice(&code_bytes);
 
             match option {
@@ -225,9 +199,9 @@ impl Message {
 
     fn insert_option(&mut self, option: DhcpOption) {
         let code = match &option {
-            DhcpOption::ClientId(_) => OptionCode::ClientId,
-            DhcpOption::ServerId(_) => OptionCode::ServerId,
-            DhcpOption::DnsServers(_) => OptionCode::DnsServers,
+            DhcpOption::ClientId(_) => OptionCode::CLIENT_ID,
+            DhcpOption::ServerId(_) => OptionCode::SERVER_ID,
+            DhcpOption::DnsServers(_) => OptionCode::DNS_SERVERS,
         };
         self.options.insert(code, option);
     }
@@ -250,13 +224,13 @@ impl<T: Client> Access<'_, T> {
         })?;
 
         match msg.msg_type {
-            MessageType::InformationRequest => {
+            MessageType::INFORMATION_REQUEST => {
                 // Build DHCPv6 Reply response
-                let mut reply = Message::new(MessageType::Reply);
+                let mut reply = Message::new(MessageType::REPLY);
                 reply.set_transaction_id(msg.transaction_id);
 
                 // Add Client Identifier option (echo back from the InformationRequest)
-                if let Some(DhcpOption::ClientId(client_id)) = msg.get_option(OptionCode::ClientId)
+                if let Some(DhcpOption::ClientId(client_id)) = msg.get_option(OptionCode::CLIENT_ID)
                 {
                     reply.insert_option(DhcpOption::ClientId(client_id.clone()));
                 }
@@ -280,12 +254,13 @@ impl<T: Client> Access<'_, T> {
                         _ => None,
                     })
                     .filter(|addr| {
+                        let octets = addr.octets();
                         !(addr.is_unspecified()
                             || addr.is_loopback()
-                            || addr.is_link_local()
+                            || addr.is_unicast_link_local()
                             || addr.is_multicast()
-                            || matches!(addr.0[0], 0xfc | 0xfd) // Is unique local address
-                            || addr.0.starts_with(&[0xfe, 0xc0])) // Is synthetic DNS server
+                            || matches!(octets[0], 0xfc | 0xfd) // Is unique local address
+                            || octets.starts_with(&[0xfe, 0xc0])) // Is synthetic DNS server
                     })
                     .map(|addr| addr.into())
                     .collect();
@@ -382,10 +357,10 @@ mod tests {
         let input_bytes = hex_to_bytes(input_hex);
         let msg = Message::decode(&input_bytes).expect("Failed to decode message");
 
-        assert_eq!(msg.msg_type, MessageType::InformationRequest);
+        assert_eq!(msg.msg_type, MessageType::INFORMATION_REQUEST);
         assert_eq!(msg.transaction_id, [0x1c, 0x57, 0xca]);
         let client_id = "0001000130adec9800155d300e15";
-        if let Some(DhcpOption::ClientId(data)) = msg.get_option(OptionCode::ClientId) {
+        if let Some(DhcpOption::ClientId(data)) = msg.get_option(OptionCode::CLIENT_ID) {
             assert_eq!(bytes_to_hex(data), client_id);
         } else {
             panic!("ClientId option not found");
@@ -401,7 +376,7 @@ mod tests {
         const TRANSACTION_ID: [u8; 3] = [0x1c, 0x57, 0xca];
 
         // Create a message with all option types
-        let mut msg = Message::new(MessageType::Reply);
+        let mut msg = Message::new(MessageType::REPLY);
         msg.set_transaction_id(TRANSACTION_ID);
         msg.insert_option(DhcpOption::ClientId(hex_to_bytes(CLIENT_ID_HEX)));
         msg.insert_option(DhcpOption::ServerId(hex_to_bytes(SERVER_ID_HEX)));
@@ -412,11 +387,11 @@ mod tests {
         // Encode and decode to verify round-trip
         let decoded = Message::decode(&msg.encode()).expect("Failed to decode encoded message");
 
-        assert_eq!(decoded.msg_type, MessageType::Reply);
+        assert_eq!(decoded.msg_type, MessageType::REPLY);
         assert_eq!(decoded.transaction_id, TRANSACTION_ID);
 
         let DhcpOption::ClientId(data) = decoded
-            .get_option(OptionCode::ClientId)
+            .get_option(OptionCode::CLIENT_ID)
             .expect("ClientId not found")
         else {
             panic!("Wrong option type for ClientId");
@@ -424,7 +399,7 @@ mod tests {
         assert_eq!(bytes_to_hex(data), CLIENT_ID_HEX);
 
         let DhcpOption::ServerId(data) = decoded
-            .get_option(OptionCode::ServerId)
+            .get_option(OptionCode::SERVER_ID)
             .expect("ServerId not found")
         else {
             panic!("Wrong option type for ServerId");
@@ -432,7 +407,7 @@ mod tests {
         assert_eq!(bytes_to_hex(data), SERVER_ID_HEX);
 
         let DhcpOption::DnsServers(servers) = decoded
-            .get_option(OptionCode::DnsServers)
+            .get_option(OptionCode::DNS_SERVERS)
             .expect("DnsServers not found")
         else {
             panic!("Wrong option type for DnsServers");

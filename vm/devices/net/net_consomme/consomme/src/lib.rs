@@ -149,10 +149,12 @@ impl ConsommeParams {
     pub fn set_cidr(&mut self, cidr: &str) -> Result<(), InvalidCidr> {
         let cidr: smoltcp::wire::Ipv4Cidr = cidr.parse().map_err(|()| InvalidCidr)?;
         let base_address = cidr.network().address();
-        self.gateway_ip = base_address;
-        self.gateway_ip.0[3] += 1;
-        self.client_ip = base_address;
-        self.client_ip.0[3] += 2;
+        let mut gateway_octets = base_address.octets();
+        gateway_octets[3] += 1;
+        self.gateway_ip = Ipv4Address::from(gateway_octets);
+        let mut client_octets = base_address.octets();
+        client_octets[3] += 2;
+        self.client_ip = Ipv4Address::from(client_octets);
         self.net_mask = cidr.netmask();
         Ok(())
     }
@@ -186,7 +188,7 @@ impl ConsommeParams {
         addr[14] = mac.0[4];
         addr[15] = mac.0[5];
 
-        Ipv6Address(addr)
+        Ipv6Address::from_octets(addr)
     }
 }
 
