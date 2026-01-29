@@ -126,7 +126,7 @@ If a step reads a secret value, **all subsequent writes from that step are autom
 
 For example:
 
-```rust
+```rust,ignore
 ctx.emit_rust_step("process token", |ctx| {
     let secret_token = secret_token.claim(ctx);
     let output_var = output_var.claim(ctx);
@@ -144,7 +144,7 @@ ctx.emit_rust_step("process token", |ctx| {
 
 If you need to write non-secret data after reading a secret, use `write_not_secret()`:
 
-```rust
+```rust,ignore
 rt.write_not_secret(output_var, &"done".to_string());
 ```
 
