@@ -7,6 +7,9 @@ use flowey::node::prelude::*;
 
 const ARM_GNU_TOOLCHAIN_URL: &str = "https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz";
 const OHCL_LINUX_KERNEL_REPO: &str = "https://github.com/weiding-msft/OHCL-Linux-Kernel.git";
+const OHCL_LINUX_KERNEL_PLANE0_BRANCH: &str = "with-arm-rebased-planes";
+const OPENVMM_TMK_REPO: &str = "https://github.com/Flgodd67/openvmm.git";
+const OPENVMM_TMK_BRANCH: &str = "cca-enablement";
 const SHRINKWRAP_REPO: &str = "https://git.gitlab.arm.com/tooling/shrinkwrap.git";
 
 flowey_request! {
@@ -41,7 +44,7 @@ impl SimpleFlowNode for Node {
             done.claim(ctx);
             move |_rt| {
                 let sh = xshell::Shell::new()?;
-                
+
                 // 0) Create parent dir
                 if let Some(parent) = shrinkwrap_dir.parent() {
                     fs_err::create_dir_all(parent)?;
@@ -100,7 +103,7 @@ impl SimpleFlowNode for Node {
                 let host_kernel_dir = toolchain_dir.join("OHCL-Linux-Kernel");
                 if !host_kernel_dir.exists() {
                     log::info!("Cloning OHCL Linux Kernel to {}", host_kernel_dir.display());
-                    xshell::cmd!(sh, "git clone").arg(OHCL_LINUX_KERNEL_REPO).arg(&host_kernel_dir).run()?;
+                    xshell::cmd!(sh, "git clone --branch {OHCL_LINUX_KERNEL_PLANE0_BRANCH} {OHCL_LINUX_KERNEL_REPO}").arg(&host_kernel_dir).run()?;
                     log::info!("OHCL Linux Kernel cloned successfully");
                 } else if update_repo {
                     log::info!("Updating OHCL Linux Kernel repo...");
@@ -162,6 +165,70 @@ impl SimpleFlowNode for Node {
                     log::info!("To rebuild, delete the Image file and run again");
                 }
 
+                // 4.5) Clone OpenVMM TMK branch with plane0 support and build TMK components
+                let tmk_kernel_dir = toolchain_dir.join("OpenVMM-TMK");
+                if !tmk_kernel_dir.exists() {
+                    log::info!("Cloning OpenVMM TMK branch to {}", tmk_kernel_dir.display());
+                    xshell::cmd!(sh, "git clone --branch {OPENVMM_TMK_BRANCH} {OPENVMM_TMK_REPO}").arg(&tmk_kernel_dir).run()?;
+                    log::info!("OpenVMM TMK branch cloned successfully");
+                } else if update_repo {
+                    log::info!("Updating OpenVMM TMK repo...");
+                    sh.change_dir(&tmk_kernel_dir);
+                    xshell::cmd!(sh, "git pull --ff-only").run()?;
+                    sh.change_dir(shrinkwrap_dir.parent().unwrap());
+                    log::info!("OpenVMM TMK repo updated successfully");
+                } else {
+                    log::info!("OpenVMM TMK already exists at {}", tmk_kernel_dir.display());
+                }
+
+                // Install Rust targets and build TMK components if do_installs is true
+                if do_installs {
+                    log::info!("Installing Rust cross-compilation targets...");
+                    xshell::cmd!(sh, "rustup target add aarch64-unknown-linux-gnu").run()?;
+                    xshell::cmd!(sh, "rustup target add aarch64-unknown-none").run()?;
+
+                    // Change to the TMK kernel directory (which should be the openvmm repo root)
+                    sh.change_dir(&tmk_kernel_dir);
+
+                    // Unset ARCH and CROSS_COMPILE if they were set
+                    log::info!("Building TMK components...");
+
+                    // Build simple_tmk
+                    let simple_tmk_binary = tmk_kernel_dir.join("target").join("aarch64-minimal_rt-none").join("debug").join("simple_tmk");
+                    if !simple_tmk_binary.exists() {
+                        log::info!("Building simple_tmk...");
+                        xshell::cmd!(sh, "cargo build -p simple_tmk --config openhcl/minimal_rt/aarch64-config.toml")
+                            .env("RUSTC_BOOTSTRAP", "1")
+                            .env_remove("ARCH")
+                            .env_remove("CROSS_COMPILE")
+                            .run()
+                            .map_err(|e| anyhow::anyhow!("Failed to build simple_tmk: {}", e))?;
+                        log::info!("simple_tmk built successfully at: {}", simple_tmk_binary.display());
+                    } else {
+                        log::info!("simple_tmk binary already exists at {}", simple_tmk_binary.display());
+                    }
+
+                    // Build tmk_vmm
+                    let tmk_vmm_binary = tmk_kernel_dir.join("target").join("aarch64-unknown-linux-gnu").join("debug").join("tmk_vmm");
+                    if !tmk_vmm_binary.exists() {
+                        log::info!("Building tmk_vmm...");
+                        xshell::cmd!(sh, "cargo build -p tmk_vmm --target aarch64-unknown-linux-gnu")
+                            .env("RUSTC_BOOTSTRAP", "1")
+                            .env_remove("ARCH")
+                            .env_remove("CROSS_COMPILE")
+                            .run()
+                            .map_err(|e| anyhow::anyhow!("Failed to build tmk_vmm: {}", e))?;
+                        log::info!("tmk_vmm built successfully at: {}", tmk_vmm_binary.display());
+                    } else {
+                        log::info!("tmk_vmm binary already exists at {}", tmk_vmm_binary.display());
+                    }
+
+                    // Return to parent directory
+                    sh.change_dir(shrinkwrap_dir.parent().unwrap());
+                } else {
+                    log::info!("Skipping TMK builds (do_installs=false). Run with --install-missing-deps to build.");
+                }
+
                 // 5) Clone shrinkwrap repo first (need it for venv location)
                 if !shrinkwrap_dir.exists() {
                     log::info!("Cloning Shrinkwrap repo to {}", shrinkwrap_dir.display());
@@ -203,6 +270,18 @@ impl SimpleFlowNode for Node {
                 log::info!("ARM GNU toolchain ready at: {}", toolchain_extracted_dir.display());
                 log::info!("OHCL Linux Kernel ready at: {}", host_kernel_dir.display());
                 log::info!("Kernel Image at: {}", kernel_image.display());
+
+                // Check if TMK binaries exist and report their status
+                let simple_tmk_binary = tmk_kernel_dir.join("target").join("aarch64-minimal_rt-none").join("debug").join("simple_tmk");
+                let tmk_vmm_binary = tmk_kernel_dir.join("target").join("aarch64-unknown-linux-gnu").join("debug").join("tmk_vmm");
+
+                if simple_tmk_binary.exists() {
+                    log::info!("simple_tmk binary at: {}", simple_tmk_binary.display());
+                }
+                if tmk_vmm_binary.exists() {
+                    log::info!("tmk_vmm binary at: {}", tmk_vmm_binary.display());
+                }
+
                 log::info!("");
                 log::info!("To use shrinkwrap in your shell:");
                 log::info!("  source {}/bin/activate", venv_dir.display());
@@ -212,6 +291,7 @@ impl SimpleFlowNode for Node {
                 log::info!("  export ARCH=arm64");
                 log::info!("  export CROSS_COMPILE={}", cross_compile_path.display());
                 log::info!("");
+                log::info!("For TMK builds, Rust targets are installed (aarch64-unknown-linux-gnu, aarch64-unknown-none)");
                 log::info!("Or the pipeline will invoke it directly using the venv Python.");
 
                 Ok(())
