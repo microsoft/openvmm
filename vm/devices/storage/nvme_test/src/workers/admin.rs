@@ -232,6 +232,7 @@ impl AdminState {
 
                 IoSq {
                     task: TaskControl::new(IoHandler::new(
+                        handler.driver.clone(),
                         handler.config.mem.clone(),
                         i as u16 + 1,
                         self.sq_delete_response.sender(),
@@ -535,6 +536,11 @@ impl AdminHandler {
                             return Ok(());
                         }
                         AdminQueueFaultBehavior::Delay(duration) => {
+                            tracing::info!(
+                                "configured fault: admin command delay of {:?} for command: {:?}",
+                                &duration,
+                                &command
+                            );
                             self.timer.sleep(*duration).await;
                         }
                         AdminQueueFaultBehavior::Panic(message) => {
