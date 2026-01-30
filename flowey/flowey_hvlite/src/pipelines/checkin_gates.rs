@@ -1023,10 +1023,19 @@ impl IntoPipeline for CheckinGatesCli {
             let mut filter = "all() & !test(very_heavy) & !test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs) & !test(hyperv_openhcl_pcat)".to_string();
             // Currently, we don't have a good way for ADO runners to authenticate in GitHub
             // (that don't involve PATs) which is a requirement to download GH Workflow Artifacts
-            // required by the servicing tests. For now, we will exclude servicing tests from running
-            // in the internal mirror.
-            if matches!(backend_hint, PipelineBackendHint::Ado) {
-                filter.push_str(" & !test(servicing)");
+            // required by the upgrade and downgrade servicing tests. For now,
+            // we will exclude these tests from running in the internal mirror.
+            // Our standard runners also need to be updated to run Hyper-V
+            // servicing tests.
+            match backend_hint {
+                PipelineBackendHint::Ado => {
+                    filter.push_str(
+                        " & !(test(servicing) & (test(upgrade) + test(downgrade) + test(hyperv)))",
+                    );
+                }
+                _ => {
+                    filter.push_str(" & !(test(servicing) & test(hyperv))");
+                }
             }
             filter
         };
@@ -1044,9 +1053,21 @@ impl IntoPipeline for CheckinGatesCli {
         ];
 
         let cvm_filter = |arch| {
-            format!(
+            let mut filter = format!(
                 "test({arch}) + (test(vbs) & test(hyperv)) + test(very_heavy) + test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs) + test(hyperv_openhcl_pcat)"
-            )
+            );
+            // See comment for standard filter. Run hyper-v servicing tests on CVM runners.
+            match backend_hint {
+                PipelineBackendHint::Ado => {
+                    filter.push_str(
+                        " + (test(servicing) & !(test(upgrade) + test(downgrade)) & test(hyperv))",
+                    );
+                }
+                _ => {
+                    filter.push_str(" + (test(servicing) & test(hyperv))");
+                }
+            }
+            filter
         };
         let cvm_x64_test_artifacts = vec![
             KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,
