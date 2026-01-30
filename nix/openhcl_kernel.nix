@@ -18,7 +18,7 @@ let
   hashes = {
     hcl-main = {
       std = {
-        x64 = "";
+        x64 = "sha256-wUDWFazJM80oztKqpuRwj8Wvto2Uo/OuVGvhpszIw+A=";
         arm64 = "sha256-qdJtqTGGWGnaNbjmEopx8YTVP7K7ZaknW9U043EJyvk=";
       };
       cvm = {
