@@ -43,6 +43,9 @@ pub enum IoQueueFaultBehavior {
     CustomPayload(Vec<u8>),
     /// Panic
     Panic(String),
+    /// Delay. Note: This delay is not asynchronously applied. i.e. Subsequent
+    /// commands will be processed until the delay is over.
+    Delay(Duration),
 }
 
 /// Supported fault behaviour for PCI faults
