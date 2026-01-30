@@ -65,8 +65,8 @@ impl IntoPipeline for CcaFvpCli {
             platform,
             overlay,
             btvar,
-            rootfs: _,
-            rtvar: _,
+            rootfs: _, // Computed automatically by the run job
+            rtvar,
             build_arg,
             run_arg: _,
             timeout_sec: _,
@@ -197,43 +197,40 @@ impl IntoPipeline for CcaFvpCli {
             .finish();
 
         // Shrinkwrap run job
-        // let run_job = pipeline
-        //     .new_job(
-        //         FlowPlatform::host(backend_hint),
-        //         FlowArch::host(backend_hint),
-        //         "cca-fvp: shrinkwrap run",
-        //     )
-        //     .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
-        //     .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
-        //         hvlite_repo_source: openvmm_repo.clone(),
-        //     })
-        //     .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_common::Params {
-        //         local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
-        //             interactive: true,
-        //             auto_install: install_missing_deps,
-        //             force_nuget_mono: false,
-        //             external_nuget_auth: false,
-        //             ignore_rust_version: true,
-        //         }),
-        //         verbose: ReadVar::from_static(verbose),
-        //         locked: false,
-        //         deny_warnings: false,
-        //     })
-        //     .dep_on(|ctx| flowey_lib_hvlite::_jobs::local_shrinkwrap_run::Params {
-        //         out_dir: dir.clone(),
-        //         shrinkwrap_dir: shrinkwrap_dir.clone(),
-        //         platform_yaml: platform.clone(),
-        //         rootfs: rootfs.clone(),
-        //         rtvars: rtvar.clone(),
-        //         extra_args: run_arg.clone(),
-        //         timeout_sec,
-        //         done: ctx.new_done_handle(),
-        //     })
-        //     .finish();
+        let run_job = pipeline
+            .new_job(
+                FlowPlatform::host(backend_hint),
+                FlowArch::host(backend_hint),
+                "cca-fvp: shrinkwrap run",
+            )
+            .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
+            .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
+                hvlite_repo_source: openvmm_repo.clone(),
+            })
+            .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_common::Params {
+                local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
+                    interactive: true,
+                    auto_install: install_missing_deps,
+                    force_nuget_mono: false,
+                    external_nuget_auth: false,
+                    ignore_rust_version: true,
+                }),
+                verbose: ReadVar::from_static(verbose),
+                locked: false,
+                deny_warnings: false,
+            })
+            .dep_on(|ctx| flowey_lib_hvlite::_jobs::local_shrinkwrap_run::Params {
+                out_dir: dir.clone(),
+                shrinkwrap_dir: shrinkwrap_dir.clone(),
+                platform_yaml: platform.clone(),
+                rtvars: rtvar.clone(),
+                done: ctx.new_done_handle(),
+            })
+            .finish();
 
         // Explicitly declare job dependencies
         pipeline.non_artifact_dep(&build_job, &install_job);
-        // pipeline.non_artifact_dep(&run_job, &build_job); // enable when run job is uncommented
+        pipeline.non_artifact_dep(&run_job, &build_job);
         Ok(pipeline)
     }
 }

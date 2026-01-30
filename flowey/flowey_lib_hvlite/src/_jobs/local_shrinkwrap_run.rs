@@ -1,33 +1,24 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Run shrinkwrap run command to launch FVP.
+//! Modify rootfs.ext2 to inject TMK binaries and kernel.
 
 use flowey::node::prelude::*;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
 
 flowey_request! {
-    /// Parameters for running Shrinkwrap (FVP launch).
+    /// Parameters for modifying rootfs.ext2 and running shrinkwrap.
     pub struct Params {
-        /// Where to place logs and where to run the command from.
+        /// Output directory where shrinkwrap build artifacts are located
         pub out_dir: PathBuf,
-        /// Path to shrinkwrap repo (containing shrinkwrap/shrinkwrap executable)
+        /// Directory where shrinkwrap repo is cloned
         pub shrinkwrap_dir: PathBuf,
-        /// Path to the platform yaml (e.g. cca-3world.yaml).
+        /// Platform YAML file for shrinkwrap run
         pub platform_yaml: PathBuf,
-        /// Rootfs path to pass as --rtvar ROOTFS=<abs path>.
-        pub rootfs: PathBuf,
-        /// Extra --rtvar KEY=VALUE entries (besides ROOTFS).
+        /// Runtime variables for shrinkwrap run (e.g., "ROOTFS=/path/to/rootfs.ext2")
         pub rtvars: Vec<String>,
-        /// Passthrough args appended to the command line (escape hatch).
-        pub extra_args: Vec<String>,
-        /// Timeout for the run step. If exceeded, Shrinkwrap process is killed.
-        pub timeout_sec: u64,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -44,120 +35,237 @@ impl SimpleFlowNode for Node {
             out_dir,
             shrinkwrap_dir,
             platform_yaml,
-            rootfs,
             rtvars,
-            extra_args,
-            timeout_sec,
             done,
         } = request;
 
-        ctx.emit_rust_step("run shrinkwrap", |ctx| {
+        ctx.emit_rust_step("modify rootfs.ext2", |ctx| {
             done.claim(ctx);
             move |_rt| {
-                fs::create_dir_all(&out_dir)?;
-                let log_dir = out_dir.join("logs");
-                fs::create_dir_all(&log_dir)?;
-                let console_log_path = log_dir.join("console.log");
-                let shrinkwrap_run_log_path = log_dir.join("shrinkwrap-run.log");
+                // Compute paths the same way as install job
+                // Get the parent directory (toolchain_dir) where everything is built
+                let toolchain_dir = shrinkwrap_dir.parent()
+                    .ok_or_else(|| anyhow::anyhow!("shrinkwrap_dir has no parent"))?;
 
-                let mut run_log = OpenOptions::new()
-                    .create(true)
-                    .truncate(true)
-                    .write(true)
-                    .open(&shrinkwrap_run_log_path)?;
+                let tmk_kernel_dir = toolchain_dir.join("OpenVMM-TMK");
+                let host_kernel_dir = toolchain_dir.join("OHCL-Linux-Kernel");
 
-                let rootfs_abs = canonicalize_or_abspath(&rootfs)?;
-                if !rootfs_abs.exists() {
-                    anyhow::bail!("ROOTFS does not exist: {}", rootfs_abs.display());
+                let simple_tmk = tmk_kernel_dir.join("target/aarch64-minimal_rt-none/debug/simple_tmk");
+                let tmk_vmm = tmk_kernel_dir.join("target/aarch64-unknown-linux-gnu/debug/tmk_vmm");
+                let kernel_image_path = host_kernel_dir.join("arch/arm64/boot/Image");
+
+                // Modify rootfs.ext2 to inject TMK binaries and kernel
+                log::info!("Starting rootfs.ext2 modification...");
+
+                let shrinkwrap_package_dir = std::env::var("HOME")
+                    .map(|h| PathBuf::from(h).join(".shrinkwrap/package/cca-3world"))
+                    .unwrap_or_else(|_| PathBuf::from("/home/ubuntu/.shrinkwrap/package/cca-3world"));
+
+                let rootfs_ext2 = shrinkwrap_package_dir.join("rootfs.ext2");
+
+                if !rootfs_ext2.exists() {
+                    anyhow::bail!("rootfs.ext2 not found at {}", rootfs_ext2.display());
                 }
 
-                // Use shrinkwrap wrapper script with venv activated
+                log::info!("Found rootfs.ext2 at {}", rootfs_ext2.display());
+
+                // Step 1: Run e2fsck to check filesystem
+                log::info!("Running e2fsck on rootfs.ext2...");
+                let e2fsck_status = Command::new("docker")
+                    .args(&["run", "--rm", "-v"])
+                    .arg(format!("{}:{}", shrinkwrap_package_dir.display(), shrinkwrap_package_dir.display()))
+                    .args(&["-w", &shrinkwrap_package_dir.to_string_lossy()])
+                    .args(&["ubuntu:24.04", "bash", "-lc"])
+                    .arg("apt-get update && apt-get install -y e2fsprogs && e2fsck -fp rootfs.ext2")
+                    .status();
+
+                match e2fsck_status {
+                    Ok(status) if status.success() => log::info!("e2fsck completed successfully"),
+                    Ok(status) => log::warn!("e2fsck exited with status: {}", status),
+                    Err(e) => anyhow::bail!("Failed to run e2fsck: {}", e),
+                }
+
+                // Step 2: Resize the filesystem
+                log::info!("Resizing rootfs.ext2 to 1024M...");
+                let resize_status = Command::new("docker")
+                    .args(&["run", "--rm", "-v"])
+                    .arg(format!("{}:{}", shrinkwrap_package_dir.display(), shrinkwrap_package_dir.display()))
+                    .args(&["-w", &shrinkwrap_package_dir.to_string_lossy()])
+                    .args(&["ubuntu:24.04", "bash", "-lc"])
+                    .arg("apt-get update && apt-get install -y e2fsprogs && e2fsck -fp rootfs.ext2 && resize2fs rootfs.ext2 1024M")
+                    .status();
+
+                match resize_status {
+                    Ok(status) if status.success() => log::info!("resize2fs completed successfully"),
+                    Ok(status) => log::warn!("resize2fs exited with status: {}", status),
+                    Err(e) => anyhow::bail!("Failed to run resize2fs: {}", e),
+                }
+
+                // Step 3: Mount rootfs, inject files, and unmount
+                log::info!("Mounting rootfs.ext2 and injecting TMK binaries...");
+
+                // Use paths from parameters
+                log::info!("Using simple_tmk from: {}", simple_tmk.display());
+                log::info!("Using tmk_vmm from: {}", tmk_vmm.display());
+                log::info!("Using kernel Image from: {}", kernel_image_path.display());
+
+                let guest_disk = shrinkwrap_package_dir.join("guest-disk.img");
+                let kvmtool_efi = shrinkwrap_package_dir.join("KVMTOOL_EFI.fd");
+                let lkvm = shrinkwrap_package_dir.join("lkvm");
+
+                // Copy kernel to Image_ohcl
+                let image_ohcl = shrinkwrap_package_dir.join("Image_ohcl");
+                if kernel_image_path.exists() {
+                    fs::copy(&kernel_image_path, &image_ohcl)
+                        .map_err(|e| anyhow::anyhow!("Failed to copy kernel Image: {}", e))?;
+                    log::info!("Copied kernel to Image_ohcl");
+                } else {
+                    log::warn!("Kernel image not found at {}", kernel_image_path.display());
+                }
+
+                // Build the mount/inject script
+                let mount_script = format!(
+                    r#"
+                    set -e
+                    mkdir -p mnt
+                    mount rootfs.ext2 mnt
+                    mkdir -p mnt/cca
+                    {simple_tmk_copy}
+                    {tmk_vmm_copy}
+                    {guest_disk_copy}
+                    {kvmtool_efi_copy}
+                    {image_ohcl_copy}
+                    {lkvm_copy}
+                    umount mnt
+                    rm -rf mnt
+                    "#,
+                    simple_tmk_copy = if simple_tmk.exists() {
+                        format!("cp {} mnt/cca/", simple_tmk.display())
+                    } else {
+                        format!("echo 'Warning: {} not found'", simple_tmk.display())
+                    },
+                    tmk_vmm_copy = if tmk_vmm.exists() {
+                        format!("cp {} mnt/cca/", tmk_vmm.display())
+                    } else {
+                        format!("echo 'Warning: {} not found'", tmk_vmm.display())
+                    },
+                    guest_disk_copy = if guest_disk.exists() {
+                        format!("cp {} mnt/cca/", guest_disk.display())
+                    } else {
+                        "".to_string()
+                    },
+                    kvmtool_efi_copy = if kvmtool_efi.exists() {
+                        format!("cp {} mnt/cca/", kvmtool_efi.display())
+                    } else {
+                        "".to_string()
+                    },
+                    image_ohcl_copy = if image_ohcl.exists() {
+                        format!("cp {} mnt/cca/", image_ohcl.display())
+                    } else {
+                        "".to_string()
+                    },
+                    lkvm_copy = if lkvm.exists() {
+                        format!("cp {} mnt/cca/", lkvm.display())
+                    } else {
+                        "".to_string()
+                    },
+                );
+
+                let mount_status = Command::new("sudo")
+                    .arg("bash")
+                    .arg("-c")
+                    .arg(&mount_script)
+                    .current_dir(&shrinkwrap_package_dir)
+                    .status();
+
+                match mount_status {
+                    Ok(status) if status.success() => {
+                        log::info!("rootfs.ext2 updated successfully with TMK binaries");
+                    }
+                    Ok(status) => {
+                        anyhow::bail!("Failed to mount/inject files: exit status {}", status);
+                    }
+                    Err(e) => {
+                        anyhow::bail!("Failed to execute mount script: {}", e);
+                    }
+                }
+
+                // Step 4: Run shrinkwrap with the modified rootfs
+                log::info!("Running shrinkwrap with platform YAML: {}", platform_yaml.display());
+
+                // Get the canonical path to rootfs.ext2
+                let rootfs_canonical = fs::canonicalize(&rootfs_ext2)
+                    .map_err(|e| anyhow::anyhow!("Failed to canonicalize rootfs path: {}", e))?;
+
+                // Prepare shrinkwrap command
                 let shrinkwrap_exe = shrinkwrap_dir.join("shrinkwrap").join("shrinkwrap");
                 let venv_dir = shrinkwrap_dir.join("venv");
-                let venv_bin = venv_dir.join("bin");
-                
-                let mut cmd = Command::new(&shrinkwrap_exe);
-                cmd.current_dir(&out_dir);
-                
-                // Set environment to use venv Python
-                cmd.env("VIRTUAL_ENV", &venv_dir);
-                cmd.env("PATH", format!("{}:{}", 
-                    venv_bin.display(), 
-                    std::env::var("PATH").unwrap_or_default()
-                ));
-                
-                cmd.arg("run");
-                cmd.arg(&platform_yaml);
-                cmd.arg("--rtvar").arg(format!("ROOTFS={}", rootfs_abs.display()));
 
-                for v in &rtvars {
-                    cmd.arg("--rtvar").arg(v);
+                if !shrinkwrap_exe.exists() {
+                    anyhow::bail!("shrinkwrap executable not found at {}", shrinkwrap_exe.display());
                 }
 
-                for a in &extra_args {
-                    cmd.arg(a);
-                }
-
-                writeln!(&mut run_log, "cwd: {}", out_dir.display())?;
-                writeln!(&mut run_log, "cmd: {}", render_command_for_logs(&cmd))?;
-                writeln!(&mut run_log, "timeout_sec: {}", timeout_sec)?;
-                run_log.flush()?;
-
-                cmd.stdout(Stdio::piped());
-                cmd.stderr(Stdio::piped());
-
-                let mut child = cmd.spawn().map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed to spawn shrinkwrap (is it on PATH?): {e}\nlog: {}",
-                        shrinkwrap_run_log_path.display()
-                    )
-                })?;
-
-                let stdout = child.stdout.take()
-                    .ok_or_else(|| anyhow::anyhow!("failed to capture shrinkwrap stdout"))?;
-                let stderr = child.stderr.take()
-                    .ok_or_else(|| anyhow::anyhow!("failed to capture shrinkwrap stderr"))?;
-
-                let console_file = OpenOptions::new()
-                    .create(true)
-                    .truncate(true)
-                    .write(true)
-                    .open(&console_log_path)?;
-                let console_file = Arc::new(Mutex::new(console_file));
-
-                let t1 = spawn_tee_thread(stdout, console_file.clone(), StreamKind::Stdout);
-                let t2 = spawn_tee_thread(stderr, console_file.clone(), StreamKind::Stderr);
-
-                let timeout = Duration::from_secs(timeout_sec);
-                let start = Instant::now();
-
-                let exit_status = loop {
-                    if let Some(status) = child.try_wait()? {
-                        break status;
-                    }
-                    if start.elapsed() > timeout {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        anyhow::bail!(
-                            "shrinkwrap run timed out after {}s (killed). See logs:\n- {}\n- {}",
-                            timeout_sec,
-                            shrinkwrap_run_log_path.display(),
-                            console_log_path.display()
-                        );
-                    }
-                    std::thread::sleep(Duration::from_millis(200));
+                // Determine the platform YAML path to use
+                // If platform_yaml is absolute, try to make it relative to out_dir
+                // Otherwise, shrinkwrap will look for artifacts relative to the YAML location
+                let platform_yaml_to_use = if platform_yaml.is_absolute() {
+                    // Try to use just the filename - shrinkwrap should have copied/processed it
+                    platform_yaml.file_name()
+                        .map(|name| PathBuf::from(name))
+                        .unwrap_or_else(|| platform_yaml.clone())
+                } else {
+                    platform_yaml.clone()
                 };
 
-                let _ = t1.join();
-                let _ = t2.join();
+                log::info!("Using platform YAML: {} (relative to {})",
+                    platform_yaml_to_use.display(),
+                    out_dir.display());
 
-                if !exit_status.success() {
-                    anyhow::bail!(
-                        "shrinkwrap run failed (exit={}). See logs:\n- {}\n- {}",
-                        exit_status,
-                        shrinkwrap_run_log_path.display(),
-                        console_log_path.display()
-                    );
+                // Build the rtvar arguments
+                let mut rtvar_args = Vec::new();
+
+                // Add the ROOTFS rtvar pointing to the modified rootfs.ext2
+                rtvar_args.push("--rtvar".to_string());
+                rtvar_args.push(format!("ROOTFS={}", rootfs_canonical.display()));
+
+                // Add any additional rtvars from parameters
+                for rtvar in rtvars {
+                    rtvar_args.push("--rtvar".to_string());
+                    rtvar_args.push(rtvar);
+                }
+
+                log::info!("Running: {} run {} {}",
+                    shrinkwrap_exe.display(),
+                    platform_yaml_to_use.display(),
+                    rtvar_args.join(" "));
+
+                // Set environment to use venv Python
+                let venv_bin = venv_dir.join("bin");
+
+                log::info!("Setting VIRTUAL_ENV={}", venv_dir.display());
+
+                let shrinkwrap_run_status = Command::new(&shrinkwrap_exe)
+                    .arg("run")
+                    .arg(&platform_yaml_to_use)
+                    .args(&rtvar_args)
+                    .env("VIRTUAL_ENV", &venv_dir)
+                    .env("PATH", format!("{}:{}",
+                        venv_bin.display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    ))
+                    .current_dir(&out_dir)  // Run from out_dir where build artifacts are
+                    .status();
+
+                match shrinkwrap_run_status {
+                    Ok(status) if status.success() => {
+                        log::info!("Shrinkwrap run completed successfully");
+                    }
+                    Ok(status) => {
+                        anyhow::bail!("Shrinkwrap run failed with exit status: {}", status);
+                    }
+                    Err(e) => {
+                        anyhow::bail!("Failed to execute shrinkwrap run: {}", e);
+                    }
                 }
 
                 Ok(())
@@ -165,75 +273,5 @@ impl SimpleFlowNode for Node {
         });
 
         Ok(())
-    }
-}
-
-#[derive(Copy, Clone)]
-enum StreamKind {
-    Stdout,
-    Stderr,
-}
-
-fn spawn_tee_thread<R: io::Read + Send + 'static>(
-    reader: R,
-    file: Arc<Mutex<File>>,
-    kind: StreamKind,
-) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        let mut br = BufReader::new(reader);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match br.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    if let Ok(mut f) = file.lock() {
-                        let _ = f.write_all(line.as_bytes());
-                        let _ = f.flush();
-                    }
-                    match kind {
-                        StreamKind::Stdout => {
-                            let _ = io::stdout().write_all(line.as_bytes());
-                            let _ = io::stdout().flush();
-                        }
-                        StreamKind::Stderr => {
-                            let _ = io::stderr().write_all(line.as_bytes());
-                            let _ = io::stderr().flush();
-                        }
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    })
-}
-
-fn canonicalize_or_abspath(p: &Path) -> anyhow::Result<PathBuf> {
-    if p.exists() {
-        Ok(p.canonicalize()?)
-    } else if p.is_absolute() {
-        Ok(p.to_path_buf())
-    } else {
-        Ok(std::env::current_dir()?.join(p))
-    }
-}
-
-fn render_command_for_logs(cmd: &Command) -> String {
-    let mut s = String::new();
-    s.push_str(&cmd.get_program().to_string_lossy());
-    for a in cmd.get_args() {
-        s.push(' ');
-        s.push_str(&shell_escape(a.to_string_lossy().as_ref()));
-    }
-    s
-}
-
-fn shell_escape(arg: &str) -> String {
-    if arg.is_empty() {
-        "''".to_string()
-    } else if arg.bytes().all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-' | b'.' | b'/' | b'=' | b':' | b'+' )) {
-        arg.to_string()
-    } else {
-        format!("'{}'", arg.replace('\'', "'\\''"))
     }
 }
