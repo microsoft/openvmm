@@ -4,8 +4,12 @@
 //! Code to apply relocations in an environment without a runtime.
 //!
 //! Do not reach out to global variables or function pointers (and the Rust
-//! formatting facilities in particular or panic processing) from this code
-//! as they generate relocation records.
+//! formatting facilities in particular or panic processing) from this code as
+//! they generate relocation records.
+//!
+//! This is a separate crate from `minimal_rt` so that we can scope build
+//! overrides, needed to prevent relocations from being generated in this code,
+//! to just this module.
 
 /// Stores error code, line number, and the pointer to the file name in the registers.
 /// Cannot call into the panic facilities before relocation, that won't be debuggable at all.

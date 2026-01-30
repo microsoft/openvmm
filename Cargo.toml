@@ -175,6 +175,7 @@ kmsg_defs = { path = "openhcl/kmsg_defs" }
 lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
+minimal_rt_reloc = { path = "openhcl/minimal_rt_reloc" }
 openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
@@ -609,12 +610,13 @@ codegen-units = 1
 opt-level = 'z'
 lto = 'fat'
 
-# Optimize minimal_rt even in the dev profile to ensure no relocations creep
-# into the relocate function.
+# Optimize minimal_rt_reloc even in the dev profile to ensure no relocations
+# creep into the relocate function.
 #
 # FUTURE: rewrite relocator in asm to avoid depending on this.
-[profile.dev.package.minimal_rt]
+[profile.dev.package.minimal_rt_reloc]
 opt-level = 1
+debug-assertions = false
 
 # Optimize loom and its main dependency even in the dev profile, as otherwise tests just take too long.
 [profile.dev.package.loom]

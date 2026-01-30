@@ -4178,11 +4178,16 @@ dependencies = [
  "cfg-if",
  "hvdef",
  "minimal_rt_build",
+ "minimal_rt_reloc",
  "zerocopy 0.8.27",
 ]
 
 [[package]]
 name = "minimal_rt_build"
+version = "0.0.0"
+
+[[package]]
+name = "minimal_rt_reloc"
 version = "0.0.0"
 
 [[package]]
