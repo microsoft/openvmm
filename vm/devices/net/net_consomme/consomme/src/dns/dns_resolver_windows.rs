@@ -6,6 +6,8 @@
 // UNSAFETY: FFI calls to Windows DNS API functions.
 #![expect(unsafe_code)]
 
+mod api;
+
 use super::DnsRequestInternal;
 use super::build_servfail_response;
 use crate::DropReason;
@@ -13,11 +15,6 @@ use crate::dns_resolver::DnsBackend;
 use crate::dns_resolver::DnsRequest;
 use crate::dns_resolver::DnsResponse;
 use crate::dns_resolver::DnsResponseAccessor;
-use crate::dns_resolver::delay_load::get_dns_cancel_query_raw_fn;
-use crate::dns_resolver::delay_load::get_dns_query_raw_fn;
-use crate::dns_resolver::delay_load::get_dns_query_raw_result_free_fn;
-use crate::dns_resolver::delay_load::get_module;
-use crate::dns_resolver::delay_load::is_dns_raw_apis_supported;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::ptr::null_mut;
@@ -35,6 +32,13 @@ use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST_0;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST_VERSION1;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULT;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULTS_VERSION1;
+
+/// Check if DnsQueryRaw APIs are available (Windows 11+).
+fn is_dns_raw_apis_supported() -> bool {
+    api::is_supported::DnsQueryRaw()
+        && api::is_supported::DnsCancelQueryRaw()
+        && api::is_supported::DnsQueryRawResultFree()
+}
 
 /// Wrapper for raw pointer that implements Send
 struct SendPtr(*mut RawCallbackContext);
@@ -79,8 +83,6 @@ pub struct WindowsDnsResolverBackend {
 
 impl WindowsDnsResolverBackend {
     pub fn new() -> Result<Self, std::io::Error> {
-        get_module().map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
-
         if !is_dns_raw_apis_supported() {
             return Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
         }
@@ -144,17 +146,7 @@ impl DnsBackend for WindowsDnsResolverBackend {
         // SAFETY: We're calling the Windows DNS API with properly initialized structures.
         // The query buffer is valid for the duration of the call, and the callback context
         // will remain valid until the callback executes or we cancel the request.
-        let result = unsafe {
-            let dns_query_raw = get_dns_query_raw_fn()
-                .map_err(|e| {
-                    // Clean up context on error
-                    let _ = Box::from_raw(context_ptr);
-                    std::io::Error::from_raw_os_error(e as i32)
-                })
-                .map_err(|_| DropReason::Packet(smoltcp::wire::Error))?;
-
-            dns_query_raw(&dns_request, &mut cancel_handle)
-        };
+        let result = unsafe { api::DnsQueryRaw(&dns_request, &mut cancel_handle) };
 
         if result == DNS_REQUEST_PENDING {
             // Query is pending, store tracking information
@@ -189,18 +181,11 @@ impl DnsBackend for WindowsDnsResolverBackend {
     fn cancel_all(&mut self) -> Result<(), std::io::Error> {
         let mut pending = self.pending_requests.lock();
 
-        // Get the cancel function
-        // SAFETY: Callers call this with a valid cancel handle
-        let cancel_fn = unsafe {
-            get_dns_cancel_query_raw_fn()
-                .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?
-        };
-
         // Cancel all pending requests
         for (request_id, tracked) in pending.drain() {
             // SAFETY: We're calling DnsCancelQueryRaw with a valid cancel handle
             unsafe {
-                let result = cancel_fn(&tracked.cancel_handle);
+                let result = api::DnsCancelQueryRaw(&tracked.cancel_handle);
                 if result != NO_ERROR as i32 {
                     tracelimit::warn_ratelimited!(
                         "Failed to cancel DNS request {}: error code {}",
@@ -306,13 +291,8 @@ unsafe extern "system" fn dns_query_raw_callback(
 
         // Free the Windows-allocated result structure
         // SAFETY: We're calling the Windows API to free memory it allocated
-        if let Ok(free_fn) = unsafe { get_dns_query_raw_result_free_fn() } {
-            // SAFETY: Calling free with a valid result structure
-            unsafe {
-                free_fn(query_results.cast_mut());
-            }
-        } else {
-            tracelimit::warn_ratelimited!("Failed to get DnsQueryRawResultFree function");
+        unsafe {
+            api::DnsQueryRawResultFree(query_results.cast_mut());
         }
     } else {
         // No results provided, return SERVFAIL

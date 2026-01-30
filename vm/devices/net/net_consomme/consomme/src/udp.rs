@@ -170,12 +170,7 @@ impl<T: Client> Access<'_, T> {
             conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
         });
         if self.inner.dns.is_some() {
-            let responses = self
-                .inner
-                .dns
-                .as_mut()
-                .unwrap()
-                .poll_responses(cx, IpProtocol::Udp);
+            let responses = self.inner.dns.as_mut().unwrap().poll_responses(cx);
 
             for response in responses {
                 if let Err(e) = self.send_dns_response(&response) {

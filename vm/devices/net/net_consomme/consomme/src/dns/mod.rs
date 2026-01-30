@@ -2,13 +2,13 @@
 // Licensed under the MIT License.
 
 #![cfg_attr(all(target_os = "linux", not(target_env = "gnu")), allow(dead_code))]
-use parking_lot::Mutex;
+use mesh_channel_core::Receiver;
+use mesh_channel_core::Sender;
+use mesh_channel_core::channel;
 use smoltcp::wire::EthernetAddress;
-use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Address;
-use std::sync::Arc;
 use std::task::Context;
-use std::task::Waker;
+use std::task::Poll;
 
 use crate::DropReason;
 
@@ -19,9 +19,6 @@ mod resolver;
 #[cfg(windows)]
 #[path = "dns_resolver_windows.rs"]
 mod resolver_raw;
-
-#[cfg(windows)]
-mod delay_load;
 
 static DNS_HEADER_SIZE: usize = 12;
 
@@ -48,37 +45,16 @@ pub struct DnsResponse {
     pub response_data: Vec<u8>,
 }
 
-struct DnsResponseQueues {
-    udp: Mutex<Vec<DnsResponse>>,
-    tcp: Mutex<Vec<DnsResponse>>,
-    waker: Mutex<Option<Waker>>,
-}
-
-// Manual Debug implementation since Waker doesn't implement Debug
-impl std::fmt::Debug for DnsResponseQueues {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DnsResponseQueues")
-            .field("udp", &self.udp)
-            .field("tcp", &self.tcp)
-            .field("waker", &self.waker.lock().is_some())
-            .finish()
-    }
-}
-
 /// Thread-safe accessor that allows backends to enqueue responses without
 /// borrowing `DnsResolver` (e.g., from a background thread).
 #[derive(Debug, Clone)]
 pub struct DnsResponseAccessor {
-    queues: Arc<DnsResponseQueues>,
+    sender: Sender<DnsResponse>,
 }
 
 impl DnsResponseAccessor {
     pub fn push(&self, response: DnsResponse) {
-        self.queues.udp.lock().push(response);
-        // Wake the async executor to process the response
-        if let Some(waker) = self.queues.waker.lock().take() {
-            waker.wake();
-        }
+        self.sender.send(response);
     }
 }
 
@@ -94,27 +70,20 @@ pub trait DnsBackend: Send + Sync {
 
 pub struct DnsResolver {
     backend: Box<dyn DnsBackend>,
-    queues: Arc<DnsResponseQueues>,
+    sender: Sender<DnsResponse>,
+    receiver: Receiver<DnsResponse>,
 }
 
 impl DnsResolver {
     #[cfg(windows)]
     pub fn new() -> Result<Self, std::io::Error> {
-        use crate::dns_resolver::delay_load::is_dns_raw_apis_supported;
         use crate::dns_resolver::resolver_raw::WindowsDnsResolverBackend;
 
-        if !is_dns_raw_apis_supported() {
-            return Err(std::io::ErrorKind::Unsupported.into());
-        }
-
-        let queues = Arc::new(DnsResponseQueues {
-            udp: Mutex::new(Vec::new()),
-            tcp: Mutex::new(Vec::new()),
-            waker: Mutex::new(None),
-        });
+        let (sender, receiver) = channel();
         Ok(Self {
             backend: Box::new(WindowsDnsResolverBackend::new()?),
-            queues,
+            sender,
+            receiver,
         })
     }
 
@@ -122,15 +91,11 @@ impl DnsResolver {
     pub fn new() -> Result<Self, std::io::Error> {
         use crate::dns_resolver::resolver::UnixDnsResolverBackend;
 
-        let queues = Arc::new(DnsResponseQueues {
-            udp: Mutex::new(Vec::new()),
-            tcp: Mutex::new(Vec::new()),
-            waker: Mutex::new(None),
-        });
-
+        let (sender, receiver) = channel();
         Ok(Self {
             backend: Box::new(UnixDnsResolverBackend::new()?),
-            queues,
+            sender,
+            receiver,
         })
     }
 
@@ -154,25 +119,22 @@ impl DnsResolver {
         }
 
         let accessor = DnsResponseAccessor {
-            queues: self.queues.clone(),
+            sender: self.sender.clone(),
         };
 
         self.backend.query(request, accessor)
     }
 
-    pub fn poll_responses(
-        &mut self,
-        cx: &mut Context<'_>,
-        protocol: IpProtocol,
-    ) -> Vec<DnsResponse> {
-        // Register the waker so we get notified when new responses arrive
-        *self.queues.waker.lock() = Some(cx.waker().clone());
-
-        match protocol {
-            IpProtocol::Udp => self.queues.udp.lock().drain(..).collect(),
-            IpProtocol::Tcp => self.queues.tcp.lock().drain(..).collect(),
-            _ => unreachable!("Unexpected IpProtocol passed in"),
+    pub fn poll_responses(&mut self, cx: &mut Context<'_>) -> Vec<DnsResponse> {
+        let mut responses = Vec::new();
+        loop {
+            match self.receiver.poll_recv(cx) {
+                Poll::Ready(Ok(response)) => responses.push(response),
+                Poll::Ready(Err(_)) => break, // Channel closed
+                Poll::Pending => break,
+            }
         }
+        responses
     }
 
     pub fn cancel_all(&mut self) -> Result<(), std::io::Error> {

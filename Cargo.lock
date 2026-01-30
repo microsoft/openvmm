@@ -803,6 +803,8 @@ dependencies = [
  "inspect",
  "inspect_counters",
  "libc",
+ "mesh_channel_core",
+ "pal",
  "pal_async",
  "parking_lot",
  "resolv-conf",
