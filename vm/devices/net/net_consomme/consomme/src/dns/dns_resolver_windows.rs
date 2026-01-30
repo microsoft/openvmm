@@ -12,6 +12,7 @@ use super::DnsRequestInternal;
 use super::build_servfail_response;
 use crate::DropReason;
 use crate::dns_resolver::DnsBackend;
+use crate::dns_resolver::DnsFlow;
 use crate::dns_resolver::DnsRequest;
 use crate::dns_resolver::DnsResponse;
 use crate::dns_resolver::DnsResponseAccessor;
@@ -33,6 +34,14 @@ use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST_VERSION1;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULT;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULTS_VERSION1;
 
+fn push_servfail_response(accessor: &DnsResponseAccessor, flow: &DnsFlow, query: &[u8]) {
+    let response = build_servfail_response(query);
+    accessor.push(DnsResponse {
+        flow: flow.clone(),
+        response_data: response,
+    });
+}
+
 /// Check if DnsQueryRaw APIs are available (Windows 11+).
 fn is_dns_raw_apis_supported() -> bool {
     api::is_supported::DnsQueryRaw()
@@ -40,49 +49,24 @@ fn is_dns_raw_apis_supported() -> bool {
         && api::is_supported::DnsQueryRawResultFree()
 }
 
-/// Wrapper for raw pointer that implements Send
-struct SendPtr(*mut RawCallbackContext);
-/// SAFETY: The context pointer is managed carefully and only accessed from
-/// the callback or during cleanup while holding the mutex.
-unsafe impl Send for SendPtr {}
-
-impl SendPtr {
-    fn new(ptr: *mut RawCallbackContext) -> Self {
-        SendPtr(ptr)
-    }
-
-    fn get(&self) -> *mut RawCallbackContext {
-        self.0
-    }
-}
-
-/// Tracked request information for pending DNS queries.
-struct TrackedRequest {
-    /// The cancel handle returned by DnsQueryRaw.
-    cancel_handle: DNS_QUERY_RAW_CANCEL,
-    /// The original request data, kept for SERVFAIL generation if needed.
-    request: DnsRequestInternal,
-    /// The callback context pointer, wrapped for Send safety.
-    context_ptr: SendPtr,
-}
-
 /// Context passed to the DNS query callback.
 struct RawCallbackContext {
-    /// Unique identifier for this request.
     request_id: u64,
-    /// Reference to the backend's pending requests map.
-    pending_requests: Arc<Mutex<HashMap<u64, TrackedRequest>>>,
+    request: DnsRequestInternal,
+    pending_requests: Arc<Mutex<HashMap<u64, DNS_QUERY_RAW_CANCEL>>>,
 }
 
 pub struct WindowsDnsResolverBackend {
     /// Counter for generating unique request IDs.
     next_request_id: AtomicU64,
     /// Map of pending DNS requests.
-    pending_requests: Arc<Mutex<HashMap<u64, TrackedRequest>>>,
+    pending_requests: Arc<Mutex<HashMap<u64, DNS_QUERY_RAW_CANCEL>>>,
+    /// Maximum number of pending requests allowed.
+    max_pending_requests: usize,
 }
 
 impl WindowsDnsResolverBackend {
-    pub fn new() -> Result<Self, std::io::Error> {
+    pub fn new(max_pending_requests: usize) -> Result<Self, std::io::Error> {
         if !is_dns_raw_apis_supported() {
             return Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
         }
@@ -90,6 +74,7 @@ impl WindowsDnsResolverBackend {
         Ok(WindowsDnsResolverBackend {
             next_request_id: AtomicU64::new(1),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
+            max_pending_requests,
         })
     }
 }
@@ -100,6 +85,19 @@ impl DnsBackend for WindowsDnsResolverBackend {
         request: &DnsRequest<'_>,
         accessor: DnsResponseAccessor,
     ) -> Result<(), DropReason> {
+        {
+            let pending = self.pending_requests.lock();
+            if pending.len() >= self.max_pending_requests {
+                tracelimit::warn_ratelimited!(
+                    current = pending.len(),
+                    max = self.max_pending_requests,
+                    "DNS request limit reached, returning SERVFAIL"
+                );
+                push_servfail_response(&accessor, &request.flow, request.dns_query);
+                return Ok(());
+            }
+        }
+
         // Generate unique request ID
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
 
@@ -113,9 +111,13 @@ impl DnsBackend for WindowsDnsResolverBackend {
             accessor,
         };
 
+        let dns_query_size = internal_request.query.len() as u32;
+        let dns_query = internal_request.query.as_ptr().cast_mut();
+
         // Create callback context
         let context = Box::new(RawCallbackContext {
             request_id,
+            request: internal_request,
             pending_requests: self.pending_requests.clone(),
         });
         let context_ptr = Box::into_raw(context);
@@ -126,8 +128,8 @@ impl DnsBackend for WindowsDnsResolverBackend {
         let dns_request = DNS_QUERY_RAW_REQUEST {
             version: DNS_QUERY_RAW_REQUEST_VERSION1,
             resultsVersion: DNS_QUERY_RAW_RESULTS_VERSION1,
-            dnsQueryRawSize: internal_request.query.len() as u32,
-            dnsQueryRaw: internal_request.query.as_ptr().cast_mut(),
+            dnsQueryRawSize: dns_query_size,
+            dnsQueryRaw: dns_query,
             dnsQueryName: null_mut(),
             dnsQueryType: 0,
             queryOptions: DNS_QUERY_NO_MULTICAST as u64
@@ -142,37 +144,37 @@ impl DnsBackend for WindowsDnsResolverBackend {
             Anonymous: DNS_QUERY_RAW_REQUEST_0::default(),
         };
 
-        // Call DnsQueryRaw
+        // Pre-insert placeholder before calling DnsQueryRaw to avoid race condition
+        // where callback fires before we can insert the cancel handle.
+        self.pending_requests
+            .lock()
+            .insert(request_id, DNS_QUERY_RAW_CANCEL::default());
+
         // SAFETY: We're calling the Windows DNS API with properly initialized structures.
         // The query buffer is valid for the duration of the call, and the callback context
         // will remain valid until the callback executes or we cancel the request.
         let result = unsafe { api::DnsQueryRaw(&dns_request, &mut cancel_handle) };
 
         if result == DNS_REQUEST_PENDING {
-            // Query is pending, store tracking information
-            let tracked = TrackedRequest {
-                cancel_handle,
-                request: internal_request,
-                context_ptr: SendPtr::new(context_ptr),
-            };
-            self.pending_requests.lock().insert(request_id, tracked);
+            // Update with real cancel handle (only if entry still exists).
+            // If the callback already fired and removed the entry, this is a no-op.
+            {
+                let mut pending = self.pending_requests.lock();
+                if pending.contains_key(&request_id) {
+                    pending.insert(request_id, cancel_handle);
+                }
+            }
             Ok(())
         } else {
-            // Query failed immediately
+            // Remove placeholder since callback won't fire on error
+            self.pending_requests.lock().remove(&request_id);
             tracelimit::warn_ratelimited!("DnsQueryRaw failed with error code: {}", result);
-
-            // Clean up context
             // SAFETY: We're reclaiming ownership of the context we just created
             unsafe {
                 let _ = Box::from_raw(context_ptr);
             }
-
             // Return SERVFAIL response
-            let response = build_servfail_response(request.dns_query);
-            accessor_clone.push(DnsResponse {
-                flow: request.flow.clone(),
-                response_data: response,
-            });
+            push_servfail_response(&accessor_clone, &request.flow, request.dns_query);
 
             Ok(())
         }
@@ -182,22 +184,15 @@ impl DnsBackend for WindowsDnsResolverBackend {
         let mut pending = self.pending_requests.lock();
 
         // Cancel all pending requests
-        for (request_id, tracked) in pending.drain() {
-            // SAFETY: We're calling DnsCancelQueryRaw with a valid cancel handle
-            unsafe {
-                let result = api::DnsCancelQueryRaw(&tracked.cancel_handle);
-                if result != NO_ERROR as i32 {
-                    tracelimit::warn_ratelimited!(
-                        "Failed to cancel DNS request {}: error code {}",
-                        request_id,
-                        result
-                    );
-                }
-
-                // Clean up the context
-                // The callback may or may not have been called at this point,
-                // but we own the context pointer and must free it
-                let _ = Box::from_raw(tracked.context_ptr.get());
+        for (request_id, cancel_handle) in pending.drain() {
+            // SAFETY: We're calling DnsCancelQueryRaw with a valid cancel handle.
+            let result = unsafe { api::DnsCancelQueryRaw(&cancel_handle) };
+            if result != NO_ERROR as i32 {
+                tracelimit::warn_ratelimited!(
+                    "Failed to cancel DNS request {}: error code {}",
+                    request_id,
+                    result
+                );
             }
         }
 
@@ -221,28 +216,23 @@ unsafe extern "system" fn dns_query_raw_callback(
     query_context: *const core::ffi::c_void,
     query_results: *const DNS_QUERY_RAW_RESULT,
 ) {
-    // Validate inputs
-    if query_context.is_null() {
-        tracelimit::warn_ratelimited!("DNS callback received null context");
-        return;
-    }
-
-    // SAFETY: The context pointer was created by us in query() and is valid
-    let context = unsafe { &*query_context.cast::<RawCallbackContext>() };
+    // SAFETY: The context pointer was created by us in query() and is valid.
+    let context = unsafe { Box::from_raw(query_context.cast::<RawCallbackContext>().cast_mut()) };
     let request_id = context.request_id;
 
-    // Remove the tracked request from the map
-    let tracked = {
+    // Helper to push SERVFAIL response for this request
+    let push_servfail = || {
+        push_servfail_response(
+            &context.request.accessor,
+            &context.request.flow,
+            &context.request.query,
+        );
+    };
+
+    {
         let mut pending = context.pending_requests.lock();
-        pending.remove(&request_id)
-    };
-
-    let Some(tracked) = tracked else {
-        tracelimit::warn_ratelimited!("DNS callback for unknown request ID: {}", request_id);
-        return;
-    };
-
-    let context_ptr = tracked.context_ptr.get();
+        pending.remove(&request_id);
+    }
 
     // Process the results if available
     if !query_results.is_null() {
@@ -262,8 +252,8 @@ unsafe extern "system" fn dns_query_raw_callback(
                 };
 
                 // Push the successful response
-                tracked.request.accessor.push(DnsResponse {
-                    flow: tracked.request.flow.clone(),
+                context.request.accessor.push(DnsResponse {
+                    flow: context.request.flow.clone(),
                     response_data: response_data.to_vec(),
                 });
             } else {
@@ -271,22 +261,14 @@ unsafe extern "system" fn dns_query_raw_callback(
                 tracelimit::warn_ratelimited!(
                     "DNS query succeeded but returned no data, returning SERVFAIL"
                 );
-                let response = build_servfail_response(&tracked.request.query);
-                tracked.request.accessor.push(DnsResponse {
-                    flow: tracked.request.flow,
-                    response_data: response,
-                });
+                push_servfail();
             }
         } else {
             tracelimit::warn_ratelimited!(
                 status = results.queryStatus,
                 "DNS query failed, returning SERVFAIL"
             );
-            let response = build_servfail_response(&tracked.request.query);
-            tracked.request.accessor.push(DnsResponse {
-                flow: tracked.request.flow,
-                response_data: response,
-            });
+            push_servfail();
         }
 
         // Free the Windows-allocated result structure
@@ -297,16 +279,6 @@ unsafe extern "system" fn dns_query_raw_callback(
     } else {
         // No results provided, return SERVFAIL
         tracelimit::warn_ratelimited!("DNS callback received null results, returning SERVFAIL");
-        let response = build_servfail_response(&tracked.request.query);
-        tracked.request.accessor.push(DnsResponse {
-            flow: tracked.request.flow,
-            response_data: response,
-        });
-    }
-
-    // Clean up the callback context
-    // SAFETY: We're reclaiming ownership of the context box we created in query()
-    unsafe {
-        let _ = Box::from_raw(context_ptr);
+        push_servfail();
     }
 }

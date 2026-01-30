@@ -317,19 +317,20 @@ struct Ipv4Addresses {
 impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(mut params: ConsommeParams) -> Self {
-        let dns = match dns_resolver::DnsResolver::new() {
-            Ok(dns) => {
-                // When the DNS resolver is available, use the default internal nameserver.
-                params.nameservers = vec![Ipv4Address::from_octets([10, 0, 0, 1])];
-                Some(dns)
-            }
-            Err(_) => {
-                tracelimit::warn_ratelimited!(
-                    "failed to initialize DNS resolver, falling back to using host DNS settings"
-                );
-                None
-            }
-        };
+        let dns =
+            match dns_resolver::DnsResolver::new(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS) {
+                Ok(dns) => {
+                    // When the DNS resolver is available, use the default internal nameserver.
+                    params.nameservers = vec![params.gateway_ip];
+                    Some(dns)
+                }
+                Err(_) => {
+                    tracelimit::warn_ratelimited!(
+                        "failed to initialize DNS resolver, falling back to using host DNS settings"
+                    );
+                    None
+                }
+            };
         let timeout = params.udp_timeout;
         Self {
             state: ConsommeState {
@@ -474,5 +475,12 @@ impl<T: Client> Access<'_, T> {
             p => return Err(DropReason::UnsupportedIpProtocol(p)),
         };
         Ok(())
+    }
+
+    /// Updates the DNS nameservers based on the current consomme parameters.
+    pub fn update_dns_nameservers(&mut self) {
+        if self.inner.dns.is_some() {
+            self.inner.state.params.nameservers = vec![self.inner.state.params.gateway_ip];
+        }
     }
 }

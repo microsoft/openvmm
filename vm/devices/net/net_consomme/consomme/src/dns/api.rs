@@ -3,6 +3,9 @@
 
 //! Raw DNS API bindings with delay-loading support.
 
+// Ensure winapi dependency is recognized as used (required for pal::delayload!)
+use winapi as _;
+
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_CANCEL;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULT;

@@ -169,8 +169,8 @@ impl<T: Client> Access<'_, T> {
 
             conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
         });
-        if self.inner.dns.is_some() {
-            let responses = self.inner.dns.as_mut().unwrap().poll_responses(cx);
+        if let Some(dns) = &mut self.inner.dns {
+            let responses = dns.poll_responses(cx);
 
             for response in responses {
                 if let Err(e) = self.send_dns_response(&response) {
@@ -283,24 +283,12 @@ impl<T: Client> Access<'_, T> {
         addresses: &Ipv4Addresses,
         udp: &UdpPacket<&[u8]>,
     ) -> Result<bool, DropReason> {
-        let payload = udp.payload();
         match udp.dst_port() {
             DHCP_SERVER => {
-                self.handle_dhcp(payload)?;
+                self.handle_dhcp(udp.payload())?;
                 Ok(true)
             }
-            DNS_PORT => {
-                if self.inner.dns.is_some() {
-                    let udp_repr = UdpRepr {
-                        src_port: udp.src_port(),
-                        dst_port: udp.dst_port(),
-                    };
-                    self.handle_dns(frame, addresses, &udp_repr, payload)?;
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
+            DNS_PORT => self.handle_dns(frame, addresses, udp),
             _ => Ok(false),
         }
     }
@@ -336,34 +324,32 @@ impl<T: Client> Access<'_, T> {
         &mut self,
         frame: &EthernetRepr,
         addresses: &Ipv4Addresses,
-        udp: &UdpRepr,
-        dns_query: &[u8],
-    ) -> Result<(), DropReason> {
+        udp: &UdpPacket<&[u8]>,
+    ) -> Result<bool, DropReason> {
+        let Some(dns) = self.inner.dns.as_mut() else {
+            return Ok(false);
+        };
+
         let request = DnsRequest {
             flow: DnsFlow {
                 src_addr: addresses.src_addr,
                 dst_addr: addresses.dst_addr,
-                src_port: udp.src_port,
-                dst_port: udp.dst_port,
+                src_port: udp.src_port(),
+                dst_port: udp.dst_port(),
                 gateway_mac: self.inner.state.params.gateway_mac,
                 client_mac: frame.src_addr,
             },
-            dns_query,
+            dns_query: udp.payload(),
         };
 
         // Submit the DNS query with addressing information
         // The response will be queued and sent later in poll_udp
-        self.inner
-            .dns
-            .as_mut()
-            .unwrap()
-            .handle_dns(&request)
-            .map_err(|e| {
-                tracing::error!(error = ?e, "Failed to start DNS query");
-                DropReason::Packet(smoltcp::wire::Error)
-            })?;
+        dns.handle_dns(&request).map_err(|e| {
+            tracing::error!(error = ?e, "Failed to start DNS query");
+            DropReason::Packet(smoltcp::wire::Error)
+        })?;
 
-        Ok(())
+        Ok(true)
     }
 
     fn send_dns_response(&mut self, response: &DnsResponse) -> Result<(), DropReason> {
