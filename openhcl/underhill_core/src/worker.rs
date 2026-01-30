@@ -3632,6 +3632,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         guest_state_encryption_policy: _,
         guest_state_lifetime: _,
         management_vtl_features: _,
+        hv_sint_enabled: _,
     } = &dps.general;
 
     if *hibernation_enabled {

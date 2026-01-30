@@ -1061,6 +1061,7 @@ async fn vm_config_from_command_line(
                             EfiDiagnosticsLogLevelCli::Full => get_resources::ged::EfiDiagnosticsLogLevelType::Full,
                         }
                     },
+                    hv_sint_enabled: false,
                 }
                 .into_resource(),
             ),
