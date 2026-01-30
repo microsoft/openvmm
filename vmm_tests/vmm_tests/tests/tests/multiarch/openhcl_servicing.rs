@@ -17,6 +17,8 @@ use nvme_resources::NvmeFaultControllerHandle;
 use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::IoQueueFaultBehavior;
+use nvme_resources::fault::IoQueueFaultConfig;
 use nvme_resources::fault::NamespaceChange;
 use nvme_resources::fault::NamespaceFaultConfig;
 use nvme_resources::fault::PciFaultBehavior;
@@ -546,6 +548,83 @@ async fn servicing_keepalive_with_nvme_identify_fault(
         None,
     )
     .await?;
+
+    Ok(())
+}
+
+/// Verifies behavior when a submission queue is full and we try to service. The
+/// servicing should still succeed (i.e. the queue pairs should still be
+/// listening for save commands).
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_with_io(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let flags = config.default_servicing_flags();
+    let mut fault_start_updater = CellUpdater::new(false);
+    let cell = fault_start_updater.cell();
+
+    // Delay excessively to cause the queue to fill up
+    let fault_configuration = FaultConfiguration::new(cell.clone()).with_io_queue_fault(
+        IoQueueFaultConfig::new(cell.clone()).with_completion_queue_fault(
+            CommandMatchBuilder::new().match_cdw0(0, 0).build(),
+            IoQueueFaultBehavior::Delay(Duration::from_millis(100000)),
+        ),
+    );
+
+    // We will need
+    let scsi_controller_guid = Guid::new_random();
+    // Get the device paths for the VTL0 NVMe disk.
+    let vtl0_nvme_lun = 1;
+    let disk_size = 2 * 1024 * 1024 * 1024; // 2 GiB
+    const SECTOR_SIZE: u64 = 512;
+
+    let (mut vm, agent) = create_keepalive_test_config(
+        config,
+        fault_configuration,
+        Some(scsi_controller_guid.clone()),
+    )
+    .await?;
+
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+
+    // Make sure the disk showed up.
+    cmd!(sh, "ls /dev/sda").run().await?;
+    cmd!(sh, "ls /dev/sdb").run().await?;
+    cmd!(sh, "ls /dev/null").run().await?;
+
+    // Fetch the correct disk path for the VTL0 NVMe disk. Petri may assign it
+    // to /dev/sda or /dev/sdb depending on timing.
+    let device_paths = get_device_paths(
+        &agent,
+        scsi_controller_guid,
+        vec![ExpectedGuestDevice {
+            lun: vtl0_nvme_lun,
+            disk_size_sectors: (disk_size / SECTOR_SIZE) as usize,
+            friendly_name: format!("nvme_disk",),
+        }],
+    )
+    .await?;
+    assert!(device_paths.len() == 1);
+    let disk_path = &device_paths[0];
+
+    // Add a sleep to let the system stablize. When the guest boots it tries to
+    // read from the disk. We don't want that messing up our experiment.
+    thread::sleep(Duration::from_secs(5));
+
+    fault_start_updater.set(true).await;
+    let _io_child = read_from_disk(&agent, disk_path).await?;
+
+    thread::sleep(Duration::from_secs(5));
+
+    for _ in 0..1 {
+        vm.restart_openhcl(igvm_file.clone(), flags).await?;
+        thread::sleep(Duration::from_secs(5));
+    }
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
 
     Ok(())
 }
