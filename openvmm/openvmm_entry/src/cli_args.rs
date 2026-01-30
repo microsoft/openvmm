@@ -642,7 +642,8 @@ Options:
 
     /// Attach a PCIe remote device to a downstream port
     #[clap(long_help = r#"
-Attach PCIe remote devices to root ports or downstream switch ports.
+Attach PCIe devices to root ports or downstream switch ports
+which are implemented in a simulator running in a remote process.
 
 Examples:
     # Attach to root port rc0rp0 with default socket
