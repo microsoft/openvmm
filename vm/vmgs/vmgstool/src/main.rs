@@ -70,6 +70,8 @@ enum Error {
     InvalidKeySize(u64, u64),
     #[error("File is not encrypted")]
     NotEncrypted,
+    #[error("File must be decrypted to perform this operation but no key was provided")]
+    EncryptedNoKey,
     #[error("File is VMGSv1 format")]
     V1Format,
     #[error("VmgsStorageBackend")]
@@ -259,6 +261,36 @@ enum Options {
         #[command(flatten)]
         file_path: FilePathArg,
     },
+    /// Move data to a new file id
+    Move {
+        #[command(flatten)]
+        file_path: FilePathArg,
+        /// Source VMGS File ID
+        #[clap(long, alias = "src", value_parser = parse_file_id)]
+        src_file_id: FileId,
+        /// Destination VMGS File ID
+        #[clap(long, alias = "dst", value_parser = parse_file_id)]
+        dst_file_id: FileId,
+        #[command(flatten)]
+        key_path: KeyPathArg,
+        /// Overwrite the VMGS data at `dst_file_id`, even if it already exists
+        #[clap(long, alias = "allowoverwrite")]
+        allow_overwrite: bool,
+    },
+    /// Delete a file id
+    Delete {
+        #[command(flatten)]
+        file_path: FilePathArg,
+        #[command(flatten)]
+        file_id: FileIdArg,
+    },
+    /// Dump information about all the File IDs allocated in the VMGS file.
+    DumpFileTable {
+        #[command(flatten)]
+        file_path: FilePathArg,
+        #[command(flatten)]
+        key_path: KeyPathArg,
+    },
     /// UEFI NVRAM operations
     UefiNvram {
         #[clap(subcommand)]
@@ -290,6 +322,7 @@ fn parse_file_id(file_id: &str) -> Result<FileId, std::num::ParseIntError> {
         "HIBERNATION_FIRMWARE" => FileId::HIBERNATION_FIRMWARE,
         "PLATFORM_SEED" => FileId::PLATFORM_SEED,
         "PROVENANCE_DOC" => FileId::PROVENANCE_DOC,
+        "TPM_NVRAM_BACKUP" => FileId::TPM_NVRAM_BACKUP,
         "EXTENDED_FILE_TABLE" => FileId::EXTENDED_FILE_TABLE,
         v => FileId(v.parse::<u32>()?),
     })
@@ -467,6 +500,29 @@ async fn do_main() -> Result<(), Error> {
         Options::QueryEncryption { file_path } => {
             vmgs_file_query_encryption(file_path.file_path).await
         }
+        Options::Move {
+            file_path,
+            src_file_id,
+            dst_file_id,
+            key_path,
+            allow_overwrite,
+        } => {
+            vmgs_file_move(
+                file_path.file_path,
+                src_file_id,
+                dst_file_id,
+                key_path.key_path,
+                allow_overwrite,
+            )
+            .await
+        }
+        Options::Delete { file_path, file_id } => {
+            vmgs_file_delete(file_path.file_path, file_id.file_id).await
+        }
+        Options::DumpFileTable {
+            file_path,
+            key_path,
+        } => vmgs_file_dump_file_table(file_path.file_path, key_path.key_path).await,
         Options::UefiNvram { operation } => uefi_nvram::do_command(operation).await,
         #[cfg(feature = "test_helpers")]
         Options::Test { operation } => test::do_command(operation).await,
@@ -480,7 +536,7 @@ async fn vmgs_file_update_key(
     new_key_path: impl AsRef<Path>,
 ) -> Result<(), Error> {
     let new_encryption_key = read_key_path(new_key_path)?;
-    let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadWrite).await?;
+    let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadWriteRequire).await?;
 
     vmgs_update_key(&mut vmgs, encryption_alg, new_encryption_key.as_ref()).await
 }
@@ -662,14 +718,12 @@ async fn vmgs_file_write(
     let mut file = File::open(data_path.as_ref()).map_err(Error::DataFile)?;
     let mut buf = Vec::new();
 
-    // manually allow, since we want to differentiate between the file not being
-    // accessible, and a read operation failing
     file.read_to_end(&mut buf).map_err(Error::DataFile)?;
 
     eprintln!("Read {} bytes", buf.len());
 
     let encrypt = key_path.is_some();
-    let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadWrite).await?;
+    let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadWriteIgnore).await?;
 
     vmgs_write(&mut vmgs, file_id, &buf, encrypt, allow_overwrite).await?;
 
@@ -716,7 +770,7 @@ async fn vmgs_file_read(
     raw_stdout: bool,
 ) -> Result<(), Error> {
     let decrypt = key_path.is_some();
-    let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadOnly).await?;
+    let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadOnlyWarn).await?;
 
     let file_info = vmgs.get_file_info(file_id)?;
     if !decrypt && file_info.encrypted {
@@ -772,9 +826,93 @@ async fn vmgs_read(vmgs: &mut Vmgs, file_id: FileId, decrypt: bool) -> Result<Ve
     })
 }
 
+async fn vmgs_file_move(
+    file_path: impl AsRef<Path>,
+    src: FileId,
+    dst: FileId,
+    key_path: Option<impl AsRef<Path>>,
+    allow_overwrite: bool,
+) -> Result<(), Error> {
+    let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadWriteRequire).await?;
+
+    vmgs_move(&mut vmgs, src, dst, allow_overwrite).await
+}
+
+async fn vmgs_move(
+    vmgs: &mut Vmgs,
+    src: FileId,
+    dst: FileId,
+    allow_overwrite: bool,
+) -> Result<(), Error> {
+    eprintln!(
+        "Moving File ID {} ({:?}) to File ID {} ({:?})",
+        src.0, src, dst.0, dst
+    );
+
+    vmgs.move_file(src, dst, allow_overwrite).await?;
+
+    Ok(())
+}
+
+async fn vmgs_file_delete(file_path: impl AsRef<Path>, file_id: FileId) -> Result<(), Error> {
+    let mut vmgs = vmgs_file_open(
+        file_path,
+        None as Option<PathBuf>,
+        OpenMode::ReadWriteIgnore,
+    )
+    .await?;
+
+    vmgs_delete(&mut vmgs, file_id).await
+}
+
+async fn vmgs_delete(vmgs: &mut Vmgs, file_id: FileId) -> Result<(), Error> {
+    eprintln!("Deleting File ID {} ({:?})", file_id.0, file_id);
+
+    vmgs.delete_file(file_id).await?;
+
+    Ok(())
+}
+
+async fn vmgs_file_dump_file_table(
+    file_path: impl AsRef<Path>,
+    key_path: Option<impl AsRef<Path>>,
+) -> Result<(), Error> {
+    let vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadOnlyWarn).await?;
+
+    vmgs_dump_file_table(&vmgs)
+}
+
+fn vmgs_dump_file_table(vmgs: &Vmgs) -> Result<(), Error> {
+    println!("FILE TABLE");
+    println!(
+        "{0:^7} {1:^25} {2:^9} {3:^9} {4:^9}",
+        "File ID", "File Name", "Allocated", "Valid", "Encrypted",
+    );
+    println!(
+        "{} {} {} {} {}",
+        "-".repeat(7),
+        "-".repeat(25),
+        "-".repeat(9),
+        "-".repeat(9),
+        "-".repeat(9),
+    );
+    for (file_id, file_info) in vmgs.dump_file_table() {
+        println!(
+            "{0:>7} {1:^25?} {2:>9} {3:>9} {4:^9}",
+            file_id.0,
+            file_id,
+            file_info.allocated_bytes,
+            file_info.valid_bytes,
+            file_info.encrypted,
+        );
+    }
+
+    Ok(())
+}
+
 async fn vmgs_file_dump_headers(file_path: impl AsRef<Path>) -> Result<(), Error> {
     let file = File::open(file_path.as_ref()).map_err(Error::VmgsFile)?;
-    let disk = vhdfiledisk_open(file, OpenMode::ReadOnly)?;
+    let disk = vhdfiledisk_open(file, OpenMode::ReadOnlyIgnore)?;
 
     let (headers, res0) = match read_headers(disk).await {
         Ok(headers) => (Some(headers), Ok(())),
@@ -954,9 +1092,25 @@ fn vmgs_dump_headers(header1: &VmgsHeader, header2: &VmgsHeader) -> Result<(), E
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[expect(clippy::enum_variant_names)]
 enum OpenMode {
-    ReadOnly,
-    ReadWrite,
+    /// Open read-only. Ignore encryption status.
+    ReadOnlyIgnore,
+    /// Open read-only. Warn if encrypted and no key was provided.
+    ReadOnlyWarn,
+    /// Open read-write. Ignore encryption status.
+    ReadWriteIgnore,
+    /// Open read-write. Fail if encrypted and no key was provided.
+    ReadWriteRequire,
+}
+
+impl OpenMode {
+    fn write(&self) -> bool {
+        match self {
+            OpenMode::ReadOnlyIgnore | OpenMode::ReadOnlyWarn => false,
+            OpenMode::ReadWriteIgnore | OpenMode::ReadWriteRequire => true,
+        }
+    }
 }
 
 async fn vmgs_file_open(
@@ -967,7 +1121,7 @@ async fn vmgs_file_open(
     eprintln!("Opening VMGS File: {}", file_path.as_ref().display());
     let file = fs_err::OpenOptions::new()
         .read(true)
-        .write(open_mode == OpenMode::ReadWrite)
+        .write(open_mode.write())
         .open(file_path.as_ref())
         .map_err(Error::VmgsFile)?;
 
@@ -975,7 +1129,7 @@ async fn vmgs_file_open(
 
     let encryption_key = key_path.map(read_key_path).transpose()?;
 
-    let res = vmgs_open(disk, encryption_key.as_deref()).await;
+    let res = vmgs_open(disk, encryption_key.as_deref(), open_mode).await;
 
     if matches!(
         res,
@@ -990,7 +1144,11 @@ async fn vmgs_file_open(
 }
 
 #[cfg_attr(not(with_encryption), expect(unused_mut), expect(unused_variables))]
-async fn vmgs_open(disk: Disk, encryption_key: Option<&[u8]>) -> Result<Vmgs, Error> {
+async fn vmgs_open(
+    disk: Disk,
+    encryption_key: Option<&[u8]>,
+    open_mode: OpenMode,
+) -> Result<Vmgs, Error> {
     let mut vmgs: Vmgs = Vmgs::open(disk, None).await?;
 
     if let Some(encryption_key) = encryption_key {
@@ -1002,6 +1160,14 @@ async fn vmgs_open(disk: Disk, encryption_key: Option<&[u8]>) -> Result<Vmgs, Er
         }
         #[cfg(not(with_encryption))]
         unreachable!("Encryption requires the encryption feature");
+    } else if vmgs.is_encrypted() {
+        match open_mode {
+            OpenMode::ReadWriteRequire => return Err(Error::EncryptedNoKey),
+            OpenMode::ReadOnlyWarn => eprintln!(
+                "Warning: Opening encrypted VMGS file without decrypting. File ID encryption status may be inaccurate."
+            ),
+            OpenMode::ReadOnlyIgnore | OpenMode::ReadWriteIgnore => {}
+        }
     }
 
     Ok(vmgs)
@@ -1032,7 +1198,7 @@ async fn vmgs_file_query_file_size(
     file_path: impl AsRef<Path>,
     file_id: FileId,
 ) -> Result<(), Error> {
-    let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnly).await?;
+    let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnlyIgnore).await?;
 
     let file_size = vmgs_query_file_size(&vmgs, file_id)?;
 
@@ -1051,7 +1217,7 @@ fn vmgs_query_file_size(vmgs: &Vmgs, file_id: FileId) -> Result<u64, Error> {
 async fn vmgs_file_query_encryption(file_path: impl AsRef<Path>) -> Result<(), Error> {
     print!("{} is ", file_path.as_ref().display());
 
-    let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnly).await?;
+    let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnlyIgnore).await?;
 
     match (vmgs.get_encryption_algorithm(), vmgs_get_gsp_type(&vmgs)) {
         (EncryptionAlgorithm::NONE, scheme) => {
@@ -1096,7 +1262,8 @@ fn vhdfiledisk_open(file: File, open_mode: OpenMode) -> Result<Disk, Error> {
     validate_size(file_size)?;
 
     let disk = Disk::new(
-        Vhd1Disk::open_fixed(file.into(), open_mode == OpenMode::ReadOnly).map_err(Error::Vhd1)?,
+        Vhd1Disk::open_fixed(file.into(), open_mode == OpenMode::ReadOnlyWarn)
+            .map_err(Error::Vhd1)?,
     )
     .map_err(Error::InvalidDisk)?;
 
@@ -1151,11 +1318,11 @@ mod tests {
     ) -> Result<Vmgs, Error> {
         let file = fs_err::OpenOptions::new()
             .read(true)
-            .write(open_mode == OpenMode::ReadWrite)
+            .write(open_mode.write())
             .open(path.as_ref())
             .map_err(Error::VmgsFile)?;
         let disk = vhdfiledisk_open(file, open_mode)?;
-        let vmgs = vmgs_open(disk, encryption_key).await?;
+        let vmgs = vmgs_open(disk, encryption_key, open_mode).await?;
         Ok(vmgs)
     }
 
@@ -1163,7 +1330,8 @@ mod tests {
         file_path: impl AsRef<Path>,
         file_id: FileId,
     ) -> Result<u64, Error> {
-        let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnly).await?;
+        let vmgs =
+            vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnlyIgnore).await?;
 
         vmgs_query_file_size(&vmgs, file_id)
     }
@@ -1172,7 +1340,8 @@ mod tests {
     async fn test_vmgs_query_encryption(
         file_path: impl AsRef<Path>,
     ) -> Result<EncryptionAlgorithm, Error> {
-        let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnly).await?;
+        let vmgs =
+            vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnlyIgnore).await?;
 
         Ok(vmgs.get_encryption_algorithm())
     }
@@ -1184,7 +1353,8 @@ mod tests {
         encryption_key: Option<&[u8]>,
         new_encryption_key: &[u8],
     ) -> Result<(), Error> {
-        let mut vmgs = test_vmgs_open(file_path, OpenMode::ReadWrite, encryption_key).await?;
+        let mut vmgs =
+            test_vmgs_open(file_path, OpenMode::ReadWriteRequire, encryption_key).await?;
 
         vmgs_update_key(&mut vmgs, encryption_alg, new_encryption_key).await
     }
@@ -1200,7 +1370,7 @@ mod tests {
     async fn read_invalid_file() {
         let (_dir, path) = new_path();
 
-        let result = test_vmgs_open(path, OpenMode::ReadOnly, None).await;
+        let result = test_vmgs_open(path, OpenMode::ReadOnlyWarn, None).await;
 
         assert!(result.is_err());
     }
@@ -1211,7 +1381,7 @@ mod tests {
 
         test_vmgs_create(&path, None, false, None).await.unwrap();
 
-        let mut vmgs = test_vmgs_open(path, OpenMode::ReadOnly, None)
+        let mut vmgs = test_vmgs_open(path, OpenMode::ReadOnlyWarn, None)
             .await
             .unwrap();
         let result = vmgs_read(&mut vmgs, FileId::FILE_TABLE, false).await;
@@ -1225,7 +1395,7 @@ mod tests {
 
         test_vmgs_create(&path, None, false, None).await.unwrap();
 
-        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWrite, None)
+        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWriteRequire, None)
             .await
             .unwrap();
 
@@ -1246,7 +1416,7 @@ mod tests {
 
         test_vmgs_create(&path, None, false, None).await.unwrap();
 
-        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWrite, None)
+        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWriteRequire, None)
             .await
             .unwrap();
 
@@ -1296,7 +1466,7 @@ mod tests {
         .await
         .unwrap();
 
-        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWrite, Some(&encryption_key))
+        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWriteRequire, Some(&encryption_key))
             .await
             .unwrap();
 
@@ -1330,7 +1500,7 @@ mod tests {
 
         test_vmgs_create(&path, None, false, None).await.unwrap();
 
-        let result = test_vmgs_open(path, OpenMode::ReadWrite, Some(&encryption_key)).await;
+        let result = test_vmgs_open(path, OpenMode::ReadWriteRequire, Some(&encryption_key)).await;
 
         assert!(result.is_err());
     }
@@ -1351,7 +1521,7 @@ mod tests {
         .await
         .unwrap();
 
-        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWrite, None)
+        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWriteIgnore, None)
             .await
             .unwrap();
 
@@ -1373,7 +1543,7 @@ mod tests {
         test_vmgs_create(&path, None, false, None).await.unwrap();
 
         {
-            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWrite, None)
+            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWriteRequire, None)
                 .await
                 .unwrap();
 
@@ -1405,7 +1575,7 @@ mod tests {
         .unwrap();
 
         {
-            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWrite, Some(&encryption_key))
+            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWriteRequire, Some(&encryption_key))
                 .await
                 .unwrap();
 
@@ -1436,7 +1606,7 @@ mod tests {
 
         // verify the file is zero size
         {
-            let result = test_vmgs_open(&path, OpenMode::ReadOnly, None).await;
+            let result = test_vmgs_open(&path, OpenMode::ReadOnlyWarn, None).await;
             assert!(matches!(result, Err(Error::ZeroSize)));
         }
 
@@ -1447,7 +1617,7 @@ mod tests {
 
         // verify the file is empty (with non-zero size)
         {
-            let result = test_vmgs_open(&path, OpenMode::ReadOnly, None).await;
+            let result = test_vmgs_open(&path, OpenMode::ReadOnlyWarn, None).await;
             assert!(matches!(result, Err(Error::EmptyFile)));
         }
 
@@ -1464,7 +1634,7 @@ mod tests {
 
         // verify the vmgs is identified as corrupted
         {
-            let result = test_vmgs_open(&path, OpenMode::ReadOnly, None).await;
+            let result = test_vmgs_open(&path, OpenMode::ReadOnlyWarn, None).await;
             matches!(result, Err(Error::Vmgs(vmgs::Error::CorruptFormat(_))));
         }
 
@@ -1475,7 +1645,7 @@ mod tests {
 
         // sanity check that the positive case works
         {
-            test_vmgs_open(&path, OpenMode::ReadOnly, None)
+            test_vmgs_open(&path, OpenMode::ReadOnlyWarn, None)
                 .await
                 .unwrap();
         }
@@ -1521,7 +1691,7 @@ mod tests {
         .unwrap();
 
         {
-            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWrite, Some(&encryption_key))
+            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWriteRequire, Some(&encryption_key))
                 .await
                 .unwrap();
 
@@ -1540,7 +1710,7 @@ mod tests {
         .unwrap();
 
         {
-            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadOnly, Some(&new_encryption_key))
+            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadOnlyWarn, Some(&new_encryption_key))
                 .await
                 .unwrap();
 
@@ -1551,7 +1721,7 @@ mod tests {
         }
 
         // Old key should no longer work
-        let result = test_vmgs_open(&path, OpenMode::ReadOnly, Some(&encryption_key)).await;
+        let result = test_vmgs_open(&path, OpenMode::ReadOnlyWarn, Some(&encryption_key)).await;
         assert!(result.is_err());
     }
 
@@ -1568,7 +1738,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWrite, Some(&encryption_key))
+        let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWriteRequire, Some(&encryption_key))
             .await
             .unwrap();
 
@@ -1619,5 +1789,117 @@ mod tests {
 
         let encryption_algorithm = test_vmgs_query_encryption(&path).await.unwrap();
         assert_eq!(encryption_algorithm, EncryptionAlgorithm::AES_GCM);
+    }
+
+    #[async_test]
+    async fn move_delete_file() {
+        let (_dir, path) = new_path();
+        let buf = b"Plain text data".to_vec();
+
+        test_vmgs_create(&path, None, false, None).await.unwrap();
+
+        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWriteRequire, None)
+            .await
+            .unwrap();
+
+        vmgs_write(&mut vmgs, FileId::TPM_NVRAM, &buf, false, false)
+            .await
+            .unwrap();
+        let read_buf = vmgs_read(&mut vmgs, FileId::TPM_NVRAM, false)
+            .await
+            .unwrap();
+        assert_eq!(buf, read_buf);
+
+        vmgs_move(
+            &mut vmgs,
+            FileId::TPM_NVRAM,
+            FileId::TPM_NVRAM_BACKUP,
+            false,
+        )
+        .await
+        .unwrap();
+        vmgs_read(&mut vmgs, FileId::TPM_NVRAM, false)
+            .await
+            .unwrap_err();
+        let read_buf = vmgs_read(&mut vmgs, FileId::TPM_NVRAM_BACKUP, false)
+            .await
+            .unwrap();
+        assert_eq!(buf, read_buf);
+        vmgs_delete(&mut vmgs, FileId::TPM_NVRAM_BACKUP)
+            .await
+            .unwrap();
+        vmgs_read(&mut vmgs, FileId::TPM_NVRAM_BACKUP, false)
+            .await
+            .unwrap_err();
+    }
+
+    #[cfg(with_encryption)]
+    #[async_test]
+    async fn move_delete_file_encrypted() {
+        let (_dir, path) = new_path();
+        let encryption_key = vec![5; 32];
+        let buf_1 = b"123".to_vec();
+        let buf_2 = b"456".to_vec();
+
+        test_vmgs_create(
+            &path,
+            None,
+            false,
+            Some((EncryptionAlgorithm::AES_GCM, &encryption_key)),
+        )
+        .await
+        .unwrap();
+
+        {
+            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWriteRequire, Some(&encryption_key))
+                .await
+                .unwrap();
+
+            vmgs_write(&mut vmgs, FileId::BIOS_NVRAM, &buf_2, true, false)
+                .await
+                .unwrap();
+            vmgs_write(&mut vmgs, FileId::TPM_NVRAM, &buf_1, true, false)
+                .await
+                .unwrap();
+            let read_buf = vmgs_read(&mut vmgs, FileId::TPM_NVRAM, true).await.unwrap();
+            assert!(read_buf == buf_1);
+
+            vmgs_move(
+                &mut vmgs,
+                FileId::TPM_NVRAM,
+                FileId::TPM_NVRAM_BACKUP,
+                false,
+            )
+            .await
+            .unwrap();
+            let read_buf = vmgs_read(&mut vmgs, FileId::TPM_NVRAM_BACKUP, true)
+                .await
+                .unwrap();
+            assert!(read_buf == buf_1);
+        }
+
+        // delete the file without decrypting, as the cmdline tool would do
+        {
+            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWriteIgnore, None)
+                .await
+                .unwrap();
+            vmgs_delete(&mut vmgs, FileId::TPM_NVRAM_BACKUP)
+                .await
+                .unwrap();
+            vmgs_read(&mut vmgs, FileId::TPM_NVRAM_BACKUP, false)
+                .await
+                .unwrap_err();
+        }
+
+        // make sure the file is not corrupted
+        {
+            let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWriteRequire, Some(&encryption_key))
+                .await
+                .unwrap();
+            let read_buf = vmgs_read(&mut vmgs, FileId::BIOS_NVRAM, true)
+                .await
+                .unwrap();
+            assert!(read_buf == buf_2);
+        }
     }
 }
