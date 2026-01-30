@@ -150,6 +150,13 @@ struct FileIdArg {
 
 #[derive(Parser)]
 #[clap(name = "vmgstool", about = "Tool to interact with VMGS files.")]
+#[clap(long_about = r#"Tool to interact with VMGS files.
+
+Unless otherwise noted, everything written to STDOUT and STDERR is unstable
+and subject to change. Automated consumers of VmgsTool should generally parse
+only the exit code. In some cases, the STDOUT of specific subcommands may be
+made stable (ex: query-size). STDERR is for human-readable debug messages and
+is never stable."#)]
 enum Options {
     /// Create and initialize `filepath` as a VMGS file of size `filesize`.
     ///
@@ -223,6 +230,8 @@ enum Options {
         file_path: FilePathArg,
     },
     /// Get the size of the specified `fileid` within the VMGS file
+    ///
+    /// The STDOUT of this subcommand is stable and contains only the file size.
     QuerySize {
         #[command(flatten)]
         file_path: FilePathArg,
@@ -1207,6 +1216,7 @@ async fn vmgs_file_query_file_size(
         file_id.0, file_id, file_size
     );
 
+    // STABLE OUTPUT
     println!("{file_size}");
 
     Ok(())
