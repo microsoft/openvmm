@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 //! Resource definitions for the PCIe remote device.
 
 use mesh::MeshPayload;
@@ -22,9 +24,13 @@ pub struct PcieRemoteHandle {
     /// Path to the Unix domain socket for communication with the simulator.
     /// If `None`, defaults to [`DEFAULT_SOCKET_PATH`].
     pub socket_path: Option<String>,
-    /// The upper 16 bits of the PCI location (segment:bus).
+    /// Host Unit - Refers to the PCIe Express Endpoint logic in the
+    /// simulator.  If the chip implement multiple PCIe Express IP blocks,
+    /// this parameter distinguishes them.
     pub hu: u16,
-    /// The lower 16 bits of the PCI location (device:function).
+    /// If the chip implement multiple PCIe Express links within
+    /// a single host unit (as with bifurcation), this parameter
+    /// distinguishes them.
     pub controller: u16,
 }
 

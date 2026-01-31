@@ -1712,6 +1712,9 @@ impl FromStr for PcieRemoteCli {
             match key {
                 "socket" => {
                     let path = value.context("socket requires a path")?;
+                    if let Some(extra) = kv.next() {
+                        anyhow::bail!("unexpected token: '{extra}'")
+                    }
                     if path.is_empty() {
                         anyhow::bail!("socket path cannot be empty");
                     }
@@ -1719,10 +1722,16 @@ impl FromStr for PcieRemoteCli {
                 }
                 "hu" => {
                     let val = value.context("hu requires a value")?;
+                    if let Some(extra) = kv.next() {
+                        anyhow::bail!("unexpected token: '{extra}'")
+                    }
                     hu = val.parse().context("failed to parse hu")?;
                 }
                 "controller" => {
                     let val = value.context("controller requires a value")?;
+                    if let Some(extra) = kv.next() {
+                        anyhow::bail!("unexpected token: '{extra}'")
+                    }
                     controller = val.parse().context("failed to parse controller")?;
                 }
                 _ => anyhow::bail!("unknown option: '{key}'"),
