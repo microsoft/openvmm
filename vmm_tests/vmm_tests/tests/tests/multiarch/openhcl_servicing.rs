@@ -56,7 +56,6 @@ use pipette_client::PipetteClient;
 use pipette_client::process::Child;
 use pipette_client::process::Stdio;
 use scsidisk_resources::SimpleScsiDiskHandle;
-use std::thread;
 use std::time::Duration;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
@@ -626,7 +625,7 @@ async fn _servicing_keepalive_with_io(
         vec![ExpectedGuestDevice {
             lun: VTL0_NVME_LUN,
             disk_size_sectors: (disk_size / SECTOR_SIZE) as usize,
-            friendly_name: format!("nvme_disk",),
+            friendly_name: "nvme_disk".to_string(),
         }],
     )
     .await?;
@@ -862,6 +861,7 @@ async fn servicing_with_keepalive_disabled_after_servicing(
 
 // Reads a large chunk from the disk, generating lots of concurrent IOs on the
 // submission queue.
+#[allow(dead_code)]
 async fn large_read_from_disk(
     agent: &PipetteClient,
     disk_path: &str,
