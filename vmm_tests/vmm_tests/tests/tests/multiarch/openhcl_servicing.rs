@@ -598,7 +598,7 @@ async fn _servicing_keepalive_with_io(
         .with_pci_fault(PciFaultConfig::new().with_custom_cap_mqes(8));
 
     let scsi_controller_guid = Guid::new_random();
-    let disk_size = 2 * 1024 * 1024 * 1024; // 10 GiB
+    let disk_size = 2 * 1024 * 1024 * 1024; // 2 GiB
     const SECTOR_SIZE: u64 = 512;
 
     let (mut vm, agent) = create_keepalive_test_config(
