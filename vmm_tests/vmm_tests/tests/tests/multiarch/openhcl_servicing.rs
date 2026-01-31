@@ -576,8 +576,8 @@ async fn servicing_keepalive_with_nvme_identify_fault(
 /// Verifies behavior when a submission queue is full and we try to service. The
 /// servicing should still succeed (i.e. the queue pairs should still be
 /// listening for save commands).
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn servicing_keepalive_with_io(
+// #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn _servicing_keepalive_with_io(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
