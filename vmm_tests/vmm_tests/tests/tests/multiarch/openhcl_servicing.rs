@@ -56,7 +56,7 @@ use pipette_client::PipetteClient;
 use pipette_client::process::Child;
 use pipette_client::process::Stdio;
 use scsidisk_resources::SimpleScsiDiskHandle;
-use std::os::unix::thread;
+use std::thread;
 use std::time::Duration;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
@@ -588,15 +588,17 @@ async fn servicing_keepalive_with_io(
     // Delay excessively (100s) to cause the queue to fill up. Don't start fault
     // immediately. There will be some IO during guest boot that we don't want to
     // interfere with.
-    let fault_configuration = FaultConfiguration::new(cell.clone()).with_io_queue_fault(
-        IoQueueFaultConfig::new(cell.clone()).with_completion_queue_fault(
-            CommandMatchBuilder::new().match_cdw0(0, 0).build(),
-            IoQueueFaultBehavior::Delay(Duration::from_millis(100_000)),
-        ),
-    );
+    let fault_configuration = FaultConfiguration::new(cell.clone())
+        .with_io_queue_fault(
+            IoQueueFaultConfig::new(cell.clone()).with_completion_queue_fault(
+                CommandMatchBuilder::new().match_cdw0(0, 0).build(),
+                IoQueueFaultBehavior::Delay(Duration::from_millis(100_000)),
+            ),
+        )
+        .with_pci_fault(PciFaultConfig::new().with_custom_cap_mqes(8));
 
     let scsi_controller_guid = Guid::new_random();
-    let disk_size = 2 * 1024 * 1024 * 1024; // 2 GiB
+    let disk_size = 2 * 1024 * 1024 * 1024; // 10 GiB
     const SECTOR_SIZE: u64 = 512;
 
     let (mut vm, agent) = create_keepalive_test_config(
@@ -634,15 +636,15 @@ async fn servicing_keepalive_with_io(
     fault_start_updater.set(true).await;
     let _io_child = large_read_from_disk(&agent, disk_path).await?;
 
-    thread::sleep(Duration::from_secs(2)); // Give some time for IO to start and fill the queue
+    cmd!(sh, "sleep 5").run().await?; // Give some time for IO to start and fill the queue
 
-    // 20 seconds should be plenty of time for the servicing to complete. Is
+    // 10 seconds should be plenty of time for the servicing to complete. Is
     // save is stuck it will be exposed here.
     CancelContext::new()
-        .with_timeout(Duration::from_secs(20))
+        .with_timeout(Duration::from_secs(10))
         .until_cancelled(vm.restart_openhcl(igvm_file.clone(), flags))
         .await
-        .expect("VM restart did not complete within 20 seconds, even though it should have. Save is stuck.")
+        .expect("VM restart did not complete within 10 seconds, even though it should have. Save is stuck.")
         .expect("VM restart failed");
 
     fault_start_updater.set(false).await;
@@ -867,7 +869,7 @@ async fn large_read_from_disk(
     let mut io_cmd = agent.command("sh");
 
     let cmd = format!(
-        "dd if={} of=/dev/null bs=800000000 iflag=direct status=none",
+        "dd if={} of=/dev/null bs=1G iflag=direct status=none",
         disk_path
     );
 
