@@ -637,7 +637,7 @@ async fn _servicing_keepalive_with_io(
 
     cmd!(sh, "sleep 5").run().await?; // Give some time for IO to start and fill the queue
 
-    // 10 seconds should be plenty of time for the servicing to complete. Is
+    // 10 seconds should be plenty of time for the servicing to complete. If
     // save is stuck it will be exposed here.
     CancelContext::new()
         .with_timeout(Duration::from_secs(10))
