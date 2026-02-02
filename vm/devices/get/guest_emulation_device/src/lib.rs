@@ -1299,13 +1299,11 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     enable_port: state.config.com1,
                     debugger_mode: false,
                     enable_vmbus_redirector: state.config.com1,
-                    tx_only: state.config.serial_tx_only,
                 },
                 com2: get_protocol::dps_json::HclUartSettings {
                     enable_port: state.config.com2,
                     debugger_mode: false,
                     enable_vmbus_redirector: state.config.com2,
-                    tx_only: state.config.serial_tx_only,
                 },
                 enable_firmware_debugging,
                 enable_tpm: state.config.enable_tpm,

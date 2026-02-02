@@ -74,7 +74,6 @@ pub struct HclUartSettings {
     pub enable_port: bool,
     pub debugger_mode: bool,
     pub enable_vmbus_redirector: bool,
-    pub tx_only: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -159,7 +158,8 @@ pub struct ManagementVtlFeatures {
     pub _reserved1: bool,
     pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
-    #[bits(60)]
+    pub tx_only_serial_port: bool,
+    #[bits(59)]
     pub _reserved2: u64,
 }
 

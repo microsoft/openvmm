@@ -429,6 +429,8 @@ pub mod runtime_claims {
         pub root_cert_thumbprint: String,
         /// Whether the serial console is enabled
         pub console_enabled: bool,
+        /// Whether the serial console, if enabled, is interactive
+        pub interactive_console: bool,
         /// Whether secure boot is enabled
         pub secure_boot: bool,
         /// Whether the TPM is enabled

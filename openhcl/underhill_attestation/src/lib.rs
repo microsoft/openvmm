@@ -1610,6 +1610,7 @@ mod tests {
             current_time: None,
             root_cert_thumbprint: String::new(),
             console_enabled: false,
+            interactive_console: false,
             secure_boot: false,
             tpm_enabled: true,
             tpm_persisted: true,

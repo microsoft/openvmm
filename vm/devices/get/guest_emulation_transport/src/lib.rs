@@ -342,13 +342,11 @@ mod tests {
                     enable_port: true,
                     debugger_mode: false,
                     enable_vmbus_redirector: true,
-                    tx_only: false,
                 },
                 com2: get_protocol::dps_json::HclUartSettings {
                     enable_port: false,
                     debugger_mode: false,
                     enable_vmbus_redirector: false,
-                    tx_only: false,
                 },
                 enable_firmware_debugging: true,
                 ..Default::default()

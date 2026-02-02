@@ -284,6 +284,8 @@ impl VmbusSerialDriver {
             && self.rx_avail
             && !self.rx_in_flight
         {
+            assert!(!self.tx_only);
+
             let request = protocol::Header::new_host_request(HostRequests::GET_RX_DATA);
             if let Poll::Ready(r) =
                 Pin::new(self.pipe.as_mut()).poll_send(cx, &[IoSlice::new(request.as_bytes())])
@@ -320,6 +322,8 @@ impl VmbusSerialDriver {
         if let Some(req) = header.host_response() {
             match req {
                 HostRequests::GET_RX_DATA => {
+                    assert!(!self.tx_only);
+
                     let response = protocol::RxDataResponse::read_from_prefix(buf)
                         .map_err(|_| ErrorInner::TruncatedMessage)?
                         .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
@@ -343,7 +347,12 @@ impl VmbusSerialDriver {
             }
         } else if let Some(notif) = header.guest_notification() {
             match notif {
-                GuestNotifications::RX_DATA_AVAILABLE => self.rx_avail = true,
+                GuestNotifications::RX_DATA_AVAILABLE => {
+                    // This notification is ignored in TX only mode.
+                    if !self.tx_only {
+                        self.rx_avail = true
+                    }
+                }
                 GuestNotifications::SET_MODEM_STATUS => {
                     let status = protocol::SetModumStatusMessage::read_from_prefix(buf)
                         .map_err(|_| ErrorInner::TruncatedMessage)?
@@ -401,18 +410,13 @@ impl AsyncRead for VmbusSerialDriver {
             ready!(self.poll_outer(cx))?;
         }
 
-        // if one-way serial is enabled, just clear the buffer and pretend we
-        // didn't get anything
-        if self.tx_only {
-            self.rx_buffer.clear();
-            Poll::Pending
-        } else {
-            let n = buf.len().min(self.rx_buffer.len());
-            for (s, d) in self.rx_buffer.drain(..n).zip(buf) {
-                *d = s;
-            }
-            Poll::Ready(Ok(n))
+        assert!(!self.tx_only);
+
+        let n = buf.len().min(self.rx_buffer.len());
+        for (s, d) in self.rx_buffer.drain(..n).zip(buf) {
+            *d = s;
         }
+        Poll::Ready(Ok(n))
     }
 }
 
