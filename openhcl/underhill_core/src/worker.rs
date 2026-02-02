@@ -3198,23 +3198,6 @@ async fn new_underhill_vm(
                     sub_system_id: None,
                 });
 
-                // Allow Manticore devices.
-                let mcr_vendor_id = 0x1414;
-                let mcr_device_id = 0xC003;
-                let mcr_prog_if = None;
-                let mcr_sub_class = None;
-                let mcr_base_class = None;
-                relay.add_allowed_device(AllowedDevice {
-                    vendor_id: Some(mcr_vendor_id),
-                    device_id: Some(mcr_device_id),
-                    revision_id: None,
-                    prog_if: mcr_prog_if,
-                    sub_class: mcr_sub_class,
-                    base_class: mcr_base_class,
-                    sub_vendor_id: None,
-                    sub_system_id: None,
-                });
-
                 vpci_relay = Some(relay);
             }
 
