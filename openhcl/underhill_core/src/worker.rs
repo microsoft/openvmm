@@ -3197,6 +3197,18 @@ async fn new_underhill_vm(
                     sub_system_id: None,
                 });
 
+                // Allow Encrypted Hypervisor devices.
+                relay.add_allowed_device(AllowedDevice {
+                    vendor_id: Some(0x1414u16), // Microsoft vendor ID
+                    device_id: Some(0xC003u16), // Encrypted Hypervisor device ID
+                    revision_id: None,
+                    prog_if: Some(ProgrammingInterface::NONE),
+                    sub_class: Some(Subclass::BRIDGE_OTHER),
+                    base_class: Some(ClassCode::ENCRYPTION_CONTROLLER),
+                    sub_vendor_id: None,
+                    sub_system_id: None,
+                });
+
                 vpci_relay = Some(relay);
             }
 
