@@ -410,10 +410,34 @@ impl LoadedVm {
                         timeout_hint,
                         capabilities_flags,
                     } = message;
+
+                    // If the host provided timeout hint is >= uint16::max
+                    // seconds, we treat that as a signal from the host that no
+                    // timeout duration was set. We instead limit servicing to
+                    // 200s in that case.
+                    let timeout_hint = if timeout_hint >= Duration::from_secs(u16::MAX as u64) {
+                        tracing::info!(
+                            CVM_ALLOWED,
+                            "host provided UINT16_MAX timeout hint, defaulting to 200s"
+                        );
+                        Duration::from_secs(200)
+                    } else {
+                        timeout_hint
+                    };
+
+                    let servicing_deadline = std::time::Instant::now() + timeout_hint;
+                    tracing::info!(
+                        CVM_ALLOWED,
+                        correlation_id = %correlation_id,
+                        timeout_hint_ms = timeout_hint.as_millis() as u64,
+                        servicing_deadline = ?servicing_deadline,
+                        "received servicing request from host"
+                    );
+
                     match self
                         .handle_servicing_request(
                             correlation_id,
-                            std::time::Instant::now() + timeout_hint,
+                            servicing_deadline,
                             capabilities_flags,
                         )
                         .await
