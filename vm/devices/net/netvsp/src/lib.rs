@@ -15,8 +15,6 @@ mod saved_state;
 mod test;
 
 use crate::buffers::GuestBuffers;
-use crate::protocol::Message1RevokeReceiveBuffer;
-use crate::protocol::Message1RevokeSendBuffer;
 use crate::protocol::VMS_SWITCH_RSS_MAX_SEND_INDIRECTION_TABLE_ENTRIES;
 use crate::protocol::Version;
 use crate::rndisprot::NDIS_HASH_FUNCTION_MASK;
@@ -1263,7 +1261,11 @@ impl VmbusDevice for Nic {
 
     async fn close(&mut self, channel_idx: u16) {
         if !self.coordinator.has_state() {
-            tracing::error!("Close called while vmbus channel is already closed");
+            tracing::error!(
+                channel_idx,
+                instance_id = %self.instance_id,
+                "Close called while vmbus channel is already closed"
+            );
             return;
         }
 
@@ -1365,7 +1367,11 @@ impl SaveRestoreVmbusDevice for Nic {
     ) -> Result<(), RestoreError> {
         let state: saved_state::SavedState = state.parse()?;
         if let Err(err) = self.restore_state(control, state).await {
-            tracing::error!(err = &err as &dyn std::error::Error, instance_id = %self.instance_id, "Failed restoring network vmbus state");
+            tracing::error!(
+                error = &err as &dyn std::error::Error,
+                instance_id = %self.instance_id,
+                "Failed restoring network vmbus state"
+            );
             Err(err.into())
         } else {
             Ok(())
@@ -2008,8 +2014,8 @@ enum PacketData {
     SendNdisVersion(protocol::Message1SendNdisVersion),
     SendReceiveBuffer(protocol::Message1SendReceiveBuffer),
     SendSendBuffer(protocol::Message1SendSendBuffer),
-    RevokeReceiveBuffer(Message1RevokeReceiveBuffer),
-    RevokeSendBuffer(Message1RevokeSendBuffer),
+    RevokeReceiveBuffer(protocol::Message1RevokeReceiveBuffer),
+    RevokeSendBuffer(protocol::Message1RevokeSendBuffer),
     RndisPacket(protocol::Message1SendRndisPacket),
     RndisPacketComplete(protocol::Message1SendRndisPacketComplete),
     SendNdisConfig(protocol::Message2SendNdisConfig),
@@ -2579,7 +2585,7 @@ impl<T: RingMem> NetChannel<T> {
             tracing::info!(
                 available = serial_number.is_some(),
                 serial_number,
-                "sending VF association message."
+                "sending VF association message"
             );
             // N.B. MIN_CONTROL_RING_SIZE reserves room to send this packet.
             let message = {
@@ -2671,7 +2677,10 @@ impl<T: RingMem> NetChannel<T> {
                 queue::TryWriteError::Queue(err) => WorkerError::Queue(err),
             });
         if let Err(err) = result {
-            tracing::error!(err = %err, "Failed to notify guest about the send indirection table");
+            tracing::error!(
+                error = &err as &dyn std::error::Error,
+                "Failed to notify guest about the send indirection table"
+            );
         }
     }
 
@@ -2695,16 +2704,16 @@ impl<T: RingMem> NetChannel<T> {
             })
             .map_err(|err| match err {
                 queue::TryWriteError::Full(len) => {
-                    tracing::error!(
-                        len,
-                        "failed to write MESSAGE4_TYPE_SWITCH_DATA_PATH message"
-                    );
+                    tracing::error!(len, "failed to write switch data path message");
                     WorkerError::OutOfSpace
                 }
                 queue::TryWriteError::Queue(err) => WorkerError::Queue(err),
             });
         if let Err(err) = result {
-            tracing::error!(err = %err, "Failed to notify guest that data path is now synthetic");
+            tracing::error!(
+                error = &err as &dyn std::error::Error,
+                "Failed to notify guest that data path is now synthetic"
+            );
         }
     }
 
@@ -2777,16 +2786,21 @@ impl<T: RingMem> NetChannel<T> {
                     let result = result.expect("DataPathSwitchPending should have been processed");
                     // Complete the data path switch request.
                     self.send_completion(id, None)?;
-                    if result {
-                        if to_guest {
-                            PrimaryChannelGuestVfState::DataPathSwitched
-                        } else {
-                            PrimaryChannelGuestVfState::Ready
-                        }
-                    } else {
-                        if to_guest {
+
+                    match (to_guest, result) {
+                        // Switching to guest VF successful.
+                        (true, true) => PrimaryChannelGuestVfState::DataPathSwitched,
+                        // Switching to guest VF failed, stay synthetic.
+                        (true, false) => {
+                            tracing::error!(
+                                "Failure switching to guest VF, remaining on synthetic"
+                            );
                             PrimaryChannelGuestVfState::DataPathSynthetic
-                        } else {
+                        }
+                        // Switching to synthetic successful.
+                        (false, true) => PrimaryChannelGuestVfState::Ready,
+                        // Switching to synthetic failed, assume VF remains active.
+                        (false, false) => {
                             tracing::error!(
                                 "Failure when guest requested switch back to synthetic"
                             );
@@ -2932,7 +2946,11 @@ impl<T: RingMem> NetChannel<T> {
                         rndisprot::STATUS_SUCCESS
                     }
                     Err(err) => {
-                        tracelimit::warn_ratelimited!(oid = ?request.oid, error = &err as &dyn std::error::Error, "oid failure");
+                        tracelimit::warn_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            oid = ?request.oid,
+                            "oid set failure"
+                        );
                         err.as_status()
                     }
                 };
@@ -4272,7 +4290,7 @@ impl Coordinator {
                 _ => primary.guest_vf_state,
             };
         } else {
-            // If the device was just removed, make sure the the data path is synthetic.
+            // If the device was just removed, make sure the data path is synthetic.
             match primary.guest_vf_state {
                 PrimaryChannelGuestVfState::DataPathSwitchPending { to_guest, .. }
                 | PrimaryChannelGuestVfState::Restoring(
@@ -4569,8 +4587,8 @@ impl<T: RingMem + 'static + Sync> AsyncRun<Worker<T>> for NetQueue {
             Err(WorkerError::Cancelled(cancelled)) => return Err(cancelled),
             Err(err) => {
                 tracing::error!(
-                    channel_idx = worker.channel_idx,
                     error = &err as &dyn std::error::Error,
+                    channel_idx = worker.channel_idx,
                     "netvsp error"
                 );
             }
@@ -5370,7 +5388,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         }
                         Err(err) => {
                             tracelimit::error_ratelimited!(
-                                err = &err as &dyn std::error::Error,
+                                error = &err as &dyn std::error::Error,
                                 "failed to handle RNDIS packet"
                             );
                             self.complete_tx_packet(state, id, protocol::Status::FAILURE)?;
@@ -5431,8 +5449,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         self.restart = Some(CoordinatorMessage::Restart);
                     }
                 }
-                PacketData::RevokeReceiveBuffer(Message1RevokeReceiveBuffer { id })
-                | PacketData::RevokeSendBuffer(Message1RevokeSendBuffer { id })
+                PacketData::RevokeReceiveBuffer(protocol::Message1RevokeReceiveBuffer { id })
+                | PacketData::RevokeSendBuffer(protocol::Message1RevokeSendBuffer { id })
                     if state.primary.is_some() =>
                 {
                     tracing::debug!(
