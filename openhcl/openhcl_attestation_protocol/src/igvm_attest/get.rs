@@ -430,7 +430,7 @@ pub mod runtime_claims {
         /// Whether the serial console is enabled
         pub console_enabled: bool,
         /// Whether the serial console, if enabled, is interactive
-        pub interactive_console: bool,
+        pub interactive_console_enabled: bool,
         /// Whether secure boot is enabled
         pub secure_boot: bool,
         /// Whether the TPM is enabled

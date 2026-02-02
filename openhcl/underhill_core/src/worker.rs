@@ -1914,7 +1914,7 @@ async fn new_underhill_vm(
         // TODO CVM: Support vmgs provisioning config
         root_cert_thumbprint: String::new(),
         console_enabled,
-        interactive_console,
+        interactive_console_enabled: interactive_console,
         secure_boot: dps.general.secure_boot_enabled,
         tpm_enabled: dps.general.tpm_enabled,
         tpm_persisted: !dps.general.suppress_attestation.unwrap_or(false),

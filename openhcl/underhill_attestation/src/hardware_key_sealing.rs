@@ -196,7 +196,7 @@ mod tests {
             current_time: None,
             root_cert_thumbprint: "".to_string(),
             console_enabled: false,
-            interactive_console: false,
+            interactive_console_enabled: false,
             secure_boot: false,
             tpm_enabled: false,
             tpm_persisted: false,
