@@ -22,9 +22,10 @@ tracelimit.workspace = true
 tracing.workspace = true
 
 [target.'cfg(unix)'.dependencies]
+blocking.workspace = true
+cfg-if.workspace = true
 libc.workspace = true
 resolv-conf.workspace = true
-parking_lot.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 pal.workspace = true

@@ -42,7 +42,6 @@ fn push_servfail_response(accessor: &DnsResponseAccessor, flow: &DnsFlow, query:
     });
 }
 
-/// Check if DnsQueryRaw APIs are available (Windows 11+).
 fn is_dns_raw_apis_supported() -> bool {
     api::is_supported::DnsQueryRaw()
         && api::is_supported::DnsCancelQueryRaw()
@@ -271,7 +270,6 @@ unsafe extern "system" fn dns_query_raw_callback(
             push_servfail();
         }
 
-        // Free the Windows-allocated result structure
         // SAFETY: We're calling the Windows API to free memory it allocated
         unsafe {
             api::DnsQueryRawResultFree(query_results.cast_mut());

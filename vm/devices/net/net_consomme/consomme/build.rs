@@ -4,13 +4,9 @@
 //! Build script for consomme package.
 
 fn main() {
-    #[cfg(target_os = "macos")]
-    {
-        println!("cargo:rustc-link-lib=resolv");
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        println!("cargo:rustc-link-lib=resolv");
+    match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("windows") => {}
+        Ok("macos") | Ok("linux") => println!("cargo:rustc-link-lib=resolv"),
+        _ => {}
     }
 }

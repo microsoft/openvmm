@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg_attr(all(target_os = "linux", not(target_env = "gnu")), allow(dead_code))]
 use mesh_channel_core::Receiver;
 use mesh_channel_core::Sender;
 use mesh_channel_core::channel;
@@ -12,13 +11,11 @@ use std::task::Poll;
 
 use crate::DropReason;
 
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-#[path = "dns_resolver_unix.rs"]
-mod resolver;
+#[cfg(unix)]
+mod unix;
 
 #[cfg(windows)]
-#[path = "dns_resolver_windows.rs"]
-mod resolver_raw;
+mod windows;
 
 static DNS_HEADER_SIZE: usize = 12;
 
@@ -84,7 +81,7 @@ impl DnsResolver {
     /// * `max_pending_requests` - Maximum number of concurrent pending DNS requests.
     #[cfg(windows)]
     pub fn new(max_pending_requests: usize) -> Result<Self, std::io::Error> {
-        use crate::dns_resolver::resolver_raw::WindowsDnsResolverBackend;
+        use crate::dns_resolver::windows::WindowsDnsResolverBackend;
 
         let (sender, receiver) = channel();
         Ok(Self {
@@ -101,9 +98,9 @@ impl DnsResolver {
     ///
     /// Note: On Unix platforms, this parameter is currently ignored as the backend
     /// does not yet support limiting pending requests.
-    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    #[cfg(unix)]
     pub fn new(_max_pending_requests: usize) -> Result<Self, std::io::Error> {
-        use crate::dns_resolver::resolver::UnixDnsResolverBackend;
+        use crate::dns_resolver::unix::UnixDnsResolverBackend;
 
         let (sender, receiver) = channel();
         Ok(Self {
@@ -111,20 +108,6 @@ impl DnsResolver {
             sender,
             receiver,
         })
-    }
-
-    /// On musl Linux, libresolv is not available.
-    /// Return an error so the caller falls back to DHCP-based DNS settings.
-    #[cfg(all(target_os = "linux", not(target_env = "gnu")))]
-    pub fn new(_max_pending_requests: usize) -> Result<Self, std::io::Error> {
-        tracing::info!(
-            "libresolv not available on musl; DNS interception disabled, \
-             falling back to DHCP-based DNS settings for guest"
-        );
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "DNS resolver backend not supported on musl libc (libresolv not available)",
-        ))
     }
 
     pub fn handle_dns(&mut self, request: &DnsRequest<'_>) -> Result<(), DropReason> {
