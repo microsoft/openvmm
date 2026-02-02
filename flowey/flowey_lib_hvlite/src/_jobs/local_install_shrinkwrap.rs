@@ -239,6 +239,33 @@ impl SimpleFlowNode for Node {
                     xshell::cmd!(sh, "git pull --ff-only").run()?;
                 }
 
+                // 5.5) Clone cca_config repo and copy planes.yaml
+                let cca_config_dir = toolchain_dir.join("cca_config");
+                if !cca_config_dir.exists() {
+                    log::info!("Cloning cca_config repo to {}", cca_config_dir.display());
+                    xshell::cmd!(sh, "git clone https://github.com/weiding-msft/cca_config").arg(&cca_config_dir).run()?;
+                } else if update_repo {
+                    log::info!("Updating cca_config repo...");
+                    sh.change_dir(&cca_config_dir);
+                    xshell::cmd!(sh, "git pull --ff-only").run()?;
+                }
+
+                // Copy planes.yaml to shrinkwrap config directory, cca-3world.yaml configuration does not bring
+                // in the right versions of all the components, this builds a planes-enabled stack
+                let planes_yaml_src = cca_config_dir.join("planes.yaml");
+                let shrinkwrap_config_dir = shrinkwrap_dir.join("config");
+                fs_err::create_dir_all(&shrinkwrap_config_dir)?;
+                let planes_yaml_dest = shrinkwrap_config_dir.join("planes.yaml");
+
+                if planes_yaml_src.exists() {
+                    log::info!("Copying planes.yaml from {} to {}",
+                        planes_yaml_src.display(),
+                        planes_yaml_dest.display());
+                    fs_err::copy(&planes_yaml_src, &planes_yaml_dest)?;
+                } else {
+                    log::warn!("planes.yaml not found in cca_config repo at {}", planes_yaml_src.display());
+                }
+
                 // 6) Create Python virtual environment and install deps
                 let venv_dir = shrinkwrap_dir.join("venv");
                 if do_installs {
