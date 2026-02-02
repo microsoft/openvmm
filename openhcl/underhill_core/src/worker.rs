@@ -2634,7 +2634,8 @@ async fn new_underhill_vm(
         }
     }
 
-    if dps.general.battery_enabled {
+    // Battery is not supported for isolated VMs.
+    if dps.general.battery_enabled && !isolation.is_isolated() {
         chipset = chipset.with_battery(
             get_client
                 .take_battery_status_recv()
@@ -3197,6 +3198,23 @@ async fn new_underhill_vm(
                     sub_system_id: None,
                 });
 
+                // Allow Manticore devices.
+                let mcr_vendor_id = 0x1414;
+                let mcr_device_id = 0xC003;
+                let mcr_prog_if = None;
+                let mcr_sub_class = None;
+                let mcr_base_class = None;
+                relay.add_allowed_device(AllowedDevice {
+                    vendor_id: Some(mcr_vendor_id),
+                    device_id: Some(mcr_device_id),
+                    revision_id: None,
+                    prog_if: mcr_prog_if,
+                    sub_class: mcr_sub_class,
+                    base_class: mcr_base_class,
+                    sub_vendor_id: None,
+                    sub_system_id: None,
+                });
+
                 vpci_relay = Some(relay);
             }
 
@@ -3587,7 +3605,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         vpci_boot_enabled: _,
 
         // Validated below
-        battery_enabled,
         processor_idle_enabled,
         firmware_debugging_enabled,
         hibernation_enabled,
@@ -3628,6 +3645,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         cxl_memory_enabled: _,
 
         // TODO: decide whether these need to be validated here
+        battery_enabled: _,
         efi_diagnostics_log_level: _,
         guest_state_encryption_policy: _,
         guest_state_lifetime: _,
@@ -3643,9 +3661,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
     }
     if *secure_boot_enabled && *firmware_debugging_enabled {
         anyhow::bail!("secure boot and firmware debugging are mutually exclusive");
-    }
-    if *battery_enabled {
-        anyhow::bail!("battery is not supported");
     }
     if *legacy_memory_map {
         anyhow::bail!("legacy memory map is not supported");
