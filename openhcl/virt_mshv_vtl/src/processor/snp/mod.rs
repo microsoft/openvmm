@@ -713,6 +713,10 @@ fn init_vmsa(
     vmsa.v_intr_cntrl_mut().set_guest_busy(true);
     vmsa.sev_features_mut().set_debug_swap(true);
 
+    // Note: The VMSA pages for VTL0 and VTL1 are converted to a VMSA page
+    // in the RMP by the kernel, in mshv_configure_vmsa_page. The VTL2 VMSA
+    // page is converted via SNP_LAUNCH_UPDATE.
+
     let vmpl = match vtl {
         GuestVtl::Vtl0 => Vmpl::Vmpl2,
         GuestVtl::Vtl1 => Vmpl::Vmpl1,

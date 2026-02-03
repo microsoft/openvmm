@@ -63,6 +63,9 @@ impl PackageManager {
             FlowPlatformLinuxDistro::Arch => {
                 xshell::cmd!(sh, "pacman -Qq {packages_to_check...}")
             }
+            FlowPlatformLinuxDistro::Nix => {
+                anyhow::bail!("Nix environments cannot install packages")
+            }
             FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
         }
         .ignore_status()
@@ -90,6 +93,9 @@ impl PackageManager {
             FlowPlatformLinuxDistro::Fedora => xshell::cmd!(sh, "sudo dnf update").run()?,
             // Running `pacman -Sy` without a full system update can break everything; do nothing
             FlowPlatformLinuxDistro::Arch => (),
+            FlowPlatformLinuxDistro::Nix => {
+                anyhow::bail!("Nix environments cannot install packages")
+            }
             FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
         }
 
@@ -117,6 +123,9 @@ impl PackageManager {
             FlowPlatformLinuxDistro::Arch => {
                 let auto_accept = (!interactive).then_some("--noconfirm");
                 xshell::cmd!(sh, "sudo pacman -S {auto_accept...} {packages...}").run()?;
+            }
+            FlowPlatformLinuxDistro::Nix => {
+                anyhow::bail!("Nix environments cannot install packages")
             }
             FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
         }
@@ -197,6 +206,17 @@ impl FlowNode for Node {
         if !matches!(ctx.platform(), FlowPlatform::Linux(_)) {
             ctx.emit_side_effect_step([], did_install);
             return Ok(());
+        }
+
+        // Explicitly fail on installation requests in Nix environments.
+        if matches!(
+            ctx.platform(),
+            FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
+        ) {
+            anyhow::bail!(
+                "Nix environments cannot install packages. Dependencies should be managed by Nix. Attempted to install {:?}",
+                packages
+            );
         }
 
         let pacman = PackageManager::new(ctx)?;
