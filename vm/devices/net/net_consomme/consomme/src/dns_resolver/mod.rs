@@ -3,9 +3,10 @@
 
 use mesh_channel_core::Receiver;
 use mesh_channel_core::Sender;
-use mesh_channel_core::channel;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::Ipv4Address;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
@@ -42,33 +43,15 @@ pub struct DnsResponse {
     pub response_data: Vec<u8>,
 }
 
-/// Thread-safe accessor that allows backends to enqueue responses without
-/// borrowing `DnsResolver` (e.g., from a background thread).
-#[derive(Debug, Clone)]
-pub struct DnsResponseAccessor {
-    sender: Sender<DnsResponse>,
-}
-
-impl DnsResponseAccessor {
-    pub fn push(&self, response: DnsResponse) {
-        self.sender.send(response);
-    }
-}
-
-pub trait DnsBackend: Send + Sync {
-    fn query(
-        &self,
-        request: &DnsRequest<'_>,
-        accessor: DnsResponseAccessor,
-    ) -> Result<(), DropReason>;
-
-    fn cancel_all(&mut self) -> Result<(), std::io::Error>;
+pub(crate) trait DnsBackend: Send + Sync {
+    fn query(&self, request: &DnsRequest<'_>, response_sender: Sender<DnsResponse>);
 }
 
 pub struct DnsResolver {
     backend: Box<dyn DnsBackend>,
-    sender: Sender<DnsResponse>,
     receiver: Receiver<DnsResponse>,
+    pending_requests: AtomicUsize,
+    max_pending_requests: usize,
 }
 
 /// Default maximum number of pending DNS requests.
@@ -83,11 +66,12 @@ impl DnsResolver {
     pub fn new(max_pending_requests: usize) -> Result<Self, std::io::Error> {
         use crate::dns_resolver::windows::WindowsDnsResolverBackend;
 
-        let (sender, receiver) = channel();
+        let receiver = Receiver::new();
         Ok(Self {
-            backend: Box::new(WindowsDnsResolverBackend::new(max_pending_requests)?),
-            sender,
+            backend: Box::new(WindowsDnsResolverBackend::new()?),
             receiver,
+            pending_requests: AtomicUsize::new(0),
+            max_pending_requests,
         })
     }
 
@@ -95,53 +79,64 @@ impl DnsResolver {
     ///
     /// # Arguments
     /// * `max_pending_requests` - Maximum number of concurrent pending DNS requests.
-    ///
-    /// Note: On Unix platforms, this parameter is currently ignored as the backend
-    /// does not yet support limiting pending requests.
     #[cfg(unix)]
-    pub fn new(_max_pending_requests: usize) -> Result<Self, std::io::Error> {
+    pub fn new(max_pending_requests: usize) -> Result<Self, std::io::Error> {
         use crate::dns_resolver::unix::UnixDnsResolverBackend;
 
-        let (sender, receiver) = channel();
+        let receiver = Receiver::new();
         Ok(Self {
             backend: Box::new(UnixDnsResolverBackend::new()?),
-            sender,
             receiver,
+            pending_requests: AtomicUsize::new(0),
+            max_pending_requests,
         })
     }
 
     pub fn handle_dns(&mut self, request: &DnsRequest<'_>) -> Result<(), DropReason> {
-        if request.dns_query.len() <= 12 {
+        if request.dns_query.len() <= DNS_HEADER_SIZE {
             return Err(DropReason::Packet(smoltcp::wire::Error));
         }
 
-        let accessor = DnsResponseAccessor {
-            sender: self.sender.clone(),
-        };
-
-        self.backend.query(request, accessor)
-    }
-
-    pub fn poll_responses(&mut self, cx: &mut Context<'_>) -> Vec<DnsResponse> {
-        let mut responses = Vec::new();
+        let mut current = self.pending_requests.load(Ordering::Relaxed);
         loop {
-            match self.receiver.poll_recv(cx) {
-                Poll::Ready(Ok(response)) => responses.push(response),
-                Poll::Ready(Err(_)) => break, // Channel closed
-                Poll::Pending => break,
+            if current >= self.max_pending_requests {
+                tracelimit::warn_ratelimited!(
+                    current,
+                    max = self.max_pending_requests,
+                    "DNS request limit reached, returning SERVFAIL"
+                );
+                let response = build_servfail_response(request.dns_query);
+                self.receiver.sender().send(DnsResponse {
+                    flow: request.flow.clone(),
+                    response_data: response,
+                });
+                return Ok(());
+            }
+            match self.pending_requests.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(c) => current = c,
             }
         }
-        responses
+
+        self.backend.query(request, self.receiver.sender());
+
+        Ok(())
     }
 
-    pub fn cancel_all(&mut self) -> Result<(), std::io::Error> {
-        self.backend.cancel_all()
-    }
-}
-
-impl Drop for DnsResolver {
-    fn drop(&mut self) {
-        let _ = self.cancel_all();
+    pub fn poll_response(&mut self, cx: &mut Context<'_>) -> Poll<Option<DnsResponse>> {
+        match self.receiver.poll_recv(cx) {
+            Poll::Ready(Ok(response)) => {
+                self.pending_requests.fetch_sub(1, Ordering::Relaxed);
+                Poll::Ready(Some(response))
+            }
+            Poll::Ready(Err(_)) => Poll::Ready(None), // Channel closed
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -150,7 +145,7 @@ impl Drop for DnsResolver {
 pub(crate) struct DnsRequestInternal {
     pub flow: DnsFlow,
     pub query: Vec<u8>,
-    pub accessor: DnsResponseAccessor,
+    pub response_sender: Sender<DnsResponse>,
 }
 
 pub(crate) fn build_servfail_response(query: &[u8]) -> Vec<u8> {

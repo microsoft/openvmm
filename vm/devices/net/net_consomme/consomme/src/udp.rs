@@ -169,13 +169,17 @@ impl<T: Client> Access<'_, T> {
 
             conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
         });
-        if let Some(dns) = &mut self.inner.dns {
-            let responses = dns.poll_responses(cx);
-
-            for response in responses {
-                if let Err(e) = self.send_dns_response(&response) {
-                    tracing::error!(error = ?e, "Failed to send DNS response");
-                }
+        while let Some(response) =
+            self.inner
+                .dns
+                .as_mut()
+                .and_then(|dns| match dns.poll_response(cx) {
+                    Poll::Ready(resp) => resp,
+                    Poll::Pending => None,
+                })
+        {
+            if let Err(e) = self.send_dns_response(&response) {
+                tracelimit::error_ratelimited!(error = ?e, "Failed to send DNS response");
             }
         }
     }

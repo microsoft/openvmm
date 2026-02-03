@@ -15,7 +15,7 @@ use crate::dns_resolver::DnsBackend;
 use crate::dns_resolver::DnsFlow;
 use crate::dns_resolver::DnsRequest;
 use crate::dns_resolver::DnsResponse;
-use crate::dns_resolver::DnsResponseAccessor;
+use mesh_channel_core::Sender;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::ptr::null_mut;
@@ -34,9 +34,9 @@ use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_REQUEST_VERSION1;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULT;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_RESULTS_VERSION1;
 
-fn push_servfail_response(accessor: &DnsResponseAccessor, flow: &DnsFlow, query: &[u8]) {
+fn push_servfail_response(sender: &Sender<DnsResponse>, flow: &DnsFlow, query: &[u8]) {
     let response = build_servfail_response(query);
-    accessor.push(DnsResponse {
+    sender.send(DnsResponse {
         flow: flow.clone(),
         response_data: response,
     });
@@ -58,14 +58,12 @@ struct RawCallbackContext {
 pub struct WindowsDnsResolverBackend {
     /// Counter for generating unique request IDs.
     next_request_id: AtomicU64,
-    /// Map of pending DNS requests.
+    /// Map of pending DNS requests (for cancellation support).
     pending_requests: Arc<Mutex<HashMap<u64, DNS_QUERY_RAW_CANCEL>>>,
-    /// Maximum number of pending requests allowed.
-    max_pending_requests: usize,
 }
 
 impl WindowsDnsResolverBackend {
-    pub fn new(max_pending_requests: usize) -> Result<Self, std::io::Error> {
+    pub fn new() -> Result<Self, std::io::Error> {
         if !is_dns_raw_apis_supported() {
             return Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
         }
@@ -73,41 +71,23 @@ impl WindowsDnsResolverBackend {
         Ok(WindowsDnsResolverBackend {
             next_request_id: AtomicU64::new(1),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
-            max_pending_requests,
         })
     }
 }
 
 impl DnsBackend for WindowsDnsResolverBackend {
-    fn query(
-        &self,
-        request: &DnsRequest<'_>,
-        accessor: DnsResponseAccessor,
-    ) -> Result<(), DropReason> {
-        {
-            let pending = self.pending_requests.lock();
-            if pending.len() >= self.max_pending_requests {
-                tracelimit::warn_ratelimited!(
-                    current = pending.len(),
-                    max = self.max_pending_requests,
-                    "DNS request limit reached, returning SERVFAIL"
-                );
-                push_servfail_response(&accessor, &request.flow, request.dns_query);
-                return Ok(());
-            }
-        }
-
+    fn query(&self, request: &DnsRequest<'_>, response_sender: Sender<DnsResponse>) {
         // Generate unique request ID
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
 
-        // Clone the accessor for error handling
-        let accessor_clone = accessor.clone();
+        // Clone the sender for error handling
+        let response_sender_clone = response_sender.clone();
 
         // Create internal request
         let internal_request = DnsRequestInternal {
             flow: request.flow.clone(),
             query: request.dns_query.to_vec(),
-            accessor,
+            response_sender,
         };
 
         let dns_query_size = internal_request.query.len() as u32;
@@ -159,11 +139,10 @@ impl DnsBackend for WindowsDnsResolverBackend {
             // If the callback already fired and removed the entry, this is a no-op.
             {
                 let mut pending = self.pending_requests.lock();
-                if pending.contains_key(&request_id) {
-                    pending.insert(request_id, cancel_handle);
+                if let Some(v) = pending.get_mut(&request_id) {
+                    *v = cancel_handle;
                 }
             }
-            Ok(())
         } else {
             // Remove placeholder since callback won't fire on error
             self.pending_requests.lock().remove(&request_id);
@@ -173,13 +152,13 @@ impl DnsBackend for WindowsDnsResolverBackend {
                 let _ = Box::from_raw(context_ptr);
             }
             // Return SERVFAIL response
-            push_servfail_response(&accessor_clone, &request.flow, request.dns_query);
-
-            Ok(())
+            push_servfail_response(&response_sender_clone, &request.flow, request.dns_query);
         }
     }
+}
 
-    fn cancel_all(&mut self) -> Result<(), std::io::Error> {
+impl WindowsDnsResolverBackend {
+    fn cancel_all(&mut self) {
         let mut pending = self.pending_requests.lock();
 
         // Cancel all pending requests
@@ -194,14 +173,12 @@ impl DnsBackend for WindowsDnsResolverBackend {
                 );
             }
         }
-
-        Ok(())
     }
 }
 
 impl Drop for WindowsDnsResolverBackend {
     fn drop(&mut self) {
-        let _ = self.cancel_all();
+        self.cancel_all();
     }
 }
 
@@ -222,7 +199,7 @@ unsafe extern "system" fn dns_query_raw_callback(
     // Helper to push SERVFAIL response for this request
     let push_servfail = || {
         push_servfail_response(
-            &context.request.accessor,
+            &context.request.response_sender,
             &context.request.flow,
             &context.request.query,
         );
@@ -251,7 +228,7 @@ unsafe extern "system" fn dns_query_raw_callback(
                 };
 
                 // Push the successful response
-                context.request.accessor.push(DnsResponse {
+                context.request.response_sender.send(DnsResponse {
                     flow: context.request.flow.clone(),
                     response_data: response_data.to_vec(),
                 });
