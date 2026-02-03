@@ -4,6 +4,7 @@
 //! Install Shrinkwrap and its dependencies on Ubuntu.
 
 use flowey::node::prelude::*;
+use std::path::Path;
 
 const ARM_GNU_TOOLCHAIN_URL: &str = "https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz";
 const OHCL_LINUX_KERNEL_REPO: &str = "https://github.com/weiding-msft/OHCL-Linux-Kernel.git";
@@ -11,6 +12,7 @@ const OHCL_LINUX_KERNEL_PLANE0_BRANCH: &str = "with-arm-rebased-planes";
 const OPENVMM_TMK_REPO: &str = "https://github.com/Flgodd67/openvmm.git";
 const OPENVMM_TMK_BRANCH: &str = "cca-enablement";
 const SHRINKWRAP_REPO: &str = "https://git.gitlab.arm.com/tooling/shrinkwrap.git";
+const CCA_CONFIG_REPO: &str = "https://github.com/weiding-msft/cca_config";
 
 flowey_request! {
     pub struct Params {
@@ -26,6 +28,34 @@ flowey_request! {
 }
 
 new_simple_flow_node!(struct Node);
+
+/// clone or update a git repository
+fn clone_or_update_repo(
+    sh: &xshell::Shell,
+    repo_url: &str,
+    target_dir: &Path,
+    update_repo: bool,
+    branch: Option<&str>,
+    repo_name: &str,
+) -> anyhow::Result<()> {
+    if !target_dir.exists() {
+        log::info!("Cloning {} to {}", repo_name, target_dir.display());
+        let mut cmd = xshell::cmd!(sh, "git clone");
+        if let Some(b) = branch {
+            cmd = cmd.args(["--branch", b]);
+        }
+        cmd.arg(repo_url).arg(target_dir).run()?;
+        log::info!("{} cloned successfully", repo_name);
+    } else if update_repo {
+        log::info!("Updating {} repo...", repo_name);
+        sh.change_dir(target_dir);
+        xshell::cmd!(sh, "git pull --ff-only").run()?;
+        log::info!("{} updated successfully", repo_name);
+    } else {
+        log::info!("{} already exists at {}", repo_name, target_dir.display());
+    }
+    Ok(())
+}
 
 impl SimpleFlowNode for Node {
     type Request = Params;
@@ -101,19 +131,14 @@ impl SimpleFlowNode for Node {
 
                 // 3) Clone OHCL Linux Kernel (Host Linux Kernel)
                 let host_kernel_dir = toolchain_dir.join("OHCL-Linux-Kernel");
-                if !host_kernel_dir.exists() {
-                    log::info!("Cloning OHCL Linux Kernel to {}", host_kernel_dir.display());
-                    xshell::cmd!(sh, "git clone --branch {OHCL_LINUX_KERNEL_PLANE0_BRANCH} {OHCL_LINUX_KERNEL_REPO}").arg(&host_kernel_dir).run()?;
-                    log::info!("OHCL Linux Kernel cloned successfully");
-                } else if update_repo {
-                    log::info!("Updating OHCL Linux Kernel repo...");
-                    sh.change_dir(&host_kernel_dir);
-                    xshell::cmd!(sh, "git pull --ff-only").run()?;
-                    sh.change_dir(shrinkwrap_dir.parent().unwrap());
-                    log::info!("OHCL Linux Kernel updated successfully");
-                } else {
-                    log::info!("OHCL Linux Kernel already exists at {}", host_kernel_dir.display());
-                }
+                clone_or_update_repo(
+                    &sh,
+                    OHCL_LINUX_KERNEL_REPO,
+                    &host_kernel_dir,
+                    update_repo,
+                    Some(OHCL_LINUX_KERNEL_PLANE0_BRANCH),
+                    "OHCL Linux Kernel",
+                )?;
 
                 // 4) Compile OHCL Linux Kernel with ARM GNU toolchain
                 let kernel_image = host_kernel_dir.join("arch").join("arm64").join("boot").join("Image");
@@ -167,19 +192,14 @@ impl SimpleFlowNode for Node {
 
                 // 4.5) Clone OpenVMM TMK branch with plane0 support and build TMK components
                 let tmk_kernel_dir = toolchain_dir.join("OpenVMM-TMK");
-                if !tmk_kernel_dir.exists() {
-                    log::info!("Cloning OpenVMM TMK branch to {}", tmk_kernel_dir.display());
-                    xshell::cmd!(sh, "git clone --branch {OPENVMM_TMK_BRANCH} {OPENVMM_TMK_REPO}").arg(&tmk_kernel_dir).run()?;
-                    log::info!("OpenVMM TMK branch cloned successfully");
-                } else if update_repo {
-                    log::info!("Updating OpenVMM TMK repo...");
-                    sh.change_dir(&tmk_kernel_dir);
-                    xshell::cmd!(sh, "git pull --ff-only").run()?;
-                    sh.change_dir(shrinkwrap_dir.parent().unwrap());
-                    log::info!("OpenVMM TMK repo updated successfully");
-                } else {
-                    log::info!("OpenVMM TMK already exists at {}", tmk_kernel_dir.display());
-                }
+                clone_or_update_repo(
+                    &sh,
+                    OPENVMM_TMK_REPO,
+                    &tmk_kernel_dir,
+                    update_repo,
+                    Some(OPENVMM_TMK_BRANCH),
+                    "OpenVMM TMK",
+                )?;
 
                 // Install Rust targets and build TMK components if do_installs is true
                 if do_installs {
@@ -230,25 +250,25 @@ impl SimpleFlowNode for Node {
                 }
 
                 // 5) Clone shrinkwrap repo first (need it for venv location)
-                if !shrinkwrap_dir.exists() {
-                    log::info!("Cloning Shrinkwrap repo to {}", shrinkwrap_dir.display());
-                    xshell::cmd!(sh, "git clone").arg(SHRINKWRAP_REPO).arg(&shrinkwrap_dir).run()?;
-                } else if update_repo {
-                    log::info!("Updating Shrinkwrap repo...");
-                    sh.change_dir(&shrinkwrap_dir);
-                    xshell::cmd!(sh, "git pull --ff-only").run()?;
-                }
+                clone_or_update_repo(
+                    &sh,
+                    SHRINKWRAP_REPO,
+                    &shrinkwrap_dir,
+                    update_repo,
+                    None,
+                    "Shrinkwrap",
+                )?;
 
                 // 5.5) Clone cca_config repo and copy planes.yaml
                 let cca_config_dir = toolchain_dir.join("cca_config");
-                if !cca_config_dir.exists() {
-                    log::info!("Cloning cca_config repo to {}", cca_config_dir.display());
-                    xshell::cmd!(sh, "git clone https://github.com/weiding-msft/cca_config").arg(&cca_config_dir).run()?;
-                } else if update_repo {
-                    log::info!("Updating cca_config repo...");
-                    sh.change_dir(&cca_config_dir);
-                    xshell::cmd!(sh, "git pull --ff-only").run()?;
-                }
+                clone_or_update_repo(
+                    &sh,
+                    CCA_CONFIG_REPO,
+                    &cca_config_dir,
+                    update_repo,
+                    None,
+                    "cca_config",
+                )?;
 
                 // Copy planes.yaml to shrinkwrap config directory, cca-3world.yaml configuration does not bring
                 // in the right versions of all the components, this builds a planes-enabled stack
