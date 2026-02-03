@@ -195,7 +195,7 @@ pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new(
 
 const MAX_SUBCHANNELS_PER_VNIC: u16 = 32;
 
-//AZIHSM VPCI IDs
+//AZIHSM VPCI IDs : TODO : Move to hsm crate in future.
 const AZIHSM_VPCI_VENDOR_ID: u16 = 0x1414;
 const AZIHSM_VPCI_DEVICE_ID: u16 = 0xC003;
 
