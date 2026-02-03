@@ -72,6 +72,8 @@ pub(crate) struct QueuePair<A: AerHandler, D: DeviceBacking> {
     #[inspect(skip)]
     mem: MemoryBlock,
     #[inspect(skip)]
+    device_id: String,
+    #[inspect(skip)]
     qid: u16,
     #[inspect(skip)]
     sq_entries: u16,
@@ -252,6 +254,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
 
         QueuePair::new_or_restore(
             spawner,
+            device.id(),
             qid,
             sq_entries,
             cq_entries,
@@ -266,6 +269,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
 
     fn new_or_restore(
         spawner: impl SpawnDriver,
+        device_id: &str,
         qid: u16,
         sq_entries: u16,
         cq_entries: u16,
@@ -384,6 +388,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
                 alloc,
             }),
             mem,
+            device_id: device_id.into(),
             qid,
             sq_entries,
             cq_entries,
@@ -421,7 +426,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
 
     /// Save queue pair state for servicing.
     pub async fn save(&self) -> anyhow::Result<QueuePairSavedState> {
-        tracing::info!(qid = self.qid, "saving queue pair state");
+        tracing::info!(qid = self.qid, pci_id = ?self.device_id, "saving queue pair state");
         // Return error if the queue does not have any memory allocated.
         if self.mem.pfns().is_empty() {
             return Err(Error::InvalidState.into());
@@ -446,6 +451,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
         interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<D>>,
         mem: MemoryBlock,
+        device_id: &str,
         saved_state: &QueuePairSavedState,
         bounce_buffer: bool,
         aer_handler: A,
@@ -461,6 +467,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
 
         QueuePair::new_or_restore(
             spawner,
+            device_id,
             *qid,
             *sq_entries,
             *cq_entries,
