@@ -195,7 +195,7 @@ pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new(
 
 const MAX_SUBCHANNELS_PER_VNIC: u16 = 32;
 
-//AZIHSM VPCI IDs : TODO : Move to hsm crate in future.
+// AZIHSM VPCI IDs : TODO : Move to hsm crate in future.
 const AZIHSM_VPCI_VENDOR_ID: u16 = 0x1414;
 const AZIHSM_VPCI_DEVICE_ID: u16 = 0xC003;
 
@@ -3201,13 +3201,13 @@ async fn new_underhill_vm(
                     sub_system_id: None,
                 });
 
-                // Allow Encrypted Hypervisor devices.
+                // Allow Azi HSM devices.
                 relay.add_allowed_device(AllowedDevice {
                     vendor_id: Some(AZIHSM_VPCI_VENDOR_ID), // Microsoft vendor ID
                     device_id: Some(AZIHSM_VPCI_DEVICE_ID), // Encrypted Hypervisor device ID
                     revision_id: None,
                     prog_if: Some(ProgrammingInterface::NONE),
-                    sub_class: Some(Subclass::BRIDGE_OTHER),
+                    sub_class: Some(Subclass::NONE),
                     base_class: Some(ClassCode::ENCRYPTION_CONTROLLER),
                     sub_vendor_id: None,
                     sub_system_id: None,
