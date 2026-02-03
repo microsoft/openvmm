@@ -120,6 +120,16 @@ fn build_rust_binary(
     Ok(())
 }
 
+fn make_target(sh: &Shell, arch: &str, cross_compile: &str, target: &str, jobs: &str) -> anyhow::Result<()> {
+    cmd!(
+        sh,
+        "make ARCH={arch} CROSS_COMPILE={cross_compile} {target} -j{jobs}"
+    )
+    .run()
+    .with_context(|| format!("Failed to run `make {}`", target))?;
+    Ok(())
+}
+
 impl SimpleFlowNode for Node {
     type Request = Params;
 
@@ -216,8 +226,7 @@ impl SimpleFlowNode for Node {
 
                     // Run make defconfig
                     log::info!("Running make defconfig...");
-                    cmd!(sh, "make ARCH={arch} CROSS_COMPILE={cross_compile} defconfig").run()
-                        .map_err(|e| anyhow::anyhow!("Failed to run make defconfig: {}", e))?;
+                    make_target(&sh, arch, cross_compile, "defconfig", "1")?;
 
                     // Enable required kernel configs in groups
                     log::info!("Enabling required kernel configurations...");
@@ -227,16 +236,14 @@ impl SimpleFlowNode for Node {
 
                     // Run make olddefconfig
                     log::info!("Running make olddefconfig...");
-                    cmd!(sh, "make ARCH={arch} CROSS_COMPILE={cross_compile} olddefconfig").run()
-                        .map_err(|e| anyhow::anyhow!("Failed to run make olddefconfig: {}", e))?;
+                    make_target(&sh, arch, cross_compile, "olddefconfig", "1")?;
 
                     // Build kernel Image
                     log::info!("Building kernel Image (this may take several minutes)...");
                     let nproc = std::thread::available_parallelism()
                         .map(|n| n.get().to_string())
                         .unwrap_or_else(|_| "1".to_string());
-                    cmd!(sh, "make ARCH={arch} CROSS_COMPILE={cross_compile} Image -j{nproc}").run()
-                        .map_err(|e| anyhow::anyhow!("Failed to build kernel Image: {}", e))?;
+                    make_target(&sh, arch, cross_compile, "Image", &nproc)?;
 
                     // Verify kernel Image was created
                     if !kernel_image.exists() {
