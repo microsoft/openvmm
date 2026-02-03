@@ -89,6 +89,7 @@ pub fn check_cfg_target_arch(path: &Path, _fix: bool) -> anyhow::Result<()> {
     if path.starts_with("guest_test_uefi")
         || path.starts_with("openhcl/openhcl_boot")
         || path.starts_with("openhcl/minimal_rt")
+        || path.starts_with("openhcl/minimal_rt_reloc")
         || path.starts_with("openhcl/sidecar")
         || path.starts_with("support/")
         || path.starts_with("tmk/simple_tmk")
