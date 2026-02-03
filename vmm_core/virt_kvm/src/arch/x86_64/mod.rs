@@ -329,6 +329,9 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
             // Convert the CPUID entries and update the APIC ID in CPUID for
             // this VCPU.
+            //
+            // TODO: centralize this code, probably in the topology crate, for
+            // use by other hypervisors.
             let cpuid_entries = cpuid
                 .leaves()
                 .iter()
@@ -357,6 +360,30 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                         }
                         CpuidFunction::V2ExtendedTopologyEnumeration => {
                             entry.edx = vp_info.apic_id;
+                        }
+                        CpuidFunction::ProcessorTopologyDefinition => {
+                            let eax =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEax::from(entry.eax);
+                            entry.eax = eax.with_extended_apic_id(vp_info.apic_id).into();
+                            let ebx =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEbx::from(entry.ebx);
+                            entry.ebx = ebx
+                                .with_compute_unit_id(
+                                    (vp_info.apic_id
+                                        % self.config.processor_topology.reserved_vps_per_socket()
+                                        / (ebx.threads_per_compute_unit() as u32 + 1))
+                                        as u8,
+                                )
+                                .into();
+                            let ecx =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEcx::from(entry.ecx);
+                            entry.ecx = ecx
+                                .with_node_id(
+                                    (vp_info.apic_id
+                                        / self.config.processor_topology.reserved_vps_per_socket())
+                                        as u8,
+                                )
+                                .into();
                         }
                         _ => (),
                     }
