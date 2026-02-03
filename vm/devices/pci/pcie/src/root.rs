@@ -21,6 +21,7 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use inspect::Inspect;
 use inspect::InspectMut;
+use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
 use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::ClassCode;
@@ -96,13 +97,13 @@ impl GenericPcieRootComplex {
         register_mmio: &mut dyn RegisterMmioIntercept,
         start_bus: u8,
         end_bus: u8,
-        ecam_base: u64,
+        ecam_range: MemoryRange,
         ports: Vec<GenericPcieRootPortDefinition>,
     ) -> Self {
-        let ecam_size = ecam_size_from_bus_numbers(start_bus, end_bus);
+        assert!(ecam_size_from_bus_numbers(start_bus, end_bus) == ecam_range.len());
 
-        let mut ecam = register_mmio.new_io_region("ecam", ecam_size);
-        ecam.map(ecam_base);
+        let mut ecam = register_mmio.new_io_region("ecam", ecam_range.len());
+        ecam.map(ecam_range.start());
 
         let port_map: HashMap<u8, (Arc<str>, RootPort)> = ports
             .into_iter()
@@ -499,7 +500,8 @@ mod tests {
             .collect();
 
         let mut register_mmio = TestPcieMmioRegistration {};
-        GenericPcieRootComplex::new(&mut register_mmio, start_bus, end_bus, 0, port_defs)
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
+        GenericPcieRootComplex::new(&mut register_mmio, start_bus, end_bus, ecam, port_defs)
     }
 
     #[test]

@@ -40,6 +40,7 @@ disk_vhd1.workspace = true
 
 guid.workspace = true
 kmsg.workspace = true
+memory_range.workspace = true
 mesh.workspace = true
 pal.workspace = true
 pal_async.workspace = true

@@ -583,7 +583,7 @@ Options:
     `segment=<value>`              configures the PCI Express segment, default 0
     `start_bus=<value>`            lowest valid bus number, default 0
     `end_bus=<value>`              highest valid bus number, default 255
-    `low_mmio=<size>`              low MMIO window size, default 4M
+    `low_mmio=<size>`              low MMIO window size, default 64M
     `high_mmio=<size>`             high MMIO window size, default 1G
 "#)]
     #[clap(long, conflicts_with("pcat"))]
@@ -1484,7 +1484,7 @@ impl FromStr for PcieRootComplexCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        const DEFAULT_PCIE_CRS_LOW_SIZE: u32 = 4 * 1024 * 1024; // 4M
+        const DEFAULT_PCIE_CRS_LOW_SIZE: u32 = 64 * 1024 * 1024; // 64M
         const DEFAULT_PCIE_CRS_HIGH_SIZE: u64 = 1024 * 1024 * 1024; // 1G
 
         let mut opts = s.split(',');
@@ -2175,7 +2175,7 @@ mod tests {
         const ONE_MB: u64 = 1024 * 1024;
         const ONE_GB: u64 = 1024 * ONE_MB;
 
-        const DEFAULT_LOW_MMIO: u32 = (4 * ONE_MB) as u32;
+        const DEFAULT_LOW_MMIO: u32 = (64 * ONE_MB) as u32;
         const DEFAULT_HIGH_MMIO: u64 = ONE_GB;
 
         assert_eq!(

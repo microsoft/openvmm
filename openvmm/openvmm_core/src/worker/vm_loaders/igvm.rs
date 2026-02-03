@@ -205,6 +205,8 @@ pub fn vtl2_memory_range(
     physical_address_size: u8,
     mem_size: u64,
     mmio_gaps: &[MemoryRange],
+    pci_ecam_gaps: &[MemoryRange],
+    pci_mmio_gaps: &[MemoryRange],
     igvm_file: &IgvmFile,
     vtl2_size: Option<u64>,
 ) -> Result<MemoryRange, Error> {
@@ -253,7 +255,8 @@ pub fn vtl2_memory_range(
     let physical_address_size = physical_address_size - 1;
 
     // Create an initial memory layout to determine the highest used address.
-    let dummy_layout = MemoryLayout::new(mem_size, mmio_gaps, None).map_err(Error::MemoryConfig)?;
+    let dummy_layout = MemoryLayout::new(mem_size, mmio_gaps, pci_ecam_gaps, pci_mmio_gaps, None)
+        .map_err(Error::MemoryConfig)?;
 
     // TODO: Underhill kernel panics if loaded at 32TB or higher. Restrict the
     // max address to 32TB until this is fixed.
@@ -264,7 +267,7 @@ pub fn vtl2_memory_range(
     // With more than two mmio gaps, it's harder to reason about which space is
     // free or not in the address space to allocate a VTL2 range. Take a
     // shortcut and place VTL2 above the end of ram or mmio.
-    let (min_addr, max_addr) = (dummy_layout.end_of_ram_or_mmio(), max_physical_address);
+    let (min_addr, max_addr) = (dummy_layout.end_of_layout(), max_physical_address);
 
     let aligned_min_addr = align_base(min_addr);
     let aligned_max_addr = (max_addr / alignment) * alignment;

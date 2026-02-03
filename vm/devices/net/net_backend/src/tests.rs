@@ -20,6 +20,8 @@ pub fn test_layout() -> MemoryLayout {
             MemoryRange::new(64 * 4096..65 * 4096),
             MemoryRange::new(65 * 4096..66 * 4096),
         ],
+        &[],
+        &[],
         None,
     )
     .unwrap()

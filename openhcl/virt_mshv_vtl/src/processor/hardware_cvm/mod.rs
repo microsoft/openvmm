@@ -2582,6 +2582,11 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 // Emulate the access.
                 true
             }
+            Some(AddressType::PciEcam) | Some(AddressType::PciMmio) => {
+                // We do not currently construct any PCI ECAM or MMIO regions in
+                // OpenHCL so this should never happen.
+                panic!("unexpected pci range");
+            }
             Some(AddressType::Ram) => {
                 let (access_check, access_type) = if is_write {
                     (
