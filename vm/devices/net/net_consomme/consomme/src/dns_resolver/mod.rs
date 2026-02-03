@@ -68,7 +68,7 @@ impl DnsResolver {
 
         let receiver = Receiver::new();
         Ok(Self {
-            backend: Box::new(WindowsDnsResolverBackend::new()?),
+            backend: Box::new(WindowsDnsResolverBackend::new(max_pending_requests)?),
             receiver,
             pending_requests: AtomicUsize::new(0),
             max_pending_requests,
