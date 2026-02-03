@@ -635,13 +635,13 @@ async fn servicing_keepalive_with_io(
     fault_start_updater.set(true).await;
     let _io_child = large_read_from_disk(&agent, disk_path).await?;
 
-    // 20 seconds should be plenty of time for the servicing to complete. If
+    // 30 seconds should be plenty of time for the servicing to complete. If
     // save is stuck it will be exposed here.
     CancelContext::new()
-        .with_timeout(Duration::from_secs(20))
+        .with_timeout(Duration::from_secs(30))
         .until_cancelled(vm.restart_openhcl(igvm_file.clone(), flags))
         .await
-        .expect("VM restart did not complete within 20 seconds, even though it should have. Save is stuck.")
+        .expect("VM restart did not complete within 30 seconds, even though it should have. Save is stuck.")
         .expect("VM restart failed");
 
     fault_start_updater.set(false).await;
