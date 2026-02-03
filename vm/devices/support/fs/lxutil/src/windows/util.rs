@@ -916,15 +916,19 @@ pub fn set_attr_check_kill_priv(
     // We only need to kill privileges if metadata is enabled, mode is not being set, and size or
     // owner are being set. Special case no changes as this is the payload when doing
     // chown(<path>, -1, -1), which in linux will remove the SUID/SGID bits.
-    let is_uid = if are_any_attributes_set(attr) {
+    let any_attrs_set = are_any_attributes_set(attr);
+    let is_uid = if any_attrs_set {
         attr.uid.is_some()
     } else {
-        true
+        false
     };
 
+    // When no attributes are set (chown(-1, -1) case), we should still proceed to clear
+    // setuid/setgid bits. Only return early if there are some attributes set but none of
+    // them require killing privileges.
     if !state.options.metadata
         || (attr.mode.is_some() && attr.mode != Some(lx::MODE_INVALID))
-        || (attr.size.is_none() && !is_uid && attr.gid.is_none())
+        || (any_attrs_set && attr.size.is_none() && !is_uid && attr.gid.is_none())
     {
         return Ok(());
     }
@@ -944,8 +948,11 @@ pub fn set_attr_check_kill_priv(
         return Ok(());
     }
 
-    // If the uid or gid changed, or this is the special case chown(.., -1, -1), clear set-user-ID.
-    if is_uid || attr.gid.is_some() {
+    // If the uid or gid changed, or this is the special case chown(.., -1, -1) on a regular file,
+    // clear set-user-ID. The chown(-1, -1) case is when no attributes are set at all.
+    // Note: For directories, chown(-1, -1) should NOT clear the setuid/setgid bits.
+    let is_directory = old_attr.stat.LxMode & lx::S_IFMT == lx::S_IFDIR;
+    if is_uid || attr.gid.is_some() || (!any_attrs_set && !is_directory) {
         let mut mode = old_attr.stat.LxMode & !lx::S_ISUID;
 
         // Clear set-group-ID only if the file is group executable.

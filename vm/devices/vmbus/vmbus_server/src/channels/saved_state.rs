@@ -424,7 +424,7 @@ pub struct DisconnectedState {
     pub reserved_gpadls: Vec<Gpadl>,
 }
 
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Debug, PartialEq, Eq, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
 pub struct VersionInfo {
     #[mesh(1)]
@@ -833,7 +833,7 @@ impl MonitorPageRequest {
     }
 }
 
-#[derive(Debug, Copy, Clone, Protobuf)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
 pub struct SignalInfo {
     #[mesh(1)]
@@ -858,7 +858,7 @@ impl SignalInfo {
     }
 }
 
-#[derive(Debug, Copy, Clone, Protobuf)]
+#[derive(Debug, Copy, PartialEq, Eq, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
 pub struct OpenRequest {
     #[mesh(1)]
@@ -940,7 +940,7 @@ impl ModifyState {
     }
 }
 
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Debug, PartialEq, Eq, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
 pub struct ReservedState {
     #[mesh(1)]

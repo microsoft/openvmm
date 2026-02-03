@@ -7,7 +7,6 @@ use crate::_jobs::local_build_igvm::non_production_build_igvm_tool_out_name;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetailsLocalOnly;
-use crate::build_openhcl_initrd::OpenhclInitrdExtraParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
@@ -453,17 +452,9 @@ impl SimpleFlowNode for Node {
                             details.with_uefi = true;
                         }
                         assert!(details.local_only.is_none());
-                        let initrd_extra =
-                            custom_kernel_modules_abs
-                                .clone()
-                                .map(|ckm| OpenhclInitrdExtraParams {
-                                    extra_initrd_layers: vec![],
-                                    extra_initrd_directories: vec![],
-                                    custom_kernel_modules: Some(ckm),
-                                });
                         details.local_only = Some(OpenhclIgvmRecipeDetailsLocalOnly {
                             openvmm_hcl_no_strip: false,
-                            openhcl_initrd_extra_params: initrd_extra,
+                            openhcl_initrd_extra_params: None,
                             custom_openvmm_hcl: None,
                             custom_openhcl_boot: None,
                             custom_uefi: None,

@@ -11,7 +11,7 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use nvme::NvmeController;
 use nvme::NvmeControllerCaps;
-use nvme_driver::Namespace;
+use nvme_driver::NamespaceHandle;
 use nvme_driver::NvmeDriver;
 use nvme_spec::nvm::DsmRange;
 use page_pool_alloc::PagePoolAllocator;
@@ -19,7 +19,6 @@ use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::convert::TryFrom;
-use std::sync::Arc;
 use user_driver_emulated_mock::DeviceTestMemory;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -27,7 +26,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 /// Nvme driver fuzzer
 pub struct FuzzNvmeDriver {
     driver: Option<NvmeDriver<FuzzEmulatedDevice<NvmeController, PagePoolAllocator>>>,
-    namespace: Arc<Namespace>,
+    namespace: NamespaceHandle,
     payload_mem: GuestMemory,
     cpu_count: u32,
 }

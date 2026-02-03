@@ -1029,6 +1029,7 @@ async fn vm_config_from_command_line(
                     },
                     com1: with_vmbus_com1_serial,
                     com2: with_vmbus_com2_serial,
+                    serial_tx_only: opt.serial_tx_only,
                     vtl2_settings: Some(prost::Message::encode_to_vec(&vtl2_settings)),
                     vmbus_redirection: opt.vmbus_redirect,
                     vmgs,
@@ -1061,6 +1062,7 @@ async fn vm_config_from_command_line(
                             EfiDiagnosticsLogLevelCli::Full => get_resources::ged::EfiDiagnosticsLogLevelType::Full,
                         }
                     },
+                    hv_sint_enabled: false,
                 }
                 .into_resource(),
             ),
