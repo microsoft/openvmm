@@ -660,7 +660,7 @@ async fn vm_config_from_command_line(
         tracing::info!(
             port_name = %cli_cfg.port_name,
             socket_path = ?cli_cfg.socket_path,
-            "Instantiating PCIe remote device"
+            "instantiating PCIe remote device"
         );
 
         // Generate a deterministic instance ID based on index
