@@ -250,6 +250,7 @@ pub fn create_host_channel(
         },
         com1: true,
         com2: true,
+        serial_tx_only: false,
         vmbus_redirection: false,
         enable_tpm: false,
         vtl2_settings: None,
