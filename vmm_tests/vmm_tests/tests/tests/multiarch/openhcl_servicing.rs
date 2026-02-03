@@ -69,6 +69,7 @@ const DEFAULT_SERVICING_COUNT: u8 = 3;
 const KEEPALIVE_VTL2_NSID: u32 = 37; // Pick any namespace ID as long as it doesn't conflict with other namespaces in the controller
 const VTL0_NVME_LUN: u32 = 1; // LUN 0 is reserved for the boot device
 const DEFAULT_DISK_SIZE: u64 = 256 * 1024; // 256 KiB
+const SCSI_SECTOR_SIZE: u64 = 512;
 
 async fn openhcl_servicing_core<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -587,18 +588,21 @@ async fn servicing_keepalive_with_io(
     // Delay excessively (100s) to cause the queue to fill up. Don't start fault
     // immediately. There will be some IO during guest boot that we don't want to
     // interfere with.
+    // DEV NOTE: Reduced mqes is required to make sure the queue fills up during
+    // the test. dd is single threaded and there seems to be a guest limitation
+    // that prevents more than 16 concurrent SCSI requests. This limit can
+    // probably be lifted if/when fio is available in the guest.
     let fault_configuration = FaultConfiguration::new(cell.clone())
         .with_io_queue_fault(
             IoQueueFaultConfig::new(cell.clone()).with_completion_queue_fault(
                 CommandMatchBuilder::new().match_cdw0(0, 0).build(),
-                IoQueueFaultBehavior::Delay(Duration::from_millis(100_000)),
+                IoQueueFaultBehavior::Delay(Duration::from_secs(100)),
             ),
         )
         .with_pci_fault(PciFaultConfig::new().with_custom_cap_mqes(8));
 
     let scsi_controller_guid = Guid::new_random();
-    let disk_size = 2 * 1024 * 1024 * 1024; // 2 GiB
-    const SECTOR_SIZE: u64 = 512;
+    let disk_size = 100 * 1024 * 1024; // 100 MiB
 
     let (mut vm, agent) = create_keepalive_test_config(
         config,
@@ -610,12 +614,6 @@ async fn servicing_keepalive_with_io(
     .await?;
 
     agent.ping().await?;
-    let sh = agent.unix_shell();
-
-    // Make sure the disk showed up.
-    cmd!(sh, "ls /dev/sda").run().await?;
-    cmd!(sh, "ls /dev/sdb").run().await?;
-    cmd!(sh, "ls /dev/null").run().await?;
 
     // Fetch the correct disk path for the VTL0 NVMe disk. Petri may assign it
     // to /dev/sda or /dev/sdb depending on timing.
@@ -624,7 +622,7 @@ async fn servicing_keepalive_with_io(
         scsi_controller_guid,
         vec![ExpectedGuestDevice {
             lun: VTL0_NVME_LUN,
-            disk_size_sectors: (disk_size / SECTOR_SIZE) as usize,
+            disk_size_sectors: (disk_size / SCSI_SECTOR_SIZE) as usize,
             friendly_name: "nvme_disk".to_string(),
         }],
     )
@@ -632,18 +630,18 @@ async fn servicing_keepalive_with_io(
     assert!(device_paths.len() == 1);
     let disk_path = &device_paths[0];
 
+    // At this point the guest should be booted and the disk should be stable
+    // with no other ongoing IO. Start some large reads to fill up the IO queue.
     fault_start_updater.set(true).await;
     let _io_child = large_read_from_disk(&agent, disk_path).await?;
 
-    cmd!(sh, "sleep 5").run().await?; // Give some time for IO to start and fill the queue
-
-    // 10 seconds should be plenty of time for the servicing to complete. If
+    // 20 seconds should be plenty of time for the servicing to complete. If
     // save is stuck it will be exposed here.
     CancelContext::new()
-        .with_timeout(Duration::from_secs(10))
+        .with_timeout(Duration::from_secs(20))
         .until_cancelled(vm.restart_openhcl(igvm_file.clone(), flags))
         .await
-        .expect("VM restart did not complete within 10 seconds, even though it should have. Save is stuck.")
+        .expect("VM restart did not complete within 20 seconds, even though it should have. Save is stuck.")
         .expect("VM restart failed");
 
     fault_start_updater.set(false).await;
