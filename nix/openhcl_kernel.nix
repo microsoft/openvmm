@@ -66,6 +66,9 @@ in stdenv.mkDerivation {
     fi
     cp -r modules/* $out/modules/
     cp kernel_build_metadata.json $out/
+    if [ -d tools ]; then
+      cp -r tools $out/
+    fi
     runHook postInstall
   '';
 }
