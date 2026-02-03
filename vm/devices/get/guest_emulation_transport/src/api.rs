@@ -84,12 +84,14 @@ pub mod platform_settings {
         pub battery_enabled: bool,
         pub processor_idle_enabled: bool,
         pub tpm_enabled: bool,
+
         pub com1_enabled: bool,
         pub com1_debugger_mode: bool,
         pub com1_vmbus_redirector: bool,
         pub com2_enabled: bool,
         pub com2_debugger_mode: bool,
         pub com2_vmbus_redirector: bool,
+
         pub firmware_debugging_enabled: bool,
         pub hibernation_enabled: bool,
 
