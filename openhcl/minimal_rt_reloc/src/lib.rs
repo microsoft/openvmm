@@ -20,6 +20,7 @@
 macro_rules! panic_no_relocs {
     ($code:expr) => {{
         let _code = $code;
+        // SAFETY: no safety requirements.
         unsafe {
             #[cfg(target_arch = "x86_64")]
             core::arch::asm!("ud2", options(noreturn));
