@@ -11,14 +11,21 @@
 //! overrides, needed to prevent relocations from being generated in this code,
 //! to just this module.
 
+#![no_std]
+// UNSAFETY: Manipulating instructions in memory.
+#![expect(unsafe_code)]
+
 /// Stores error code, line number, and the pointer to the file name in the registers.
 /// Cannot call into the panic facilities before relocation, that won't be debuggable at all.
 macro_rules! panic_no_relocs {
     ($code:expr) => {{
         let _code = $code;
-        crate::arch::fault();
-        // Uncomment for local debugging. Can't spin forever in the official build.
-        // crate::arch::dead_loop(_code as u64, line!() as u64, file!().as_ptr() as u64);
+        unsafe {
+            #[cfg(target_arch = "x86_64")]
+            core::arch::asm!("ud2", options(noreturn));
+            #[cfg(target_arch = "aarch64")]
+            core::arch::asm!("brk #0", options(noreturn));
+        }
     }};
 }
 
