@@ -2854,24 +2854,30 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                             backing_scsi_lun,
                         } => {
                             // Determine the backing device type and path
-                            let (device_type, device_path, sub_device_path) = if let Some(nsid) =
-                                backing_nvme_nsid
-                            {
-                                (
+                            let (device_type, device_path, sub_device_path) = match (
+                                backing_nvme_nsid,
+                                backing_scsi_lun,
+                            ) {
+                                (Some(nsid), None) => (
                                     vtl2_settings_proto::physical_device::DeviceType::Nvme,
                                     storage_builder::NVME_VTL2_INSTANCE_ID,
                                     nsid,
-                                )
-                            } else if let Some(scsi_lun) = backing_scsi_lun {
-                                (
+                                ),
+                                (None, Some(scsi_lun)) => (
                                     vtl2_settings_proto::physical_device::DeviceType::Vscsi,
                                     storage_builder::SCSI_VTL2_INSTANCE_ID,
                                     scsi_lun,
-                                )
-                            } else {
-                                anyhow::bail!(
-                                    "must specify either --backing-nvme-nsid or --backing-scsi-lun"
-                                );
+                                ),
+                                (Some(_), Some(_)) => {
+                                    anyhow::bail!(
+                                        "can't specify both --backing-nvme-nsid and --backing-scsi-lun"
+                                    );
+                                }
+                                (None, None) => {
+                                    anyhow::bail!(
+                                        "must specify either --backing-nvme-nsid or --backing-scsi-lun"
+                                    );
+                                }
                             };
 
                             // Default to the standard OpenVMM VTL0 SCSI instance
