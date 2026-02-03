@@ -113,6 +113,7 @@ pub struct KvmProcessorBinder {
 }
 
 impl KvmPartitionInner {
+    #[cfg(guest_arch = "x86_64")]
     fn bsp(&self) -> &KvmVpInner {
         &self.vps[0]
     }
@@ -123,9 +124,7 @@ impl KvmPartitionInner {
 
     #[cfg(guest_arch = "x86_64")]
     fn vps(&self) -> impl Iterator<Item = &'_ KvmVpInner> {
-        (0..self.vps.len() as u32)
-            .map(|index| self.vp(VpIndex::new(index)))
-            .flatten()
+        (0..self.vps.len() as u32).filter_map(|index| self.vp(VpIndex::new(index)))
     }
 
     fn evaluate_vp(&self, vp_index: VpIndex) {
