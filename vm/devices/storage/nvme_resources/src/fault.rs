@@ -96,7 +96,7 @@ pub enum NamespaceChange {
 pub struct PciFaultConfig {
     /// Fault to apply to cc.en() bit during enablement
     pub controller_management_fault_enable: PciFaultBehavior,
-    /// Custom MQES value to return in CAP register reads
+    /// Custom MQES value to return in CAP register reads. 1 based value.
     pub custom_cap_mqes: Option<u16>,
 }
 
