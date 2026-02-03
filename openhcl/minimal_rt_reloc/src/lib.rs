@@ -19,13 +19,14 @@
 /// Cannot call into the panic facilities before relocation, that won't be debuggable at all.
 macro_rules! panic_no_relocs {
     ($code:expr) => {{
-        let _code = $code;
+        let code = $code;
+        let line = core::panic::Location::caller().line();
         // SAFETY: no safety requirements.
         unsafe {
             #[cfg(target_arch = "x86_64")]
-            core::arch::asm!("ud2", options(noreturn));
+            core::arch::asm!("ud2", in("rdi") code, in("rsi") line, options(noreturn));
             #[cfg(target_arch = "aarch64")]
-            core::arch::asm!("brk #0", options(noreturn));
+            core::arch::asm!("brk #0", in("x0") code, in("x1") line, options(noreturn));
         }
     }};
 }
