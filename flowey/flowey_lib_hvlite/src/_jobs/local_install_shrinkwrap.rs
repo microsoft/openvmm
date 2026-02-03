@@ -5,6 +5,7 @@
 
 use flowey::node::prelude::*;
 use std::path::Path;
+use xshell::{cmd, Shell};
 
 const ARM_GNU_TOOLCHAIN_URL: &str = "https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz";
 const OHCL_LINUX_KERNEL_REPO: &str = "https://github.com/weiding-msft/OHCL-Linux-Kernel.git";
@@ -13,6 +14,21 @@ const OPENVMM_TMK_REPO: &str = "https://github.com/Flgodd67/openvmm.git";
 const OPENVMM_TMK_BRANCH: &str = "cca-enablement";
 const SHRINKWRAP_REPO: &str = "https://git.gitlab.arm.com/tooling/shrinkwrap.git";
 const CCA_CONFIG_REPO: &str = "https://github.com/weiding-msft/cca_config";
+
+const CCA_CONFIGS: &[&str] = &["CONFIG_VIRT_DRIVERS", "CONFIG_ARM_CCA_GUEST"];
+const NINEP_CONFIGS: &[&str] = &[
+    "CONFIG_NET_9P",
+    "CONFIG_NET_9P_FD",
+    "CONFIG_NET_9P_VIRTIO",
+    "CONFIG_NET_9P_FS",
+];
+const HYPERV_CONFIGS: &[&str] = &[
+    "CONFIG_HYPERV",
+    "CONFIG_HYPERV_MSHV",
+    "CONFIG_MSHV",
+    "CONFIG_MSHV_VTL",
+    "CONFIG_HYPERV_VTL_MODE",
+];
 
 flowey_request! {
     pub struct Params {
@@ -31,7 +47,7 @@ new_simple_flow_node!(struct Node);
 
 /// clone or update a git repository
 fn clone_or_update_repo(
-    sh: &xshell::Shell,
+    sh: &Shell,
     repo_url: &str,
     target_dir: &Path,
     update_repo: bool,
@@ -40,7 +56,7 @@ fn clone_or_update_repo(
 ) -> anyhow::Result<()> {
     if !target_dir.exists() {
         log::info!("Cloning {} to {}", repo_name, target_dir.display());
-        let mut cmd = xshell::cmd!(sh, "git clone");
+        let mut cmd = cmd!(sh, "git clone");
         if let Some(b) = branch {
             cmd = cmd.args(["--branch", b]);
         }
@@ -49,11 +65,58 @@ fn clone_or_update_repo(
     } else if update_repo {
         log::info!("Updating {} repo...", repo_name);
         sh.change_dir(target_dir);
-        xshell::cmd!(sh, "git pull --ff-only").run()?;
+        cmd!(sh, "git pull --ff-only").run()?;
         log::info!("{} updated successfully", repo_name);
     } else {
         log::info!("{} already exists at {}", repo_name, target_dir.display());
     }
+    Ok(())
+}
+
+fn enable_kernel_configs(sh: &Shell, group: &str, configs: &[&str]) -> anyhow::Result<()> {
+    // Build a single argument string like: "--enable A --enable B ..."
+    let mut args = String::new();
+    for c in configs {
+        args.push_str("--enable ");
+        args.push_str(c);
+        args.push(' ');
+    }
+
+    cmd!(sh, "./scripts/config --file .config {args}")
+        .run()
+        .with_context(|| format!("Failed to enable {} kernel configs", group))?;
+
+    Ok(())
+}
+
+/// Build a Rust binary if it doesn't already exist
+fn build_rust_binary(
+    sh: &Shell,
+    binary_path: &Path,
+    package: &str,
+    build_args: &[&str],
+) -> anyhow::Result<()> {
+    if binary_path.exists() {
+        log::info!("{} binary already exists at {}", package, binary_path.display());
+        return Ok(());
+    }
+
+    log::info!("Building {}...", package);
+    let mut command = cmd!(sh, "cargo build -p {package}");
+
+    // Add additional build arguments
+    for arg in build_args {
+        command = command.arg(arg);
+    }
+
+    command
+        .env("RUSTC_BOOTSTRAP", "1")
+        .env_remove("ARCH")
+        .env_remove("CROSS_COMPILE")
+        .run()
+        .map_err(|e| anyhow::anyhow!("Failed to build {}: {}", package, e))?;
+
+    log::info!("{} built successfully at: {}", package, binary_path.display());
     Ok(())
 }
 
@@ -73,7 +136,7 @@ impl SimpleFlowNode for Node {
         ctx.emit_rust_step("install shrinkwrap", |ctx| {
             done.claim(ctx);
             move |_rt| {
-                let sh = xshell::Shell::new()?;
+                let sh = Shell::new()?;
 
                 // 0) Create parent dir
                 if let Some(parent) = shrinkwrap_dir.parent() {
@@ -83,18 +146,18 @@ impl SimpleFlowNode for Node {
                 // 1) System deps (Ubuntu)
                 if do_installs {
                     log::info!("Installing system dependencies...");
-                    xshell::cmd!(sh, "sudo apt-get update").run()?;
-                    xshell::cmd!(sh, "sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc git netcat-openbsd python3 python3-pip python3-venv telnet docker.io unzip").run()?;
+                    cmd!(sh, "sudo apt-get update").run()?;
+                    cmd!(sh, "sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc git netcat-openbsd python3 python3-pip python3-venv telnet docker.io unzip").run()?;
 
                     // Setup Docker group and add current user
                     log::info!("Setting up Docker group...");
                     let username = std::env::var("USER").unwrap_or_else(|_| "vscode".to_string());
 
                     // Create docker group (ignore error if it already exists)
-                    let _ = xshell::cmd!(sh, "sudo groupadd docker").run();
+                    let _ = cmd!(sh, "sudo groupadd docker").run();
 
                     // Add user to docker group
-                    xshell::cmd!(sh, "sudo usermod -aG docker {username}").run()?;
+                    cmd!(sh, "sudo usermod -aG docker {username}").run()?;
 
                     log::warn!("Docker group membership updated. You may need to log out and log back in for docker permissions to take effect.");
                     log::warn!("Alternatively, run: newgrp docker");
@@ -109,7 +172,7 @@ impl SimpleFlowNode for Node {
                 // Download toolchain if not present
                 if !toolchain_archive.exists() {
                     log::info!("Downloading ARM GNU toolchain to {}", toolchain_archive.display());
-                    xshell::cmd!(sh, "wget -O").arg(&toolchain_archive).arg(ARM_GNU_TOOLCHAIN_URL).run()?;
+                    cmd!(sh, "wget -O").arg(&toolchain_archive).arg(ARM_GNU_TOOLCHAIN_URL).run()?;
                     log::info!("ARM GNU toolchain downloaded successfully");
                 } else {
                     log::info!("ARM GNU toolchain already exists at {}", toolchain_archive.display());
@@ -119,7 +182,7 @@ impl SimpleFlowNode for Node {
                 if !toolchain_extracted_dir.exists() {
                     log::info!("Extracting ARM GNU toolchain to {}", toolchain_dir.display());
                     sh.change_dir(toolchain_dir);
-                    xshell::cmd!(sh, "tar -xvf").arg(&toolchain_archive).run()?;
+                    cmd!(sh, "tar -xvf").arg(&toolchain_archive).run()?;
                     log::info!("ARM GNU toolchain extracted successfully");
                 } else {
                     log::info!("ARM GNU toolchain already extracted at {}", toolchain_extracted_dir.display());
@@ -153,21 +216,18 @@ impl SimpleFlowNode for Node {
 
                     // Run make defconfig
                     log::info!("Running make defconfig...");
-                    xshell::cmd!(sh, "make ARCH={arch} CROSS_COMPILE={cross_compile} defconfig").run()
+                    cmd!(sh, "make ARCH={arch} CROSS_COMPILE={cross_compile} defconfig").run()
                         .map_err(|e| anyhow::anyhow!("Failed to run make defconfig: {}", e))?;
 
-                    // Enable required kernel configs
+                    // Enable required kernel configs in groups
                     log::info!("Enabling required kernel configurations...");
-                    xshell::cmd!(sh, "./scripts/config --file .config --enable CONFIG_VIRT_DRIVERS --enable CONFIG_ARM_CCA_GUEST").run()
-                        .map_err(|e| anyhow::anyhow!("Failed to enable CCA configs: {}", e))?;
-                    xshell::cmd!(sh, "./scripts/config --file .config --enable CONFIG_NET_9P --enable CONFIG_NET_9P_FD --enable CONFIG_NET_9P_VIRTIO --enable CONFIG_NET_9P_FS").run()
-                        .map_err(|e| anyhow::anyhow!("Failed to enable 9P configs: {}", e))?;
-                    xshell::cmd!(sh, "./scripts/config --file .config --enable CONFIG_HYPERV --enable CONFIG_HYPERV_MSHV --enable CONFIG_MSHV --enable CONFIG_MSHV_VTL --enable CONFIG_HYPERV_VTL_MODE").run()
-                        .map_err(|e| anyhow::anyhow!("Failed to enable Hyper-V configs: {}", e))?;
+                    enable_kernel_configs(&sh, "CCA", CCA_CONFIGS)?;
+                    enable_kernel_configs(&sh, "9P", NINEP_CONFIGS)?;
+                    enable_kernel_configs(&sh, "Hyper-V", HYPERV_CONFIGS)?;
 
                     // Run make olddefconfig
                     log::info!("Running make olddefconfig...");
-                    xshell::cmd!(sh, "make ARCH={arch} CROSS_COMPILE={cross_compile} olddefconfig").run()
+                    cmd!(sh, "make ARCH={arch} CROSS_COMPILE={cross_compile} olddefconfig").run()
                         .map_err(|e| anyhow::anyhow!("Failed to run make olddefconfig: {}", e))?;
 
                     // Build kernel Image
@@ -175,7 +235,7 @@ impl SimpleFlowNode for Node {
                     let nproc = std::thread::available_parallelism()
                         .map(|n| n.get().to_string())
                         .unwrap_or_else(|_| "1".to_string());
-                    xshell::cmd!(sh, "make ARCH={arch} CROSS_COMPILE={cross_compile} Image -j{nproc}").run()
+                    cmd!(sh, "make ARCH={arch} CROSS_COMPILE={cross_compile} Image -j{nproc}").run()
                         .map_err(|e| anyhow::anyhow!("Failed to build kernel Image: {}", e))?;
 
                     // Verify kernel Image was created
@@ -204,44 +264,39 @@ impl SimpleFlowNode for Node {
                 // Install Rust targets and build TMK components if do_installs is true
                 if do_installs {
                     log::info!("Installing Rust cross-compilation targets...");
-                    xshell::cmd!(sh, "rustup target add aarch64-unknown-linux-gnu").run()?;
-                    xshell::cmd!(sh, "rustup target add aarch64-unknown-none").run()?;
+                    cmd!(sh, "rustup target add aarch64-unknown-linux-gnu").run()?;
+                    cmd!(sh, "rustup target add aarch64-unknown-none").run()?;
 
                     // Change to the TMK kernel directory (which should be the openvmm repo root)
                     sh.change_dir(&tmk_kernel_dir);
 
-                    // Unset ARCH and CROSS_COMPILE if they were set
                     log::info!("Building TMK components...");
 
                     // Build simple_tmk
-                    let simple_tmk_binary = tmk_kernel_dir.join("target").join("aarch64-minimal_rt-none").join("debug").join("simple_tmk");
-                    if !simple_tmk_binary.exists() {
-                        log::info!("Building simple_tmk...");
-                        xshell::cmd!(sh, "cargo build -p simple_tmk --config openhcl/minimal_rt/aarch64-config.toml")
-                            .env("RUSTC_BOOTSTRAP", "1")
-                            .env_remove("ARCH")
-                            .env_remove("CROSS_COMPILE")
-                            .run()
-                            .map_err(|e| anyhow::anyhow!("Failed to build simple_tmk: {}", e))?;
-                        log::info!("simple_tmk built successfully at: {}", simple_tmk_binary.display());
-                    } else {
-                        log::info!("simple_tmk binary already exists at {}", simple_tmk_binary.display());
-                    }
+                    let simple_tmk_binary = tmk_kernel_dir
+                        .join("target")
+                        .join("aarch64-minimal_rt-none")
+                        .join("debug")
+                        .join("simple_tmk");
+                    build_rust_binary(
+                        &sh,
+                        &simple_tmk_binary,
+                        "simple_tmk",
+                        &["--config", "openhcl/minimal_rt/aarch64-config.toml"],
+                    )?;
 
                     // Build tmk_vmm
-                    let tmk_vmm_binary = tmk_kernel_dir.join("target").join("aarch64-unknown-linux-gnu").join("debug").join("tmk_vmm");
-                    if !tmk_vmm_binary.exists() {
-                        log::info!("Building tmk_vmm...");
-                        xshell::cmd!(sh, "cargo build -p tmk_vmm --target aarch64-unknown-linux-gnu")
-                            .env("RUSTC_BOOTSTRAP", "1")
-                            .env_remove("ARCH")
-                            .env_remove("CROSS_COMPILE")
-                            .run()
-                            .map_err(|e| anyhow::anyhow!("Failed to build tmk_vmm: {}", e))?;
-                        log::info!("tmk_vmm built successfully at: {}", tmk_vmm_binary.display());
-                    } else {
-                        log::info!("tmk_vmm binary already exists at {}", tmk_vmm_binary.display());
-                    }
+                    let tmk_vmm_binary = tmk_kernel_dir
+                        .join("target")
+                        .join("aarch64-unknown-linux-gnu")
+                        .join("debug")
+                        .join("tmk_vmm");
+                    build_rust_binary(
+                        &sh,
+                        &tmk_vmm_binary,
+                        "tmk_vmm",
+                        &["--target", "aarch64-unknown-linux-gnu"],
+                    )?;
 
                     // Return to parent directory
                     sh.change_dir(shrinkwrap_dir.parent().unwrap());
@@ -291,13 +346,13 @@ impl SimpleFlowNode for Node {
                 if do_installs {
                     if !venv_dir.exists() {
                         log::info!("Creating Python virtual environment at {}", venv_dir.display());
-                        xshell::cmd!(sh, "python3 -m venv").arg(&venv_dir).run()?;
+                        cmd!(sh, "python3 -m venv").arg(&venv_dir).run()?;
                     }
 
                     log::info!("Installing Python dependencies in virtual environment...");
                     let pip_bin = venv_dir.join("bin").join("pip");
-                    xshell::cmd!(sh, "{pip_bin} install --upgrade pip").run()?;
-                    xshell::cmd!(sh, "{pip_bin} install pyyaml termcolor tuxmake").run()?;
+                    cmd!(sh, "{pip_bin} install --upgrade pip").run()?;
+                    cmd!(sh, "{pip_bin} install pyyaml termcolor tuxmake").run()?;
                 }
 
                 // 7) Validate shrinkwrap entrypoint exists
