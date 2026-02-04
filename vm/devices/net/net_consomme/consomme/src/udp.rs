@@ -128,7 +128,7 @@ impl UdpConnection {
                     Ipv4Repr {
                         src_addr: src_ip.into(),
                         dst_addr: dst_addr.ip,
-                        protocol: IpProtocol::Udp,
+                        next_header: IpProtocol::Udp,
                         payload_len: UDP_HEADER_LEN + n,
                         hop_limit: 64,
                     }
