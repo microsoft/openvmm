@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Modify rootfs.ext2 to inject TMK binaries and kernel.
-
 use flowey::node::prelude::*;
 use std::fs;
 use std::path::PathBuf;
@@ -17,6 +15,8 @@ flowey_request! {
         pub shrinkwrap_dir: PathBuf,
         /// Platform YAML file for shrinkwrap run
         pub platform_yaml: PathBuf,
+        /// Path to rootfs.ext2 file
+        pub rootfs_path: PathBuf,
         /// Runtime variables for shrinkwrap run (e.g., "ROOTFS=/path/to/rootfs.ext2")
         pub rtvars: Vec<String>,
         pub done: WriteVar<SideEffect>,
@@ -35,6 +35,7 @@ impl SimpleFlowNode for Node {
             out_dir,
             shrinkwrap_dir,
             platform_yaml,
+            rootfs_path,
             rtvars,
             done,
         } = request;
@@ -57,11 +58,8 @@ impl SimpleFlowNode for Node {
                 // Modify rootfs.ext2 to inject TMK binaries and kernel
                 log::info!("Starting rootfs.ext2 modification...");
 
-                let shrinkwrap_package_dir = std::env::var("HOME")
-                    .map(|h| PathBuf::from(h).join(".shrinkwrap/package/cca-3world"))
-                    .unwrap_or_else(|_| PathBuf::from("/home/ubuntu/.shrinkwrap/package/cca-3world"));
-
-                let rootfs_ext2 = shrinkwrap_package_dir.join("rootfs.ext2");
+                // Use the rootfs path provided by the user command
+                let rootfs_ext2 = rootfs_path;
 
                 if !rootfs_ext2.exists() {
                     anyhow::bail!("rootfs.ext2 not found at {}", rootfs_ext2.display());
@@ -69,14 +67,21 @@ impl SimpleFlowNode for Node {
 
                 log::info!("Found rootfs.ext2 at {}", rootfs_ext2.display());
 
+                // Get the directory containing rootfs.ext2 for docker mounting
+                let rootfs_dir = rootfs_ext2.parent()
+                    .ok_or_else(|| anyhow::anyhow!("rootfs.ext2 has no parent directory"))?;
+                let rootfs_filename = rootfs_ext2.file_name()
+                    .ok_or_else(|| anyhow::anyhow!("Invalid rootfs path"))?
+                    .to_string_lossy();
+
                 // Step 1: Run e2fsck to check filesystem
                 log::info!("Running e2fsck on rootfs.ext2...");
                 let e2fsck_status = Command::new("docker")
                     .args(&["run", "--rm", "-v"])
-                    .arg(format!("{}:{}", shrinkwrap_package_dir.display(), shrinkwrap_package_dir.display()))
-                    .args(&["-w", &shrinkwrap_package_dir.to_string_lossy()])
+                    .arg(format!("{}:{}", rootfs_dir.display(), rootfs_dir.display()))
+                    .args(&["-w", &rootfs_dir.to_string_lossy()])
                     .args(&["ubuntu:24.04", "bash", "-lc"])
-                    .arg("apt-get update && apt-get install -y e2fsprogs && e2fsck -fp rootfs.ext2")
+                    .arg(format!("apt-get update && apt-get install -y e2fsprogs && e2fsck -fp {}", rootfs_filename))
                     .status();
 
                 match e2fsck_status {
@@ -89,10 +94,10 @@ impl SimpleFlowNode for Node {
                 log::info!("Resizing rootfs.ext2 to 1024M...");
                 let resize_status = Command::new("docker")
                     .args(&["run", "--rm", "-v"])
-                    .arg(format!("{}:{}", shrinkwrap_package_dir.display(), shrinkwrap_package_dir.display()))
-                    .args(&["-w", &shrinkwrap_package_dir.to_string_lossy()])
+                    .arg(format!("{}:{}", rootfs_dir.display(), rootfs_dir.display()))
+                    .args(&["-w", &rootfs_dir.to_string_lossy()])
                     .args(&["ubuntu:24.04", "bash", "-lc"])
-                    .arg("apt-get update && apt-get install -y e2fsprogs && e2fsck -fp rootfs.ext2 && resize2fs rootfs.ext2 1024M")
+                    .arg(format!("apt-get update && apt-get install -y e2fsprogs && e2fsck -fp {} && resize2fs {} 1024M", rootfs_filename, rootfs_filename))
                     .status();
 
                 match resize_status {
@@ -109,12 +114,13 @@ impl SimpleFlowNode for Node {
                 log::info!("Using tmk_vmm from: {}", tmk_vmm.display());
                 log::info!("Using kernel Image from: {}", kernel_image_path.display());
 
-                let guest_disk = shrinkwrap_package_dir.join("guest-disk.img");
-                let kvmtool_efi = shrinkwrap_package_dir.join("KVMTOOL_EFI.fd");
-                let lkvm = shrinkwrap_package_dir.join("lkvm");
+                // Same directory as rootfs.ext2
+                let guest_disk = rootfs_dir.join("guest-disk.img");
+                let kvmtool_efi = rootfs_dir.join("KVMTOOL_EFI.fd");
+                let lkvm = rootfs_dir.join("lkvm");
 
                 // Copy kernel to Image_ohcl
-                let image_ohcl = shrinkwrap_package_dir.join("Image_ohcl");
+                let image_ohcl = rootfs_dir.join("Image_ohcl");
                 if kernel_image_path.exists() {
                     fs::copy(&kernel_image_path, &image_ohcl)
                         .map_err(|e| anyhow::anyhow!("Failed to copy kernel Image: {}", e))?;
@@ -128,7 +134,7 @@ impl SimpleFlowNode for Node {
                     r#"
                     set -e
                     mkdir -p mnt
-                    mount rootfs.ext2 mnt
+                    mount {rootfs_filename} mnt
                     mkdir -p mnt/cca
                     {simple_tmk_copy}
                     {tmk_vmm_copy}
@@ -139,6 +145,7 @@ impl SimpleFlowNode for Node {
                     umount mnt
                     rm -rf mnt
                     "#,
+                    rootfs_filename = rootfs_filename,
                     simple_tmk_copy = if simple_tmk.exists() {
                         format!("cp {} mnt/cca/", simple_tmk.display())
                     } else {
@@ -175,7 +182,7 @@ impl SimpleFlowNode for Node {
                     .arg("bash")
                     .arg("-c")
                     .arg(&mount_script)
-                    .current_dir(&shrinkwrap_package_dir)
+                    .current_dir(rootfs_dir)
                     .status();
 
                 match mount_status {
