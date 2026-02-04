@@ -866,7 +866,7 @@ async fn large_read_from_disk(
     let mut io_cmd = agent.command("sh");
 
     let cmd = format!(
-        "dd if={} of=/dev/null bs=1G iflag=direct status=none",
+        "dd if={} of=/dev/null bs=10M iflag=direct status=none",
         disk_path
     );
 
