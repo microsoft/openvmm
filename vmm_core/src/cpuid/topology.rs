@@ -182,11 +182,7 @@ fn amd_extended_address_space_sizes_cpuid(
     leaves: &mut Vec<CpuidLeaf>,
 ) {
     let nc = (topology.reserved_vps_per_socket() - 1) as u8;
-    let apic_core_id_size = topology
-        .reserved_vps_per_socket()
-        .next_power_of_two()
-        .trailing_zeros() as u8;
-
+    let apic_core_id_size = topology.reserved_vps_per_socket().trailing_zeros() as u8;
     let ecx = ExtendedAddressSpaceSizesEcx::new()
         .with_nc(nc)
         .with_apic_core_id_size(apic_core_id_size);
@@ -205,10 +201,6 @@ fn amd_extended_address_space_sizes_cpuid(
 }
 
 /// Adds leaf 8000001Eh (Processor Topology Definition) for AMD processors.
-///
-/// This leaf provides extended APIC ID, compute unit ID, and node information.
-/// The extended APIC ID (eax) and compute unit ID (ebx) are per-VP values that
-/// must be filled in by the caller.
 fn amd_processor_topology_definition_cpuid(
     topology: &ProcessorTopology,
     leaves: &mut Vec<CpuidLeaf>,
@@ -220,6 +212,7 @@ fn amd_processor_topology_definition_cpuid(
 
     let ebx_mask = ProcessorTopologyDefinitionEbx::new().with_threads_per_compute_unit(!0);
 
+    // TODO: support AMD's nodes per socket concept.
     let ecx = ProcessorTopologyDefinitionEcx::new().with_nodes_per_processor(0);
     let ecx_mask = ProcessorTopologyDefinitionEcx::new().with_nodes_per_processor(0x7);
 
