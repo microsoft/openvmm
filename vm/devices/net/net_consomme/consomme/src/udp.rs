@@ -377,7 +377,7 @@ mod tests {
         Ipv4Repr {
             src_addr: guest_ip,
             dst_addr: external_ip,
-            protocol: IpProtocol::Udp,
+            next_header: IpProtocol::Udp,
             payload_len: UDP_HEADER_LEN + payload.len(),
             hop_limit: 64,
         }
