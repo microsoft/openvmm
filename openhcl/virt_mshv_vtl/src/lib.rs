@@ -1355,16 +1355,21 @@ fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
     let caps = hcl.get_vsm_capabilities().map_err(Error::GetReg)?;
     let hardware_isolated = hcl.isolation().is_hardware_isolated();
     let isolated = hcl.isolation().is_isolated();
-    let result =
-        safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
-    let restore_partition_time_available = hvdef::HvEnlightenmentInformation::from(
-        result.eax as u128
-            | (result.ebx as u128) << 32
-            | (result.ecx as u128) << 64
-            | (result.edx as u128) << 96,
-    )
-    .restore_time_on_resume();
-    tracing::info!(restore_partition_time_available, "restore_partition_time");
+    // xtask-fmt allow-target-arch cpu-intrinsic
+    let restore_partition_time_available = if cfg!(target_arch = "x86_64") {
+        let result =
+            safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
+        hvdef::HvEnlightenmentInformation::from(
+            result.eax as u128
+                | (result.ebx as u128) << 32
+                | (result.ecx as u128) << 64
+                | (result.edx as u128) << 96,
+        )
+        .restore_time_on_resume()
+    } else {
+        // Only available on x86_64 hypervisors.
+        false
+    };
 
     let config = HvRegisterVsmPartitionConfig::new()
         .with_default_vtl_protection_mask(0xF)
