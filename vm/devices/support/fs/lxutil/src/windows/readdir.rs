@@ -398,7 +398,7 @@ impl DirectoryEnumerator {
 
         // Serve entries from cache.
         loop {
-            let entries: Vec<_> = self.cursor.entries_from(requested_offset).to_vec();
+            let entries = self.cursor.entries_from(requested_offset);
 
             if entries.is_empty() && self.cursor.needs_more(requested_offset) {
                 // Need to fetch more entries - refill the cache.
