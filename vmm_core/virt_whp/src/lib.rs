@@ -897,6 +897,10 @@ impl WhpPartitionInner {
         vtl0: VtlPartition,
         vtl2: Option<VtlPartition>,
     ) -> Result<Self, Error> {
+        // FUTURE: register cpuid results with the hypervisor, and register
+        // appropriate per-VP results where necessary (or tell the hypervisor
+        // the AMD topology information so that it can provide per-VP results
+        // accurately).
         #[cfg(guest_arch = "x86_64")]
         let cpuid = {
             use vm_topology::processor::x86::ApicMode;
