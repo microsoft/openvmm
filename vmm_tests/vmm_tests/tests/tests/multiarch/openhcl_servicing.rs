@@ -56,6 +56,7 @@ use pipette_client::PipetteClient;
 use pipette_client::process::Child;
 use pipette_client::process::Stdio;
 use scsidisk_resources::SimpleScsiDiskHandle;
+use std::thread;
 use std::time::Duration;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
@@ -642,6 +643,91 @@ async fn servicing_keepalive_with_io(
         .until_cancelled(vm.restart_openhcl(igvm_file.clone(), flags))
         .await
         .expect("VM restart did not complete within 30 seconds, even though it should have. Save is stuck.")
+        .expect("VM restart failed");
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    Ok(())
+}
+
+/// Verifies behavior when a there are outstanding commands in the io queue
+/// after restore, the serivcing should still succeed even if the commands have
+/// not yet completed. i.e. should service even with the drain after restore
+/// flag enabled.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn double_servicing_keepalive_with_io(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let flags = config.default_servicing_flags();
+    let mut fault_start_updater = CellUpdater::new(false);
+    let cell = fault_start_updater.cell();
+
+    // Delay excessively (100s) to cause the queue to fill up. Don't start fault
+    // immediately. There will be some IO during guest boot that we don't want to
+    // interfere with.
+    // DEV NOTE: Reduced mqes is required to make sure the queue fills up during
+    // the test. dd is single threaded and there seems to be a guest limitation
+    // that prevents more than 16 concurrent SCSI requests. This limit can
+    // probably be lifted if/when fio is available in the guest.
+    let fault_configuration = FaultConfiguration::new(cell.clone())
+        .with_io_queue_fault(
+            IoQueueFaultConfig::new(cell.clone()).with_completion_queue_fault(
+                CommandMatchBuilder::new().match_cdw0(0, 0).build(),
+                IoQueueFaultBehavior::Delay(Duration::from_secs(100)),
+            ),
+        )
+        .with_pci_fault(PciFaultConfig::new().with_custom_cap_mqes(8));
+
+    let scsi_controller_guid = Guid::new_random();
+    let disk_size = 100 * 1024 * 1024; // 100 MiB
+
+    let (mut vm, agent) = create_keepalive_test_config(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        scsi_controller_guid,
+        disk_size,
+    )
+    .await?;
+
+    agent.ping().await?;
+
+    // Fetch the correct disk path for the VTL0 NVMe disk. Petri may assign it
+    // to /dev/sda or /dev/sdb depending on timing.
+    let device_paths = get_device_paths(
+        &agent,
+        scsi_controller_guid,
+        vec![ExpectedGuestDevice {
+            lun: VTL0_NVME_LUN,
+            disk_size_sectors: (disk_size / SCSI_SECTOR_SIZE) as usize,
+            friendly_name: "nvme_disk".to_string(),
+        }],
+    )
+    .await?;
+    assert!(device_paths.len() == 1);
+    let disk_path = &device_paths[0];
+
+    // At this point the guest should be booted and the disk should be stable
+    // with no other ongoing IO. Start some large reads to fill up the IO queue.
+    fault_start_updater.set(true).await;
+    let _io_child = large_read_from_disk(&agent, disk_path).await?;
+
+    // 30 seconds should be plenty of time for the servicing to complete. If
+    // save is stuck it will be exposed here.
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(30))
+        .until_cancelled(vm.restart_openhcl(igvm_file.clone(), flags))
+        .await
+        .expect("VM restart did not complete within 30 seconds, even though it should have. Save is stuck.")
+        .expect("VM restart failed");
+
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(30))
+        .until_cancelled(vm.restart_openhcl(igvm_file.clone(), flags))
+        .await
+        .expect("VM restart did not complete within 30 seconds, even though it should have. Save is stuck on second restart.")
         .expect("VM restart failed");
 
     fault_start_updater.set(false).await;
