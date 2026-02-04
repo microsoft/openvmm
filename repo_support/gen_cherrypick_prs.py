@@ -71,9 +71,7 @@ def run(cmd: List[str], *, check: bool = True, cwd: Optional[str] = None) -> str
             f"Command failed ({p.returncode}): {shlex.join(cmd)}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
         )
 
-    if capture:
-        return (p.stdout or "").strip()
-    return ""
+    return (p.stdout or "").strip()
 
 
 def ensure_clean_worktree(allow_dirty: bool) -> None:
