@@ -723,6 +723,8 @@ async fn double_servicing_keepalive_with_io(
         .expect("VM restart did not complete within 30 seconds, even though it should have. Save is stuck.")
         .expect("VM restart failed");
 
+    agent.ping().await?;
+
     CancelContext::new()
         .with_timeout(Duration::from_secs(30))
         .until_cancelled(vm.restart_openhcl(igvm_file.clone(), flags))
@@ -731,7 +733,6 @@ async fn double_servicing_keepalive_with_io(
         .expect("VM restart failed");
 
     fault_start_updater.set(false).await;
-    agent.ping().await?;
 
     Ok(())
 }
