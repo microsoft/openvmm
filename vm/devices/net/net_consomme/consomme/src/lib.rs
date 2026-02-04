@@ -234,7 +234,7 @@ struct SocketAddress {
 
 impl From<SocketAddress> for SocketAddrV4 {
     fn from(addr: SocketAddress) -> Self {
-        Self::new(addr.ip.into(), addr.port)
+        Self::new(addr.ip, addr.port)
     }
 }
 

@@ -199,8 +199,7 @@ impl<T: Client> Access<'_, T> {
         };
 
         let send_buffer = icmp_packet.into_inner();
-        let ip4_addr = Ipv4Addr::from(addresses.dst_addr);
-        match conn.send_to(ip4_addr, send_buffer, hop_limit) {
+        match conn.send_to(addresses.dst_addr, send_buffer, hop_limit) {
             Ok(_) => {
                 conn.stats.tx_packets.increment();
                 Ok(())
