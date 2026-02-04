@@ -71,6 +71,8 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 => get_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd),
             _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED => get_prepped_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd),
             _ if id == test_vhd::FREE_BSD_13_2_X64 => get_test_artifact_path(KnownTestArtifacts::FreeBsd13_2X64Vhd),
+            _ if id == test_vhd::ALPINE_3_23_X64 => get_test_artifact_path(KnownTestArtifacts::Alpine323X64Vhd),
+            _ if id == test_vhd::ALPINE_3_23_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Alpine323Aarch64Vhd),
             _ if id == test_vhd::UBUNTU_2404_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2404ServerX64Vhd),
             _ if id == test_vhd::UBUNTU_2504_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2504ServerX64Vhd),
             _ if id == test_vhd::UBUNTU_2404_SERVER_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd),
@@ -93,6 +95,10 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             }
             _ if id == guest_tools::TPM_GUEST_TESTS_LINUX_X64 => {
                 tpm_guest_tests_linux_path(MachineArch::X86_64)
+            }
+
+            _ if id == host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64 => {
+                test_igvm_agent_rpc_server_windows_path(MachineArch::X86_64)
             }
 
             _ => anyhow::bail!("no support for given artifact type"),
@@ -272,6 +278,19 @@ fn tpm_guest_tests_linux_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
         "tpm_guest_tests",
         MissingCommand::Build {
             package: "tpm_guest_tests",
+            target: Some(target),
+        },
+    )
+}
+
+/// Path to the output location of the test_igvm_agent_rpc_server executable.
+fn test_igvm_agent_rpc_server_windows_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    let target = windows_msvc_target(arch);
+    get_path(
+        format!("target/{target}/debug"),
+        "test_igvm_agent_rpc_server.exe",
+        MissingCommand::Build {
+            package: "test_igvm_agent_rpc_server",
             target: Some(target),
         },
     )

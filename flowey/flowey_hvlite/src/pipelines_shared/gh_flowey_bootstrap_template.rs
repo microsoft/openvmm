@@ -14,6 +14,6 @@ pub fn get_template() -> String {
 
     template.replace(
         "{{RUSTUP_TOOLCHAIN}}",
-        flowey_lib_hvlite::_jobs::cfg_versions::RUSTUP_TOOLCHAIN,
+        flowey_lib_hvlite::cfg_rustup_version::RUSTUP_TOOLCHAIN,
     )
 }

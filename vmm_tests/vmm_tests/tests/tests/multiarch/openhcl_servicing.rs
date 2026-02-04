@@ -43,6 +43,8 @@ use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_LINUX_DIRE
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_STANDARD_AARCH64;
 #[allow(unused_imports)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_STANDARD_X64;
+#[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
@@ -62,15 +64,11 @@ const KEEPALIVE_VTL2_NSID: u32 = 37; // Pick any namespace ID as long as it does
 
 async fn openhcl_servicing_core<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
-    openhcl_cmdline: &str,
     new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     flags: OpenHclServicingFlags,
     servicing_count: u8,
 ) -> anyhow::Result<()> {
-    let (mut vm, agent) = config
-        .with_openhcl_command_line(openhcl_cmdline)
-        .run()
-        .await?;
+    let (mut vm, agent) = config.run().await?;
 
     for _ in 0..servicing_count {
         agent.ping().await?;
@@ -93,11 +91,10 @@ async fn openhcl_servicing_core<T: PetriVmmBackend>(
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself.
-///
-/// N.B. These Hyper-V tests fail in CI for x64. Tracked by #1652.
 #[vmm_test(
     openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64],
-    //hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
+    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64]
 )]
 async fn basic_servicing<T: PetriVmmBackend>(
@@ -106,15 +103,13 @@ async fn basic_servicing<T: PetriVmmBackend>(
 ) -> anyhow::Result<()> {
     let mut flags = config.default_servicing_flags();
     flags.override_version_checks = true;
-    openhcl_servicing_core(config, "", igvm_file, flags, DEFAULT_SERVICING_COUNT).await
+    openhcl_servicing_core(config, igvm_file, flags, DEFAULT_SERVICING_COUNT).await
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself, with a tpm.
-///
-/// N.B. These Hyper-V tests fail in CI for x64. Tracked by #1652.
 #[vmm_test(
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
-    //hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64]
 )]
 async fn tpm_servicing<T: PetriVmmBackend>(
@@ -128,7 +123,6 @@ async fn tpm_servicing<T: PetriVmmBackend>(
             .with_tpm(true)
             .with_tpm_state_persistence(true)
             .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
-        "",
         igvm_file,
         flags,
         DEFAULT_SERVICING_COUNT,
@@ -145,8 +139,7 @@ async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
 ) -> anyhow::Result<()> {
     let flags = config.default_servicing_flags();
     openhcl_servicing_core(
-        config,
-        "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
+        config.with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512"),
         igvm_file,
         flags,
         DEFAULT_SERVICING_COUNT,
@@ -164,9 +157,9 @@ async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
     let flags = config.default_servicing_flags();
     openhcl_servicing_core(
         config
+            .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
             .with_boot_device_type(petri::BootDeviceType::ScsiViaNvme)
             .with_vmbus_redirect(true), // Need this to attach the NVMe device
-        "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         igvm_file,
         flags,
         1, // Test is slow with NVMe device, so only do one loop to avoid timeout
@@ -176,7 +169,9 @@ async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
 
 #[vmm_test(
     openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, LATEST_RELEASE_LINUX_DIRECT_X64],
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_RELEASE_STANDARD_AARCH64, LATEST_STANDARD_AARCH64]
+    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, LATEST_RELEASE_STANDARD_X64],
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, LATEST_RELEASE_STANDARD_X64],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64, LATEST_RELEASE_STANDARD_AARCH64]
 )]
 async fn servicing_upgrade<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -193,7 +188,6 @@ async fn servicing_upgrade<T: PetriVmmBackend>(
         config
             .with_custom_openhcl(from_igvm)
             .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
-        "",
         to_igvm,
         flags,
         DEFAULT_SERVICING_COUNT,
@@ -202,12 +196,14 @@ async fn servicing_upgrade<T: PetriVmmBackend>(
 }
 
 #[vmm_test(
-    openvmm_openhcl_linux_direct_x64 [LATEST_RELEASE_LINUX_DIRECT_X64, LATEST_LINUX_DIRECT_TEST_X64],
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_RELEASE_STANDARD_AARCH64, LATEST_STANDARD_AARCH64]
+    openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, LATEST_RELEASE_LINUX_DIRECT_X64],
+    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, LATEST_RELEASE_STANDARD_X64],
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, LATEST_RELEASE_STANDARD_X64],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64, LATEST_RELEASE_STANDARD_AARCH64]
 )]
 async fn servicing_downgrade<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
-    (to_igvm, from_igvm): (
+    (from_igvm, to_igvm): (
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     ),
@@ -220,7 +216,6 @@ async fn servicing_downgrade<T: PetriVmmBackend>(
         config
             .with_custom_openhcl(from_igvm)
             .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
-        "",
         to_igvm,
         flags,
         DEFAULT_SERVICING_COUNT,
@@ -354,6 +349,70 @@ async fn servicing_keepalive_with_namespace_update(
         .await
         .expect("GET_LOG_PAGE command was not observed within 60 seconds of vm restore after servicing with namespace change")
         .expect("GET_LOG_PAGE verification failed");
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    Ok(())
+}
+
+/// Verifies behavior when a GET_LOG_PAGE command is delayed during servicing, simulating a
+/// scenario where an AER could be missed after OpenHCL restart.
+// #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn _servicing_keepalive_with_missed_get_log_page(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let flags = config.default_servicing_flags();
+    let mut fault_start_updater = CellUpdater::new(false);
+    let (ns_change_send, ns_change_recv) = mesh::channel::<NamespaceChange>();
+    let (identify_verify_send, identify_verify_recv) = mesh::oneshot::<()>();
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_namespace_fault(NamespaceFaultConfig::new(ns_change_recv))
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new()
+                .with_submission_queue_fault(
+                    CommandMatchBuilder::new()
+                        .match_cdw0_opcode(nvme_spec::AdminOpcode::GET_LOG_PAGE.0)
+                        .build(),
+                    AdminQueueFaultBehavior::Delay(Duration::from_secs(10)),
+                )
+                .with_submission_queue_fault(
+                    CommandMatchBuilder::new()
+                        .match_cdw0_opcode(nvme_spec::AdminOpcode::IDENTIFY.0)
+                        .match_cdw10(
+                            nvme_spec::Cdw10Identify::new()
+                                .with_cns(nvme_spec::Cns::NAMESPACE.0)
+                                .into(),
+                            nvme_spec::Cdw10Identify::new().with_cns(u8::MAX).into(),
+                        )
+                        .build(),
+                    AdminQueueFaultBehavior::Verify(Some(identify_verify_send)),
+                ),
+        );
+
+    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
+
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+
+    // Make sure the disk showed up.
+    cmd!(sh, "ls /dev/sda").run().await?;
+
+    fault_start_updater.set(true).await;
+    ns_change_send
+        .call(NamespaceChange::ChangeNotification, KEEPALIVE_VTL2_NSID)
+        .await?;
+
+    vm.restart_openhcl(igvm_file.clone(), flags).await?;
+
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(30))
+        .until_cancelled(identify_verify_recv)
+        .await
+        .expect("IDENTIFY should be observed within 30 seconds of vm restore after servicing with namespace change")
+        .expect("IDENTIFY verification should pass and return a valid result.");
 
     fault_start_updater.set(false).await;
     agent.ping().await?;

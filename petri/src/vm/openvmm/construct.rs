@@ -16,13 +16,13 @@ use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmgsResource;
 use crate::ProcessorTopology;
-use crate::SIZE_1_GB;
 use crate::SecureBootTemplate;
 use crate::TpmConfig;
 use crate::UefiConfig;
 use crate::VmbusStorageType;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 
+use crate::SIZE_1_MB;
 use crate::VmbusStorageController;
 use crate::openvmm::memdiff_vmgs;
 use crate::openvmm::petri_disk_to_openvmm;
@@ -744,10 +744,10 @@ impl PetriVmConfigSetupCore<'_> {
                         Vtl2BaseAddressType::File
                     } else {
                         // By default, utilize IGVM relocation and tell OpenVMM
-                        // to place VTL2 at 2GB. This tests both relocation
+                        // to place VTL2 at 512MB. This tests both relocation
                         // support in OpenVMM, and relocation support within
                         // OpenHCL.
-                        Vtl2BaseAddressType::Absolute(2 * SIZE_1_GB)
+                        Vtl2BaseAddressType::Absolute(512 * SIZE_1_MB)
                     }
                 });
 
@@ -839,6 +839,7 @@ impl PetriVmConfigSetupCore<'_> {
             },
             com1: true,
             com2: true,
+            serial_tx_only: false,
             vmbus_redirection: *vmbus_redirect,
             vtl2_settings: None, // Will be added at startup to allow tests to modify
             vmgs: memdiff_vmgs(self.vmgs)?,
@@ -861,6 +862,7 @@ impl PetriVmConfigSetupCore<'_> {
             igvm_attest_test_config: None,
             test_gsp_by_id,
             efi_diagnostics_log_level: Default::default(), // TODO: make configurable
+            hv_sint_enabled: false,
         };
 
         Ok((ged, guest_request_send))

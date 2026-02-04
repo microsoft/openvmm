@@ -50,7 +50,7 @@ impl<T: Client> Access<'_, T> {
         let dns_servers = if self.inner.state.params.nameservers.is_empty() {
             None
         } else {
-            let mut dns_vec = heapless::Vec::new();
+            let mut dns_servers = heapless::Vec::new();
             for &s in self
                 .inner
                 .state
@@ -59,15 +59,16 @@ impl<T: Client> Access<'_, T> {
                 .iter()
                 .take(DHCP_MAX_DNS_SERVER_COUNT)
             {
-                let _ = dns_vec.push(s);
+                let _ = dns_servers.push(s);
             }
-            Some(dns_vec)
+            Some(dns_servers)
         };
 
         let resp_dhcp = if let Some(your_ip) = your_ip {
             DhcpRepr {
                 message_type,
                 transaction_id: dhcp_req.transaction_id,
+                secs: 0,
                 client_hardware_address: dhcp_req.client_hardware_address,
                 client_ip: Ipv4Address::UNSPECIFIED,
                 your_ip,
@@ -83,7 +84,6 @@ impl<T: Client> Access<'_, T> {
                 dns_servers: dns_servers.clone(),
                 max_size: None,
                 lease_duration: Some(86400),
-                secs: 0,
                 renew_duration: None,
                 rebind_duration: None,
                 additional_options: &[],
@@ -92,6 +92,7 @@ impl<T: Client> Access<'_, T> {
             DhcpRepr {
                 message_type: DhcpMessageType::Nak,
                 transaction_id: dhcp_req.transaction_id,
+                secs: 0,
                 client_hardware_address: dhcp_req.client_hardware_address,
                 client_ip: Ipv4Address::UNSPECIFIED,
                 your_ip: Ipv4Address::BROADCAST,
@@ -107,7 +108,6 @@ impl<T: Client> Access<'_, T> {
                 dns_servers: None,
                 max_size: None,
                 lease_duration: None,
-                secs: 0,
                 renew_duration: None,
                 rebind_duration: None,
                 additional_options: &[],

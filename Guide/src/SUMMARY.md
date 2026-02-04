@@ -42,6 +42,7 @@
     - [`Nodes`](./dev_guide/dev_tools/flowey/nodes.md)
     - [`Artifacts`](./dev_guide/dev_tools/flowey/artifacts.md)
     - [`Pipelines`](./dev_guide/dev_tools/flowey/pipelines.md)
+    - [`Nix`](./dev_guide/dev_tools/flowey/nix.md)
   - [`cargo xtask`](./dev_guide/dev_tools/xtask.md)
   - [`cargo xflowey`](./dev_guide/dev_tools/xflowey.md)
   - [VmgsTool](./dev_guide/dev_tools/vmgstool.md)
@@ -118,8 +119,10 @@
     - [mesh]()
     - [inspect]()
   - [OpenHCL Architecture](./reference/architecture/openhcl.md)
-    - [IGVM](./reference/architecture/igvm.md)
-    - [Boot Process](./reference/architecture/openhcl_boot.md)
+    - [Processes and Components](./reference/architecture/openhcl/processes.md)
+    - [Boot Flow](./reference/architecture/openhcl/boot.md)
+    - [Sidecar](./reference/architecture/openhcl/sidecar.md)
+    - [IGVM](./reference/architecture/openhcl/igvm.md)
 
 ---
 

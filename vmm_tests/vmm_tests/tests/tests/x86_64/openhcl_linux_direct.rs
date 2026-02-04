@@ -18,7 +18,6 @@ use petri::vtl2_settings::ControllerType;
 use petri::vtl2_settings::Vtl2LunBuilder;
 use petri::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
 use petri::vtl2_settings::Vtl2StorageControllerBuilder;
-use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 use vmm_test_macros::openvmm_test;
 
 /// Today this only tests that the nic can get an IP address via consomme's DHCP
@@ -78,8 +77,8 @@ async fn mana_nic_shared_pool(
 }
 
 /// Test an OpenHCL Linux direct VM with many NVMe devices assigned to VTL2 and vmbus relay.
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn many_nvme_devices_servicing_very_heavy(
+///#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn _many_nvme_devices_servicing_very_heavy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {

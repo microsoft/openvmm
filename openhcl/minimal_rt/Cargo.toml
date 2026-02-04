@@ -8,10 +8,12 @@ rust-version.workspace = true
 
 [dependencies]
 hvdef.workspace = true
+minimal_rt_reloc.workspace = true
 
 arrayvec.workspace = true
 cfg-if.workspace = true
 zerocopy.workspace = true
+
 [build-dependencies]
 minimal_rt_build.workspace = true
 

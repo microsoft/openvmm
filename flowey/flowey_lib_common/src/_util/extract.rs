@@ -39,6 +39,7 @@ pub fn extract_zip_if_new_deps(ctx: &mut NodeCtx<'_>) -> ExtractZipDeps {
                     FlowPlatformLinuxDistro::Fedora => vec!["bsdtar".into()],
                     FlowPlatformLinuxDistro::Ubuntu => vec!["libarchive-tools".into()],
                     FlowPlatformLinuxDistro::Arch => vec!["libarchive".into()],
+                    FlowPlatformLinuxDistro::Nix => vec![],
                     FlowPlatformLinuxDistro::Unknown => vec![],
                 },
                 _ => {
@@ -115,7 +116,7 @@ pub fn extract_zip_if_new(
 #[non_exhaustive]
 pub struct ExtractTarBz2Deps<C = VarNotClaimed> {
     persistent_dir: Option<ReadVar<PathBuf, C>>,
-    lbzip2_installed: ReadVar<SideEffect, C>,
+    bzip2_installed: ReadVar<SideEffect, C>,
 }
 
 impl ClaimVar for ExtractTarBz2Deps {
@@ -124,11 +125,11 @@ impl ClaimVar for ExtractTarBz2Deps {
     fn claim(self, ctx: &mut StepCtx<'_>) -> Self::Claimed {
         let Self {
             persistent_dir,
-            lbzip2_installed,
+            bzip2_installed,
         } = self;
         ExtractTarBz2Deps {
             persistent_dir: persistent_dir.claim(ctx),
-            lbzip2_installed: lbzip2_installed.claim(ctx),
+            bzip2_installed: bzip2_installed.claim(ctx),
         }
     }
 }
@@ -137,8 +138,8 @@ impl ClaimVar for ExtractTarBz2Deps {
 pub fn extract_tar_bz2_if_new_deps(ctx: &mut NodeCtx<'_>) -> ExtractTarBz2Deps {
     ExtractTarBz2Deps {
         persistent_dir: ctx.persistent_dir(),
-        lbzip2_installed: ctx.reqv(|v| crate::install_dist_pkg::Request::Install {
-            package_names: vec!["lbzip2".into()],
+        bzip2_installed: ctx.reqv(|v| crate::install_dist_pkg::Request::Install {
+            package_names: vec!["bzip2".into()],
             done: v,
         }),
     }
@@ -159,7 +160,7 @@ pub fn extract_tar_bz2_if_new(
 ) -> anyhow::Result<PathBuf> {
     let ExtractTarBz2Deps {
         persistent_dir,
-        lbzip2_installed: _,
+        bzip2_installed: _,
     } = deps;
 
     let sh = xshell::Shell::new()?;

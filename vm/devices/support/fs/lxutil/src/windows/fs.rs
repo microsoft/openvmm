@@ -275,18 +275,61 @@ pub fn chmod(file_handle: &OwnedHandle, mode: lx::mode_t) -> lx::Result<()> {
     }
 }
 
+/// Result of analyzing a delete file error to determine how to proceed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteErrorAction {
+    /// The error should be returned as-is without attempting any workarounds.
+    ReturnError(lx::Error),
+    /// The error might be due to a read-only attribute; try clearing it and retrying.
+    TryReadOnlyWorkaround,
+}
+
+/// Analyzes an error from a delete file operation to determine the appropriate action.
+pub fn analyze_delete_error(error: lx::Error, file_handle: &OwnedHandle) -> DeleteErrorAction {
+    // Skip the read-only file workaround for these specific errors that are unrelated to file permissions.
+    // For errors like ENOTEMPTY (directory not empty), preserve the original error.
+    if error.value() == lx::ENOTEMPTY
+        || error.value() == lx::ENOENT
+        || error.value() == lx::ENOTDIR
+        || error.value() == lx::EISDIR
+    {
+        DeleteErrorAction::ReturnError(error)
+    } else if error.value() == lx::EIO {
+        // EIO can come from STATUS_CANNOT_DELETE, which for directories means
+        // the directory is not empty. Check if this is a directory and return
+        // ENOTEMPTY in that case.
+        if is_directory(file_handle) {
+            DeleteErrorAction::ReturnError(lx::Error::ENOTEMPTY)
+        } else {
+            DeleteErrorAction::ReturnError(error)
+        }
+    } else {
+        DeleteErrorAction::TryReadOnlyWorkaround
+    }
+}
+
 pub fn delete_file(fs_context: &FsContext, file_handle: &OwnedHandle) -> lx::Result<()> {
     let result = delete_file_core(fs_context, file_handle);
 
     match result {
         Ok(_) => result,
-        Err(e) => {
-            if e.value() == lx::EIO {
-                result
-            } else {
+        Err(e) => match analyze_delete_error(e, file_handle) {
+            DeleteErrorAction::ReturnError(err) => Err(err),
+            DeleteErrorAction::TryReadOnlyWorkaround => {
                 delete_read_only_file(fs_context, file_handle)
             }
-        }
+        },
+    }
+}
+
+/// Check if a file handle refers to a directory.
+fn is_directory(file_handle: &OwnedHandle) -> bool {
+    if let Ok(info) =
+        util::query_information_file::<FileSystem::FILE_BASIC_INFORMATION>(file_handle)
+    {
+        info.FileAttributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0
+    } else {
+        false
     }
 }
 
@@ -565,7 +608,7 @@ pub fn get_lx_attr(
     umask: u32,
     fmask: u32,
     dmask: u32,
-) -> lx::Result<lx::Stat> {
+) -> lx::Result<lx::StatEx> {
     let inode_attr = determine_inode_attributes(fs_context, info, flags, umask, fmask, dmask)?;
     let mode = inode_attr.mode.unwrap_or(0);
     let file_size: u64;
@@ -579,29 +622,56 @@ pub fn get_lx_attr(
         block_count = allocation_size_to_block_count(info.AllocationSize, block_size)
     }
 
-    // lx::Stat has different padding members on ARM and x86. As such, don't construct it manually,
-    // but just fill out the individual fields.
-    let mut stat: lx::Stat = unsafe { std::mem::zeroed() };
-    stat.uid = inode_attr.uid.unwrap_or(default_uid);
-    stat.gid = inode_attr.gid.unwrap_or(default_gid);
-    stat.mode = mode;
-    stat.device_nr_special = inode_attr.device_id.unwrap_or(0) as _;
-    stat.inode_nr = info.FileId as _;
-    stat.link_count = info.NumberOfLinks as _;
-    stat.access_time = util::nt_time_to_timespec(info.LastAccessTime, true);
-    stat.write_time = util::nt_time_to_timespec(info.LastWriteTime, true);
-    stat.change_time = if info.ChangeTime == 0 {
-        // Some file systems do not provide a change time. If this is the case,
-        // use the write time.
-        util::nt_time_to_timespec(info.LastWriteTime, true)
-    } else {
-        util::nt_time_to_timespec(info.ChangeTime, true)
-    };
-    stat.block_size = block_size as _;
-    stat.file_size = file_size;
-    stat.block_count = block_count;
+    let attributes_mask = lx::StatExAttributes::new()
+        .with_compressed(true)
+        .with_encrypted(true)
+        .with_nodump(true);
+    let attributes = lx::StatExAttributes::new()
+        .with_compressed(info.FileAttributes & W32Fs::FILE_ATTRIBUTE_COMPRESSED.0 != 0)
+        .with_encrypted(info.FileAttributes & W32Fs::FILE_ATTRIBUTE_ENCRYPTED.0 != 0)
+        .with_nodump(info.FileAttributes & W32Fs::FILE_ATTRIBUTE_ARCHIVE.0 == 0);
+    let mask = lx::StatExMask::new()
+        .with_file_type(true)
+        .with_mode(true)
+        .with_nlink(true)
+        .with_uid(true)
+        .with_gid(true)
+        .with_atime(true)
+        .with_btime(true)
+        .with_ctime(info.ChangeTime != 0)
+        .with_mtime(true)
+        .with_ino(true)
+        .with_size(true)
+        .with_blocks(true);
 
-    Ok(stat)
+    let rdev_id = inode_attr.device_id.unwrap_or(0);
+    Ok(lx::StatEx {
+        uid: inode_attr.uid.unwrap_or(default_uid),
+        gid: inode_attr.gid.unwrap_or(default_gid),
+        mode: mode as u16,
+        rdev_major: lx::major32(rdev_id),
+        rdev_minor: lx::minor(rdev_id),
+        inode_id: info.FileId as _,
+        link_count: info.NumberOfLinks as _,
+        creation_time: util::nt_time_to_timespec(info.CreationTime, true).into(),
+        access_time: util::nt_time_to_timespec(info.LastAccessTime, true).into(),
+        write_time: util::nt_time_to_timespec(info.LastWriteTime, true).into(),
+        change_time: if info.ChangeTime == 0 {
+            // Some file systems do not provide a change time. If this is the case,
+            // use the write time.
+            util::nt_time_to_timespec(info.LastWriteTime, true)
+        } else {
+            util::nt_time_to_timespec(info.ChangeTime, true)
+        }
+        .into(),
+        block_size: block_size as _,
+        file_size,
+        block_count,
+        attributes_mask,
+        attributes,
+        mask,
+        ..Default::default()
+    })
 }
 
 /// Query the stat information for a handle. If the filesystem does not support FILE_STAT_INFORMATION,
