@@ -1678,7 +1678,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWrite, None)
+        let mut vmgs = test_vmgs_open(&path, OpenMode::ReadWriteIgnore, None)
             .await
             .unwrap();
 
