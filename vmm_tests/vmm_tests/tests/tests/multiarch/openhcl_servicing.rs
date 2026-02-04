@@ -635,14 +635,94 @@ async fn servicing_keepalive_with_io_queue_full(
     fault_start_updater.set(true).await;
     let _io_child = large_read_from_disk(&agent, disk_path).await?;
 
-    // 60 seconds should be plenty of time for the servicing to complete. If
+    // 60 seconds should be plenty of time for the save to complete. If
     // save is stuck it will be exposed here.
     CancelContext::new()
         .with_timeout(Duration::from_secs(60))
-        .until_cancelled(vm.restart_openhcl(igvm_file.clone(), flags))
+        .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
         .await
-        .expect("VM restart did not complete within 60 seconds, even though it should have. Save is stuck.")
-        .expect("VM restart failed");
+        .expect("VM save did not complete within 60 seconds, even though it should have. Save is stuck.")
+        .expect("VM save failed");
+
+    vm.restore_openhcl().await?;
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    Ok(())
+}
+
+/// Verifies behavior when device io is slow/stuck and we repeatedly
+/// try to servicing. When draining IO queues after restore, nvme_driver should
+/// still be responsive on Save commands.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_with_unresponsive_io(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let flags = config.default_servicing_flags();
+    let mut fault_start_updater = CellUpdater::new(false);
+    let cell = fault_start_updater.cell();
+
+    // Delay (100s). Draining IO after restore will now be excessively slow.
+    let fault_configuration = FaultConfiguration::new(cell.clone()).with_io_queue_fault(
+        IoQueueFaultConfig::new(cell.clone()).with_completion_queue_fault(
+            CommandMatchBuilder::new().match_cdw0(0, 0).build(),
+            IoQueueFaultBehavior::Delay(Duration::from_secs(100)),
+        ),
+    );
+
+    let scsi_controller_guid = Guid::new_random();
+    let (mut vm, agent) = create_keepalive_test_config(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        scsi_controller_guid,
+        DEFAULT_DISK_SIZE,
+    )
+    .await?;
+
+    agent.ping().await?;
+
+    // Fetch the correct disk path for the VTL0 NVMe disk. Petri may assign it
+    // to /dev/sda or /dev/sdb depending on timing.
+    let device_paths = get_device_paths(
+        &agent,
+        scsi_controller_guid,
+        vec![ExpectedGuestDevice {
+            lun: VTL0_NVME_LUN,
+            disk_size_sectors: (DEFAULT_DISK_SIZE / SCSI_SECTOR_SIZE) as usize,
+            friendly_name: "nvme_disk".to_string(),
+        }],
+    )
+    .await?;
+    assert!(device_paths.len() == 1);
+    let disk_path = &device_paths[0];
+
+    // At this point the guest should be booted and the disk should be stable
+    // with no other ongoing IO. Start some reads.
+    fault_start_updater.set(true).await;
+    let _io_child = large_read_from_disk(&agent, disk_path).await?;
+
+    // 60 seconds should be plenty of time for the save to complete. Save should
+    // NEVER get stuck on the first attempt. Keeping a timeout to avoid long
+    // running tests.
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
+        .await
+        .expect("VM save did not complete within 60 seconds, even though it should have. Stuck on first save attempt.")
+        .expect("VM save failed");
+    vm.restore_openhcl().await?;
+    agent.ping().await?;
+
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
+        .await
+        .expect("VM save did not complete within 60 seconds, even though it should have. Save is stuck when draining after restore.")
+        .expect("VM save failed");
+    vm.restore_openhcl().await?;
 
     fault_start_updater.set(false).await;
     agent.ping().await?;
