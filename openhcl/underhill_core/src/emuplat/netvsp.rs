@@ -877,17 +877,39 @@ impl HclNetworkVFManagerWorker {
                                 .instrument(tracing::info_span!("saving mana device state"))
                                 .await;
 
-                            // Closing the VFIO device handle can take a long time.
-                            // Leak the handle by stashing it away.
-                            std::mem::forget(device);
-
                             match saved_state {
-                                Ok(saved_state) => VfManagerSaveResult::Saved(ManaSavedState {
-                                    mana_device: saved_state,
-                                    pci_id: self.vtl2_pci_id.clone(),
-                                }),
-                                Err(_) => {
-                                    tracing::error!("Failed while saving MANA device state");
+                                Ok(saved_state) => {
+                                    // Closing the VFIO device handle can take a long time.
+                                    // Leak the handle by stashing it away.
+                                    std::mem::forget(device);
+                                    VfManagerSaveResult::Saved(ManaSavedState {
+                                        mana_device: saved_state,
+                                        pci_id: self.vtl2_pci_id.clone(),
+                                    })
+                                }
+                                Err(err) => {
+                                    tracing::error!(
+                                        error = err.as_ref() as &dyn std::error::Error,
+                                        "Failed while saving MANA device state"
+                                    );
+                                    // Enable FLR to try to recover the device.
+                                    match vfio_set_device_reset_method(
+                                        &self.vtl2_pci_id,
+                                        PciDeviceResetMethod::Flr,
+                                    ) {
+                                        Ok(_) => {
+                                            tracing::info!(
+                                                "Attempt to reset device via FLR on next teardown."
+                                            );
+                                        }
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                err = &err as &dyn std::error::Error,
+                                                "Failed to re-enable FLR"
+                                            );
+                                        }
+                                    }
+                                    drop(device);
                                     VfManagerSaveResult::SaveFailed
                                 }
                             }
