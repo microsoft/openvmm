@@ -105,6 +105,10 @@ impl PendingCommands {
         self.commands.is_empty()
     }
 
+    fn len(&self) -> usize {
+        self.commands.len()
+    }
+
     /// Inserts a command into the pending list, updating it with a new CID.
     fn insert(&mut self, command: &mut spec::Command, respond: Rpc<(), spec::Completion>) {
         let entry = self.commands.vacant_entry();
@@ -329,7 +333,9 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
         let cq_addr = cq_mem_block.pfns()[0] * PAGE_SIZE64;
 
         let queue_handler = match saved_state {
-            Some(s) => QueueHandler::restore(sq_mem_block, cq_mem_block, s, aer_handler)?,
+            Some(s) => {
+                QueueHandler::restore(sq_mem_block, cq_mem_block, s, aer_handler, device_id, qid)?
+            }
             None => {
                 // Create a new one.
                 QueueHandler {
@@ -339,6 +345,8 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
                     stats: Default::default(),
                     drain_after_restore: false,
                     aer_handler,
+                    device_id: device_id.into(),
+                    qid,
                 }
             }
         };
@@ -932,6 +940,8 @@ struct QueueHandler<A: AerHandler> {
     drain_after_restore: bool,
     #[inspect(skip)]
     aer_handler: A,
+    device_id: String,
+    qid: u16,
 }
 
 #[derive(Inspect, Default)]
@@ -949,6 +959,8 @@ impl<A: AerHandler> QueueHandler<A> {
         mut recv_cmd: mesh::Receiver<Cmd>,
         interrupt: &mut DeviceInterrupt,
     ) {
+        let mut logged_drain_after_restore = false;
+
         loop {
             enum Event {
                 Request(Req),
@@ -989,6 +1001,11 @@ impl<A: AerHandler> QueueHandler<A> {
                 })
                 .await
             } else {
+                if !logged_drain_after_restore {
+                    tracing::info!(pci_id = ?self.device_id, qid = self.qid, "Have {} outstanding IOs from before save, draining them before allowing new IO...", self.commands.len());
+                    logged_drain_after_restore = true;
+                }
+
                 // Only process in-flight completions.
                 poll_fn(|cx| {
                     while !self.commands.is_empty() {
@@ -1009,6 +1026,7 @@ impl<A: AerHandler> QueueHandler<A> {
             match event {
                 Event::Request(req) => match req {
                     Req::Save(queue_state) => {
+                        tracing::info!(pci_id = ?self.device_id, qid = ?self.qid, "received save request, shutting down ...");
                         queue_state.complete(self.save().await);
                         // Do not allow any more processing after save completed.
                         break;
@@ -1038,6 +1056,7 @@ impl<A: AerHandler> QueueHandler<A> {
                     let respond = self.commands.remove(completion.cid);
                     if self.drain_after_restore && self.commands.is_empty() {
                         // Switch to normal processing mode once all in-flight commands completed.
+                        tracing::info!(pci_id = ?self.device_id, qid = ?self.qid, "done with drain-after-restore");
                         self.drain_after_restore = false;
                     }
                     self.sq.update_head(completion.sqhd);
@@ -1066,6 +1085,8 @@ impl<A: AerHandler> QueueHandler<A> {
         cq_mem_block: MemoryBlock,
         saved_state: &QueueHandlerSavedState,
         mut aer_handler: A,
+        device_id: &str,
+        qid: u16,
     ) -> anyhow::Result<Self> {
         let QueueHandlerSavedState {
             sq_state,
@@ -1085,6 +1106,8 @@ impl<A: AerHandler> QueueHandler<A> {
             // Admin queue is expected to have pending Async Event requests.
             drain_after_restore: sq_state.sqid != 0 && !pending_cmds.commands.is_empty(),
             aer_handler,
+            device_id: device_id.into(),
+            qid,
         })
     }
 }
