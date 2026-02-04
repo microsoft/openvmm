@@ -2155,14 +2155,15 @@ pub mod steps {
             backend: FlowBackend,
             platform: FlowPlatform,
             arch: FlowArch,
-        ) -> RustRuntimeServices<'_> {
-            RustRuntimeServices {
+        ) -> anyhow::Result<RustRuntimeServices<'_>> {
+            Ok(RustRuntimeServices {
                 runtime_var_db,
                 backend,
                 platform,
                 arch,
                 has_read_secret: false,
-            }
+                sh: xshell::Shell::new()?,
+            })
         }
 
         pub struct RustRuntimeServices<'a> {
@@ -2171,6 +2172,8 @@ pub mod steps {
             platform: FlowPlatform,
             arch: FlowArch,
             has_read_secret: bool,
+            /// A pre-initialized xshell::Shell for running commands.
+            pub sh: xshell::Shell,
         }
 
         impl RustRuntimeServices<'_> {
@@ -3022,5 +3025,24 @@ macro_rules! flowey_request {
             }
             fn do_not_manually_impl_this_trait__use_the_flowey_request_macro_instead(&mut self) {}
         }
+    };
+}
+
+/// Construct a command to run via the flowey shell.
+///
+/// This is a thin wrapper around [`xshell::cmd!`] that abstracts the
+/// underlying shell implementation, making it possible to swap in a
+/// different shell backend in the future (e.g. wrapping commands in `nix-shell --pure`)
+/// without touching every callsite.
+///
+/// # Example
+///
+/// ```ignore
+/// flowey::shell_cmd!(rt, "cargo build --release").run()?;
+/// ```
+#[macro_export]
+macro_rules! shell_cmd {
+    ($rt:expr, $cmd:literal) => {
+        $crate::reexports::xshell::cmd!($rt.sh, $cmd)
     };
 }

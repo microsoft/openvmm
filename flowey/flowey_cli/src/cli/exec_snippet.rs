@@ -135,7 +135,7 @@ impl ExecSnippet {
                     flow_backend.into(),
                     flow_platform,
                     flow_arch,
-                );
+                )?;
 
             let mut ctx_backend = ExecSnippetCtx::new(
                 flow_backend.into(),

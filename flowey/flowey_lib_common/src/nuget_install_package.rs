@@ -183,9 +183,8 @@ impl FlowNode for Node {
                     // FUTURE: add checks to avoid having to invoke
                     // nuget at all (a-la the "expected_hashes" in the
                     // old ci/restore.sh)
-                    let sh = xshell::Shell::new()?;
-                    xshell::cmd!(
-                        sh,
+                    flowey::shell_cmd!(
+                        rt,
                         "{nuget_bin}
                                     install
                                     {non_interactive...}
