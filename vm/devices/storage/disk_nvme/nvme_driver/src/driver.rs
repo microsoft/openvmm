@@ -203,6 +203,7 @@ impl<D: DeviceBacking> IoQueue<D> {
         interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<D>>,
         mem_block: MemoryBlock,
+        device_id: &str,
         saved_state: &IoQueueSavedState,
         bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
@@ -216,6 +217,7 @@ impl<D: DeviceBacking> IoQueue<D> {
             interrupt,
             registers.clone(),
             mem_block,
+            device_id,
             queue_data,
             bounce_buffer,
             NoOpAerHandler,
@@ -829,6 +831,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     interrupt0,
                     registers.clone(),
                     mem_block,
+                    &pci_id,
                     a,
                     bounce_buffer,
                     AdminAerHandler::new(),
@@ -916,6 +919,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     interrupt,
                     registers.clone(),
                     mem_block,
+                    &pci_id,
                     q,
                     bounce_buffer,
                 )?;
@@ -1177,6 +1181,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             interrupt,
             self.registers.clone(),
             proto.mem,
+            &pci_id,
             &proto.save_state,
             self.bounce_buffer,
         )
@@ -1397,6 +1402,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
         &mut self,
         worker_state: &mut WorkerState,
     ) -> anyhow::Result<NvmeDriverWorkerSavedState> {
+        tracing::info!(pci_id = ?self.device.id(), "saving nvme driver worker state: admin queue");
         let admin = match self.admin.as_ref() {
             Some(a) => match a.save().await {
                 Ok(admin_state) => {
@@ -1423,6 +1429,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             }
         };
 
+        tracing::info!(pci_id = ?self.device.id(), "saving nvme driver worker state: io queues");
         let (ok, errs): (Vec<_>, Vec<_>) =
             join_all(self.io.drain(..).map(async |q| q.save().await))
                 .await
