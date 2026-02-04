@@ -1332,7 +1332,7 @@ async fn vmgs_file_copy_igvmfile(
     allow_overwrite: bool,
     resource_code: ResourceCode,
 ) -> Result<(), Error> {
-    let mut vmgs = vmgs_file_open(file_path, None::<PathBuf>, OpenMode::ReadWrite).await?;
+    let mut vmgs = vmgs_file_open(file_path, None::<PathBuf>, OpenMode::ReadWriteIgnore).await?;
 
     eprintln!("Reading IGVM file from: {}", data_path.as_ref().display());
 
