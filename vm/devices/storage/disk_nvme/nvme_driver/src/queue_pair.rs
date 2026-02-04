@@ -959,7 +959,7 @@ impl<A: AerHandler> QueueHandler<A> {
         mut recv_cmd: mesh::Receiver<Cmd>,
         interrupt: &mut DeviceInterrupt,
     ) {
-        let mut logged_drain_after_restore = false;
+        tracing::info!(pci_id = ?self.device_id, qid = self.qid, "Have {} outstanding IOs from before save, draining them before allowing new IO...", self.commands.len());
 
         loop {
             enum Event {
@@ -1001,11 +1001,6 @@ impl<A: AerHandler> QueueHandler<A> {
                 })
                 .await
             } else {
-                if !logged_drain_after_restore {
-                    tracing::info!(pci_id = ?self.device_id, qid = self.qid, "Have {} outstanding IOs from before save, draining them before allowing new IO...", self.commands.len());
-                    logged_drain_after_restore = true;
-                }
-
                 // Only process in-flight completions.
                 poll_fn(|cx| {
                     while !self.commands.is_empty() {
