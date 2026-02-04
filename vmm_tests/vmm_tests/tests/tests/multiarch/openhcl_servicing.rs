@@ -653,7 +653,7 @@ async fn servicing_keepalive_with_io_queue_full(
 }
 
 /// Verifies behavior when device io is slow/stuck and we repeatedly
-/// try to servicing. When draining IO queues after restore, nvme_driver should
+/// try to service. When draining IO queues after restore, nvme_driver should
 /// still be responsive on Save commands.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn servicing_keepalive_with_unresponsive_io(
