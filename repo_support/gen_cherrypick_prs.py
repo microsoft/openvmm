@@ -60,16 +60,13 @@ class BackportInfo:
     merged_at: Optional[datetime]
 
 
-def run(cmd: List[str], *, capture: bool = True, check: bool = True, cwd: Optional[str] = None) -> str:
+def run(cmd: List[str], *, check: bool = True, cwd: Optional[str] = None) -> str:
     """Run a command and return stdout (stripped). Raises on failure if check=True."""
-    if capture:
-        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False, cwd=cwd)
-    else:
-        p = subprocess.run(cmd, check=False, cwd=cwd)
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False, cwd=cwd)
 
     if check and p.returncode != 0:
-        stderr = getattr(p, "stderr", "") or ""
-        stdout = getattr(p, "stdout", "") or ""
+        stderr = p.stderr or ""
+        stdout = p.stdout or ""
         raise RuntimeError(
             f"Command failed ({p.returncode}): {shlex.join(cmd)}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
         )
@@ -135,7 +132,7 @@ def find_backport_infos(
         queries.append(f'base:{base_branch} "{orig_title}" in:title')
 
     items: List[dict] = []
-    seen_numbers: set[int] = set()
+    seen_numbers: Set[int] = set()
     for q in queries:
         for pr in gh_pr_list_search(q, repo):
             n = int(pr.get("number")) if pr.get("number") is not None else None
@@ -144,7 +141,7 @@ def find_backport_infos(
             seen_numbers.add(n)
             items.append(pr)
 
-    rx = re.compile(rf"\bPR\s*#?{pr_number}\b", re.IGNORECASE)
+    rx = re.compile(rf"\bPR\s*#?{re.escape(str(pr_number))}(?:\b|$)", re.IGNORECASE)
     url_fragment = f"/pull/{pr_number}"
     title_lc = orig_title.lower()
 
@@ -153,7 +150,6 @@ def find_backport_infos(
         title = str(pr.get("title") or "")
         body = str(pr.get("body") or "")
         hay = f"{title}\n{body}"
-        hay_lc = hay.lower()
         if not (
             rx.search(hay)
             or url_fragment in hay
@@ -205,7 +201,7 @@ def gh_pr_list_search(query: str, repo: Optional[str]) -> List[dict]:
         "--search",
         query,
         "--limit",
-        "50",
+        "500",
         "--json",
         "number,title,body,url,state,mergedAt",
     ]
@@ -260,21 +256,21 @@ def extract_merge_sha(prj: dict) -> str:
 
 
 def git_fetch(remote: str) -> None:
-    run(["git", "fetch", remote], capture=True, check=True)
+    run(["git", "fetch", remote], check=True)
 
 
 def git_checkout_branch_from(remote: str, base_branch: str, new_branch: str) -> None:
     # Create/reset local branch to remote/base
-    run(["git", "checkout", "-B", new_branch, f"{remote}/{base_branch}"], capture=True, check=True)
+    run(["git", "checkout", "-B", new_branch, f"{remote}/{base_branch}"], check=True)
 
 
 def git_cherrypick_x(sha: str) -> None:
     # -x appends "(cherry picked from commit ...)" to the commit message
-    run(["git", "cherry-pick", "-x", sha], capture=True, check=True)
+    run(["git", "cherry-pick", "-x", sha], check=True)
 
 
 def git_commit_subject(sha: str) -> str:
-    return run(["git", "show", "-s", "--format=%s", sha], capture=True, check=True)
+    return run(["git", "show", "-s", "--format=%s", sha], check=True)
 
 
 def git_push(remote: str, branch: str, force: bool) -> None:
@@ -282,7 +278,7 @@ def git_push(remote: str, branch: str, force: bool) -> None:
     if force:
         cmd.insert(2, "--force-with-lease")
     try:
-        run(cmd, capture=True, check=True)
+        run(cmd, check=True)
         return
     except RuntimeError as e:
         msg = str(e)
@@ -293,7 +289,7 @@ def git_push(remote: str, branch: str, force: bool) -> None:
                 f"Remote branch '{branch}' is ahead on {remote}. Force-with-lease push? [y/N] "
             ):
                 cmd = ["git", "push", "-u", "--force-with-lease", remote, branch]
-                run(cmd, capture=True, check=True)
+                run(cmd, check=True)
                 return
         raise
 
@@ -312,11 +308,11 @@ def gh_pr_create(
     if repo:
         cmd.extend(["-R", repo])
     # gh pr create prints the URL of the created PR on success.
-    return run(cmd, capture=True, check=True)
+    return run(cmd, check=True)
 
 
 def git_remote_url(remote: str) -> str:
-    return run(["git", "remote", "get-url", remote], capture=True, check=True)
+    return run(["git", "remote", "get-url", remote], check=True)
 
 
 def parse_github_owner_repo(remote_url: str) -> Optional[str]:
@@ -453,6 +449,18 @@ def main() -> int:
 
     if args.dry_run:
         print("--dry-run set; no changes will be made.")
+        if infos:
+            print("The following PRs would be processed:")
+            for info in infos:
+                short_sha = info.merge_sha[:8] if info.merge_sha else ""
+                if short_sha:
+                    print(f"  #{info.number} {info.title} ({short_sha})")
+                else:
+                    print(f"  #{info.number} {info.title}")
+        if not_completed:
+            print("The following PRs were skipped because they are not yet completed:")
+            for info in not_completed:
+                print(f"  #{info.number} {info.title}")
         return 0
 
     # Make sure we have the latest release branch
@@ -474,10 +482,11 @@ def main() -> int:
         base_repo = base_remote_repo
     if base_repo is None:
         print(
-            "Warning: Could not determine base repo from git remotes. "
-            "Consider passing --repo OWNER/REPO.",
+            "Error: Could not determine base repo from git remotes."
+            "Pass --repo OWNER/REPO or run from within a GitHub repository.",
             file=sys.stderr,
         )
+        raise SystemExit("Could not determine base repo from git remotes.")
 
     green = "\x1b[32m"
     orange = "\x1b[38;5;208m"
@@ -490,7 +499,7 @@ def main() -> int:
             return f"{orange}*IN PROGRESS*{reset}"
         return "*NONE*"
 
-    backport_map: dict[int, List[BackportInfo]] = {}
+    backport_map: Dict[int, List[BackportInfo]] = {}
     for info in infos:
         backport_map[info.number] = find_backport_infos(
             info.number, args.release_branch, base_repo, info.title
@@ -511,9 +520,9 @@ def main() -> int:
                 print(f"        {label} {bp.url}")
 
     if not_completed:
-        print("\nNot completed in main:")
+        print("\nPending merge into main:")
         for info in not_completed:
-            status = "not completed in main" if info.state == "OPEN" else "abandoned"
+            status = "pending merge into main" if info.state == "OPEN" else "abandoned"
             print(f"  #{info.number} ({info.state.lower()}): {status}")
             print(f"      title: {info.title}")
             print(f"      {info.url}")
