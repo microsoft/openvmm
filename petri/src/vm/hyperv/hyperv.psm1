@@ -670,7 +670,7 @@ function Get-VmScreenshot
     $vmcs = Get-MsvmComputerSystem $Vm
 
     # Get the resolution of the screen at the moment
-    $videoHead = $vmcs | Get-CimAssociatedInstance -ResultClassName "Msvm_VideoHead"
+    $videoHead = @($vmcs | Get-CimAssociatedInstance -ResultClassName "Msvm_VideoHead")[0]
     $x = $videoHead.CurrentHorizontalResolution
     $y = $videoHead.CurrentVerticalResolution
 
