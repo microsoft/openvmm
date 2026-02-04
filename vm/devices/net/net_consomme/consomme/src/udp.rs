@@ -220,10 +220,13 @@ impl<T: Client> Access<'_, T> {
         };
 
         let conn = self.get_or_insert(guest_addr, None, Some(frame.src_addr))?;
-        match conn.socket.as_mut().unwrap().get().send_to(
-            udp_packet.payload(),
-            (addresses.dst_addr, udp.dst_port),
-        ) {
+        match conn
+            .socket
+            .as_mut()
+            .unwrap()
+            .get()
+            .send_to(udp_packet.payload(), (addresses.dst_addr, udp.dst_port))
+        {
             Ok(_) => {
                 conn.stats.tx_packets.increment();
                 conn.last_activity = Instant::now();
