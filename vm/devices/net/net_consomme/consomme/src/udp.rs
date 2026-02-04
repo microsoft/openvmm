@@ -421,7 +421,7 @@ mod tests {
             guest_mac,
             gateway_mac,
             guest_ip,
-            target_ip.into(),
+            target_ip,
             12345,
             54321,
             b"test",
