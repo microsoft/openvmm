@@ -173,11 +173,11 @@ impl Drop for WindowsDnsResolverBackend {
     }
 }
 
-/// Error type for DNS query result processing failures.
+/// Error type for DNS query result processing failures
 #[derive(Debug)]
 enum DnsResultError {
     NullResults,
-    QueryFailed { status: i32 },
+    QueryFailed(i32),
     NoResponseData,
 }
 
@@ -198,24 +198,19 @@ unsafe fn process_dns_results(
     let results = unsafe { &*query_results };
 
     if results.queryStatus != NO_ERROR as i32 {
-        return Err(DnsResultError::QueryFailed {
-            status: results.queryStatus,
-        });
+        Err(DnsResultError::QueryFailed(results.queryStatus))
+    } else if results.queryRawResponseSize == 0 || results.queryRawResponse.is_null() {
+        Err(DnsResultError::NoResponseData)
+    } else {
+        // SAFETY: queryRawResponse points to a buffer of queryRawResponseSize bytes allocated by Windows
+        let response_data = unsafe {
+            std::slice::from_raw_parts(
+                results.queryRawResponse,
+                results.queryRawResponseSize as usize,
+            )
+        };
+        Ok(response_data.to_vec())
     }
-
-    if results.queryRawResponseSize == 0 || results.queryRawResponse.is_null() {
-        return Err(DnsResultError::NoResponseData);
-    }
-
-    // SAFETY: queryRawResponse points to a buffer of queryRawResponseSize bytes allocated by Windows
-    let response_data = unsafe {
-        std::slice::from_raw_parts(
-            results.queryRawResponse,
-            results.queryRawResponseSize as usize,
-        )
-    };
-
-    Ok(response_data.to_vec())
 }
 
 /// Callback for DnsQueryRaw completion.
@@ -242,6 +237,10 @@ unsafe extern "system" fn dns_query_raw_callback(
             flow: context.request.flow.clone(),
             response_data,
         }),
+        Err(DnsResultError::QueryFailed(status)) => {
+            tracelimit::warn_ratelimited!(status, "DNS query failed, returning SERVFAIL");
+            None
+        }
         Err(e) => {
             tracelimit::warn_ratelimited!(error = ?e, "DNS query failed, returning SERVFAIL");
             None

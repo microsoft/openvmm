@@ -24,9 +24,9 @@ pub fn handle_dns_query(request: DnsRequestInternal) {
     let answer_len = unsafe {
         res_send(
             request.query.as_ptr(),
-            request.query.len() as libc::c_int,
+            request.query.len() as c_int,
             answer.as_mut_ptr(),
-            answer.len() as libc::c_int,
+            answer.len() as c_int,
         )
     };
 
@@ -72,9 +72,9 @@ mod tests {
         let _answer_len = unsafe {
             res_send(
                 dns_query.as_ptr(),
-                dns_query.len() as libc::c_int,
+                dns_query.len() as c_int,
                 answer.as_mut_ptr(),
-                answer.len() as libc::c_int,
+                answer.len() as c_int,
             )
         };
     }

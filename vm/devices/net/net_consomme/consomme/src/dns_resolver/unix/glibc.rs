@@ -11,6 +11,11 @@ use super::DnsResponse;
 use super::build_servfail_response;
 use libc::c_int;
 
+/// Size of the `res_state` structure for different platforms.
+/// These values were derived from including resolv.h and using sizeof(struct __res_state).
+#[cfg_attr(target_os = "macos")]
+const RES_STATE_SIZE: usize = 552;
+#[cfg_attr(target_os = "linux")]
 const RES_STATE_SIZE: usize = 568;
 
 #[repr(C)]
