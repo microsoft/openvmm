@@ -664,11 +664,11 @@ async fn servicing_keepalive_with_unresponsive_io(
     let mut fault_start_updater = CellUpdater::new(false);
     let cell = fault_start_updater.cell();
 
-    // Delay (100s). Draining IO after restore will now be excessively slow.
+    // Delay (120s). Draining IO after restore will now be excessively slow.
     let fault_configuration = FaultConfiguration::new(cell.clone()).with_io_queue_fault(
         IoQueueFaultConfig::new(cell.clone()).with_completion_queue_fault(
             CommandMatchBuilder::new().match_cdw0(0, 0).build(),
-            IoQueueFaultBehavior::Delay(Duration::from_secs(100)),
+            IoQueueFaultBehavior::Delay(Duration::from_secs(120)),
         ),
     );
 
