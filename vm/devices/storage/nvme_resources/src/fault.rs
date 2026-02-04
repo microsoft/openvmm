@@ -97,7 +97,7 @@ pub struct PciFaultConfig {
     /// Fault to apply to cc.en() bit during enablement
     pub controller_management_fault_enable: PciFaultBehavior,
     /// Custom MQES value to return in CAP register reads. 1 based value.
-    pub custom_cap_mqes: Option<u16>,
+    pub max_queue_size: Option<u16>,
 }
 
 /// A fault config to trigger spurious namespace change notifications from the controller.
@@ -435,7 +435,7 @@ impl PciFaultConfig {
     pub fn new() -> Self {
         Self {
             controller_management_fault_enable: PciFaultBehavior::Default,
-            custom_cap_mqes: None,
+            max_queue_size: None,
         }
     }
 
@@ -447,7 +447,7 @@ impl PciFaultConfig {
 
     /// Add a custom CAP.MQES value to return on register reads
     pub fn with_custom_cap_mqes(mut self, mqes: u16) -> Self {
-        self.custom_cap_mqes = Some(mqes);
+        self.max_queue_size = Some(mqes);
         self
     }
 }
