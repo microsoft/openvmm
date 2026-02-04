@@ -577,7 +577,7 @@ async fn servicing_keepalive_with_nvme_identify_fault(
 /// servicing should still succeed (i.e. the queue pairs should still be
 /// listening for save commands).
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn servicing_keepalive_with_io(
+async fn servicing_keepalive_with_io_queue_full(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
