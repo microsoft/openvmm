@@ -446,8 +446,8 @@ impl PciFaultConfig {
     }
 
     /// Add a custom CAP.MQES value to return on register reads
-    pub fn with_custom_cap_mqes(mut self, mqes: u16) -> Self {
-        self.max_queue_size = Some(mqes);
+    pub fn with_max_queue_size(mut self, max_queue_size: u16) -> Self {
+        self.max_queue_size = Some(max_queue_size);
         self
     }
 }

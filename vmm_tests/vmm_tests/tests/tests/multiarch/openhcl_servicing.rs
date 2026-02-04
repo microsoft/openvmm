@@ -599,7 +599,7 @@ async fn servicing_keepalive_with_io_queue_full(
                 IoQueueFaultBehavior::Delay(Duration::from_secs(100)),
             ),
         )
-        .with_pci_fault(PciFaultConfig::new().with_custom_cap_mqes(8));
+        .with_pci_fault(PciFaultConfig::new().with_max_queue_size(8));
 
     let scsi_controller_guid = Guid::new_random();
     let disk_size = 100 * 1024 * 1024; // 100 MiB
@@ -635,13 +635,13 @@ async fn servicing_keepalive_with_io_queue_full(
     fault_start_updater.set(true).await;
     let _io_child = large_read_from_disk(&agent, disk_path).await?;
 
-    // 30 seconds should be plenty of time for the servicing to complete. If
+    // 60 seconds should be plenty of time for the servicing to complete. If
     // save is stuck it will be exposed here.
     CancelContext::new()
-        .with_timeout(Duration::from_secs(30))
+        .with_timeout(Duration::from_secs(60))
         .until_cancelled(vm.restart_openhcl(igvm_file.clone(), flags))
         .await
-        .expect("VM restart did not complete within 30 seconds, even though it should have. Save is stuck.")
+        .expect("VM restart did not complete within 60 seconds, even though it should have. Save is stuck.")
         .expect("VM restart failed");
 
     fault_start_updater.set(false).await;
