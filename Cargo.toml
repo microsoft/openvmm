@@ -459,6 +459,7 @@ gptman = "2.0"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 h2 = "0.4"
+heapless = { version = "0.8", default-features = false }
 heck = "0.5"
 hex = "0.4"
 http = "1"
@@ -532,7 +533,7 @@ signal-hook = { version = "0.3", default-features = false }
 slab = "0.4"
 smallbox = "0.8"
 smallvec = "1.8"
-smoltcp = { version = "0.8", default-features = false }
+smoltcp = { version = "0.12.0", default-features = false }
 socket2 = "0.6"
 spin = "0.10.0"
 stackfuture = "0.3"

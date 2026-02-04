@@ -126,9 +126,9 @@ impl UdpConnection {
                     eth.set_dst_addr(self.guest_mac);
                     let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
                     Ipv4Repr {
-                        src_addr: src_ip.into(),
+                        src_addr: src_ip,
                         dst_addr: dst_addr.ip,
-                        protocol: IpProtocol::Udp,
+                        next_header: IpProtocol::Udp,
                         payload_len: UDP_HEADER_LEN + n,
                         hop_limit: 64,
                     }
@@ -220,10 +220,13 @@ impl<T: Client> Access<'_, T> {
         };
 
         let conn = self.get_or_insert(guest_addr, None, Some(frame.src_addr))?;
-        match conn.socket.as_mut().unwrap().get().send_to(
-            udp_packet.payload(),
-            (Ipv4Addr::from(addresses.dst_addr), udp.dst_port),
-        ) {
+        match conn
+            .socket
+            .as_mut()
+            .unwrap()
+            .get()
+            .send_to(udp_packet.payload(), (addresses.dst_addr, udp.dst_port))
+        {
             Ok(_) => {
                 conn.stats.tx_packets.increment();
                 conn.last_activity = Instant::now();
@@ -285,7 +288,7 @@ impl<T: Client> Access<'_, T> {
         port: u16,
     ) -> Result<(), DropReason> {
         let guest_addr = SocketAddress {
-            ip: ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED).into(),
+            ip: ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED),
             port,
         };
         let _ = self.get_or_insert(guest_addr, ip_addr, None)?;
@@ -295,7 +298,7 @@ impl<T: Client> Access<'_, T> {
     /// Unbinds from the specified host port.
     pub fn unbind_udp_port(&mut self, port: u16) -> Result<(), DropReason> {
         let guest_addr = SocketAddress {
-            ip: Ipv4Addr::UNSPECIFIED.into(),
+            ip: Ipv4Addr::UNSPECIFIED,
             port,
         };
         match self.inner.udp.connections.remove(&guest_addr) {
@@ -374,7 +377,7 @@ mod tests {
         Ipv4Repr {
             src_addr: guest_ip,
             dst_addr: external_ip,
-            protocol: IpProtocol::Udp,
+            next_header: IpProtocol::Udp,
             payload_len: UDP_HEADER_LEN + payload.len(),
             hop_limit: 64,
         }
@@ -418,7 +421,7 @@ mod tests {
             guest_mac,
             gateway_mac,
             guest_ip,
-            target_ip.into(),
+            target_ip,
             12345,
             54321,
             b"test",
