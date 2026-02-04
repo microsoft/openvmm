@@ -65,7 +65,7 @@ impl IntoPipeline for CcaFvpCli {
             platform,
             overlay,
             btvar,
-            rootfs: _, // Computed automatically by the run job
+            rootfs,
             rtvar,
             build_arg,
             run_arg: _,
@@ -223,6 +223,7 @@ impl IntoPipeline for CcaFvpCli {
                 out_dir: dir.clone(),
                 shrinkwrap_dir: shrinkwrap_dir.clone(),
                 platform_yaml: platform.clone(),
+                rootfs_path: rootfs.clone(),
                 rtvars: rtvar.clone(),
                 done: ctx.new_done_handle(),
             })
