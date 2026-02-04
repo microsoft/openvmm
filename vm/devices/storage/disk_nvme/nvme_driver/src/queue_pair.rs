@@ -986,6 +986,11 @@ impl<A: AerHandler> QueueHandler<A> {
             } else {
                 // Only process in-flight completions.
                 poll_fn(|cx| {
+                    // Look for control plane requests like Save/Inspect
+                    if let Poll::Ready(Some(req)) = recv_req.poll_next_unpin(cx) {
+                        return Event::Request(req).into();
+                    }
+
                     while !self.commands.is_empty() {
                         if let Some(completion) = self.cq.read() {
                             return Event::Completion(completion).into();
