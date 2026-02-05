@@ -2083,7 +2083,7 @@ enum InteractiveCommand {
         interval: Option<u64>,
     },
 
-    /// Hot add a disk to the guest.
+    /// Hot add a disk to the VTL0 guest.
     #[clap(visible_alias = "d")]
     AddDisk {
         #[clap(long = "ro")]
@@ -2101,7 +2101,7 @@ enum InteractiveCommand {
         file_path: Option<PathBuf>,
     },
 
-    /// Hot remove a disk from the guest.
+    /// Hot remove a disk from the VTL0 guest.
     #[clap(visible_alias = "D")]
     RmDisk {
         #[clap(long)]
