@@ -658,8 +658,11 @@ pub struct ExtendedFeatureSubleaf1Edx {
     pub _reserved1: u32,
     pub avx_vnni_int8: bool,
     pub avx_ne_convert: bool,
-    #[bits(26)]
+    #[bits(4)]
     pub _reserved2: u32,
+    pub avx_vnni_int16: bool,
+    #[bits(21)]
+    pub _reserved3: u32,
 }
 
 #[bitfield(u32)]

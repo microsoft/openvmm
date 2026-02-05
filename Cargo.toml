@@ -175,6 +175,7 @@ kmsg_defs = { path = "openhcl/kmsg_defs" }
 lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
+minimal_rt_reloc = { path = "openhcl/minimal_rt_reloc" }
 openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
@@ -321,6 +322,7 @@ tpm_lib = { path = "vm/devices/tpm/tpm_lib" }
 tpm_protocol = { path = "vm/devices/tpm/tpm_protocol" }
 tpm_resources = { path = "vm/devices/tpm_resources" }
 mcr_resources = { path = "vm/devices/mcr_resources" }
+pcie_remote_resources = { path = "vm/devices/pcie_remote_resources" }
 uidevices = { path = "vm/devices/uidevices" }
 uidevices_resources = { path = "vm/devices/uidevices_resources" }
 user_driver = { path = "vm/devices/user_driver" }
@@ -457,7 +459,7 @@ gptman = "2.0"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 h2 = "0.4"
-heapless = { version = "0.8.0", default-features = false}
+heapless = { version = "0.8", default-features = false }
 heck = "0.5"
 hex = "0.4"
 http = "1"
@@ -610,12 +612,13 @@ codegen-units = 1
 opt-level = 'z'
 lto = 'fat'
 
-# Optimize minimal_rt even in the dev profile to ensure no relocations creep
-# into the relocate function.
+# Optimize minimal_rt_reloc even in the dev profile to ensure no relocations
+# creep into the relocate function.
 #
 # FUTURE: rewrite relocator in asm to avoid depending on this.
-[profile.dev.package.minimal_rt]
+[profile.dev.package.minimal_rt_reloc]
 opt-level = 1
+debug-assertions = false
 
 # Optimize loom and its main dependency even in the dev profile, as otherwise tests just take too long.
 [profile.dev.package.loom]

@@ -42,6 +42,7 @@
     - [`Nodes`](./dev_guide/dev_tools/flowey/nodes.md)
     - [`Artifacts`](./dev_guide/dev_tools/flowey/artifacts.md)
     - [`Pipelines`](./dev_guide/dev_tools/flowey/pipelines.md)
+    - [`Nix`](./dev_guide/dev_tools/flowey/nix.md)
   - [`cargo xtask`](./dev_guide/dev_tools/xtask.md)
   - [`cargo xflowey`](./dev_guide/dev_tools/xflowey.md)
   - [VmgsTool](./dev_guide/dev_tools/vmgstool.md)

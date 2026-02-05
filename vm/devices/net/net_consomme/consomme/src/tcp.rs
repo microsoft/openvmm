@@ -511,8 +511,8 @@ impl<T: Client> Sender<'_, T> {
             max_seg_size: None,
             sack_permitted: false,
             sack_ranges: [None, None, None],
-            payload: &[],
             timestamp: None,
+            payload: &[],
         };
 
         tracing::trace!(?tcp, "tcp rst xmit");
@@ -859,8 +859,8 @@ impl TcpConnection {
             max_seg_size: Some(max_seg_size),
             sack_permitted: false,
             sack_ranges: [None, None, None],
-            payload: &[],
             timestamp: None,
+            payload: &[],
         };
 
         sender.send_packet(&tcp, None);
@@ -892,8 +892,8 @@ impl TcpConnection {
                 max_seg_size: None,
                 sack_permitted: false,
                 sack_ranges: [None, None, None],
-                payload: &[],
                 timestamp: None,
+                payload: &[],
             };
 
             let mut tx_next = self.tx_send;
@@ -991,8 +991,8 @@ impl TcpConnection {
             max_seg_size: None,
             sack_permitted: false,
             sack_ranges: [None, None, None],
-            payload: &[],
             timestamp: None,
+            payload: &[],
         };
 
         tracing::trace!(?tcp, "tcp ack xmit");

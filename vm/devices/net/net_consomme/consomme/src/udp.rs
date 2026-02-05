@@ -5,6 +5,7 @@ use super::Access;
 use super::Client;
 use super::DropReason;
 use super::dhcp::DHCP_SERVER;
+use super::dhcpv6::DHCPV6_ALL_AGENTS_MULTICAST;
 use super::dhcpv6::DHCPV6_SERVER;
 use crate::ChecksumState;
 use crate::ConsommeState;
@@ -273,9 +274,8 @@ impl<T: Client> Access<'_, T> {
                 )?;
 
                 // Check for gateway-destined packets (IPv6 uses multicast instead of broadcast)
-                let dst_octets = addrs.dst_addr.octets();
                 if addrs.dst_addr == self.inner.state.params.gateway_link_local_ipv6
-                    || dst_octets[0..2] == [0xff, 0x02]
+                    || addrs.dst_addr == DHCPV6_ALL_AGENTS_MULTICAST
                 {
                     if self.handle_gateway_udp_v6(&udp_packet, Some(addrs.src_addr))? {
                         return Ok(());

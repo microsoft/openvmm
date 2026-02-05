@@ -4242,11 +4242,16 @@ dependencies = [
  "cfg-if",
  "hvdef",
  "minimal_rt_build",
+ "minimal_rt_reloc",
  "zerocopy 0.8.27",
 ]
 
 [[package]]
 name = "minimal_rt_build"
+version = "0.0.0"
+
+[[package]]
+name = "minimal_rt_reloc"
 version = "0.0.0"
 
 [[package]]
@@ -5251,6 +5256,7 @@ dependencies = [
  "pal",
  "pal_async",
  "parking_lot",
+ "pcie_remote_resources",
  "prost",
  "rustyline",
  "scsidisk_resources",
@@ -5688,6 +5694,15 @@ dependencies = [
  "tracing",
  "vmcore",
  "zerocopy 0.8.27",
+]
+
+[[package]]
+name = "pcie_remote_resources"
+version = "0.0.0"
+dependencies = [
+ "guid",
+ "mesh",
+ "vm_resource",
 ]
 
 [[package]]

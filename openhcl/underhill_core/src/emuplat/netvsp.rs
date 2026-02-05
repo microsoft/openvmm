@@ -598,9 +598,10 @@ impl HclNetworkVFManagerWorker {
         .await
         {
             Ok(mut device) => {
+                // Subscribe to VF reconfigure events before starting notification task
+                self.vf_reconfig_receiver = Some(device.subscribe_vf_reconfig().await);
                 // Resubscribe to notifications from the MANA device.
                 device.start_notification_task(&self.driver_source).await;
-                self.vf_reconfig_receiver = Some(device.subscribe_vf_reconfig().await);
 
                 self.mana_device = Some(device);
                 self.connect_endpoints().await.is_ok()
@@ -876,17 +877,39 @@ impl HclNetworkVFManagerWorker {
                                 .instrument(tracing::info_span!("saving mana device state"))
                                 .await;
 
-                            // Closing the VFIO device handle can take a long time.
-                            // Leak the handle by stashing it away.
-                            std::mem::forget(device);
-
                             match saved_state {
-                                Ok(saved_state) => VfManagerSaveResult::Saved(ManaSavedState {
-                                    mana_device: saved_state,
-                                    pci_id: self.vtl2_pci_id.clone(),
-                                }),
-                                Err(_) => {
-                                    tracing::error!("Failed while saving MANA device state");
+                                Ok(saved_state) => {
+                                    // Closing the VFIO device handle can take a long time.
+                                    // Leak the handle by stashing it away.
+                                    std::mem::forget(device);
+                                    VfManagerSaveResult::Saved(ManaSavedState {
+                                        mana_device: saved_state,
+                                        pci_id: self.vtl2_pci_id.clone(),
+                                    })
+                                }
+                                Err(err) => {
+                                    tracing::error!(
+                                        error = err.as_ref() as &dyn std::error::Error,
+                                        "Failed while saving MANA device state"
+                                    );
+                                    // Enable FLR to try to recover the device.
+                                    match vfio_set_device_reset_method(
+                                        &self.vtl2_pci_id,
+                                        PciDeviceResetMethod::Flr,
+                                    ) {
+                                        Ok(_) => {
+                                            tracing::info!(
+                                                "Attempt to reset device via FLR on next teardown."
+                                            );
+                                        }
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                err = &err as &dyn std::error::Error,
+                                                "Failed to re-enable FLR"
+                                            );
+                                        }
+                                    }
+                                    drop(device);
                                     VfManagerSaveResult::SaveFailed
                                 }
                             }
@@ -922,6 +945,12 @@ impl HclNetworkVFManagerWorker {
                     if self.is_shutdown_active
                         || matches!(vtl2_device_state, Vtl2DeviceState::Missing)
                     {
+                        tracing::debug!(
+                            is_shutdown_active = self.is_shutdown_active,
+                            vtl2_device_state_missing =
+                                matches!(vtl2_device_state, Vtl2DeviceState::Missing),
+                            "Skipping VF reconfiguration during shutdown or when device is missing"
+                        );
                         continue;
                     }
 
@@ -1242,8 +1271,9 @@ impl HclNetworkVFManager {
         // Now that the endpoints are connected, start the device notification task that will
         // listen for and relay endpoint actions.
         let device = worker.mana_device.as_mut().unwrap();
-        device.start_notification_task(driver_source).await;
+        // Subscribe to VF reconfig events before starting notification task
         worker.vf_reconfig_receiver = Some(device.subscribe_vf_reconfig().await);
+        device.start_notification_task(driver_source).await;
         let endpoints = endpoints
             .into_iter()
             .zip(mac_addresses)

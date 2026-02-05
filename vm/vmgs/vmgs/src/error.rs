@@ -70,6 +70,9 @@ pub enum Error {
     /// VMGS is v1 format
     #[error("VMGS is v1 format")]
     V1Format,
+    /// Cannot overwrite file when moving
+    #[error("cannot overwrite file when moving")]
+    OverwriteMove,
 
     /// OpenSSL errors.
     #[cfg(feature = "encryption_ossl")]

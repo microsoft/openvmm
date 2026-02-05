@@ -101,11 +101,6 @@ impl MshvVtl {
         value: SevRmpAdjust,
         terminate_on_failure: bool,
     ) -> Result<(), SnpPageError> {
-        if value.vmsa() {
-            // TODO SNP: VMSA conversion does not work.
-            return Ok(());
-        }
-
         // SAFETY: TODO SNP FUTURE: For defense in depth it could be useful to prevent
         // usermode from changing permissions of a VTL2 kernel page in the kernel.
         let ret = unsafe {

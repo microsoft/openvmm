@@ -50,6 +50,7 @@ open_enum! {
         HIBERNATION_FIRMWARE = 14,
         PLATFORM_SEED = 15,
         PROVENANCE_DOC = 16,
+        TPM_NVRAM_BACKUP = 17,
 
         EXTENDED_FILE_TABLE = 63,
     }

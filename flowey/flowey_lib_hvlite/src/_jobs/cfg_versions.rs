@@ -23,8 +23,7 @@ pub const GH_CLI: &str = "2.52.0";
 pub const MDBOOK: &str = "0.4.40";
 pub const MDBOOK_ADMONISH: &str = "1.18.0";
 pub const MDBOOK_MERMAID: &str = "0.14.0";
-pub const RUSTUP_TOOLCHAIN: &str = "1.91.1";
-pub const MU_MSVM: &str = "25.1.9";
+pub const MU_MSVM: &str = "25.1.10";
 pub const NEXTEST: &str = "0.9.101";
 pub const NODEJS: &str = "24.x";
 // N.B. Kernel version numbers for dev and stable branches are not directly
@@ -61,6 +60,7 @@ impl FlowNode for Node {
         ctx.import::<crate::resolve_openhcl_kernel_package::Node>();
         ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
+        ctx.import::<crate::cfg_rustup_version::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
         ctx.import::<flowey_lib_common::download_cargo_fuzz::Node>();
         ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
@@ -71,7 +71,6 @@ impl FlowNode for Node {
         ctx.import::<flowey_lib_common::resolve_protoc::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
-        ctx.import::<flowey_lib_common::install_rust::Node>();
     }
 
     #[rustfmt::skip]
@@ -179,7 +178,7 @@ impl FlowNode for Node {
         }
         ctx.req(flowey_lib_common::install_azure_cli::Request::Version(AZURE_CLI.into()));
         ctx.req(flowey_lib_common::install_nodejs::Request::Version(NODEJS.into()));
-        ctx.req(flowey_lib_common::install_rust::Request::Version(RUSTUP_TOOLCHAIN.into()));
+        ctx.req(crate::cfg_rustup_version::Request::Init);
         Ok(())
     }
 }

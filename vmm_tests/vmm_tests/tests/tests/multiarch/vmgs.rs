@@ -322,6 +322,36 @@ async fn run_vmgstool_verification(
     let output = std::fs::read(&out_data_path)?;
     assert_eq!(&contents[..], &output[..]);
 
+    let mut cmd = Command::new(vmgstool_path);
+    cmd.arg("move")
+        .arg("--filepath")
+        .arg(vmgs_path)
+        .arg("--src")
+        .arg("3")
+        .arg("--dst")
+        .arg("17");
+    if let Some(key_path) = key_path {
+        cmd.arg("--keypath").arg(key_path);
+    }
+    run_host_cmd(cmd).await?;
+
+    let out_data_path = temp_dir.path().join("out.bin");
+    let mut cmd = Command::new(vmgstool_path);
+    cmd.arg("dump")
+        .arg("--filepath")
+        .arg(vmgs_path)
+        .arg("--data-path")
+        .arg(&out_data_path)
+        .arg("--fileid")
+        .arg("17");
+    if let Some(key_path) = key_path {
+        cmd.arg("--keypath").arg(key_path);
+    }
+    run_host_cmd(cmd).await?;
+
+    let output = std::fs::read(&out_data_path)?;
+    assert_eq!(&contents[..], &output[..]);
+
     Ok(())
 }
 
