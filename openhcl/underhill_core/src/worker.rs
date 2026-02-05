@@ -315,6 +315,8 @@ pub struct UnderhillEnvCfg {
     /// The timeout in seconds for VM config operations, both the initial configuration
     /// and then subsequent modifications.
     pub config_timeout_in_seconds: u64,
+    /// The timeout in milliseconds for dump collection during a panic in servicing.
+    pub servicing_timeout_dump_collection_in_ms: u64,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -3554,6 +3556,7 @@ async fn new_underhill_vm(
         test_configuration: env_cfg.test_configuration,
         dma_manager,
         config_timeout_in_seconds: env_cfg.config_timeout_in_seconds,
+        servicing_timeout_dump_collection_in_ms: env_cfg.servicing_timeout_dump_collection_in_ms,
     };
 
     Ok(loaded_vm)
