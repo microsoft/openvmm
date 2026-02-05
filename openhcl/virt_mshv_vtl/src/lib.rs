@@ -1348,6 +1348,26 @@ impl IoApicRouting for UhPartitionInner {
     }
 }
 
+// xtask-fmt allow-target-arch cpu-intrinsic
+#[cfg(target_arch = "x86_64")]
+fn is_restore_partition_time_available() -> bool {
+    let result =
+        safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
+    let enlightenment_info = hvdef::HvEnlightenmentInformation::from(
+        result.eax as u128
+            | (result.ebx as u128) << 32
+            | (result.ecx as u128) << 64
+            | (result.edx as u128) << 96,
+    );
+    enlightenment_info.restore_time_on_resume()
+}
+// xtask-fmt allow-target-arch cpu-intrinsic
+#[cfg(not(target_arch = "x86_64"))]
+fn is_restore_partition_time_available() -> bool {
+    // Only available on x86_64 Hyper-V hypervisor.
+    false
+}
+
 /// Configure the [`hvdef::HvRegisterVsmPartitionConfig`] register with the
 /// values used by underhill.
 fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
@@ -1355,22 +1375,6 @@ fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
     let caps = hcl.get_vsm_capabilities().map_err(Error::GetReg)?;
     let hardware_isolated = hcl.isolation().is_hardware_isolated();
     let isolated = hcl.isolation().is_isolated();
-    // xtask-fmt allow-target-arch cpu-intrinsic
-    let restore_partition_time_available = if cfg!(target_arch = "x86_64") {
-        let result =
-            safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
-        hvdef::HvEnlightenmentInformation::from(
-            result.eax as u128
-                | (result.ebx as u128) << 32
-                | (result.ecx as u128) << 64
-                | (result.edx as u128) << 96,
-        )
-        .restore_time_on_resume()
-    } else {
-        // Only available on x86_64 hypervisors.
-        false
-    };
-
     let config = HvRegisterVsmPartitionConfig::new()
         .with_default_vtl_protection_mask(0xF)
         .with_enable_vtl_protection(!hardware_isolated)
@@ -1382,7 +1386,7 @@ fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
         .with_intercept_acceptance(isolated)
         .with_intercept_enable_vtl_protection(isolated && !hardware_isolated)
         .with_intercept_system_reset(caps.intercept_system_reset_available())
-        .with_intercept_restore_partition_time(restore_partition_time_available);
+        .with_intercept_restore_partition_time(is_restore_partition_time_available());
 
     hcl.set_vtl2_vsm_partition_config(config)
         .map_err(Error::SetReg)
