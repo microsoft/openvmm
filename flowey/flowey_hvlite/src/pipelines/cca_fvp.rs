@@ -95,42 +95,34 @@ impl IntoPipeline for CcaFvpCli {
 
         // Put Shrinkwrap repo under the pipeline working dir, so it's self-contained.
         let shrinkwrap_dir = dir.join("shrinkwrap");
+        let shrinkwrap_config_dir = shrinkwrap_dir.join("config");
 
-        // Convert platform and overlay paths that reference the shrinkwrap directory
-        // to absolute paths, since shrinkwrap will change directory during execution
-        let platform = if platform.starts_with("target/cca-fvp/shrinkwrap/") ||
-                          platform.starts_with("./target/cca-fvp/shrinkwrap/") {
-            // This is a shrinkwrap config file, make it absolute
-            let rel_path = platform.strip_prefix("target/cca-fvp/shrinkwrap/")
-                .or_else(|_| platform.strip_prefix("./target/cca-fvp/shrinkwrap/"))
-                .unwrap();
-            shrinkwrap_dir.join(rel_path)
-        } else if platform.is_absolute() {
-            platform
-        } else {
-            // Try to canonicalize if it exists, otherwise make it absolute
-            std::fs::canonicalize(&platform).unwrap_or_else(|_| {
-                std::env::current_dir().unwrap().join(&platform)
-            })
-        };
-
-        let overlay: Vec<PathBuf> = overlay.into_iter().map(|p| {
-            if p.starts_with("target/cca-fvp/shrinkwrap/") ||
-               p.starts_with("./target/cca-fvp/shrinkwrap/") {
-                // This is a shrinkwrap config file, make it absolute
+        // To resolve platform/overlay paths
+        // If relative, assume it's in shrinkwrap/config/
+        // If absolute, use as-is
+        let resolve_config_path = |p: PathBuf| -> PathBuf {
+            if p.is_absolute() {
+                p
+            } else if p.starts_with("target/cca-fvp/shrinkwrap/") ||
+                      p.starts_with("./target/cca-fvp/shrinkwrap/") {
+                // Legacy format: target/cca-fvp/shrinkwrap/config/file.yaml
                 let rel_path = p.strip_prefix("target/cca-fvp/shrinkwrap/")
                     .or_else(|_| p.strip_prefix("./target/cca-fvp/shrinkwrap/"))
                     .unwrap();
                 shrinkwrap_dir.join(rel_path)
-            } else if p.is_absolute() {
-                p
             } else {
-                // Try to canonicalize if it exists, otherwise make it absolute
-                std::fs::canonicalize(&p).unwrap_or_else(|_| {
-                    std::env::current_dir().unwrap().join(&p)
-                })
+                // Use relative path: assume it's in shrinkwrap/config/
+                shrinkwrap_config_dir.join(p)
             }
-        }).collect();
+        };
+
+        // Resolve platform YAML path
+        let platform = resolve_config_path(platform);
+
+        // Resolve overlay YAML paths
+        let overlay: Vec<PathBuf> = overlay.into_iter()
+            .map(resolve_config_path)
+            .collect();
 
         // Create separate jobs to ensure proper ordering
         let install_job = pipeline
