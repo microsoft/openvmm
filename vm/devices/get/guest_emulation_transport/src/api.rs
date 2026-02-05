@@ -20,6 +20,7 @@ pub use get_protocol::VmgsIoStatus;
 use zerocopy::FromZeros;
 
 use guid::Guid;
+use std::time::Duration;
 
 /// Device platform settings.
 #[expect(missing_docs)]
@@ -251,7 +252,7 @@ pub struct GuestSaveRequest {
     /// GUID associated with the request.
     pub correlation_id: Guid,
     /// When to complete the request.
-    pub deadline: std::time::Instant,
+    pub timeout_hint: Duration,
     /// Flags bitfield.
     pub capabilities_flags: SaveGuestVtl2StateFlags,
 }

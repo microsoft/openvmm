@@ -31,6 +31,7 @@ use std::future::Future;
 use std::future::pending;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use underhill_config::Vtl2SettingsErrorInfo;
 use underhill_config::Vtl2SettingsErrorInfoVec;
@@ -1359,8 +1360,7 @@ impl<T: RingMem> ProcessLoop<T> {
             .save_request
             .send(GuestSaveRequest {
                 correlation_id: notification_header.correlation_id,
-                deadline: std::time::Instant::now()
-                    + std::time::Duration::from_secs(notification_header.timeout_hint_secs as u64),
+                timeout_hint: Duration::from_secs(notification_header.timeout_hint_secs.into()),
                 capabilities_flags: notification_header.capabilities_flags,
             })
             .map_err(|_| {
