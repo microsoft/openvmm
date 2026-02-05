@@ -1062,6 +1062,7 @@ async fn vm_config_from_command_line(
                         }
                     },
                     hv_sint_enabled: false,
+                    azi_hsm_enabled: false,
                 }
                 .into_resource(),
             ),

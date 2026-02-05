@@ -95,6 +95,8 @@ pub mod ged {
         pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
         /// Enable PPI-based SINT ACPI device for ARM64 Linux L1VH
         pub hv_sint_enabled: bool,
+        /// Enable Azure HSM
+        pub azi_hsm_enabled: bool,
     }
 
     /// The firmware and chipset configuration for the guest.

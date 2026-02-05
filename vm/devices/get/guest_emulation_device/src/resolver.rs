@@ -206,6 +206,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                     }
                 },
                 hv_sint_enabled: resource.hv_sint_enabled,
+                azi_hsm_enabled: resource.azi_hsm_enabled,
             },
             halt,
             resource.firmware_event_send,
