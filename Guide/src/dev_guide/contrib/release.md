@@ -24,7 +24,7 @@ process.
 | release/2411     | Out of service     |                                                                                   |
 | release/2505     | Servicing          | Supports runtime servicing from release/2411.                                     |
 | release/1.7.2511 | Ask Mode           | Supports runtime servicing from release/2411 and release/2505.                    |
-| release/1.8      | Stabilization      | Supports runtime servicing from release/2411, release/2505, and release/1.7.2511. |
+| release/1.8.xxyy | Active Development | Supports runtime servicing from release/2411, release/2505, and release/1.7.2511. |
 | _tbd, in main_   | Active Development | Supports runtime servicing from release/2411, release/2505, and release/1.7.2511. |
 
 ## Marking, Approval Process, Code Flow
