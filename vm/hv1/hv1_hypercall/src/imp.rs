@@ -1034,3 +1034,39 @@ impl<T: VbsVmCallReport> HypercallDispatch<HvVbsVmCallReport> for T {
         })
     }
 }
+
+/// Defines the `HvRestorePartitionTime` hypercall.
+pub type HvRestorePartitionTime = SimpleHypercall<
+    defs::RestorePartitionTime,
+    (),
+    { HypercallCode::HvCallRestorePartitionTime.0 },
+>;
+
+/// Implements the `HvRestorePartitionTime` hypercall.
+pub trait RestorePartitionTime {
+    /// Restores the partition time.
+    fn restore_partition_time(
+        &mut self,
+        partition_id: u64,
+        tsc_sequence: u32,
+        reference_time_in_100_ns: u64,
+        tsc: u64,
+    ) -> HvResult<()>;
+}
+
+impl<T: RestorePartitionTime> HypercallDispatch<HvRestorePartitionTime> for T {
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        HvRestorePartitionTime::run(params, |input| {
+            if input.reserved != 0 {
+                return Err(HvError::InvalidParameter);
+            }
+
+            self.restore_partition_time(
+                input.partition_id,
+                input.tsc_sequence,
+                input.reference_time_in_100_ns,
+                input.tsc,
+            )
+        })
+    }
+}
