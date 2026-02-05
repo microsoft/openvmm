@@ -9,6 +9,7 @@ pub mod vtl2_settings_worker;
 use self::vtl2_settings_worker::DeviceInterfaces;
 use crate::ControlRequest;
 use crate::emuplat::EmuplatServicing;
+use crate::emuplat::netvsp::NetworkAdapterIndex;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::nvme_manager::manager::NvmeManager;
 use crate::options::KeepAliveConfig;
@@ -118,6 +119,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
         is_isolated: bool,
         keepalive_mode: KeepAliveConfig,
         mana_state: Option<&ManaSavedState>,
+        network_adapter_index: Arc<NetworkAdapterIndex>,
     ) -> anyhow::Result<RuntimeSavedState>;
 
     /// Callback when network is removed externally.
@@ -198,6 +200,7 @@ pub(crate) struct LoadedVm {
     pub test_configuration: Option<TestScenarioConfig>,
     pub dma_manager: OpenhclDmaManager,
     pub config_timeout_in_seconds: u64,
+    pub network_adapter_index: Arc<NetworkAdapterIndex>,
 }
 
 pub struct LoadedVmState<T> {
@@ -873,6 +876,7 @@ impl LoadedVm {
                 dma_manager_state,
                 vmbus_client,
                 mana_state,
+                network_adapter_index: Some(self.network_adapter_index.get()),
             },
             units,
         };
@@ -941,6 +945,7 @@ impl LoadedVm {
                 self.isolation.is_isolated(),
                 self.mana_keep_alive.clone(),
                 None, // No existing mana state
+                self.network_adapter_index.clone(),
             )
             .await?;
 
