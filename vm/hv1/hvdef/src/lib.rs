@@ -299,6 +299,7 @@ open_enum! {
         HvCallCheckSparseGpaPageVtlAccess = 0x00D4,
         HvCallAcceptGpaPages = 0x00D9,
         HvCallModifySparseGpaPageHostVisibility = 0x00DB,
+        HvCallRestorePartitionTime = 0x0103,
         HvCallMemoryMappedIoRead = 0x0106,
         HvCallMemoryMappedIoWrite = 0x0107,
         HvCallPinGpaPageRanges = 0x0112,
@@ -1970,6 +1971,16 @@ pub mod hypercall {
         pub access_width: u32,
         pub reserved_z0: u32,
         pub data: [u8; HV_HYPERCALL_MMIO_MAX_DATA_LENGTH],
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct RestorePartitionTime {
+        pub partition_id: u64,
+        pub tsc_sequence: u32,
+        pub reserved: u32,
+        pub reference_time_in_100_ns: u64,
+        pub tsc: u64,
     }
 }
 

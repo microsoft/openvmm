@@ -1426,7 +1426,8 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, HypervisorBackedX86> {
             hv1_hypercall::HvRetargetDeviceInterrupt,
             hv1_hypercall::HvGetVpIndexFromApicId,
             hv1_hypercall::HvSetVpRegisters,
-            hv1_hypercall::HvModifyVtlProtectionMask
+            hv1_hypercall::HvModifyVtlProtectionMask,
+            hv1_hypercall::HvRestorePartitionTime,
         ]
     );
 }

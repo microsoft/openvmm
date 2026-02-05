@@ -1458,3 +1458,37 @@ impl<T, B: Backing> hv1_hypercall::ExtendedQueryCapabilities for UhHypercallHand
         Err(HvError::InvalidHypercallCode)
     }
 }
+
+impl<T, B: Backing> hv1_hypercall::RestorePartitionTime for UhHypercallHandler<'_, '_, T, B> {
+    fn restore_partition_time(
+        &mut self,
+        partition_id: u64,
+        tsc_sequence: u32,
+        reference_time_in_100_ns: u64,
+        tsc: u64,
+    ) -> hvdef::HvResult<()> {
+        tracelimit::info_ratelimited!(
+            partition_id,
+            tsc_sequence,
+            reference_time_in_100_ns,
+            tsc,
+            "handling restore partition time intercept"
+        );
+        if partition_id != hvdef::HV_PARTITION_ID_SELF {
+            return Err(HvError::InvalidParameter);
+        }
+
+        if let Err(e) = self.vp.partition.hcl.restore_partition_time(
+            tsc_sequence,
+            reference_time_in_100_ns,
+            tsc,
+        ) {
+            tracelimit::error_ratelimited!(
+                error = &e as &dyn std::error::Error,
+                "failed to restore partition time"
+            );
+            return Err(HvError::InvalidParameter);
+        }
+        Ok(())
+    }
+}
