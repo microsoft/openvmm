@@ -32,7 +32,7 @@ export const shortcutSections: readonly ShortcutCategory[] = [
         shortcutParts: ["<col_name>:<search_term>"],
         descriptions: [
           "Logviewer supports column-scoped filtering with prefixes including `severity:`, `source:`, and `message:`.",
-          "Multiple tokens are ANDed together",
+          "Multiple tokens are ANDed together.",
         ],
       },
       {
