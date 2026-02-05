@@ -76,7 +76,7 @@ export const shortcutSections: readonly ShortcutCategory[] = [
       },
       {
         shortcutParts: ["↑ / ↓"],
-        descriptions: ["Moves selection to the previous/next visible tree row"],
+        descriptions: ["Moves selection to the previous/next visible tree row."],
       },
       {
         shortcutParts: ["→ / ←"],
