@@ -85,6 +85,10 @@ trait CpuidArchInitializer {
 
     /// Returns the synthetic hypervisor cpuid leafs for the architecture.
     fn hv_cpuid_leaves(&self) -> [(CpuidFunction, CpuidResult); 5];
+
+    /// Makes any architecture-specific updates to any cpuid leaves that have
+    /// dependencies on the extended state enumeration leaves.
+    fn update_xsave_dependencies(&self, xsave_support: u64, results: &mut CpuidResults);
 }
 
 /// Initialization parameters per isolation type for parsing cpuid results
@@ -537,6 +541,8 @@ impl CpuidResults {
 
         self.max_extended_state = max_extended_state;
 
+        self.update_xsave_dependencies(arch_initializer);
+
         Ok(())
     }
 
@@ -629,6 +635,117 @@ impl CpuidResults {
         }
 
         extended_address_space_sizes.ebx = updated_sizes.into();
+    }
+
+    /// Suppress the availability of any feature that requires XSAVE support
+    /// if the corresponding XSAVE support is not enabled.
+    fn update_xsave_dependencies(&mut self, arch_initializer: &dyn CpuidArchInitializer) {
+        let mut clear_extended_features0_ebx = cpuid::ExtendedFeatureSubleaf0Ebx::new();
+        let mut clear_extended_features0_ecx = cpuid::ExtendedFeatureSubleaf0Ecx::new();
+        let mut clear_extended_features0_edx = cpuid::ExtendedFeatureSubleaf0Edx::new();
+
+        let mut clear_version_and_features0_ecx = cpuid::VersionAndFeaturesEcx::new();
+
+        let CpuidResult {
+            eax: xsave_low,
+            ebx: xsave_high,
+            ecx: _,
+            edx: _,
+        } = *self
+            .leaf_result_ref(CpuidFunction::ExtendedStateEnumeration, Some(0), true)
+            .expect("validated this subleaf exists");
+
+        let xsave_support = ((xsave_high as u64) << 32) | (xsave_low as u64);
+
+        let mut disable_avx_512 = false;
+
+        if (xsave_support & xsave::XFEATURE_YMM != xsave::XFEATURE_YMM)
+            || (xsave_support & xsave::XFEATURE_SSE != xsave::XFEATURE_SSE)
+        {
+            clear_version_and_features0_ecx.set_avx(true);
+            clear_version_and_features0_ecx.set_fma(true);
+
+            clear_extended_features0_ebx.set_avx2(true);
+
+            clear_extended_features0_ecx.set_vaes(true);
+            clear_extended_features0_ecx.set_gfni(true);
+            clear_extended_features0_ecx.set_vpclmulqdq(true);
+
+            disable_avx_512 = true;
+        }
+
+        if disable_avx_512 || (xsave_support & xsave::XFEATURE_AVX512 != xsave::XFEATURE_AVX512) {
+            clear_extended_features0_ebx.set_avx512f(true);
+            clear_extended_features0_ebx.set_avx512dq(true);
+            clear_extended_features0_ebx.set_avx512_ifma(true);
+            clear_extended_features0_ebx.set_avx512cd(true);
+            clear_extended_features0_ebx.set_avx512bw(true);
+            clear_extended_features0_ebx.set_avx512vl(true);
+
+            clear_extended_features0_ecx.set_avx512_vbmi(true);
+            clear_extended_features0_ecx.set_avx512_vbmi2(true);
+            clear_extended_features0_ecx.set_avx512_vnni(true);
+            clear_extended_features0_ecx.set_avx512_bitalg(true);
+            clear_extended_features0_ecx.set_avx512_vpopcntdq(true);
+
+            clear_extended_features0_edx.set_avx512_vp2_intersect(true);
+            clear_extended_features0_edx.set_avx512_fp16(true);
+        }
+
+        let extended_features0_entry = self
+            .leaf_result_mut_ref(CpuidFunction::ExtendedFeatures, Some(0))
+            .expect("validated this leaf exists");
+
+        let clearing_ebx = cpuid::ExtendedFeatureSubleaf0Ebx::from(
+            extended_features0_entry.ebx & clear_extended_features0_ebx.into_bits(),
+        );
+
+        let clearing_ecx = cpuid::ExtendedFeatureSubleaf0Ecx::from(
+            extended_features0_entry.ecx & clear_extended_features0_ecx.into_bits(),
+        );
+
+        let clearing_edx = cpuid::ExtendedFeatureSubleaf0Edx::from(
+            extended_features0_entry.edx & clear_extended_features0_edx.into_bits(),
+        );
+
+        if (clearing_ebx.into_bits() != 0)
+            || (clearing_ecx.into_bits() != 0)
+            || (clearing_edx.into_bits() != 0)
+        {
+            tracing::warn!(
+                CVM_ALLOWED,
+                ?clearing_ebx,
+                ?clearing_ecx,
+                ?clearing_edx,
+                ?xsave_support,
+                "Disabling features in cpuid leaf 7.0 due to missing xsave support.",
+            );
+        }
+
+        extended_features0_entry.ebx &= !clear_extended_features0_ebx.into_bits();
+        extended_features0_entry.ecx &= !clear_extended_features0_ecx.into_bits();
+        extended_features0_entry.edx &= !clear_extended_features0_edx.into_bits();
+
+        let version_and_features = self
+            .leaf_result_mut_ref(CpuidFunction::VersionAndFeatures, None)
+            .expect("validated this leaf exists");
+
+        let clearing_ecx = cpuid::VersionAndFeaturesEcx::from(
+            version_and_features.ecx & clear_version_and_features0_ecx.into_bits(),
+        );
+
+        if clearing_ecx.into_bits() != 0 {
+            tracing::warn!(
+                CVM_ALLOWED,
+                ?clearing_ecx,
+                ?xsave_support,
+                "Disabling features in cpuid leaf 1.0 due to missing xsave support.",
+            );
+        }
+
+        version_and_features.ecx &= !clear_version_and_features0_ecx.into_bits();
+
+        arch_initializer.update_xsave_dependencies(xsave_support, self);
     }
 
     /// Returns a flag list of CPUID leaves.

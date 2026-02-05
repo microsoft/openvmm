@@ -364,11 +364,11 @@ impl<T: Client> Access<'_, T> {
             hash_map::Entry::Vacant(e) => {
                 let ft = FourTuple {
                     dst: SocketAddress {
-                        ip: Ipv4Addr::UNSPECIFIED.into(),
+                        ip: Ipv4Addr::UNSPECIFIED,
                         port: 0,
                     },
                     src: SocketAddress {
-                        ip: ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED).into(),
+                        ip: ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED),
                         port,
                     },
                 };
@@ -414,7 +414,7 @@ impl<T: Client> Sender<'_, T> {
         let ipv4 = Ipv4Repr {
             src_addr: self.ft.dst.ip,
             dst_addr: self.ft.src.ip,
-            protocol: IpProtocol::Tcp,
+            next_header: IpProtocol::Tcp,
             payload_len: tcp.header_len() + payload.as_ref().map_or(0, |p| p.len()),
             hop_limit: 64,
         };
@@ -448,6 +448,7 @@ impl<T: Client> Sender<'_, T> {
             max_seg_size: None,
             sack_permitted: false,
             sack_ranges: [None, None, None],
+            timestamp: None,
             payload: &[],
         };
 
@@ -660,16 +661,11 @@ impl TcpConnection {
         }
 
         // Handle the tx path.
-        if self.socket.is_some() {
+        if let Some(socket) = &mut self.socket {
             if self.state.tx_fin() {
-                if let Poll::Ready(events) = self
-                    .socket
-                    .as_mut()
-                    .unwrap()
-                    .poll_ready(cx, PollEvents::EMPTY)
-                {
+                if let Poll::Ready(events) = socket.poll_ready(cx, PollEvents::EMPTY) {
                     if events.has_err() {
-                        let err = take_socket_error(self.socket.as_ref().unwrap());
+                        let err = take_socket_error(socket);
                         match err.kind() {
                             ErrorKind::BrokenPipe | ErrorKind::ConnectionReset => {}
                             _ => tracing::warn!(
@@ -688,9 +684,7 @@ impl TcpConnection {
                 while !self.tx_buffer.is_full() {
                     let (a, b) = self.tx_buffer.unwritten_slices_mut();
                     let mut bufs = [IoSliceMut::new(a), IoSliceMut::new(b)];
-                    match Pin::new(&mut *self.socket.as_mut().unwrap())
-                        .poll_read_vectored(cx, &mut bufs)
-                    {
+                    match Pin::new(&mut *socket).poll_read_vectored(cx, &mut bufs) {
                         Poll::Ready(Ok(n)) => {
                             if n == 0 {
                                 self.close();
@@ -719,11 +713,11 @@ impl TcpConnection {
         }
 
         // Handle the rx path.
-        if self.socket.is_some() {
+        if let Some(socket) = &mut self.socket {
             while !self.rx_buffer.is_empty() {
                 let (a, b) = self.rx_buffer.as_slices();
                 let bufs = [IoSlice::new(a), IoSlice::new(b)];
-                match Pin::new(&mut *self.socket.as_mut().unwrap()).poll_write_vectored(cx, &bufs) {
+                match Pin::new(&mut *socket).poll_write_vectored(cx, &bufs) {
                     Poll::Ready(Ok(n)) => {
                         self.rx_buffer.drain(..n);
                     }
@@ -744,13 +738,7 @@ impl TcpConnection {
                 }
             }
             if self.rx_buffer.is_empty() && self.state.rx_fin() && !self.is_shutdown {
-                if let Err(err) = self
-                    .socket
-                    .as_ref()
-                    .unwrap()
-                    .get()
-                    .shutdown(Shutdown::Write)
-                {
+                if let Err(err) = socket.get().shutdown(Shutdown::Write) {
                     tracing::warn!(error = &err as &dyn std::error::Error, "shutdown error");
                     sender.rst(self.tx_send, Some(self.rx_seq));
                     return false;
@@ -799,6 +787,7 @@ impl TcpConnection {
             max_seg_size: Some(max_seg_size),
             sack_permitted: false,
             sack_ranges: [None, None, None],
+            timestamp: None,
             payload: &[],
         };
 
@@ -831,6 +820,7 @@ impl TcpConnection {
                 max_seg_size: None,
                 sack_permitted: false,
                 sack_ranges: [None, None, None],
+                timestamp: None,
                 payload: &[],
             };
 
@@ -925,6 +915,7 @@ impl TcpConnection {
             max_seg_size: None,
             sack_permitted: false,
             sack_ranges: [None, None, None],
+            timestamp: None,
             payload: &[],
         };
 
@@ -1176,7 +1167,7 @@ impl TcpListener {
                         Some(src_address) => Ok(Some((
                             socket,
                             SocketAddress {
-                                ip: (*src_address.ip()).into(),
+                                ip: (*src_address.ip()),
                                 port: addr.port(),
                             },
                         ))),

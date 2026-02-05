@@ -24,6 +24,6 @@ pub fn get_template_ado(ado_hvlite_repo_resource_id: &AdoResourcesRepositoryId) 
         )
         .replace(
             "{{RUSTUP_TOOLCHAIN}}",
-            flowey_lib_hvlite::_jobs::cfg_versions::RUSTUP_TOOLCHAIN,
+            flowey_lib_hvlite::cfg_rustup_version::RUSTUP_TOOLCHAIN,
         )
 }

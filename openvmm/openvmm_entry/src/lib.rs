@@ -86,6 +86,7 @@ use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
@@ -199,8 +200,40 @@ struct VmResources {
     kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     ged_rpc: Option<mesh::Sender<get_resources::ged::GuestEmulationRequest>>,
+    vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
     #[cfg(windows)]
     switch_ports: Vec<vmswitch::kernel::SwitchPort>,
+}
+
+impl VmResources {
+    /// Modify the cached VTL2 settings and send them to OpenHCL via the GED.
+    ///
+    /// This follows the same pattern as petri's `modify_vtl2_settings`: the cache
+    /// is modified locally, then the entire settings are sent to OpenHCL.
+    async fn modify_vtl2_settings(
+        &mut self,
+        f: impl FnOnce(&mut vtl2_settings_proto::Vtl2Settings),
+    ) -> anyhow::Result<()> {
+        let mut settings_copy = self
+            .vtl2_settings
+            .clone()
+            .context("vtl2 settings not configured")?;
+
+        f(&mut settings_copy);
+
+        let ged_rpc = self.ged_rpc.as_ref().context("no GED configured")?;
+
+        ged_rpc
+            .call_failable(
+                get_resources::ged::GuestEmulationRequest::ModifyVtl2Settings,
+                prost::Message::encode_to_vec(&settings_copy),
+            )
+            .await?;
+
+        // Settings successfully applied, update our cache
+        self.vtl2_settings = Some(settings_copy);
+        Ok(())
+    }
 }
 
 struct ConsoleState<'a> {
@@ -652,6 +685,36 @@ async fn vm_config_from_command_line(
         });
     }
 
+    // Build initial PCIe devices list from CLI options. Storage devices
+    // (e.g., NVMe controllers on PCIe ports) are added later by storage_builder.
+    let mut pcie_devices = Vec::new();
+    for (index, cli_cfg) in opt.pcie_remote.iter().enumerate() {
+        tracing::info!(
+            port_name = %cli_cfg.port_name,
+            socket_path = ?cli_cfg.socket_path,
+            "instantiating PCIe remote device"
+        );
+
+        // Generate a deterministic instance ID based on index
+        const PCIE_REMOTE_BASE_INSTANCE_ID: Guid =
+            guid::guid!("28ed784d-c059-429f-9d9a-46bea02562c0");
+        let instance_id = Guid {
+            data1: index as u32,
+            ..PCIE_REMOTE_BASE_INSTANCE_ID
+        };
+
+        pcie_devices.push(PcieDeviceConfig {
+            port_name: cli_cfg.port_name.clone(),
+            resource: pcie_remote_resources::PcieRemoteHandle {
+                instance_id,
+                socket_path: cli_cfg.socket_path.clone(),
+                hu: cli_cfg.hu,
+                controller: cli_cfg.controller,
+            }
+            .into_resource(),
+        });
+    }
+
     #[cfg(windows)]
     let mut kernel_vmnics = Vec::new();
     #[cfg(windows)]
@@ -978,6 +1041,9 @@ async fn vm_config_from_command_line(
             namespace_settings: Vec::default(),
         };
 
+        // Cache the VTL2 settings for later modification via the interactive console.
+        resources.vtl2_settings = Some(vtl2_settings.clone());
+
         let (send, guest_request_recv) = mesh::channel();
         resources.ged_rpc = Some(send);
 
@@ -1029,6 +1095,7 @@ async fn vm_config_from_command_line(
                     },
                     com1: with_vmbus_com1_serial,
                     com2: with_vmbus_com2_serial,
+                    serial_tx_only: opt.serial_tx_only,
                     vtl2_settings: Some(prost::Message::encode_to_vec(&vtl2_settings)),
                     vmbus_redirection: opt.vmbus_redirect,
                     vmgs,
@@ -1061,6 +1128,7 @@ async fn vm_config_from_command_line(
                             EfiDiagnosticsLogLevelCli::Full => get_resources::ged::EfiDiagnosticsLogLevelType::Full,
                         }
                     },
+                    hv_sint_enabled: false,
                 }
                 .into_resource(),
             ),
@@ -1389,7 +1457,7 @@ async fn vm_config_from_command_line(
         load_mode,
         floppy_disks,
         pcie_root_complexes,
-        pcie_devices: Vec::new(),
+        pcie_devices,
         pcie_switches,
         vpci_devices,
         ide_disks: Vec::new(),
@@ -1914,6 +1982,10 @@ enum InteractiveCommand {
         lun: u8,
     },
 
+    /// Manage VTL2 settings (storage controllers, NICs exposed to VTL0).
+    #[clap(subcommand)]
+    Vtl2Settings(Vtl2SettingsCommand),
+
     /// Inspect program state.
     #[clap(visible_alias = "x")]
     Inspect {
@@ -2039,6 +2111,51 @@ enum InteractiveCommand {
     Kvp(kvp::KvpCommand),
 }
 
+/// Subcommands for managing VTL2 settings.
+#[derive(clap::Subcommand)]
+enum Vtl2SettingsCommand {
+    /// Show the current VTL2 settings.
+    Show,
+
+    /// Add a SCSI disk to VTL0 backed by a VTL2 storage device.
+    ///
+    /// The backing device can be either a VTL2 NVMe namespace or a VTL2 SCSI disk.
+    AddScsiDisk {
+        /// The VTL0 SCSI controller instance ID (GUID). Defaults to the standard
+        /// OpenVMM VTL0 SCSI instance.
+        #[clap(long)]
+        controller: Option<String>,
+        /// The SCSI LUN to expose to VTL0.
+        #[clap(long)]
+        lun: u32,
+        /// The backing VTL2 NVMe namespace ID.
+        #[clap(
+            long,
+            conflicts_with = "backing_scsi_lun",
+            required_unless_present = "backing_scsi_lun"
+        )]
+        backing_nvme_nsid: Option<u32>,
+        /// The backing VTL2 SCSI LUN.
+        #[clap(
+            long,
+            conflicts_with = "backing_nvme_nsid",
+            required_unless_present = "backing_nvme_nsid"
+        )]
+        backing_scsi_lun: Option<u32>,
+    },
+
+    /// Remove a SCSI disk from VTL0.
+    RmScsiDisk {
+        /// The SCSI controller instance ID (GUID). Defaults to the standard
+        /// OpenVMM VTL0 SCSI instance.
+        #[clap(long)]
+        controller: Option<String>,
+        /// The SCSI LUN to remove.
+        #[clap(long)]
+        lun: u32,
+    },
+}
+
 struct CommandParser {
     app: clap::Command,
 }
@@ -2081,7 +2198,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             .with_context(|| format!("binding to VNC port {}", opt.vnc_port))?;
 
         let input_send = vm_config.input.sender();
-        let framebuffer = resources.framebuffer_access.expect("synth video enabled");
+        let framebuffer = resources
+            .framebuffer_access
+            .take()
+            .expect("synth video enabled");
 
         let vnc_host = mesh
             .make_host("vnc", None)
@@ -2178,7 +2298,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     let (console_command_send, console_command_recv) = mesh::channel();
     let (inspect_completion_engine_send, inspect_completion_engine_recv) = mesh::channel();
 
-    let mut console_in = resources.console_in;
+    let mut console_in = resources.console_in.take();
     thread::Builder::new()
         .name("stdio-thread".to_string())
         .spawn(move || {
@@ -2745,6 +2865,156 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
 
                 if let Err(error) = action.await {
                     tracing::error!(error = error.as_error(), "error removing disk")
+                }
+            }
+            InteractiveCommand::Vtl2Settings(cmd) => {
+                if resources.vtl2_settings.is_none() {
+                    eprintln!("error: no VTL2 settings (not running with VTL2?)");
+                    continue;
+                }
+                let action = async {
+                    match cmd {
+                        Vtl2SettingsCommand::Show => {
+                            let settings = resources.vtl2_settings.as_ref().unwrap();
+                            println!("{:#?}", settings);
+                        }
+                        Vtl2SettingsCommand::AddScsiDisk {
+                            controller,
+                            lun,
+                            backing_nvme_nsid,
+                            backing_scsi_lun,
+                        } => {
+                            // Determine the backing device type and path
+                            let (device_type, device_path, sub_device_path) = match (
+                                backing_nvme_nsid,
+                                backing_scsi_lun,
+                            ) {
+                                (Some(nsid), None) => (
+                                    vtl2_settings_proto::physical_device::DeviceType::Nvme,
+                                    storage_builder::NVME_VTL2_INSTANCE_ID,
+                                    nsid,
+                                ),
+                                (None, Some(scsi_lun)) => (
+                                    vtl2_settings_proto::physical_device::DeviceType::Vscsi,
+                                    storage_builder::SCSI_VTL2_INSTANCE_ID,
+                                    scsi_lun,
+                                ),
+                                (Some(_), Some(_)) => {
+                                    anyhow::bail!(
+                                        "can't specify both --backing-nvme-nsid and --backing-scsi-lun"
+                                    );
+                                }
+                                (None, None) => {
+                                    anyhow::bail!(
+                                        "must specify either --backing-nvme-nsid or --backing-scsi-lun"
+                                    );
+                                }
+                            };
+
+                            // Default to the standard OpenVMM VTL0 SCSI instance
+                            let controller_guid = controller
+                                .map(|s| s.parse())
+                                .transpose()
+                                .context("invalid controller GUID")?
+                                .unwrap_or(storage_builder::UNDERHILL_VTL0_SCSI_INSTANCE);
+
+                            let mut not_found = false;
+                            resources
+                                .modify_vtl2_settings(|settings| {
+                                    let dynamic = settings.dynamic.get_or_insert_with(Default::default);
+
+                                    // Find the SCSI controller, bail out if not found (we can't create new controllers at runtime)
+                                    let scsi_controller = dynamic
+                                        .storage_controllers
+                                        .iter_mut()
+                                        .find(|c| {
+                                            c.instance_id == controller_guid.to_string()
+                                                && c.protocol
+                                                    == vtl2_settings_proto::storage_controller::StorageProtocol::Scsi
+                                                        as i32
+                                        });
+
+                                    let Some(scsi_controller) = scsi_controller else {
+                                        not_found = true;
+                                        return;
+                                    };
+
+                                    // Add the LUN backed by the VTL2 storage device. If the LUN exists already, UH will reject the settings
+                                    scsi_controller.luns.push(vtl2_settings_proto::Lun {
+                                        location: lun,
+                                        device_id: Guid::new_random().to_string(),
+                                        vendor_id: "OpenVMM".to_string(),
+                                        product_id: "Disk".to_string(),
+                                        product_revision_level: "1.0".to_string(),
+                                        serial_number: "0".to_string(),
+                                        model_number: "1".to_string(),
+                                        physical_devices: Some(vtl2_settings_proto::PhysicalDevices {
+                                            r#type: vtl2_settings_proto::physical_devices::BackingType::Single.into(),
+                                            device: Some(vtl2_settings_proto::PhysicalDevice {
+                                                device_type: device_type.into(),
+                                                device_path: device_path.to_string(),
+                                                sub_device_path,
+                                            }),
+                                            devices: Vec::new(),
+                                        }),
+                                        is_dvd: false,
+                                        ..Default::default()
+                                    });
+                                })
+                                .await?;
+
+                            if not_found {
+                                anyhow::bail!("SCSI controller {} not found", controller_guid);
+                            }
+                            let backing_desc = if backing_nvme_nsid.is_some() {
+                                format!("nvme_nsid={}", sub_device_path)
+                            } else {
+                                format!("scsi_lun={}", sub_device_path)
+                            };
+                            println!(
+                                "Added VTL0 SCSI disk: controller={}, lun={}, backing={}",
+                                controller_guid, lun, backing_desc
+                            );
+                        }
+                        Vtl2SettingsCommand::RmScsiDisk { controller, lun } => {
+                            // Default to the standard OpenVMM VTL0 SCSI instance
+                            let controller_guid = controller
+                                .map(|s| s.parse())
+                                .transpose()
+                                .context("invalid controller GUID")?
+                                .unwrap_or(storage_builder::UNDERHILL_VTL0_SCSI_INSTANCE);
+
+                            resources
+                                .modify_vtl2_settings(|settings| {
+                                    let dynamic = settings.dynamic.as_mut();
+                                    if let Some(dynamic) = dynamic {
+                                        // Find the SCSI controller
+                                        if let Some(scsi_controller) =
+                                            dynamic.storage_controllers.iter_mut().find(|c| {
+                                                c.instance_id == controller_guid.to_string()
+                                                    && c.protocol
+                                                        == vtl2_settings_proto::storage_controller::StorageProtocol::Scsi
+                                                            as i32
+                                            })
+                                        {
+                                            // Remove the LUN
+                                            scsi_controller.luns.retain(|l| l.location != lun);
+                                        }
+                                    }
+                                })
+                                .await?;
+
+                            println!(
+                                "Removed VTL0 SCSI disk: controller={}, lun={}",
+                                controller_guid, lun
+                            );
+                        }
+                    }
+                    anyhow::Ok(())
+                };
+
+                if let Err(error) = action.await {
+                    eprintln!("error: {}", error);
                 }
             }
             InteractiveCommand::Inspect {

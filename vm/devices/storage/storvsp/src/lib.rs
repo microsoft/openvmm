@@ -893,6 +893,7 @@ impl<T: RingMem> Worker<T> {
                             _ = self.fast_select.select((self.rescan_notification.select_next_some(),)).fuse() => {
                                 if version >= Version::Win7
                                 {
+                                    tracing::debug!("rescan notification received, sending ENUMERATE_BUS");
                                     self.inner.send_packet(&mut self.queue.split().1, storvsp_protocol::Operation::ENUMERATE_BUS, storvsp_protocol::NtStatus::SUCCESS, &())?;
                                 }
                             }
