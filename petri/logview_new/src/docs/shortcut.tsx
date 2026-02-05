@@ -15,7 +15,7 @@ export function ShortcutRow({
         {shortcutParts.map((part, i) => (
           <React.Fragment>
             {i > 0 && <span className="mx-1">+</span>}
-            <kbd className="whitespace-nowrap inline-flex items-left rounded-md bg-gray-100 rounded-md px-2 py-1">
+            <kbd className="whitespace-nowrap inline-flex items-start rounded-md bg-gray-100 px-2 py-1">
               {part}
             </kbd>
           </React.Fragment>
