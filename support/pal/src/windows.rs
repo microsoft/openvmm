@@ -1006,18 +1006,19 @@ macro_rules! delayload {
             $visibility:vis fn $name:ident($($params:ident : $types:ty),* $(,)?) -> $result:ty;
         )*
     }} => {
-        fn get_module() -> Result<::winapi::shared::minwindef::HINSTANCE, ::winapi::shared::minwindef::DWORD> {
+        fn get_module() -> Result<::windows_sys::Win32::Foundation::HMODULE, ::windows_sys::Win32::Foundation::WIN32_ERROR> {
+            use ::std::ffi::c_void;
             use ::std::ptr::null_mut;
             use ::std::sync::atomic::{AtomicPtr, Ordering};
-            use ::winapi::um::{
-                errhandlingapi::GetLastError,
-                libloaderapi::{FreeLibrary, LoadLibraryA},
+            use ::windows_sys::Win32::{
+                Foundation::{FreeLibrary, GetLastError, WIN32_ERROR},
+                System::LibraryLoader::{LoadLibraryA},
             };
 
-            static MODULE: AtomicPtr<::winapi::shared::minwindef::HINSTANCE__> = AtomicPtr::new(null_mut());
+            static MODULE: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
             let mut module = MODULE.load(Ordering::Relaxed);
             if module.is_null() {
-                module = unsafe { LoadLibraryA(concat!($dll, "\0").as_ptr() as *const i8) };
+                module = unsafe { LoadLibraryA(concat!($dll, "\0").as_ptr() as *const u8) };
                 if module.is_null() {
                     return Err(unsafe { GetLastError() });
                 }
@@ -1033,12 +1034,12 @@ macro_rules! delayload {
             #![expect(non_snake_case)]
             $(
                 $(#[$a])*
-                pub fn $name() -> Result<usize, ::winapi::shared::minwindef::DWORD> {
+                pub fn $name() -> Result<usize, ::windows_sys::Win32::Foundation::WIN32_ERROR> {
                     use ::std::concat;
                     use ::std::sync::atomic::{AtomicUsize, Ordering};
-                    use ::winapi::{
-                        shared::winerror::ERROR_PROC_NOT_FOUND,
-                        um::libloaderapi::GetProcAddress,
+                    use ::windows_sys::Win32::{
+                        Foundation::ERROR_PROC_NOT_FOUND,
+                        System::LibraryLoader::GetProcAddress,
                     };
 
                     // A FNCELL value 0 denotes that GetProcAddress has never been
@@ -1053,8 +1054,9 @@ macro_rules! delayload {
                         let module = super::get_module()?;
                         fnval = unsafe { GetProcAddress(
                             module,
-                            concat!(stringify!($name), "\0").as_ptr() as *const i8) }
-                        as usize;
+                            concat!(stringify!($name), "\0").as_ptr() as *const u8) }
+                            .map(|f| f as usize)
+                            .unwrap_or(0);
                         if fnval == 0 {
                             fnval = 1;
                         }
@@ -1097,10 +1099,10 @@ macro_rules! delayload {
         )*
     };
 
-    (@result_from_win32((i32), $val:expr)) => { ::winapi::shared::winerror::HRESULT_FROM_WIN32($val) };
+    (@result_from_win32((i32), $val:expr)) => { ::windows_result::HRESULT::from_win32($val) };
     (@result_from_win32((u32), $val:expr)) => { $val };
     (@result_from_win32((DWORD), $val:expr)) => { $val };
-    (@result_from_win32((HRESULT), $val:expr)) => { ::winapi::shared::winerror::HRESULT_FROM_WIN32($val) };
+    (@result_from_win32((HRESULT), $val:expr)) => { ::windows_result::HRESULT::from_win32($val) };
     (@result_from_win32(($t:tt), $val:expr)) => { panic!("could not load: {}", $val) };
 }
 
