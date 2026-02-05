@@ -705,8 +705,7 @@ async fn servicing_keepalive_with_unresponsive_io(
     let _io_child = large_read_from_disk(&agent, disk_path).await?;
 
     // 60 seconds should be plenty of time for the save to complete. Save should
-    // NEVER get stuck on the first attempt. Keeping a timeout to avoid long
-    // running tests.
+    // NEVER get stuck. Keeping a timeout to avoid long running tests.
     CancelContext::new()
         .with_timeout(Duration::from_secs(60))
         .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
