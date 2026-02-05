@@ -17,6 +17,16 @@ into the `main` branch. But, to ease the cherry-picks, we may ask that you hold
 off from making breaking or large refactoring changes at points in this
 process.
 
+## Existing Release Branches
+
+| Release          | Phase              | Notes                                                                             |
+| ---------------- | ------------------ | --------------------------------------------------------------------------------- |
+| release/2411     | Out of service     |                                                                                   |
+| release/2505     | Servicing          | Supports runtime servicing from release/2411.                                     |
+| release/1.7.2511 | Ask Mode           | Supports runtime servicing from release/2411 and release/2505.                    |
+| release/1.8      | Stabilization      | Supports runtime servicing from release/2411, release/2505, and release/1.7.2511. |
+| _tbd, in main_   | Active Development | Supports runtime servicing from release/2411, release/2505, and release/1.7.2511. |
+
 ## Marking, Approval Process, Code Flow
 
 The OpenVMM maintainers will publish various dates for the upcoming releases.
@@ -59,7 +69,9 @@ doubts.
 When creating a backport PR to a release branch:
 
 * **Clean cherry-picks are strongly preferred.** A clean cherry-pick minimizes
-  reviewer effort and reduces the risk of introducing regressions.
+  reviewer effort and reduces the risk of introducing regressions. For clean
+  cherry-picks, include "Clean cherry-pick of `#<PR_NUMBER>`" in the PR
+  description.
 * **If the backport is not a clean cherry-pick** (e.g., requires conflict
   resolution or additional modifications), clearly indicate this in the PR
   description. This signals to the reviewer that extra care is needed during
@@ -82,14 +94,6 @@ staging branches is as follows:
 3. **Promotion to release branch**: Once validated, changes from the staging
    branch are promoted to the actual release branch.
 
-This staged approach provides maintainers with greater control during the
-critical Ask Mode phase, allowing them to:
-
-* **Test changes in isolation** before they reach the release branch
-* **Batch multiple fixes** together for comprehensive validation
-* **Roll back problematic changes** from staging without affecting the release
-  branch
-
 ##### Mirror Pipeline Configuration
 
 The OpenVMM project uses an automated mirror pipeline that synchronizes code
@@ -111,15 +115,6 @@ This configuration ensures that:
 During normal development (outside of Ask Mode), both parameters typically point
 to the same branch.
   
-## Existing Release Branches
-
-| Release          | Phase              | Notes                                                                |
-| ---------------- | ------------------ | -------------------------------------------------------------------- |
-| release/2411     | Out of service     |                                                                      |
-| release/2505     | Servicing          | Supports runtime servicing from release/2411.                        |
-| release/1.7.2511 | Ask Mode           | Supports runtime servicing from release/2411 and release/2505.       |
-| _tbd, in main_   | Active Development | Supports runtime servicing from release/2411 and release/2505.       |
-
 ## Taking a Dependency on a Release
 
 We welcome feedback, especially if you would like to depend on a reliable
