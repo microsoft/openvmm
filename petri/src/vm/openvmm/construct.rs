@@ -839,6 +839,7 @@ impl PetriVmConfigSetupCore<'_> {
             },
             com1: true,
             com2: true,
+            serial_tx_only: false,
             vmbus_redirection: *vmbus_redirect,
             vtl2_settings: None, // Will be added at startup to allow tests to modify
             vmgs: memdiff_vmgs(self.vmgs)?,
@@ -861,6 +862,7 @@ impl PetriVmConfigSetupCore<'_> {
             igvm_attest_test_config: None,
             test_gsp_by_id,
             efi_diagnostics_log_level: Default::default(), // TODO: make configurable
+            hv_sint_enabled: false,
         };
 
         Ok((ged, guest_request_send))

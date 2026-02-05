@@ -86,6 +86,7 @@ use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::PcieSwitchConfig;
@@ -652,6 +653,36 @@ async fn vm_config_from_command_line(
         });
     }
 
+    // Build initial PCIe devices list from CLI options. Storage devices
+    // (e.g., NVMe controllers on PCIe ports) are added later by storage_builder.
+    let mut pcie_devices = Vec::new();
+    for (index, cli_cfg) in opt.pcie_remote.iter().enumerate() {
+        tracing::info!(
+            port_name = %cli_cfg.port_name,
+            socket_path = ?cli_cfg.socket_path,
+            "instantiating PCIe remote device"
+        );
+
+        // Generate a deterministic instance ID based on index
+        const PCIE_REMOTE_BASE_INSTANCE_ID: Guid =
+            guid::guid!("28ed784d-c059-429f-9d9a-46bea02562c0");
+        let instance_id = Guid {
+            data1: index as u32,
+            ..PCIE_REMOTE_BASE_INSTANCE_ID
+        };
+
+        pcie_devices.push(PcieDeviceConfig {
+            port_name: cli_cfg.port_name.clone(),
+            resource: pcie_remote_resources::PcieRemoteHandle {
+                instance_id,
+                socket_path: cli_cfg.socket_path.clone(),
+                hu: cli_cfg.hu,
+                controller: cli_cfg.controller,
+            }
+            .into_resource(),
+        });
+    }
+
     #[cfg(windows)]
     let mut kernel_vmnics = Vec::new();
     #[cfg(windows)]
@@ -1029,6 +1060,7 @@ async fn vm_config_from_command_line(
                     },
                     com1: with_vmbus_com1_serial,
                     com2: with_vmbus_com2_serial,
+                    serial_tx_only: opt.serial_tx_only,
                     vtl2_settings: Some(prost::Message::encode_to_vec(&vtl2_settings)),
                     vmbus_redirection: opt.vmbus_redirect,
                     vmgs,
@@ -1061,6 +1093,7 @@ async fn vm_config_from_command_line(
                             EfiDiagnosticsLogLevelCli::Full => get_resources::ged::EfiDiagnosticsLogLevelType::Full,
                         }
                     },
+                    hv_sint_enabled: false,
                 }
                 .into_resource(),
             ),
@@ -1389,7 +1422,7 @@ async fn vm_config_from_command_line(
         load_mode,
         floppy_disks,
         pcie_root_complexes,
-        pcie_devices: Vec::new(),
+        pcie_devices,
         pcie_switches,
         vpci_devices,
         ide_disks: Vec::new(),

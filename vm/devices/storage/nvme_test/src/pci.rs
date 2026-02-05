@@ -197,7 +197,13 @@ impl NvmeFaultController {
 
         // Check for 64-bit registers.
         let d: Option<u64> = match spec::Register(addr & !7) {
-            spec::Register::CAP => Some(CAP.into()),
+            spec::Register::CAP => {
+                if let Some(mqes) = self.pci_fault_config.max_queue_size {
+                    Some(CAP.with_mqes_z(mqes - 1).into())
+                } else {
+                    Some(CAP.into())
+                }
+            }
             spec::Register::ASQ => Some(self.registers.asq),
             spec::Register::ACQ => Some(self.registers.acq),
             spec::Register::BPMBL => Some(0),

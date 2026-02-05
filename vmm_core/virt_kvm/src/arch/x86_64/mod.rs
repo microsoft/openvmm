@@ -329,6 +329,9 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
             // Convert the CPUID entries and update the APIC ID in CPUID for
             // this VCPU.
+            //
+            // TODO: centralize this code, probably in the topology crate, for
+            // use by other hypervisors.
             let cpuid_entries = cpuid
                 .leaves()
                 .iter()
@@ -357,6 +360,30 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                         }
                         CpuidFunction::V2ExtendedTopologyEnumeration => {
                             entry.edx = vp_info.apic_id;
+                        }
+                        CpuidFunction::ProcessorTopologyDefinition => {
+                            let eax =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEax::from(entry.eax);
+                            entry.eax = eax.with_extended_apic_id(vp_info.apic_id).into();
+                            let ebx =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEbx::from(entry.ebx);
+                            entry.ebx = ebx
+                                .with_compute_unit_id(
+                                    (vp_info.apic_id
+                                        % self.config.processor_topology.reserved_vps_per_socket()
+                                        / (ebx.threads_per_compute_unit() as u32 + 1))
+                                        as u8,
+                                )
+                                .into();
+                            let ecx =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEcx::from(entry.ecx);
+                            entry.ecx = ecx
+                                .with_node_id(
+                                    (vp_info.apic_id
+                                        / self.config.processor_topology.reserved_vps_per_socket())
+                                        as u8,
+                                )
+                                .into();
                         }
                         _ => (),
                     }
@@ -431,7 +458,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             .collect::<Vec<_>>();
 
         if cfg!(debug_assertions) {
-            (&partition).check_reset_all(&partition.inner.vp(VpIndex::BSP).vp_info);
+            (&partition).check_reset_all(&partition.inner.bsp().vp_info);
         }
 
         Ok((partition, vps))
@@ -473,7 +500,7 @@ impl ResetPartition for KvmPartition {
                 .map_err(Box::new)?;
         }
         let mut this = self;
-        this.reset_all(&self.inner.vp(VpIndex::BSP).vp_info)
+        this.reset_all(&self.inner.bsp().vp_info)
             .map_err(Box::new)?;
         Ok(())
     }
@@ -501,7 +528,10 @@ impl Partition for KvmPartition {
 
     fn request_yield(&self, vp_index: VpIndex) {
         tracing::trace!(vp_index = vp_index.index(), "request yield");
-        if self.inner.vp(vp_index).needs_yield.request_yield() {
+        let Some(vp) = self.inner.vp(vp_index) else {
+            return;
+        };
+        if vp.needs_yield.request_yield() {
             self.inner.evaluate_vp(vp_index);
         }
     }
@@ -517,12 +547,13 @@ impl virt::X86Partition for KvmPartition {
     }
 
     fn pulse_lint(&self, vp_index: VpIndex, _vtl: Vtl, lint: u8) {
+        let Some(vp) = self.inner.vp(vp_index) else {
+            tracelimit::warn_ratelimited!(?vp_index, "pulse_lint for invalid vp_index");
+            return;
+        };
         if lint == 0 {
             tracing::trace!(vp_index = vp_index.index(), "request interrupt window");
-            self.inner
-                .vp(vp_index)
-                .request_interrupt_window
-                .store(true, Ordering::Relaxed);
+            vp.request_interrupt_window.store(true, Ordering::Relaxed);
             self.inner.evaluate_vp(vp_index);
         } else {
             // TODO
@@ -1221,15 +1252,18 @@ impl Processor for KvmProcessor<'_> {
 }
 
 impl virt::Synic for KvmPartition {
-    fn post_message(&self, _vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        let wake = self
-            .inner
-            .vp(vp)
+    fn post_message(&self, _vtl: Vtl, vp_index: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
+        let Some(vp) = self.inner.vp(vp_index) else {
+            tracelimit::warn_ratelimited!(?vp_index, "post_message for invalid vp_index");
+            return;
+        };
+
+        let wake = vp
             .synic_message_queue
             .enqueue_message(sint, &HvMessage::new(HvMessageType(typ), 0, payload));
 
         if wake {
-            self.inner.evaluate_vp(vp);
+            self.inner.evaluate_vp(vp_index);
         }
     }
 
@@ -1281,11 +1315,24 @@ impl GuestEventPort for KvmGuestEventPort {
     fn interrupt(&self) -> Interrupt {
         let this = self.clone();
         Interrupt::from_fn(move || {
-            let KvmEventPortParams { vp, sint, flag } = *this.params.lock();
+            let KvmEventPortParams {
+                vp: vp_index,
+                sint,
+                flag,
+            } = *this.params.lock();
             let Some(partition) = this.partition.upgrade() else {
                 return;
             };
-            let siefp = partition.vp(vp).siefp.read();
+            let Some(vp) = partition.vp(vp_index) else {
+                tracelimit::warn_ratelimited!(
+                    ?vp_index,
+                    sint,
+                    flag,
+                    "signal event for invalid vp_index"
+                );
+                return;
+            };
+            let siefp = vp.siefp.read();
             if !siefp.enabled() {
                 return;
             }
@@ -1298,7 +1345,7 @@ impl GuestEventPort for KvmGuestEventPort {
                         drop(siefp);
                         partition
                             .kvm
-                            .irq_line(VMBUS_BASE_GSI + vp.index(), true)
+                            .irq_line(VMBUS_BASE_GSI + vp_index.index(), true)
                             .unwrap();
 
                         break;

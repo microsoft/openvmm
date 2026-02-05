@@ -13,6 +13,7 @@ pal_async.workspace = true
 
 futures.workspace = true
 getrandom.workspace = true
+heapless.workspace = true
 smoltcp = { workspace = true, features = [ "proto-ipv4", "medium-ethernet", "socket-raw", "std", "proto-dhcpv4" ] }
 socket2.workspace = true
 thiserror.workspace = true

@@ -628,7 +628,7 @@ function Restart-OpenHCL
         [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
         [System.Object] $Vm,
 
-        [int] $TimeoutHintSeconds = 30, # Ends up as the deadline in GuestSaveRequest (see the handling of
+        [int] $TimeoutHintSeconds = 60, # Ends up as the deadline in GuestSaveRequest (see the handling of
                                         # SaveGuestVtl2StateNotification in guest_emulation_transport).
                                         #
                                         # Also used as the hint for how long to wait (in this cmdlet) for the
@@ -670,7 +670,7 @@ function Get-VmScreenshot
     $vmcs = Get-MsvmComputerSystem $Vm
 
     # Get the resolution of the screen at the moment
-    $videoHead = $vmcs | Get-CimAssociatedInstance -ResultClassName "Msvm_VideoHead"
+    $videoHead = @($vmcs | Get-CimAssociatedInstance -ResultClassName "Msvm_VideoHead")[0]
     $x = $videoHead.CurrentHorizontalResolution
     $y = $videoHead.CurrentVerticalResolution
 

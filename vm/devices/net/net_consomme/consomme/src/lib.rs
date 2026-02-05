@@ -117,10 +117,9 @@ impl ConsommeParams {
     pub fn set_cidr(&mut self, cidr: &str) -> Result<(), InvalidCidr> {
         let cidr: smoltcp::wire::Ipv4Cidr = cidr.parse().map_err(|()| InvalidCidr)?;
         let base_address = cidr.network().address();
-        self.gateway_ip = base_address;
-        self.gateway_ip.0[3] += 1;
-        self.client_ip = base_address;
-        self.client_ip.0[3] += 2;
+        let octets = base_address.octets();
+        self.gateway_ip = Ipv4Address::new(octets[0], octets[1], octets[2], octets[3] + 1);
+        self.client_ip = Ipv4Address::new(octets[0], octets[1], octets[2], octets[3] + 2);
         self.net_mask = cidr.netmask();
         Ok(())
     }
@@ -235,7 +234,7 @@ struct SocketAddress {
 
 impl From<SocketAddress> for SocketAddrV4 {
     fn from(addr: SocketAddress) -> Self {
-        Self::new(addr.ip.into(), addr.port)
+        Self::new(addr.ip, addr.port)
     }
 }
 
@@ -256,7 +255,7 @@ struct FourTuple {
 pub enum DropReason {
     /// The packet could not be parsed.
     #[error("packet parsing error")]
-    Packet(#[from] smoltcp::Error),
+    Packet(#[from] smoltcp::wire::Error),
     /// The ethertype is unknown.
     #[error("unsupported ethertype {0}")]
     UnsupportedEthertype(EthernetProtocol),
@@ -410,7 +409,7 @@ impl<T: Client> Access<'_, T> {
             || payload.len() < ipv4.header_len().into()
             || payload.len() < ipv4.total_len().into()
         {
-            return Err(DropReason::Packet(smoltcp::Error::Malformed));
+            return Err(DropReason::Packet(smoltcp::wire::Error));
         }
 
         let total_len = if checksum.tso.is_some() {
@@ -419,11 +418,11 @@ impl<T: Client> Access<'_, T> {
             ipv4.total_len().into()
         };
         if total_len < ipv4.header_len().into() {
-            return Err(DropReason::Packet(smoltcp::Error::Malformed));
+            return Err(DropReason::Packet(smoltcp::wire::Error));
         }
 
         if ipv4.more_frags() || ipv4.frag_offset() != 0 {
-            return Err(DropReason::Packet(smoltcp::Error::Fragmented));
+            return Err(DropReason::Packet(smoltcp::wire::Error));
         }
 
         if !checksum.ipv4 && !ipv4.verify_checksum() {
@@ -437,7 +436,7 @@ impl<T: Client> Access<'_, T> {
 
         let inner = &payload[ipv4.header_len().into()..total_len];
 
-        match ipv4.protocol() {
+        match ipv4.next_header() {
             IpProtocol::Tcp => self.handle_tcp(&addresses, inner, checksum)?,
             IpProtocol::Udp => self.handle_udp(frame, &addresses, inner, checksum)?,
             IpProtocol::Icmp => {
