@@ -348,7 +348,7 @@ impl<T: Client> Access<'_, T> {
         // Submit the DNS query with addressing information
         // The response will be queued and sent later in poll_udp
         dns.handle_dns(&request).map_err(|e| {
-            tracing::error!(error = ?e, "Failed to start DNS query");
+            tracelimit::error_ratelimited!(error = ?e, "Failed to start DNS query");
             DropReason::Packet(smoltcp::wire::Error)
         })?;
 

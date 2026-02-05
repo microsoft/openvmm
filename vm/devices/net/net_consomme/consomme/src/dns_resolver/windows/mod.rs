@@ -58,13 +58,13 @@ pub struct WindowsDnsResolverBackend {
 }
 
 impl WindowsDnsResolverBackend {
-    pub fn new(max_pending_requests: usize) -> Result<Self, std::io::Error> {
+    pub fn new() -> Result<Self, std::io::Error> {
         if !is_dns_raw_apis_supported() {
             return Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
         }
 
         Ok(WindowsDnsResolverBackend {
-            pending_requests: Arc::new(Mutex::new(Slab::with_capacity(max_pending_requests))),
+            pending_requests: Arc::new(Mutex::new(Slab::new())),
         })
     }
 }
@@ -190,12 +190,8 @@ unsafe fn process_dns_results(
     query_results: *const DNS_QUERY_RAW_RESULT,
 ) -> Result<Vec<u8>, DnsResultError> {
     // Query results could be null if the query was cancelled
-    if query_results.is_null() {
-        return Err(DnsResultError::NullResults);
-    }
-
-    // SAFETY: query_results is a valid pointer provided by Windows
-    let results = unsafe { &*query_results };
+    // SAFETY: if query_results is not null, then it is a valid pointer provided by Windows
+    let results = unsafe { query_results.as_ref().ok_or(DnsResultError::NullResults)? };
 
     if results.queryStatus != NO_ERROR as i32 {
         Err(DnsResultError::QueryFailed(results.queryStatus))

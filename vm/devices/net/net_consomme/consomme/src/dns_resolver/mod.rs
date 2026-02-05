@@ -68,7 +68,7 @@ impl DnsResolver {
 
         let receiver = Receiver::new();
         Ok(Self {
-            backend: Box::new(WindowsDnsResolverBackend::new(max_pending_requests)?),
+            backend: Box::new(WindowsDnsResolverBackend::new()?),
             receiver,
             pending_requests: AtomicUsize::new(0),
             max_pending_requests,
@@ -97,33 +97,24 @@ impl DnsResolver {
             return Err(DropReason::Packet(smoltcp::wire::Error));
         }
 
-        let mut current = self.pending_requests.load(Ordering::Relaxed);
-        loop {
-            if current >= self.max_pending_requests {
+        let result =
+            self.pending_requests
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                    (n < self.max_pending_requests).then_some(n + 1)
+                });
+
+        match result {
+            Ok(_) => {
+                self.backend.query(request, self.receiver.sender());
+            }
+            Err(current) => {
                 tracelimit::warn_ratelimited!(
                     current,
                     max = self.max_pending_requests,
-                    "DNS request limit reached, returning SERVFAIL"
+                    "DNS request limit reached"
                 );
-                let response = build_servfail_response(request.dns_query);
-                self.receiver.sender().send(DnsResponse {
-                    flow: request.flow.clone(),
-                    response_data: response,
-                });
-                return Ok(());
-            }
-            match self.pending_requests.compare_exchange_weak(
-                current,
-                current + 1,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(c) => current = c,
             }
         }
-
-        self.backend.query(request, self.receiver.sender());
 
         Ok(())
     }
@@ -134,8 +125,7 @@ impl DnsResolver {
                 self.pending_requests.fetch_sub(1, Ordering::Relaxed);
                 Poll::Ready(Some(response))
             }
-            Poll::Ready(Err(_)) => Poll::Ready(None), // Channel closed
-            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(_)) | Poll::Pending => Poll::Pending,
         }
     }
 }
