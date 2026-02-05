@@ -583,6 +583,31 @@ impl Namespace {
             identify_ns.clone(),
         )
     }
+
+    /// Get value of NSABP (Namespace Supported Atomic Boundary & Power) from the namespace identify data.
+    pub fn nsabp(&self) -> bool {
+        self.state.identify.lock().nsfeat.nsabp()
+    }
+
+    /// Get value of AWUN (Atomic Write Unit Normal) from the identify data of the controller associated with this namespace.
+    pub fn awun(&self) -> u16 {
+        self.controller_identify.as_ref().awun
+    }
+
+    /// Get value of NAWUN (Namespace Atomic Write Unit Normal) from the namespace identify data.
+    pub fn nawun(&self) -> u16 {
+        self.state.identify.lock().nawun
+    }
+
+    /// Get value of NABSN (Namespace Atomic Boundary Size Normal) from the namespace identify data.
+    pub fn nabsn(&self) -> u16 {
+        self.state.identify.lock().nabsn
+    }
+
+    /// Get value of NABO (Namespace Atomic Boundary Offset) from the namespace identify data.
+    pub fn nabo(&self) -> u16 {
+        self.state.identify.lock().nabo
+    }
 }
 
 impl DynamicState {
