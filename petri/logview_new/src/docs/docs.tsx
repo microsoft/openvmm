@@ -25,8 +25,8 @@ export function Docs(): React.JSX.Element {
       </div>
       {/* Display the shortcuts list defined in shortcuts.ts */}
       <div className="pb-8 pt-1">
-        {shortcutSections.map((section) => (
-          <div className="pb-8">
+        {shortcutSections.map((section, i) => (
+          <div className="pb-8" key={i}>
             <ShortcutHeader title={section.title} />
 
             {section.note && (
@@ -35,8 +35,9 @@ export function Docs(): React.JSX.Element {
 
             <table className="border-collapse table-fixed w-full">
               <tbody className="divide-y divide-solid divide-gray-200">
-                {section.shortcuts.map((s) => (
+                {section.shortcuts.map((s, idx) => (
                   <ShortcutRow
+                    key={idx}
                     shortcutParts={s.shortcutParts}
                     descriptions={s.descriptions}
                   />

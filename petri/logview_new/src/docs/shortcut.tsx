@@ -13,7 +13,7 @@ export function ShortcutRow({
     <tr className="border-x-0 text-[0.9rem]">
       <td className="w-[15rem] whitespace-nowrap align-top px-4 py-3 font-mono font-bold">
         {shortcutParts.map((part, i) => (
-          <React.Fragment>
+          <React.Fragment key={i}>
             {i > 0 && <span className="mx-1">+</span>}
             <kbd className="whitespace-nowrap inline-flex items-left rounded-md bg-gray-100 rounded-md px-2 py-1">
               {part}
@@ -23,8 +23,8 @@ export function ShortcutRow({
       </td>
       <td className="px-4 py-3 text-gray-800 text-[0.9rem]">
         <ul className="m-0 list-none pl-5">
-          {descriptions.map((d) => (
-            <li>{d}</li>
+          {descriptions.map((d, i) => (
+            <li key={i}>{d}</li>
           ))}
         </ul>
       </td>
