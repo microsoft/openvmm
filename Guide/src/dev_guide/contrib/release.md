@@ -64,6 +64,52 @@ When creating a backport PR to a release branch:
   resolution or additional modifications), clearly indicate this in the PR
   description. This signals to the reviewer that extra care is needed during
   the review process.
+
+#### Staging Branches During Ask Mode
+
+During the Ask Mode phase, when a release is nearing completion and only
+critical fixes are allowed, the project may use **staging branches** to provide
+an additional layer of validation before changes reach the release branch.
+
+A staging branch follows the naming pattern `staging/<RELEASE>` (e.g.,
+`staging/1.7.2511` for the `release/1.7.2511` branch). The workflow with
+staging branches is as follows:
+
+1. **Critical fixes** that need to be included in the release are first merged
+   into the staging branch for validation.
+2. **Validation and testing** occur on the staging branch to ensure the changes
+   are safe and don't introduce regressions.
+3. **Promotion to release branch**: Once validated, changes from the staging
+   branch are promoted to the actual release branch.
+
+This staged approach provides maintainers with greater control during the
+critical Ask Mode phase, allowing them to:
+
+* **Test changes in isolation** before they reach the release branch
+* **Batch multiple fixes** together for comprehensive validation
+* **Roll back problematic changes** from staging without affecting the release
+  branch
+
+##### Mirror Pipeline Configuration
+
+The OpenVMM project uses an automated mirror pipeline that synchronizes code
+with internal Microsoft systems. During Ask Mode with staging branches, the
+mirror pipeline configuration differs from normal operation:
+
+* **`branchToMirror`**: Points to the official release branch (e.g.,
+  `release/1.7.2511`)
+* **`branchToUpdateSubmodule`**: Points to the staging branch (e.g.,
+  `staging/1.7.2511`)
+
+This configuration ensures that:
+
+* The release branch content is mirrored to internal systems for production use
+* The staging branch reference is used for submodule updates, allowing internal
+  systems to track and validate changes before they're promoted to the release
+  branch
+
+During normal development (outside of Ask Mode), both parameters typically point
+to the same branch.
   
 ## Existing Release Branches
 
