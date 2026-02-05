@@ -52,7 +52,6 @@ pub struct Consomme {
     #[inspect(mut)]
     udp: udp::Udp,
     icmp: icmp::Icmp,
-    // TODO: implement inspect
     #[inspect(skip)]
     dns: Option<dns_resolver::DnsResolver>,
 }
@@ -102,7 +101,6 @@ impl ConsommeParams {
     ///     no DNS resolvers
     pub fn new() -> Result<Self, Error> {
         let nameservers = dns::nameservers()?;
-
         Ok(Self {
             gateway_ip: Ipv4Address::new(10, 0, 0, 1),
             gateway_mac: EthernetAddress([0x52, 0x55, 10, 0, 0, 1]),

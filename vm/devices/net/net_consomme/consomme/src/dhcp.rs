@@ -81,7 +81,7 @@ impl<T: Client> Access<'_, T> {
                 client_identifier: None,
                 server_identifier: Some(self.inner.state.params.gateway_ip),
                 parameter_request_list: None,
-                dns_servers: dns_servers.clone(),
+                dns_servers,
                 max_size: None,
                 lease_duration: Some(86400),
                 renew_duration: None,
