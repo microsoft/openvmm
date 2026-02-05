@@ -1,12 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use inspect::Inspect;
 use mesh_channel_core::Receiver;
 use mesh_channel_core::Sender;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::Ipv4Address;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
@@ -47,10 +46,13 @@ pub(crate) trait DnsBackend: Send + Sync {
     fn query(&self, request: &DnsRequest<'_>, response_sender: Sender<DnsResponse>);
 }
 
+#[derive(Inspect)]
 pub struct DnsResolver {
+    #[inspect(skip)]
     backend: Box<dyn DnsBackend>,
+    #[inspect(skip)]
     receiver: Receiver<DnsResponse>,
-    pending_requests: AtomicUsize,
+    pending_requests: usize,
     max_pending_requests: usize,
 }
 
@@ -70,7 +72,7 @@ impl DnsResolver {
         Ok(Self {
             backend: Box::new(WindowsDnsResolverBackend::new()?),
             receiver,
-            pending_requests: AtomicUsize::new(0),
+            pending_requests: 0,
             max_pending_requests,
         })
     }
@@ -87,7 +89,7 @@ impl DnsResolver {
         Ok(Self {
             backend: Box::new(UnixDnsResolverBackend::new()?),
             receiver,
-            pending_requests: AtomicUsize::new(0),
+            pending_requests: 0,
             max_pending_requests,
         })
     }
@@ -97,23 +99,15 @@ impl DnsResolver {
             return Err(DropReason::Packet(smoltcp::wire::Error));
         }
 
-        let result =
-            self.pending_requests
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                    (n < self.max_pending_requests).then_some(n + 1)
-                });
-
-        match result {
-            Ok(_) => {
-                self.backend.query(request, self.receiver.sender());
-            }
-            Err(current) => {
-                tracelimit::warn_ratelimited!(
-                    current,
-                    max = self.max_pending_requests,
-                    "DNS request limit reached"
-                );
-            }
+        if self.pending_requests < self.max_pending_requests {
+            self.pending_requests += 1;
+            self.backend.query(request, self.receiver.sender());
+        } else {
+            tracelimit::warn_ratelimited!(
+                current = self.pending_requests,
+                max = self.max_pending_requests,
+                "DNS request limit reached"
+            );
         }
 
         Ok(())
@@ -122,7 +116,7 @@ impl DnsResolver {
     pub fn poll_response(&mut self, cx: &mut Context<'_>) -> Poll<Option<DnsResponse>> {
         match self.receiver.poll_recv(cx) {
             Poll::Ready(Ok(response)) => {
-                self.pending_requests.fetch_sub(1, Ordering::Relaxed);
+                self.pending_requests -= 1;
                 Poll::Ready(Some(response))
             }
             Poll::Ready(Err(_)) | Poll::Pending => Poll::Pending,

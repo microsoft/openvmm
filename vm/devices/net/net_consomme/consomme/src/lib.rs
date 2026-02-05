@@ -52,7 +52,7 @@ pub struct Consomme {
     #[inspect(mut)]
     udp: udp::Udp,
     icmp: icmp::Icmp,
-    #[inspect(skip)]
+    #[inspect(with = "Option::is_some")]
     dns: Option<dns_resolver::DnsResolver>,
 }
 
