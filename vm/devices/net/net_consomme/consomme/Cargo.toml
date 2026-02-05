@@ -7,19 +7,20 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-inspect.workspace = true
-inspect_counters.workspace = true
-pal_async.workspace = true
 futures.workspace = true
 getrandom.workspace = true
 heapless.workspace = true
-open_enum.workspace = true
 smoltcp = { workspace = true, features = [ "proto-ipv4", "proto-ipv6", "medium-ethernet", "socket-raw", "std", "proto-dhcpv4" ] }
 socket2.workspace = true
 thiserror.workspace = true
-tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
+inspect.workspace = true
+inspect_counters.workspace = true
+open_enum.workspace = true
+pal_async.workspace = true
+tracelimit.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

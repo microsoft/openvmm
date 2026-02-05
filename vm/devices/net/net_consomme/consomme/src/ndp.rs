@@ -1,11 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! NDP (Neighbor Discovery Protocol) implementation for IPv6 SLAAC (Stateless Address Autoconfiguration)
+//! NDP (Neighbor Discovery Protocol) implementation for IPv6 SLAAC (Stateless
+//! Address Autoconfiguration)
 //!
-//! This module implements RFC 4861 (Neighbor Discovery) and RFC 4862 (IPv6 Stateless Address Autoconfiguration).
-//! The implementation is stateless - we advertise prefixes via Router Advertisements and let clients
-//! autoconfigure their own addresses using SLAAC.
+//! This module implements RFC 4861 (Neighbor Discovery) and RFC 4862 (IPv6
+//! Stateless Address Autoconfiguration).  The implementation is stateless - we
+//! advertise prefixes via Router Advertisements and let clients autoconfigure
+//! their own addresses using SLAAC.
 
 use super::Access;
 use super::Client;

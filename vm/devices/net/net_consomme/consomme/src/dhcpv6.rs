@@ -1,6 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! DHCPv6 (Dynamic Host Configuration Protocol for IPv6) implementation for
+//! IPv6 SLAAC (Stateless Address Autoconfiguration)
+//!
+//! This module implements a subset of RFC 8415 (DHCPv6) to compliment our NDP
+//! implementation for SLAAC.  
+//! We only support the Information Request message type, to configure DNS
+//! servers for clients that have autoconfigured their own addresses via SLAAC.
+
 use super::Access;
 use super::Client;
 use super::DropReason;
