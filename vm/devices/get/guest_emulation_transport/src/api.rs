@@ -20,6 +20,7 @@ pub use get_protocol::VmgsIoStatus;
 use zerocopy::FromZeros;
 
 use guid::Guid;
+use std::time::Duration;
 
 /// Device platform settings.
 #[expect(missing_docs)]
@@ -84,12 +85,14 @@ pub mod platform_settings {
         pub battery_enabled: bool,
         pub processor_idle_enabled: bool,
         pub tpm_enabled: bool,
+
         pub com1_enabled: bool,
         pub com1_debugger_mode: bool,
         pub com1_vmbus_redirector: bool,
         pub com2_enabled: bool,
         pub com2_debugger_mode: bool,
         pub com2_vmbus_redirector: bool,
+
         pub firmware_debugging_enabled: bool,
         pub hibernation_enabled: bool,
 
@@ -251,7 +254,7 @@ pub struct GuestSaveRequest {
     /// GUID associated with the request.
     pub correlation_id: Guid,
     /// When to complete the request.
-    pub deadline: std::time::Instant,
+    pub timeout_hint: Duration,
     /// Flags bitfield.
     pub capabilities_flags: SaveGuestVtl2StateFlags,
 }
