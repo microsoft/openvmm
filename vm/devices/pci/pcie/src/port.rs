@@ -10,7 +10,7 @@ use pci_bus::GenericPciBusDevice;
 use pci_core::capabilities::msi_cap::MsiCapability;
 use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
-use pci_core::msi::MsiInterruptSet;
+use pci_core::msi::MsiConnection;
 use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::HardwareIds;
 use std::sync::Arc;
@@ -55,9 +55,9 @@ impl PcieDownstreamPort {
             None => (false, None),
         };
 
-        let mut msi_set = MsiInterruptSet::new();
+        let msi_conn = MsiConnection::new();
         // Create MSI capability with 1 message (multiple_message_capable=0), 64-bit addressing, no per-vector masking
-        let msi_capability = MsiCapability::new(0, true, false, &mut msi_set);
+        let msi_capability = MsiCapability::new(0, true, false, msi_conn.target());
 
         let pcie_cap = if hotplug {
             let slot_num = slot_number.unwrap_or(0);

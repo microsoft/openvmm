@@ -68,9 +68,17 @@ export function Menu(): React.JSX.Element {
                 <li>
                   <button
                     className="drawer-link"
-                    onClick={() => navigateAndClose('/tests')}
+                    onClick={() => navigateAndClose("/tests")}
                   >
                     Tests
+                  </button>
+                </li>
+                <li>
+                  <button
+                    className="drawer-link"
+                    onClick={() => navigateAndClose("/docs")}
+                  >
+                    Docs
                   </button>
                 </li>
                 <li className="drawer-separator" aria-hidden="true" />
@@ -97,7 +105,7 @@ export function Menu(): React.JSX.Element {
               </ul>
             </nav>
           </>,
-          document.body
+          document.body,
         )}
     </>
   );

@@ -10,6 +10,11 @@ use super::dhcpv6::DHCPV6_SERVER;
 use crate::ChecksumState;
 use crate::ConsommeState;
 use crate::IpAddresses;
+use crate::Ipv4Addresses;
+use crate::Ipv6Addresses;
+use crate::dns_resolver::DnsFlow;
+use crate::dns_resolver::DnsRequest;
+use crate::dns_resolver::DnsResponse;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -26,10 +31,10 @@ use smoltcp::wire::IPV4_HEADER_LEN;
 use smoltcp::wire::IPV6_HEADER_LEN;
 use smoltcp::wire::IpAddress;
 use smoltcp::wire::IpProtocol;
-use smoltcp::wire::IpRepr;
 use smoltcp::wire::Ipv4Packet;
-use smoltcp::wire::Ipv6Address;
+use smoltcp::wire::Ipv4Repr;
 use smoltcp::wire::Ipv6Packet;
+use smoltcp::wire::Ipv6Repr;
 use smoltcp::wire::UDP_HEADER_LEN;
 use smoltcp::wire::UdpPacket;
 use smoltcp::wire::UdpRepr;
@@ -47,6 +52,8 @@ use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 use std::time::Instant;
+
+pub const DNS_PORT: u16 = 53;
 
 pub(crate) struct Udp {
     connections: HashMap<SocketAddr, UdpConnection>,
@@ -132,53 +139,36 @@ impl UdpConnection {
                 },
             ) {
                 Poll::Ready(Ok((n, src_addr))) => {
-                    eth.set_dst_addr(self.guest_mac);
-                    eth.set_src_addr(state.params.gateway_mac);
-                    let ip = IpRepr::new(
-                        src_addr.ip().into(),
-                        dst_addr.ip().into(),
-                        IpProtocol::Udp,
-                        UDP_HEADER_LEN + n,
-                        64,
-                    );
-
-                    match ip {
-                        IpRepr::Ipv4(_) => eth.set_ethertype(EthernetProtocol::Ipv4),
-                        IpRepr::Ipv6(_) => eth.set_ethertype(EthernetProtocol::Ipv6),
-                    }
-
-                    let ip_packet_buf = eth.payload_mut();
-                    ip.emit(&mut *ip_packet_buf, &ChecksumCapabilities::default());
-                    let (udp_payload_buf, ip_total_len) = match dst_addr {
-                        SocketAddr::V4(_) => {
-                            let ipv4_packet = Ipv4Packet::new_unchecked(&*ip_packet_buf);
-                            let total_len = ipv4_packet.total_len() as usize;
-                            let payload_offset = ipv4_packet.header_len() as usize;
-                            (&mut ip_packet_buf[payload_offset..], total_len)
+                    let (packet_len, checksum_state) = match (dst_addr, src_addr.ip()) {
+                        (SocketAddr::V4(dst), IpAddr::V4(src_ip)) => {
+                            let len = build_udp_packet(
+                                &mut eth,
+                                src_ip.into(),
+                                (*dst.ip()).into(),
+                                src_addr.port(),
+                                dst.port(),
+                                n,
+                                state.params.gateway_mac,
+                                self.guest_mac,
+                            );
+                            (len, ChecksumState::UDP4)
                         }
-                        SocketAddr::V6(_) => {
-                            let ipv6_packet = Ipv6Packet::new_unchecked(&*ip_packet_buf);
-                            let total_len = ipv6_packet.total_len();
-                            let payload_offset = IPV6_HEADER_LEN;
-                            (&mut ip_packet_buf[payload_offset..], total_len)
+                        (SocketAddr::V6(dst), IpAddr::V6(src_ip)) => {
+                            let len = build_udp_packet(
+                                &mut eth,
+                                src_ip.into(),
+                                (*dst.ip()).into(),
+                                src_addr.port(),
+                                dst.port(),
+                                n,
+                                state.params.gateway_mac,
+                                self.guest_mac,
+                            );
+                            (len, ChecksumState::NONE)
                         }
+                        _ => unreachable!("mismatched address families"),
                     };
 
-                    let dst_ip_addr: IpAddress = dst_addr.ip().into();
-                    let src_ip_addr: IpAddress = src_addr.ip().into();
-                    let mut udp_packet = UdpPacket::new_unchecked(udp_payload_buf);
-                    udp_packet.set_src_port(src_addr.port());
-                    udp_packet.set_dst_port(dst_addr.port());
-                    udp_packet.set_len((UDP_HEADER_LEN + n) as u16);
-                    udp_packet.fill_checksum(&src_ip_addr, &dst_ip_addr);
-
-                    let packet_len = ETHERNET_HEADER_LEN + ip_total_len;
-                    let checksum_state = match dst_addr {
-                        SocketAddr::V4(_) => ChecksumState::UDP4,
-                        SocketAddr::V6(_) => ChecksumState::NONE,
-                    };
-
-                    // Send packet to client
                     client.recv(&eth.as_ref()[..packet_len], &checksum_state);
                     self.stats.rx_packets.increment();
                     self.last_activity = Instant::now();
@@ -210,6 +200,19 @@ impl<T: Client> Access<'_, T> {
 
             conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
         });
+        while let Some(response) =
+            self.inner
+                .dns
+                .as_mut()
+                .and_then(|dns| match dns.poll_response(cx) {
+                    Poll::Ready(resp) => resp,
+                    Poll::Pending => None,
+                })
+        {
+            if let Err(e) = self.send_dns_response(&response) {
+                tracelimit::error_ratelimited!(error = ?e, "Failed to send DNS response");
+            }
+        }
     }
 
     pub(crate) fn refresh_udp_driver(&mut self) {
@@ -254,7 +257,7 @@ impl<T: Client> Access<'_, T> {
                 if addrs.dst_addr == self.inner.state.params.gateway_ip
                     || addrs.dst_addr.is_broadcast()
                 {
-                    if self.handle_gateway_udp(&udp_packet)? {
+                    if self.handle_gateway_udp(frame, addrs, &udp_packet)? {
                         return Ok(());
                     }
                 }
@@ -277,7 +280,7 @@ impl<T: Client> Access<'_, T> {
                 if addrs.dst_addr == self.inner.state.params.gateway_link_local_ipv6
                     || addrs.dst_addr == DHCPV6_ALL_AGENTS_MULTICAST
                 {
-                    if self.handle_gateway_udp_v6(&udp_packet, Some(addrs.src_addr))? {
+                    if self.handle_gateway_udp_v6(frame, addrs, &udp_packet)? {
                         return Ok(());
                     }
                 }
@@ -349,28 +352,35 @@ impl<T: Client> Access<'_, T> {
         }
     }
 
-    fn handle_gateway_udp(&mut self, udp: &UdpPacket<&[u8]>) -> Result<bool, DropReason> {
-        let payload = udp.payload();
+    fn handle_gateway_udp(
+        &mut self,
+        frame: &EthernetRepr,
+        addresses: &Ipv4Addresses,
+        udp: &UdpPacket<&[u8]>,
+    ) -> Result<bool, DropReason> {
         match udp.dst_port() {
             DHCP_SERVER => {
-                self.handle_dhcp(payload)?;
+                self.handle_dhcp(udp.payload())?;
                 Ok(true)
             }
+            DNS_PORT => self.handle_dns(frame, addresses.src_addr.into(), addresses.dst_addr.into(), udp),
             _ => Ok(false),
         }
     }
 
     fn handle_gateway_udp_v6(
         &mut self,
+        frame: &EthernetRepr,
+        addresses: &Ipv6Addresses,
         udp: &UdpPacket<&[u8]>,
-        client_ip: Option<Ipv6Address>,
     ) -> Result<bool, DropReason> {
         let payload = udp.payload();
         match udp.dst_port() {
             DHCPV6_SERVER => {
-                self.handle_dhcpv6(payload, client_ip)?;
+                self.handle_dhcpv6(payload, Some(addresses.src_addr))?;
                 Ok(true)
             }
+            DNS_PORT => self.handle_dns(frame, addresses.src_addr.into(), addresses.dst_addr.into(), udp),
             _ => Ok(false),
         }
     }
@@ -403,10 +413,160 @@ impl<T: Client> Access<'_, T> {
         }
     }
 
+    fn handle_dns(
+        &mut self,
+        frame: &EthernetRepr,
+        src_addr: IpAddress,
+        dst_addr: IpAddress,
+        udp: &UdpPacket<&[u8]>,
+    ) -> Result<bool, DropReason> {
+        let Some(dns) = self.inner.dns.as_mut() else {
+            return Ok(false);
+        };
+
+        let request = DnsRequest {
+            flow: DnsFlow {
+                src_addr,
+                dst_addr,
+                src_port: udp.src_port(),
+                dst_port: udp.dst_port(),
+                gateway_mac: self.inner.state.params.gateway_mac,
+                client_mac: frame.src_addr,
+            },
+            dns_query: udp.payload(),
+        };
+
+        // Submit the DNS query with addressing information
+        // The response will be queued and sent later in poll_udp
+        dns.handle_dns(&request).map_err(|e| {
+            tracelimit::error_ratelimited!(error = ?e, "Failed to start DNS query");
+            DropReason::Packet(smoltcp::wire::Error)
+        })?;
+
+        Ok(true)
+    }
+
+    fn send_dns_response(&mut self, response: &DnsResponse) -> Result<(), DropReason> {
+        tracing::debug!(
+            response_len = response.response_data.len(),
+            src = %response.flow.src_addr,
+            dst = %response.flow.dst_addr,
+            src_port = response.flow.src_port,
+            dst_port = response.flow.dst_port,
+            "Sending UDP DNS response"
+        );
+
+        let buffer = &mut self.inner.state.buffer;
+
+        // Determine header length based on IP version
+        let (ip_header_len, checksum_state) = match response.flow.src_addr {
+            IpAddress::Ipv4(_) => (IPV4_HEADER_LEN, ChecksumState::UDP4),
+            IpAddress::Ipv6(_) => (IPV6_HEADER_LEN, ChecksumState::NONE),
+        };
+
+        let payload_offset = ETHERNET_HEADER_LEN + ip_header_len + UDP_HEADER_LEN;
+        let required_size = payload_offset + response.response_data.len();
+
+        if required_size > buffer.len() {
+            return Err(DropReason::SendBufferFull);
+        }
+
+        buffer[payload_offset..required_size].copy_from_slice(&response.response_data);
+
+        let mut eth_frame = EthernetFrame::new_unchecked(&mut buffer[..]);
+        let frame_len = build_udp_packet(
+            &mut eth_frame,
+            response.flow.dst_addr,
+            response.flow.src_addr,
+            response.flow.dst_port,
+            response.flow.src_port,
+            response.response_data.len(),
+            response.flow.gateway_mac,
+            response.flow.client_mac,
+        );
+
+        self.client.recv(&buffer[..frame_len], &checksum_state);
+
+        Ok(())
+    }
+
     #[cfg(test)]
     /// Returns the current number of active UDP connections.
     pub fn udp_connection_count(&self) -> usize {
         self.inner.udp.connections.len()
+    }
+}
+
+/// Helper function to build a complete UDP packet in an Ethernet frame.
+///
+/// This function constructs the Ethernet, IP (v4 or v6), and UDP headers, and assumes
+/// the UDP payload is already present in the buffer at the correct offset.
+///
+/// Returns the total length of the constructed frame.
+fn build_udp_packet<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized>(
+    eth_frame: &mut EthernetFrame<&mut T>,
+    src_ip: IpAddress,
+    dst_ip: IpAddress,
+    src_port: u16,
+    dst_port: u16,
+    payload_len: usize,
+    src_mac: EthernetAddress,
+    dst_mac: EthernetAddress,
+) -> usize {
+    // Build Ethernet header
+    eth_frame.set_src_addr(src_mac);
+    eth_frame.set_dst_addr(dst_mac);
+
+    match (src_ip, dst_ip) {
+        (IpAddress::Ipv4(src_ip), IpAddress::Ipv4(dst_ip)) => {
+            eth_frame.set_ethertype(EthernetProtocol::Ipv4);
+
+            // Build IPv4 header
+            let mut ipv4_packet = Ipv4Packet::new_unchecked(eth_frame.payload_mut());
+            let ipv4_repr = Ipv4Repr {
+                src_addr: src_ip,
+                dst_addr: dst_ip,
+                next_header: IpProtocol::Udp,
+                payload_len: UDP_HEADER_LEN + payload_len,
+                hop_limit: 64,
+            };
+            ipv4_repr.emit(&mut ipv4_packet, &ChecksumCapabilities::default());
+
+            // Build UDP header (payload is already in place)
+            let mut udp_packet = UdpPacket::new_unchecked(ipv4_packet.payload_mut());
+            udp_packet.set_src_port(src_port);
+            udp_packet.set_dst_port(dst_port);
+            udp_packet.set_len((UDP_HEADER_LEN + payload_len) as u16);
+            udp_packet.fill_checksum(&src_ip.into(), &dst_ip.into());
+
+            // Return total frame length
+            ETHERNET_HEADER_LEN + ipv4_packet.total_len() as usize
+        }
+        (IpAddress::Ipv6(src_ip), IpAddress::Ipv6(dst_ip)) => {
+            eth_frame.set_ethertype(EthernetProtocol::Ipv6);
+
+            // Build IPv6 header
+            let mut ipv6_packet = Ipv6Packet::new_unchecked(eth_frame.payload_mut());
+            let ipv6_repr = Ipv6Repr {
+                src_addr: src_ip,
+                dst_addr: dst_ip,
+                next_header: IpProtocol::Udp,
+                payload_len: UDP_HEADER_LEN + payload_len,
+                hop_limit: 64,
+            };
+            ipv6_repr.emit(&mut ipv6_packet);
+
+            // Build UDP header (payload is already in place)
+            let mut udp_packet = UdpPacket::new_unchecked(ipv6_packet.payload_mut());
+            udp_packet.set_src_port(src_port);
+            udp_packet.set_dst_port(dst_port);
+            udp_packet.set_len((UDP_HEADER_LEN + payload_len) as u16);
+            udp_packet.fill_checksum(&src_ip.into(), &dst_ip.into());
+
+            // Return total frame length
+            ETHERNET_HEADER_LEN + ipv6_packet.total_len()
+        }
+        _ => panic!("mismatched IP address families"),
     }
 }
 
@@ -418,7 +578,6 @@ mod tests {
     use pal_async::DefaultDriver;
     use parking_lot::Mutex;
     use smoltcp::wire::Ipv4Address;
-    use smoltcp::wire::Ipv4Repr;
     use std::sync::Arc;
 
     /// Mock test client that captures received packets
@@ -452,51 +611,6 @@ mod tests {
         }
     }
 
-    /// Helper to build an Ethernet/IPv4/UDP packet
-    fn build_udp_packet(
-        guest_mac: EthernetAddress,
-        gateway_mac: EthernetAddress,
-        guest_ip: Ipv4Address,
-        external_ip: Ipv4Address,
-        guest_port: u16,
-        external_port: u16,
-        payload: &[u8],
-    ) -> Vec<u8> {
-        let mut buffer =
-            vec![0u8; ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN + payload.len()];
-
-        let mut eth = EthernetFrame::new_unchecked(&mut buffer);
-        eth.set_src_addr(guest_mac);
-        eth.set_dst_addr(gateway_mac);
-        eth.set_ethertype(EthernetProtocol::Ipv4);
-
-        let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
-        Ipv4Repr {
-            src_addr: guest_ip,
-            dst_addr: external_ip,
-            next_header: IpProtocol::Udp,
-            payload_len: UDP_HEADER_LEN + payload.len(),
-            hop_limit: 64,
-        }
-        .emit(&mut ipv4, &ChecksumCapabilities::default());
-
-        let mut udp = UdpPacket::new_unchecked(ipv4.payload_mut());
-        UdpRepr {
-            src_port: guest_port,
-            dst_port: external_port,
-        }
-        .emit(
-            &mut udp,
-            &guest_ip.into(),
-            &external_ip.into(),
-            payload.len(),
-            |buf| buf.copy_from_slice(payload),
-            &ChecksumCapabilities::default(),
-        );
-
-        buffer
-    }
-
     fn create_consomme_with_timeout(timeout: Duration) -> Consomme {
         let mut params = ConsommeParams::new().expect("Failed to create params");
         params.udp_timeout = timeout;
@@ -511,21 +625,29 @@ mod tests {
 
         let guest_mac = consomme.params_mut().client_mac;
         let gateway_mac = consomme.params_mut().gateway_mac;
-        let guest_ip = consomme.params_mut().client_ip;
-        let target_ip = Ipv4Addr::LOCALHOST;
+        let guest_ip: Ipv4Address = consomme.params_mut().client_ip;
+        let target_ip: Ipv4Address = Ipv4Addr::LOCALHOST;
 
-        let packet = build_udp_packet(
-            guest_mac,
-            gateway_mac,
+        // Create a buffer and place the payload at the correct offset
+        let payload = b"test";
+        let mut buffer =
+            vec![0u8; ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN + payload.len()];
+        buffer[ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN..].copy_from_slice(payload);
+
+        let mut eth_frame = EthernetFrame::new_unchecked(&mut buffer[..]);
+        let packet_len = build_udp_packet(
+            &mut eth_frame,
             guest_ip,
             target_ip,
             12345,
             54321,
-            b"test",
+            payload.len(),
+            guest_mac,
+            gateway_mac,
         );
 
         let mut access = consomme.access(&mut client);
-        let _ = access.send(&packet, &ChecksumState::NONE);
+        let _ = access.send(&buffer[..packet_len], &ChecksumState::NONE);
 
         #[allow(clippy::disallowed_methods)]
         let waker = futures::task::noop_waker();

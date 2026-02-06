@@ -309,7 +309,10 @@ fn process_message(
             });
         }
         ConsommeMessage::UpdateState(rpc) => {
-            rpc.handle_sync(|f| f(consomme.get_mut().params_mut()));
+            rpc.handle_sync(|f| {
+                f(consomme.get_mut().params_mut());
+                consomme.update_dns_nameservers()
+            });
         }
     }
 }

@@ -858,7 +858,7 @@ impl SignalInfo {
     }
 }
 
-#[derive(Debug, Copy, PartialEq, Eq, Clone, Protobuf)]
+#[derive(Copy, PartialEq, Eq, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
 pub struct OpenRequest {
     #[mesh(1)]
@@ -875,6 +875,52 @@ pub struct OpenRequest {
     pub guest_specified_interrupt_info: Option<SignalInfo>,
     #[mesh(7)]
     pub flags: u16,
+}
+
+impl std::fmt::Debug for OpenRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            open_id,
+            ring_buffer_gpadl_id,
+            target_vp,
+            downstream_ring_buffer_page_offset,
+            user_data,
+            guest_specified_interrupt_info,
+            flags,
+        } = self;
+
+        let user_data_display: &dyn std::fmt::Debug = if self.user_data.iter().all(|&b| b == 0) {
+            &"[<all-zeroes>]"
+        } else {
+            struct HexDisplay<'a>(&'a [u8; 120]);
+            impl std::fmt::Debug for HexDisplay<'_> {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(f, "[")?;
+                    for byte in self.0 {
+                        write!(f, "{:02X}", byte)?;
+                    }
+                    write!(f, "]")
+                }
+            }
+            &HexDisplay(user_data)
+        };
+
+        f.debug_struct("OpenRequest")
+            .field("open_id", open_id)
+            .field("ring_buffer_gpadl_id", ring_buffer_gpadl_id)
+            .field("target_vp", target_vp)
+            .field(
+                "downstream_ring_buffer_page_offset",
+                downstream_ring_buffer_page_offset,
+            )
+            .field("user_data", user_data_display)
+            .field(
+                "guest_specified_interrupt_info",
+                guest_specified_interrupt_info,
+            )
+            .field("flags", flags)
+            .finish()
+    }
 }
 
 impl OpenRequest {
