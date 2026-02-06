@@ -74,17 +74,12 @@ fn clone_or_update_repo(
 }
 
 fn enable_kernel_configs(sh: &Shell, group: &str, configs: &[&str]) -> anyhow::Result<()> {
-    // Build a single argument string like: "--enable A --enable B ..."
-    let mut args = String::new();
-    for c in configs {
-        args.push_str("--enable ");
-        args.push_str(c);
-        args.push(' ');
+    // Enable each config one at a time to avoid shell argument parsing issues
+    for config in configs {
+        cmd!(sh, "./scripts/config --file .config --enable {config}")
+            .run()
+            .with_context(|| format!("Failed to enable {} kernel config {}", group, config))?;
     }
-
-    cmd!(sh, "./scripts/config --file .config {args}")
-        .run()
-        .with_context(|| format!("Failed to enable {} kernel configs", group))?;
 
     Ok(())
 }
