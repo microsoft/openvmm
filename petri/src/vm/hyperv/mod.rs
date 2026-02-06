@@ -341,6 +341,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             disable_frontpage,
             default_boot_always_attempt,
             enable_vpci_boot,
+            azi_hsm_enabled: _, // Not supported on Hyper-V
         }) = uefi_config
         {
             vm.set_secure_boot(
