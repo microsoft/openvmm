@@ -21,6 +21,7 @@ use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::RwLock;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::collections::hash_map;
 use std::sync::Arc;
@@ -37,12 +38,13 @@ pub struct NvmeManager {
     task: Task<()>,
     client: NvmeManagerClient,
     /// Running environment (memory layout) supports save/restore.
-    save_restore_supported: bool,
+    save_restore_supported: Cell<bool>,
 }
 
 impl Inspect for NvmeManager {
     fn inspect(&self, req: inspect::Request<'_>) {
         let mut resp = req.respond();
+
         // Pull out the field that force loads a driver on a device and handle
         // it separately.
         resp.child("force_load_pci_id", |req| match req.update() {
@@ -53,6 +55,36 @@ impl Inspect for NvmeManager {
             }
             Err(req) => req.value(""),
         });
+
+        // Get/update `save_restore_supported`. The property is called `save_restore_enabled` so that
+        // in the future we can add an actual boolean `save_restore_enabled` field without breaking the inspect interface.
+        resp.child("save_restore_enabled", |req| match req.update() {
+            Ok(update) => {
+                let new_value_str = update.new_value().to_string();
+                let new_value: bool = match new_value_str.as_str() {
+                    "true" | "1" => true,
+                    "false" | "0" => false,
+                    _ => {
+                        update.fail(anyhow::anyhow!(
+                            "invalid value for save_restore_enabled: {}, expecting true/false or 1/0.",
+                            new_value_str
+                        ));
+                        return;
+                    }
+                };
+                if new_value && !self.save_restore_supported.get() {
+                    update.fail(anyhow::anyhow!(
+                        "cannot enable save/restore support after it has been disabled"
+                    ));
+                    return;
+                }
+                tracing::info!(save_restore_supported = new_value, "setting save_restore_supported");
+                self.save_restore_supported.set(new_value);
+                update.succeed(new_value);
+            }
+            Err(req) => req.value(self.save_restore_supported.get()),
+        });
+
         // Send the remaining fields directly to the worker.
         resp.merge(inspect::adhoc(|req| {
             self.client.sender.send(Request::Inspect(req.defer()))
@@ -107,7 +139,7 @@ impl NvmeManager {
         Self {
             task,
             client: NvmeManagerClient { sender: send },
-            save_restore_supported,
+            save_restore_supported: Cell::new(save_restore_supported),
         }
     }
 
@@ -132,7 +164,7 @@ impl NvmeManager {
     pub async fn save(&self, nvme_keepalive: bool) -> Option<NvmeManagerSavedState> {
         // NVMe manager has no own data to save, everything will be done
         // in the Worker task which can be contacted through Client.
-        if self.save_restore_supported && nvme_keepalive {
+        if self.save_restore_supported.get() && nvme_keepalive {
             Some(self.client().save().await?)
         } else {
             // Do not save any state if nvme_keepalive

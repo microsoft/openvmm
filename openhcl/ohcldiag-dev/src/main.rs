@@ -108,7 +108,7 @@ enum Command {
         /// Update the path with a new value.
         #[clap(short, long, conflicts_with("recursive"))]
         update: Option<String>,
-        /// Timeout to wait for the inspection. 0 means no timeout.
+        /// Timeout in seconds to wait for the inspection. 0 means no timeout.
         #[clap(short, default_value = "1", conflicts_with("update"))]
         timeout: u64,
     },
