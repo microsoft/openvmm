@@ -647,8 +647,8 @@ mod tests {
         let mut eth_frame = EthernetFrame::new_unchecked(&mut buffer[..]);
         let packet_len = build_udp_packet(
             &mut eth_frame,
-            guest_ip,
-            target_ip,
+            IpAddress::Ipv4(guest_ip),
+            IpAddress::Ipv4(target_ip),
             12345,
             54321,
             payload.len(),
