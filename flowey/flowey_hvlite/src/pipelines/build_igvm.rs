@@ -3,6 +3,7 @@
 
 //! See [`BuildIgvmCli`]
 
+use flowey::node::prelude::FlowPlatformLinuxDistro;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
@@ -74,6 +75,13 @@ where
     /// Automatically install any missing required dependencies.
     #[clap(long)]
     pub install_missing_deps: bool,
+
+    /// Use nix for dependency resolution and shell command execution.
+    ///
+    /// This wraps all shell commands in `nix-shell --pure --run` and resolves
+    /// dependencies from the nix environment instead of downloading them.
+    #[clap(long)]
+    pub use_nix: bool,
 
     #[clap(flatten)]
     pub customizations: BuildIgvmCliCustomizations,
@@ -286,6 +294,7 @@ impl IntoPipeline for BuildIgvmCli {
             verbose,
             locked,
             install_missing_deps,
+            use_nix,
             customizations:
                 BuildIgvmCliCustomizations {
                     build_label,
@@ -332,15 +341,28 @@ impl IntoPipeline for BuildIgvmCli {
             OpenhclRecipeCli::Aarch64 | OpenhclRecipeCli::Aarch64Devkern => CommonArch::Aarch64,
         };
 
-        let mut job = pipeline.new_job(
-            FlowPlatform::host(backend_hint),
-            FlowArch::host(backend_hint),
-            "build-igvm",
-        );
+        // Determine platform: use Nix if --use-nix is set, otherwise detect from host
+        let platform = if use_nix {
+            FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
+        } else {
+            FlowPlatform::host(backend_hint)
+        };
 
-        // Initialize cfg_versions job, this makes sure everything will be downloaded
-        // and versions are set up correctly unless overriden by other parameters.
-        job = job.dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init);
+        let mut job = pipeline.new_job(platform, FlowArch::host(backend_hint), "build-igvm");
+
+        // Initialize cfg_versions based on mode
+        job = if use_nix {
+            // Use nix environment for dependency resolution
+            // For local runs, we assume nix is already installed (don't auto-install)
+            job.dep_on(|_| flowey_lib_common::install_nix::Request::AutoInstall(false))
+                .dep_on(move |_| {
+                    flowey_lib_hvlite::_jobs::cfg_versions::Request::NixEnvironment(recipe_arch)
+                })
+        } else {
+            // Initialize cfg_versions job, this makes sure everything will be downloaded
+            // and versions are set up correctly unless overriden by other parameters.
+            job.dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
+        };
 
         // Override openvmm_deps with a local path if specified
         if let Some(openvmm_deps_path) = custom_openvmm_deps {

@@ -61,8 +61,13 @@ pub mod user_facing {
 }
 
 fn linux_distro() -> FlowPlatformLinuxDistro {
-    // Check for nix environment first - takes precedence over distro detection
-    if std::env::var("IN_NIX_SHELL").is_ok() {
+    // Check for Nix environment first
+    // USING_NIX=1 is set in CI, IN_NIX_SHELL is set when inside nix-shell
+    if std::env::var("USING_NIX")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+        || std::env::var("IN_NIX_SHELL").is_ok()
+    {
         return FlowPlatformLinuxDistro::Nix;
     }
 

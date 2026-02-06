@@ -36,6 +36,7 @@ pub mod build_vmgstool;
 pub mod build_xtask;
 pub mod cfg_openvmm_magicpath;
 pub mod cfg_rustup_version;
+pub mod download_openhcl_kernel_package;
 pub mod download_openvmm_vmm_tests_artifacts;
 pub mod download_release_igvm_files_from_gh;
 pub mod download_uefi_mu_msvm;

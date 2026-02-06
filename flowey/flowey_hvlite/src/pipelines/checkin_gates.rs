@@ -638,6 +638,18 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_openhcl_igvm_extras, _use_openhcl_igvm_extras) =
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras"));
 
+            // Nix artifacts are only needed for GitHub backend
+            let (pub_openhcl_igvm_nix, pub_openhcl_igvm_extras_nix) =
+                if !matches!(backend_hint, PipelineBackendHint::Ado) {
+                    let (pub_igvm, _) =
+                        pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-nix"));
+                    let (pub_extras, _) =
+                        pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras-nix"));
+                    (Some(pub_igvm), Some(pub_extras))
+                } else {
+                    (None, None)
+                };
+
             let (pub_openhcl_baseline, _use_openhcl_baseline) =
                 if matches!(config, PipelineConfig::Ci) {
                     let (p, u) = pipeline.new_artifact(format!("{arch_tag}-openhcl-baseline"));
@@ -747,6 +759,48 @@ impl IntoPipeline for CheckinGatesCli {
                 });
 
             all_jobs.push(job.finish());
+
+            // Nix build job is only supported on GitHub
+            if !matches!(backend_hint, PipelineBackendHint::Ado) {
+                let pub_openhcl_igvm_nix = pub_openhcl_igvm_nix.unwrap();
+                let pub_openhcl_igvm_extras_nix = pub_openhcl_igvm_extras_nix.unwrap();
+                let job = pipeline
+                    .new_job(
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix),
+                        FlowArch::X86_64,
+                        format!("{} with nix", build_openhcl_job_tag(arch_tag)),
+                    )
+                    .gh_set_pool(crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk())
+                    .gh_dangerous_global_env_var("USING_NIX", "1")
+                    .dep_on(|ctx| {
+                        flowey_lib_common::install_nix::Request::EnsureInstalled(ctx.new_done_handle())
+                    })
+                    .dep_on(move |_| {
+                        flowey_lib_hvlite::_jobs::cfg_versions::Request::NixEnvironment(arch)
+                    })
+                    .dep_on(|ctx| {
+                        flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
+                            igvm_files: igvm_recipes
+                                .clone()
+                                .into_iter()
+                                .map(|recipe| OpenhclIgvmBuildParams {
+                                    profile: openvmm_hcl_profile,
+                                    recipe,
+                                    custom_target: Some(CommonTriple::Custom(openhcl_musl_target(
+                                        arch,
+                                    ))),
+                                })
+                                .collect(),
+                            artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm_nix),
+                            artifact_dir_openhcl_igvm_extras: ctx
+                                .publish_artifact(pub_openhcl_igvm_extras_nix),
+                            artifact_openhcl_verify_size_baseline: None,
+                            done: ctx.new_done_handle(),
+                        }
+                    });
+
+                all_jobs.push(job.finish());
+            }
 
             // TODO: Once we have a few runs of the openvmm-mirror PR pipeline, this job can be re-worked to use ADO artifacts instead of GH artifacts.
             if matches!(config, PipelineConfig::Pr)

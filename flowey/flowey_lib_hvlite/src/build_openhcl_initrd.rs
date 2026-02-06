@@ -125,6 +125,7 @@ impl FlowNode for Node {
 
             ctx.emit_rust_step("building openhcl initrd", |ctx| {
                 pydeps.clone().claim(ctx);
+                let platform = ctx.platform();
                 let interactive_dep = interactive_dep.claim(ctx);
                 let rootfs_config = rootfs_config.claim(ctx);
                 let extra_env = extra_env.claim(ctx);
@@ -143,7 +144,7 @@ impl FlowNode for Node {
                     let kernel_package_root = rt.read(kernel_package_root);
                     let kernel_metadata = rt.read(kernel_metadata);
 
-                    let sh = xshell::Shell::new()?;
+                    let sh = FloweyShell::new(platform)?;
 
                     let initrd_path = sh.current_dir().join("openhcl.cpio.gz");
 

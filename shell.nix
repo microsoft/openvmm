@@ -58,8 +58,6 @@ let
   crossCompilers =
     if hostArch == "x86_64" then [ aarch64CrossGcc ]
     else [ x64CrossGcc ];
-
-  # Rust configuration
   overrides = (builtins.fromTOML (builtins.readFile ./Cargo.toml));
   rustVersionFromCargo = overrides.workspace.package.rust-version;
   # Cargo.toml uses "X.Y", rust-overlay uses "X.Y.Z"
@@ -156,6 +154,20 @@ in pkgs.mkShell {
   OPENVMM_DEPS_X64 = x64BaseDeps.openvmm_deps;
   OPENVMM_DEPS_AARCH64 = aarch64BaseDeps.openvmm_deps;
 
+  # Environment variables read by flowey when using --use-nix flag
+# Arch-specific paths for cross-compilation
+  NIX_OPENVMM_DEPS_X64 = x64BaseDeps.openvmm_deps;
+  NIX_OPENVMM_DEPS_AARCH64 = aarch64BaseDeps.openvmm_deps;
+  NIX_OPENHCL_KERNEL_X64 = x64Kernel;
+  NIX_OPENHCL_KERNEL_AARCH64 = aarch64Kernel;
+  NIX_UEFI_MU_MSVM_X64 = "${x64BaseDeps.uefi_mu_msvm}/MSVM.fd";
+  NIX_UEFI_MU_MSVM_AARCH64 = "${aarch64BaseDeps.uefi_mu_msvm}/MSVM.fd";
+  NIX_PROTOC_PATH = protoc;
+
+  # Legacy environment variables (default to x64 for backward compatibility)
+  NIX_OPENVMM_DEPS = x64BaseDeps.openvmm_deps;
+  NIX_OPENHCL_KERNEL = x64Kernel;
+  NIX_UEFI_MU_MSVM = "${x64BaseDeps.uefi_mu_msvm}/MSVM.fd";
   RUST_BACKTRACE = 1;
   SOURCE_DATE_EPOCH = 12345;
 
@@ -180,18 +192,5 @@ in pkgs.mkShell {
     ln -sf ${x64CrossGcc}/bin/x86_64-unknown-linux-gnu-objcopy $NIX_CC_WRAPPER_DIR/x86_64-linux-gnu-objcopy
     ''}
     export PATH="$NIX_CC_WRAPPER_DIR:$PATH"
-
-    echo "OpenVMM Nix Shell"
-    echo "================="
-    echo "Host architecture: ${hostArch}"
-    echo ""
-    echo "Build commands:"
-    echo "  cargo xflowey build-igvm x64 \$CARGO_BUILD_ARGS_X64"
-    echo "  cargo xflowey build-igvm x64-cvm \$CARGO_BUILD_ARGS_X64_CVM"
-    echo "  cargo xflowey build-igvm x64-devkern \$CARGO_BUILD_ARGS_X64_DEVKERN"
-    echo "  cargo xflowey build-igvm x64-cvm-devkern \$CARGO_BUILD_ARGS_X64_CVM_DEVKERN"
-    echo "  cargo xflowey build-igvm aarch64 \$CARGO_BUILD_ARGS_AARCH64"
-    echo "  cargo xflowey build-igvm aarch64-devkern \$CARGO_BUILD_ARGS_AARCH64_DEVKERN"
-    echo ""
   '';
 }

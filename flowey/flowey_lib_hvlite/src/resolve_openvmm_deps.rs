@@ -15,7 +15,7 @@ pub enum OpenvmmDepsArch {
 flowey_request! {
     pub enum Request {
         /// Use a locally downloaded openvmm-deps for a specific architecture
-        LocalPath(OpenvmmDepsArch, PathBuf),
+        LocalPath(OpenvmmDepsArch, ReadVar<PathBuf>),
         /// Specify version of the github release to pull from
         Version(String),
         GetLinuxTestKernel(OpenvmmDepsArch, WriteVar<PathBuf>),
@@ -38,7 +38,7 @@ impl FlowNode for Node {
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let mut version = None;
-        let mut local_paths: BTreeMap<OpenvmmDepsArch, PathBuf> = BTreeMap::new();
+        let mut local_paths: BTreeMap<OpenvmmDepsArch, ReadVar<PathBuf>> = BTreeMap::new();
         let mut linux_test_kernel: BTreeMap<_, Vec<_>> = BTreeMap::new();
         let mut linux_test_initrd: BTreeMap<_, Vec<_>> = BTreeMap::new();
         let mut openhcl_cpio_dbgrd: BTreeMap<_, Vec<_>> = BTreeMap::new();
@@ -50,12 +50,10 @@ impl FlowNode for Node {
                 Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
                 Request::LocalPath(arch, path) => {
                     if let Some(existing) = local_paths.get(&arch) {
-                        if existing != &path {
+                        if !existing.eq(&path) {
                             anyhow::bail!(
-                                "Conflicting LocalPath requests for {:?}: {:?} vs {:?}",
-                                arch,
-                                existing,
-                                path
+                                "Conflicting LocalPath requests for {:?}: different backing variables",
+                                arch
                             );
                         }
                     } else {
@@ -106,10 +104,19 @@ impl FlowNode for Node {
                 let openhcl_cpio_dbgrd = openhcl_cpio_dbgrd.claim(ctx);
                 let openhcl_cpio_shell = openhcl_cpio_shell.claim(ctx);
                 let openhcl_sysroot = openhcl_sysroot.claim(ctx);
-                let local_paths = local_paths.clone();
+                let local_paths: BTreeMap<OpenvmmDepsArch, ClaimedReadVar<PathBuf>> = local_paths
+                    .into_iter()
+                    .map(|(arch, var)| (arch, var.claim(ctx)))
+                    .collect();
                 move |rt| {
-                    let get_base_dir = |arch: OpenvmmDepsArch| {
-                        local_paths.get(&arch).ok_or_else(|| {
+                    // Read all paths upfront for efficiency
+                    let resolved_paths: BTreeMap<OpenvmmDepsArch, PathBuf> = local_paths
+                        .iter()
+                        .map(|(arch, claimed_var)| (*arch, rt.read(claimed_var.clone())))
+                        .collect();
+
+                    let get_base_dir = |arch: OpenvmmDepsArch| -> anyhow::Result<&PathBuf> {
+                        resolved_paths.get(&arch).ok_or_else(|| {
                             anyhow::anyhow!("No local path specified for architecture {:?}", arch)
                         })
                     };
