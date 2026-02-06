@@ -1900,14 +1900,18 @@ async fn new_underhill_vm(
     // Create the `AttestationVmConfig` from `dps`, which will be used in
     // - stateful mode (the attestation is not suppressed)
     // - stateless mode (isolated VM with attestation suppressed)
+    let console_enabled = dps.general.com1_enabled
+        || dps.general.com2_enabled
+        || dps.general.com1_vmbus_redirector
+        || dps.general.com2_vmbus_redirector;
+    let interactive_console =
+        console_enabled && !dps.general.management_vtl_features.tx_only_serial_port();
     let attestation_vm_config = AttestationVmConfig {
         current_time: None,
         // TODO CVM: Support vmgs provisioning config
         root_cert_thumbprint: String::new(),
-        console_enabled: dps.general.com1_enabled
-            || dps.general.com2_enabled
-            || dps.general.com1_vmbus_redirector
-            || dps.general.com2_vmbus_redirector,
+        console_enabled,
+        interactive_console_enabled: interactive_console,
         secure_boot: dps.general.secure_boot_enabled,
         tpm_enabled: dps.general.tpm_enabled,
         tpm_persisted: !dps.general.suppress_attestation.unwrap_or(false),
@@ -2477,6 +2481,7 @@ async fn new_underhill_vm(
         serial_inputs[0] = Some(Resource::new(
             vmbus_serial_guest::OpenVmbusSerialGuestConfig::open(
                 &vmbus_serial_guest::UART_INTERFACE_INSTANCE_COM1,
+                dps.general.management_vtl_features.tx_only_serial_port(),
             )
             .context("failed to open com1")?,
         ));
@@ -2486,6 +2491,7 @@ async fn new_underhill_vm(
         serial_inputs[1] = Some(Resource::new(
             vmbus_serial_guest::OpenVmbusSerialGuestConfig::open(
                 &vmbus_serial_guest::UART_INTERFACE_INSTANCE_COM2,
+                dps.general.management_vtl_features.tx_only_serial_port(),
             )
             .context("failed to open com2")?,
         ));

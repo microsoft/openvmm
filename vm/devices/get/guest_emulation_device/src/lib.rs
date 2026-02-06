@@ -140,6 +140,8 @@ pub struct GuestConfig {
     pub com1: bool,
     /// Enable COM2 for VTL0 and the VMBUS redirector in VTL2.
     pub com2: bool,
+    /// Only allow guest to host serial traffic
+    pub serial_tx_only: bool,
     /// Enable vmbus redirection.
     pub vmbus_redirection: bool,
     /// Enable the TPM.
