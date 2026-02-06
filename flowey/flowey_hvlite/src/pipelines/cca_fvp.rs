@@ -81,14 +81,18 @@ impl IntoPipeline for CcaFvpCli {
 
         let mut pipeline = Pipeline::new();
 
+        // Store the original dir value for validation before canonicalization
+        let original_dir = dir.clone();
+
         // Convert dir to absolute path to ensure consistency across jobs
+        // Relative paths are resolved from the repository root
         let dir = std::fs::canonicalize(&dir)
             .or_else(|_| {
-                // If dir doesn't exist yet, make it absolute relative to current dir
+                // If dir doesn't exist yet, make it absolute relative to repo root
                 let abs = if dir.is_absolute() {
                     dir.clone()
                 } else {
-                    std::env::current_dir()?.join(&dir)
+                    crate::repo_root().join(&dir)
                 };
                 Ok::<_, anyhow::Error>(abs)
             })?;
@@ -97,32 +101,54 @@ impl IntoPipeline for CcaFvpCli {
         let shrinkwrap_dir = dir.join("shrinkwrap");
         let shrinkwrap_config_dir = shrinkwrap_dir.join("config");
 
-        // To resolve platform/overlay paths
-        // If relative, assume it's in shrinkwrap/config/
-        // If absolute, use as-is
-        let resolve_config_path = |p: PathBuf| -> PathBuf {
+        // Helper to resolve platform/overlay paths:
+        // - Absolute paths: use as-is
+        // - Simple filenames (no '/'): resolve to <dir>/shrinkwrap/config/
+        // - Relative paths with '/': must start with --dir prefix
+        let resolve_config_path = |p: PathBuf, arg_name: &str| -> anyhow::Result<PathBuf> {
             if p.is_absolute() {
-                p
-            } else if p.starts_with("target/cca-fvp/shrinkwrap/") ||
-                      p.starts_with("./target/cca-fvp/shrinkwrap/") {
-                // Legacy format: target/cca-fvp/shrinkwrap/config/file.yaml
-                let rel_path = p.strip_prefix("target/cca-fvp/shrinkwrap/")
-                    .or_else(|_| p.strip_prefix("./target/cca-fvp/shrinkwrap/"))
-                    .unwrap();
-                shrinkwrap_dir.join(rel_path)
+                Ok(p)
             } else {
-                // Use relative path: assume it's in shrinkwrap/config/
-                shrinkwrap_config_dir.join(p)
+                let p_str = p.to_string_lossy();
+
+                // Check if it's a simple filename (no directory separators)
+                if !p_str.contains('/') {
+                    // Simple filename: resolve to shrinkwrap/config/
+                    return Ok(shrinkwrap_config_dir.join(p));
+                }
+
+                // It's a relative path with directories - validate it starts with --dir
+                let original_dir_str = original_dir.to_string_lossy();
+                let dir_prefix = original_dir_str.trim_start_matches("./");
+                let alt_dir_prefix = format!("./{}", dir_prefix);
+
+                if p_str.starts_with(dir_prefix) || p_str.starts_with(&alt_dir_prefix) {
+                    // Valid: path starts with --dir prefix
+                    // Strip the prefix and reconstruct using the canonical dir
+                    let stripped = p_str.strip_prefix(dir_prefix)
+                        .or_else(|| p_str.strip_prefix(alt_dir_prefix.as_str()))
+                        .unwrap()
+                        .trim_start_matches('/');
+
+                    Ok(dir.join(stripped))
+                } else {
+                    // Invalid: relative path doesn't start with --dir
+                    anyhow::bail!(
+                        "Relative path for {} must start with the --dir value ({}). Got: {}. \
+                         Either use an absolute path, a simple filename, or a relative path starting with '{}/'.",
+                        arg_name, original_dir.display(), p.display(), original_dir_str
+                    )
+                }
             }
         };
 
         // Resolve platform YAML path
-        let platform = resolve_config_path(platform);
+        let platform = resolve_config_path(platform, "--platform")?;
 
         // Resolve overlay YAML paths
         let overlay: Vec<PathBuf> = overlay.into_iter()
-            .map(resolve_config_path)
-            .collect();
+            .map(|p| resolve_config_path(p, "--overlay"))
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
         // Create separate jobs to ensure proper ordering
         let install_job = pipeline
