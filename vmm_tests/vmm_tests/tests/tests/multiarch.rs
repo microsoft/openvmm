@@ -438,6 +438,60 @@ async fn efi_diagnostics_no_boot(
     anyhow::bail!("Did not find expected message in kmsg");
 }
 
+/// Test that AziHsm is present in UEFI by checking for AziHsm log messages.
+/// Boots with TPM and AziHsm enabled, no boot disk required.
+#[openvmm_test_no_agent(openhcl_uefi_x64(none))]
+async fn azi_hsm_present(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let vm = config
+        .with_tpm(true)
+        .with_azi_hsm_enabled(true)
+        .with_uefi_frontpage(true)
+        .run_without_agent()
+        .await?;
+
+    // Look for AziHsm log messages in kmsg
+    const AZI_HSM_PREFIX: &str = "AziHsm:";
+
+    let mut kmsg = vm.kmsg().await?;
+    while let Some(data) = kmsg.next().await {
+        let data = data.context("reading kmsg")?;
+        let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
+        let raw = msg.message.as_raw();
+        if raw.contains(AZI_HSM_PREFIX) {
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!("Did not find expected AziHsm message in kmsg");
+}
+
+/// Test that AziHsm is absent when disabled
+/// Boots with TPM enabled but AziHsm disabled, no boot disk required.
+#[openvmm_test_no_agent(openhcl_uefi_x64(none))]
+async fn azi_hsm_absent(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let vm = config
+        .with_tpm(true)
+        .with_azi_hsm_enabled(false)
+        .with_uefi_frontpage(true)
+        .run_without_agent()
+        .await?;
+
+    // Verify AziHsm log messages do NOT appear in kmsg
+    const AZI_HSM_PREFIX: &str = "AziHsm:";
+
+    let mut kmsg = vm.kmsg().await?;
+    while let Some(data) = kmsg.next().await {
+        let data = data.context("reading kmsg")?;
+        let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
+        let raw = msg.message.as_raw();
+        if raw.contains(AZI_HSM_PREFIX) {
+            anyhow::bail!("Found unexpected AziHsm message in kmsg when AziHsm should be disabled");
+        }
+    }
+
+    Ok(())
+}
+
 /// Boot our guest-test UEFI image, which will run some tests,
 /// and then purposefully triple fault itself via an expiring
 /// watchdog timer.
