@@ -502,6 +502,68 @@ async fn servicing_keepalive_fault_if_identify(
     Ok(())
 }
 
+/// Test that disabling keepalive through inspect actually disables it.
+/// We test this by disabling keepalives and waiting for IDENTIFY.
+/// We should only receive IDENTIFY if keepalive is disabled.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_test_keepalive_disable_through_inspect(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let mut fault_start_updater = CellUpdater::new(false);
+
+    let (identify_verify_send, identify_verify_recv) = mesh::oneshot::<()>();
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvme_spec::AdminOpcode::IDENTIFY.0)
+                    .build(),
+                AdminQueueFaultBehavior::Verify(Some(identify_verify_send)),
+            ),
+        );
+
+    let mut flags = config.default_servicing_flags();
+    // Enable keepalive, then disable it later via inspect
+    flags.enable_nvme_keepalive = true;
+    flags.enable_mana_keepalive = false;
+    let (mut vm, agent) = create_keepalive_test_config(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        Guid::new_random(),
+        DEFAULT_DISK_SIZE,
+    )
+    .await?;
+
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+
+    // Make sure the disk showed up.
+    cmd!(sh, "ls /dev/sda").run().await?;
+
+    fault_start_updater.set(true).await;
+
+    // Disable keepalive via inspect
+    vm.inspect_update_openhcl("vm/nvme_keepalive_mode", "disabled")
+        .await?;
+
+    vm.restart_openhcl(igvm_file.clone(), flags).await?;
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(30))
+        .until_cancelled(identify_verify_recv)
+        .await
+        .expect("IDENTIFY should be observed within 30 seconds of vm restore after servicing with keepalive disabled")
+        .expect("IDENTIFY verification should pass and return a valid result.");
+
+    Ok(())
+}
+
 /// Verifies that the driver awaits an existing AER instead of issuing a new one after servicing.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn servicing_keepalive_verify_no_duplicate_aers(
