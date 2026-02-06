@@ -36,6 +36,33 @@ const NETWORK_PREFIX_BASE: Ipv6Address = Ipv6Address::new(0x2001, 0xabcd, 0, 0, 
 const LINK_LOCAL_ALL_NODES: Ipv6Address =
     Ipv6Address::from_octets([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
+/// NDP option type for Recursive DNS Server (RFC 8106 Section 5.1)
+const NDP_OPTION_RDNSS: u8 = 25;
+/// RDNSS lifetime in seconds (how long the advertised DNS servers may be used)
+const RDNSS_LIFETIME_SECS: u32 = 3600;
+
+fn write_rdnss_option(buf: &mut [u8], dns_servers: &[Ipv6Address]) {
+    buf[0] = NDP_OPTION_RDNSS;
+    buf[1] = (1 + 2 * dns_servers.len()) as u8; // Length in 8-octet units
+    buf[2] = 0; // Reserved
+    buf[3] = 0; // Reserved
+    buf[4..8].copy_from_slice(&RDNSS_LIFETIME_SECS.to_be_bytes());
+    let mut offset = 8;
+    for server in dns_servers {
+        buf[offset..offset + 16].copy_from_slice(&server.octets());
+        offset += 16;
+    }
+}
+
+/// Calculate the byte size of an RDNSS option for the given number of DNS servers.
+fn rdnss_option_size(num_servers: usize) -> usize {
+    if num_servers == 0 {
+        0
+    } else {
+        8 + 16 * num_servers // 8-byte header + 16 bytes per IPv6 address
+    }
+}
+
 #[derive(Debug)]
 pub enum NdpMessageType {
     RouterSolicit,
@@ -135,8 +162,10 @@ impl<T: Client> Access<'_, T> {
 
     /// Send a Router Advertisement (RFC 4861 Section 4.2)
     ///
-    /// Router Advertisements contain prefix information for SLAAC. Clients will use
-    /// the advertised prefix to generate their own IPv6 addresses.
+    /// Router Advertisements contain prefix information for SLAAC and RDNSS
+    /// information (RFC 8106) for DNS server discovery. Clients will use the
+    /// advertised prefix to generate their own IPv6 addresses, and the RDNSS
+    /// option to configure DNS servers without requiring DHCPv6.
     fn send_router_advertisement(
         &mut self,
         dst_addr: Ipv6Address,
@@ -169,12 +198,17 @@ impl<T: Client> Access<'_, T> {
             }),
         };
 
+        let dns_servers = self.inner.state.params.filtered_ipv6_nameservers();
+
+        let rdnss_size = rdnss_option_size(dns_servers.len());
+        let icmpv6_len = ndp_repr.buffer_len() + rdnss_size;
+
         // Build IPv6 header
         let ipv6_repr = Ipv6Repr {
             src_addr: self.inner.state.params.gateway_link_local_ipv6,
             dst_addr,
             next_header: IpProtocol::Icmpv6,
-            payload_len: ndp_repr.buffer_len(),
+            payload_len: icmpv6_len,
             hop_limit: 255, // Router advertisements must have a hop limit of 255 to indicate the packet was not forwarded by another router.
         };
 
@@ -191,11 +225,26 @@ impl<T: Client> Access<'_, T> {
         let mut ipv6_packet = Ipv6Packet::new_unchecked(eth_frame.payload_mut());
         ipv6_repr.emit(&mut ipv6_packet);
 
-        let mut icmpv6_packet = Icmpv6Packet::new_unchecked(ipv6_packet.payload_mut());
-        ndp_repr.emit(&mut icmpv6_packet);
-        icmpv6_packet.fill_checksum(&ipv6_repr.src_addr, &ipv6_repr.dst_addr);
+        // Write the NDP Router Advertisement message
+        {
+            let mut icmpv6_packet = Icmpv6Packet::new_unchecked(ipv6_packet.payload_mut());
+            ndp_repr.emit(&mut icmpv6_packet);
+        }
 
-        let total_len = eth_repr.buffer_len() + ipv6_repr.buffer_len() + ndp_repr.buffer_len();
+        // Append the RDNSS option after the NDP message (RFC 8106)
+        if !dns_servers.is_empty() {
+            let payload = ipv6_packet.payload_mut();
+            write_rdnss_option(&mut payload[ndp_repr.buffer_len()..], &dns_servers);
+        }
+
+        // Compute the ICMPv6 checksum over the full message (including RDNSS)
+        {
+            let payload = ipv6_packet.payload_mut();
+            let mut icmpv6_packet = Icmpv6Packet::new_unchecked(&mut payload[..icmpv6_len]);
+            icmpv6_packet.fill_checksum(&ipv6_repr.src_addr, &ipv6_repr.dst_addr);
+        }
+
+        let total_len = eth_repr.buffer_len() + ipv6_repr.buffer_len() + icmpv6_len;
 
         self.client.recv(&buffer[..total_len], &ChecksumState::NONE);
         Ok(())

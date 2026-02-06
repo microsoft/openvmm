@@ -8,9 +8,6 @@ rust-version.workspace = true
 
 [dependencies]
 mesh_channel_core.workspace = true
-inspect.workspace = true
-inspect_counters.workspace = true
-pal_async.workspace = true
 futures.workspace = true
 getrandom.workspace = true
 heapless.workspace = true
@@ -18,7 +15,6 @@ parking_lot.workspace = true
 smoltcp = { workspace = true, features = [ "proto-ipv4", "proto-ipv6", "proto-dns", "medium-ethernet", "socket-raw", "std", "proto-dhcpv4" ] }
 socket2.workspace = true
 thiserror.workspace = true
-tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 

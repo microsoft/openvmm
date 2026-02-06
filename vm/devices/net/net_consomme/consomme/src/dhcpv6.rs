@@ -229,26 +229,7 @@ impl<T: Client> Access<'_, T> {
                 reply.server_id = Some(duid_bytes);
 
                 // Add DNS Name Server option if we have nameservers
-                let dns_servers: Vec<std::net::Ipv6Addr> = self
-                    .inner
-                    .state
-                    .params
-                    .nameservers
-                    .iter()
-                    .filter_map(|ip| match ip {
-                        IpAddress::Ipv6(addr) => Some(*addr),
-                        _ => None,
-                    })
-                    .filter(|addr| {
-                        let octets = addr.octets();
-                        !(addr.is_unspecified()
-                            || addr.is_loopback()
-                            || addr.is_unicast_link_local()
-                            || addr.is_multicast()
-                            || matches!(octets[0], 0xfc | 0xfd) // Is unique local address
-                            || octets.starts_with(&[0xfe, 0xc0])) // Is synthetic DNS server
-                    })
-                    .collect();
+                let dns_servers = self.inner.state.params.filtered_ipv6_nameservers();
 
                 if !dns_servers.is_empty() {
                     reply.dns_servers = Some(dns_servers);

@@ -363,7 +363,12 @@ impl<T: Client> Access<'_, T> {
                 self.handle_dhcp(udp.payload())?;
                 Ok(true)
             }
-            DNS_PORT => self.handle_dns(frame, addresses.src_addr.into(), addresses.dst_addr.into(), udp),
+            DNS_PORT => self.handle_dns(
+                frame,
+                addresses.src_addr.into(),
+                addresses.dst_addr.into(),
+                udp,
+            ),
             _ => Ok(false),
         }
     }
@@ -380,7 +385,12 @@ impl<T: Client> Access<'_, T> {
                 self.handle_dhcpv6(payload, Some(addresses.src_addr))?;
                 Ok(true)
             }
-            DNS_PORT => self.handle_dns(frame, addresses.src_addr.into(), addresses.dst_addr.into(), udp),
+            DNS_PORT => self.handle_dns(
+                frame,
+                addresses.src_addr.into(),
+                addresses.dst_addr.into(),
+                udp,
+            ),
             _ => Ok(false),
         }
     }

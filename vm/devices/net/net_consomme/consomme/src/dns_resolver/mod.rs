@@ -5,7 +5,7 @@ use inspect::Inspect;
 use mesh_channel_core::Receiver;
 use mesh_channel_core::Sender;
 use smoltcp::wire::EthernetAddress;
-use smoltcp::wire::Ipv4Address;
+use smoltcp::wire::IpAddress;
 use std::task::Context;
 use std::task::Poll;
 
@@ -21,8 +21,8 @@ static DNS_HEADER_SIZE: usize = 12;
 
 #[derive(Debug, Clone)]
 pub struct DnsFlow {
-    pub src_addr: Ipv4Address,
-    pub dst_addr: Ipv4Address,
+    pub src_addr: IpAddress,
+    pub dst_addr: IpAddress,
     pub src_port: u16,
     pub dst_port: u16,
     pub gateway_mac: EthernetAddress,

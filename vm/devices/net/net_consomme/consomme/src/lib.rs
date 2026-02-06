@@ -192,6 +192,30 @@ impl ConsommeParams {
 
         Ipv6Address::from_octets(addr)
     }
+
+    /// Returns the list of IPv6 nameservers suitable for advertisement to
+    /// guests via NDP RDNSS or DHCPv6.
+    ///
+    /// Filters out addresses that are not useful as DNS servers in a
+    /// guest-facing context: unspecified, loopback, multicast, unique-local
+    /// (fc00::/7), and deprecated site-local (fec0::/10) addresses.
+    pub fn filtered_ipv6_nameservers(&self) -> Vec<Ipv6Address> {
+        self.nameservers
+            .iter()
+            .filter_map(|ip| match ip {
+                IpAddress::Ipv6(addr) => Some(*addr),
+                _ => None,
+            })
+            .filter(|addr| {
+                let octets = addr.octets();
+                !(addr.is_unspecified()
+                    || addr.is_loopback()
+                    || addr.is_multicast()
+                    || matches!(octets[0], 0xfc | 0xfd) // unique local address
+                    || octets.starts_with(&[0xfe, 0xc0])) // deprecated site-local
+            })
+            .collect()
+    }
 }
 
 /// An accessor for consomme.
@@ -399,7 +423,10 @@ impl Consomme {
             match dns_resolver::DnsResolver::new(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS) {
                 Ok(dns) => {
                     // When the DNS resolver is available, use the default internal nameserver.
-                    params.nameservers = vec![params.gateway_ip.into()];
+                    params.nameservers = vec![
+                        params.gateway_ip.into(),
+                        params.gateway_link_local_ipv6.into(),
+                    ];
                     Some(dns)
                 }
                 Err(_) => {
@@ -610,7 +637,10 @@ impl<T: Client> Access<'_, T> {
     /// Updates the DNS nameservers based on the current consomme parameters.
     pub fn update_dns_nameservers(&mut self) {
         if self.inner.dns.is_some() {
-            self.inner.state.params.nameservers = vec![self.inner.state.params.gateway_ip.into()];
+            self.inner.state.params.nameservers = vec![
+                self.inner.state.params.gateway_ip.into(),
+                self.inner.state.params.gateway_link_local_ipv6.into(),
+            ];
         }
     }
 }
