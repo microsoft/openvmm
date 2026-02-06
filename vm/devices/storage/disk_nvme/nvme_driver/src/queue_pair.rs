@@ -962,7 +962,9 @@ impl<A: AerHandler> QueueHandler<A> {
         mut recv_cmd: mesh::Receiver<Cmd>,
         interrupt: &mut DeviceInterrupt,
     ) {
-        tracing::info!(pci_id = ?self.device_id, qid = self.qid, "Have {} outstanding IOs from before save, draining them before allowing new IO...", self.commands.len());
+        if self.drain_after_restore {
+            tracing::info!(pci_id = ?self.device_id, qid = self.qid, "Have {} outstanding IOs from before save, draining them before allowing new IO...", self.commands.len());
+        }
 
         loop {
             enum Event {
