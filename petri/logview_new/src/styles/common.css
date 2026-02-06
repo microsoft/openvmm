@@ -203,6 +203,56 @@
   text-decoration: underline;
 }
 
+/* Run details: hover-only perf link on the right edge of the Test Name column */
+.run-details-testname-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+
+.run-details-testname-link {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 3.2rem; /* reserve space so the perf button doesn't overlap */
+}
+
+.run-details-testname-perf {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease-in-out;
+  transition-delay: 0ms;
+
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
+  font-size: 0.95rem;
+  line-height: 1.2;
+  padding: 0.25rem 0.5rem;
+
+  color: #111111;
+  background: #ffffff;
+  border: 1px solid #cfd8e3;
+  border-radius: 4px;
+  text-decoration: none;
+}
+
+.virtualized-table-row:hover .run-details-testname-perf,
+.run-details-testname-cell:hover .run-details-testname-perf {
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: 300ms;
+}
+
+.run-details-testname-perf:hover {
+  background: #f3f4f6;
+}
+
 .common-failed-count {
   font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", monospace;
   color: #000000;

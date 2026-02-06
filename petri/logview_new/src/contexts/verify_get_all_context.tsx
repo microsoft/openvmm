@@ -1,3 +1,9 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+// Context to ensure a single-time verification before downloading test
+// performance from "all" branches. This is used in both the Test and
+// TestDetails. Confirming in either page verifies perpetually for the session.
 import React, { createContext, useContext, useMemo, useState } from "react";
 
 type VerifyGetAllContextValue = {
