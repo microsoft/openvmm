@@ -17,7 +17,7 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
-use pci_core::msi::MsiInterruptSet;
+use pci_core::msi::MsiConnection;
 use pci_core::test_helpers::TestPciInterruptController;
 use user_driver::backoff::Backoff;
 use vmcore::vm_task::SingleDriverBackend;
@@ -32,11 +32,11 @@ fn instantiate_controller(
 ) -> NvmeController {
     let mut mmio_reg = TestNvmeMmioRegistration {};
     let vm_task_driver = &VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let mut msi_interrupt_set = MsiInterruptSet::new();
+    let msi_conn = MsiConnection::new();
     let controller = NvmeController::new(
         vm_task_driver,
         gm.clone(),
-        &mut msi_interrupt_set,
+        msi_conn.target(),
         &mut mmio_reg,
         NvmeControllerCaps {
             msix_count: 64,
@@ -46,7 +46,7 @@ fn instantiate_controller(
     );
 
     if let Some(intc) = int_controller {
-        msi_interrupt_set.connect(intc);
+        msi_conn.connect(intc.signal_msi());
     }
     controller
 }

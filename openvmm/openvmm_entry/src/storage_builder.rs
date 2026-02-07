@@ -382,6 +382,7 @@ impl StorageBuilder {
                     namespaces: std::mem::take(&mut self.vtl0_nvme_namespaces),
                     max_io_queues: 64,
                     msix_count: 64,
+                    requests: None,
                 }
                 .into_resource(),
             });
@@ -397,15 +398,19 @@ impl StorageBuilder {
             }
         }
 
-        if !self.vtl2_nvme_namespaces.is_empty() {
-            if config
-                .hypervisor
-                .with_vtl2
-                .as_ref()
-                .is_none_or(|c| c.vtl0_alias_map)
-            {
+        if config
+            .hypervisor
+            .with_vtl2
+            .as_ref()
+            .is_none_or(|c| c.vtl0_alias_map)
+        {
+            if !self.vtl2_nvme_namespaces.is_empty() {
                 anyhow::bail!("must specify --vtl2 and --no-alias-map to offer disks to VTL2");
             }
+        } else {
+            // If VTL2 is being used, always add an NVMe controller, even
+            // if there are no namespaces, to allow for hot-plugging.
+            let (send, recv) = mesh::channel();
             config.vpci_devices.push(VpciDeviceConfig {
                 vtl: DeviceVtl::Vtl2,
                 instance_id: NVME_VTL2_INSTANCE_ID,
@@ -414,9 +419,11 @@ impl StorageBuilder {
                     namespaces: std::mem::take(&mut self.vtl2_nvme_namespaces),
                     max_io_queues: 64,
                     msix_count: 64,
+                    requests: Some(recv),
                 }
                 .into_resource(),
             });
+            resources.nvme_vtl2_rpc = Some(send);
         }
 
         let owned_pcie_controllers = std::mem::take(&mut self.pcie_nvme_controllers);
@@ -437,6 +444,7 @@ impl StorageBuilder {
                     namespaces,
                     max_io_queues: 64,
                     msix_count: 64,
+                    requests: None,
                 }
                 .into_resource(),
             });
@@ -449,15 +457,14 @@ impl StorageBuilder {
     /// OpenHCL.
     pub fn build_underhill(&self) -> Vec<StorageController> {
         let mut storage_controllers = Vec::new();
-        if !self.underhill_scsi_luns.is_empty() {
-            let controller = StorageController {
-                instance_id: UNDERHILL_VTL0_SCSI_INSTANCE.to_string(),
-                protocol: storage_controller::StorageProtocol::Scsi.into(),
-                luns: self.underhill_scsi_luns.clone(),
-                io_queue_depth: None,
-            };
-            storage_controllers.push(controller);
-        }
+        // Always create a SCSI controller, even if no LUNs configured, to allow hot-plugging
+        let controller = StorageController {
+            instance_id: UNDERHILL_VTL0_SCSI_INSTANCE.to_string(),
+            protocol: storage_controller::StorageProtocol::Scsi.into(),
+            luns: self.underhill_scsi_luns.clone(),
+            io_queue_depth: None,
+        };
+        storage_controllers.push(controller);
 
         if !self.underhill_nvme_luns.is_empty() {
             let controller = StorageController {

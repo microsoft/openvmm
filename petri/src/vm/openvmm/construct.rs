@@ -1117,6 +1117,7 @@ fn vmbus_storage_controllers_to_openvmm(
                         max_io_queues: 64,
                         msix_count: 64,
                         namespaces,
+                        requests: None,
                     }
                     .into_resource(),
                 });
