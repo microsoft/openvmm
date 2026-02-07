@@ -653,6 +653,11 @@ impl Vmgs {
             .file_info())
     }
 
+    /// Returns whether a file id is allocated
+    pub fn check_file_allocated(&self, file_id: FileId) -> bool {
+        self.state.fcbs.contains_key(&file_id)
+    }
+
     /// Get info about all the files currently in the file table
     pub fn dump_file_table(&self) -> Vec<(FileId, VmgsFileInfo)> {
         let mut file_table = self

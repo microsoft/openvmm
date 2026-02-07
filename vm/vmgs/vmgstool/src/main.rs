@@ -48,19 +48,17 @@ pub(crate) enum Error {
     Vhd1(#[source] disk_vhd1::OpenError),
     #[error("invalid disk")]
     InvalidDisk(#[source] disk_backend::InvalidDisk),
-    #[error("VMGS format")]
-    Vmgs(#[source] vmgs::Error),
+    #[error("Internal VMGS error")]
+    Vmgs(#[from] VmgsError),
     #[error("VMGS file already exists")]
     FileExists,
     #[cfg(with_encryption)]
     #[error("Adding encryption key")]
-    EncryptionKey(#[source] vmgs::Error),
+    EncryptionKey(#[source] VmgsError),
     #[error("Data file / STDOUT IO")]
     DataFile(#[source] std::io::Error),
     #[error("The VMGS file has zero size")]
     ZeroSize,
-    #[error("The VMGS file has a non zero size but the contents are empty")]
-    EmptyFile,
     #[error("Invalid VMGS file size: {0} {1}")]
     InvalidVmgsFileSize(u64, String),
     #[error("Key file IO")]
@@ -71,8 +69,6 @@ pub(crate) enum Error {
     NotEncrypted,
     #[error("File must be decrypted to perform this operation but no key was provided")]
     EncryptedNoKey,
-    #[error("File is VMGSv1 format")]
-    V1Format,
     #[error("VmgsStorageBackend")]
     VmgsStorageBackend(#[from] storage_backend::EncryptionNotSupported),
     #[error("NVRAM storage")]
@@ -100,33 +96,25 @@ pub(crate) enum Error {
     IgvmFile(#[source] anyhow::Error),
 }
 
-impl From<vmgs::Error> for Error {
-    fn from(value: vmgs::Error) -> Self {
-        match value {
-            vmgs::Error::EmptyFile => Error::EmptyFile,
-            vmgs::Error::V1Format => Error::V1Format,
-            e => Error::Vmgs(e),
-        }
-    }
-}
-
 /// Automation requires certain exit codes to be guaranteed
 /// main matches Error enum to ExitCode
 ///
-/// query-encryption must return ErrorNotEncrypted if file is not encrypted
-/// dump-headers must return ErrorEmpty when file is blank
-/// query-size must return ErrorNotFound when file id is uninitialized
-/// ExitCode::Error returned for all other errors
+/// - query-encryption must return NotEncrypted if file is not encrypted,
+/// GspById if the file contains a VMID, and GspUnknown if neither
+/// a VMID nor a key protector are present. Success indicates GspKey.
+/// - dump-headers must return Empty when the file is blank.
+/// - query-size must return NotFound when the file id is uninitialized.
+/// - Error is returned for all other errors.
 #[derive(Debug, Clone, Copy)]
 #[repr(i32)]
 enum ExitCode {
     Error = 1,
-    ErrorNotEncrypted = 2,
-    ErrorEmpty = 3,
-    ErrorNotFound = 4,
-    ErrorV1 = 5,
-    ErrorGspById = 6,
-    ErrorGspUnknown = 7,
+    NotEncrypted = 2,
+    Empty = 3,
+    NotFound = 4,
+    V1Format = 5,
+    GspById = 6,
+    GspUnknown = 7,
 }
 
 #[derive(Args)]
@@ -369,7 +357,7 @@ fn parse_legacy_args() -> Vec<String> {
         };
 
         if let Some(new_cmd) = new_cmd {
-            eprintln!("Warning: Using legacy arguments. Please migrate to the new syntax.");
+            tracing::warn!("Using legacy arguments. Please migrate to the new syntax.");
             args[1] = new_cmd.to_string();
 
             let mut index = 2;
@@ -422,27 +410,37 @@ pub fn init_tracing(verbose: bool) {
 }
 
 fn main() {
+    let verbose = false;
+    init_tracing(verbose);
+
     DefaultPool::run_with(async |_| match do_main().await {
         Ok(_) => tracing::info!("The operation completed successfully."),
         Err(e) => {
             let exit_code = match e {
-                Error::NotEncrypted => ExitCode::ErrorNotEncrypted,
-                Error::EmptyFile => ExitCode::ErrorEmpty,
-                Error::ZeroSize => ExitCode::ErrorEmpty,
-                Error::Vmgs(VmgsError::FileInfoNotAllocated) => ExitCode::ErrorNotFound,
-                Error::V1Format => ExitCode::ErrorV1,
-                Error::GspByIdEncryption => ExitCode::ErrorGspById,
-                Error::GspUnknown => ExitCode::ErrorGspUnknown,
+                Error::NotEncrypted => ExitCode::NotEncrypted,
+                Error::Vmgs(VmgsError::EmptyFile) => ExitCode::Empty,
+                Error::ZeroSize => ExitCode::Empty,
+                Error::Vmgs(VmgsError::FileInfoNotAllocated) => ExitCode::NotFound,
+                Error::Vmgs(VmgsError::V1Format) => ExitCode::V1Format,
+                Error::GspByIdEncryption => ExitCode::GspById,
+                Error::GspUnknown => ExitCode::GspUnknown,
                 _ => ExitCode::Error,
             };
 
-            eprintln!("EXIT CODE: {} ({:?})", exit_code as i32, exit_code);
-            eprintln!("ERROR: {}", e);
-            let mut error_source = std::error::Error::source(&e);
-            while let Some(e2) = error_source {
-                eprintln!("- {}", e2);
-                error_source = e2.source();
+            if verbose || matches!(exit_code, ExitCode::Error) {
+                tracing::error!("{}", e);
+                let mut error_source = std::error::Error::source(&e);
+                while let Some(e2) = error_source {
+                    tracing::error!("{}", e2);
+                    error_source = e2.source();
+                }
             }
+
+            tracing::info!(
+                "The operation completed with exit code: {} ({:?})",
+                exit_code as i32,
+                exit_code
+            );
 
             std::process::exit(exit_code as i32);
         }
@@ -451,7 +449,6 @@ fn main() {
 
 async fn do_main() -> Result<(), Error> {
     let opt = Options::parse_from(parse_legacy_args());
-    init_tracing(false);
 
     match opt {
         Options::Create {
@@ -505,7 +502,9 @@ async fn do_main() -> Result<(), Error> {
         }
         Options::DumpHeaders { file_path } => vmgs_file_dump_headers(file_path.file_path).await,
         Options::QuerySize { file_path, file_id } => {
-            vmgs_file_query_file_size(file_path.file_path, file_id.file_id).await
+            vmgs_file_query_file_size(file_path.file_path, file_id.file_id)
+                .await
+                .map(|_| ())
         }
         Options::UpdateKey {
             file_path,
@@ -588,7 +587,7 @@ async fn vmgs_update_key(
     unreachable!("encryption requires the encryption feature");
     #[cfg(with_encryption)]
     {
-        eprintln!("Updating encryption key");
+        tracing::info!("Updating encryption key");
         vmgs.update_encryption_key(new_encryption_key, encryption_alg)
             .await
             .map_err(Error::EncryptionKey)?;
@@ -642,7 +641,7 @@ fn vhdfiledisk_create(
     let exists = Path::new(path.as_ref()).exists();
 
     // open/create the file
-    eprintln!("Creating file: {}", path.as_ref().display());
+    tracing::info!("Creating file: {}", path.as_ref().display());
     let file = match fs_err::OpenOptions::new()
         .read(true)
         .write(true)
@@ -678,7 +677,7 @@ fn vhdfiledisk_create(
         ""
     };
     if needs_resize {
-        eprintln!(
+        tracing::info!(
             "Setting file size to {}{}{}",
             file_size,
             default_label,
@@ -688,9 +687,10 @@ fn vhdfiledisk_create(
         );
         file.set_len(file_size).map_err(Error::VmgsFile)?;
     } else {
-        eprintln!(
+        tracing::info!(
             "File size is already {}{}, skipping resize",
-            file_size, default_label
+            file_size,
+            default_label
         );
     }
 
@@ -699,18 +699,18 @@ fn vhdfiledisk_create(
         None
     } else {
         Vhd1Disk::open_fixed(file.try_clone().map_err(Error::VmgsFile)?.into(), false)
-            .inspect_err(|e| eprintln!("No valid VHD header found in existing file: {e:#}"))
+            .inspect_err(|e| tracing::info!("No valid VHD header found in existing file: {e:#}"))
             .ok()
     };
 
     // format the VHD if necessary
     let disk = match disk {
         Some(disk) => {
-            eprintln!("Valid VHD footer already exists, skipping VHD format");
+            tracing::info!("Valid VHD footer already exists, skipping VHD format");
             disk
         }
         None => {
-            eprintln!("Formatting VHD");
+            tracing::info!("Formatting VHD");
             Vhd1Disk::make_fixed(file.file()).map_err(Error::Vhd1)?;
             Vhd1Disk::open_fixed(file.into(), false).map_err(Error::Vhd1)?
         }
@@ -724,11 +724,11 @@ async fn vmgs_create(
     disk: Disk,
     encryption_alg_key: Option<(EncryptionAlgorithm, &[u8])>,
 ) -> Result<Vmgs, Error> {
-    eprintln!("Formatting VMGS");
+    tracing::info!("Formatting VMGS");
     let mut vmgs = Vmgs::format_new(disk, None).await?;
 
     if let Some((algorithm, encryption_key)) = encryption_alg_key {
-        eprintln!("Adding encryption key");
+        tracing::info!("Adding encryption key");
         #[cfg(with_encryption)]
         vmgs.update_encryption_key(encryption_key, algorithm)
             .await
@@ -747,7 +747,7 @@ async fn vmgs_file_write(
     key_path: Option<impl AsRef<Path>>,
     allow_overwrite: bool,
 ) -> Result<(), Error> {
-    eprintln!(
+    tracing::info!(
         "Opening source (raw data file): {}",
         data_path.as_ref().display()
     );
@@ -757,7 +757,7 @@ async fn vmgs_file_write(
 
     file.read_to_end(&mut buf).map_err(Error::DataFile)?;
 
-    eprintln!("Read {} bytes", buf.len());
+    tracing::info!("Read {} bytes", buf.len());
 
     let encrypt = key_path.is_some();
     let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadWriteIgnore).await?;
@@ -774,14 +774,14 @@ async fn vmgs_write(
     encrypt: bool,
     allow_overwrite: bool,
 ) -> Result<(), Error> {
-    eprintln!("Writing File ID {} ({:?})", file_id.0, file_id);
+    tracing::info!("Writing File ID {} ({:?})", file_id.0, file_id);
 
     if let Ok(info) = vmgs.get_file_info(file_id) {
         if !allow_overwrite && info.valid_bytes > 0 {
             return Err(Error::FileIdExists(file_id));
         }
         if !encrypt && info.encrypted {
-            eprintln!("Warning: overwriting encrypted file with plaintext data")
+            tracing::warn!("Overwriting encrypted file with plaintext data")
         }
     }
 
@@ -811,22 +811,22 @@ async fn vmgs_file_read(
 
     let file_info = vmgs.get_file_info(file_id)?;
     if !decrypt && file_info.encrypted {
-        eprintln!("Warning: Reading encrypted file without decrypting");
+        tracing::warn!("Reading encrypted file without decrypting");
     }
 
     let buf = vmgs_read(&mut vmgs, file_id, decrypt).await?;
 
-    eprintln!("Read {} bytes", buf.len());
+    tracing::info!("Read {} bytes", buf.len());
     if buf.len() != file_info.valid_bytes as usize {
-        eprintln!("Warning: Bytes read from VMGS doesn't match file info");
+        tracing::warn!("Bytes read from VMGS doesn't match file info");
     }
 
     if let Some(path) = data_path {
-        eprintln!("Writing contents to {}", path.as_ref().display());
+        tracing::info!("Writing contents to {}", path.as_ref().display());
         let mut file = File::create(path.as_ref()).map_err(Error::DataFile)?;
         file.write_all(&buf).map_err(Error::DataFile)?;
     } else {
-        eprintln!("Writing contents to stdout");
+        tracing::info!("Writing contents to stdout");
         if raw_stdout {
             let mut stdout = std::io::stdout();
             stdout.write_all(&buf).map_err(Error::DataFile)?;
@@ -855,7 +855,7 @@ async fn vmgs_file_read(
 }
 
 async fn vmgs_read(vmgs: &mut Vmgs, file_id: FileId, decrypt: bool) -> Result<Vec<u8>, Error> {
-    eprintln!("Reading File ID {} ({:?})", file_id.0, file_id);
+    tracing::info!("Reading File ID {} ({:?})", file_id.0, file_id);
     Ok(if decrypt {
         vmgs.read_file(file_id).await?
     } else {
@@ -881,9 +881,12 @@ async fn vmgs_move(
     dst: FileId,
     allow_overwrite: bool,
 ) -> Result<(), Error> {
-    eprintln!(
+    tracing::info!(
         "Moving File ID {} ({:?}) to File ID {} ({:?})",
-        src.0, src, dst.0, dst
+        src.0,
+        src,
+        dst.0,
+        dst
     );
 
     vmgs.move_file(src, dst, allow_overwrite).await?;
@@ -903,9 +906,13 @@ async fn vmgs_file_delete(file_path: impl AsRef<Path>, file_id: FileId) -> Resul
 }
 
 async fn vmgs_delete(vmgs: &mut Vmgs, file_id: FileId) -> Result<(), Error> {
-    eprintln!("Deleting File ID {} ({:?})", file_id.0, file_id);
+    tracing::info!("Deleting File ID {} ({:?})", file_id.0, file_id);
 
-    vmgs.delete_file(file_id).await?;
+    vmgs.delete_file(file_id).await.inspect_err(|e| {
+        if matches!(e, VmgsError::FileInfoNotAllocated) {
+            tracing::error!("File ID {} ({:?}) is not allocated", file_id.0, file_id);
+        }
+    })?;
 
     Ok(())
 }
@@ -948,6 +955,8 @@ fn vmgs_dump_file_table(vmgs: &Vmgs) -> Result<(), Error> {
 }
 
 async fn vmgs_file_dump_headers(file_path: impl AsRef<Path>) -> Result<(), Error> {
+    tracing::info!("Opening VMGS File: {}", file_path.as_ref().display());
+
     let file = File::open(file_path.as_ref()).map_err(Error::VmgsFile)?;
     let disk = vhdfiledisk_open(file, OpenMode::ReadOnlyIgnore)?;
 
@@ -1155,7 +1164,7 @@ async fn vmgs_file_open(
     key_path: Option<impl AsRef<Path>>,
     open_mode: OpenMode,
 ) -> Result<Vmgs, Error> {
-    eprintln!("Opening VMGS File: {}", file_path.as_ref().display());
+    tracing::info!("Opening VMGS File: {}", file_path.as_ref().display());
     let file = fs_err::OpenOptions::new()
         .read(true)
         .write(open_mode.write())
@@ -1173,7 +1182,7 @@ async fn vmgs_file_open(
         Err(Error::Vmgs(VmgsError::InvalidFormat(_)))
             | Err(Error::Vmgs(VmgsError::CorruptFormat(_)))
     ) {
-        eprintln!("VMGS is corrupted or invalid. Dumping headers.");
+        tracing::error!("VMGS is corrupted or invalid. Dumping headers.");
         let _ = vmgs_file_dump_headers(file_path.as_ref()).await;
     }
 
@@ -1200,8 +1209,8 @@ async fn vmgs_open(
     } else if vmgs.is_encrypted() {
         match open_mode {
             OpenMode::ReadWriteRequire => return Err(Error::EncryptedNoKey),
-            OpenMode::ReadOnlyWarn => eprintln!(
-                "Warning: Opening encrypted VMGS file without decrypting. File ID encryption status may be inaccurate."
+            OpenMode::ReadOnlyWarn => tracing::warn!(
+                "Opening encrypted VMGS file without decrypting. File ID encryption status may be inaccurate."
             ),
             OpenMode::ReadOnlyIgnore | OpenMode::ReadWriteIgnore => {}
         }
@@ -1211,7 +1220,7 @@ async fn vmgs_open(
 }
 
 fn read_key_path(path: impl AsRef<Path>) -> Result<Vec<u8>, Error> {
-    eprintln!("Reading encryption key: {}", path.as_ref().display());
+    tracing::info!("Reading encryption key: {}", path.as_ref().display());
     let metadata = fs_err::metadata(&path).map_err(Error::KeyFile)?;
     if metadata.len() != VMGS_ENCRYPTION_KEY_SIZE as u64 {
         return Err(Error::InvalidKeySize(
@@ -1234,53 +1243,67 @@ fn read_key_path(path: impl AsRef<Path>) -> Result<Vec<u8>, Error> {
 async fn vmgs_file_query_file_size(
     file_path: impl AsRef<Path>,
     file_id: FileId,
-) -> Result<(), Error> {
+) -> Result<u64, Error> {
     let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnlyIgnore).await?;
 
-    let file_size = vmgs_query_file_size(&vmgs, file_id)?;
+    vmgs_query_file_size(&vmgs, file_id)
+}
 
-    eprintln!(
+fn vmgs_query_file_size(vmgs: &Vmgs, file_id: FileId) -> Result<u64, Error> {
+    let file_size = vmgs
+        .get_file_info(file_id)
+        .inspect_err(|e| {
+            if matches!(e, VmgsError::FileInfoNotAllocated) {
+                tracing::info!("File ID {} ({:?}) is not allocated", file_id.0, file_id);
+            }
+        })?
+        .valid_bytes;
+
+    tracing::info!(
         "File ID {} ({:?}) has a size of {}",
-        file_id.0, file_id, file_size
+        file_id.0,
+        file_id,
+        file_size
     );
 
     // STABLE OUTPUT
     println!("{file_size}");
 
-    Ok(())
-}
-
-fn vmgs_query_file_size(vmgs: &Vmgs, file_id: FileId) -> Result<u64, Error> {
-    Ok(vmgs.get_file_info(file_id)?.valid_bytes)
+    Ok(file_size)
 }
 
 async fn vmgs_file_query_encryption(file_path: impl AsRef<Path>) -> Result<(), Error> {
-    print!("{} is ", file_path.as_ref().display());
-
     let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnlyIgnore).await?;
+
+    // let encryption_alg = vmgs.get_encryption_algorithm();
+    // let gsp_type = vmgs_get_gsp_type(&vmgs);
 
     match (vmgs.get_encryption_algorithm(), vmgs_get_gsp_type(&vmgs)) {
         (EncryptionAlgorithm::NONE, scheme) => {
-            println!("not encrypted (encryption scheme: {scheme:?})");
+            tracing::info!("The VMGS file is not encrypted (encryption scheme: {scheme:?})");
             Err(Error::NotEncrypted)
         }
         (EncryptionAlgorithm::AES_GCM, GspType::GspKey) => {
-            println!("encrypted with AES GCM encryption algorithm using GspKey");
+            tracing::info!(
+                "The VMGS file is encrypted with AES GCM encryption algorithm using GspKey"
+            );
             Ok(())
         }
         (EncryptionAlgorithm::AES_GCM, GspType::GspById) => {
-            println!("encrypted with AES GCM encryption algorithm using GspById");
+            tracing::info!(
+                "The VMGS file is encrypted with AES GCM encryption algorithm using GspById"
+            );
             Err(Error::GspByIdEncryption)
         }
         (EncryptionAlgorithm::AES_GCM, GspType::None) => {
-            println!(
-                "encrypted with AES GCM encryption algorithm using an unknown encryption scheme"
+            tracing::warn!(
+                "The VMGS file is encrypted with AES GCM encryption algorithm using an unknown encryption scheme"
             );
             Err(Error::GspUnknown)
         }
         (alg, scheme) => {
-            println!(
-                "using an unknown encryption algorithm: {alg:?} (encryption scheme: {scheme:?})"
+            tracing::error!(
+                "The VMGS file is using an unknown encryption algorithm: {alg:?} (encryption scheme: {scheme:?})"
             );
             Err(Error::EncryptionUnknown)
         }
@@ -1288,9 +1311,9 @@ async fn vmgs_file_query_encryption(file_path: impl AsRef<Path>) -> Result<(), E
 }
 
 fn vmgs_get_gsp_type(vmgs: &Vmgs) -> GspType {
-    if vmgs_query_file_size(vmgs, FileId::KEY_PROTECTOR).is_ok() {
+    if vmgs.check_file_allocated(FileId::KEY_PROTECTOR) {
         GspType::GspKey
-    } else if vmgs_query_file_size(vmgs, FileId::VM_UNIQUE_ID).is_ok() {
+    } else if vmgs.check_file_allocated(FileId::VM_UNIQUE_ID) {
         GspType::GspById
     } else {
         GspType::None
@@ -1658,7 +1681,7 @@ mod tests {
         // verify the file is empty (with non-zero size)
         {
             let result = test_vmgs_open(&path, OpenMode::ReadOnlyWarn, None).await;
-            assert!(matches!(result, Err(Error::EmptyFile)));
+            assert!(matches!(result, Err(Error::Vmgs(VmgsError::EmptyFile))));
         }
 
         // write some invalid data to the file
@@ -1675,7 +1698,7 @@ mod tests {
         // verify the vmgs is identified as corrupted
         {
             let result = test_vmgs_open(&path, OpenMode::ReadOnlyWarn, None).await;
-            matches!(result, Err(Error::Vmgs(vmgs::Error::CorruptFormat(_))));
+            matches!(result, Err(Error::Vmgs(VmgsError::CorruptFormat(_))));
         }
 
         // create a valid vmgs

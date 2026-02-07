@@ -194,7 +194,7 @@ async fn vmgs_two_keys(disk: Disk, first_key: &[u8], second_key: &[u8]) -> Resul
 
     #[cfg(with_encryption)]
     {
-        eprintln!("Adding encryption key without removing old key");
+        tracing::info!("Adding encryption key without removing old key");
         vmgs.test_add_new_encryption_key(second_key, EncryptionAlgorithm::AES_GCM)
             .await?;
     }

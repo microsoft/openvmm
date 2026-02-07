@@ -158,7 +158,7 @@ async fn dump_nvram(
         count += 1;
     }
 
-    eprintln!("Retrieved {count} NVRAM entries");
+    tracing::info!("Retrieved {count} NVRAM entries");
     Ok(())
 }
 
@@ -168,7 +168,7 @@ fn dump_nvram_from_json(
     output_path: Option<impl AsRef<Path>>,
     truncate: bool,
 ) -> Result<(), Error> {
-    eprintln!("Opening JSON file: {}", file_path.as_ref().display());
+    tracing::info!("Opening JSON file: {}", file_path.as_ref().display());
     let file = File::open(file_path.as_ref()).map_err(Error::VmgsFile)?;
 
     let runtime_state: vmgs_json::RuntimeState = serde_json::from_reader(file)?;
@@ -208,7 +208,7 @@ fn dump_nvram_from_json(
         }
     }
 
-    eprintln!("Retrieved {count} NVRAM entries");
+    tracing::info!("Retrieved {count} NVRAM entries");
     Ok(())
 }
 
@@ -368,9 +368,9 @@ async fn vmgs_file_remove_boot_entries(
         vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadWriteRequire).await?;
 
     if dry_run {
-        eprintln!("Printing Boot Entries (Dry-run)");
+        tracing::info!("Printing Boot Entries (Dry-run)");
     } else {
-        eprintln!("Deleting Boot Entries");
+        tracing::info!("Deleting Boot Entries");
     }
 
     let name = Ucs2LeVec::from("BootOrder".to_string());
@@ -424,7 +424,7 @@ async fn vmgs_file_remove_nvram_entry(
     let mut nvram_storage =
         vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadWriteRequire).await?;
 
-    eprintln!("Removing variable with name {name} and vendor {vendor}");
+    tracing::info!("Removing variable with name {name} and vendor {vendor}");
 
     let name = Ucs2LeVec::from(name);
     let vendor = Guid::from_str(&vendor)?;

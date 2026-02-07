@@ -7,7 +7,6 @@ use thiserror::Error;
 
 /// VMGS errors.
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum Error {
     /// Error reading from disk.
     #[error("read disk error")]
@@ -23,7 +22,7 @@ pub enum Error {
     #[error("invalid file id or file header")]
     FileInfo,
     /// No allocated bytes for file id being read.
-    #[error("no allocated bytes for file id being read")]
+    #[error("the requested file id was not allocated")]
     FileInfoNotAllocated,
     /// Cannot allocate 0 blocks.
     #[error("cannot allocate 0 blocks")]
@@ -52,7 +51,7 @@ pub enum Error {
     /// Corrupt VMGS file format.
     #[error("VMGS_CORRUPT_FORMAT: {0}")]
     CorruptFormat(String),
-    /// Empty VMGS file.
+    /// The VMGS file has a non zero size but the contents are empty.
     #[error("empty file")]
     EmptyFile,
     /// Cannot overwrite encrypted file with plaintext data.
