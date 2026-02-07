@@ -364,11 +364,11 @@ impl<T: Client> Access<'_, T> {
             hash_map::Entry::Vacant(e) => {
                 let ft = FourTuple {
                     dst: SocketAddress {
-                        ip: Ipv4Addr::UNSPECIFIED.into(),
+                        ip: Ipv4Addr::UNSPECIFIED,
                         port: 0,
                     },
                     src: SocketAddress {
-                        ip: ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED).into(),
+                        ip: ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED),
                         port,
                     },
                 };
@@ -414,7 +414,7 @@ impl<T: Client> Sender<'_, T> {
         let ipv4 = Ipv4Repr {
             src_addr: self.ft.dst.ip,
             dst_addr: self.ft.src.ip,
-            protocol: IpProtocol::Tcp,
+            next_header: IpProtocol::Tcp,
             payload_len: tcp.header_len() + payload.as_ref().map_or(0, |p| p.len()),
             hop_limit: 64,
         };
@@ -448,6 +448,7 @@ impl<T: Client> Sender<'_, T> {
             max_seg_size: None,
             sack_permitted: false,
             sack_ranges: [None, None, None],
+            timestamp: None,
             payload: &[],
         };
 
@@ -786,6 +787,7 @@ impl TcpConnection {
             max_seg_size: Some(max_seg_size),
             sack_permitted: false,
             sack_ranges: [None, None, None],
+            timestamp: None,
             payload: &[],
         };
 
@@ -818,6 +820,7 @@ impl TcpConnection {
                 max_seg_size: None,
                 sack_permitted: false,
                 sack_ranges: [None, None, None],
+                timestamp: None,
                 payload: &[],
             };
 
@@ -912,6 +915,7 @@ impl TcpConnection {
             max_seg_size: None,
             sack_permitted: false,
             sack_ranges: [None, None, None],
+            timestamp: None,
             payload: &[],
         };
 
@@ -1163,7 +1167,7 @@ impl TcpListener {
                         Some(src_address) => Ok(Some((
                             socket,
                             SocketAddress {
-                                ip: (*src_address.ip()).into(),
+                                ip: (*src_address.ip()),
                                 port: addr.port(),
                             },
                         ))),

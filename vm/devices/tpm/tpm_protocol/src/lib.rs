@@ -11,6 +11,7 @@ use tpm20proto::NV_INDEX_RANGE_BASE_PLATFORM_MANUFACTURER;
 use tpm20proto::NV_INDEX_RANGE_BASE_TCG_ASSIGNED;
 use tpm20proto::ReservedHandle;
 use tpm20proto::TPM20_HT_PERSISTENT;
+use tpm20proto::TpmaNvBits;
 use tpm20proto::TpmaObject;
 use tpm20proto::TpmaObjectBits;
 
@@ -55,3 +56,22 @@ pub fn expected_ak_attributes() -> TpmaObject {
         .with_sign_encrypt(true)
         .into()
 }
+
+/// Expected NVRAM index attributes for a platform-created AKCert index.
+pub fn platform_akcert_attributes() -> TpmaNvBits {
+    TpmaNvBits::new()
+        .with_nv_authread(true)
+        .with_nv_authwrite(true)
+        .with_nv_ownerread(true)
+        .with_nv_platformcreate(true)
+        .with_nv_no_da(true)
+}
+
+/// Default vTPM version provisioned for a new VMGS.
+pub const TPM_DEFAULT_VERSION: &str = "1.38";
+
+/// Default vTPM NVRAM size provisioned for a new VMGS.
+pub const TPM_DEFAULT_SIZE: usize = 32768;
+
+/// Default NVRAM index size provisioned for AKCert.
+pub const TPM_DEFAULT_AKCERT_SIZE: usize = 4096;

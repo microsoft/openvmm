@@ -459,6 +459,10 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
 
         [l0, l1, l2, l3, l4]
     }
+
+    fn update_xsave_dependencies(&self, _xsave_support: u64, _results: &mut CpuidResults) {
+        // No SNP-specific updates
+    }
 }
 
 pub struct SnpCpuidIterator<'a> {

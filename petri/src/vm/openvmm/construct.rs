@@ -842,6 +842,7 @@ impl PetriVmConfigSetupCore<'_> {
             },
             com1: true,
             com2: true,
+            serial_tx_only: false,
             vmbus_redirection: *vmbus_redirect,
             vtl2_settings: None, // Will be added at startup to allow tests to modify
             vmgs: memdiff_vmgs(self.vmgs)?,
@@ -1120,6 +1121,7 @@ fn vmbus_storage_controllers_to_openvmm(
                         max_io_queues: 64,
                         msix_count: 64,
                         namespaces,
+                        requests: None,
                     }
                     .into_resource(),
                 });

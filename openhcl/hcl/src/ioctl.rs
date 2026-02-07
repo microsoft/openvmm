@@ -127,6 +127,8 @@ pub enum Error {
     AllocVp(#[source] anyhow::Error),
     #[error("failed to map or unmap redirected device interrupt")]
     MapRedirectedDeviceInterrupt(#[source] nix::Error),
+    #[error("failed to restore partition time")]
+    RestorePartitionTime(#[source] nix::Error),
 }
 
 /// Error for IOCTL errors specifically.
@@ -342,6 +344,7 @@ pub(crate) mod ioctls {
     const MSHV_VTL_RETURN_TO_LOWER_VTL: u16 = 0x27;
     const MSHV_SET_VP_REGISTERS: u16 = 0x6;
     const MSHV_GET_VP_REGISTERS: u16 = 0x5;
+    const MSHV_RESTORE_PARTITION_TIME: u16 = 0x13;
     const MSHV_HVCALL_SETUP: u16 = 0x1E;
     const MSHV_HVCALL: u16 = 0x1F;
     const MSHV_VTL_ADD_VTL0_MEMORY: u16 = 0x21;
@@ -432,6 +435,15 @@ pub(crate) mod ioctls {
         pub apic_id: u32,
         pub create_mapping: u8,
         pub padding: [u8; 7],
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    pub struct mshv_restore_partition_time {
+        pub tsc_sequence: u32,
+        pub reserved: u32,
+        pub reference_time_in_100_ns: u64,
+        pub tsc: u64,
     }
 
     ioctl_none!(
@@ -597,6 +609,14 @@ pub(crate) mod ioctls {
         MSHV_IOCTL,
         MSHV_MAP_REDIRECTED_DEVICE_INTERRUPT,
         mshv_map_device_int
+    );
+
+    ioctl_write_ptr!(
+        /// Restore partition time.
+        hcl_restore_partition_time,
+        MSHV_IOCTL,
+        MSHV_RESTORE_PARTITION_TIME,
+        mshv_restore_partition_time
     );
 }
 
@@ -2501,5 +2521,29 @@ impl Hcl {
         }
 
         Ok(param.vector)
+    }
+
+    /// Restore partition time. This is typically called after resume from
+    /// hibernate to synchronize the TSC with the value at hibernate time.
+    pub fn restore_partition_time(
+        &self,
+        tsc_sequence: u32,
+        reference_time_in_100_ns: u64,
+        tsc: u64,
+    ) -> Result<(), Error> {
+        let partition_time = mshv_restore_partition_time {
+            tsc_sequence,
+            reserved: 0,
+            reference_time_in_100_ns,
+            tsc,
+        };
+
+        // SAFETY: ioctl has no prerequisites.
+        unsafe {
+            hcl_restore_partition_time(self.mshv_vtl.file.as_raw_fd(), &partition_time)
+                .map_err(Error::RestorePartitionTime)?;
+        }
+
+        Ok(())
     }
 }

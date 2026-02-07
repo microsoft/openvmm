@@ -203,6 +203,7 @@ impl<D: DeviceBacking> IoQueue<D> {
         interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<D>>,
         mem_block: MemoryBlock,
+        device_id: &str,
         saved_state: &IoQueueSavedState,
         bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
@@ -216,6 +217,7 @@ impl<D: DeviceBacking> IoQueue<D> {
             interrupt,
             registers.clone(),
             mem_block,
+            device_id,
             queue_data,
             bounce_buffer,
             NoOpAerHandler,
@@ -829,6 +831,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     interrupt0,
                     registers.clone(),
                     mem_block,
+                    &pci_id,
                     a,
                     bounce_buffer,
                     AdminAerHandler::new(),
@@ -916,6 +919,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     interrupt,
                     registers.clone(),
                     mem_block,
+                    &pci_id,
                     q,
                     bounce_buffer,
                 )?;
@@ -1177,6 +1181,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             interrupt,
             self.registers.clone(),
             proto.mem,
+            &pci_id,
             &proto.save_state,
             self.bounce_buffer,
         )
@@ -1397,15 +1402,53 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
         &mut self,
         worker_state: &mut WorkerState,
     ) -> anyhow::Result<NvmeDriverWorkerSavedState> {
+        tracing::info!(pci_id = ?self.device.id(), "saving nvme driver worker state: admin queue");
         let admin = match self.admin.as_ref() {
-            Some(a) => Some(a.save().await?),
-            None => None,
+            Some(a) => match a.save().await {
+                Ok(admin_state) => {
+                    tracing::info!(
+                        pci_id = ?self.device.id(),
+                        id = admin_state.qid,
+                        pending_commands_count = admin_state.handler_data.pending_cmds.commands.len(),
+                        "saved admin queue",
+                    );
+                    Some(admin_state)
+                }
+                Err(e) => {
+                    tracing::error!(
+                            pci_id = ?self.device.id(),
+                            error = e.as_ref() as &dyn std::error::Error,
+                            "failed to save admin queue",
+                    );
+                    return Err(e);
+                }
+            },
+            None => {
+                tracing::warn!(pci_id = ?self.device.id(), "no admin queue saved");
+                None
+            }
         };
 
-        let io: Vec<IoQueueSavedState> = join_all(self.io.drain(..).map(async |q| q.save().await))
-            .await
+        tracing::info!(pci_id = ?self.device.id(), "saving nvme driver worker state: io queues");
+        let (ok, errs): (Vec<_>, Vec<_>) =
+            join_all(self.io.drain(..).map(async |q| q.save().await))
+                .await
+                .into_iter()
+                .partition(Result::is_ok);
+        if !errs.is_empty() {
+            for e in errs.into_iter().map(Result::unwrap_err) {
+                tracing::error!(
+                    pci_id = ?self.device.id(),
+                    error = e.as_ref() as &dyn std::error::Error,
+                    "failed to save io queue",
+                );
+            }
+            return Err(anyhow::anyhow!("failed to save one or more io queues"));
+        }
+
+        let io: Vec<IoQueueSavedState> = ok
             .into_iter()
-            .flatten()
+            .map(Result::unwrap)
             // Don't forget to include any queues that were saved from a _previous_ save, but were never restored
             // because they didn't see any IO.
             .chain(
@@ -1414,16 +1457,6 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
                     .map(|(_cpu, proto_queue)| proto_queue.save_state),
             )
             .collect();
-
-        match admin {
-            None => tracing::warn!(pci_id = ?self.device.id(), "no admin queue saved"),
-            Some(ref admin_state) => tracing::info!(
-                pci_id = ?self.device.id(),
-                id = admin_state.qid,
-                pending_commands_count = admin_state.handler_data.pending_cmds.commands.len(),
-                "saved admin queue",
-            ),
-        }
 
         match io.is_empty() {
             true => tracing::warn!(pci_id = ?self.device.id(), "no io queues saved"),

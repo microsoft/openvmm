@@ -85,6 +85,7 @@ serial_16550_resources.workspace = true
 storage_string.workspace = true
 storvsp.workspace = true
 storvsp_resources.workspace = true
+tpm_protocol.workspace = true
 tpm_resources.workspace = true
 tpm_device = { workspace = true, features = ["tpm"] }
 tracelimit.workspace = true
@@ -131,6 +132,7 @@ vmcore.workspace = true
 vm_resource.workspace = true
 vmgs = { workspace = true, features = ["encryption_ossl", "save_restore"] }
 vmgs_broker = { workspace = true, features = ["encryption_ossl"] }
+vmgs_format.workspace = true
 vmgs_resources.workspace = true
 x86defs.workspace = true
 

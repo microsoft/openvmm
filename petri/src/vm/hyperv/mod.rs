@@ -715,9 +715,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     }
 
     fn take_framebuffer_access(&mut self) -> Option<vm::HyperVFramebufferAccess> {
-        // TODO: fix gen 1 screenshots
-        (!self.properties.is_isolated && !self.properties.is_pcat)
-            .then(|| self.vm.get_framebuffer_access())
+        (!self.properties.is_isolated).then(|| self.vm.get_framebuffer_access())
     }
 
     async fn reset(&mut self) -> anyhow::Result<()> {

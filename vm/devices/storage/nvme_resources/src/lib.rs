@@ -8,6 +8,7 @@
 use crate::fault::FaultConfiguration;
 use guid::Guid;
 use mesh::MeshPayload;
+use mesh::rpc::FailableRpc;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::kind::DiskHandleKind;
@@ -26,10 +27,21 @@ pub struct NvmeControllerHandle {
     pub max_io_queues: u16,
     /// The initial set of namespaces.
     pub namespaces: Vec<NamespaceDefinition>,
+    /// Runtime request channel for hot add/remove of namespaces.
+    pub requests: Option<mesh::Receiver<NvmeControllerRequest>>,
 }
 
 impl ResourceId<PciDeviceHandleKind> for NvmeControllerHandle {
     const ID: &'static str = "nvme";
+}
+
+/// A runtime request to the NVMe controller.
+#[derive(MeshPayload)]
+pub enum NvmeControllerRequest {
+    /// Add a namespace.
+    AddNamespace(FailableRpc<NamespaceDefinition, ()>),
+    /// Remove a namespace by its NSID.
+    RemoveNamespace(FailableRpc<u32, ()>),
 }
 
 /// A handle to a NVMe fault controller.

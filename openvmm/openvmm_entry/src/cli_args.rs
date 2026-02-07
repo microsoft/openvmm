@@ -266,6 +266,10 @@ options:
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com2_serial: Option<SerialConfigCli>,
 
+    /// Only allow guest to host serial traffic
+    #[clap(long)]
+    pub serial_tx_only: bool,
+
     /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none))
     #[clap(long, value_name = "SERIAL")]
     pub debugcon: Option<DebugconSerialConfigCli>,
@@ -643,6 +647,35 @@ Options:
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_switch: Vec<GenericPcieSwitchCli>,
+
+    /// Attach a PCIe remote device to a downstream port
+    #[clap(long_help = r#"
+Attach PCIe devices to root ports or downstream switch ports
+which are implemented in a simulator running in a remote process.
+
+Examples:
+    # Attach to root port rc0rp0 with default socket
+    --pcie-remote rc0rp0
+
+    # Attach with custom socket path
+    --pcie-remote rc0rp0,socket=/tmp/custom.sock
+
+    # Specify HU and controller identifiers
+    --pcie-remote rc0rp0,hu=1,controller=0
+
+    # Multiple devices on different ports
+    --pcie-remote rc0rp0,socket=/tmp/dev0.sock
+    --pcie-remote rc0rp1,socket=/tmp/dev1.sock
+
+Syntax: <port_name>[,opt=arg,...]
+
+Options:
+    `socket=<path>`                 Unix socket path (default: /tmp/qemu-pci-remote-0-ep.sock)
+    `hu=<value>`                    Hardware unit identifier (default: 0)
+    `controller=<value>`            Controller identifier (default: 0)
+"#)]
+    #[clap(long, conflicts_with("pcat"))]
+    pub pcie_remote: Vec<PcieRemoteCli>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1652,6 +1685,76 @@ impl FromStr for GenericPcieSwitchCli {
     }
 }
 
+/// CLI configuration for a PCIe remote device.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PcieRemoteCli {
+    /// Name of the PCIe downstream port to attach to.
+    pub port_name: String,
+    /// Unix socket path for the remote simulator.
+    pub socket_path: Option<String>,
+    /// Hardware unit identifier for plug request.
+    pub hu: u16,
+    /// Controller identifier for plug request.
+    pub controller: u16,
+}
+
+impl FromStr for PcieRemoteCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut opts = s.split(',');
+        let port_name = opts.next().context("expected port name")?;
+        if port_name.is_empty() {
+            anyhow::bail!("must provide a port name");
+        }
+
+        let mut socket_path = None;
+        let mut hu = 0u16;
+        let mut controller = 0u16;
+
+        for opt in opts {
+            let mut kv = opt.split('=');
+            let key = kv.next().context("expected option name")?;
+            let value = kv.next();
+
+            match key {
+                "socket" => {
+                    let path = value.context("socket requires a path")?;
+                    if let Some(extra) = kv.next() {
+                        anyhow::bail!("unexpected token: '{extra}'")
+                    }
+                    if path.is_empty() {
+                        anyhow::bail!("socket path cannot be empty");
+                    }
+                    socket_path = Some(path.to_string());
+                }
+                "hu" => {
+                    let val = value.context("hu requires a value")?;
+                    if let Some(extra) = kv.next() {
+                        anyhow::bail!("unexpected token: '{extra}'")
+                    }
+                    hu = val.parse().context("failed to parse hu")?;
+                }
+                "controller" => {
+                    let val = value.context("controller requires a value")?;
+                    if let Some(extra) = kv.next() {
+                        anyhow::bail!("unexpected token: '{extra}'")
+                    }
+                    controller = val.parse().context("failed to parse controller")?;
+                }
+                _ => anyhow::bail!("unknown option: '{key}'"),
+            }
+        }
+
+        Ok(PcieRemoteCli {
+            port_name: port_name.to_string(),
+            socket_path,
+            hu,
+            controller,
+        })
+    }
+}
+
 /// Read a environment variable that may / may-not have a target-specific
 /// prefix. e.g: `default_value_from_arch_env("FOO")` would first try and read
 /// from `FOO`, and if that's not found, it will try `X86_64_FOO`.
@@ -2391,5 +2494,61 @@ mod tests {
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=bad").is_err());
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=").is_err());
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,invalid_flag").is_err());
+    }
+
+    #[test]
+    fn test_pcie_remote_from_str() {
+        // Basic port name only
+        assert_eq!(
+            PcieRemoteCli::from_str("rc0rp0").unwrap(),
+            PcieRemoteCli {
+                port_name: "rc0rp0".to_string(),
+                socket_path: None,
+                hu: 0,
+                controller: 0,
+            }
+        );
+
+        // With socket path
+        assert_eq!(
+            PcieRemoteCli::from_str("rc0rp0,socket=/tmp/custom.sock").unwrap(),
+            PcieRemoteCli {
+                port_name: "rc0rp0".to_string(),
+                socket_path: Some("/tmp/custom.sock".to_string()),
+                hu: 0,
+                controller: 0,
+            }
+        );
+
+        // With all options
+        assert_eq!(
+            PcieRemoteCli::from_str("myport,socket=/tmp/dev.sock,hu=1,controller=2").unwrap(),
+            PcieRemoteCli {
+                port_name: "myport".to_string(),
+                socket_path: Some("/tmp/dev.sock".to_string()),
+                hu: 1,
+                controller: 2,
+            }
+        );
+
+        // Only hu and controller
+        assert_eq!(
+            PcieRemoteCli::from_str("port0,hu=5,controller=3").unwrap(),
+            PcieRemoteCli {
+                port_name: "port0".to_string(),
+                socket_path: None,
+                hu: 5,
+                controller: 3,
+            }
+        );
+
+        // Error cases
+        assert!(PcieRemoteCli::from_str("").is_err());
+        assert!(PcieRemoteCli::from_str("port,socket=").is_err());
+        assert!(PcieRemoteCli::from_str("port,hu=").is_err());
+        assert!(PcieRemoteCli::from_str("port,hu=bad").is_err());
+        assert!(PcieRemoteCli::from_str("port,controller=").is_err());
+        assert!(PcieRemoteCli::from_str("port,controller=bad").is_err());
+        assert!(PcieRemoteCli::from_str("port,unknown=value").is_err());
     }
 }
