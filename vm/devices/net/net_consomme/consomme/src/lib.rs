@@ -25,6 +25,8 @@ mod icmp;
 mod ndp;
 mod tcp;
 mod udp;
+
+mod unix;
 mod windows;
 
 use inspect::Inspect;
@@ -58,6 +60,7 @@ pub struct Consomme {
     udp: udp::Udp,
     icmp: icmp::Icmp,
     dns: Option<dns_resolver::DnsResolver>,
+    host_has_ipv6: bool,
 }
 
 #[derive(Inspect)]
@@ -110,6 +113,10 @@ pub struct ConsommeParams {
     /// Idle timeout for UDP connections.
     #[inspect(debug)]
     pub udp_timeout: Duration,
+    /// If true, skip checks for host IPv6 support and assume the host has a
+    /// routable IPv6 address.
+    #[inspect(display)]
+    pub skip_ipv6_checks: bool,
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -141,6 +148,7 @@ impl ConsommeParams {
             client_ip_ipv6: None,
             // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
             udp_timeout: Duration::from_secs(300),
+            skip_ipv6_checks: false,
         })
     }
 
@@ -215,6 +223,17 @@ impl ConsommeParams {
                     || octets.starts_with(&[0xfe, 0xc0])) // deprecated site-local
             })
             .collect()
+    }
+
+    /// Returns the default internal nameserver list for use when the DNS
+    /// resolver is active. Includes the IPv6 gateway only when the host
+    /// has a routable IPv6 address.
+    fn internal_nameservers(&self, host_has_ipv6: bool) -> Vec<IpAddress> {
+        let mut ns = vec![self.gateway_ip.into()];
+        if host_has_ipv6 {
+            ns.push(self.gateway_link_local_ipv6.into());
+        }
+        ns
     }
 }
 
@@ -416,17 +435,38 @@ impl IpAddresses {
     }
 }
 
+/// Returns `true` if the given IPv6 address is a globally routable unicast
+/// address (i.e., not loopback, unspecified, or link-local).
+fn is_routable_ipv6(addr: &std::net::Ipv6Addr) -> bool {
+    !addr.is_loopback() && !addr.is_unspecified() && !addr.is_unicast_link_local()
+}
+
 impl Consomme {
     /// Creates a new consomme instance with specified state.
     pub fn new(mut params: ConsommeParams) -> Self {
+        let host_has_ipv6 = if params.skip_ipv6_checks {
+            true
+        } else {
+            #[cfg(windows)]
+            let host_has_ipv6_result = windows::host_has_ipv6_address().map_err(|e| e.to_string());
+            #[cfg(unix)]
+            let host_has_ipv6_result = unix::host_has_ipv6_address().map_err(|e| e.to_string());
+
+            match host_has_ipv6_result {
+                Ok(has_ipv6) => has_ipv6,
+                Err(e) => {
+                    tracelimit::warn_ratelimited!(
+                        "failed to check for host IPv6 address, assuming no IPv6 support: {e}"
+                    );
+                    false
+                }
+            }
+        };
         let dns =
             match dns_resolver::DnsResolver::new(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS) {
                 Ok(dns) => {
                     // When the DNS resolver is available, use the default internal nameserver.
-                    params.nameservers = vec![
-                        params.gateway_ip.into(),
-                        params.gateway_link_local_ipv6.into(),
-                    ];
+                    params.nameservers = params.internal_nameservers(host_has_ipv6);
                     Some(dns)
                 }
                 Err(_) => {
@@ -446,6 +486,7 @@ impl Consomme {
             udp: udp::Udp::new(timeout),
             icmp: icmp::Icmp::new(),
             dns,
+            host_has_ipv6,
         }
     }
 
@@ -526,7 +567,11 @@ impl<T: Client> Access<'_, T> {
         let frame = EthernetRepr::parse(&frame_packet)?;
         match frame.ethertype {
             EthernetProtocol::Ipv4 => self.handle_ipv4(&frame, frame_packet.payload(), checksum)?,
-            EthernetProtocol::Ipv6 => self.handle_ipv6(&frame, frame_packet.payload(), checksum)?,
+            EthernetProtocol::Ipv6 => {
+                if self.inner.host_has_ipv6 {
+                    self.handle_ipv6(&frame, frame_packet.payload(), checksum)?
+                }
+            }
             EthernetProtocol::Arp => self.handle_arp(&frame, frame_packet.payload())?,
             _ => return Err(DropReason::UnsupportedEthertype(frame.ethertype)),
         }
@@ -637,10 +682,11 @@ impl<T: Client> Access<'_, T> {
     /// Updates the DNS nameservers based on the current consomme parameters.
     pub fn update_dns_nameservers(&mut self) {
         if self.inner.dns.is_some() {
-            self.inner.state.params.nameservers = vec![
-                self.inner.state.params.gateway_ip.into(),
-                self.inner.state.params.gateway_link_local_ipv6.into(),
-            ];
+            self.inner.state.params.nameservers = self
+                .inner
+                .state
+                .params
+                .internal_nameservers(self.inner.host_has_ipv6);
         }
     }
 }
