@@ -973,6 +973,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Sets whether AziHsm support is enabled in UEFI.
+    pub fn with_azi_hsm_enabled(mut self, enable: bool) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("AziHsm is only supported for UEFI firmware.")
+            .azi_hsm_enabled = enable;
+        self
+    }
+
     /// Run the VM with Enable VMBus relay enabled
     pub fn with_vmbus_redirect(mut self, enable: bool) -> Self {
         self.config
@@ -1733,6 +1743,8 @@ pub struct UefiConfig {
     pub default_boot_always_attempt: bool,
     /// Enable vPCI boot (for NVMe)
     pub enable_vpci_boot: bool,
+    /// Enable AziHsm support
+    pub azi_hsm_enabled: bool,
 }
 
 impl Default for UefiConfig {
@@ -1743,6 +1755,7 @@ impl Default for UefiConfig {
             disable_frontpage: true,
             default_boot_always_attempt: false,
             enable_vpci_boot: false,
+            azi_hsm_enabled: false,
         }
     }
 }

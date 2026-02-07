@@ -644,6 +644,7 @@ impl PetriVmConfigSetupCore<'_> {
                             disable_frontpage,
                             default_boot_always_attempt,
                             enable_vpci_boot,
+                            azi_hsm_enabled,
                         },
                 },
             ) => {
@@ -662,6 +663,7 @@ impl PetriVmConfigSetupCore<'_> {
                     uefi_console_mode: Some(openvmm_defs::config::UefiConsoleMode::Com1),
                     default_boot_always_attempt: *default_boot_always_attempt,
                     bios_guid: Guid::new_random(),
+                    azi_hsm_enabled: *azi_hsm_enabled,
                 }
             }
             (
@@ -801,6 +803,7 @@ impl PetriVmConfigSetupCore<'_> {
                 disable_frontpage,
                 default_boot_always_attempt,
                 enable_vpci_boot,
+                azi_hsm_enabled,
             },
             OpenHclConfig { vmbus_redirect, .. },
         ) = match self.firmware {
@@ -854,6 +857,7 @@ impl PetriVmConfigSetupCore<'_> {
             igvm_attest_test_config: None,
             test_gsp_by_id,
             efi_diagnostics_log_level: Default::default(), // TODO: make configurable
+            azi_hsm_enabled: *azi_hsm_enabled,
         };
 
         Ok((ged, guest_request_send))

@@ -207,6 +207,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                         get_protocol::dps_json::EfiDiagnosticsLogLevelType::FULL
                     }
                 },
+                azi_hsm_enabled: resource.azi_hsm_enabled,
             },
             halt,
             resource.firmware_event_send,
