@@ -61,6 +61,8 @@ export function Tests(): React.JSX.Element {
         const abortController = new AbortController();
 
         if (branchFilter === "all" && !verified) {
+                        setFetchedCount(0);
+            setTotalToFetch(0);
             return;
         }
 
