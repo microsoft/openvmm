@@ -25,9 +25,7 @@ export function TestDetails(): React.JSX.Element {
     const [fetchedCount, setFetchedCount] = useState<number>(0);
     const [totalToFetch, setTotalToFetch] = useState<number | null>(null);
     const queryClient = useQueryClient();
-
-    const {verified, setVerified} = useVerifyGetAll();
-    
+    const {verified, setVerified} = useVerifyGetAll();    
 
     const { architecture: archParam, testName: encodedTestName } = useParams();
     // Build full test name depending on whether new (architecture + remainder) or legacy route
