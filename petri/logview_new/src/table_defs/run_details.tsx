@@ -71,6 +71,8 @@ export const createColumns = (runId: string): ColumnDef<TestResult>[] => [
           <Link
             to={`/tests/${encodedArchitecture}/${encodedRemainder}`}
             className="run-details-testname-perf"
+            aria-label={`View perf for ${fullTestName}`}
+            title={`View perf for ${fullTestName}`}
           >
             perf
           </Link>
