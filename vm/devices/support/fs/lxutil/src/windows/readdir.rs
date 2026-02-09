@@ -256,8 +256,8 @@ impl DirEntryCursor {
         if self.entries.is_empty() {
             return false;
         }
-        // Cache is valid if offset is within [window_start, last_entry.offset)
-        offset >= self.window_start && offset < self.entries.last().map_or(0, |e| e.offset)
+        // Cache is valid if offset is within [window_start, last_entry.offset]
+        offset >= self.window_start && offset <= self.entries.last().map_or(0, |e| e.offset)
     }
 
     /// Find the index of the first entry to serve for the given offset.
