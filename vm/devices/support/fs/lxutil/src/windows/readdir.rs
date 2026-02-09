@@ -30,9 +30,20 @@ const BUFFER_EXTRA_SIZE: usize = 0x200;
 ///
 /// The Linux kernel rounds up getdents buffer requests to 4096 bytes. With
 /// typical directory entry sizes, this allows approximately 32 entries per
-/// kernel request. By caching 64 entries (2x the kernel buffer), we reduce
-/// the number of repeated guest filesystem enumeration calls that would
-/// be needed when the guest requests small buffers while deleting entries.
+/// kernel request. By caching 64 entries (2x the kernel (due to a cache miss
+/// buffer), we reduce the number of repeated guest filesystem enumeration calls
+/// that would be needed when the guest requests small buffers while deleting
+/// entries.
+///
+/// The cache provides a sliding window of directory entries with stable
+/// offsets.  This ensures stable enumeration even when files are deleted
+/// between calls: offsets remain valid within the cache window, so the guest
+/// won't skip or repeat entries due to host-side directory changes.
+///
+/// Note: when serving entries from the cache, we return only the entries
+/// currently cached and then stop (rather than partially serving the cache and
+/// immediately refilling to serve more). By stopping at the cache boundary, the
+/// next call naturally starts a fresh window at the boundary offset.
 const CACHE_MAX_ENTRIES: usize = 64;
 
 #[expect(non_snake_case)]
@@ -245,17 +256,20 @@ impl DirEntryCursor {
         if self.entries.is_empty() {
             return false;
         }
-        // Cache is valid if offset is within [window_start, last_entry.offset]
-        offset >= self.window_start && offset < self.entries.last().map_or(0, |e| e.offset + 1)
+        // Cache is valid if offset is within [window_start, last_entry.offset)
+        offset >= self.window_start && offset < self.entries.last().map_or(0, |e| e.offset)
     }
 
     /// Find the index of the first entry to serve for the given offset.
     /// Returns the index of the first entry with offset > given offset.
     fn find_start_index(&self, offset: u64) -> usize {
         assert!(offset >= self.window_start);
-        self.entries
-            .binary_search_by(|e| e.offset.cmp(&offset))
-            .map_or_else(|idx| idx, |idx| idx + 1)
+        let idx = offset - self.window_start + 1;
+        if idx < self.entries.len() as u64 {
+            idx as usize
+        } else {
+            self.entries.len()
+        }
     }
 
     /// Get entries starting from the given offset.
