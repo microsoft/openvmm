@@ -816,7 +816,6 @@ dependencies = [
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
- "winapi",
  "windows-sys 0.61.0",
 ]
 
