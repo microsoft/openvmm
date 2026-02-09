@@ -264,14 +264,9 @@ impl DirEntryCursor {
     /// Returns the index of the first entry with offset > given offset.
     fn find_start_index(&self, offset: u64) -> usize {
         assert!(offset >= self.window_start);
-        let idx = offset - self.window_start + 1;
-        if idx < self.entries.len() as u64 {
-            idx as usize
-        } else {
-            self.entries.len()
-        }
+        ((offset - self.window_start) as usize).min(self.entries.len())
     }
-
+    
     /// Get entries starting from the given offset.
     fn entries_from(&self, offset: u64) -> &[CachedDirEntry] {
         let start = self.find_start_index(offset);
