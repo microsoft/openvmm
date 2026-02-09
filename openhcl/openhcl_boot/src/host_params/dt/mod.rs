@@ -442,10 +442,15 @@ fn topology_from_host_dt(
             MemoryAllocationMode::Vtl2 { .. }
         ) {
         // Decide the amount of mmio VTL2 should allocate, which is different
-        // depending on the heuristic used. On a newer host where a vtl2 mmio
-        // range is provided, use the size provided by the host. If the host did
-        // not provide a vtl2 mmio range, then use the maximum of the host
-        // provided value and the calculated default.
+        // depending on the heuristic used.
+        //
+        // On a newer host where a vtl2 mmio range is provided inside the
+        // vmbus_vtl2 device tree node, use the size provided by the host inside
+        // the openhcl node for memory allocation mode.
+        //
+        // If the host did not provide a vtl2 mmio range, then use the maximum
+        // of the host provided value inside the openhcl node and the calculated
+        // default.
         let host_provided_size = match parsed.memory_allocation_mode {
             MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
             _ => 0,
