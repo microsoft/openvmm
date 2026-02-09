@@ -15,9 +15,11 @@ use crate::single_threaded::SingleThreaded;
 use core::cell::RefCell;
 use core::fmt;
 use core::fmt::Write;
+use memory_range::MemoryRange;
 #[cfg(target_arch = "x86_64")]
 use minimal_rt::arch::InstrIoAccess;
 use minimal_rt::arch::Serial;
+use string_page_buf::StringBuffer;
 
 enum Logger {
     #[cfg(target_arch = "x86_64")]
@@ -42,14 +44,41 @@ impl Logger {
 
 pub struct BootLogger {
     logger: SingleThreaded<RefCell<Logger>>,
+    in_memory_logger: SingleThreaded<RefCell<Option<StringBuffer<'static>>>>,
 }
 
 pub static BOOT_LOGGER: BootLogger = BootLogger {
     logger: SingleThreaded(RefCell::new(Logger::None)),
+    in_memory_logger: SingleThreaded(RefCell::new(None)),
 };
 
-/// Initialize the boot logger. This replaces any previous init calls.
-pub fn boot_logger_init(isolation_type: IsolationType, com3_serial_available: bool) {
+/// Initialize the in-memory log buffer. This range must be identity mapped, and
+/// unused by anything else.
+pub fn boot_logger_memory_init(buffer: MemoryRange) {
+    if buffer.is_empty() {
+        return;
+    }
+
+    let log_buffer_ptr = buffer.start() as *mut u8;
+    // SAFETY: At file build time, this range is enforced to be unused by
+    // anything else. The rest of the bootshim will mark this range as reserved
+    // and not free to be used by anything else.
+    //
+    // The VA is valid as we are identity mapped.
+    let log_buffer_slice =
+        unsafe { core::slice::from_raw_parts_mut(log_buffer_ptr, buffer.len() as usize) };
+
+    *BOOT_LOGGER.in_memory_logger.borrow_mut() = Some(
+        StringBuffer::new(log_buffer_slice)
+            .expect("log buffer should be valid from fixed at build config"),
+    );
+}
+
+/// Initialize the runtime boot logger, for logging to serial or other outputs.
+///
+/// If a runtime logger was initialized, emit any in-memory log to the
+/// configured runtime output.
+pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_available: bool) {
     let mut logger = BOOT_LOGGER.logger.borrow_mut();
 
     *logger = match (isolation_type, com3_serial_available) {
@@ -61,45 +90,32 @@ pub fn boot_logger_init(isolation_type: IsolationType, com3_serial_available: bo
         (IsolationType::Tdx, true) => Logger::TdxSerial(Serial::init(TdxIoAccess)),
         _ => Logger::None,
     };
+
+    // Emit any in-memory log to the runtime logger.
+    if let Some(buf) = BOOT_LOGGER.in_memory_logger.borrow_mut().as_mut() {
+        let _ = logger.write_str(buf.contents());
+    }
 }
 
 impl Write for &BootLogger {
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        if let Some(buf) = self.in_memory_logger.borrow_mut().as_mut() {
+            // Ignore the errors from the in memory logger.
+            let _ = buf.append(s);
+        }
         self.logger.borrow_mut().write_str(s)
     }
 }
 
-/// Log a message. These messages are always emitted regardless of debug or
-/// release, if a corresponding logger was configured.
-///
-/// If you want to log something just for local debugging, use [`debug_log!`]
-/// instead.
-macro_rules! log {
-    () => {};
-    ($($arg:tt)*) => {
-        {
-            use core::fmt::Write;
-            let _ = writeln!(&$crate::boot_logger::BOOT_LOGGER, $($arg)*);
-        }
-    };
+impl log::Log for BootLogger {
+    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+        // TODO: filter level
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        let _ = writeln!(&*self, "[{}] {}", record.level(), record.args());
+    }
+
+    fn flush(&self) {}
 }
-
-pub(crate) use log;
-
-/// This emits the same as [`log!`], but is intended for local debugging and is
-/// linted against to not pass CI. Use for local development when you just need
-/// debug prints.
-//
-// Expect unused macros for the same reason as unused_imports below, as there
-// should be no usage of this macro normally.
-#[expect(unused_macros)]
-macro_rules! debug_log {
-    ($($arg:tt)*) => {
-        $crate::boot_logger::log!($($arg)*)
-    };
-}
-
-// Expect unused imports because there should be no normal usage in code due to
-// lints against it in CI.
-#[expect(unused_imports)]
-pub(crate) use debug_log;

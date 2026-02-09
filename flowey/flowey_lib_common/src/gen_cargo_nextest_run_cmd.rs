@@ -30,10 +30,12 @@ flowey_request! {
         pub fail_fast: Option<bool>,
         /// Additional env vars set when executing the tests.
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
+        /// Additional command to run before the tests
+        pub extra_commands: Option<ReadVar<Vec<(OsString, Vec<OsString>)>>>,
         /// Generate a portable command with paths relative to `test_content_dir`
         pub portable: bool,
         /// Command for running the tests
-        pub command: WriteVar<Command>,
+        pub command: WriteVar<Script>,
     }
 }
 
@@ -59,10 +61,9 @@ pub enum CommandShell {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Command {
+pub struct Script {
     pub env: BTreeMap<String, String>,
-    pub argv0: OsString,
-    pub args: Vec<OsString>,
+    pub commands: Vec<(OsString, Vec<OsString>)>,
     pub shell: CommandShell,
 }
 
@@ -86,6 +87,7 @@ impl FlowNode for Node {
             tool_config_files,
             nextest_profile,
             extra_env,
+            extra_commands,
             nextest_filter_expr,
             run_ignored,
             fail_fast,
@@ -102,12 +104,14 @@ impl FlowNode for Node {
                     .map(|(a, b)| (a, b.claim(ctx)))
                     .collect::<Vec<_>>();
                 let extra_env = extra_env.claim(ctx);
+                let extra_commands = extra_commands.claim(ctx);
                 let command = command.claim(ctx);
 
                 move |rt| {
                     let working_dir = rt.read(working_dir);
                     let config_file = rt.read(config_file);
                     let mut with_env = rt.read(extra_env).unwrap_or_default();
+                    let mut commands = rt.read(extra_commands).unwrap_or_default();
 
                     let target = match &run_kind_deps {
                         RunKindDeps::BuildAndRun {
@@ -187,7 +191,6 @@ impl FlowNode for Node {
                                     packages,
                                     features,
                                     no_default_features,
-                                    unstable_panic_abort_tests,
                                     target,
                                     profile,
                                     extra_env,
@@ -202,7 +205,6 @@ impl FlowNode for Node {
                                 target,
                                 rt.read(packages),
                                 features,
-                                unstable_panic_abort_tests,
                                 no_default_features,
                                 rt.read(extra_env),
                             );
@@ -342,12 +344,13 @@ impl FlowNode for Node {
                     // run.
                     with_env.extend(build_env);
 
+                    commands.push((argv0, args));
+
                     rt.write(
                         command,
-                        &Command {
+                        &Script {
                             env: with_env,
-                            argv0,
-                            args,
+                            commands,
                             shell: if (portable || !windows_via_wsl2)
                                 && matches!(
                                     target.operating_system,
@@ -375,8 +378,7 @@ pub(crate) fn cargo_nextest_build_args_and_env(
     cargo_profile: CargoBuildProfile,
     target: target_lexicon::Triple,
     packages: build_params::TestPackages,
-    features: build_params::FeatureSet,
-    unstable_panic_abort_tests: Option<build_params::PanicAbortTests>,
+    features: crate::run_cargo_build::CargoFeatureSet,
     no_default_features: bool,
     mut extra_env: BTreeMap<String, String>,
 ) -> (Vec<String>, BTreeMap<String, String>) {
@@ -412,52 +414,21 @@ pub(crate) fn cargo_nextest_build_args_and_env(
         v
     };
 
-    let features: Vec<String> = {
-        let mut v = Vec::new();
-
-        if no_default_features {
-            v.push("--no-default-features".into())
-        }
-
-        match features {
-            build_params::FeatureSet::All => v.push("--all-features".into()),
-            build_params::FeatureSet::Specific(features) => {
-                if !features.is_empty() {
-                    v.push("--features".into());
-                    v.push(features.join(","));
-                }
-            }
-        }
-
-        v
-    };
-
-    let (z_panic_abort_tests, use_rustc_bootstrap) = match unstable_panic_abort_tests {
-        Some(kind) => (
-            Some("-Zpanic-abort-tests"),
-            match kind {
-                build_params::PanicAbortTests::UsingNightly => false,
-                build_params::PanicAbortTests::UsingRustcBootstrap => true,
-            },
-        ),
-        None => (None, false),
-    };
-
     let mut args = Vec::new();
     args.extend(locked.map(Into::into));
     args.extend(verbose.map(Into::into));
     args.push("--cargo-profile".into());
     args.push(cargo_profile.into());
-    args.extend(z_panic_abort_tests.map(Into::into));
     args.push("--target".into());
     args.push(target);
     args.extend(packages);
-    args.extend(features);
+    if no_default_features {
+        args.push("--no-default-features".into())
+    }
+    args.extend(features.to_cargo_arg_strings());
 
     let mut env = BTreeMap::new();
-    if use_rustc_bootstrap {
-        env.insert("RUSTC_BOOTSTRAP".into(), "1".into());
-    }
+
     env.append(&mut extra_env);
 
     (args, env)
@@ -491,41 +462,46 @@ impl RunKindDeps {
     }
 }
 
-impl std::fmt::Display for Command {
+impl std::fmt::Display for Script {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let quote_char = match self.shell {
             CommandShell::Powershell => "\"",
             CommandShell::Bash => "'",
-        };
-        let arg_string = {
-            self.args
-                .iter()
-                .map(|v| format!("{quote_char}{}{quote_char}", v.to_string_lossy()))
-                .collect::<Vec<_>>()
-                .join(" ")
         };
 
         let env_string = match self.shell {
             CommandShell::Powershell => self
                 .env
                 .iter()
-                .map(|(k, v)| format!("$env:{k}=\"{v}\";"))
+                .map(|(k, v)| format!("$env:{k}=\"{v}\""))
                 .collect::<Vec<_>>()
-                .join(" "),
+                .join("\n"),
             CommandShell::Bash => self
                 .env
                 .iter()
-                .map(|(k, v)| format!("{k}=\"{v}\""))
+                .map(|(k, v)| format!("export {k}=\"{v}\""))
                 .collect::<Vec<_>>()
-                .join(" "),
+                .join("\n"),
         };
+        writeln!(f, "{env_string}")?;
 
-        let argv0_string = self.argv0.to_string_lossy();
-        let argv0_string = match self.shell {
-            CommandShell::Powershell => format!("&\"{argv0_string}\""),
-            CommandShell::Bash => format!("\"{argv0_string}\""),
-        };
+        for cmd in &self.commands {
+            let argv0_string = cmd.0.to_string_lossy();
+            let argv0_string = match self.shell {
+                CommandShell::Powershell => format!("&\"{argv0_string}\""),
+                CommandShell::Bash => format!("\"{argv0_string}\""),
+            };
 
-        write!(f, "{} {} {}", env_string, argv0_string, arg_string)
+            let arg_string = {
+                cmd.1
+                    .iter()
+                    .map(|v| format!("{quote_char}{}{quote_char}", v.to_string_lossy()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            writeln!(f, "{argv0_string} {arg_string}")?;
+        }
+
+        Ok(())
     }
 }

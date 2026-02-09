@@ -5,6 +5,7 @@
 
 use crate::VmgsClient;
 use crate::VmgsClientError;
+use crate::broker::VmgsBrokerError;
 use async_trait::async_trait;
 use thiserror::Error;
 use vmcore::non_volatile_store::NonVolatileStore;
@@ -67,7 +68,7 @@ impl NonVolatileStore for VmgsNonVolatileStore {
     async fn restore(&mut self) -> Result<Option<Vec<u8>>, NonVolatileStoreError> {
         match self.vmgs.read_file(self.file_id).await {
             Ok(buf) => Ok(Some(buf)),
-            Err(VmgsClientError::Vmgs(vmgs::Error::FileInfoAllocated)) => Ok(None),
+            Err(VmgsClientError::Vmgs(VmgsBrokerError::FileInfoNotAllocated)) => Ok(None),
             Err(e) => Err(NonVolatileStoreError::new(e)),
         }
     }

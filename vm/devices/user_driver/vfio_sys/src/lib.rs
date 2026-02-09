@@ -9,6 +9,8 @@
 use anyhow::Context;
 use bitfield_struct::bitfield;
 use libc::c_void;
+use pal_async::driver::Driver;
+use pal_async::timer::PolledTimer;
 use std::ffi::CString;
 use std::fs;
 use std::fs::File;
@@ -149,7 +151,11 @@ impl Group {
         Ok(group)
     }
 
-    pub fn open_device(&self, device_id: &str) -> anyhow::Result<Device> {
+    pub async fn open_device(
+        &self,
+        device_id: &str,
+        driver: &(impl ?Sized + Driver),
+    ) -> anyhow::Result<Device> {
         let id = CString::new(device_id)?;
         // SAFETY: The file descriptor is valid and the string is null-terminated.
         let file = unsafe {
@@ -160,8 +166,10 @@ impl Group {
             // sleep.
             let fd = match fd {
                 Err(nix::errno::Errno::ENODEV) => {
-                    std::thread::sleep(std::time::Duration::from_millis(250));
-                    tracing::warn!("Retrying vfio open_device after delay");
+                    tracing::warn!(pci_id = device_id, "Retrying vfio open_device after delay");
+                    PolledTimer::new(driver)
+                        .sleep(std::time::Duration::from_millis(250))
+                        .await;
                     ioctl::vfio_group_get_device_fd(self.file.as_raw_fd(), id.as_ptr())
                 }
                 _ => fd,
@@ -198,14 +206,40 @@ impl Group {
     /// Skip VFIO device reset when kernel is reloaded during servicing.
     /// This feature is non-upstream version of our kernel and will be
     /// eventually replaced with iommufd.
-    pub fn set_keep_alive(&self, device_id: &str) -> anyhow::Result<()> {
+    pub async fn set_keep_alive(
+        &self,
+        device_id: &str,
+        driver: &(impl ?Sized + Driver),
+    ) -> anyhow::Result<()> {
         // SAFETY: The file descriptor is valid and a correctly constructed struct is being passed.
         unsafe {
-            let id = CString::new(device_id.to_owned())?;
-            ioctl::vfio_group_set_keep_alive(self.file.as_raw_fd(), id.as_ptr())
-                .context("failed to set keep-alive")?;
+            let id = CString::new(device_id)?;
+            let r = ioctl::vfio_group_set_keep_alive(self.file.as_raw_fd(), id.as_ptr());
+            match r {
+                Ok(_) => Ok(()),
+                Err(nix::errno::Errno::ENODEV) => {
+                    // There is a small race window in the kernel between when the
+                    // vfio device is visible to userspace, and when it is added to its
+                    // internal list. Try one more time on ENODEV failure after a brief
+                    // sleep.
+                    tracing::warn!(
+                        pci_id = device_id,
+                        "vfio keepalive got ENODEV, retrying after delay"
+                    );
+                    PolledTimer::new(driver)
+                        .sleep(std::time::Duration::from_millis(250))
+                        .await;
+                    ioctl::vfio_group_set_keep_alive(self.file.as_raw_fd(), id.as_ptr())
+                        .with_context(|| {
+                            format!("failed to set keep-alive after delay for {device_id}")
+                        })
+                        .map(|_| ())
+                }
+                Err(_) => r
+                    .with_context(|| format!("failed to set keep-alive for {device_id}"))
+                    .map(|_| ()),
+            }
         }
-        Ok(())
     }
 }
 
@@ -400,6 +434,33 @@ impl Device {
         }
         Ok(())
     }
+
+    /// Disable (unmap) a contiguous range of previously mapped MSI-X vectors.
+    ///
+    /// This issues VFIO_DEVICE_SET_IRQS with ACTION_TRIGGER + DATA_NONE and a
+    /// non-zero count, which per VFIO semantics removes the eventfd bindings
+    /// for the specified range starting at `start`.
+    pub fn unmap_msix(&self, start: u32, count: u32) -> anyhow::Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+
+        let header = vfio_irq_set {
+            argsz: size_of::<vfio_irq_set>() as u32,
+            flags: VFIO_IRQ_SET_ACTION_TRIGGER | VFIO_IRQ_SET_DATA_NONE,
+            index: VFIO_PCI_MSIX_IRQ_INDEX,
+            start,
+            count,
+            data: Default::default(),
+        };
+
+        // SAFETY: The file descriptor is valid; header constructed per VFIO spec.
+        unsafe {
+            ioctl::vfio_device_set_irqs(self.file.as_raw_fd(), &header)
+                .context("failed to unmap msix vectors")?;
+        }
+        Ok(())
+    }
 }
 
 impl AsRef<File> for Device {
@@ -432,6 +493,30 @@ pub fn find_msix_irq(pci_id: &str, index: u32) -> anyhow::Result<u32> {
         .with_context(|| format!("unexpected irq format {}. Expecting 'irq#:'", irq))?;
 
     Ok(irq)
+}
+
+pub fn print_relevant_params() {
+    #[derive(Debug)]
+    struct Param {
+        _name: &'static str,
+        _value: Option<String>,
+    }
+
+    let vfio_params = [
+        "/sys/module/vfio/parameters/enable_unsafe_noiommu_mode",
+        "/sys/module/driver/parameters/async_probe",
+    ]
+    .iter()
+    .map(|path| Param {
+        _name: path,
+        _value: fs::read_to_string(path).ok().map(|s| s.trim().to_string()),
+    })
+    .collect::<Vec<_>>();
+
+    tracing::debug!(
+        vfio_params = ?vfio_params,
+        "Relevant VFIO module parameters"
+    );
 }
 
 pub struct MappedRegion {

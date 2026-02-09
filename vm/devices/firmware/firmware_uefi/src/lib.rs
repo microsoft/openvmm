@@ -43,7 +43,7 @@
 //! must be implemented by the "platform" hosting the UEFI device.
 //!
 //! This layer of abstraction allows the re-using the same UEFI emulator between
-//! multiple VMMs (HvLite, Underhill, etc...), without tying the emulator to any
+//! multiple VMMs (OpenVMM, Underhill, etc...), without tying the emulator to any
 //! VMM specific infrastructure (via some kind of compile-time feature flag
 //! infrastructure).
 
@@ -55,6 +55,8 @@ pub mod platform;
 pub mod service;
 #[cfg(not(feature = "fuzzing"))]
 mod service;
+
+pub use crate::service::diagnostics::LogLevel;
 
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
@@ -126,6 +128,7 @@ pub struct UefiConfig {
     pub initial_generation_id: [u8; 16],
     pub use_mmio: bool,
     pub command_set: UefiCommandSet,
+    pub diagnostics_log_level: LogLevel,
 }
 
 /// Various runtime objects used by the UEFI device + underlying services.
@@ -211,7 +214,9 @@ impl UefiDevice {
                     generation_id_deps,
                 ),
                 time: service::time::TimeServices::new(time_source),
-                diagnostics: service::diagnostics::DiagnosticsServices::new(),
+                diagnostics: service::diagnostics::DiagnosticsServices::new(
+                    cfg.diagnostics_log_level,
+                ),
             },
         };
 

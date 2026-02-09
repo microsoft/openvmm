@@ -404,7 +404,8 @@ impl GuestMemoryBitmap {
     }
 
     fn init(&mut self, range: MemoryRange, state: bool) -> Result<(), MappingError> {
-        if range.start() % (PAGE_SIZE as u64 * 8) != 0 || range.end() % (PAGE_SIZE as u64 * 8) != 0
+        if !range.start().is_multiple_of(PAGE_SIZE as u64 * 8)
+            || !range.end().is_multiple_of(PAGE_SIZE as u64 * 8)
         {
             return Err(MappingError::BadAlignment(range));
         }
@@ -415,7 +416,7 @@ impl GuestMemoryBitmap {
         let bitmap_page_end = bitmap_end / PAGE_SIZE;
         let page_count = bitmap_page_end + 1 - bitmap_page_start;
 
-        // TODO SNP: map some pre-reserved lower VTL memory into the
+        // TODO CVM FUTURE: map some pre-reserved lower VTL memory into the
         // bitmap. Or just figure out how to hot add that memory to the
         // kernel. Or have the boot loader reserve it at boot time.
         //

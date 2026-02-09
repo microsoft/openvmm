@@ -3,13 +3,14 @@
 
 //! I/O queue handler.
 
+use crate::command_match::match_command_pattern;
 use crate::error::CommandResult;
 use crate::error::NvmeError;
 use crate::namespace::Namespace;
+use crate::prp::PrpRange;
 use crate::queue::CompletionQueue;
-use crate::queue::DoorbellRegister;
+use crate::queue::DoorbellMemory;
 use crate::queue::QueueError;
-use crate::queue::ShadowDoorbell;
 use crate::queue::SubmissionQueue;
 use crate::spec;
 use crate::spec::nvm;
@@ -17,9 +18,16 @@ use crate::workers::MAX_DATA_TRANSFER_SIZE;
 use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use inspect::Inspect;
+use nvme_resources::fault::CommandMatch;
+use nvme_resources::fault::IoQueueFaultBehavior;
+use nvme_resources::fault::IoQueueFaultConfig;
+use nvme_spec::Command;
+use pal_async::timer::PolledTimer;
+use parking_lot::RwLock;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::future::pending;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
 use task_control::AsyncRun;
@@ -29,6 +37,8 @@ use task_control::StopTask;
 use thiserror::Error;
 use unicycle::FuturesUnordered;
 use vmcore::interrupt::Interrupt;
+use vmcore::vm_task::VmTaskDriver;
+use zerocopy::FromZeros;
 
 #[derive(Inspect)]
 pub struct IoHandler {
@@ -36,6 +46,8 @@ pub struct IoHandler {
     sqid: u16,
     #[inspect(skip)]
     admin_response: mesh::Sender<u16>,
+    #[inspect(skip)]
+    timer: PolledTimer,
 }
 
 #[derive(Inspect)]
@@ -45,9 +57,11 @@ pub struct IoState {
     #[inspect(skip)]
     namespaces: BTreeMap<u32, Arc<Namespace>>,
     #[inspect(skip)]
-    ios: FuturesUnordered<Pin<Box<dyn Future<Output = IoResult> + Send>>>,
+    ios: FuturesUnordered<Pin<Box<dyn Future<Output = (IoResult, Command)> + Send>>>,
     io_count: usize,
     queue_state: IoQueueState,
+    #[inspect(skip)]
+    fault_configuration: Arc<IoQueueFaultConfig>,
 }
 
 #[derive(Inspect)]
@@ -59,24 +73,33 @@ enum IoQueueState {
 
 impl IoState {
     pub fn new(
+        mem: &GuestMemory,
+        doorbell: Arc<RwLock<DoorbellMemory>>,
         sq_gpa: u64,
         sq_len: u16,
-        sq_tail: Arc<DoorbellRegister>,
-        sq_sdb_idx_gpas: Option<ShadowDoorbell>,
+        sq_id: u16,
         cq_gpa: u64,
         cq_len: u16,
-        cq_head: Arc<DoorbellRegister>,
-        cq_sdb_idx_gpas: Option<ShadowDoorbell>,
+        cq_id: u16,
         interrupt: Option<Interrupt>,
         namespaces: BTreeMap<u32, Arc<Namespace>>,
+        fault_configuration: Arc<IoQueueFaultConfig>,
     ) -> Self {
         Self {
-            sq: SubmissionQueue::new(sq_tail, sq_gpa, sq_len, sq_sdb_idx_gpas),
-            cq: CompletionQueue::new(cq_head, interrupt, cq_gpa, cq_len, cq_sdb_idx_gpas),
+            sq: SubmissionQueue::new(doorbell.clone(), sq_id * 2, sq_gpa, sq_len, mem.clone()),
+            cq: CompletionQueue::new(
+                doorbell,
+                cq_id * 2 + 1,
+                mem.clone(),
+                interrupt,
+                cq_gpa,
+                cq_len,
+            ),
             namespaces,
             ios: FuturesUnordered::new(),
             io_count: 0,
             queue_state: IoQueueState::Active,
+            fault_configuration,
         }
     }
 
@@ -103,14 +126,12 @@ struct IoResult {
     cid: u16,
     opcode: nvm::NvmOpcode,
     result: Result<CommandResult, NvmeError>,
-    advance_evt_idx: bool,
 }
 
 impl AsyncRun<IoState> for IoHandler {
     async fn run(&mut self, stop: &mut StopTask<'_>, state: &mut IoState) -> Result<(), Cancelled> {
-        let mem = self.mem.clone();
         stop.until_stopped(async {
-            if let Err(err) = self.process(state, &mem).await {
+            if let Err(err) = self.process(state).await {
                 tracing::error!(error = &err as &dyn std::error::Error, "io handler failed");
             }
         })
@@ -133,11 +154,17 @@ enum HandlerError {
 }
 
 impl IoHandler {
-    pub fn new(mem: GuestMemory, sqid: u16, admin_response: mesh::Sender<u16>) -> Self {
+    pub fn new(
+        driver: VmTaskDriver,
+        mem: GuestMemory,
+        sqid: u16,
+        admin_response: mesh::Sender<u16>,
+    ) -> Self {
         Self {
             mem,
             sqid,
             admin_response,
+            timer: PolledTimer::new(&driver),
         }
     }
 
@@ -148,11 +175,7 @@ impl IoHandler {
         }
     }
 
-    async fn process(
-        &mut self,
-        state: &mut IoState,
-        mem: &GuestMemory,
-    ) -> Result<(), HandlerError> {
+    async fn process(&mut self, state: &mut IoState) -> Result<(), HandlerError> {
         loop {
             let deleting = match state.queue_state {
                 IoQueueState::Active => {
@@ -160,7 +183,7 @@ impl IoHandler {
                     // to post an immediate result or to post an IO completion. It's not
                     // strictly necessary to start a new IO, but handling that special
                     // case is not worth the complexity.
-                    state.cq.wait_ready(mem).await?;
+                    poll_fn(|cx| state.cq.poll_ready(cx)).await?;
                     false
                 }
                 IoQueueState::Deleting => {
@@ -175,13 +198,13 @@ impl IoHandler {
             };
 
             enum Event {
-                Sq(Result<spec::Command, QueueError>),
-                Io(IoResult),
+                Sq(Result<Command, QueueError>),
+                Io((IoResult, Command)),
             }
 
             let next_sqe = async {
                 if state.io_count < MAX_IO_QUEUE_DEPTH && !deleting {
-                    Event::Sq(state.sq.next(&self.mem).await)
+                    Event::Sq(poll_fn(|cx| state.sq.poll_next(cx)).await)
                 } else {
                     pending().await
                 }
@@ -196,14 +219,8 @@ impl IoHandler {
             };
 
             let event = (next_sqe, next_io_completion).race().await;
-            let (cid, result) = match event {
-                Event::Io(io_result) => {
-                    if io_result.advance_evt_idx {
-                        let result = state.sq.advance_evt_idx(&self.mem);
-                        if result.is_err() {
-                            tracelimit::warn_ratelimited!("failure to advance evt_idx");
-                        }
-                    }
+            let (cid, result, command) = match event {
+                Event::Io((io_result, command)) => {
                     state.io_count -= 1;
                     let result = match io_result.result {
                         Ok(cr) => cr,
@@ -218,7 +235,7 @@ impl IoHandler {
                             err.into()
                         }
                     };
-                    (io_result.cid, result)
+                    (io_result.cid, result, command)
                 }
                 Event::Sq(r) => {
                     let command = r?;
@@ -226,41 +243,28 @@ impl IoHandler {
 
                     if let Some(ns) = state.namespaces.get(&command.nsid) {
                         let ns = ns.clone();
-                        // If the queue depth is low, immediately update the evt_idx, so that
-                        // the guest driver will ring the doorbell again.  If the queue depth is
-                        // high, defer this until I/O completion, on the theory that high queue
-                        // depth workloads won't wait before enqueuing more work.
-                        //
-                        // TODO: Update later after performance testing, perhaps to something
-                        // like to 2*(number of VPs)/(number of queue pairs).
-                        let mut advance_evt_idx = true;
-                        if state.io_count <= 1 {
-                            let result = state.sq.advance_evt_idx(&self.mem);
-                            if result.is_err() {
-                                tracelimit::warn_ratelimited!("failure to advance evt_idx");
-                            }
-                            advance_evt_idx = false;
-                        }
                         let io = Box::pin(async move {
                             let result = ns.nvm_command(MAX_DATA_TRANSFER_SIZE, &command).await;
-                            IoResult {
-                                nsid: command.nsid,
-                                opcode: nvm::NvmOpcode(command.cdw0.opcode()),
-                                cid,
-                                result,
-                                advance_evt_idx,
-                            }
+                            (
+                                IoResult {
+                                    nsid: command.nsid,
+                                    opcode: nvm::NvmOpcode(command.cdw0.opcode()),
+                                    cid,
+                                    result,
+                                },
+                                command,
+                            )
                         });
                         state.ios.push(io);
                         state.io_count += 1;
                         continue;
                     }
 
-                    let result = state.sq.advance_evt_idx(&self.mem);
-                    if result.is_err() {
-                        tracelimit::warn_ratelimited!("failure to advance evt_idx");
-                    }
-                    (cid, spec::Status::INVALID_NAMESPACE_OR_FORMAT.into())
+                    (
+                        cid,
+                        spec::Status::INVALID_NAMESPACE_OR_FORMAT.into(),
+                        Command::new_zeroed(),
+                    )
                 }
             };
 
@@ -272,25 +276,64 @@ impl IoHandler {
                 cid,
                 status: spec::CompletionStatus::new().with_status(result.status.0),
             };
-            if !state.cq.write(&self.mem, completion)? {
+
+            // Apply a completion queue fault only to synchronously processed IO commands
+            // (Ignore namespace change and sq delete complete events for now).
+            if state.fault_configuration.fault_active.get()
+                && let Some(fault) = Self::get_configured_fault_behavior(
+                    &state.fault_configuration.io_completion_queue_faults,
+                    &command,
+                )
+            {
+                match fault {
+                    IoQueueFaultBehavior::CustomPayload(payload) => {
+                        tracing::info!(
+                            "configured fault: io completion custom payload write. completion: {:?}, payload size: {}",
+                            &completion,
+                            payload.len()
+                        );
+
+                        // Panic to avoid silent test failures.
+                        PrpRange::parse(&self.mem, payload.len(), command.dptr)
+                        .expect("configured fault failure: failed to parse PRP for custom payload write.")
+                        .write(&self.mem, &payload)
+                        .expect("configured fault failure: failed to write custom payload");
+                    }
+                    IoQueueFaultBehavior::Panic(message) => {
+                        panic!(
+                            "configured fault: io completion panic with sqid: {:?} command: {:?}, completion: {:?} and message: {}",
+                            &self.sqid, &command, &completion, &message
+                        );
+                    }
+                    IoQueueFaultBehavior::Delay(duration) => {
+                        tracing::info!(
+                            "configured fault: io completion delay of {:?} for sqid: {:?}, command: {:?}, completion: {:?}",
+                            &duration,
+                            &self.sqid,
+                            &command,
+                            &completion
+                        );
+                        self.timer.sleep(duration).await;
+                    }
+                }
+            }
+
+            if !state.cq.write(completion)? {
                 assert!(deleting);
                 tracelimit::warn_ratelimited!("dropped i/o completion during queue deletion");
             }
-            state
-                .cq
-                .catch_up_evt_idx(false, state.io_count as u32, &self.mem)?;
         }
         Ok(())
     }
 
-    pub fn update_shadow_db(
-        &mut self,
-        mem: &GuestMemory,
-        state: &mut IoState,
-        sq_sdb: ShadowDoorbell,
-        cq_sdb: ShadowDoorbell,
-    ) {
-        state.sq.update_shadow_db(mem, sq_sdb);
-        state.cq.update_shadow_db(mem, cq_sdb);
+    /// Returns a mutable reference to the fault behavior for a given command if a fault is configured.
+    fn get_configured_fault_behavior(
+        fault_configs: &[(CommandMatch, IoQueueFaultBehavior)],
+        command: &Command,
+    ) -> Option<IoQueueFaultBehavior> {
+        fault_configs
+            .iter()
+            .find(|(pattern, _)| match_command_pattern(pattern, command))
+            .map(|(_, behavior)| behavior.clone())
     }
 }

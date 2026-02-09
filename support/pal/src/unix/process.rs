@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
+    #[cfg(target_arch = "x86_64")]
     fn test_seccomp_sandbox() {
         use crate::sys::SyscallResult;
         use crate::sys::while_eintr;

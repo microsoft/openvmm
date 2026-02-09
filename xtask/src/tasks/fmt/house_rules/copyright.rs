@@ -27,27 +27,37 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
 
     if !matches!(
         ext,
-        "rs" | "c" | "proto" | "toml" | "ts" | "js" | "py" | "ps1"
+        "rs" | "c" | "proto" | "toml" | "ts" | "tsx" | "js" | "css" | "html" | "py" | "ps1"
     ) {
         return Ok(());
     }
 
     let f = BufReader::new(File::open(path)?);
     let mut lines = f.lines();
-    let (script_interpreter_line, blank_after_script_interpreter_line, first_content_line) = {
+    let (
+        allowed_non_copyright_first_line,
+        blank_after_allowed_non_copyright_first_line,
+        first_content_line,
+    ) = {
         let line = lines.next().unwrap_or(Ok(String::new()))?;
-        // Besides the "py", "ps1, "toml", and "config" files, only for Rust,
-        // `#!` is in the first set of the grammar. That's why we need to check
-        // the extension for not being "rs".
         // Someone may decide to put a script interpreter line (aka "shebang")
         // in a .config or a .toml file, and mark the file as executable. While
         // that's not common, we choose not to constrain creativity.
-        if line.starts_with("#!") && ext != "rs" {
-            let script_interpreter_line = line;
-            let after_script_interpreter_line = lines.next().unwrap_or(Ok(String::new()))?;
+        //
+        // The shebang (`#!`) is part of the valid grammar of Rust, and does not
+        // indicate that the file should be interpreted as a script. So we don't
+        // allow that line in Rust files.
+        //
+        // Some HTML files may start with a `<!DOCTYPE html>` line, so let that line pass as well
+        if (line.starts_with("#!") && ext != "rs")
+            || (line.starts_with("<!DOCTYPE html>") && ext == "html")
+        {
+            let allowed_non_copyright_first_line = line;
+            let after_allowed_non_copyright_first_line =
+                lines.next().unwrap_or(Ok(String::new()))?;
             (
-                Some(script_interpreter_line),
-                Some(after_script_interpreter_line.is_empty()),
+                Some(allowed_non_copyright_first_line),
+                Some(after_allowed_non_copyright_first_line.is_empty()),
                 lines.next().unwrap_or(Ok(String::new()))?,
             )
         } else {
@@ -97,33 +107,49 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
             let mut f = BufReader::new(File::open(path)?);
             let mut f_fixed = File::create(path_fix)?;
 
-            if let Some(script_interpreter_line) = &script_interpreter_line {
-                writeln!(f_fixed, "{script_interpreter_line}")?;
+            if let Some(allowed_non_copyright_first_line) = &allowed_non_copyright_first_line {
+                writeln!(f_fixed, "{allowed_non_copyright_first_line}")?;
                 f.read_line(&mut String::new())?;
             }
-            if let Some(blank_after_script_interpreter_line) = blank_after_script_interpreter_line {
-                if !blank_after_script_interpreter_line {
+            if let Some(blank_after_allowed_non_copyright_first_line) =
+                blank_after_allowed_non_copyright_first_line
+            {
+                if !blank_after_allowed_non_copyright_first_line {
                     writeln!(f_fixed)?;
                 }
             }
 
             if missing_banner {
                 let prefix = match ext {
-                    "rs" | "c" | "proto" | "ts" | "js" => "//",
+                    "rs" | "c" | "proto" | "ts" | "tsx" | "js" => "//",
                     "toml" | "py" | "ps1" | "config" => "#",
+                    "css" => "/*",
+                    "html" => "<!--",
+                    _ => unreachable!(),
+                };
+
+                // Put a space here (if required), so that header lines without a prefix
+                // don't end with a trailing space. E.g. ` -->` instead of `-->`.
+                let suffix = match ext {
+                    "rs" | "c" | "proto" | "ts" | "tsx" | "js" | "toml" | "py" | "ps1"
+                    | "config" => "",
+                    "css" => " */",
+                    "html" => " -->",
                     _ => unreachable!(),
                 };
 
                 // Preserve the UTF-8 BOM if it exists.
-                if script_interpreter_line.is_none() && first_content_line.starts_with('\u{feff}') {
+                if allowed_non_copyright_first_line.is_none()
+                    && first_content_line.starts_with('\u{feff}')
+                {
                     write!(f_fixed, "\u{feff}")?;
                     // Skip the BOM.
                     f.read_exact(&mut [0; 3])?;
                 }
 
-                writeln!(f_fixed, "{} {}", prefix, HEADER_MIT_FIRST)?;
+                writeln!(f_fixed, "{} {}{}", prefix, HEADER_MIT_FIRST, suffix)?;
                 if !is_msft_internal {
-                    writeln!(f_fixed, "{} {}", prefix, HEADER_MIT_SECOND)?;
+                    writeln!(f_fixed, "{} {}{}", prefix, HEADER_MIT_SECOND, suffix)?;
                 }
 
                 writeln!(f_fixed)?; // also add that missing blank line
@@ -158,8 +184,10 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
     if missing_blank_line {
         missing.push("a blank line after the copyright & license header");
     }
-    if let Some(blank_after_script_interpreter_line) = blank_after_script_interpreter_line {
-        if !blank_after_script_interpreter_line {
+    if let Some(blank_after_allowed_non_copyright_first_line) =
+        blank_after_allowed_non_copyright_first_line
+    {
+        if !blank_after_allowed_non_copyright_first_line {
             missing.push("a blank line after the script interpreter line");
         }
     }

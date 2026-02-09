@@ -24,13 +24,15 @@ use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[expect(missing_docs)] // Self-describing names
 pub enum KnownTestArtifacts {
+    Alpine323X64Vhd,
+    Alpine323Aarch64Vhd,
     Gen1WindowsDataCenterCore2022X64Vhd,
     Gen2WindowsDataCenterCore2022X64Vhd,
     Gen2WindowsDataCenterCore2025X64Vhd,
     FreeBsd13_2X64Vhd,
     FreeBsd13_2X64Iso,
-    Ubuntu2204ServerX64Vhd,
     Ubuntu2404ServerX64Vhd,
+    Ubuntu2504ServerX64Vhd,
     Ubuntu2404ServerAarch64Vhd,
     Windows11EnterpriseAarch64Vhdx,
     VmgsWithBootEntry,
@@ -54,6 +56,16 @@ impl KnownTestArtifactMeta {
 
 // linear scan to find entries is OK, given how few entries there are
 const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = &[
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::Alpine323X64Vhd,
+        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64::FILENAME,
+        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64::SIZE,
+    ),
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::Alpine323Aarch64Vhd,
+        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64::FILENAME,
+        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64::SIZE,
+    ),
     KnownTestArtifactMeta::new(
         KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,
         petri_artifacts_vmm_test::artifacts::test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64::FILENAME,
@@ -80,14 +92,14 @@ const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = &[
         petri_artifacts_vmm_test::artifacts::test_iso::FREE_BSD_13_2_X64::SIZE,
     ),
     KnownTestArtifactMeta::new(
-        KnownTestArtifacts::Ubuntu2204ServerX64Vhd,
-        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2204_SERVER_X64::FILENAME,
-        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2204_SERVER_X64::SIZE,
-    ),
-    KnownTestArtifactMeta::new(
         KnownTestArtifacts::Ubuntu2404ServerX64Vhd,
         petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64::FILENAME,
         petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64::SIZE,
+    ),
+        KnownTestArtifactMeta::new(
+        KnownTestArtifacts::Ubuntu2504ServerX64Vhd,
+        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2504_SERVER_X64::FILENAME,
+        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2504_SERVER_X64::SIZE,
     ),
     KnownTestArtifactMeta::new(
         KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,

@@ -61,11 +61,23 @@ pub mod user_facing {
 }
 
 fn linux_distro() -> FlowPlatformLinuxDistro {
+    // Check for nix environment first - takes precedence over distro detection
+    if std::env::var("IN_NIX_SHELL").is_ok() {
+        return FlowPlatformLinuxDistro::Nix;
+    }
+
+    // A `nix develop` shell doesn't set `IN_NIX_SHELL`, but the PATH should include a nix store path
+    if std::env::var("PATH").is_ok_and(|path| path.contains("/nix/store")) {
+        return FlowPlatformLinuxDistro::Nix;
+    }
+
     if let Ok(etc_os_release) = fs_err::read_to_string("/etc/os-release") {
         if etc_os_release.contains("ID=ubuntu") {
             FlowPlatformLinuxDistro::Ubuntu
         } else if etc_os_release.contains("ID=fedora") {
             FlowPlatformLinuxDistro::Fedora
+        } else if etc_os_release.contains("ID=arch") {
+            FlowPlatformLinuxDistro::Arch
         } else {
             FlowPlatformLinuxDistro::Unknown
         }
@@ -278,16 +290,14 @@ impl GhPrTriggers {
 #[derive(Debug, Clone, PartialEq)]
 pub enum GhRunnerOsLabel {
     UbuntuLatest,
+    Ubuntu2404,
     Ubuntu2204,
-    Ubuntu2004,
     WindowsLatest,
+    Windows2025,
     Windows2022,
-    Windows2019,
-    MacOsLatest,
-    MacOs14,
-    MacOs13,
-    MacOs12,
-    MacOs11,
+    Ubuntu2404Arm,
+    Ubuntu2204Arm,
+    Windows11Arm,
     Custom(String),
 }
 
@@ -598,6 +608,7 @@ impl Pipeline {
             platform,
             arch,
             cond_param_idx: None,
+            timeout_minutes: None,
             ado_pool: None,
             ado_variables: BTreeMap::new(),
             gh_override_if: None,
@@ -1194,12 +1205,21 @@ impl PipelineJob<'_> {
         self
     }
 
-    /// Only run the job if the specified condition is true.
+    /// Set a timeout for the job, in minutes.
     ///
-    /// When running locally, the `cond`'s default value will be used to
-    /// determine if the job will be run.
+    /// Not calling this will result in the platform's default timeout being used,
+    /// which is typically 60 minutes, but may vary.
+    pub fn with_timeout_in_minutes(self, timeout: u32) -> Self {
+        self.pipeline.jobs[self.job_idx].timeout_minutes = Some(timeout);
+        self
+    }
+
+    /// (ADO+Local Only) Only run the job if the specified condition is true.
     pub fn with_condition(self, cond: UseParameter<bool>) -> Self {
         self.pipeline.jobs[self.job_idx].cond_param_idx = Some(cond.idx);
+        self.pipeline.parameters[cond.idx]
+            .used_by_jobs
+            .insert(self.job_idx);
         self
     }
 
@@ -1262,6 +1282,90 @@ pub enum PipelineBackendHint {
     Github,
 }
 
+/// Trait for types that can be converted into a [`Pipeline`].
+///
+/// This is the primary entry point for defining flowey pipelines. Implement this trait
+/// to create a pipeline definition that can be executed locally or converted to CI YAML.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use flowey_core::pipeline::{IntoPipeline, Pipeline, PipelineBackendHint};
+/// use flowey_core::node::{FlowPlatform, FlowPlatformLinuxDistro, FlowArch};
+///
+/// struct MyPipeline;
+///
+/// impl IntoPipeline for MyPipeline {
+///     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
+///         let mut pipeline = Pipeline::new();
+///
+///         // Define a job that runs on Linux x86_64
+///         let _job = pipeline
+///             .new_job(
+///                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+///                 FlowArch::X86_64,
+///                 "build"
+///             )
+///             .finish();
+///
+///         Ok(pipeline)
+///     }
+/// }
+/// ```
+///
+/// # Complex Example with Parameters and Artifacts
+///
+/// ```rust,ignore
+/// use flowey_core::pipeline::{IntoPipeline, Pipeline, PipelineBackendHint, ParameterKind};
+/// use flowey_core::node::{FlowPlatform, FlowPlatformLinuxDistro, FlowArch};
+///
+/// struct BuildPipeline;
+///
+/// impl IntoPipeline for BuildPipeline {
+///     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
+///         let mut pipeline = Pipeline::new();
+///
+///         // Define a runtime parameter
+///         let enable_tests = pipeline.new_parameter_bool(
+///             "enable_tests",
+///             "Whether to run tests",
+///             ParameterKind::Stable,
+///             Some(true) // default value
+///         );
+///
+///         // Create an artifact for passing data between jobs
+///         let (publish_build, use_build) = pipeline.new_artifact("build-output");
+///
+///         // Job 1: Build
+///         let build_job = pipeline
+///             .new_job(
+///                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+///                 FlowArch::X86_64,
+///                 "build"
+///             )
+///             .with_timeout_in_minutes(30)
+///             .dep_on(|ctx| flowey_lib_hvlite::_jobs::example_node::Request {
+///                 output_dir: ctx.publish_artifact(publish_build),
+///             })
+///             .finish();
+///
+///         // Job 2: Test (conditionally run based on parameter)
+///         let _test_job = pipeline
+///             .new_job(
+///                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+///                 FlowArch::X86_64,
+///                 "test"
+///             )
+///             .with_condition(enable_tests)
+///             .dep_on(|ctx| flowey_lib_hvlite::_jobs::example_node2::Request {
+///                 input_dir: ctx.use_artifact(&use_build),
+///             })
+///             .finish();
+///
+///         Ok(pipeline)
+///     }
+/// }
+/// ```
 pub trait IntoPipeline {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline>;
 }
@@ -1308,6 +1412,7 @@ pub mod internal {
         pub platform: FlowPlatform,
         pub arch: FlowArch,
         pub cond_param_idx: Option<usize>,
+        pub timeout_minutes: Option<u32>,
         // backend specific
         pub ado_pool: Option<AdoPool>,
         pub ado_variables: BTreeMap<String, String>,

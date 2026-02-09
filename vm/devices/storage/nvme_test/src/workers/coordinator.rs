@@ -8,7 +8,8 @@ use super::admin::AdminConfig;
 use super::admin::AdminHandler;
 use super::admin::AdminState;
 use super::admin::NsidConflict;
-use crate::queue::DoorbellRegister;
+use crate::queue::DoorbellMemory;
+use crate::queue::InvalidDoorbell;
 use disk_backend::Disk;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -23,7 +24,7 @@ use mesh::rpc::RpcSend;
 use nvme_resources::fault::FaultConfiguration;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use std::future::pending;
 use std::sync::Arc;
 use task_control::TaskControl;
@@ -31,22 +32,15 @@ use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
-/// An input context for the NvmeWorkers
-pub struct NvmeWorkersContext<'a> {
-    pub driver_source: &'a VmTaskDriverSource,
-    pub mem: GuestMemory,
-    pub interrupts: Vec<Interrupt>,
-    pub max_sqs: u16,
-    pub max_cqs: u16,
-    pub qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
-    pub subsystem_id: Guid,
-    pub fault_configuration: FaultConfiguration,
-}
-
+#[derive(InspectMut)]
 pub struct NvmeWorkers {
+    #[inspect(skip)]
     _task: Task<()>,
+    #[inspect(flatten, send = "CoordinatorRequest::Inspect")]
     send: mesh::Sender<CoordinatorRequest>,
-    doorbells: Vec<Arc<DoorbellRegister>>,
+    #[inspect(skip)]
+    doorbells: Arc<RwLock<DoorbellMemory>>,
+    #[inspect(skip)]
     state: EnableState,
 }
 
@@ -58,29 +52,19 @@ enum EnableState {
     Resetting(PendingRpc<()>),
 }
 
-impl InspectMut for NvmeWorkers {
-    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        self.send.send(CoordinatorRequest::Inspect(req.defer()));
-    }
-}
-
 impl NvmeWorkers {
-    pub fn new(context: NvmeWorkersContext<'_>) -> Self {
-        let NvmeWorkersContext {
-            driver_source,
-            mem,
-            interrupts,
-            subsystem_id,
-            max_sqs,
-            max_cqs,
-            qe_sizes,
-            fault_configuration,
-        } = context;
-
+    pub fn new(
+        driver_source: &VmTaskDriverSource,
+        mem: GuestMemory,
+        interrupts: Vec<Interrupt>,
+        max_sqs: u16,
+        max_cqs: u16,
+        qe_sizes: Arc<parking_lot::Mutex<IoQueueEntrySizes>>,
+        subsystem_id: Guid,
+        fault_configuration: FaultConfiguration,
+    ) -> Self {
         let num_qids = 2 + max_sqs.max(max_cqs) * 2;
-        let doorbells: Vec<_> = (0..num_qids)
-            .map(|_| Arc::new(DoorbellRegister::new()))
-            .collect();
+        let doorbells = Arc::new(RwLock::new(DoorbellMemory::new(num_qids)));
 
         let driver = driver_source.simple();
         let handler: AdminHandler = AdminHandler::new(
@@ -118,11 +102,9 @@ impl NvmeWorkers {
         }
     }
 
-    pub fn doorbell(&self, index: u16, value: u32) {
-        if let Some(doorbell) = self.doorbells.get(index as usize) {
-            doorbell.write(value);
-        } else {
-            tracelimit::warn_ratelimited!(index, value, "unknown doorbell");
+    pub fn doorbell(&self, db_id: u16, value: u32) {
+        if let Err(InvalidDoorbell) = self.doorbells.read().try_write(db_id, value) {
+            tracelimit::error_ratelimited!(db_id, "write to invalid doorbell index");
         }
     }
 

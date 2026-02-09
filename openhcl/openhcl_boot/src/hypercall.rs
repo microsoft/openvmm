@@ -41,7 +41,7 @@ impl HvcallPage {
         let addr = self.buffer.as_ptr() as u64;
 
         // These should be page-aligned
-        assert!(addr % HV_PAGE_SIZE == 0);
+        assert!(addr.is_multiple_of(HV_PAGE_SIZE));
 
         addr
     }
@@ -176,8 +176,8 @@ impl HvCall {
             .with_rep_count(rep_count.unwrap_or_default());
 
         #[cfg(target_arch = "x86_64")]
-        if self.tdx_io_page.is_some() {
-            return invoke_tdcall_hypercall(control, self.tdx_io_page.as_ref().unwrap());
+        if let Some(tdx_io_page) = &self.tdx_io_page {
+            return invoke_tdcall_hypercall(control, tdx_io_page);
         }
         // SAFETY: Invoking hypercall per TLFS spec
         unsafe {

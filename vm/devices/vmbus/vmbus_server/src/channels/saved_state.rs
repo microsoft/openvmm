@@ -19,7 +19,6 @@ use vmbus_core::protocol::FeatureFlags;
 use vmbus_core::protocol::GpadlId;
 use vmbus_core::protocol::Version;
 use vmbus_ring::gparange;
-use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::monitor::MonitorId;
 
 impl super::Server {
@@ -371,16 +370,18 @@ mod inner {
 }
 
 /// Represents either connected or disconnected saved state.
-enum SavedConnectionState {
+#[derive(Debug, Clone)]
+pub enum SavedConnectionState {
     Connected(ConnectedState),
     Disconnected(DisconnectedState),
 }
 
 /// Alternative representation of the saved state that ensures that all code paths deal with either
 /// the connected or disconnected state, and cannot neglect one.
+#[derive(Debug, Clone)]
 pub struct SavedStateData {
-    state: SavedConnectionState,
-    pending_messages: Vec<OutgoingMessage>,
+    pub state: SavedConnectionState,
+    pub pending_messages: Vec<OutgoingMessage>,
 }
 
 impl SavedStateData {
@@ -405,31 +406,31 @@ impl SavedStateData {
 
 #[derive(Debug, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-struct ConnectedState {
+pub struct ConnectedState {
     #[mesh(1)]
-    connection: Connection,
+    pub connection: Connection,
     #[mesh(2)]
-    channels: Vec<Channel>,
+    pub channels: Vec<Channel>,
     #[mesh(3)]
-    gpadls: Vec<Gpadl>,
+    pub gpadls: Vec<Gpadl>,
 }
 
 #[derive(Default, Debug, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-struct DisconnectedState {
+pub struct DisconnectedState {
     #[mesh(1)]
-    reserved_channels: Vec<Channel>,
+    pub reserved_channels: Vec<Channel>,
     #[mesh(2)]
-    reserved_gpadls: Vec<Gpadl>,
+    pub reserved_gpadls: Vec<Gpadl>,
 }
 
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Debug, PartialEq, Eq, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-struct VersionInfo {
+pub struct VersionInfo {
     #[mesh(1)]
-    version: u32,
+    pub version: u32,
     #[mesh(2)]
-    feature_flags: u32,
+    pub feature_flags: u32,
 }
 
 impl VersionInfo {
@@ -462,7 +463,7 @@ impl VersionInfo {
 
 #[derive(Debug, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-enum Connection {
+pub enum Connection {
     #[mesh(1)]
     Disconnecting {
         #[mesh(1)]
@@ -602,7 +603,7 @@ impl Connection {
 
 #[derive(Debug, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-enum ConnectionAction {
+pub enum ConnectionAction {
     #[mesh(1)]
     None,
     #[mesh(2)]
@@ -648,15 +649,15 @@ impl ConnectionAction {
 #[mesh(package = "vmbus.server.channels")]
 pub struct Channel {
     #[mesh(1)]
-    key: OfferKey,
+    pub key: OfferKey,
     #[mesh(2)]
-    channel_id: u32,
+    pub channel_id: u32,
     #[mesh(3)]
-    offered_connection_id: u32,
+    pub offered_connection_id: u32,
     #[mesh(4)]
-    state: ChannelState,
+    pub state: ChannelState,
     #[mesh(5)]
-    monitor_id: Option<u8>,
+    pub monitor_id: Option<u8>,
 }
 
 impl Channel {
@@ -721,25 +722,25 @@ impl Channel {
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-struct InitiateContactRequest {
+pub struct InitiateContactRequest {
     #[mesh(1)]
-    version_requested: u32,
+    pub version_requested: u32,
     #[mesh(2)]
-    target_message_vp: u32,
+    pub target_message_vp: u32,
     #[mesh(3)]
-    monitor_page: MonitorPageRequest,
+    pub monitor_page: MonitorPageRequest,
     #[mesh(4)]
-    target_sint: u8,
+    pub target_sint: u8,
     #[mesh(5)]
-    target_vtl: u8,
+    pub target_vtl: u8,
     #[mesh(6)]
-    feature_flags: u32,
+    pub feature_flags: u32,
     #[mesh(7)]
-    interrupt_page: Option<u64>,
+    pub interrupt_page: Option<u64>,
     #[mesh(8)]
-    client_id: Guid,
+    pub client_id: Guid,
     #[mesh(9)]
-    trusted: bool,
+    pub trusted: bool,
 }
 
 impl InitiateContactRequest {
@@ -774,11 +775,11 @@ impl InitiateContactRequest {
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-struct MonitorPageGpas {
+pub struct MonitorPageGpas {
     #[mesh(1)]
-    parent_to_child: u64,
+    pub parent_to_child: u64,
     #[mesh(2)]
-    child_to_parent: u64,
+    pub child_to_parent: u64,
 }
 
 impl MonitorPageGpas {
@@ -803,7 +804,7 @@ impl MonitorPageGpas {
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-enum MonitorPageRequest {
+pub enum MonitorPageRequest {
     #[mesh(1)]
     None,
     #[mesh(2)]
@@ -832,13 +833,13 @@ impl MonitorPageRequest {
     }
 }
 
-#[derive(Debug, Copy, Clone, Protobuf)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-struct SignalInfo {
+pub struct SignalInfo {
     #[mesh(1)]
-    event_flag: u16,
+    pub event_flag: u16,
     #[mesh(2)]
-    connection_id: u32,
+    pub connection_id: u32,
 }
 
 impl SignalInfo {
@@ -857,23 +858,69 @@ impl SignalInfo {
     }
 }
 
-#[derive(Debug, Copy, Clone, Protobuf)]
+#[derive(Copy, PartialEq, Eq, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
 pub struct OpenRequest {
     #[mesh(1)]
-    open_id: u32,
+    pub open_id: u32,
     #[mesh(2)]
     pub ring_buffer_gpadl_id: GpadlId,
     #[mesh(3)]
-    target_vp: u32,
+    pub target_vp: u32,
     #[mesh(4)]
     pub downstream_ring_buffer_page_offset: u32,
     #[mesh(5)]
-    user_data: [u8; 120],
+    pub user_data: [u8; 120],
     #[mesh(6)]
-    guest_specified_interrupt_info: Option<SignalInfo>,
+    pub guest_specified_interrupt_info: Option<SignalInfo>,
     #[mesh(7)]
-    flags: u16,
+    pub flags: u16,
+}
+
+impl std::fmt::Debug for OpenRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            open_id,
+            ring_buffer_gpadl_id,
+            target_vp,
+            downstream_ring_buffer_page_offset,
+            user_data,
+            guest_specified_interrupt_info,
+            flags,
+        } = self;
+
+        let user_data_display: &dyn std::fmt::Debug = if self.user_data.iter().all(|&b| b == 0) {
+            &"[<all-zeroes>]"
+        } else {
+            struct HexDisplay<'a>(&'a [u8; 120]);
+            impl std::fmt::Debug for HexDisplay<'_> {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(f, "[")?;
+                    for byte in self.0 {
+                        write!(f, "{:02X}", byte)?;
+                    }
+                    write!(f, "]")
+                }
+            }
+            &HexDisplay(user_data)
+        };
+
+        f.debug_struct("OpenRequest")
+            .field("open_id", open_id)
+            .field("ring_buffer_gpadl_id", ring_buffer_gpadl_id)
+            .field("target_vp", target_vp)
+            .field(
+                "downstream_ring_buffer_page_offset",
+                downstream_ring_buffer_page_offset,
+            )
+            .field("user_data", user_data_display)
+            .field(
+                "guest_specified_interrupt_info",
+                guest_specified_interrupt_info,
+            )
+            .field("flags", flags)
+            .finish()
+    }
 }
 
 impl OpenRequest {
@@ -909,7 +956,7 @@ impl OpenRequest {
 
 #[derive(Debug, Copy, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-enum ModifyState {
+pub enum ModifyState {
     #[mesh(1)]
     NotModifying,
     #[mesh(2)]
@@ -939,15 +986,15 @@ impl ModifyState {
     }
 }
 
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Debug, PartialEq, Eq, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-struct ReservedState {
+pub struct ReservedState {
     #[mesh(1)]
-    version: VersionInfo,
+    pub version: VersionInfo,
     #[mesh(2)]
-    vp: u32,
+    pub vp: u32,
     #[mesh(3)]
-    sint: u8,
+    pub sint: u8,
 }
 
 impl ReservedState {
@@ -988,7 +1035,7 @@ impl ReservedState {
 
 #[derive(Debug, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-enum ChannelState {
+pub enum ChannelState {
     #[mesh(1)]
     Closed,
     #[mesh(2)]
@@ -1138,7 +1185,7 @@ pub struct Gpadl {
     #[mesh(4)]
     pub buf: Vec<u64>,
     #[mesh(5)]
-    state: GpadlState,
+    pub state: GpadlState,
 }
 
 impl Gpadl {
@@ -1160,10 +1207,9 @@ impl Gpadl {
     }
 
     fn restore(self, channel: &super::Channel) -> Result<super::Gpadl, RestoreError> {
-        let mut buf = self.buf;
         if self.state != GpadlState::InProgress {
             // Validate the range.
-            buf = MultiPagedRangeBuf::new(self.count.into(), buf)?.into_buffer();
+            gparange::validate_gpa_ranges(self.count.into(), &self.buf)?;
         }
         let (state, allow_revoked) = match self.state {
             GpadlState::InProgress => (super::GpadlState::InProgress, true),
@@ -1184,7 +1230,7 @@ impl Gpadl {
 
         Ok(super::Gpadl {
             count: self.count,
-            buf,
+            buf: self.buf,
             state,
         })
     }
@@ -1209,7 +1255,7 @@ pub enum GpadlState {
 
 #[derive(Debug, Clone, Protobuf, PartialEq, Eq)]
 #[mesh(package = "vmbus.server.channels")]
-struct OutgoingMessage(Vec<u8>);
+pub struct OutgoingMessage(pub Vec<u8>);
 
 impl OutgoingMessage {
     fn save(value: &vmbus_core::OutgoingMessage) -> Self {

@@ -4,11 +4,11 @@
 //! This module implements support for KVM on aarch64.
 //! It is unsatisfactory (e.g. DeviceTree generation is disjoint from this code, and
 //! this code does not rely on the KVM_CAP to see what is actually supported), but it
-//! is a start providing assurance that HvLite virtualization model is appropriate for
+//! is a start providing assurance that OpenVMM virtualization model is appropriate for
 //! KVM/aarch64.
 
 #![expect(dead_code)]
-#![cfg(all(target_os = "linux", guest_is_native, guest_arch = "aarch64"))]
+#![cfg(all(target_os = "linux", guest_arch = "aarch64"))]
 
 use crate::KvmError;
 use crate::KvmPartition;
@@ -419,8 +419,7 @@ impl virt::Processor for KvmProcessor<'_> {
                     self.runner.run()
                 };
 
-                let exit =
-                    exit.map_err(|err| VpHaltReason::Hypervisor(KvmRunVpError::Run(err).into()))?;
+                let exit = exit.map_err(|err| dev.fatal_error(KvmRunVpError::Run(err).into()))?;
                 pending_exit = true;
                 match exit {
                     kvm::Exit::Interrupted => {
@@ -439,17 +438,13 @@ impl virt::Processor for KvmProcessor<'_> {
                         dev.handle_eoi(irq.into());
                     }
                     kvm::Exit::InternalError { error, .. } => {
-                        return Err(VpHaltReason::InvalidVmState(
-                            KvmRunVpError::InternalError(error).into(),
-                        ));
+                        return Err(dev.fatal_error(KvmRunVpError::InternalError(error).into()));
                     }
                     kvm::Exit::FailEntry {
                         hardware_entry_failure_reason,
                     } => {
                         tracing::error!(hardware_entry_failure_reason, "VP entry failed");
-                        return Err(VpHaltReason::InvalidVmState(
-                            KvmRunVpError::InvalidVpState.into(),
-                        ));
+                        return Err(dev.fatal_error(KvmRunVpError::InvalidVpState.into()));
                     }
                     _ => panic!("unhandled exit: {:?}", exit),
                 }
@@ -502,11 +497,13 @@ pub struct KvmProtoPartition<'a> {
 impl KvmProtoPartition<'_> {
     fn add_gicv3(&mut self) -> Result<(), KvmError> {
         // KVM requires the distributor and redistributor bases be _64KiB aligned_,
-        // these ranges come from the Hvlite MMIO gaps.
+        // these ranges come from the OpenVMM MMIO gaps.
         const GIC_ALIGNMENT: u64 = 0x10000;
         let gic_dist_base: u64 = self.config.processor_topology.gic_distributor_base();
         let gic_redist_base: u64 = self.config.processor_topology.gic_redistributors_base();
-        if gic_dist_base % GIC_ALIGNMENT != 0 || gic_redist_base % GIC_ALIGNMENT != 0 {
+        if !gic_dist_base.is_multiple_of(GIC_ALIGNMENT)
+            || !gic_redist_base.is_multiple_of(GIC_ALIGNMENT)
+        {
             return Err(KvmError::Misaligned);
         }
 

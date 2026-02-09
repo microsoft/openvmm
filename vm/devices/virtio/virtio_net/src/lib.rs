@@ -43,6 +43,7 @@ use virtio::Resources;
 use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
+use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromBytes;
@@ -51,9 +52,9 @@ use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
 // These correspond to VIRTIO_NET_F_ flags.
-#[bitfield(u64)]
+#[bitfield(u32)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-struct NetworkFeatures {
+struct NetworkFeaturesBank0 {
     pub csum: bool,
     pub guest_csum: bool,
     pub ctrl_guest_offloads: bool,
@@ -78,19 +79,41 @@ struct NetworkFeatures {
     pub guest_announce: bool,
     pub mq: bool,
     pub ctrl_mac_addr: bool,
-    #[bits(29)]
-    _reserved4: u64,
+    #[bits(8)]
+    _unavailable: u8,
+}
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+struct NetworkFeaturesBank1 {
+    #[bits(18)]
+    _unused: u32,
+    pub device_stats: bool, // VIRTIO_NET_F_DEVICE_STATS(50)
+    pub hash_tunnel: bool,
+    pub vq_notf_coal: bool,
     pub notf_coal: bool,
     pub guest_uso4: bool,
     pub guest_uso6: bool,
     pub host_uso: bool,
     pub hash_report: bool,
-    _reserved5: bool,
+    _reserved: bool,
     pub guest_hdrlen: bool,
     pub rss: bool,
     pub rsc_ext: bool,
     pub standby: bool,
     pub speed_duplex: bool,
+}
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+struct NetworkFeaturesBank2 {
+    pub rss_context: bool, // VIRTIO_NET_F_RSS_CONTEXT(64)
+    pub guest_udp_tunnel_gso: bool,
+    pub guest_udp_tunnel_gso_csum: bool,
+    pub host_udp_tunnel_gso: bool,
+    pub host_udp_tunnel_gso_csum: bool,
+    pub out_net_header: bool,
+    pub ipsec: bool,
+    #[bits(25)]
+    _unused: u32,
 }
 
 // These correspond to VIRTIO_NET_S_ flags.
@@ -209,7 +232,8 @@ impl VirtioDevice for Device {
         // TODO: Add network features based on endpoint capabilities (NetworkFeatures::VIRTIO_NET_F_*)
         DeviceTraits {
             device_id: 1,
-            device_features: NetworkFeatures::new().with_mac(true).into(),
+            device_features: VirtioDeviceFeatures::new()
+                .with_bank(0, NetworkFeaturesBank0::new().with_mac(true).into_bits()),
             max_queues: 2 * self.registers.max_virtqueue_pairs,
             device_register_length: size_of::<NetConfig>() as u32,
             shared_memory: DeviceTraitsSharedMemory { id: 0, size: 0 },
@@ -258,7 +282,7 @@ impl VirtioDevice for Device {
                 continue;
             }
             let rx_queue = VirtioQueue::new(
-                resources.features,
+                resources.features.clone(),
                 rx_resources.params,
                 self.memory.clone(),
                 rx_resources.notify,
@@ -282,7 +306,7 @@ impl VirtioDevice for Device {
                 continue;
             }
             let tx_queue = VirtioQueue::new(
-                resources.features,
+                resources.features.clone(),
                 tx_resources.params,
                 self.memory.clone(),
                 tx_resources.notify,
@@ -869,8 +893,10 @@ impl Worker {
         let idx = work.descriptor_index();
         segments[0].ty = TxSegmentType::Head(TxMetadata {
             id: TxId(idx.into()),
-            segment_count: segments.len(),
-            len: work.get_payload_length(false) as usize - header_size(),
+            segment_count: segments.len().try_into().unwrap(),
+            len: (work.get_payload_length(false) as usize - header_size())
+                .try_into()
+                .unwrap(),
             ..Default::default()
         });
         let state = &mut self.active_state;

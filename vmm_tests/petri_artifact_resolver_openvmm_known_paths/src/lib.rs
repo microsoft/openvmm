@@ -57,9 +57,9 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == openhcl_igvm::LATEST_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::Standard),
             _ if id == openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::StandardDevKernel),
 
-            _ if id == openhcl_igvm::RELEASE_25_05_STANDARD_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2505, OpenhclFlavor::Standard),
-            _ if id == openhcl_igvm::RELEASE_25_05_LINUX_DIRECT_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2505, OpenhclFlavor::LinuxDirect),
-            _ if id == openhcl_igvm::RELEASE_25_05_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Release2505, OpenhclFlavor::Standard),
+            _ if id == openhcl_igvm::LATEST_RELEASE_STANDARD_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2511, OpenhclFlavor::Standard),
+            _ if id == openhcl_igvm::LATEST_RELEASE_LINUX_DIRECT_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2511, OpenhclFlavor::LinuxDirect),
+            _ if id == openhcl_igvm::LATEST_RELEASE_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Release2511, OpenhclFlavor::Standard),
 
             _ if id == openhcl_igvm::um_bin::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_extras_path(OpenhclVersion::Latest,OpenhclFlavor::LinuxDirect,OpenhclExtras::UmBin),
             _ if id == openhcl_igvm::um_dbg::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_extras_path(OpenhclVersion::Latest,OpenhclFlavor::LinuxDirect,OpenhclExtras::UmDbg),
@@ -69,9 +69,12 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64 => get_test_artifact_path(KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd),
             _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64 => get_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd),
             _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 => get_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd),
+            _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED => get_prepped_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd),
             _ if id == test_vhd::FREE_BSD_13_2_X64 => get_test_artifact_path(KnownTestArtifacts::FreeBsd13_2X64Vhd),
-            _ if id == test_vhd::UBUNTU_2204_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2204ServerX64Vhd),
+            _ if id == test_vhd::ALPINE_3_23_X64 => get_test_artifact_path(KnownTestArtifacts::Alpine323X64Vhd),
+            _ if id == test_vhd::ALPINE_3_23_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Alpine323Aarch64Vhd),
             _ if id == test_vhd::UBUNTU_2404_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2404ServerX64Vhd),
+            _ if id == test_vhd::UBUNTU_2504_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2504ServerX64Vhd),
             _ if id == test_vhd::UBUNTU_2404_SERVER_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd),
             _ if id == test_vhd::WINDOWS_11_ENTERPRISE_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx),
 
@@ -84,6 +87,19 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == tmks::TMK_VMM_LINUX_AARCH64_MUSL => tmk_vmm_paravisor_path(MachineArch::Aarch64),
             _ if id == tmks::SIMPLE_TMK_X64 => simple_tmk_path(MachineArch::X86_64),
             _ if id == tmks::SIMPLE_TMK_AARCH64 => simple_tmk_path(MachineArch::Aarch64),
+
+            _ if id == VMGSTOOL_NATIVE => vmgstool_native_executable_path(),
+
+            _ if id == guest_tools::TPM_GUEST_TESTS_WINDOWS_X64 => {
+                tpm_guest_tests_windows_path(MachineArch::X86_64)
+            }
+            _ if id == guest_tools::TPM_GUEST_TESTS_LINUX_X64 => {
+                tpm_guest_tests_linux_path(MachineArch::X86_64)
+            }
+
+            _ if id == host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64 => {
+                test_igvm_agent_rpc_server_windows_path(MachineArch::X86_64)
+            }
 
             _ => anyhow::bail!("no support for given artifact type"),
         }
@@ -99,7 +115,7 @@ enum PipetteFlavor {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 enum OpenhclVersion {
     Latest,
-    Release2505,
+    Release2511,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -124,6 +140,13 @@ fn target_arch_path(arch: MachineArch) -> &'static str {
     }
 }
 
+fn windows_msvc_target(arch: MachineArch) -> &'static str {
+    match arch {
+        MachineArch::X86_64 => "x86_64-pc-windows-msvc",
+        MachineArch::Aarch64 => "aarch64-pc-windows-msvc",
+    }
+}
+
 fn get_test_artifact_path(artifact: KnownTestArtifacts) -> Result<PathBuf, anyhow::Error> {
     let images_dir = std::env::var("VMM_TEST_IMAGES");
     let full_path = Path::new(images_dir.as_deref().unwrap_or("images"));
@@ -139,6 +162,21 @@ fn get_test_artifact_path(artifact: KnownTestArtifacts) -> Result<PathBuf, anyho
                 &artifact.name(),
             ],
             description: "test artifact",
+        },
+    )
+}
+
+fn get_prepped_test_artifact_path(artifact: KnownTestArtifacts) -> Result<PathBuf, anyhow::Error> {
+    let images_dir = std::env::var("VMM_TEST_IMAGES");
+    let full_path = Path::new(images_dir.as_deref().unwrap_or("images"));
+    let prepped_filename = artifact.filename().replace(".vhd", "-prepped.vhd");
+
+    get_path(
+        full_path,
+        prepped_filename,
+        MissingCommand::Run {
+            description: "prepped test image",
+            package: "prep_steps",
         },
     )
 }
@@ -201,7 +239,7 @@ fn pipette_path(arch: MachineArch, os_flavor: PipetteFlavor) -> anyhow::Result<P
     unreachable!()
 }
 
-/// Path to the output location of the hvlite executable.
+/// Path to the output location of the openvmm executable.
 fn openvmm_native_executable_path() -> anyhow::Result<PathBuf> {
     get_output_executable_path("openvmm")
 }
@@ -209,6 +247,53 @@ fn openvmm_native_executable_path() -> anyhow::Result<PathBuf> {
 /// Path to the output location of the tmk_vmm executable.
 fn tmk_vmm_native_executable_path() -> anyhow::Result<PathBuf> {
     get_output_executable_path("tmk_vmm")
+}
+
+/// Path to the output location of the vmgstool executable.
+fn vmgstool_native_executable_path() -> anyhow::Result<PathBuf> {
+    get_output_executable_path("vmgstool")
+}
+
+/// Path to the output location of the tpm_guest_tests executable.
+fn tpm_guest_tests_windows_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    let target = windows_msvc_target(arch);
+    get_path(
+        format!("target/{target}/debug"),
+        "tpm_guest_tests.exe",
+        MissingCommand::Build {
+            package: "tpm_guest_tests",
+            target: Some(target),
+        },
+    )
+}
+
+fn tpm_guest_tests_linux_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    let target = match arch {
+        MachineArch::X86_64 => "x86_64-unknown-linux-gnu",
+        MachineArch::Aarch64 => "aarch64-unknown-linux-gnu",
+    };
+
+    get_path(
+        format!("target/{target}/debug"),
+        "tpm_guest_tests",
+        MissingCommand::Build {
+            package: "tpm_guest_tests",
+            target: Some(target),
+        },
+    )
+}
+
+/// Path to the output location of the test_igvm_agent_rpc_server executable.
+fn test_igvm_agent_rpc_server_windows_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    let target = windows_msvc_target(arch);
+    get_path(
+        format!("target/{target}/debug"),
+        "test_igvm_agent_rpc_server.exe",
+        MissingCommand::Build {
+            package: "test_igvm_agent_rpc_server",
+            target: Some(target),
+        },
+    )
 }
 
 fn tmk_vmm_paravisor_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
@@ -382,25 +467,25 @@ fn openhcl_bin_path(
                 xflowey_args: &["build-igvm", "aarch64-devkern"],
             },
         ),
-        (MachineArch::X86_64, OpenhclVersion::Release2505, OpenhclFlavor::LinuxDirect) => (
-            "flowey-out/artifacts/latest-release-igvm-files",
-            "release-2505-x64-direct-openhcl.bin",
+        (MachineArch::X86_64, OpenhclVersion::Release2511, OpenhclFlavor::LinuxDirect) => (
+            "flowey-out/artifacts/last-release-igvm-files",
+            "release-2511-x64-direct-openhcl.bin",
             MissingCommand::XFlowey {
                 description: "Previous OpenHCL release IGVM file",
                 xflowey_args: &["restore-packages"],
             },
         ),
-        (MachineArch::X86_64, OpenhclVersion::Release2505, OpenhclFlavor::Standard) => (
-            "flowey-out/artifacts/latest-release-igvm-files",
-            "release-2505-x64-openhcl.bin",
+        (MachineArch::X86_64, OpenhclVersion::Release2511, OpenhclFlavor::Standard) => (
+            "flowey-out/artifacts/last-release-igvm-files",
+            "release-2511-x64-openhcl.bin",
             MissingCommand::XFlowey {
                 description: "Previous OpenHCL release IGVM file",
                 xflowey_args: &["restore-packages"],
             },
         ),
-        (MachineArch::Aarch64, OpenhclVersion::Release2505, OpenhclFlavor::Standard) => (
-            "flowey-out/artifacts/latest-release-igvm-files",
-            "release-2505-aarch64-openhcl.bin",
+        (MachineArch::Aarch64, OpenhclVersion::Release2511, OpenhclFlavor::Standard) => (
+            "flowey-out/artifacts/last-release-igvm-files",
+            "release-2511-aarch64-openhcl.bin",
             MissingCommand::XFlowey {
                 description: "Previous OpenHCL release IGVM file",
                 xflowey_args: &["restore-packages"],
@@ -541,6 +626,11 @@ pub enum MissingCommand<'a> {
         package: &'a str,
         target: Option<&'a str>,
     },
+    /// A `cargo run` invocation.
+    Run {
+        description: &'a str,
+        package: &'a str,
+    },
     /// A `cargo xtask` invocation.
     Xtask {
         description: &'a str,
@@ -564,6 +654,14 @@ impl MissingCommand<'_> {
                 "Failed to find {package} binary. Run `cargo build {target_args}-p {package}` to build it.",
                 target_args =
                     target.map_or(String::new(), |target| format!("--target {} ", target)),
+            ),
+            MissingCommand::Run {
+                description,
+                package,
+            } => anyhow::bail!(
+                "Failed to find {}. Run `cargo run -p {}` to create it.",
+                description,
+                package
             ),
             MissingCommand::Xtask {
                 description,

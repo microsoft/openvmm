@@ -14,6 +14,7 @@
 pub mod node {
     pub mod prelude {
         // include all user-facing types in the prelude
+        pub use flowey_core::match_arch;
         pub use flowey_core::node::user_facing::*;
 
         // ...in addition, export various types/traits that node impls are
@@ -34,6 +35,9 @@ pub mod node {
 
             /// Helper to make files executable on unix-like platforms
             fn make_executable(&self) -> std::io::Result<()>;
+
+            /// Helper to check if a file is executable on unix-like platforms
+            fn is_executable(&self) -> std::io::Result<bool>;
         }
 
         impl<T> FloweyPathExt for T
@@ -56,6 +60,22 @@ pub mod node {
                     )?;
                 }
                 Ok(())
+            }
+
+            fn is_executable(&self) -> std::io::Result<bool> {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let path = self.as_ref();
+                    let mode = path.metadata()?.permissions().mode();
+                    Ok(mode & 0o111 != 0)
+                }
+
+                // TODO: Implement for windows. Tracked by https://github.com/microsoft/openvmm/issues/2622
+                #[cfg(not(unix))]
+                {
+                    Ok(true)
+                }
             }
         }
     }

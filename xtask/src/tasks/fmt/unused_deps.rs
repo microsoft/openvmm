@@ -628,10 +628,15 @@ impl Sink for StopAfterFirstMatch {
         let mat = String::from_utf8(mat.bytes().to_vec())?;
         let mat = mat.trim();
 
-        if mat.starts_with("//") || mat.starts_with("//!") {
-            // Continue if seeing what resembles a comment or doc comment. Unfortunately we can't
-            // do anything better because trying to figure whether we're within a (doc) comment
-            // would require actual parsing of the Rust code.
+        if (mat.starts_with("//") || mat.starts_with("//!"))
+            && !(mat.starts_with("/// # use") || mat.starts_with("/// use"))
+        {
+            // Continue if seeing what resembles a comment or an inner doc
+            // comment.
+            // Certain exceptions for outer doc comments (`///`) because they may contain code
+            // examples that use dependencies, and skipping them could cause us to miss usages
+            // relevant for dependency detection. Unfortunately we can't check whether the example
+            // is within a code snippet without actually parsing the code.
             return Ok(true);
         }
 

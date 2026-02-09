@@ -4,6 +4,7 @@
 //! Interface to `mshv_vtl` driver.
 
 mod deferred;
+pub mod register;
 
 pub mod aarch64;
 pub mod snp;
@@ -32,19 +33,12 @@ use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PARTITION_ID_SELF;
-use hvdef::HV_VP_INDEX_SELF;
 use hvdef::HvAarch64RegisterPage;
-use hvdef::HvAllArchRegisterName;
-#[cfg(guest_arch = "aarch64")]
-use hvdef::HvArm64RegisterName;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
 use hvdef::HvMessage;
-use hvdef::HvRegisterName;
-use hvdef::HvRegisterValue;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvStatus;
-use hvdef::HvX64RegisterName;
 use hvdef::HvX64RegisterPage;
 use hvdef::HypercallCode;
 use hvdef::Vtl;
@@ -55,7 +49,6 @@ use hvdef::hypercall::HvGpaRangeExtended;
 use hvdef::hypercall::HvInputVtl;
 use hvdef::hypercall::HvInterceptParameters;
 use hvdef::hypercall::HvInterceptType;
-use hvdef::hypercall::HvRegisterAssoc;
 use hvdef::hypercall::HypercallOutput;
 use hvdef::hypercall::InitialVpContextX64;
 use hvdef::hypercall::ModifyHostVisibility;
@@ -63,7 +56,6 @@ use memory_range::MemoryRange;
 use pal::unix::pthread::*;
 use parking_lot::Mutex;
 use private::BackingPrivate;
-use sidecar_client::NewSidecarClientError;
 use sidecar_client::SidecarClient;
 use sidecar_client::SidecarRun;
 use sidecar_client::SidecarVp;
@@ -104,27 +96,10 @@ pub enum Error {
     ReturnToLowerVtl(#[source] nix::Error),
     #[error("AddVtl0Memory")]
     AddVtl0Memory(#[source] nix::Error),
-    #[error("hcl_set_vp_register")]
-    SetVpRegister(#[source] nix::Error),
-    #[error("hcl_get_vp_register")]
-    GetVpRegister(#[source] nix::Error),
-    #[error("failed to get VP register {reg:#x?} from hypercall")]
-    GetVpRegisterHypercall {
-        #[cfg(guest_arch = "x86_64")]
-        reg: HvX64RegisterName,
-        #[cfg(guest_arch = "aarch64")]
-        reg: HvArm64RegisterName,
-        #[source]
-        err: HvError,
-    },
     #[error("hcl_request_interrupt")]
     RequestInterrupt(#[source] HvError),
-    #[error("hcl_cancel_vp failed")]
-    CancelVp(#[source] nix::Error),
     #[error("failed to signal event")]
     SignalEvent(#[source] HvError),
-    #[error("failed to post message")]
-    PostMessage(#[source] HvError),
     #[error("failed to mmap the vp context {:?}", .1.map(|vtl| format!("for VTL {:?}", vtl)).unwrap_or("".to_string()))]
     MmapVp(#[source] io::Error, Option<Vtl>),
     #[error("failed to set the poll file")]
@@ -133,26 +108,12 @@ pub enum Error {
     CheckExtensions(#[source] nix::Error),
     #[error("failed to mmap the register page")]
     MmapRegPage(#[source] io::Error),
-    #[error("invalid num signal events")]
-    NumSignalEvent(#[source] io::Error),
     #[error("failed to create vtl")]
     CreateVTL(#[source] nix::Error),
     #[error("gpa failed vtl access check")]
     CheckVtlAccess(#[source] HvError),
-    #[error("failed to set registers using set_vp_registers hypercall")]
-    SetRegisters(#[source] HvError),
-    #[error("Unknown register name: {0:x}")]
-    UnknownRegisterName(u32),
-    #[error("Invalid register value")]
-    InvalidRegisterValue,
-    #[error("failed to set host visibility")]
-    SetHostVisibility(#[source] nix::Error),
-    #[error("failed to allocate host overlay page")]
-    HostOverlayPageExhausted,
     #[error("sidecar error")]
     Sidecar(#[source] sidecar_client::SidecarError),
-    #[error("failed to open sidecar")]
-    OpenSidecar(#[source] NewSidecarClientError),
     #[error(
         "mismatch between requested isolation type {requested:?} and supported isolation type {supported:?}"
     )]
@@ -164,6 +125,10 @@ pub enum Error {
     MissingPrivateMemory,
     #[error("failed to allocate pages for vp")]
     AllocVp(#[source] anyhow::Error),
+    #[error("failed to map or unmap redirected device interrupt")]
+    MapRedirectedDeviceInterrupt(#[source] nix::Error),
+    #[error("failed to restore partition time")]
+    RestorePartitionTime(#[source] nix::Error),
 }
 
 /// Error for IOCTL errors specifically.
@@ -363,7 +328,7 @@ enum HvcallRepInput<'a, T> {
     Count(u16),
 }
 
-mod ioctls {
+pub(crate) mod ioctls {
     #![allow(non_camel_case_types)]
 
     use crate::protocol;
@@ -379,6 +344,7 @@ mod ioctls {
     const MSHV_VTL_RETURN_TO_LOWER_VTL: u16 = 0x27;
     const MSHV_SET_VP_REGISTERS: u16 = 0x6;
     const MSHV_GET_VP_REGISTERS: u16 = 0x5;
+    const MSHV_RESTORE_PARTITION_TIME: u16 = 0x13;
     const MSHV_HVCALL_SETUP: u16 = 0x1E;
     const MSHV_HVCALL: u16 = 0x1F;
     const MSHV_VTL_ADD_VTL0_MEMORY: u16 = 0x21;
@@ -394,6 +360,7 @@ mod ioctls {
     const MSHV_INVLPGB: u16 = 0x36;
     const MSHV_TLBSYNC: u16 = 0x37;
     const MSHV_KICKCPUS: u16 = 0x38;
+    const MSHV_MAP_REDIRECTED_DEVICE_INTERRUPT: u16 = 0x39;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -459,6 +426,24 @@ mod ioctls {
         pub r9: u64,
         pub r10_out: u64, // only supported as output
         pub r11_out: u64, // only supported as output
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    pub struct mshv_map_device_int {
+        pub vector: u32,
+        pub apic_id: u32,
+        pub create_mapping: u8,
+        pub padding: [u8; 7],
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    pub struct mshv_restore_partition_time {
+        pub tsc_sequence: u32,
+        pub reserved: u32,
+        pub reference_time_in_100_ns: u64,
+        pub tsc: u64,
     }
 
     ioctl_none!(
@@ -574,6 +559,7 @@ mod ioctls {
     pub const HCL_CAP_REGISTER_PAGE: u32 = 1;
     pub const HCL_CAP_VTL_RETURN_ACTION: u32 = 2;
     pub const HCL_CAP_DR6_SHARED: u32 = 3;
+    pub const HCL_CAP_LOWER_VTL_TIMER_VIRT: u32 = 4;
 
     ioctl_write_ptr!(
         /// Check for the presence of an extension capability.
@@ -615,6 +601,22 @@ mod ioctls {
         MSHV_IOCTL,
         MSHV_KICKCPUS,
         protocol::hcl_kick_cpus
+    );
+
+    ioctl_readwrite!(
+        /// Map or unmap VTL0 device interrupt in VTL2.
+        hcl_map_redirected_device_interrupt,
+        MSHV_IOCTL,
+        MSHV_MAP_REDIRECTED_DEVICE_INTERRUPT,
+        mshv_map_device_int
+    );
+
+    ioctl_write_ptr!(
+        /// Restore partition time.
+        hcl_restore_partition_time,
+        MSHV_IOCTL,
+        MSHV_RESTORE_PARTITION_TIME,
+        mshv_restore_partition_time
     );
 }
 
@@ -709,163 +711,6 @@ impl MshvVtl {
 
         Ok(())
     }
-}
-
-#[cfg(guest_arch = "x86_64")]
-fn is_vtl_shared_mtrr(reg: HvX64RegisterName) -> bool {
-    matches!(
-        reg,
-        HvX64RegisterName::MsrMtrrCap
-            | HvX64RegisterName::MsrMtrrDefType
-            | HvX64RegisterName::MsrMtrrPhysBase0
-            | HvX64RegisterName::MsrMtrrPhysBase1
-            | HvX64RegisterName::MsrMtrrPhysBase2
-            | HvX64RegisterName::MsrMtrrPhysBase3
-            | HvX64RegisterName::MsrMtrrPhysBase4
-            | HvX64RegisterName::MsrMtrrPhysBase5
-            | HvX64RegisterName::MsrMtrrPhysBase6
-            | HvX64RegisterName::MsrMtrrPhysBase7
-            | HvX64RegisterName::MsrMtrrPhysBase8
-            | HvX64RegisterName::MsrMtrrPhysBase9
-            | HvX64RegisterName::MsrMtrrPhysBaseA
-            | HvX64RegisterName::MsrMtrrPhysBaseB
-            | HvX64RegisterName::MsrMtrrPhysBaseC
-            | HvX64RegisterName::MsrMtrrPhysBaseD
-            | HvX64RegisterName::MsrMtrrPhysBaseE
-            | HvX64RegisterName::MsrMtrrPhysBaseF
-            | HvX64RegisterName::MsrMtrrPhysMask0
-            | HvX64RegisterName::MsrMtrrPhysMask1
-            | HvX64RegisterName::MsrMtrrPhysMask2
-            | HvX64RegisterName::MsrMtrrPhysMask3
-            | HvX64RegisterName::MsrMtrrPhysMask4
-            | HvX64RegisterName::MsrMtrrPhysMask5
-            | HvX64RegisterName::MsrMtrrPhysMask6
-            | HvX64RegisterName::MsrMtrrPhysMask7
-            | HvX64RegisterName::MsrMtrrPhysMask8
-            | HvX64RegisterName::MsrMtrrPhysMask9
-            | HvX64RegisterName::MsrMtrrPhysMaskA
-            | HvX64RegisterName::MsrMtrrPhysMaskB
-            | HvX64RegisterName::MsrMtrrPhysMaskC
-            | HvX64RegisterName::MsrMtrrPhysMaskD
-            | HvX64RegisterName::MsrMtrrPhysMaskE
-            | HvX64RegisterName::MsrMtrrPhysMaskF
-            | HvX64RegisterName::MsrMtrrFix64k00000
-            | HvX64RegisterName::MsrMtrrFix16k80000
-            | HvX64RegisterName::MsrMtrrFix16kA0000
-            | HvX64RegisterName::MsrMtrrFix4kC0000
-            | HvX64RegisterName::MsrMtrrFix4kC8000
-            | HvX64RegisterName::MsrMtrrFix4kD0000
-            | HvX64RegisterName::MsrMtrrFix4kD8000
-            | HvX64RegisterName::MsrMtrrFix4kE0000
-            | HvX64RegisterName::MsrMtrrFix4kE8000
-            | HvX64RegisterName::MsrMtrrFix4kF0000
-            | HvX64RegisterName::MsrMtrrFix4kF8000
-    )
-}
-
-/// Indicate whether reg is shared across VTLs.
-///
-/// This function is not complete: DR6 may or may not be shared, depending on
-/// the processor type; the caller needs to check HvRegisterVsmCapabilities.
-/// Some MSRs are not included here as they are not represented in
-/// HvX64RegisterName, including MSR_TSC_FREQUENCY, MSR_MCG_CAP,
-/// MSR_MCG_STATUS, MSR_RESET, MSR_GUEST_IDLE, and MSR_DEBUG_DEVICE_OPTIONS.
-#[cfg(guest_arch = "x86_64")]
-fn is_vtl_shared_reg(reg: HvX64RegisterName) -> bool {
-    is_vtl_shared_mtrr(reg)
-        || matches!(
-            reg,
-            HvX64RegisterName::VpIndex
-                | HvX64RegisterName::VpRuntime
-                | HvX64RegisterName::TimeRefCount
-                | HvX64RegisterName::Rax
-                | HvX64RegisterName::Rbx
-                | HvX64RegisterName::Rcx
-                | HvX64RegisterName::Rdx
-                | HvX64RegisterName::Rsi
-                | HvX64RegisterName::Rdi
-                | HvX64RegisterName::Rbp
-                | HvX64RegisterName::Cr2
-                | HvX64RegisterName::R8
-                | HvX64RegisterName::R9
-                | HvX64RegisterName::R10
-                | HvX64RegisterName::R11
-                | HvX64RegisterName::R12
-                | HvX64RegisterName::R13
-                | HvX64RegisterName::R14
-                | HvX64RegisterName::R15
-                | HvX64RegisterName::Dr0
-                | HvX64RegisterName::Dr1
-                | HvX64RegisterName::Dr2
-                | HvX64RegisterName::Dr3
-                | HvX64RegisterName::Xmm0
-                | HvX64RegisterName::Xmm1
-                | HvX64RegisterName::Xmm2
-                | HvX64RegisterName::Xmm3
-                | HvX64RegisterName::Xmm4
-                | HvX64RegisterName::Xmm5
-                | HvX64RegisterName::Xmm6
-                | HvX64RegisterName::Xmm7
-                | HvX64RegisterName::Xmm8
-                | HvX64RegisterName::Xmm9
-                | HvX64RegisterName::Xmm10
-                | HvX64RegisterName::Xmm11
-                | HvX64RegisterName::Xmm12
-                | HvX64RegisterName::Xmm13
-                | HvX64RegisterName::Xmm14
-                | HvX64RegisterName::Xmm15
-                | HvX64RegisterName::FpMmx0
-                | HvX64RegisterName::FpMmx1
-                | HvX64RegisterName::FpMmx2
-                | HvX64RegisterName::FpMmx3
-                | HvX64RegisterName::FpMmx4
-                | HvX64RegisterName::FpMmx5
-                | HvX64RegisterName::FpMmx6
-                | HvX64RegisterName::FpMmx7
-                | HvX64RegisterName::FpControlStatus
-                | HvX64RegisterName::XmmControlStatus
-                | HvX64RegisterName::Xfem
-        )
-}
-
-/// Indicate whether reg is shared across VTLs.
-#[cfg(guest_arch = "aarch64")]
-fn is_vtl_shared_reg(reg: HvArm64RegisterName) -> bool {
-    use hvdef::HvArm64RegisterName;
-
-    matches!(
-        reg,
-        HvArm64RegisterName::X0
-            | HvArm64RegisterName::X1
-            | HvArm64RegisterName::X2
-            | HvArm64RegisterName::X3
-            | HvArm64RegisterName::X4
-            | HvArm64RegisterName::X5
-            | HvArm64RegisterName::X6
-            | HvArm64RegisterName::X7
-            | HvArm64RegisterName::X8
-            | HvArm64RegisterName::X9
-            | HvArm64RegisterName::X10
-            | HvArm64RegisterName::X11
-            | HvArm64RegisterName::X12
-            | HvArm64RegisterName::X13
-            | HvArm64RegisterName::X14
-            | HvArm64RegisterName::X15
-            | HvArm64RegisterName::X16
-            | HvArm64RegisterName::X17
-            | HvArm64RegisterName::X19
-            | HvArm64RegisterName::X20
-            | HvArm64RegisterName::X21
-            | HvArm64RegisterName::X22
-            | HvArm64RegisterName::X23
-            | HvArm64RegisterName::X24
-            | HvArm64RegisterName::X25
-            | HvArm64RegisterName::X26
-            | HvArm64RegisterName::X27
-            | HvArm64RegisterName::X28
-            | HvArm64RegisterName::XFp
-            | HvArm64RegisterName::XLr
-    )
 }
 
 /// The `/dev/mshv_hvcall` device for issuing hypercalls directly to the
@@ -985,9 +830,9 @@ impl MshvHvcall {
     ///
     /// Returns on error, the hypervisor error and the number of pages
     /// processed.
-    //
-    // TODO SNP: this isn't really safe. Probably this should be an IOCTL in the
-    // kernel so that it can validate the page ranges are VTL0 memory.
+    ///
+    /// VBS FUTURE TODO: For defense in depth it could be useful to prevent usermode from
+    /// changing visibility of a VTL2 kernel page in the kernel.
     pub fn modify_gpa_visibility(
         &self,
         host_visibility: HostVisibilityType,
@@ -1299,7 +1144,7 @@ impl MshvHvcall {
             assert!(size_of::<O>() <= HV_PAGE_SIZE as usize);
         }
         assert_size::<I, O>();
-        assert!(variable_input.len() % 8 == 0);
+        assert!(variable_input.len().is_multiple_of(8));
 
         let input = [input.as_bytes(), variable_input].concat();
         if input.len() > HV_PAGE_SIZE as usize {
@@ -1387,124 +1232,6 @@ impl MshvHvcall {
         }
 
         Ok(())
-    }
-
-    /// Get a single VP register for the given VTL via hypercall.
-    fn get_vp_register_for_vtl_inner(
-        &self,
-        target_vtl: HvInputVtl,
-        name: HvRegisterName,
-    ) -> Result<HvRegisterValue, Error> {
-        let header = hvdef::hypercall::GetSetVpRegisters {
-            partition_id: HV_PARTITION_ID_SELF,
-            vp_index: HV_VP_INDEX_SELF,
-            target_vtl,
-            rsvd: [0; 3],
-        };
-        let mut output = [HvRegisterValue::new_zeroed()];
-
-        // SAFETY: The input header and rep slice are the correct types for this hypercall.
-        //         The hypercall output is validated right after the hypercall is issued.
-        let status = unsafe {
-            self.hvcall_rep(
-                HypercallCode::HvCallGetVpRegisters,
-                &header,
-                HvcallRepInput::Elements(&[name]),
-                Some(&mut output),
-            )
-            .expect("get_vp_register hypercall should not fail")
-        };
-
-        // Status must be success with 1 rep completed
-        status
-            .result()
-            .map_err(|err| Error::GetVpRegisterHypercall {
-                reg: name.into(),
-                err,
-            })?;
-        assert_eq!(status.elements_processed(), 1);
-
-        Ok(output[0])
-    }
-
-    /// Get a single VP register for the given VTL via hypercall. Only a select
-    /// set of registers are supported; others will cause a panic.
-    #[cfg(guest_arch = "x86_64")]
-    fn get_vp_register_for_vtl(
-        &self,
-        vtl: HvInputVtl,
-        name: HvX64RegisterName,
-    ) -> Result<HvRegisterValue, Error> {
-        match vtl.target_vtl().unwrap() {
-            None | Some(Vtl::Vtl2) => {
-                assert!(matches!(
-                    name,
-                    HvX64RegisterName::GuestVsmPartitionConfig
-                        | HvX64RegisterName::VsmPartitionConfig
-                        | HvX64RegisterName::VsmPartitionStatus
-                        | HvX64RegisterName::VsmCapabilities
-                        | HvX64RegisterName::TimeRefCount
-                        | HvX64RegisterName::VsmVpSecureConfigVtl0
-                        | HvX64RegisterName::VsmVpSecureConfigVtl1
-                ));
-            }
-            Some(Vtl::Vtl1) => {
-                todo!("TODO: allowed registers for VTL1");
-            }
-            Some(Vtl::Vtl0) => {
-                // Only VTL-private registers can go through this path.
-                // VTL-shared registers have to go through the kernel (either
-                // via the CPU context page or via the dedicated ioctl), as
-                // they may require special handling there.
-                //
-                // Register access should go through the register page if
-                // possible (as a performance optimization). In practice,
-                // registers that are normally available on the register page
-                // are handled here only when it is unavailable (e.g., running
-                // in WHP).
-                assert!(!is_vtl_shared_reg(name));
-            }
-        }
-
-        self.get_vp_register_for_vtl_inner(vtl, name.into())
-    }
-
-    /// Get a single VP register for the given VTL via hypercall. Only a select
-    /// set of registers are supported; others will cause a panic.
-    #[cfg(guest_arch = "aarch64")]
-    fn get_vp_register_for_vtl(
-        &self,
-        vtl: HvInputVtl,
-        name: HvArm64RegisterName,
-    ) -> Result<HvRegisterValue, Error> {
-        match vtl.target_vtl().unwrap() {
-            None | Some(Vtl::Vtl2) => {
-                assert!(matches!(
-                    name,
-                    HvArm64RegisterName::GuestVsmPartitionConfig
-                        | HvArm64RegisterName::VsmPartitionConfig
-                        | HvArm64RegisterName::VsmPartitionStatus
-                        | HvArm64RegisterName::VsmCapabilities
-                        | HvArm64RegisterName::TimeRefCount
-                        | HvArm64RegisterName::VsmVpSecureConfigVtl0
-                        | HvArm64RegisterName::VsmVpSecureConfigVtl1
-                        | HvArm64RegisterName::PrivilegesAndFeaturesInfo
-                ));
-            }
-            Some(Vtl::Vtl1) => {
-                // TODO: allowed registers for VTL1
-                todo!();
-            }
-            Some(Vtl::Vtl0) => {
-                // Only VTL-private registers can go through this path.
-                // VTL-shared registers have to go through the kernel (either
-                // via the CPU context page or via the dedicated ioctl), as
-                // they may require special handling there.
-                assert!(!is_vtl_shared_reg(name));
-            }
-        }
-
-        self.get_vp_register_for_vtl_inner(vtl, name.into())
     }
 
     /// Invokes the HvCallMemoryMappedIoRead hypercall
@@ -1607,13 +1334,13 @@ pub struct Hcl {
     supports_vtl_ret_action: bool,
     supports_register_page: bool,
     dr6_shared: bool,
+    supports_lower_vtl_timer_virt: bool,
     isolation: IsolationType,
     snp_register_bitmap: [u8; 64],
     sidecar: Option<SidecarClient>,
 }
 
 /// The isolation type for a partition.
-// TODO: Add guest_arch cfgs.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum IsolationType {
     /// No isolation.
@@ -1642,6 +1369,11 @@ impl Hcl {
     /// Returns true if DR6 is a shared register on this processor.
     pub fn dr6_shared(&self) -> bool {
         self.dr6_shared
+    }
+
+    /// Returns true if timer virtualization for lower VTL is supported.
+    pub fn supports_lower_vtl_timer_virt(&self) -> bool {
+        self.supports_lower_vtl_timer_virt
     }
 }
 
@@ -1780,7 +1512,6 @@ pub trait Backing<'a>: BackingPrivate<'a> {}
 impl<'a, T: BackingPrivate<'a>> Backing<'a> for T {}
 
 mod private {
-    use super::Error;
     use super::Hcl;
     use super::HclVp;
     use super::NoRunner;
@@ -1799,7 +1530,7 @@ mod private {
             vtl: GuestVtl,
             name: HvRegisterName,
             value: HvRegisterValue,
-        ) -> Result<bool, Error>;
+        ) -> bool;
 
         fn must_flush_regs_on(runner: &ProcessorRunner<'a, Self>, name: HvRegisterName) -> bool;
 
@@ -1807,7 +1538,7 @@ mod private {
             runner: &ProcessorRunner<'a, Self>,
             vtl: GuestVtl,
             name: HvRegisterName,
-        ) -> Result<Option<HvRegisterValue>, Error>;
+        ) -> Option<HvRegisterValue>;
 
         fn flush_register_page(runner: &mut ProcessorRunner<'a, Self>);
     }
@@ -1830,112 +1561,6 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         if let Some(actions) = &mut self.deferred_actions {
             actions.flush();
         }
-    }
-
-    // Registers that are shared between VTLs need to be handled by the kernel
-    // as they may require special handling there. set_reg and get_reg will
-    // handle these registers using a dedicated ioctl, instead of the general-
-    // purpose Set/GetVpRegisters hypercalls.
-    #[cfg(guest_arch = "x86_64")]
-    fn is_kernel_managed(&self, name: HvX64RegisterName) -> bool {
-        if name == HvX64RegisterName::Dr6 {
-            self.hcl.dr6_shared()
-        } else {
-            is_vtl_shared_reg(name)
-        }
-    }
-
-    #[cfg(guest_arch = "aarch64")]
-    fn is_kernel_managed(&self, name: HvArm64RegisterName) -> bool {
-        is_vtl_shared_reg(name)
-    }
-
-    fn set_reg(&mut self, vtl: GuestVtl, regs: &[HvRegisterAssoc]) -> Result<(), Error> {
-        if regs.is_empty() {
-            return Ok(());
-        }
-
-        if let Some(sidecar) = &mut self.sidecar {
-            sidecar
-                .set_vp_registers(vtl.into(), regs)
-                .map_err(Error::Sidecar)?;
-        } else {
-            // TODO: group up to MSHV_VP_MAX_REGISTERS regs. The kernel
-            // currently has a bug where it only supports one register at a
-            // time. Once that's fixed, this code could set a group of
-            // registers in one ioctl.
-            for reg in regs {
-                let hc_regs = &mut [HvRegisterAssoc {
-                    name: reg.name,
-                    pad: [0; 3],
-                    value: reg.value,
-                }];
-
-                if self.is_kernel_managed(reg.name.into()) {
-                    let hv_vp_register_args = mshv_vp_registers {
-                        count: 1,
-                        regs: hc_regs.as_mut_ptr(),
-                    };
-                    // SAFETY: ioctl call with correct types.
-                    unsafe {
-                        hcl_set_vp_register(
-                            self.hcl.mshv_vtl.file.as_raw_fd(),
-                            &hv_vp_register_args,
-                        )
-                        .map_err(Error::SetVpRegister)?;
-                    }
-                } else {
-                    let hc_regs = [HvRegisterAssoc {
-                        name: reg.name,
-                        pad: [0; 3],
-                        value: reg.value,
-                    }];
-                    self.set_vp_registers_hvcall_inner(vtl.into(), &hc_regs)
-                        .map_err(Error::SetRegisters)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn get_reg(&mut self, vtl: Vtl, regs: &mut [HvRegisterAssoc]) -> Result<(), Error> {
-        if regs.is_empty() {
-            return Ok(());
-        }
-
-        if let Some(sidecar) = &mut self.sidecar {
-            sidecar
-                .get_vp_registers(vtl.into(), regs)
-                .map_err(Error::Sidecar)?;
-        } else {
-            // TODO: group up to MSHV_VP_MAX_REGISTERS regs. The kernel
-            // currently has a bug where it only supports one register at a
-            // time. Once that's fixed, this code could set a group of
-            // registers in one ioctl.
-            for reg in regs {
-                if self.is_kernel_managed(reg.name.into()) {
-                    let mut mshv_vp_register_args = mshv_vp_registers {
-                        count: 1,
-                        regs: reg,
-                    };
-                    // SAFETY: we know that our file is a vCPU fd, we know the kernel will only read the
-                    // correct amount of memory from our pointer, and we verify the return result.
-                    unsafe {
-                        hcl_get_vp_register(
-                            self.hcl.mshv_vtl.file.as_raw_fd(),
-                            &mut mshv_vp_register_args,
-                        )
-                        .map_err(Error::GetVpRegister)?;
-                    }
-                } else {
-                    reg.value = self
-                        .hcl
-                        .mshv_hvcall
-                        .get_vp_register_for_vtl(vtl.into(), reg.name.into())?;
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Clears the cancel flag so that the VP can be run again.
@@ -2074,191 +1699,6 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         self.sidecar.is_some()
     }
 
-    fn get_vp_registers_inner<R: Copy + Into<HvRegisterName>>(
-        &mut self,
-        vtl: GuestVtl,
-        names: &[R],
-        values: &mut [HvRegisterValue],
-    ) -> Result<(), Error> {
-        assert_eq!(names.len(), values.len());
-        let mut assoc = Vec::new();
-        let mut offset = Vec::new();
-        for (i, (&name, value)) in names.iter().zip(values.iter_mut()).enumerate() {
-            if let Some(v) = T::try_get_reg(self, vtl, name.into())? {
-                *value = v;
-            } else {
-                assoc.push(HvRegisterAssoc {
-                    name: name.into(),
-                    pad: Default::default(),
-                    value: FromZeros::new_zeroed(),
-                });
-                offset.push(i);
-            }
-        }
-
-        self.get_reg(vtl.into(), &mut assoc)?;
-        for (&i, assoc) in offset.iter().zip(&assoc) {
-            values[i] = assoc.value;
-        }
-        Ok(())
-    }
-
-    /// Get the following register on the current VP.
-    ///
-    /// This will fail for registers that are in the mmapped CPU context, i.e.
-    /// registers that are shared between VTL0 and VTL2.
-    pub fn get_vp_register(
-        &mut self,
-        vtl: GuestVtl,
-        #[cfg(guest_arch = "x86_64")] name: HvX64RegisterName,
-        #[cfg(guest_arch = "aarch64")] name: HvArm64RegisterName,
-    ) -> Result<HvRegisterValue, Error> {
-        let mut value = [0u64.into(); 1];
-        self.get_vp_registers_inner(vtl, &[name], &mut value)?;
-        Ok(value[0])
-    }
-
-    /// Get the following register on the current VP for VTL 2.
-    ///
-    /// This will fail for registers that are in the mmapped CPU context, i.e.
-    /// registers that are shared between VTL0 and VTL2.
-    pub fn get_vp_vtl2_register(
-        &mut self,
-        #[cfg(guest_arch = "x86_64")] name: HvX64RegisterName,
-        #[cfg(guest_arch = "aarch64")] name: HvArm64RegisterName,
-    ) -> Result<HvRegisterValue, Error> {
-        let mut assoc = [HvRegisterAssoc {
-            name: name.into(),
-            pad: Default::default(),
-            value: FromZeros::new_zeroed(),
-        }];
-        self.get_reg(Vtl::Vtl2, &mut assoc)?;
-        Ok(assoc[0].value)
-    }
-
-    /// Get the following VP registers on the current VP.
-    ///
-    /// # Panics
-    /// Panics if `names.len() != values.len()`.
-    pub fn get_vp_registers(
-        &mut self,
-        vtl: GuestVtl,
-        #[cfg(guest_arch = "x86_64")] names: &[HvX64RegisterName],
-        #[cfg(guest_arch = "aarch64")] names: &[HvArm64RegisterName],
-        values: &mut [HvRegisterValue],
-    ) -> Result<(), Error> {
-        self.get_vp_registers_inner(vtl, names, values)
-    }
-
-    /// Set the following register on the current VP.
-    ///
-    /// This will fail for registers that are in the mmapped CPU context, i.e.
-    /// registers that are shared between VTL0 and VTL2.
-    pub fn set_vp_register(
-        &mut self,
-        vtl: GuestVtl,
-        #[cfg(guest_arch = "x86_64")] name: HvX64RegisterName,
-        #[cfg(guest_arch = "aarch64")] name: HvArm64RegisterName,
-        value: HvRegisterValue,
-    ) -> Result<(), Error> {
-        self.set_vp_registers(vtl, [(name, value)])
-    }
-
-    /// Sets a set of VP registers.
-    pub fn set_vp_registers<I>(&mut self, vtl: GuestVtl, values: I) -> Result<(), Error>
-    where
-        I: IntoIterator,
-        I::Item: Into<HvRegisterAssoc> + Clone,
-    {
-        let mut assoc = Vec::new();
-        for HvRegisterAssoc { name, value, .. } in values.into_iter().map(Into::into) {
-            if !assoc.is_empty() && T::must_flush_regs_on(self, name) {
-                self.set_reg(vtl, &assoc)?;
-                assoc.clear();
-            }
-            if !T::try_set_reg(self, vtl, name, value)? {
-                assoc.push(HvRegisterAssoc {
-                    name,
-                    pad: Default::default(),
-                    value,
-                });
-            }
-        }
-        if !assoc.is_empty() {
-            self.set_reg(vtl, &assoc)?;
-        }
-        Ok(())
-    }
-
-    fn set_vp_registers_hvcall_inner(
-        &mut self,
-        vtl: Vtl,
-        registers: &[HvRegisterAssoc],
-    ) -> Result<(), HvError> {
-        let header = hvdef::hypercall::GetSetVpRegisters {
-            partition_id: HV_PARTITION_ID_SELF,
-            vp_index: HV_VP_INDEX_SELF,
-            target_vtl: vtl.into(),
-            rsvd: [0; 3],
-        };
-
-        tracing::trace!(?registers, "HvCallSetVpRegisters rep");
-
-        // SAFETY: The input header and rep slice are the correct types for this hypercall.
-        //         The hypercall output is validated right after the hypercall is issued.
-        let status = unsafe {
-            self.hcl
-                .mshv_hvcall
-                .hvcall_rep::<hvdef::hypercall::GetSetVpRegisters, HvRegisterAssoc, u8>(
-                    HypercallCode::HvCallSetVpRegisters,
-                    &header,
-                    HvcallRepInput::Elements(registers),
-                    None,
-                )
-                .expect("set_vp_registers hypercall should not fail")
-        };
-
-        // Status must be success
-        status.result()?;
-        Ok(())
-    }
-
-    /// Sets the following registers on the current VP and given VTL using a
-    /// direct hypercall.
-    ///
-    /// This should not be used on the fast path. Therefore only a select set of
-    /// registers are supported, and others will cause a panic.
-    ///
-    /// This function can be used with VTL2 as a target.
-    pub fn set_vp_registers_hvcall<I>(&mut self, vtl: Vtl, values: I) -> Result<(), HvError>
-    where
-        I: IntoIterator,
-        I::Item: Into<HvRegisterAssoc> + Clone,
-    {
-        let registers: Vec<HvRegisterAssoc> = values.into_iter().map(Into::into).collect();
-
-        assert!(registers.iter().all(
-            |HvRegisterAssoc {
-                 name,
-                 pad: _,
-                 value: _,
-             }| matches!(
-                (*name).into(),
-                HvX64RegisterName::PendingEvent0
-                    | HvX64RegisterName::PendingEvent1
-                    | HvX64RegisterName::Sipp
-                    | HvX64RegisterName::Sifp
-                    | HvX64RegisterName::Ghcb
-                    | HvX64RegisterName::VsmPartitionConfig
-                    | HvX64RegisterName::VsmVpWaitForTlbLock
-                    | HvX64RegisterName::VsmVpSecureConfigVtl0
-                    | HvX64RegisterName::VsmVpSecureConfigVtl1
-                    | HvX64RegisterName::CrInterceptControl
-            )
-        ));
-        self.set_vp_registers_hvcall_inner(vtl, &registers)
-    }
-
     /// Sets the VTL that should be returned to when underhill exits
     pub fn set_exit_vtl(&mut self, vtl: GuestVtl) {
         // SAFETY: self.run is mapped, and the target_vtl field can only be
@@ -2325,9 +1765,12 @@ impl Hcl {
         let supports_vtl_ret_action = mshv_fd.check_extension(HCL_CAP_VTL_RETURN_ACTION)?;
         let supports_register_page = mshv_fd.check_extension(HCL_CAP_REGISTER_PAGE)?;
         let dr6_shared = mshv_fd.check_extension(HCL_CAP_DR6_SHARED)?;
+        let supports_lower_vtl_timer_virt =
+            mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
         tracing::debug!(
             supports_vtl_ret_action,
             supports_register_page,
+            supports_lower_vtl_timer_virt,
             "HCL capabilities",
         );
 
@@ -2351,6 +1794,7 @@ impl Hcl {
             supports_vtl_ret_action,
             supports_register_page,
             dr6_shared,
+            supports_lower_vtl_timer_virt,
             isolation,
             snp_register_bitmap,
             sidecar,
@@ -2604,161 +2048,6 @@ impl Hcl {
         Ok(())
     }
 
-    /// Gets the current hypervisor reference time.
-    pub fn reference_time(&self) -> Result<u64, Error> {
-        Ok(self
-            .get_vp_register(HvAllArchRegisterName::TimeRefCount, HvInputVtl::CURRENT_VTL)?
-            .as_u64())
-    }
-
-    /// Get a single VP register for the given VTL via hypercall. Only a select
-    /// set of registers are supported; others will cause a panic.
-    #[cfg(guest_arch = "x86_64")]
-    fn get_vp_register(
-        &self,
-        name: impl Into<HvX64RegisterName>,
-        vtl: HvInputVtl,
-    ) -> Result<HvRegisterValue, Error> {
-        self.mshv_hvcall.get_vp_register_for_vtl(vtl, name.into())
-    }
-
-    /// Get a single VP register for the given VTL via hypercall. Only a select
-    /// set of registers are supported; others will cause a panic.
-    #[cfg(guest_arch = "aarch64")]
-    fn get_vp_register(
-        &self,
-        name: impl Into<HvArm64RegisterName>,
-        vtl: HvInputVtl,
-    ) -> Result<HvRegisterValue, Error> {
-        self.mshv_hvcall.get_vp_register_for_vtl(vtl, name.into())
-    }
-
-    /// Set a single VP register via hypercall as VTL2. Only a select set of registers are
-    /// supported, others will cause a panic.
-    fn set_vp_register(
-        &self,
-        name: HvRegisterName,
-        value: HvRegisterValue,
-        vtl: HvInputVtl,
-    ) -> Result<(), HvError> {
-        match vtl.target_vtl().unwrap() {
-            None | Some(Vtl::Vtl2) => {
-                #[cfg(guest_arch = "x86_64")]
-                assert!(matches!(
-                    name.into(),
-                    HvX64RegisterName::GuestVsmPartitionConfig
-                        | HvX64RegisterName::VsmPartitionConfig
-                        | HvX64RegisterName::PmTimerAssist
-                ));
-
-                #[cfg(guest_arch = "aarch64")]
-                assert!(matches!(
-                    name.into(),
-                    HvArm64RegisterName::GuestVsmPartitionConfig
-                        | HvArm64RegisterName::VsmPartitionConfig
-                ));
-            }
-            Some(Vtl::Vtl1) => {
-                // TODO: allowed registers for VTL1
-                todo!();
-            }
-            Some(Vtl::Vtl0) => {
-                // TODO: allowed registers for VTL0
-                todo!();
-            }
-        }
-
-        let header = hvdef::hypercall::GetSetVpRegisters {
-            partition_id: HV_PARTITION_ID_SELF,
-            vp_index: HV_VP_INDEX_SELF,
-            target_vtl: HvInputVtl::CURRENT_VTL,
-            rsvd: [0; 3],
-        };
-
-        let input = HvRegisterAssoc {
-            name,
-            pad: Default::default(),
-            value,
-        };
-
-        tracing::trace!(?name, register = ?value, "HvCallSetVpRegisters");
-
-        // SAFETY: The input header and rep slice are the correct types for this hypercall.
-        //         The hypercall output is validated right after the hypercall is issued.
-        let output = unsafe {
-            self.mshv_hvcall
-                .hvcall_rep::<hvdef::hypercall::GetSetVpRegisters, HvRegisterAssoc, u8>(
-                    HypercallCode::HvCallSetVpRegisters,
-                    &header,
-                    HvcallRepInput::Elements(&[input]),
-                    None,
-                )
-                .expect("set_vp_registers hypercall should not fail")
-        };
-
-        output.result()?;
-
-        // hypercall must succeed with 1 rep completed
-        assert_eq!(output.elements_processed(), 1);
-        Ok(())
-    }
-
-    /// Translate the following gva to a gpa page.
-    ///
-    /// The caller must ensure `control_flags.input_vtl()` is set to a specific
-    /// VTL.
-    #[cfg(guest_arch = "aarch64")]
-    pub fn translate_gva_to_gpa(
-        &self,
-        gva: u64,
-        control_flags: hvdef::hypercall::TranslateGvaControlFlagsArm64,
-    ) -> Result<Result<TranslateResult, aarch64::TranslateErrorAarch64>, TranslateGvaToGpaError>
-    {
-        use hvdef::hypercall;
-
-        assert!(!self.isolation.is_hardware_isolated());
-        assert!(
-            control_flags.input_vtl().use_target_vtl(),
-            "did not specify a target VTL"
-        );
-
-        let header = hypercall::TranslateVirtualAddressArm64 {
-            partition_id: HV_PARTITION_ID_SELF,
-            vp_index: HV_VP_INDEX_SELF,
-            reserved: 0,
-            control_flags,
-            gva_page: gva >> hvdef::HV_PAGE_SHIFT,
-        };
-
-        let mut output: hypercall::TranslateVirtualAddressExOutputArm64 = FromZeros::new_zeroed();
-
-        // SAFETY: The input header and slice are the correct types for this hypercall.
-        //         The hypercall output is validated right after the hypercall is issued.
-        let status = unsafe {
-            self.mshv_hvcall
-                .hvcall(
-                    HypercallCode::HvCallTranslateVirtualAddressEx,
-                    &header,
-                    &mut output,
-                )
-                .expect("translate can never fail")
-        };
-
-        status
-            .result()
-            .map_err(|hv_error| TranslateGvaToGpaError::Hypervisor { gva, hv_error })?;
-
-        // Note: WHP doesn't currently support TranslateVirtualAddressEx, so overlay_page, cache_type,
-        // event_info aren't trustworthy values if the results came from WHP.
-        match output.translation_result.result.result_code() {
-            c if c == hypercall::TranslateGvaResultCode::SUCCESS.0 => Ok(Ok(TranslateResult {
-                gpa_page: output.gpa_page,
-                overlay_page: output.translation_result.result.overlay_page(),
-            })),
-            x => Ok(Err(aarch64::TranslateErrorAarch64 { code: x })),
-        }
-    }
-
     fn to_hv_gpa_range_array(gpa_memory_ranges: &[MemoryRange]) -> Vec<HvGpaRange> {
         const PAGES_PER_ENTRY: u64 = 2048;
         const PAGE_SIZE: u64 = HV_PAGE_SIZE;
@@ -2922,154 +2211,6 @@ impl Hcl {
             GpaPinUnpinAction::UnpinGpaRange,
             GpaPinUnpinAction::PinGpaRange,
         )
-    }
-
-    /// Read the vsm capabilities register for VTL2.
-    pub fn get_vsm_capabilities(&self) -> Result<hvdef::HvRegisterVsmCapabilities, Error> {
-        let caps = hvdef::HvRegisterVsmCapabilities::from(
-            self.get_vp_register(
-                HvAllArchRegisterName::VsmCapabilities,
-                HvInputVtl::CURRENT_VTL,
-            )?
-            .as_u64(),
-        );
-
-        let caps = match self.isolation {
-            IsolationType::None | IsolationType::Vbs => caps,
-            // TODO SNP: Return actions may be useful, but with alternate injection many of these need
-            // cannot actually be processed by the hypervisor without returning to VTL2.
-            // Filter them out for now.
-            IsolationType::Snp => hvdef::HvRegisterVsmCapabilities::new()
-                .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
-                .with_intercept_page_available(caps.intercept_page_available()),
-            IsolationType::Tdx => hvdef::HvRegisterVsmCapabilities::new()
-                .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
-                .with_intercept_page_available(caps.intercept_page_available())
-                .with_dr6_shared(true),
-        };
-
-        assert_eq!(caps.dr6_shared(), self.dr6_shared());
-
-        Ok(caps)
-    }
-
-    /// Set the [`hvdef::HvRegisterVsmPartitionConfig`] register.
-    pub fn set_vtl2_vsm_partition_config(
-        &self,
-        vsm_config: HvRegisterVsmPartitionConfig,
-    ) -> Result<(), SetVsmPartitionConfigError> {
-        self.set_vp_register(
-            HvAllArchRegisterName::VsmPartitionConfig.into(),
-            HvRegisterValue::from(u64::from(vsm_config)),
-            HvInputVtl::CURRENT_VTL,
-        )
-        .map_err(|e| SetVsmPartitionConfigError::Hypervisor {
-            config: vsm_config,
-            hv_error: e,
-        })
-    }
-
-    /// Get the [`hvdef::HvRegisterGuestVsmPartitionConfig`] register
-    pub fn get_guest_vsm_partition_config(
-        &self,
-    ) -> Result<hvdef::HvRegisterGuestVsmPartitionConfig, Error> {
-        Ok(hvdef::HvRegisterGuestVsmPartitionConfig::from(
-            self.get_vp_register(
-                HvAllArchRegisterName::GuestVsmPartitionConfig,
-                HvInputVtl::CURRENT_VTL,
-            )?
-            .as_u64(),
-        ))
-    }
-
-    /// Get the [`hvdef::HvRegisterVsmPartitionStatus`] register
-    pub fn get_vsm_partition_status(&self) -> Result<hvdef::HvRegisterVsmPartitionStatus, Error> {
-        Ok(hvdef::HvRegisterVsmPartitionStatus::from(
-            self.get_vp_register(
-                HvAllArchRegisterName::VsmPartitionStatus,
-                HvInputVtl::CURRENT_VTL,
-            )?
-            .as_u64(),
-        ))
-    }
-
-    #[cfg(guest_arch = "aarch64")]
-    /// Get the [`hvdef::HvPartitionPrivilege`] register
-    pub fn get_privileges_and_features_info(&self) -> Result<hvdef::HvPartitionPrivilege, Error> {
-        Ok(hvdef::HvPartitionPrivilege::from(
-            self.get_vp_register(
-                HvArm64RegisterName::PrivilegesAndFeaturesInfo,
-                HvInputVtl::CURRENT_VTL,
-            )?
-            .as_u64(),
-        ))
-    }
-
-    /// Get the [`hvdef::hypercall::HvGuestOsId`] register for the given VTL.
-    pub fn get_guest_os_id(&self, vtl: Vtl) -> Result<hvdef::hypercall::HvGuestOsId, Error> {
-        Ok(hvdef::hypercall::HvGuestOsId::from(
-            self.get_vp_register(HvAllArchRegisterName::GuestOsId, vtl.into())?
-                .as_u64(),
-        ))
-    }
-
-    /// Configure guest VSM.
-    /// The only configuration attribute currently supported is changing the maximum number of
-    /// guest-visible virtual trust levels for the partition. (VTL 1)
-    pub fn set_guest_vsm_partition_config(
-        &self,
-        enable_guest_vsm: bool,
-    ) -> Result<(), SetGuestVsmConfigError> {
-        let register_value = hvdef::HvRegisterGuestVsmPartitionConfig::new()
-            .with_maximum_vtl(if enable_guest_vsm { 1 } else { 0 })
-            .with_reserved(0);
-
-        tracing::trace!(enable_guest_vsm, "set_guest_vsm_partition_config");
-        if self.isolation.is_hardware_isolated() {
-            unimplemented!("set_guest_vsm_partition_config");
-        }
-
-        self.set_vp_register(
-            HvAllArchRegisterName::GuestVsmPartitionConfig.into(),
-            HvRegisterValue::from(u64::from(register_value)),
-            HvInputVtl::CURRENT_VTL,
-        )
-        .map_err(|e| SetGuestVsmConfigError::Hypervisor {
-            enable_guest_vsm,
-            hv_error: e,
-        })
-    }
-
-    /// Sets the Power Management Timer assist in the hypervisor.
-    #[cfg(guest_arch = "x86_64")]
-    pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), HvError> {
-        tracing::debug!(?port, "set_pm_timer_assist");
-        if self.isolation.is_hardware_isolated() {
-            if port.is_some() {
-                unimplemented!("set_pm_timer_assist");
-            }
-        }
-
-        let val = HvRegisterValue::from(u64::from(match port {
-            Some(p) => hvdef::HvPmTimerInfo::new()
-                .with_port(p)
-                .with_enabled(true)
-                .with_width_24(false),
-            None => 0.into(),
-        }));
-
-        self.set_vp_register(
-            HvX64RegisterName::PmTimerAssist.into(),
-            val,
-            HvInputVtl::CURRENT_VTL,
-        )
-    }
-
-    /// Sets the Power Management Timer assist in the hypervisor.
-    #[cfg(guest_arch = "aarch64")]
-    pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), HvError> {
-        tracing::debug!(?port, "set_pm_timer_assist unimplemented on aarch64");
-        Err(HvError::UnknownRegisterName)
     }
 
     /// Sets the VTL protection mask for the specified memory range.
@@ -3236,6 +2377,7 @@ impl Hcl {
         vector: u32,
         multicast: bool,
         target_processors: ProcessorSet<'_>,
+        proxy_redirect: bool,
     ) -> Result<(), HvError> {
         let header = hvdef::hypercall::RetargetDeviceInterrupt {
             partition_id: HV_PARTITION_ID_SELF,
@@ -3246,7 +2388,8 @@ impl Hcl {
                 vector,
                 flags: hvdef::hypercall::HvInterruptTargetFlags::default()
                     .with_multicast(multicast)
-                    .with_processor_set(true),
+                    .with_processor_set(true)
+                    .with_proxy_redirect(proxy_redirect),
                 // Always use a generic processor set to simplify construction. This hypercall is
                 // invoked relatively infrequently, the overhead should be acceptable.
                 mask_or_format: hvdef::hypercall::HV_GENERIC_SET_SPARSE_4K,
@@ -3355,5 +2498,52 @@ impl Hcl {
         unsafe {
             hcl_kickcpus(self.mshv_vtl.file.as_raw_fd(), &data).expect("should always succeed");
         }
+    }
+
+    /// Map or unmap guest device interrupt vector in VTL2 kernel
+    pub fn map_redirected_device_interrupt(
+        &self,
+        vector: u32,
+        apic_id: u32,
+        create_mapping: bool,
+    ) -> Result<u32, Error> {
+        let mut param = mshv_map_device_int {
+            vector,
+            apic_id,
+            create_mapping: create_mapping.into(),
+            padding: [0; 7],
+        };
+
+        // SAFETY: following the IOCTL definition.
+        unsafe {
+            hcl_map_redirected_device_interrupt(self.mshv_vtl.file.as_raw_fd(), &mut param)
+                .map_err(Error::MapRedirectedDeviceInterrupt)?;
+        }
+
+        Ok(param.vector)
+    }
+
+    /// Restore partition time. This is typically called after resume from
+    /// hibernate to synchronize the TSC with the value at hibernate time.
+    pub fn restore_partition_time(
+        &self,
+        tsc_sequence: u32,
+        reference_time_in_100_ns: u64,
+        tsc: u64,
+    ) -> Result<(), Error> {
+        let partition_time = mshv_restore_partition_time {
+            tsc_sequence,
+            reserved: 0,
+            reference_time_in_100_ns,
+            tsc,
+        };
+
+        // SAFETY: ioctl has no prerequisites.
+        unsafe {
+            hcl_restore_partition_time(self.mshv_vtl.file.as_raw_fd(), &partition_time)
+                .map_err(Error::RestorePartitionTime)?;
+        }
+
+        Ok(())
     }
 }

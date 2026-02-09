@@ -347,7 +347,7 @@ impl<'a> ParseSignatureSha256<'a> {
 
         // sha256 has consistent signature sizes, so we can perform some early
         // validation as an optimization
-        if buf.len() % expected_signature_size != 0 {
+        if !buf.len().is_multiple_of(expected_signature_size) {
             return Err(ParseError::Sha256TruncatedData);
         }
 

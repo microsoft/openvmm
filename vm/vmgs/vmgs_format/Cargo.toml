@@ -11,6 +11,7 @@ open_enum.workspace = true
 inspect = { workspace = true, optional = true }
 
 bitfield-struct.workspace = true
+serde = { workspace = true, features = ["std", "derive"] }
 static_assertions.workspace = true
 zerocopy.workspace = true
 [lints]

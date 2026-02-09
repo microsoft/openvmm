@@ -228,7 +228,7 @@ impl Wq {
 
         let total_len = header.total_len();
         if total_len > size_of::<Wqe>() || total_len > self.available() as usize {
-            tracing::warn!("invalid wqe");
+            tracing::warn!(total_len, available = self.available(), "invalid wqe");
             return Poll::Pending;
         }
 
@@ -254,7 +254,10 @@ impl Wq {
         let old_len = self.available();
         assert!(old_len <= self.cap);
         let new_len = val.wrapping_sub(self.head);
-        if self.head % WQE_ALIGNMENT as u32 == 0 && new_len > old_len && new_len <= self.cap {
+        if self.head.is_multiple_of(WQE_ALIGNMENT as u32)
+            && new_len > old_len
+            && new_len <= self.cap
+        {
             self.tail = val;
             self.waker.take()
         } else {

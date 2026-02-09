@@ -11,6 +11,7 @@ default = []
 
 inspect = ["vmgs_format/inspect", "dep:inspect", "dep:inspect_counters"]
 save_restore = ["dep:mesh_protobuf"]
+mesh = ["dep:mesh_protobuf"]
 
 # Use native windows crypto APIs
 encryption_win = ["dep:windows"]
@@ -18,6 +19,9 @@ encryption_win = ["dep:windows"]
 encryption_ossl = ["dep:openssl"]
 
 test_helpers = []
+
+# run windows encryption unit tests in CI
+ci = ["encryption_win"]
 
 [dependencies]
 disk_backend.workspace = true
@@ -35,6 +39,7 @@ cfg-if.workspace = true
 crc32fast.workspace = true
 getrandom.workspace = true
 openssl = { optional = true, features = ["vendored"], workspace = true }
+serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
 tracing.workspace = true
 cvm_tracing.workspace = true

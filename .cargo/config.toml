@@ -32,10 +32,6 @@ CC_x86_64_unknown_linux_musl = { value = "build_support/underhill_cross/x86_64-u
 # Use the packaged verison of protoc, symlinked by repo setup tooling
 PROTOC = { value = ".packages/Google.Protobuf.Tools/tools/protoc", relative = true }
 
-# Path to lxutil.dll
-X86_64_LXUTIL_DLL_DIR = { value = ".packages/Microsoft.WSL.LxUtil.amd64fre/build/native/bin", relative = true }
-AARCH64_LXUTIL_DLL_DIR = { value = ".packages/Microsoft.WSL.LxUtil.arm64fre/build/native/bin", relative = true }
-
 # Path to sysroot (used by build_support/underhill_cross)
 X86_64_SYSROOT = { value = ".packages/extracted/x86_64-sysroot", relative = true }
 AARCH64_SYSROOT = { value = ".packages/extracted/aarch64-sysroot", relative = true }
@@ -93,6 +89,9 @@ rustflags = [
   "-Ctarget-feature=+crt-static",
   # Use RELR relocation format, which is considerably smaller.
   "-Clink-arg=-Wl,-z,pack-relative-relocs",
+  # Disable unwind tables to reduce binary size.
+  # TODO: It would be nice to have this enabled for debug builds
+  "-Cforce-unwind-tables=no",
 ]
 
 [target.'cfg(all(target_arch = "aarch64", target_env = "musl"))']

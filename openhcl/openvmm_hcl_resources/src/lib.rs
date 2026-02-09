@@ -16,7 +16,7 @@ vm_resource::register_static_resolvers! {
     chipset::i8042::resolver::I8042Resolver,
     missing_dev::resolver::MissingDevResolver,
     #[cfg(feature = "tpm")]
-    tpm::resolver::TpmDeviceResolver,
+    tpm_device::resolver::TpmDeviceResolver,
     #[cfg(guest_arch = "x86_64")]
     serial_16550::resolver::Serial16550Resolver,
     #[cfg(guest_arch = "aarch64")]
@@ -25,6 +25,7 @@ vm_resource::register_static_resolvers! {
 
     // Non-volatile stores
     vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreResolver,
+    vmgs_broker::resolver::VmgsFileResolver,
 
     // Serial ports
     serial_core::disconnected::resolver::DisconnectedSerialBackendResolver,

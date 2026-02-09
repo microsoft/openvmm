@@ -28,20 +28,28 @@ impl FlowNode for Node {
         let host_arch = ctx.arch();
 
         let native = |target: &target_lexicon::Triple| -> bool {
-            let platform = match target.operating_system {
-                target_lexicon::OperatingSystem::Windows => FlowPlatform::Windows,
-                target_lexicon::OperatingSystem::Linux => {
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
-                }
-                target_lexicon::OperatingSystem::Darwin(_) => FlowPlatform::MacOs,
-                _ => return false,
+            // Check if the target matches the host platform, treat Linux distros as equivalent
+            let os_matches = matches!(
+                (host_platform, target.operating_system),
+                (
+                    FlowPlatform::Linux(_),
+                    target_lexicon::OperatingSystem::Linux
+                ) | (
+                    FlowPlatform::Windows,
+                    target_lexicon::OperatingSystem::Windows
+                ) | (
+                    FlowPlatform::MacOs,
+                    target_lexicon::OperatingSystem::Darwin(_)
+                )
+            );
+
+            let arch_matches = match target.architecture {
+                Architecture::X86_64 => host_arch == FlowArch::X86_64,
+                Architecture::Aarch64(_) => host_arch == FlowArch::Aarch64,
+                _ => false,
             };
-            let arch = match target.architecture {
-                Architecture::X86_64 => FlowArch::X86_64,
-                Architecture::Aarch64(_) => FlowArch::Aarch64,
-                _ => return false,
-            };
-            host_platform == platform && host_arch == arch
+
+            os_matches && arch_matches
         };
 
         for Request {
@@ -54,32 +62,52 @@ impl FlowNode for Node {
 
             if !native(&target) {
                 let platform = ctx.platform();
-                let gcc_arch_str = match target.architecture {
-                    Architecture::X86_64 => match platform {
-                        FlowPlatform::Linux(linux_distribution) => match linux_distribution {
-                            FlowPlatformLinuxDistro::Fedora => "x86_64",
-                            FlowPlatformLinuxDistro::Ubuntu => "x86-64",
-                            FlowPlatformLinuxDistro::Unknown => {
-                                anyhow::bail!("Unknown Linux distribution")
-                            }
-                        },
-                        _ => anyhow::bail!("Unsupported platform"),
-                    },
-                    Architecture::Aarch64(_) => "aarch64",
-                    arch => anyhow::bail!("unsupported arch {arch}"),
-                };
 
                 match (platform, target.operating_system) {
                     (FlowPlatform::Linux(_), target_lexicon::OperatingSystem::Linux) => {
-                        let (gcc_pkg, bin) = match target.architecture {
-                            Architecture::Aarch64(_) => (
-                                format!("gcc-{gcc_arch_str}-linux-gnu"),
-                                "aarch64-linux-gnu-gcc".to_string(),
-                            ),
-                            Architecture::X86_64 => (
-                                format!("gcc-{gcc_arch_str}-linux-gnu"),
-                                "x86_64-linux-gnu-gcc".to_string(),
-                            ),
+                        let (gcc_pkg, bin): (Option<&str>, String) = match target.architecture {
+                            Architecture::X86_64 => match platform {
+                                FlowPlatform::Linux(linux_distribution) => {
+                                    let pkg = match linux_distribution {
+                                        FlowPlatformLinuxDistro::Fedora => {
+                                            Some("gcc-x86_64-linux-gnu")
+                                        }
+                                        FlowPlatformLinuxDistro::Ubuntu => {
+                                            Some("gcc-x86-64-linux-gnu")
+                                        }
+                                        FlowPlatformLinuxDistro::Arch => {
+                                            match_arch!(host_arch, FlowArch::X86_64, Some("gcc"))
+                                        }
+                                        FlowPlatformLinuxDistro::Nix => None,
+                                        FlowPlatformLinuxDistro::Unknown => {
+                                            anyhow::bail!("Unknown Linux distribution")
+                                        }
+                                    };
+                                    (pkg, "x86_64-linux-gnu-gcc".to_string())
+                                }
+                                _ => anyhow::bail!("Unsupported platform"),
+                            },
+                            Architecture::Aarch64(_) => match platform {
+                                FlowPlatform::Linux(linux_distribution) => {
+                                    let pkg = match linux_distribution {
+                                        FlowPlatformLinuxDistro::Fedora
+                                        | FlowPlatformLinuxDistro::Ubuntu => {
+                                            Some("gcc-aarch64-linux-gnu")
+                                        }
+                                        FlowPlatformLinuxDistro::Arch => match_arch!(
+                                            host_arch,
+                                            FlowArch::X86_64,
+                                            Some("aarch64-linux-gnu-gcc")
+                                        ),
+                                        FlowPlatformLinuxDistro::Nix => None,
+                                        FlowPlatformLinuxDistro::Unknown => {
+                                            anyhow::bail!("Unknown Linux distribution")
+                                        }
+                                    };
+                                    (pkg, "aarch64-linux-gnu-gcc".to_string())
+                                }
+                                _ => anyhow::bail!("Unsupported platform"),
+                            },
                             arch => anyhow::bail!("unsupported arch {arch}"),
                         };
 
@@ -92,12 +120,16 @@ impl FlowNode for Node {
                         // * The only Rust `aarch64` targets that produce
                         //   position-independent static ELF binaries with no std are
                         //   `aarch64-unknown-linux-*`.
-                        pre_build_deps.push(ctx.reqv(|v| {
-                            flowey_lib_common::install_dist_pkg::Request::Install {
-                                package_names: vec![gcc_pkg],
-                                done: v,
-                            }
-                        }));
+                        //
+                        // Skip package installation for Nix (shell.nix provides cross-compilers)
+                        if let Some(gcc_pkg) = gcc_pkg {
+                            pre_build_deps.push(ctx.reqv(|v| {
+                                flowey_lib_common::install_dist_pkg::Request::Install {
+                                    package_names: vec![gcc_pkg.into()],
+                                    done: v,
+                                }
+                            }));
+                        }
 
                         // when cross compiling for gnu linux, explicitly set the
                         // linker being used.

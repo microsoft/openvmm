@@ -3,6 +3,8 @@
 
 //! Worker for the prototype gRPC/ttrpc management endpoint.
 
+#![cfg(any(feature = "ttrpc", feature = "grpc"))]
+
 use self::vmservice::nic_config::Backend;
 use crate::serial_io::bind_serial;
 use anyhow::Context;
@@ -12,21 +14,6 @@ use awaitgroup::WaitGroup;
 use futures::FutureExt;
 use futures::StreamExt;
 use guid::Guid;
-use hvlite_defs::config::Config;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
-use hvlite_defs::config::DeviceVtl;
-use hvlite_defs::config::HypervisorConfig;
-use hvlite_defs::config::LoadMode;
-use hvlite_defs::config::MemoryConfig;
-use hvlite_defs::config::ProcessorTopologyConfig;
-use hvlite_defs::config::VirtioBus;
-use hvlite_defs::config::VmbusConfig;
-use hvlite_defs::config::VpciDeviceConfig;
-use hvlite_defs::rpc::VmRpc;
-use hvlite_defs::worker::VM_WORKER;
-use hvlite_defs::worker::VmWorkerParameters;
-use hvlite_helpers::disk::open_disk_type;
-use hvlite_ttrpc_vmservice as vmservice;
 use inspect::Inspect;
 use inspect::InspectionBuilder;
 use inspect_proto::InspectResponse2;
@@ -43,6 +30,22 @@ use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use netvsp_resources::NetvspHandle;
+use openvmm_defs::config::Config;
+use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
+use openvmm_defs::config::DEFAULT_PCIE_ECAM_BASE;
+use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::HypervisorConfig;
+use openvmm_defs::config::LoadMode;
+use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::ProcessorTopologyConfig;
+use openvmm_defs::config::VirtioBus;
+use openvmm_defs::config::VmbusConfig;
+use openvmm_defs::config::VpciDeviceConfig;
+use openvmm_defs::rpc::VmRpc;
+use openvmm_defs::worker::VM_WORKER;
+use openvmm_defs::worker::VmWorkerParameters;
+use openvmm_helpers::disk::open_disk_type;
+use openvmm_ttrpc_vmservice as vmservice;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::task::Spawn;
@@ -457,6 +460,9 @@ impl VmService {
             load_mode,
             ide_disks: vec![],
             floppy_disks: vec![],
+            pcie_root_complexes: vec![],
+            pcie_devices: vec![],
+            pcie_switches: vec![],
             vpci_devices: vec![],
             memory: MemoryConfig {
                 mem_size: req_config
@@ -468,6 +474,7 @@ impl VmService {
                     .context("invalid memory configuration")?,
                 mmio_gaps: DEFAULT_MMIO_GAPS_X86.into(),
                 prefetch_memory: false,
+                pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
             },
             chipset: chipset.chipset,
             processor_topology: ProcessorTopologyConfig {
@@ -507,6 +514,7 @@ impl VmService {
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             automatic_guest_reset: true,
+            efi_diagnostics_log_level: Default::default(),
         };
 
         let mut scsi_rpc = None;
@@ -525,6 +533,7 @@ impl VmService {
                         devices,
                         io_queue_depth: None,
                         requests: Some(recv),
+                        poll_mode_queue_depth: None,
                     }
                     .into_resource(),
                 ));

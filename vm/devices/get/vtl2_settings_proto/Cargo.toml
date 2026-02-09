@@ -10,7 +10,7 @@ rust-version.workspace = true
 pbjson.workspace = true
 pbjson-types.workspace = true
 prost.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["std"] }
 
 [build-dependencies]
 prost-build.workspace = true

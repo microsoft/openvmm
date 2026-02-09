@@ -14,6 +14,11 @@ encryption_win = ["vmgs/encryption_win"]
 # Use OpenSSL crypto APIs
 encryption_ossl = ["vmgs/encryption_ossl"]
 
+test_helpers = ["vmgs/test_helpers", "getrandom"]
+
+# run windows encryption unit tests in CI
+ci = ["encryption_win"]
+
 [dependencies]
 disk_backend.workspace = true
 disk_vhd1.workspace = true
@@ -31,8 +36,9 @@ async-trait.workspace = true
 clap = { workspace = true, features = ["derive"] }
 hex.workspace = true
 fs-err.workspace = true
+getrandom = { workspace = true, optional = true}
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
 ucs2.workspace = true
 

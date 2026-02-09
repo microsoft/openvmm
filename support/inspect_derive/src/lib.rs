@@ -122,6 +122,21 @@ fn parse_string_attr(input: ParseStream<'_>) -> syn::Result<LitStr> {
     input.parse()
 }
 
+fn parse_wrapped_attr<T: Parse>(input: ParseStream<'_>) -> syn::Result<T> {
+    let _: syn::token::Eq = input.parse()?;
+    let lit: LitStr = input.parse()?;
+    lit.parse()
+}
+
+fn parse_wrapped_attr_with<T>(
+    input: ParseStream<'_>,
+    parser: impl FnOnce(ParseStream<'_>) -> syn::Result<T>,
+) -> syn::Result<T> {
+    let _: syn::token::Eq = input.parse()?;
+    let lit: LitStr = input.parse()?;
+    lit.parse_with(parser)
+}
+
 impl Parse for StructAttr {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let ident = Ident::parse_any(input)?;
@@ -137,18 +152,18 @@ impl Parse for StructAttr {
             };
             Self::Transparent(field_attr)
         } else if ident == "with" {
-            let with = parse_string_attr(input)?;
-            Self::With(with.parse()?)
+            Self::With(parse_wrapped_attr(input)?)
         } else if ident == "display" {
             Self::With(parse_quote_spanned!(ident.span()=> ::inspect::AsDisplay))
         } else if ident == "debug" {
             Self::With(parse_quote_spanned!(ident.span()=> ::inspect::AsDebug))
         } else if ident == "extra" {
-            let with = parse_string_attr(input)?;
-            Self::Extra(with.parse()?)
+            Self::Extra(parse_wrapped_attr(input)?)
         } else if ident == "bound" {
-            let val = parse_string_attr(input)?;
-            Self::Bound(val.parse_with(Punctuated::parse_terminated)?)
+            Self::Bound(parse_wrapped_attr_with(
+                input,
+                Punctuated::parse_terminated,
+            )?)
         } else if ident == "hex" {
             Self::Hex
         } else {
@@ -196,8 +211,10 @@ impl Parse for FieldAttr {
         } else if ident == "sensitive" {
             Self::Sensitive
         } else if ident == "with" {
-            let with = parse_string_attr(input)?;
-            Self::With(with.parse()?)
+            Self::With(parse_wrapped_attr(input)?)
+        } else if ident == "send" {
+            let map: syn::Expr = parse_wrapped_attr(input)?;
+            Self::With(parse_quote!(|x| ::inspect::send(x, #map)))
         } else {
             return Err(syn::Error::new(
                 ident.span(),
@@ -214,8 +231,7 @@ impl Parse for EnumAttr {
         let kind = if ident == "skip" {
             Self::Skip
         } else if ident == "with" {
-            let with = parse_string_attr(input)?;
-            Self::With(with.parse()?)
+            Self::With(parse_wrapped_attr(input)?)
         } else if ident == "external_tag" {
             Self::ExternalTag
         } else if ident == "tag" {
@@ -227,11 +243,12 @@ impl Parse for EnumAttr {
         } else if ident == "debug" {
             Self::With(parse_quote_spanned!(ident.span()=> ::inspect::AsDebug))
         } else if ident == "extra" {
-            let with = parse_string_attr(input)?;
-            Self::Extra(with.parse()?)
+            Self::Extra(parse_wrapped_attr(input)?)
         } else if ident == "bound" {
-            let val = parse_string_attr(input)?;
-            Self::Bound(val.parse_with(Punctuated::parse_terminated)?)
+            Self::Bound(parse_wrapped_attr_with(
+                input,
+                Punctuated::parse_terminated,
+            )?)
         } else if ident == "hex" {
             Self::Hex
         } else {

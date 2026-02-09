@@ -15,7 +15,3 @@ pal_async.workspace = true
 
 [lints]
 workspace = true
-
-[package.metadata.xtask.unused-deps]
-# Used in doc tests
-ignored = ["futures"]

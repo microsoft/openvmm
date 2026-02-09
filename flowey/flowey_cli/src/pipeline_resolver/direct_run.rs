@@ -93,6 +93,7 @@ fn direct_run_do_work(
             platform,
             arch,
             cond_param_idx,
+            timeout_minutes: _,
             ado_pool: _,
             ado_variables: _,
             gh_override_if: _,
@@ -124,6 +125,7 @@ fn direct_run_do_work(
             (FlowArch::X86_64, FlowArch::X86_64) | (FlowArch::Aarch64, FlowArch::Aarch64) => (),
             _ => {
                 log::error!("mismatch between job arch and local arch. skipping job...");
+                skipped_jobs.insert(idx);
                 continue;
             }
         }
@@ -159,7 +161,7 @@ fn direct_run_do_work(
             let (mut output_graph, _, err_unreachable_nodes) =
                 crate::flow_resolver::stage1_dag::stage1_dag(
                     FlowBackend::Local,
-                    platform,
+                    flow_platform,
                     flow_arch,
                     patches.clone(),
                     root_nodes
@@ -228,6 +230,11 @@ fn direct_run_do_work(
             pipeline_param_idx,
         } in parameters_used
         {
+            log::trace!(
+                "resolving parameter idx {}, flowey_var {:?}",
+                pipeline_param_idx,
+                flowey_var
+            );
             let (desc, value) = match &parameters[*pipeline_param_idx] {
                 Parameter::Bool {
                     name: _,
@@ -308,35 +315,34 @@ fn direct_run_do_work(
         }
         fs_err::create_dir_all(out_dir.join(".work"))?;
 
+        if let Some(cond_param_idx) = cond_param_idx {
+            let Parameter::Bool {
+                name,
+                description: _,
+                kind: _,
+                default: _,
+            } = &parameters[cond_param_idx]
+            else {
+                panic!("cond param is guaranteed to be bool by type system")
+            };
+
+            // Vars should have had their default already applied, so this should never fail.
+            let (data, _secret) = in_mem_var_db.get_var(name);
+            let should_run: bool = serde_json::from_slice(&data).unwrap();
+
+            if !should_run {
+                log::warn!("job condition was false - skipping job...");
+                skipped_jobs.insert(idx);
+                continue;
+            }
+        }
+
         let mut runtime_services = flowey_core::node::steps::rust::new_rust_runtime_services(
             &mut in_mem_var_db,
             FlowBackend::Local,
             platform,
             flow_arch,
         );
-
-        if let Some(cond_param_idx) = cond_param_idx {
-            let Parameter::Bool {
-                name: _,
-                description: _,
-                kind: _,
-                default,
-            } = &parameters[cond_param_idx]
-            else {
-                panic!("cond param is guaranteed to be bool by type system")
-            };
-
-            let Some(should_run) = default else {
-                anyhow::bail!(
-                    "when running locally, job condition parameter must include a default value"
-                )
-            };
-
-            if !should_run {
-                log::warn!("job condition was false - skipping job...");
-                continue;
-            }
-        }
 
         for ResolvedRunnableStep {
             node_handle,
@@ -375,6 +381,9 @@ fn direct_run_do_work(
                 log::info!(""); // log a newline, for the pretty
             }
         }
+
+        // Leave the last node's working dir so it can be deleted by later steps
+        std::env::set_current_dir(&out_dir)?;
     }
 
     Ok(())

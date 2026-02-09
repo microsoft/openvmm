@@ -13,6 +13,7 @@ use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetailsLocalOnly;
 use crate::build_openhcl_igvm_from_recipe::OpenhclKernelPackage;
 use crate::build_openhcl_igvm_from_recipe::Vtl0KernelType;
 use crate::build_openhcl_initrd::OpenhclInitrdExtraParams;
+use crate::build_openvmm_hcl::MaxTraceLevel;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_openvmm_hcl::OpenvmmHclFeature;
 use crate::build_openvmm_hcl::OpenvmmHclOutput;
@@ -24,7 +25,6 @@ use crate::run_igvmfilegen::IgvmOutput;
 pub struct Customizations {
     pub build_label: Option<String>,
     pub custom_directory: Vec<PathBuf>,
-    pub custom_kernel_modules: Option<PathBuf>,
     pub custom_kernel: Option<PathBuf>,
     pub custom_layer: Vec<PathBuf>,
     pub custom_openhcl_boot: Option<PathBuf>,
@@ -37,6 +37,7 @@ pub struct Customizations {
     pub override_kernel_pkg: Option<OpenhclKernelPackage>,
     pub override_manifest: Option<PathBuf>,
     pub override_openvmm_hcl_feature: Vec<String>,
+    pub override_max_trace_level: Option<MaxTraceLevel>,
     pub with_debuginfo: bool,
     pub with_perf_tools: bool,
     pub with_sidecar: bool,
@@ -81,7 +82,6 @@ impl SimpleFlowNode for Node {
         let Customizations {
             build_label,
             custom_directory,
-            custom_kernel_modules,
             custom_kernel,
             custom_layer,
             override_manifest,
@@ -93,6 +93,7 @@ impl SimpleFlowNode for Node {
             override_arch,
             override_kernel_pkg,
             override_openvmm_hcl_feature,
+            override_max_trace_level,
             with_debuginfo,
             with_perf_tools,
             with_sidecar,
@@ -124,6 +125,7 @@ impl SimpleFlowNode for Node {
                 with_uefi,
                 with_interactive,
                 with_sidecar: with_sidecar_details,
+                max_trace_level,
             } = &mut recipe_details;
 
             if custom_kernel.is_some() {
@@ -151,7 +153,6 @@ impl SimpleFlowNode for Node {
                         .into_iter()
                         .map(|p| p.absolute())
                         .collect::<Result<_, _>>()?,
-                    custom_kernel_modules,
                 }),
                 custom_openvmm_hcl: custom_openvmm_hcl.map(|p| p.absolute()).transpose()?,
                 custom_openhcl_boot: custom_openhcl_boot.map(|p| p.absolute()).transpose()?,
@@ -184,6 +185,10 @@ impl SimpleFlowNode for Node {
                     CommonArch::X86_64 => CommonTriple::X86_64_LINUX_MUSL,
                     CommonArch::Aarch64 => CommonTriple::AARCH64_LINUX_MUSL,
                 };
+            }
+
+            if let Some(lvl) = override_max_trace_level {
+                *max_trace_level = lvl;
             }
 
             if let Some(p) = custom_vtl0_kernel {

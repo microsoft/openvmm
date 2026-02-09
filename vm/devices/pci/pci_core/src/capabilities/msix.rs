@@ -4,8 +4,7 @@
 //! MSI-X Capability.
 
 use super::PciCapability;
-use crate::msi::MsiInterrupt;
-use crate::msi::RegisterMsi;
+use crate::msi::MsiTarget;
 use crate::spec::caps::CapabilityId;
 use crate::spec::caps::msix::MsixCapabilityHeader;
 use crate::spec::caps::msix::MsixTableEntryIdx;
@@ -47,6 +46,10 @@ struct MsixCapability {
 impl PciCapability for MsixCapability {
     fn label(&self) -> &str {
         "msi-x"
+    }
+
+    fn capability_id(&self) -> CapabilityId {
+        CapabilityId::MSIX
     }
 
     fn len(&self) -> usize {
@@ -108,6 +111,66 @@ impl PciCapability for MsixCapability {
         for vector in &mut state.vectors {
             vector.state = EntryState::new();
         }
+    }
+}
+
+#[derive(Clone, Inspect, Debug)]
+pub(crate) struct MsiInterrupt(#[inspect(flatten)] Arc<Mutex<MsiInterruptInner>>);
+
+#[derive(Inspect, Debug)]
+struct MsiInterruptInner {
+    target: MsiTarget,
+    pending: bool,
+    enabled: bool,
+    address: u64,
+    data: u32,
+}
+
+impl MsiInterrupt {
+    pub fn new(target: MsiTarget) -> Self {
+        Self(Arc::new(Mutex::new(MsiInterruptInner {
+            target,
+            pending: false,
+            enabled: false,
+            address: 0,
+            data: 0,
+        })))
+    }
+
+    pub fn enable(&self, address: u64, data: u32, set_pending: bool) {
+        let mut state = self.0.lock();
+        state.pending |= set_pending;
+        state.address = address;
+        state.data = data;
+        state.enabled = true;
+        if state.pending {
+            state.target.signal_msi(0, address, data);
+            state.pending = false;
+        }
+    }
+
+    pub fn disable(&self) {
+        let mut state = self.0.lock();
+        state.enabled = false;
+    }
+
+    pub fn drain_pending(&self) -> bool {
+        let mut state = self.0.lock();
+        let was_pending = state.pending;
+        state.pending = false;
+        was_pending
+    }
+
+    pub fn interrupt(&self) -> Interrupt {
+        let state = self.0.clone();
+        Interrupt::from_fn(move || {
+            let mut state = state.lock();
+            if state.enabled {
+                state.target.signal_msi(0, state.address, state.data);
+            } else {
+                state.pending = true;
+            }
+        })
     }
 }
 
@@ -229,15 +292,11 @@ impl MsixEmulator {
     /// be implemented. e.g: it uses a shared BAR for the table and BPA, with
     /// fixed offsets into the BAR for both of those tables. It would be nice to
     /// re-visit this code and make it more flexible.
-    pub fn new(
-        bar: u8,
-        count: u16,
-        register_msi: &mut dyn RegisterMsi,
-    ) -> (Self, impl PciCapability + use<>) {
+    pub fn new(bar: u8, count: u16, msi_target: &MsiTarget) -> (Self, impl PciCapability + use<>) {
         let state = MsixState {
             enabled: false,
             vectors: (0..count)
-                .map(|_| MsixMessageTableEntry::new(register_msi.new_msi()))
+                .map(|_| MsixMessageTableEntry::new(MsiInterrupt::new(msi_target.clone())))
                 .collect(),
         };
         let state = Arc::new(Mutex::new(state));
@@ -445,15 +504,14 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::msi::MsiInterruptSet;
-    use crate::test_helpers::TestPciInterruptController;
+    use crate::{msi::MsiConnection, test_helpers::TestPciInterruptController};
 
     #[test]
     fn msix_check() {
-        let mut set = MsiInterruptSet::new();
-        let (mut msix, mut cap) = MsixEmulator::new(2, 64, &mut set);
+        let msi_conn = MsiConnection::new();
+        let (mut msix, mut cap) = MsixEmulator::new(2, 64, msi_conn.target());
         let msi_controller = TestPciInterruptController::new();
-        set.connect(&msi_controller);
+        msi_conn.connect(msi_controller.signal_msi());
         // check capabilities
         assert_eq!(cap.read_u32(0), 0x3f0011);
         assert_eq!(cap.read_u32(4), 2);

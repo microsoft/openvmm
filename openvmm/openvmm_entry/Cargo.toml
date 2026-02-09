@@ -22,15 +22,16 @@ ttrpc = []
 
 [dependencies]
 chipset_resources.workspace = true
+chipset_device_worker_defs.workspace = true
 debug_worker_defs.workspace = true
 vmotherboard.workspace = true
 diag_client.workspace = true
-hvlite_defs.workspace = true
-hvlite_helpers.workspace = true
+openvmm_defs.workspace = true
+openvmm_helpers.workspace = true
 vmm_core_defs.workspace = true
 vnc_worker_defs.workspace = true
-hvlite_pcat_locator.workspace = true
-hvlite_ttrpc_vmservice.workspace = true
+openvmm_pcat_locator.workspace = true
+openvmm_ttrpc_vmservice.workspace = true
 disk_backend_resources.workspace = true
 disk_crypt_resources.workspace = true
 firmware_uefi_custom_vars.workspace = true
@@ -65,6 +66,7 @@ vm_manifest_builder.workspace = true
 vm_resource.workspace = true
 vtl2_settings_proto.workspace = true
 mcr_resources.workspace = true
+pcie_remote_resources.workspace = true
 
 clap_dyn_complete.workspace = true
 console_relay.workspace = true

@@ -61,7 +61,8 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, ScsiControllerHandle> for Storv
         resource: ScsiControllerHandle,
         input: ResolveVmbusDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let controller = ScsiController::new();
+        let controller =
+            ScsiController::new_with_poll_mode_queue_depth(resource.poll_mode_queue_depth);
         let device = StorageDevice::build_scsi(
             input.driver_source,
             &controller,

@@ -3,7 +3,7 @@
 
 //! Disk backend implementation that uses a user-mode NVMe driver based on VFIO.
 
-#![cfg(target_os = "linux")]
+#![cfg(any(windows, target_os = "linux"))]
 #![forbid(unsafe_code)]
 #![expect(missing_docs)]
 
@@ -16,20 +16,23 @@ use inspect::Inspect;
 use nvme_common::from_nvme_reservation_report;
 use nvme_spec::Status;
 use nvme_spec::nvm;
+#[cfg(target_os = "linux")]
 use pal::unix::affinity::get_cpu_number;
+#[cfg(windows)]
+use pal::windows::affinity::get_cpu_number;
 use std::io;
 
 #[derive(Debug, Inspect)]
 pub struct NvmeDisk {
     /// NVMe namespace mapped to the disk representation.
     #[inspect(flatten)]
-    namespace: nvme_driver::Namespace,
+    namespace: nvme_driver::NamespaceHandle,
     #[inspect(skip)]
     block_shift: u32,
 }
 
 impl NvmeDisk {
-    pub fn new(namespace: nvme_driver::Namespace) -> Self {
+    pub fn new(namespace: nvme_driver::NamespaceHandle) -> Self {
         Self {
             block_shift: namespace.block_size().trailing_zeros(),
             namespace,

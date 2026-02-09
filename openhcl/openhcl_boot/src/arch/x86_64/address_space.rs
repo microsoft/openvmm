@@ -254,7 +254,7 @@ static LOCAL_MAP_INITIALIZED: SingleThreaded<Cell<bool>> = SingleThreaded(Cell::
 /// It returns a LocalMap structure with a static lifetime.
 /// `va` is the virtual address of the local map region. It must be 2MB aligned.
 pub fn init_local_map(va: u64) -> LocalMap<'static> {
-    assert!(va % X64_LARGE_PAGE_SIZE == 0);
+    assert!(va.is_multiple_of(X64_LARGE_PAGE_SIZE));
 
     // SAFETY: The va for the local map is part of the measured build. This routine will only be
     // called once. The boot shim is a single threaded environment, the contained assertion is
@@ -292,7 +292,7 @@ impl TdxHypercallPage {
         unsafe {
             let entry = get_pde_for_va(va);
             assert!(entry.is_present() & entry.is_large_page());
-            assert!(va % X64_LARGE_PAGE_SIZE == 0);
+            assert!(va.is_multiple_of(X64_LARGE_PAGE_SIZE));
             assert!(entry.tdx_is_shared());
             TdxHypercallPage(va)
         }

@@ -63,24 +63,23 @@ impl LxString {
         self.bytes.clear()
     }
 
-    /// Extends the string with the given `&OsStr` slice.
-    pub fn push(&mut self, s: &impl AsRef<LxStr>) {
+    /// Extends the string with the given `AsRef<LxStr>` slice.
+    pub fn push(&mut self, s: impl AsRef<LxStr>) {
         self.bytes.extend_from_slice(&s.as_ref().bytes)
     }
 
-    /// Reserves capacity for at least `additional` more capacity to be inserted in the given
-    /// `OsString`.
+    /// Reserves capacity for at least `additional` more capacity to be inserted into this string.
     pub fn reserve(&mut self, additional: usize) {
         self.bytes.reserve(additional);
     }
 
-    /// Reserves the minimum capacity for exactly additional more capacity to be inserted in the given `LxString`. Does nothing if
+    /// Reserves the minimum capacity for exactly additional more capacity to be inserted into this string. Does nothing if
     /// the capacity is already sufficient.
     pub fn reserve_exact(&mut self, additional: usize) {
         self.bytes.reserve_exact(additional);
     }
 
-    /// Shrinks the capacity of the `LxString` to match its length.
+    /// Shrinks the capacity of this string to match its length.
     pub fn shrink_to_fit(&mut self) {
         self.bytes.shrink_to_fit()
     }
@@ -142,6 +141,12 @@ impl PartialEq<&str> for LxString {
 impl fmt::Debug for LxString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl FromIterator<char> for LxString {
+    fn from_iter<T: IntoIterator<Item = char>>(iter: T) -> Self {
+        String::from_iter(iter).into()
     }
 }
 

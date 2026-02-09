@@ -173,7 +173,7 @@ pub async fn emulate<T: EmulatorSupport>(
 ) -> Result<(), VpHaltReason> {
     emulate_core(support, intercept_state, emu_mem, dev)
         .await
-        .map_err(|e| VpHaltReason::EmulationFailure(e.into()))
+        .map_err(|e| dev.fatal_error(e.into()))
 }
 
 async fn emulate_core<T: EmulatorSupport>(

@@ -3,7 +3,7 @@
 
 //! This module implements support for KVM on x86_64.
 
-#![cfg(all(target_os = "linux", guest_is_native, guest_arch = "x86_64"))]
+#![cfg(all(target_os = "linux", guest_arch = "x86_64"))]
 
 mod regs;
 mod vm_state;
@@ -14,7 +14,6 @@ use crate::KvmPartition;
 use crate::KvmPartitionInner;
 use crate::KvmProcessorBinder;
 use crate::KvmRunVpError;
-use crate::gsi;
 use crate::gsi::GsiRouting;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
@@ -37,8 +36,7 @@ use kvm::kvm_ioeventfd_flag_nr_deassign;
 use pal_event::Event;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
-use pci_core::msi::MsiControl;
-use pci_core::msi::MsiInterruptTarget;
+use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
 use std::future::poll_fn;
 use std::io;
@@ -297,7 +295,8 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         let mut caps = virt::PartitionCapabilities::from_cpuid(
             self.config.processor_topology,
             &mut |function, index| cpuid.result(function, index, &[0; 4]),
-        );
+        )
+        .map_err(KvmError::Capabilities)?;
 
         caps.can_freeze_time = false;
 
@@ -328,6 +327,9 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
             // Convert the CPUID entries and update the APIC ID in CPUID for
             // this VCPU.
+            //
+            // TODO: centralize this code, probably in the topology crate, for
+            // use by other hypervisors.
             let cpuid_entries = cpuid
                 .leaves()
                 .iter()
@@ -356,6 +358,30 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                         }
                         CpuidFunction::V2ExtendedTopologyEnumeration => {
                             entry.edx = vp_info.apic_id;
+                        }
+                        CpuidFunction::ProcessorTopologyDefinition => {
+                            let eax =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEax::from(entry.eax);
+                            entry.eax = eax.with_extended_apic_id(vp_info.apic_id).into();
+                            let ebx =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEbx::from(entry.ebx);
+                            entry.ebx = ebx
+                                .with_compute_unit_id(
+                                    (vp_info.apic_id
+                                        % self.config.processor_topology.reserved_vps_per_socket()
+                                        / (ebx.threads_per_compute_unit() as u32 + 1))
+                                        as u8,
+                                )
+                                .into();
+                            let ecx =
+                                x86defs::cpuid::ProcessorTopologyDefinitionEcx::from(entry.ecx);
+                            entry.ecx = ecx
+                                .with_node_id(
+                                    (vp_info.apic_id
+                                        / self.config.processor_topology.reserved_vps_per_socket())
+                                        as u8,
+                                )
+                                .into();
                         }
                         _ => (),
                     }
@@ -430,7 +456,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             .collect::<Vec<_>>();
 
         if cfg!(debug_assertions) {
-            (&partition).check_reset_all(&partition.inner.vp(VpIndex::BSP).vp_info);
+            (&partition).check_reset_all(&partition.inner.bsp().vp_info);
         }
 
         Ok((partition, vps))
@@ -472,7 +498,7 @@ impl ResetPartition for KvmPartition {
                 .map_err(Box::new)?;
         }
         let mut this = self;
-        this.reset_all(&self.inner.vp(VpIndex::BSP).vp_info)
+        this.reset_all(&self.inner.bsp().vp_info)
             .map_err(Box::new)?;
         Ok(())
     }
@@ -490,8 +516,8 @@ impl Partition for KvmPartition {
         Some(self.clone())
     }
 
-    fn msi_interrupt_target(self: &Arc<Self>, _vtl: Vtl) -> Option<Arc<dyn MsiInterruptTarget>> {
-        Some(Arc::new(KvmMsiTarget(self.inner.clone())))
+    fn as_signal_msi(self: &Arc<Self>, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+        Some(self.inner.clone())
     }
 
     fn caps(&self) -> &virt::PartitionCapabilities {
@@ -500,7 +526,10 @@ impl Partition for KvmPartition {
 
     fn request_yield(&self, vp_index: VpIndex) {
         tracing::trace!(vp_index = vp_index.index(), "request yield");
-        if self.inner.vp(vp_index).needs_yield.request_yield() {
+        let Some(vp) = self.inner.vp(vp_index) else {
+            return;
+        };
+        if vp.needs_yield.request_yield() {
             self.inner.evaluate_vp(vp_index);
         }
     }
@@ -516,12 +545,13 @@ impl virt::X86Partition for KvmPartition {
     }
 
     fn pulse_lint(&self, vp_index: VpIndex, _vtl: Vtl, lint: u8) {
+        let Some(vp) = self.inner.vp(vp_index) else {
+            tracelimit::warn_ratelimited!(?vp_index, "pulse_lint for invalid vp_index");
+            return;
+        };
         if lint == 0 {
             tracing::trace!(vp_index = vp_index.index(), "request interrupt window");
-            self.inner
-                .vp(vp_index)
-                .request_interrupt_window
-                .store(true, Ordering::Relaxed);
+            vp.request_interrupt_window.store(true, Ordering::Relaxed);
             self.inner.evaluate_vp(vp_index);
         } else {
             // TODO
@@ -1061,7 +1091,7 @@ impl Processor for KvmProcessor<'_> {
                     .store(false, Ordering::Relaxed);
                 if self.runner.check_or_request_interrupt_window() {
                     self.deliver_pic_interrupt(dev)
-                        .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
+                        .map_err(|e| dev.fatal_error(e.into()))?;
                 }
             }
 
@@ -1091,8 +1121,7 @@ impl Processor for KvmProcessor<'_> {
                     self.runner.run()
                 };
 
-                let exit =
-                    exit.map_err(|err| VpHaltReason::Hypervisor(KvmRunVpError::Run(err).into()))?;
+                let exit = exit.map_err(|err| dev.fatal_error(KvmRunVpError::Run(err).into()))?;
                 pending_exit = true;
                 match exit {
                     kvm::Exit::Interrupted => {
@@ -1101,7 +1130,7 @@ impl Processor for KvmProcessor<'_> {
                     }
                     kvm::Exit::InterruptWindow => {
                         self.deliver_pic_interrupt(dev)
-                            .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
+                            .map_err(|e| dev.fatal_error(e.into()))?;
                     }
                     kvm::Exit::IoIn { port, data, size } => {
                         for data in data.chunks_mut(size as usize) {
@@ -1191,12 +1220,10 @@ impl Processor for KvmProcessor<'_> {
                         dev.handle_eoi(irq.into());
                     }
                     kvm::Exit::InternalError { error, .. } => {
-                        return Err(VpHaltReason::InvalidVmState(
-                            KvmRunVpError::InternalError(error).into(),
-                        ));
+                        return Err(dev.fatal_error(KvmRunVpError::InternalError(error).into()));
                     }
                     kvm::Exit::EmulationFailure { instruction_bytes } => {
-                        return Err(VpHaltReason::EmulationFailure(
+                        return Err(dev.fatal_error(
                             EmulationError {
                                 instruction_bytes: instruction_bytes.to_vec(),
                             }
@@ -1207,9 +1234,7 @@ impl Processor for KvmProcessor<'_> {
                         hardware_entry_failure_reason,
                     } => {
                         tracing::error!(hardware_entry_failure_reason, "VP entry failed");
-                        return Err(VpHaltReason::InvalidVmState(
-                            KvmRunVpError::InvalidVpState.into(),
-                        ));
+                        return Err(dev.fatal_error(KvmRunVpError::InvalidVpState.into()));
                     }
                 }
             }
@@ -1225,15 +1250,18 @@ impl Processor for KvmProcessor<'_> {
 }
 
 impl virt::Synic for KvmPartition {
-    fn post_message(&self, _vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        let wake = self
-            .inner
-            .vp(vp)
+    fn post_message(&self, _vtl: Vtl, vp_index: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
+        let Some(vp) = self.inner.vp(vp_index) else {
+            tracelimit::warn_ratelimited!(?vp_index, "post_message for invalid vp_index");
+            return;
+        };
+
+        let wake = vp
             .synic_message_queue
             .enqueue_message(sint, &HvMessage::new(HvMessageType(typ), 0, payload));
 
         if wake {
-            self.inner.evaluate_vp(vp);
+            self.inner.evaluate_vp(vp_index);
         }
     }
 
@@ -1285,11 +1313,24 @@ impl GuestEventPort for KvmGuestEventPort {
     fn interrupt(&self) -> Interrupt {
         let this = self.clone();
         Interrupt::from_fn(move || {
-            let KvmEventPortParams { vp, sint, flag } = *this.params.lock();
+            let KvmEventPortParams {
+                vp: vp_index,
+                sint,
+                flag,
+            } = *this.params.lock();
             let Some(partition) = this.partition.upgrade() else {
                 return;
             };
-            let siefp = partition.vp(vp).siefp.read();
+            let Some(vp) = partition.vp(vp_index) else {
+                tracelimit::warn_ratelimited!(
+                    ?vp_index,
+                    sint,
+                    flag,
+                    "signal event for invalid vp_index"
+                );
+                return;
+            };
+            let siefp = vp.siefp.read();
             if !siefp.enabled() {
                 return;
             }
@@ -1302,7 +1343,7 @@ impl GuestEventPort for KvmGuestEventPort {
                         drop(siefp);
                         partition
                             .kvm
-                            .irq_line(VMBUS_BASE_GSI + vp.index(), true)
+                            .irq_line(VMBUS_BASE_GSI + vp_index.index(), true)
                             .unwrap();
 
                         break;
@@ -1326,42 +1367,8 @@ impl GuestEventPort for KvmGuestEventPort {
     }
 }
 
-#[derive(Debug)]
-struct GsiMsi {
-    gsi: gsi::GsiRoute,
-}
-
-struct KvmMsiTarget(Arc<KvmPartitionInner>);
-
-impl MsiInterruptTarget for KvmMsiTarget {
-    fn new_interrupt(&self) -> Box<dyn MsiControl> {
-        let event = Event::new();
-        let interrupt = self.0.new_route(Some(event)).expect("BUGBUG");
-        Box::new(GsiMsi { gsi: interrupt })
-    }
-}
-
-impl MsiControl for GsiMsi {
-    fn enable(&mut self, address: u64, data: u32) {
-        let request = MsiRequest { address, data };
-        let KvmMsi {
-            address_lo,
-            address_hi,
-            data,
-        } = KvmMsi::new(request);
-
-        self.gsi.enable(kvm::RoutingEntry::Msi {
-            address_lo,
-            address_hi,
-            data,
-        });
-    }
-
-    fn disable(&mut self) {
-        self.gsi.disable();
-    }
-
-    fn signal(&mut self, _address: u64, _data: u32) {
-        self.gsi.irqfd_event().unwrap().signal()
+impl SignalMsi for KvmPartitionInner {
+    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+        self.request_msi(MsiRequest { address, data });
     }
 }

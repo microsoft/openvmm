@@ -178,7 +178,7 @@ impl Queue for DioQueue {
             while !segments.is_empty() {
                 let (metadata, this, rest) = next_packet(segments);
                 segments = rest;
-                nic.write_with(metadata.len, |mut buf| -> anyhow::Result<_> {
+                nic.write_with(metadata.len as usize, |mut buf| -> anyhow::Result<_> {
                     for segment in this {
                         let (this, rest) = buf.split_at_mut(segment.len as usize);
                         mem.read_at(segment.gpa, this)

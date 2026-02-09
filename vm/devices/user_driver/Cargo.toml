@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [features]
 default = ["vfio"]
-vfio = ["vfio_sys", "sparse_mmap"]
+vfio = ["vfio_sys", "trycopy"]
 mmio_simulate_fallback = []
 
 [dependencies]
@@ -21,6 +21,7 @@ safeatomic.workspace = true
 uevent.workspace = true
 event-listener.workspace = true
 guestmem.workspace = true
+trycopy = { workspace = true, optional = true }
 vmcore.workspace = true
 
 anyhow.workspace = true
@@ -34,7 +35,6 @@ futures.workspace = true
 futures-concurrency.workspace = true
 libc.workspace = true
 pal_event.workspace = true
-sparse_mmap = { workspace = true, optional = true }
 vfio_sys = { workspace = true, optional = true }
 
 [lints]

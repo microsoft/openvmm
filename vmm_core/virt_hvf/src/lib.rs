@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))] // xtask-fmt allow-target-arch sys-crate
+#![cfg(all(target_os = "macos", guest_is_native, guest_arch = "aarch64"))]
 
 //! A hypervisor backend using macos's Hypervisor framework.
 
@@ -937,7 +937,7 @@ impl<'p> Processor for HvfProcessor<'p> {
             // SAFETY: we are not concurrently accessing `exit`.
             unsafe { abi::hv_vcpu_run(self.vcpu.vcpu) }
                 .chk()
-                .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
+                .map_err(|err| dev.fatal_error(err.into()))?;
 
             match self.vcpu.exit.reason {
                 abi::HvExitReason::CANCELED => {
@@ -960,7 +960,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                         ExceptionClass::DATA_ABORT_LOWER => {
                             let iss = IssDataAbort::from(exception.syndrome.iss());
                             if !iss.isv() {
-                                return Err(VpHaltReason::EmulationFailure(
+                                return Err(dev.fatal_error(
                                     anyhow::anyhow!("can't handle data abort without isv: {iss:?}")
                                         .into(),
                                 ));
@@ -1115,7 +1115,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                             advance(&mut self.vcpu);
                         }
                         class => {
-                            return Err(VpHaltReason::InvalidVmState(
+                            return Err(dev.fatal_error(
                                 anyhow::anyhow!(
                                     "unsupported exception class: {class:?} {iss:#x}",
                                     iss = exception.syndrome.iss()
@@ -1129,7 +1129,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                     self.gicr.raise(PPI_VTIMER);
                 }
                 reason => {
-                    return Err(VpHaltReason::InvalidVmState(
+                    return Err(dev.fatal_error(
                         anyhow::anyhow!("unsupported exit reason: {reason:?}").into(),
                     ));
                 }

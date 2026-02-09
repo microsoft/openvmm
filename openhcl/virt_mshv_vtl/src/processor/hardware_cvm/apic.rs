@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg(guest_arch = "x86_64")]
-
 use crate::UhProcessor;
 use crate::processor::HardwareIsolatedBacking;
 use cvm_tracing::CVM_ALLOWED;

@@ -23,10 +23,11 @@ use crate::processor::UhEmulationState;
 use crate::processor::UhHypercallHandler;
 use crate::processor::UhProcessor;
 use aarch64defs::Cpsr64;
+use aarch64defs::SystemOff2Code;
+use aarch64defs::SystemReset2Code;
 use aarch64emu::AccessCpuState;
 use aarch64emu::InterceptState;
 use hcl::GuestVtl;
-use hcl::UnsupportedGuestVtl;
 use hcl::ioctl;
 use hcl::ioctl::aarch64::MshvArm64;
 use hv1_emulator::hv::ProcessorVtlHv;
@@ -95,6 +96,10 @@ struct ProcessorStatsArm64 {
     hypercall: Counter,
     synic_deliverable: Counter,
 }
+
+#[derive(Debug, Error)]
+#[error("vendor-specific system reset with code {0:#x}")]
+struct VendorSpecificSystemReset(u32);
 
 #[expect(private_interfaces)]
 impl BackingPrivate for HypervisorBackedArm64 {
@@ -168,7 +173,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
         let intercepted = this
             .runner
             .run()
-            .map_err(|e| VpHaltReason::Hypervisor(MshvRunVpError(e).into()))?;
+            .map_err(|e| dev.fatal_error(MshvRunVpError(e).into()))?;
 
         if intercepted {
             let stat = match this.runner.exit_message().header.typ {
@@ -195,9 +200,52 @@ impl BackingPrivate for HypervisorBackedArm64 {
                         .exit_message()
                         .as_message::<hvdef::HvArm64ResetInterceptMessage>();
                     match message.reset_type {
-                        HvArm64ResetType::POWER_OFF => return Err(VpHaltReason::PowerOff),
-                        HvArm64ResetType::REBOOT => return Err(VpHaltReason::Reset),
-                        ty => unreachable!("unknown reset type: {:#x?}", ty),
+                        HvArm64ResetType::POWER_OFF => {
+                            return Err(VpHaltReason::PowerOff);
+                        }
+                        HvArm64ResetType::REBOOT => {
+                            return Err(VpHaltReason::Reset);
+                        }
+                        HvArm64ResetType::HIBERNATE => match SystemOff2Code(message.reset_code) {
+                            SystemOff2Code::DEFAULT | SystemOff2Code::HIBERNATE_OFF => {
+                                return Err(VpHaltReason::Hibernate);
+                            }
+                            _ => {
+                                tracing::error!(
+                                    reset_code = message.reset_code,
+                                    "received unknown architectural hibernate reset code, treating as hibernate"
+                                );
+                                return Err(VpHaltReason::Hibernate);
+                            }
+                        },
+                        HvArm64ResetType::SYSTEM_RESET => {
+                            // High bit set indicates vendor-specific reset code.
+                            if message.reset_code & 0x80000000 != 0 {
+                                tracing::error!(
+                                    reset_code = message.reset_code,
+                                    "received vendor-specific system_reset2 reset code, treating as fatal error"
+                                );
+                                return Err(dev.fatal_error(
+                                    VendorSpecificSystemReset(message.reset_code).into(),
+                                ));
+                            }
+                            match SystemReset2Code(message.reset_code) {
+                                SystemReset2Code::WARM_RESET => return Err(VpHaltReason::Reset),
+                                _ => {
+                                    tracing::error!(
+                                        reset_code = message.reset_code,
+                                        "received unknown architectural system_reset2 reset code, treating as reset"
+                                    );
+                                    return Err(VpHaltReason::Reset);
+                                }
+                            }
+                        }
+                        ty => {
+                            unreachable!(
+                                "unknown reset type: {:#x?}, {:#x}",
+                                ty, message.reset_code
+                            )
+                        }
                     }
                 }
                 reason => unreachable!("unknown exit reason: {:#x?}", reason),
@@ -252,22 +300,12 @@ impl BackingPrivate for HypervisorBackedArm64 {
 }
 
 #[derive(Debug, Error)]
-#[error("invalid intercepted vtl {0:?}")]
-struct InvalidInterceptedVtl(u8);
-
-#[derive(Debug, Error)]
 #[error("guest accessed unaccepted gpa {0}")]
 struct UnacceptedMemoryAccess(u64);
 
 impl UhProcessor<'_, HypervisorBackedArm64> {
-    fn intercepted_vtl(
-        message_header: &hvdef::HvArm64InterceptMessageHeader,
-    ) -> Result<GuestVtl, InvalidInterceptedVtl> {
-        message_header
-            .execution_state
-            .vtl()
-            .try_into()
-            .map_err(|e: UnsupportedGuestVtl| InvalidInterceptedVtl(e.0))
+    fn intercepted_vtl(message_header: &hvdef::HvArm64InterceptMessageHeader) -> GuestVtl {
+        message_header.execution_state.vtl().try_into().unwrap()
     }
 
     fn handle_synic_deliverable_exit(&mut self) {
@@ -300,8 +338,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "hypercall");
 
-        let intercepted_vtl = Self::intercepted_vtl(&message.header)
-            .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
+        let intercepted_vtl = Self::intercepted_vtl(&message.header);
         let guest_memory = &self.partition.gm[intercepted_vtl];
         let smccc_convention = message.immediate == 0;
 
@@ -333,8 +370,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             interruption_pending: message.header.execution_state.interruption_pending(),
         };
 
-        let intercepted_vtl = Self::intercepted_vtl(&message.header)
-            .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
+        let intercepted_vtl = Self::intercepted_vtl(&message.header);
 
         // Fast path for monitor page writes.
         if Some(message.guest_physical_address & !(hvdef::HV_PAGE_SIZE - 1))
@@ -393,9 +429,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             // Note: SGX memory should be included in this check, so if SGX is
             // no longer included in the lower_vtl_memory_layout, make sure the
             // appropriate changes are reflected here.
-            Err(VpHaltReason::InvalidVmState(
-                UnacceptedMemoryAccess(gpa).into(),
-            ))
+            Err(dev.fatal_error(UnacceptedMemoryAccess(gpa).into()))
         } else {
             // TODO: for hardware isolation, if the intercept is due to a guest
             // error, inject a machine check
@@ -724,8 +758,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
 
         match self
             .vp
-            .partition
-            .hcl
+            .runner
             .translate_gva_to_gpa(gva, control_flags)
             .unwrap()
         {

@@ -12,6 +12,7 @@ use super::Guid;
 use crate::HvsockRelayChannelHalf;
 use crate::ring::RingMem;
 use anyhow::Context;
+use fs_err::PathExt;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::StreamExt;
@@ -199,9 +200,10 @@ impl ListenerWorker {
 
         let channel = CancelContext::new()
             .with_timeout(Duration::from_secs(2))
-            .until_cancelled(offer.accept(self.inner.driver.as_ref()))
+            .until_cancelled(offer.wait_for_open(self.inner.driver.as_ref()))
             .await?
             .context("failed to accept channel")?
+            .accept()
             .channel;
 
         let pipe = BytePipe::new(channel).context("failed to create vmbus pipe")?;
@@ -234,6 +236,8 @@ impl ListenerWorker {
                         error = &err as &dyn std::error::Error,
                         "connection relay failed"
                     );
+                } else {
+                    tracing::debug!(%service_id, "connection relay finished");
                 }
             });
 
@@ -396,7 +400,7 @@ impl HvsockRelayWorker {
                             tracing::debug!(request = ?&request, "relay done");
                         }
                         Err(err) => {
-                            tracing::error!(
+                            tracelimit::error_ratelimited!(
                                 request = ?&request,
                                 err = err.as_ref() as &dyn std::error::Error,
                                 "relay error"
@@ -414,13 +418,16 @@ impl RelayInner {
     async fn relay_guest_connect_to_host(
         &self,
         pending: PendingConnection,
-        path: &Path,
+        base_path: &Path,
         is_specific_path: bool,
     ) -> anyhow::Result<()> {
         let request = &pending.request;
-        let socket = self
-            .connect_to_host_uds(request, path, is_specific_path)
-            .await?;
+
+        // Find the appropriate path to connect to. Don't connect until the
+        // channel with the guest has been established, since that's a
+        // failure-prone operation and we don't want the host to see a broken
+        // connection.
+        let path = self.host_uds_path(request, base_path, is_specific_path)?;
 
         let mut offer = Offer::new(
             self.driver.as_ref(),
@@ -440,65 +447,83 @@ impl RelayInner {
         .await
         .context("failed to offer channel")?;
 
+        tracing::debug!(?request, "offered hvsocket channel to guest");
+        let service_id = request.service_id;
+
         // Now that the channel is offered, report that the connection operation is
         // done.
         pending.done(true);
 
-        let channel = offer.accept(self.driver.as_ref()).await?.channel;
+        // Give the guest a few seconds to open the channel.
+        let channel = CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(offer.wait_for_open(self.driver.as_ref()))
+            .await
+            .context("guest did not open hvsocket channel")??;
+
+        tracing::debug!(%service_id, "guest opened hvsocket channel");
+
+        // Connect to the host Unix socket.
+        let socket = PolledSocket::connect_unix(self.driver.as_ref(), &path)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to connect to registered listener {} for {}",
+                    path.display(),
+                    service_id
+                )
+            })?;
+
+        tracing::debug!(%service_id, path = %path.display(), "connected to host uds socket");
+
+        // Accept the channel now that the host connection is established.
+        let channel = channel.accept().channel;
+
         let channel = BytePipe::new(channel)?;
-        relay_connected(channel, socket).await?;
+        if let Err(err) = relay_connected(channel, socket).await {
+            tracelimit::error_ratelimited!(
+                %service_id,
+                error = &err as &dyn std::error::Error,
+                "guest to host connection relay failed"
+            );
+        } else {
+            tracing::debug!(%service_id, "guest to host connection relay finished");
+        }
+
         // N.B. offer needs to stay alive until here to avoid revoking the channel
         // before the relay is done.
         drop(offer);
         Ok(())
     }
 
-    async fn connect_to_host_uds(
+    fn host_uds_path(
         &self,
         request: &HvsockConnectRequest,
-        path: &Path,
+        base_path: &Path,
         is_specific_path: bool,
-    ) -> anyhow::Result<PolledSocket<UnixStream>> {
-        if is_specific_path {
-            // `path` is the specific path we should connect to.
-            let socket = PolledSocket::connect_unix(self.driver.as_ref(), path)
-                .await
-                .with_context(|| {
-                    format!(
-                        "failed to connect to registered listener {} for {}",
-                        path.display(),
-                        request.service_id
-                    )
-                })?;
-            return Ok(socket);
-        }
-
-        if let Some(port) = vsock_port(&request.service_id) {
-            // This is a vsock connection, so try connecting after appending the
-            // port to the path.
-            let mut path = path.as_os_str().to_owned();
-            path.push(format!("_{port}"));
-            if let Ok(socket) = PolledSocket::connect_unix(self.driver.as_ref(), path).await {
-                return Ok(socket);
+    ) -> anyhow::Result<PathBuf> {
+        let mut path = base_path.as_os_str().to_owned();
+        if !is_specific_path {
+            if let Some(port) = vsock_port(&request.service_id) {
+                // This is a vsock connection, so try connecting after appending the
+                // port to the path.
+                path.push(format!("_{port}"));
+                if Path::new(&path).fs_err_try_exists()? {
+                    return Ok(path.into());
+                }
+                path.clear();
+                path.push(base_path);
             }
+            path.push(format!("_{}", request.service_id));
         }
-
-        // This is not a vsock connection, or the vsock connection failed. Try
-        // connecting after appending the service ID to the path.
-        let mut path = path.as_os_str().to_owned();
-        path.push(format!("_{}", request.service_id));
-        let path = Path::new(&path);
-        let socket = PolledSocket::connect_unix(self.driver.as_ref(), path)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to connect to hybrid vsock listener {} for {}",
-                    path.display(),
-                    request.service_id
-                )
-            })?;
-
-        Ok(socket)
+        if !Path::new(&path).fs_err_try_exists()? {
+            anyhow::bail!(
+                "no hybrid vsock listener based at {} for {}",
+                base_path.display(),
+                request.service_id
+            );
+        }
+        Ok(path.into())
     }
 
     async fn connect_to_guest(&self, service_id: Guid) -> anyhow::Result<(UnixStream, Task<()>)> {
@@ -522,9 +547,10 @@ impl RelayInner {
         .context("failed to offer channel")?;
 
         let channel = offer
-            .accept(self.driver.as_ref())
+            .wait_for_open(self.driver.as_ref())
             .await
             .context("failed to accept channel")?
+            .accept()
             .channel;
         let pipe = BytePipe::new(channel).context("failed to create vmbus pipe")?;
 

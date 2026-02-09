@@ -83,6 +83,7 @@ use vmbus_core::HvsockConnectResult;
 use vmbus_core::MaxVersionInfo;
 use vmbus_core::OutgoingMessage;
 use vmbus_core::TaggedStream;
+use vmbus_core::VMBUS_SINT;
 use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
 pub use vmbus_core::protocol::GpadlId;
@@ -99,7 +100,6 @@ use vmcore::synic::MessagePort;
 use vmcore::synic::MonitorPageGpas;
 use vmcore::synic::SynicPortAccess;
 
-const SINT: u8 = 2;
 pub const REDIRECT_SINT: u8 = 7;
 pub const REDIRECT_VTL: Vtl = Vtl::Vtl2;
 const SHARED_EVENT_CONNECTION_ID: u32 = 2;
@@ -108,11 +108,17 @@ const VMBUS_MESSAGE_TYPE: u32 = 1;
 
 const MAX_CONCURRENT_HVSOCK_REQUESTS: usize = 16;
 
+#[derive(Inspect)]
 pub struct VmbusServer {
+    #[inspect(flatten, send = "VmbusRequest::Inspect")]
     task_send: mesh::Sender<VmbusRequest>,
+    #[inspect(skip)]
     control: Arc<VmbusServerControl>,
+    #[inspect(skip)]
     _message_port: Box<dyn Sync + Send>,
+    #[inspect(skip)]
     _multiclient_message_port: Option<Box<dyn Sync + Send>>,
+    #[inspect(skip)]
     task: Task<ServerTask>,
 }
 
@@ -135,6 +141,7 @@ pub struct VmbusServerBuilder<T: SpawnDriver> {
     force_confidential_external_memory: bool,
     send_messages_while_stopped: bool,
     channel_unstick_delay: Option<Duration>,
+    use_absolute_channel_order: bool,
 }
 
 #[derive(mesh::MeshPayload)]
@@ -256,12 +263,6 @@ pub(crate) enum OfferRequest {
     ForceReset(Rpc<(), ()>),
 }
 
-impl Inspect for VmbusServer {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.task_send.send(VmbusRequest::Inspect(req.defer()));
-    }
-}
-
 struct ChannelEvent(Interrupt);
 
 impl EventPort for ChannelEvent {
@@ -278,12 +279,12 @@ impl EventPort for ChannelEvent {
 #[mesh(package = "vmbus.server")]
 pub struct SavedState {
     #[mesh(1)]
-    server: channels::SavedState,
+    pub server: channels::SavedState,
     // Indicates if the lost synic bug is fixed or not. By default it's false.
     // During the restore process, we check if the field is not true then
     // unstick_channels() function will be called to mitigate the issue.
     #[mesh(2)]
-    lost_synic_bug_fixed: bool,
+    pub lost_synic_bug_fixed: bool,
 }
 
 const MESSAGE_CONNECTION_ID: u32 = 1;
@@ -311,6 +312,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             force_confidential_external_memory: false,
             send_messages_while_stopped: false,
             channel_unstick_delay: Some(Duration::from_millis(100)),
+            use_absolute_channel_order: false,
         }
     }
 
@@ -438,6 +440,14 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
         self
     }
 
+    /// Sets whether the channel order value provided in an offer is the primary way of ordering
+    /// channels when assigning channel IDs, rather than the default behavior of ordering by
+    /// interface ID first.
+    pub fn use_absolute_channel_order(mut self, assign: bool) -> Self {
+        self.use_absolute_channel_order = assign;
+        self
+    }
+
     /// Creates a new instance of the server.
     ///
     /// When the object is dropped, all channels will be closed and revoked
@@ -453,7 +463,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
         let (redirect_vtl, redirect_sint) = if self.use_message_redirect {
             (REDIRECT_VTL, REDIRECT_SINT)
         } else {
-            (self.vtl, SINT)
+            (self.vtl, VMBUS_SINT)
         };
 
         // If this server is not for VTL2, use a server-specific connection ID rather than the
@@ -502,7 +512,12 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             force_confidential_external_memory: self.force_confidential_external_memory,
         });
 
-        let mut server = channels::Server::new(self.vtl, connection_id, self.channel_id_offset);
+        let mut server = channels::Server::new(
+            self.vtl,
+            connection_id,
+            self.channel_id_offset,
+            self.use_absolute_channel_order,
+        );
 
         // If MNF is handled by this server and this is a paravisor for an isolated VM, the monitor
         // pages must be allocated by the server, not the guest, since the guest will provide shared
@@ -851,7 +866,7 @@ impl ServerTask {
         // revoked before being dropped.
         if let Some(channel) = self.inner.channels.get(&id.offer_id) {
             if channel.seq == id.seq {
-                tracing::info!(?id.offer_id, "revoking channel");
+                tracing::info!(?id.offer_id, key = %channel.key, "revoking channel");
                 self.inner.channels.remove(&id.offer_id);
                 self.server
                     .with_notifier(&mut self.inner)
@@ -942,13 +957,14 @@ impl ServerTask {
 
         match &mut channel.state {
             ChannelState::Closing => {
+                tracing::debug!(?offer_id, key = %channel.key, "closing channel");
                 channel.state = ChannelState::Closed;
                 self.server
                     .with_notifier(&mut self.inner)
                     .close_complete(offer_id);
             }
             _ => {
-                tracing::error!(?offer_id, "invalid close channel response");
+                tracing::error!(?offer_id, key = %channel.key, "invalid close channel response");
             }
         };
     }
@@ -1003,9 +1019,10 @@ impl ServerTask {
 
         let channel = self.inner.channels.get_mut(&offer_id).unwrap();
         for gpadl in &gpadls {
-            if let Ok(buf) =
-                MultiPagedRangeBuf::new(gpadl.request.count.into(), gpadl.request.buf.clone())
-            {
+            if let Ok(buf) = MultiPagedRangeBuf::from_range_buffer(
+                gpadl.request.count.into(),
+                gpadl.request.buf.clone(),
+            ) {
                 channel.gpadls.add(gpadl.request.id, buf);
             }
         }
@@ -1140,6 +1157,7 @@ impl ServerTask {
     }
 
     fn handle_tl_connect_result(&mut self, result: HvsockConnectResult) {
+        tracing::debug!(?result, "hvsock connect result");
         assert_ne!(self.inner.hvsock_requests, 0);
         self.inner.hvsock_requests -= 1;
 
@@ -1492,6 +1510,7 @@ impl Notifier for ServerTaskInner {
         let response = match action {
             channels::Action::Open(open_params, version) => {
                 let seq = channel.seq;
+                let key = channel.key;
                 match self.open_channel(offer_id, &open_params) {
                     Ok((channel, interrupt)) => handle(
                         offer_id,
@@ -1509,6 +1528,7 @@ impl Notifier for ServerTaskInner {
                         tracelimit::error_ratelimited!(
                             err = err.as_ref() as &dyn std::error::Error,
                             ?offer_id,
+                            %key,
                             "could not open channel",
                         );
 
@@ -1537,7 +1557,7 @@ impl Notifier for ServerTaskInner {
             channels::Action::Gpadl(gpadl_id, count, buf) => {
                 channel.gpadls.add(
                     gpadl_id,
-                    MultiPagedRangeBuf::new(count.into(), buf.clone()).unwrap(),
+                    MultiPagedRangeBuf::from_range_buffer(count.into(), buf.clone()).unwrap(),
                 );
                 handle(
                     offer_id,
@@ -1707,6 +1727,7 @@ impl Notifier for ServerTaskInner {
     }
 
     fn notify_hvsock(&mut self, request: &HvsockConnectRequest) {
+        tracing::debug!(?request, "received hvsock connect request");
         self.hvsock_requests += 1;
         self.hvsock_send.send(*request);
     }
@@ -1771,11 +1792,11 @@ impl ServerTaskInner {
         let (target_vtl, target_sint) = if open_params.flags.redirect_interrupt() {
             (self.redirect_vtl, self.redirect_sint)
         } else {
-            (self.vtl, SINT)
+            (self.vtl, VMBUS_SINT)
         };
 
         let guest_event_port = self.synic.new_guest_event_port(
-            VmbusServer::get_child_event_port_id(open_params.channel_id, SINT, self.vtl),
+            VmbusServer::get_child_event_port_id(open_params.channel_id, VMBUS_SINT, self.vtl),
             target_vtl,
             target_vp,
             target_sint,
@@ -1931,6 +1952,7 @@ impl ServerTaskInner {
                 .new_guest_message_port(self.redirect_vtl, new_target.vp, new_target.sint)
                 .inspect_err(|err| {
                     tracing::error!(
+                        key = %channel.key,
                         ?err,
                         ?self.redirect_vtl,
                         ?new_target,
@@ -1948,6 +1970,7 @@ impl ServerTaskInner {
             // ignore it and just send to the old vp.
             if let Err(err) = message_port.set_target_vp(new_target.vp) {
                 tracing::error!(
+                    key = %channel.key,
                     ?err,
                     ?self.redirect_vtl,
                     ?new_target,

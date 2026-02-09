@@ -6,6 +6,10 @@ name = "openvmm_hcl_resources"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+# Enable building with TPM device support.
+tpm = ["dep:tpm_device"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
 mesh_worker.workspace = true
 vm_resource.workspace = true
@@ -27,7 +31,8 @@ hyperv_ic.workspace = true
 missing_dev.workspace = true
 serial_16550.workspace = true
 serial_pl011.workspace = true
-tpm = { workspace = true, optional = true, features = ["tpm"] }
+tpm_device = { workspace = true, optional = true, features = ["tpm"] }
+vmgs_broker.workspace = true
 
 # VPCI devices
 nvme = { workspace = true, optional = true }

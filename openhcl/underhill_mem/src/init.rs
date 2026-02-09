@@ -122,10 +122,6 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             // the future, the boot shim should be made aware of when it's booting
             // during a servicing operation and unify the application of vtl2
             // protections.
-
-            // Temporarily move HCL into an Arc so that it can be used across
-            // multiple processors.
-
             tracing::debug!("Applying VTL2 protections");
             apply_vtl2_protections(boot_init.tp, boot_init.vtl2_memory)
                 .instrument(tracing::info_span!("apply_vtl2_protections", CVM_ALLOWED))

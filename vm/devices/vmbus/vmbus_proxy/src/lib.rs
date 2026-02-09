@@ -19,7 +19,9 @@ use pal_async::windows::overlapped::IoBuf;
 use pal_async::windows::overlapped::IoBufMut;
 use pal_async::windows::overlapped::OverlappedFile;
 use pal_event::Event;
+use std::mem::ManuallyDrop;
 use std::mem::zeroed;
+use std::num::NonZeroU32;
 use std::os::windows::prelude::*;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
@@ -79,11 +81,22 @@ impl From<OwnedHandle> for ProxyHandle {
 }
 
 pub struct VmbusProxy {
-    file: OverlappedFile,
+    file: ManuallyDrop<OverlappedFile>,
     // NOTE: This must come after `file` so that it is not released until `file`
     // is closed.
     guest_memory: Option<GuestMemory>,
     cancel: CancelContext,
+}
+
+impl Drop for VmbusProxy {
+    fn drop(&mut self) {
+        // SAFETY: VmbusProxy is being dropped so can no longer be used.
+        let file = unsafe { ManuallyDrop::take(&mut self.file) };
+
+        // Extract the inner file to dissociate the I/O completion port. This is required so the
+        // file object can be reused in case of handle brokering.
+        file.into_inner();
+    }
 }
 
 #[derive(Debug)]
@@ -93,6 +106,7 @@ pub enum ProxyAction {
         offer: VMBUS_CHANNEL_OFFER,
         incoming_event: Event,
         outgoing_event: Option<Event>,
+        device_order: Option<NonZeroU32>,
     },
     Revoke {
         id: u64,
@@ -128,8 +142,11 @@ unsafe impl<T> IoBufMut for StaticIoctlBuffer<T> {
 
 impl VmbusProxy {
     pub fn new(driver: &dyn Driver, handle: ProxyHandle, ctx: CancelContext) -> Result<Self> {
+        // SAFETY: This handle is duplicated and can be shared with other devices, so safety depends
+        // on this being the only user of the handle for overlapped IO.
+        let file = unsafe { OverlappedFile::new(driver, handle.0)? };
         Ok(Self {
-            file: OverlappedFile::new(driver, handle.0)?,
+            file: ManuallyDrop::new(file),
             guest_memory: None,
             cancel: ctx,
         })
@@ -146,7 +163,8 @@ impl VmbusProxy {
     {
         // SAFETY: guaranteed by caller.
         let (r, (_, output)) = unsafe { self.file.ioctl(code, input, output).await };
-        r?;
+        let size = r?;
+        assert_eq!(size, output.len(), "ioctl returned unexpected size");
         Ok(output)
     }
 
@@ -185,7 +203,8 @@ impl VmbusProxy {
             }
         };
 
-        r?;
+        let size = r?;
+        assert_eq!(size, output.len(), "ioctl returned unexpected size");
         Ok(output)
     }
 
@@ -237,6 +256,7 @@ impl VmbusProxy {
                     } else {
                         None
                     },
+                    device_order: NonZeroU32::new(output.u.Offer.DeviceOrder),
                 })
             },
             proxyioctl::VmbusProxyActionTypeRevoke => {

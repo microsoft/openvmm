@@ -6,6 +6,7 @@
 
 use super::services::ArcMutexChipsetServices;
 use crate::BusIdPci;
+use crate::BusIdPcieDownstreamPort;
 use crate::VmmChipsetDevice;
 use arc_cyclic_builder::ArcCyclicBuilder;
 use arc_cyclic_builder::ArcCyclicBuilderExt;
@@ -71,6 +72,7 @@ pub struct ArcMutexChipsetDeviceBuilder<'a, 'b, T> {
 
     pci_addr: Option<(u8, u8, u8)>,
     pci_bus_id: Option<BusIdPci>,
+    pcie_port: Option<BusIdPcieDownstreamPort>,
     external_pci: bool,
 }
 
@@ -97,6 +99,7 @@ where
 
             pci_addr: None,
             pci_bus_id: None,
+            pcie_port: None,
             external_pci: false,
         }
     }
@@ -117,6 +120,12 @@ where
     /// For PCI devices: place the device on the specific bus
     pub fn on_pci_bus(mut self, id: BusIdPci) -> Self {
         self.pci_bus_id = Some(id);
+        self
+    }
+
+    /// For PCIe devices: place the device on the specified downstream port
+    pub fn on_pcie_port(mut self, id: BusIdPcieDownstreamPort) -> Self {
+        self.pcie_port = Some(id);
         self
     }
 
@@ -156,39 +165,50 @@ where
 
         if !self.external_pci {
             if let Some(dev) = typed_dev.supports_pci() {
-                // static pci registration
-                let bdf = match (self.pci_addr, dev.suggested_bdf()) {
-                    (Some(override_bdf), Some(suggested_bdf)) => {
-                        let (ob, od, of) = override_bdf;
-                        let (sb, sd, sf) = suggested_bdf;
-                        tracing::info!(
-                            "overriding suggested bdf: using {:02x}:{:02x}:{} instead of {:02x}:{:02x}:{}",
-                            ob,
-                            od,
-                            of,
-                            sb,
-                            sd,
-                            sf
-                        );
-                        override_bdf
-                    }
-                    (None, Some(bdf)) | (Some(bdf), None) => bdf,
-                    (None, None) => {
-                        return Err(
-                            AddDeviceErrorKind::NoPciBusAddress.with_dev_name(self.dev_name)
-                        );
-                    }
-                };
-
-                let bus_id = match self.pci_bus_id.take() {
-                    Some(bus_id) => bus_id,
-                    None => panic!(
-                        "wiring error: did not invoke `on_pci_bus` for `{}`",
+                if self.pci_bus_id.is_some() && self.pcie_port.is_some() {
+                    panic!(
+                        "wiring error: invoked both `on_pci_bus` and `on_pcie_port` for `{}`",
                         self.dev_name
-                    ),
-                };
+                    );
+                }
 
-                self.services.register_static_pci(bus_id, bdf);
+                if let Some(bus_id_port) = self.pcie_port {
+                    self.services.register_static_pcie(bus_id_port);
+                } else {
+                    // static pci registration
+                    let bdf = match (self.pci_addr, dev.suggested_bdf()) {
+                        (Some(override_bdf), Some(suggested_bdf)) => {
+                            let (ob, od, of) = override_bdf;
+                            let (sb, sd, sf) = suggested_bdf;
+                            tracing::info!(
+                                "overriding suggested bdf: using {:02x}:{:02x}:{} instead of {:02x}:{:02x}:{}",
+                                ob,
+                                od,
+                                of,
+                                sb,
+                                sd,
+                                sf
+                            );
+                            override_bdf
+                        }
+                        (None, Some(bdf)) | (Some(bdf), None) => bdf,
+                        (None, None) => {
+                            return Err(
+                                AddDeviceErrorKind::NoPciBusAddress.with_dev_name(self.dev_name)
+                            );
+                        }
+                    };
+
+                    let bus_id = match self.pci_bus_id.take() {
+                        Some(bus_id) => bus_id,
+                        None => panic!(
+                            "wiring error: did not invoke `on_pci_bus` for `{}`",
+                            self.dev_name
+                        ),
+                    };
+
+                    self.services.register_static_pci(bus_id, bdf);
+                }
             }
         }
 

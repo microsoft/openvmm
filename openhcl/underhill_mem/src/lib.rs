@@ -258,10 +258,20 @@ impl MemoryAcceptor {
             IsolationType::Vbs => {
                 // TODO VBS: is there something to do here?
             }
-            IsolationType::Snp => self
-                .mshv_vtl
-                .pvalidate_pages(range, false, false)
-                .expect("pvalidate should not fail"),
+            IsolationType::Snp => {
+                // Revoke permissions before unaccepting pages. This is required
+                // because a subsequent page acceptance is not guaranteed to
+                // reset permissions unless the hypervisor executed RMPUPDATE,
+                // which it cannot be trusted to do. We set new permissions
+                // ourselves, but that still leaves open a tiny window where the
+                // guest could access the pages with the old permissions.
+                for lower_vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
+                    self.apply_protections(range, lower_vtl, HV_MAP_GPA_PERMISSIONS_NONE)
+                        .unwrap();
+                }
+                self.mshv_vtl.pvalidate_pages(range, false, false).unwrap()
+            }
+
             IsolationType::Tdx => {
                 // Nothing to do for TDX.
             }
@@ -613,8 +623,6 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             tlb_access.flush_entire();
         }
 
-        // TODO SNP: check list of locks, roll back bitmap changes if there was one.
-
         if shared {
             // Unaccept the pages so that the hypervisor can reclaim them.
             for &range in &ranges {
@@ -808,17 +816,16 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 // this should track all pages that have been accepted and
                 // should be used instead.
                 // Also don't attempt to change the permissions of locked pages.
-                if !inner.valid_encrypted.check_valid(gpn)
-                    || self.check_gpn_not_locked(&inner, target_vtl, gpn).is_err()
-                {
+                if inner.valid_encrypted.check_valid(gpn) {
+                    self.check_gpn_not_locked(&inner, target_vtl, gpn)?;
+                    page_count += 1;
+                } else {
                     if page_count > 0 {
                         let end_address = protect_start + (page_count * PAGE_SIZE as u64);
                         ranges.push(MemoryRange::new(protect_start..end_address));
                     }
                     protect_start = (gpn + 1) * PAGE_SIZE as u64;
                     page_count = 0;
-                } else {
-                    page_count += 1;
                 }
             }
 
@@ -845,6 +852,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         // Invalidate the entire VTL 0 TLB to ensure that the new permissions
         // are observed.
         tlb_access.flush(GuestVtl::Vtl0);
+        tlb_access.set_wait_for_tlb_locks(target_vtl);
 
         Ok(())
     }
@@ -860,7 +868,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         // applied. This does not need to be synchronized against other
         // threads performing VTL protection changes; whichever thread
         // finishes last will control the outcome.
-        let mut inner = self.inner.lock();
+        let inner = self.inner.lock();
 
         // Validate the ranges are RAM.
         for &gpn in gpns {
@@ -871,6 +879,11 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             // Validate they're not locked.
             self.check_gpn_not_locked(&inner, target_vtl, gpn)
                 .map_err(|x| (x, 0))?;
+
+            // Validate they're not overlay pages.
+            if inner.overlay_pages[target_vtl].iter().any(|p| p.gpn == gpn) {
+                return Err((HvError::OperationDenied, 0));
+            }
         }
 
         // Protections cannot be applied to a host-visible page
@@ -886,13 +899,8 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             .unwrap(); // Ok to unwrap, we've validated the gpns above.
 
         for range in ranges {
-            self.apply_protections_with_overlay_handling(
-                range,
-                target_vtl,
-                protections,
-                &mut inner,
-            )
-            .unwrap();
+            self.apply_protections(range, target_vtl, protections, GpnSource::GuestMemory)
+                .unwrap();
         }
 
         // Flush any threads accessing pages that had their VTL protections

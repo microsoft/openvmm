@@ -15,25 +15,17 @@ use zerocopy::FromBytes;
 
 #[test]
 fn test_version_negotiation_not_supported() {
-    let (mut notifier, _recv) = TestNotifier::new();
-    let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
+    let mut env = TestEnv::new();
 
-    test_initiate_contact(
-        &mut server,
-        &mut notifier,
-        TestVersion::Unsupported(0xffffffff),
-        0,
-    );
+    test_initiate_contact(&mut env, TestVersion::Unsupported(0xffffffff), 0);
 }
 
 #[test]
 fn test_version_negotiation_success() {
-    let (mut notifier, _recv) = TestNotifier::new();
-    let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
+    let mut env = TestEnv::new();
 
     test_initiate_contact(
-        &mut server,
-        &mut notifier,
+        &mut env,
         TestVersion::Supported {
             version: Version::Win10,
             expected_features: 0,
@@ -44,16 +36,14 @@ fn test_version_negotiation_success() {
 
 #[test]
 fn test_version_negotiation_multiclient_sint() {
-    let (mut notifier, _recv) = TestNotifier::new();
-    let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
+    let mut env = TestEnv::new();
 
     let target_info = TargetInfo::new()
         .with_sint(3)
         .with_vtl(0)
         .with_feature_flags(FeatureFlags::new().into());
 
-    server
-        .with_notifier(&mut notifier)
+    env.c()
         .handle_synic_message(in_msg_ex(
             protocol::MessageType::INITIATE_CONTACT,
             protocol::InitiateContact {
@@ -70,9 +60,9 @@ fn test_version_negotiation_multiclient_sint() {
 
     // No action is taken when a different SINT is requested, since it's not supported. An
     // unsupported message is sent to the requested SINT.
-    assert!(notifier.modify_requests.is_empty());
-    assert!(matches!(server.state, ConnectionState::Disconnected));
-    notifier.check_message_with_target(
+    assert!(env.notifier.modify_requests.is_empty());
+    assert!(matches!(env.server.state, ConnectionState::Disconnected));
+    env.notifier.check_message_with_target(
         OutgoingMessage::new(&protocol::VersionResponse {
             version_supported: 0,
             connection_state: protocol::ConnectionState::SUCCESSFUL,
@@ -84,8 +74,7 @@ fn test_version_negotiation_multiclient_sint() {
 
     // SINT is ignored if the multiclient port is not used.
     test_initiate_contact(
-        &mut server,
-        &mut notifier,
+        &mut env,
         TestVersion::Supported {
             version: Version::Win10Rs3_1,
             expected_features: 0,
@@ -96,16 +85,14 @@ fn test_version_negotiation_multiclient_sint() {
 
 #[test]
 fn test_version_negotiation_multiclient_vtl() {
-    let (mut notifier, _recv) = TestNotifier::new();
-    let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
+    let mut env = TestEnv::new();
 
     let target_info = TargetInfo::new()
-        .with_sint(SINT)
+        .with_sint(VMBUS_SINT)
         .with_vtl(2)
         .with_feature_flags(FeatureFlags::new().into());
 
-    server
-        .with_notifier(&mut notifier)
+    env.c()
         .handle_synic_message(in_msg_ex(
             protocol::MessageType::INITIATE_CONTACT,
             protocol::InitiateContact {
@@ -120,17 +107,16 @@ fn test_version_negotiation_multiclient_vtl() {
         ))
         .unwrap();
 
-    let action = notifier.forward_request.take().unwrap();
+    let action = env.notifier.forward_request.take().unwrap();
     assert!(matches!(action, InitiateContactRequest { .. }));
 
     // The VTL contact message was forwarded but no action was taken by this server.
-    assert!(notifier.messages.is_empty());
-    assert!(matches!(server.state, ConnectionState::Disconnected));
+    assert!(env.notifier.messages.is_empty());
+    assert!(matches!(env.server.state, ConnectionState::Disconnected));
 
     // VTL is ignored if the multiclient port is not used.
     test_initiate_contact(
-        &mut server,
-        &mut notifier,
+        &mut env,
         TestVersion::Supported {
             version: Version::Win10Rs4,
             expected_features: 0,
@@ -138,7 +124,7 @@ fn test_version_negotiation_multiclient_vtl() {
         target_info.into(),
     );
 
-    assert!(notifier.forward_request.is_none());
+    assert!(env.notifier.forward_request.is_none());
 }
 
 #[test]
@@ -147,12 +133,11 @@ fn test_version_negotiation_feature_flags() {
 
     // Test with no feature flags.
     let mut target_info = TargetInfo::new()
-        .with_sint(SINT)
+        .with_sint(VMBUS_SINT)
         .with_vtl(0)
         .with_feature_flags(FeatureFlags::new().into());
     test_initiate_contact(
-        &mut env.server,
-        &mut env.notifier,
+        &mut env,
         TestVersion::Supported {
             version: Version::Copper,
             expected_features: 0,
@@ -170,8 +155,7 @@ fn test_version_negotiation_feature_flags() {
             .into(),
     );
     test_initiate_contact(
-        &mut env.server,
-        &mut env.notifier,
+        &mut env,
         TestVersion::Supported {
             version: Version::Copper,
             expected_features: FeatureFlags::new()
@@ -189,8 +173,7 @@ fn test_version_negotiation_feature_flags() {
         u32::from(FeatureFlags::new().with_guest_specified_signal_parameters(true)) | 0xf0000000,
     );
     test_initiate_contact(
-        &mut env.server,
-        &mut env.notifier,
+        &mut env,
         TestVersion::Supported {
             version: Version::Copper,
             expected_features: FeatureFlags::new()
@@ -206,8 +189,7 @@ fn test_version_negotiation_feature_flags() {
     // Verify client ID feature flag.
     target_info.set_feature_flags(FeatureFlags::new().with_client_id(true).into());
     test_initiate_contact(
-        &mut env.server,
-        &mut env.notifier,
+        &mut env,
         TestVersion::Supported {
             version: Version::Copper,
             expected_features: FeatureFlags::new().with_client_id(true).into(),
@@ -218,11 +200,9 @@ fn test_version_negotiation_feature_flags() {
 
 #[test]
 fn test_version_negotiation_interrupt_page() {
-    let (mut notifier, _recv) = TestNotifier::new();
-    let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
+    let mut env = TestEnv::new();
     test_initiate_contact(
-        &mut server,
-        &mut notifier,
+        &mut env,
         TestVersion::Supported {
             version: Version::V1,
             expected_features: 0,
@@ -230,11 +210,9 @@ fn test_version_negotiation_interrupt_page() {
         1234,
     );
 
-    let (mut notifier, _recv) = TestNotifier::new();
-    let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
+    let mut env = TestEnv::new();
     test_initiate_contact(
-        &mut server,
-        &mut notifier,
+        &mut env,
         TestVersion::Supported {
             version: Version::Win7,
             expected_features: 0,
@@ -242,11 +220,9 @@ fn test_version_negotiation_interrupt_page() {
         1234,
     );
 
-    let (mut notifier, _recv) = TestNotifier::new();
-    let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
+    let mut env = TestEnv::new();
     test_initiate_contact(
-        &mut server,
-        &mut notifier,
+        &mut env,
         TestVersion::Supported {
             version: Version::Win8,
             expected_features: 0,
@@ -263,18 +239,12 @@ enum TestVersion {
     },
 }
 
-fn test_initiate_contact(
-    server: &mut Server,
-    notifier: &mut TestNotifier,
-    version: TestVersion,
-    target_info: u64,
-) {
+fn test_initiate_contact(env: &mut TestEnv, version: TestVersion, target_info: u64) {
     let raw_version = match version {
         TestVersion::Unsupported(version) => version,
         TestVersion::Supported { version, .. } => version as u32,
     };
-    server
-        .with_notifier(notifier)
+    env.c()
         .handle_synic_message(in_msg(
             protocol::MessageType::INITIATE_CONTACT,
             protocol::InitiateContact2 {
@@ -296,7 +266,7 @@ fn test_initiate_contact(
             expected_features,
         } = version
         {
-            let request = notifier.next_action();
+            let request = env.notifier.next_action();
             let interrupt_page = if raw_version < Version::Win8 as u32 {
                 Update::Set(target_info)
             } else {
@@ -323,13 +293,12 @@ fn test_initiate_contact(
                 }
             );
 
-            server.with_notifier(notifier).complete_initiate_contact(
-                ModifyConnectionResponse::Supported(
+            env.c()
+                .complete_initiate_contact(ModifyConnectionResponse::Supported(
                     protocol::ConnectionState::SUCCESSFUL,
                     SUPPORTED_FEATURE_FLAGS,
                     None,
-                ),
-            );
+                ));
 
             let selected_version_or_connection_id = if raw_version >= Version::Win10Rs3_1 as u32 {
                 1
@@ -350,32 +319,37 @@ fn test_initiate_contact(
     };
 
     if raw_version >= Version::Copper as u32 && expect_supported {
-        notifier.check_message(OutgoingMessage::new(&protocol::VersionResponse2 {
-            version_response,
-            supported_features: expected_features,
-        }));
+        env.notifier
+            .check_message(OutgoingMessage::new(&protocol::VersionResponse2 {
+                version_response,
+                supported_features: expected_features,
+            }));
     } else {
-        notifier.check_message(OutgoingMessage::new(&version_response));
+        env.notifier
+            .check_message(OutgoingMessage::new(&version_response));
         assert_eq!(expected_features, 0);
     }
 
-    assert!(notifier.messages.is_empty());
+    assert!(env.notifier.messages.is_empty());
     if expect_supported {
-        assert!(matches!(server.state, ConnectionState::Connected { .. }));
+        assert!(matches!(
+            env.server.state,
+            ConnectionState::Connected { .. }
+        ));
         if raw_version < Version::Win8_1 as u32 {
-            assert_eq!(Some(0), notifier.target_message_vp);
+            assert_eq!(Some(0), env.notifier.target_message_vp);
         } else {
-            assert_eq!(Some(1), notifier.target_message_vp);
+            assert_eq!(Some(1), env.notifier.target_message_vp);
         }
     } else {
-        assert!(matches!(server.state, ConnectionState::Disconnected));
-        assert!(notifier.target_message_vp.is_none());
+        assert!(matches!(env.server.state, ConnectionState::Disconnected));
+        assert!(env.notifier.target_message_vp.is_none());
     }
 
     if raw_version < Version::Win8 as u32 {
-        assert_eq!(notifier.interrupt_page, Some(target_info));
+        assert_eq!(env.notifier.interrupt_page, Some(target_info));
     } else {
-        assert!(notifier.interrupt_page.is_none());
+        assert!(env.notifier.interrupt_page.is_none());
     }
 }
 
@@ -411,12 +385,11 @@ fn test_channel_lifetime_copper_open_flags() {
 }
 
 fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
-    let (mut notifier, recv) = TestNotifier::new();
-    let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
+    let mut env = TestEnv::new();
     let interface_id = Guid::new_random();
     let instance_id = Guid::new_random();
-    let offer_id = server
-        .with_notifier(&mut notifier)
+    let offer_id = env
+        .c()
         .offer_channel(OfferParamsInternal {
             interface_name: "test".to_owned(),
             instance_id,
@@ -426,15 +399,14 @@ fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
         .unwrap();
 
     let mut target_info = TargetInfo::new()
-        .with_sint(SINT)
+        .with_sint(VMBUS_SINT)
         .with_vtl(2)
         .with_feature_flags(FeatureFlags::new().into());
     if version >= Version::Copper {
         target_info.set_feature_flags(feature_flags.into());
     }
 
-    server
-        .with_notifier(&mut notifier)
+    env.c()
         .handle_synic_message(in_msg(
             protocol::MessageType::INITIATE_CONTACT,
             protocol::InitiateContact {
@@ -447,7 +419,7 @@ fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
         ))
         .unwrap();
 
-    let request = notifier.next_action();
+    let request = env.notifier.next_action();
     assert_eq!(
         request,
         ModifyConnectionRequest {
@@ -462,8 +434,7 @@ fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
         }
     );
 
-    server
-        .with_notifier(&mut notifier)
+    env.c()
         .complete_initiate_contact(ModifyConnectionResponse::Supported(
             protocol::ConnectionState::SUCCESSFUL,
             SUPPORTED_FEATURE_FLAGS,
@@ -477,21 +448,22 @@ fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
     };
 
     if version >= Version::Copper {
-        notifier.check_message(OutgoingMessage::new(&protocol::VersionResponse2 {
-            version_response,
-            supported_features: feature_flags.into(),
-        }));
+        env.notifier
+            .check_message(OutgoingMessage::new(&protocol::VersionResponse2 {
+                version_response,
+                supported_features: feature_flags.into(),
+            }));
     } else {
-        notifier.check_message(OutgoingMessage::new(&version_response));
+        env.notifier
+            .check_message(OutgoingMessage::new(&version_response));
     }
 
-    server
-        .with_notifier(&mut notifier)
+    env.c()
         .handle_synic_message(in_msg(protocol::MessageType::REQUEST_OFFERS, ()))
         .unwrap();
 
     let channel_id = ChannelId(1);
-    notifier.check_messages([
+    env.notifier.check_messages([
         OutgoingMessage::new(&protocol::OfferChannel {
             interface_id,
             instance_id,
@@ -529,8 +501,7 @@ fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
             connection_id = 0x2002;
         }
 
-        server
-            .with_notifier(&mut notifier)
+        env.c()
             .handle_synic_message(in_msg(
                 protocol::MessageType::OPEN_CHANNEL,
                 protocol::OpenChannel2 {
@@ -545,13 +516,12 @@ fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
             ))
             .unwrap();
     } else {
-        server
-            .with_notifier(&mut notifier)
+        env.c()
             .handle_synic_message(in_msg(protocol::MessageType::OPEN_CHANNEL, open_channel))
             .unwrap();
     }
 
-    let (id, action) = recv.recv().unwrap();
+    let (id, action) = env.recv.recv().unwrap();
     assert_eq!(id, offer_id);
     let Action::Open(op, ..) = action else {
         panic!("unexpected action: {:?}", action);
@@ -566,18 +536,16 @@ fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
     assert_eq!(op.monitor_info, None);
     assert_eq!(op.flags, expected_flags);
 
-    server
-        .with_notifier(&mut notifier)
-        .open_complete(offer_id, 0);
+    env.c().open_complete(offer_id, 0);
 
-    notifier.check_message(OutgoingMessage::new(&protocol::OpenResult {
-        channel_id,
-        open_id: 1,
-        status: 0,
-    }));
+    env.notifier
+        .check_message(OutgoingMessage::new(&protocol::OpenResult {
+            channel_id,
+            open_id: 1,
+            status: 0,
+        }));
 
-    server
-        .with_notifier(&mut notifier)
+    env.c()
         .handle_synic_message(in_msg(
             protocol::MessageType::MODIFY_CHANNEL,
             protocol::ModifyChannel {
@@ -587,27 +555,25 @@ fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
         ))
         .unwrap();
 
-    let (id, action) = recv.recv().unwrap();
+    let (id, action) = env.recv.recv().unwrap();
     assert_eq!(id, offer_id);
     assert!(matches!(action, Action::Modify { target_vp: 4 }));
 
-    server
-        .with_notifier(&mut notifier)
-        .modify_channel_complete(id, 0);
+    env.c().modify_channel_complete(id, 0);
 
     if version >= Version::Iron {
-        notifier.check_message(OutgoingMessage::new(&protocol::ModifyChannelResponse {
-            channel_id,
-            status: 0,
-        }));
+        env.notifier
+            .check_message(OutgoingMessage::new(&protocol::ModifyChannelResponse {
+                channel_id,
+                status: 0,
+            }));
     }
 
-    assert!(notifier.messages.is_empty());
+    assert!(env.notifier.messages.is_empty());
 
-    server.with_notifier(&mut notifier).revoke_channel(offer_id);
+    env.c().revoke_channel(offer_id);
 
-    server
-        .with_notifier(&mut notifier)
+    env.c()
         .handle_synic_message(in_msg(
             protocol::MessageType::REL_ID_RELEASED,
             protocol::RelIdReleased { channel_id },
@@ -632,11 +598,9 @@ fn test_hvsock_rs5() {
 }
 
 fn test_hvsock_helper(version: Version, force_small_message: bool) {
-    let (mut notifier, _recv) = TestNotifier::new();
-    let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
+    let mut env = TestEnv::new();
 
-    server
-        .with_notifier(&mut notifier)
+    env.c()
         .handle_synic_message(in_msg(
             protocol::MessageType::INITIATE_CONTACT,
             protocol::InitiateContact {
@@ -649,7 +613,7 @@ fn test_hvsock_helper(version: Version, force_small_message: bool) {
         ))
         .unwrap();
 
-    let request = notifier.next_action();
+    let request = env.notifier.next_action();
     assert_eq!(
         request,
         ModifyConnectionRequest {
@@ -664,8 +628,7 @@ fn test_hvsock_helper(version: Version, force_small_message: bool) {
         }
     );
 
-    server
-        .with_notifier(&mut notifier)
+    env.c()
         .complete_initiate_contact(ModifyConnectionResponse::Supported(
             protocol::ConnectionState::SUCCESSFUL,
             SUPPORTED_FEATURE_FLAGS,
@@ -673,7 +636,7 @@ fn test_hvsock_helper(version: Version, force_small_message: bool) {
         ));
 
     // Discard the version response message.
-    notifier.messages.pop_front();
+    env.notifier.messages.pop_front();
 
     let service_id = Guid::new_random();
     let endpoint_id = Guid::new_random();
@@ -698,30 +661,27 @@ fn test_hvsock_helper(version: Version, force_small_message: bool) {
         )
     };
 
-    server
-        .with_notifier(&mut notifier)
-        .handle_synic_message(request_msg)
-        .unwrap();
+    env.c().handle_synic_message(request_msg).unwrap();
 
-    let request = notifier.hvsock_requests.pop().unwrap();
+    let request = env.notifier.hvsock_requests.pop().unwrap();
     assert_eq!(request.service_id, service_id);
     assert_eq!(request.endpoint_id, endpoint_id);
-    assert!(notifier.hvsock_requests.is_empty());
+    assert!(env.notifier.hvsock_requests.is_empty());
 
     // Notify the guest of connection failure.
-    server
-        .with_notifier(&mut notifier)
+    env.c()
         .send_tl_connect_result(HvsockConnectResult::from_request(&request, false));
 
     if version >= Version::Win10Rs3_0 {
-        notifier.check_message(OutgoingMessage::new(&protocol::TlConnectResult {
-            service_id: request.service_id,
-            endpoint_id: request.endpoint_id,
-            status: protocol::STATUS_CONNECTION_REFUSED,
-        }));
+        env.notifier
+            .check_message(OutgoingMessage::new(&protocol::TlConnectResult {
+                service_id: request.service_id,
+                endpoint_id: request.endpoint_id,
+                status: protocol::STATUS_CONNECTION_REFUSED,
+            }));
     }
 
-    assert!(notifier.messages.is_empty());
+    assert!(env.notifier.messages.is_empty());
 }
 
 /// Ensure that channels can be offered at each stage of connection.
@@ -828,12 +788,12 @@ fn test_save_restore_with_connection() {
     env.gpadl(3, 31);
 
     // Test Opening, Open, and Closing save for reserved channels
-    env.open_reserved(7, 1, SINT.into());
-    env.open_reserved(8, 2, SINT.into());
-    env.open_reserved(9, 3, SINT.into());
+    env.open_reserved(7, 1, VMBUS_SINT.into());
+    env.open_reserved(8, 2, VMBUS_SINT.into());
+    env.open_reserved(9, 3, VMBUS_SINT.into());
     env.c().open_complete(offer_id8, 0);
     env.c().open_complete(offer_id9, 0);
-    env.close_reserved(9, 3, SINT.into());
+    env.close_reserved(9, 3, VMBUS_SINT.into());
 
     // Revoke an offer but don't have the "guest" release it, so we can then mark it as
     // reoffered.
@@ -893,7 +853,7 @@ fn test_save_restore_with_connection() {
 
     // Check reserved channels have been restored to the same state
     env.c().open_complete(offer_id7, 0);
-    env.close_reserved(8, 2, SINT.into());
+    env.close_reserved(8, 2, VMBUS_SINT.into());
     env.c().close_complete(offer_id8);
     env.c().close_complete(offer_id9);
 
@@ -1101,14 +1061,8 @@ fn test_save_restore_offers_not_sent() {
     env.c().handle_request_offers().unwrap();
     env.notifier.check_messages([
         OutgoingMessage::new(&protocol::OfferChannel {
-            interface_id: Guid {
-                data1: 1,
-                ..Guid::ZERO
-            },
-            instance_id: Guid {
-                data1: 1,
-                ..Guid::ZERO
-            },
+            interface_id: guid_from_id(1),
+            instance_id: guid_from_id(1),
             channel_id: ChannelId(1),
             connection_id: 0x2001,
             is_dedicated: 1,
@@ -1116,14 +1070,8 @@ fn test_save_restore_offers_not_sent() {
             ..protocol::OfferChannel::new_zeroed()
         }),
         OutgoingMessage::new(&protocol::OfferChannel {
-            interface_id: Guid {
-                data1: 2,
-                ..Guid::ZERO
-            },
-            instance_id: Guid {
-                data1: 2,
-                ..Guid::ZERO
-            },
+            interface_id: guid_from_id(2),
+            instance_id: guid_from_id(2),
             channel_id: ChannelId(2),
             connection_id: 0x2002,
             is_dedicated: 1,
@@ -1131,14 +1079,8 @@ fn test_save_restore_offers_not_sent() {
             ..protocol::OfferChannel::new_zeroed()
         }),
         OutgoingMessage::new(&protocol::OfferChannel {
-            interface_id: Guid {
-                data1: 3,
-                ..Guid::ZERO
-            },
-            instance_id: Guid {
-                data1: 3,
-                ..Guid::ZERO
-            },
+            interface_id: guid_from_id(3),
+            instance_id: guid_from_id(3),
             channel_id: ChannelId(3),
             connection_id: 0x2003,
             is_dedicated: 1,
@@ -1179,14 +1121,8 @@ fn test_save_restore_hot_add_during_restore() {
     env.c().revoke_unclaimed_channels();
     env.notifier
         .check_message(OutgoingMessage::new(&protocol::OfferChannel {
-            interface_id: Guid {
-                data1: 4,
-                ..Guid::ZERO
-            },
-            instance_id: Guid {
-                data1: 4,
-                ..Guid::ZERO
-            },
+            interface_id: guid_from_id(4),
+            instance_id: guid_from_id(4),
             channel_id: ChannelId(4),
             connection_id: 0x2004,
             is_dedicated: 1,
@@ -1210,7 +1146,7 @@ fn test_pending_messages() {
 
     env.notifier.messages.clear();
     env.notifier.pend_messages = true;
-    env.open_reserved(2, 4, SINT.into());
+    env.open_reserved(2, 4, VMBUS_SINT.into());
     env.c().open_complete(offer_id2, protocol::STATUS_SUCCESS);
 
     // Reserved channel message should not be queued, but just discarded if it cannot be sent.
@@ -1361,18 +1297,24 @@ fn test_reserved_channels() {
     env.notifier.messages.clear();
 
     // Open responses should be sent to the provided target
-    env.open_reserved(1, 1, SINT.into());
+    env.open_reserved(1, 1, VMBUS_SINT.into());
     env.c().open_complete(offer_id1, 0);
     env.notifier.check_message_with_target(
         OutgoingMessage::new(&protocol::OpenResult {
             channel_id: ChannelId(1),
             ..FromZeros::new_zeroed()
         }),
-        MessageTarget::ReservedChannel(offer_id1, ConnectionTarget { vp: 1, sint: SINT }),
+        MessageTarget::ReservedChannel(
+            offer_id1,
+            ConnectionTarget {
+                vp: 1,
+                sint: VMBUS_SINT,
+            },
+        ),
     );
-    env.open_reserved(2, 2, SINT.into());
+    env.open_reserved(2, 2, VMBUS_SINT.into());
     env.c().open_complete(offer_id2, 0);
-    env.open_reserved(3, 3, SINT.into());
+    env.open_reserved(3, 3, VMBUS_SINT.into());
     env.c().open_complete(offer_id3, 0);
 
     // This should fail
@@ -1383,7 +1325,7 @@ fn test_reserved_channels() {
     env.complete_reset();
 
     // Closing while disconnected should work
-    env.close_reserved(2, 2, SINT.into());
+    env.close_reserved(2, 2, VMBUS_SINT.into());
     env.c().close_complete(offer_id2);
 
     env.notifier.messages.clear();
@@ -1396,20 +1338,26 @@ fn test_reserved_channels() {
     env.c().gpadl_create_complete(offer_id2, GpadlId(10), 0);
 
     // Reopening the same offer should work
-    env.open_reserved(2, 3, SINT.into());
+    env.open_reserved(2, 3, VMBUS_SINT.into());
     env.c().open_complete(offer_id2, 0);
 
     env.notifier.messages.clear();
 
     // The channel should still be open after disconnect/reconnect
     // and close responses should be sent to the provided target
-    env.close_reserved(1, 4, SINT.into());
+    env.close_reserved(1, 4, VMBUS_SINT.into());
     env.c().close_complete(offer_id1);
     env.notifier.check_message_with_target(
         OutgoingMessage::new(&protocol::CloseReservedChannelResponse {
             channel_id: ChannelId(1),
         }),
-        MessageTarget::ReservedChannel(offer_id1, ConnectionTarget { vp: 4, sint: SINT }),
+        MessageTarget::ReservedChannel(
+            offer_id1,
+            ConnectionTarget {
+                vp: 4,
+                sint: VMBUS_SINT,
+            },
+        ),
     );
     env.teardown_gpadl(1, 10);
     env.c().gpadl_teardown_complete(offer_id1, GpadlId(10));
@@ -1435,7 +1383,7 @@ fn test_disconnected_reset() {
 
     env.gpadl(1, 10);
     env.c().gpadl_create_complete(offer_id1, GpadlId(10), 0);
-    env.open_reserved(1, 1, SINT.into());
+    env.open_reserved(1, 1, VMBUS_SINT.into());
     env.c().open_complete(offer_id1, 0);
 
     env.c().handle_unload();
@@ -1458,13 +1406,13 @@ fn test_disconnected_reset() {
 
     env.gpadl(2, 20);
     env.c().gpadl_create_complete(offer_id2, GpadlId(20), 0);
-    env.open_reserved(2, 2, SINT.into());
+    env.open_reserved(2, 2, VMBUS_SINT.into());
     env.c().open_complete(offer_id2, 0);
 
     env.c().handle_unload();
     env.complete_reset();
 
-    env.close_reserved(2, 2, SINT.into());
+    env.close_reserved(2, 2, VMBUS_SINT.into());
     env.c().close_complete(offer_id2);
     env.c().gpadl_teardown_complete(offer_id2, GpadlId(20));
 
@@ -1484,14 +1432,8 @@ fn test_mnf_channel() {
 
     let mut expected_channels = [
         protocol::OfferChannel {
-            interface_id: Guid {
-                data1: 1,
-                ..Guid::ZERO
-            },
-            instance_id: Guid {
-                data1: 1,
-                ..Guid::ZERO
-            },
+            interface_id: guid_from_id(1),
+            instance_id: guid_from_id(1),
             channel_id: ChannelId(1),
             connection_id: 0x2001,
             is_dedicated: 1,
@@ -1499,14 +1441,8 @@ fn test_mnf_channel() {
             ..protocol::OfferChannel::new_zeroed()
         },
         protocol::OfferChannel {
-            interface_id: Guid {
-                data1: 2,
-                ..Guid::ZERO
-            },
-            instance_id: Guid {
-                data1: 2,
-                ..Guid::ZERO
-            },
+            interface_id: guid_from_id(2),
+            instance_id: guid_from_id(2),
             channel_id: ChannelId(2),
             connection_id: 0x2002,
             is_dedicated: 1,
@@ -1514,14 +1450,8 @@ fn test_mnf_channel() {
             ..protocol::OfferChannel::new_zeroed()
         },
         protocol::OfferChannel {
-            interface_id: Guid {
-                data1: 3,
-                ..Guid::ZERO
-            },
-            instance_id: Guid {
-                data1: 3,
-                ..Guid::ZERO
-            },
+            interface_id: guid_from_id(3),
+            instance_id: guid_from_id(3),
             channel_id: ChannelId(3),
             connection_id: 0x2003,
             is_dedicated: 1,
@@ -1593,7 +1523,7 @@ fn test_server_monitor_page_helper(provide_guest_pages: bool) {
             protocol::InitiateContact {
                 version_requested: version as u32,
                 interrupt_page_or_target_info: TargetInfo::new()
-                    .with_sint(SINT)
+                    .with_sint(VMBUS_SINT)
                     .with_vtl(0)
                     .with_feature_flags(feature_flags.into())
                     .into(),
@@ -1675,14 +1605,8 @@ fn test_server_monitor_page_helper(provide_guest_pages: bool) {
     env.c().handle_request_offers().unwrap();
     env.notifier.check_messages([
         OutgoingMessage::new(&protocol::OfferChannel {
-            interface_id: Guid {
-                data1: 1,
-                ..Guid::ZERO
-            },
-            instance_id: Guid {
-                data1: 1,
-                ..Guid::ZERO
-            },
+            interface_id: guid_from_id(1),
+            instance_id: guid_from_id(1),
             channel_id: ChannelId(1),
             connection_id: 0x2001,
             is_dedicated: 1,
@@ -1711,14 +1635,8 @@ fn test_channel_id_order() {
 
     env.notifier.check_messages([
         OutgoingMessage::new(&protocol::OfferChannel {
-            interface_id: Guid {
-                data1: 3,
-                ..Guid::ZERO
-            },
-            instance_id: Guid {
-                data1: 3,
-                ..Guid::ZERO
-            },
+            interface_id: guid_from_id(3),
+            instance_id: guid_from_id(3),
             channel_id: ChannelId(1),
             connection_id: 0x2001,
             is_dedicated: 1,
@@ -1726,14 +1644,8 @@ fn test_channel_id_order() {
             ..protocol::OfferChannel::new_zeroed()
         }),
         OutgoingMessage::new(&protocol::OfferChannel {
-            interface_id: Guid {
-                data1: 5,
-                ..Guid::ZERO
-            },
-            instance_id: Guid {
-                data1: 8,
-                ..Guid::ZERO
-            },
+            interface_id: guid_from_id(5),
+            instance_id: guid_from_id(8),
             channel_id: ChannelId(2),
             connection_id: 0x2002,
             is_dedicated: 1,
@@ -1741,14 +1653,8 @@ fn test_channel_id_order() {
             ..protocol::OfferChannel::new_zeroed()
         }),
         OutgoingMessage::new(&protocol::OfferChannel {
-            interface_id: Guid {
-                data1: 5,
-                ..Guid::ZERO
-            },
-            instance_id: Guid {
-                data1: 6,
-                ..Guid::ZERO
-            },
+            interface_id: guid_from_id(5),
+            instance_id: guid_from_id(6),
             channel_id: ChannelId(3),
             connection_id: 0x2003,
             is_dedicated: 1,
@@ -1756,14 +1662,8 @@ fn test_channel_id_order() {
             ..protocol::OfferChannel::new_zeroed()
         }),
         OutgoingMessage::new(&protocol::OfferChannel {
-            interface_id: Guid {
-                data1: 5,
-                ..Guid::ZERO
-            },
-            instance_id: Guid {
-                data1: 1,
-                ..Guid::ZERO
-            },
+            interface_id: guid_from_id(5),
+            instance_id: guid_from_id(1),
             channel_id: ChannelId(4),
             connection_id: 0x2004,
             is_dedicated: 1,
@@ -1771,14 +1671,8 @@ fn test_channel_id_order() {
             ..protocol::OfferChannel::new_zeroed()
         }),
         OutgoingMessage::new(&protocol::OfferChannel {
-            interface_id: Guid {
-                data1: 5,
-                ..Guid::ZERO
-            },
-            instance_id: Guid {
-                data1: 5,
-                ..Guid::ZERO
-            },
+            interface_id: guid_from_id(5),
+            instance_id: guid_from_id(5),
             channel_id: ChannelId(5),
             connection_id: 0x2005,
             is_dedicated: 1,
@@ -1786,14 +1680,8 @@ fn test_channel_id_order() {
             ..protocol::OfferChannel::new_zeroed()
         }),
         OutgoingMessage::new(&protocol::OfferChannel {
-            interface_id: Guid {
-                data1: 10,
-                ..Guid::ZERO
-            },
-            instance_id: Guid {
-                data1: 10,
-                ..Guid::ZERO
-            },
+            interface_id: guid_from_id(10),
+            instance_id: guid_from_id(10),
             channel_id: ChannelId(6),
             connection_id: 0x2006,
             is_dedicated: 1,
@@ -1801,14 +1689,92 @@ fn test_channel_id_order() {
             ..protocol::OfferChannel::new_zeroed()
         }),
         OutgoingMessage::new(&protocol::OfferChannel {
-            interface_id: Guid {
-                data1: 17,
-                ..Guid::ZERO
-            },
-            instance_id: Guid {
-                data1: 17,
-                ..Guid::ZERO
-            },
+            interface_id: guid_from_id(17),
+            instance_id: guid_from_id(17),
+            channel_id: ChannelId(7),
+            connection_id: 0x2007,
+            is_dedicated: 1,
+            monitor_id: 0xff,
+            ..protocol::OfferChannel::new_zeroed()
+        }),
+        OutgoingMessage::new(&protocol::AllOffersDelivered {}),
+    ])
+}
+
+#[test]
+fn test_channel_id_order_absolute() {
+    let mut env = TestEnv::with_params(true);
+
+    let _offer_id1 = env.offer_with_order(3, 3, Some(1));
+    let _offer_id3 = env.offer_with_order(5, 5, Some(3));
+    let _offer_id4 = env.offer_with_order(17, 17, Some(4));
+    let _offer_id7 = env.offer_with_order(5, 1, None);
+    let _offer_id5 = env.offer_with_order(5, 6, Some(5));
+    let _offer_id2 = env.offer_with_order(10, 10, Some(2));
+    let _offer_id6 = env.offer_with_order(5, 8, Some(6));
+
+    env.connect(Version::Win10, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+
+    // Channel IDs are assigned by the order values first.
+    env.notifier.check_messages([
+        OutgoingMessage::new(&protocol::OfferChannel {
+            interface_id: guid_from_id(3),
+            instance_id: guid_from_id(3),
+            channel_id: ChannelId(1),
+            connection_id: 0x2001,
+            is_dedicated: 1,
+            monitor_id: 0xff,
+            ..protocol::OfferChannel::new_zeroed()
+        }),
+        OutgoingMessage::new(&protocol::OfferChannel {
+            interface_id: guid_from_id(10),
+            instance_id: guid_from_id(10),
+            channel_id: ChannelId(2),
+            connection_id: 0x2002,
+            is_dedicated: 1,
+            monitor_id: 0xff,
+            ..protocol::OfferChannel::new_zeroed()
+        }),
+        OutgoingMessage::new(&protocol::OfferChannel {
+            interface_id: guid_from_id(5),
+            instance_id: guid_from_id(5),
+            channel_id: ChannelId(3),
+            connection_id: 0x2003,
+            is_dedicated: 1,
+            monitor_id: 0xff,
+            ..protocol::OfferChannel::new_zeroed()
+        }),
+        OutgoingMessage::new(&protocol::OfferChannel {
+            interface_id: guid_from_id(17),
+            instance_id: guid_from_id(17),
+            channel_id: ChannelId(4),
+            connection_id: 0x2004,
+            is_dedicated: 1,
+            monitor_id: 0xff,
+            ..protocol::OfferChannel::new_zeroed()
+        }),
+        OutgoingMessage::new(&protocol::OfferChannel {
+            interface_id: guid_from_id(5),
+            instance_id: guid_from_id(6),
+            channel_id: ChannelId(5),
+            connection_id: 0x2005,
+            is_dedicated: 1,
+            monitor_id: 0xff,
+            ..protocol::OfferChannel::new_zeroed()
+        }),
+        OutgoingMessage::new(&protocol::OfferChannel {
+            interface_id: guid_from_id(5),
+            instance_id: guid_from_id(8),
+            channel_id: ChannelId(6),
+            connection_id: 0x2006,
+            is_dedicated: 1,
+            monitor_id: 0xff,
+            ..protocol::OfferChannel::new_zeroed()
+        }),
+        OutgoingMessage::new(&protocol::OfferChannel {
+            interface_id: guid_from_id(5),
+            instance_id: guid_from_id(1),
             channel_id: ChannelId(7),
             connection_id: 0x2007,
             is_dedicated: 1,
@@ -2044,7 +2010,10 @@ fn test_reinitiate_contact() {
         protocol::MessageType::INITIATE_CONTACT,
         protocol::InitiateContact {
             version_requested: Version::Win10 as u32,
-            interrupt_page_or_target_info: TargetInfo::new().with_sint(SINT).with_vtl(0).into(),
+            interrupt_page_or_target_info: TargetInfo::new()
+                .with_sint(VMBUS_SINT)
+                .with_vtl(0)
+                .into(),
             child_to_parent_monitor_page_gpa: 0x123f000,
             parent_to_child_monitor_page_gpa: 0x321f000,
             ..FromZeros::new_zeroed()
@@ -2195,6 +2164,70 @@ fn test_gpadl_create_failure() {
         }));
 }
 
+#[test]
+fn test_gpadl_in_progress_reset() {
+    let mut env = TestEnv::new();
+
+    let offer_id1 = env.offer(1);
+
+    const RANGE: [u64; 2] = [1u64, 0u64];
+
+    env.connect(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+    env.notifier.messages.clear();
+
+    // Start a gpadl creation but do not complete it.
+    env.c().handle_gpadl_header(
+        &protocol::GpadlHeader {
+            channel_id: ChannelId(1),
+            gpadl_id: GpadlId(1),
+            count: 2,
+            len: 32,
+        },
+        RANGE.as_bytes(),
+    );
+
+    // Ensure no error was sent.
+    assert!(env.notifier.messages.is_empty());
+
+    // Reset the connection while gpadl creation is in progress.
+    env.c().reset();
+    env.complete_reset();
+    assert!(env.notifier.is_reset());
+
+    // Reconnect and start a new gpadl creation with the same ID, and complete it this time.
+    env.connect(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+    env.notifier.messages.clear();
+    env.c().handle_gpadl_header(
+        &protocol::GpadlHeader {
+            channel_id: ChannelId(1),
+            gpadl_id: GpadlId(1),
+            count: 1,
+            len: 32,
+        },
+        RANGE.as_bytes(),
+    );
+
+    env.c()
+        .handle_gpadl_body(
+            &protocol::GpadlBody {
+                rsvd: 0,
+                gpadl_id: GpadlId(1),
+            },
+            RANGE.as_bytes(),
+        )
+        .unwrap();
+
+    // Ensure no error was sent.
+    assert!(env.notifier.messages.is_empty());
+
+    // Check for the gpadl creation notification.
+    let (offer_id, action) = env.recv.recv().unwrap();
+    assert_eq!(offer_id, offer_id1);
+    assert!(matches!(action, Action::Gpadl(GpadlId(1), ..)));
+}
+
 struct TestNotifier {
     send: mpsc::Sender<(OfferId, Action)>,
     modify_requests: VecDeque<ModifyConnectionRequest>,
@@ -2335,8 +2368,17 @@ struct TestEnv {
 
 impl TestEnv {
     fn new() -> Self {
+        Self::with_params(false)
+    }
+
+    fn with_params(assign_channel_id_on_offer: bool) -> Self {
         let (notifier, recv) = TestNotifier::new();
-        let server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
+        let server = Server::new(
+            Vtl::Vtl0,
+            MESSAGE_CONNECTION_ID,
+            0,
+            assign_channel_id_on_offer,
+        );
         Self {
             server,
             notifier,
@@ -2395,7 +2437,7 @@ impl TestEnv {
         &mut self,
         interface_id: u32,
         instance_id: u32,
-        order: Option<u32>,
+        order: Option<u64>,
     ) -> OfferId {
         self.offer_inner(
             interface_id,
@@ -2415,19 +2457,13 @@ impl TestEnv {
         interface_id: u32,
         instance_id: u32,
         use_mnf: MnfUsage,
-        offer_order: Option<u32>,
+        offer_order: Option<u64>,
         flags: OfferFlags,
     ) -> OfferId {
         self.c()
             .offer_channel(OfferParamsInternal {
-                instance_id: Guid {
-                    data1: instance_id,
-                    ..Guid::ZERO
-                },
-                interface_id: Guid {
-                    data1: interface_id,
-                    ..Guid::ZERO
-                },
+                instance_id: guid_from_id(instance_id),
+                interface_id: guid_from_id(interface_id),
                 use_mnf,
                 offer_order,
                 flags,
@@ -2543,7 +2579,7 @@ impl TestEnv {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: version as u32,
                     interrupt_page_or_target_info: TargetInfo::new()
-                        .with_sint(SINT)
+                        .with_sint(VMBUS_SINT)
                         .with_vtl(0)
                         .with_feature_flags(feature_flags.into())
                         .into(),
@@ -2654,5 +2690,12 @@ fn in_msg_ex<T: IntoBytes + Immutable + KnownLayout>(
         data,
         multiclient,
         trusted,
+    }
+}
+
+fn guid_from_id(id: u32) -> Guid {
+    Guid {
+        data1: id,
+        ..Guid::ZERO
     }
 }

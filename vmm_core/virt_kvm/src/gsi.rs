@@ -80,6 +80,7 @@ impl GsiRouting {
 
 impl KvmPartitionInner {
     /// Reserves a new route, optionally with an associated irqfd event.
+    #[expect(dead_code)]
     pub(crate) fn new_route(self: &Arc<Self>, irqfd_event: Option<Event>) -> Option<GsiRoute> {
         let gsi = self.gsi_routing.lock().alloc()?;
         Some(GsiRoute {
@@ -138,6 +139,7 @@ impl GsiRoute {
     }
 
     /// Enables the route and associated irqfd.
+    #[expect(dead_code)]
     pub fn enable(&self, entry: kvm::RoutingEntry) {
         let partition = self.set_entry(Some(entry));
         let _lock = self.enable_mutex.lock();
@@ -172,12 +174,15 @@ impl GsiRoute {
     }
 
     /// Returns the configured irqfd event, if there is one.
+    #[expect(dead_code)]
     pub fn irqfd_event(&self) -> Option<&Event> {
         self.irqfd_event.as_ref()
     }
 
     /// Signals the interrupt if it is enabled.
-    pub fn _signal(&self) {
+    #[allow(clippy::assertions_on_constants)]
+    #[expect(dead_code)]
+    pub fn signal(&self) {
         // Use a relaxed atomic read to avoid extra synchronization in this
         // path. It's up to callers to synchronize this with `enable`/`disable`
         // if strict ordering is necessary.
@@ -189,8 +194,7 @@ impl GsiRoute {
                 // the type of the interrupt: SPI or PPI handled by the in-kernel vGIC,
                 // or the user mode GIC emulator (where have to specify the target VP, too).
 
-                // xtask-fmt allow-target-arch sys-crate
-                assert!(cfg!(target_arch = "x86_64"));
+                assert!(cfg!(guest_arch = "x86_64"));
                 partition
                     .kvm
                     .irq_line(self.gsi, true)

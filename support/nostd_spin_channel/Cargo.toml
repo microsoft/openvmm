@@ -1,0 +1,14 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "nostd_spin_channel"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+spin.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

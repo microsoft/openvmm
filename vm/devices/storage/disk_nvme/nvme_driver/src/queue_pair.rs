@@ -4,6 +4,7 @@
 //! Implementation of an admin or IO queue pair.
 
 use super::spec;
+use crate::driver::save_restore::AerHandlerSavedState;
 use crate::driver::save_restore::Error;
 use crate::driver::save_restore::PendingCommandSavedState;
 use crate::driver::save_restore::PendingCommandsSavedState;
@@ -19,19 +20,19 @@ use guestmem::GuestMemoryError;
 use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use inspect_counters::Counter;
-use mesh::Cancel;
-use mesh::CancelContext;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
+use nvme_spec::AsynchronousEventRequestDw0;
 use pal_async::driver::SpawnDriver;
-use pal_async::task::Task;
 use safeatomic::AtomicSliceOps;
 use slab::Slab;
 use std::future::poll_fn;
 use std::num::Wrapping;
 use std::sync::Arc;
 use std::task::Poll;
+use task_control::AsyncRun;
+use task_control::TaskControl;
 use thiserror::Error;
 use user_driver::DeviceBacking;
 use user_driver::interrupt::DeviceInterrupt;
@@ -45,29 +46,41 @@ use zerocopy::FromZeros;
 /// Value for unused PRP entries, to catch/mitigate buffer size mismatches.
 const INVALID_PAGE_ADDR: u64 = !(PAGE_SIZE as u64 - 1);
 
-pub(crate) struct QueuePair {
-    task: Task<QueueHandler>,
-    cancel: Cancel,
-    issuer: Arc<Issuer>,
-    mem: MemoryBlock,
-    qid: u16,
-    sq_entries: u16,
-    cq_entries: u16,
-}
+const SQ_ENTRY_SIZE: usize = size_of::<spec::Command>();
+const CQ_ENTRY_SIZE: usize = size_of::<spec::Completion>();
+/// Submission Queue size in bytes.
+const SQ_SIZE: usize = PAGE_SIZE * 4;
+/// Completion Queue size in bytes.
+const CQ_SIZE: usize = PAGE_SIZE;
+/// Maximum SQ size in entries.
+pub const MAX_SQ_ENTRIES: u16 = (SQ_SIZE / SQ_ENTRY_SIZE) as u16;
+/// Maximum CQ size in entries.
+pub const MAX_CQ_ENTRIES: u16 = (CQ_SIZE / CQ_ENTRY_SIZE) as u16;
+/// Number of pages per queue if bounce buffering.
+const PER_QUEUE_PAGES_BOUNCE_BUFFER: usize = 128;
+/// Number of pages per queue if not bounce buffering.
+const PER_QUEUE_PAGES_NO_BOUNCE_BUFFER: usize = 64;
+/// Number of SQ entries per page (64).
+const SQ_ENTRIES_PER_PAGE: usize = PAGE_SIZE / SQ_ENTRY_SIZE;
 
-impl Inspect for QueuePair {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        let Self {
-            task: _,
-            cancel: _,
-            issuer,
-            mem: _,
-            qid: _,
-            sq_entries: _,
-            cq_entries: _,
-        } = self;
-        issuer.send.send(Req::Inspect(req.defer()));
-    }
+#[derive(Inspect)]
+pub(crate) struct QueuePair<A: AerHandler, D: DeviceBacking> {
+    #[inspect(skip)]
+    task: TaskControl<QueueHandlerLoop<A, D>, ()>,
+    #[inspect(flatten, with = "|x| inspect::send(&x.send_req, Req::Inspect)")]
+    issuer: Arc<Issuer>,
+    #[inspect(skip)]
+    mem: MemoryBlock,
+    #[inspect(skip)]
+    device_id: String,
+    #[inspect(skip)]
+    qid: u16,
+    #[inspect(skip)]
+    sq_entries: u16,
+    #[inspect(skip)]
+    cq_entries: u16,
+    sq_addr: u64,
+    cq_addr: u64,
 }
 
 impl PendingCommands {
@@ -90,6 +103,10 @@ impl PendingCommands {
 
     fn is_empty(&self) -> bool {
         self.commands.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.commands.len()
     }
 
     /// Inserts a command into the pending list, updating it with a new CID.
@@ -169,47 +186,79 @@ impl PendingCommands {
     }
 }
 
-impl QueuePair {
-    /// Maximum SQ size in entries.
-    pub const MAX_SQ_ENTRIES: u16 = (PAGE_SIZE / 64) as u16;
-    /// Maximum CQ size in entries.
-    pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16;
-    /// Submission Queue size in bytes.
-    const SQ_SIZE: usize = PAGE_SIZE;
-    /// Completion Queue size in bytes.
-    const CQ_SIZE: usize = PAGE_SIZE;
-    /// Number of pages per queue if bounce buffering.
-    const PER_QUEUE_PAGES_BOUNCE_BUFFER: usize = 128;
-    /// Number of pages per queue if not bounce buffering.
-    const PER_QUEUE_PAGES_NO_BOUNCE_BUFFER: usize = 64;
+struct QueueHandlerLoop<A: AerHandler, D: DeviceBacking> {
+    queue_handler: QueueHandler<A>,
+    registers: Arc<DeviceRegisters<D>>,
+    recv_req: Option<mesh::Receiver<Req>>,
+    recv_cmd: Option<mesh::Receiver<Cmd>>,
+    interrupt: DeviceInterrupt,
+}
 
+impl<A: AerHandler, D: DeviceBacking> AsyncRun<()> for QueueHandlerLoop<A, D> {
+    async fn run(
+        &mut self,
+        stop: &mut task_control::StopTask<'_>,
+        _: &mut (),
+    ) -> Result<(), task_control::Cancelled> {
+        stop.until_stopped(async {
+            self.queue_handler
+                .run(
+                    &self.registers,
+                    self.recv_req.take().unwrap(),
+                    self.recv_cmd.take().unwrap(),
+                    &mut self.interrupt,
+                )
+                .await;
+        })
+        .await
+    }
+}
+
+impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
+    /// Create a new queue pair.
+    ///
+    /// `sq_entries` and `cq_entries` are the requested sizes in entries.
+    /// Calling code should request the largest size it thinks the device
+    /// will support (see `CAP.MQES`). These may be clamped down to what will
+    /// fit in one page should this routine fail to allocate physically
+    /// contiguous memory to back the queues.
+    /// IMPORTANT: Calling code should check the actual sizes via corresponding
+    /// calls to [`QueuePair::sq_entries`] and [`QueuePair::cq_entries`] AFTER calling this routine.
     pub fn new(
         spawner: impl SpawnDriver,
-        device: &impl DeviceBacking,
+        device: &D,
         qid: u16,
-        sq_entries: u16, // Requested SQ size in entries.
-        cq_entries: u16, // Requested CQ size in entries.
+        sq_entries: u16,
+        cq_entries: u16,
         interrupt: DeviceInterrupt,
-        registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        registers: Arc<DeviceRegisters<D>>,
         bounce_buffer: bool,
+        aer_handler: A,
     ) -> anyhow::Result<Self> {
-        let total_size = QueuePair::SQ_SIZE
-            + QueuePair::CQ_SIZE
+        // FUTURE: Consider splitting this into several allocations, rather than
+        // allocating the sum total together. This can increase the likelihood
+        // of getting contiguous memory when falling back to the LockedMem
+        // allocator, but this is not the expected path. Be careful that any
+        // changes you make here work with already established save state.
+        let total_size = SQ_SIZE
+            + CQ_SIZE
             + if bounce_buffer {
-                QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER * PAGE_SIZE
+                PER_QUEUE_PAGES_BOUNCE_BUFFER * PAGE_SIZE
             } else {
-                QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE
+                PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE
             };
         let dma_client = device.dma_client();
+
         let mem = dma_client
             .allocate_dma_buffer(total_size)
             .context("failed to allocate memory for queues")?;
 
-        assert!(sq_entries <= Self::MAX_SQ_ENTRIES);
-        assert!(cq_entries <= Self::MAX_CQ_ENTRIES);
+        assert!(sq_entries <= MAX_SQ_ENTRIES);
+        assert!(cq_entries <= MAX_CQ_ENTRIES);
 
         QueuePair::new_or_restore(
             spawner,
+            device.id(),
             qid,
             sq_entries,
             cq_entries,
@@ -218,28 +267,75 @@ impl QueuePair {
             mem,
             None,
             bounce_buffer,
+            aer_handler,
         )
     }
 
-    /// Create new object or restore from saved state.
     fn new_or_restore(
         spawner: impl SpawnDriver,
+        device_id: &str,
         qid: u16,
-        sq_entries: u16, // Submission queue entries.
-        cq_entries: u16, // Completion queue entries.
-        mut interrupt: DeviceInterrupt,
-        registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        sq_entries: u16,
+        cq_entries: u16,
+        interrupt: DeviceInterrupt,
+        registers: Arc<DeviceRegisters<D>>,
         mem: MemoryBlock,
         saved_state: Option<&QueueHandlerSavedState>,
         bounce_buffer: bool,
+        aer_handler: A,
     ) -> anyhow::Result<Self> {
         // MemoryBlock is either allocated or restored prior calling here.
-        let sq_mem_block = mem.subblock(0, QueuePair::SQ_SIZE);
-        let cq_mem_block = mem.subblock(QueuePair::SQ_SIZE, QueuePair::CQ_SIZE);
-        let data_offset = QueuePair::SQ_SIZE + QueuePair::CQ_SIZE;
+        let sq_mem_block = mem.subblock(0, SQ_SIZE);
+        let cq_mem_block = mem.subblock(SQ_SIZE, CQ_SIZE);
+        let data_offset = SQ_SIZE + CQ_SIZE;
 
-        let mut queue_handler = match saved_state {
-            Some(s) => QueueHandler::restore(sq_mem_block, cq_mem_block, s)?,
+        // Make sure that the queue memory is physically contiguous. While the
+        // NVMe spec allows for some provisions of queue memory to be
+        // non-contiguous, this depends on device support. At least one device
+        // that we must support requires that the memory is contiguous (via the
+        // CAP.CQR bit). Because of that, just simplify the code paths to use
+        // contiguous memory.
+        //
+        // We could also seek through the memory block to find contiguous pages
+        // (for example, if the first 4 pages are not contiguous, but pages 5-8
+        // are, use those), but other parts of this driver already assume the
+        // math to get the correct offsets.
+        //
+        // N.B. It is expected that allocations from the private pool will
+        // always be contiguous, and that is the normal path. That can fail in
+        // some cases (e.g. if we got some guesses about memory size wrong), and
+        // we prefer to operate in a perf degraded state rather than fail
+        // completely.
+
+        let (sq_is_contiguous, cq_is_contiguous) = (
+            sq_mem_block.contiguous_pfns(),
+            cq_mem_block.contiguous_pfns(),
+        );
+
+        let (sq_entries, cq_entries) = if !sq_is_contiguous || !cq_is_contiguous {
+            tracing::warn!(
+                qid,
+                sq_is_contiguous,
+                sq_mem_block.pfns = ?sq_mem_block.pfns(),
+                cq_is_contiguous,
+                cq_mem_block.pfns = ?cq_mem_block.pfns(),
+                "non-contiguous queue memory detected, falling back to single page queues"
+            );
+            // Clamp both queues to the number of entries that will fit in a
+            // single SQ page (since this will be the smaller between the SQ and
+            // CQ capacity).
+            (SQ_ENTRIES_PER_PAGE as u16, SQ_ENTRIES_PER_PAGE as u16)
+        } else {
+            (sq_entries, cq_entries)
+        };
+
+        let sq_addr = sq_mem_block.pfns()[0] * PAGE_SIZE64;
+        let cq_addr = cq_mem_block.pfns()[0] * PAGE_SIZE64;
+
+        let queue_handler = match saved_state {
+            Some(s) => {
+                QueueHandler::restore(sq_mem_block, cq_mem_block, s, aer_handler, device_id, qid)?
+            }
             None => {
                 // Create a new one.
                 QueueHandler {
@@ -248,22 +344,24 @@ impl QueuePair {
                     commands: PendingCommands::new(qid),
                     stats: Default::default(),
                     drain_after_restore: false,
+                    aer_handler,
+                    device_id: device_id.into(),
+                    qid,
                 }
             }
         };
 
-        let (send, recv) = mesh::channel();
-        let (mut ctx, cancel) = CancelContext::new().with_cancel();
-        let task = spawner.spawn("nvme-queue", {
-            async move {
-                ctx.until_cancelled(async {
-                    queue_handler.run(&registers, recv, &mut interrupt).await;
-                })
-                .await
-                .ok();
-                queue_handler
-            }
+        let (send_req, recv_req) = mesh::channel();
+        let (send_cmd, recv_cmd) = mesh::channel();
+        let mut task = TaskControl::new(QueueHandlerLoop {
+            queue_handler,
+            registers,
+            recv_req: Some(recv_req),
+            recv_cmd: Some(recv_cmd),
+            interrupt,
         });
+        task.insert(spawner, "nvme-queue", ());
+        task.start();
 
         // Convert the queue pages to bytes, and assert that queue size is large
         // enough.
@@ -283,30 +381,46 @@ impl QueuePair {
         // NOTE: Do not remove the `const` blocks below. This is to force
         // compile time evaluation of the assertion described above.
         let alloc_len = if bounce_buffer {
-            const { pages_to_size_bytes(QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER) }
+            const { pages_to_size_bytes(PER_QUEUE_PAGES_BOUNCE_BUFFER) }
         } else {
-            const { pages_to_size_bytes(QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER) }
+            const { pages_to_size_bytes(PER_QUEUE_PAGES_NO_BOUNCE_BUFFER) }
         };
 
         let alloc = PageAllocator::new(mem.subblock(data_offset, alloc_len));
 
         Ok(Self {
             task,
-            cancel,
-            issuer: Arc::new(Issuer { send, alloc }),
+            issuer: Arc::new(Issuer {
+                send_req,
+                send_cmd,
+                alloc,
+            }),
             mem,
+            device_id: device_id.into(),
             qid,
             sq_entries,
             cq_entries,
+            sq_addr,
+            cq_addr,
         })
     }
 
+    /// Returns the actual number of SQ entries supported by this queue pair.
+    pub fn sq_entries(&self) -> u16 {
+        self.sq_entries
+    }
+
+    /// Returns the actual number of CQ entries supported by this queue pair.
+    pub fn cq_entries(&self) -> u16 {
+        self.cq_entries
+    }
+
     pub fn sq_addr(&self) -> u64 {
-        self.mem.pfns()[0] * PAGE_SIZE64
+        self.sq_addr
     }
 
     pub fn cq_addr(&self) -> u64 {
-        self.mem.pfns()[1] * PAGE_SIZE64
+        self.cq_addr
     }
 
     pub fn issuer(&self) -> &Arc<Issuer> {
@@ -314,19 +428,20 @@ impl QueuePair {
     }
 
     pub async fn shutdown(mut self) -> impl Send {
-        self.cancel.cancel();
-        self.task.await
+        self.task.stop().await;
+        self.task.into_inner().0.queue_handler
     }
 
     /// Save queue pair state for servicing.
     pub async fn save(&self) -> anyhow::Result<QueuePairSavedState> {
+        tracing::info!(qid = self.qid, pci_id = ?self.device_id, "saving queue pair state");
         // Return error if the queue does not have any memory allocated.
         if self.mem.pfns().is_empty() {
             return Err(Error::InvalidState.into());
         }
         // Send an RPC request to QueueHandler thread to save its data.
         // QueueHandler stops any other processing after completing Save request.
-        let handler_data = self.issuer.send.call(Req::Save, ()).await??;
+        let handler_data = self.issuer.send_req.call(Req::Save, ()).await??;
 
         Ok(QueuePairSavedState {
             mem_len: self.mem.len(),
@@ -342,10 +457,12 @@ impl QueuePair {
     pub fn restore(
         spawner: impl SpawnDriver,
         interrupt: DeviceInterrupt,
-        registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        registers: Arc<DeviceRegisters<D>>,
         mem: MemoryBlock,
+        device_id: &str,
         saved_state: &QueuePairSavedState,
         bounce_buffer: bool,
+        aer_handler: A,
     ) -> anyhow::Result<Self> {
         let QueuePairSavedState {
             mem_len: _,  // Used to restore DMA buffer before calling this.
@@ -358,6 +475,7 @@ impl QueuePair {
 
         QueuePair::new_or_restore(
             spawner,
+            device_id,
             *qid,
             *sq_entries,
             *cq_entries,
@@ -366,6 +484,7 @@ impl QueuePair {
             mem,
             Some(handler_data),
             bounce_buffer,
+            aer_handler,
         )
     }
 }
@@ -404,14 +523,42 @@ impl std::error::Error for NvmeError {}
 impl std::fmt::Display for NvmeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0.status_code_type() {
-            spec::StatusCodeType::GENERIC => write!(f, "general error {:#x?}", self.0),
+            spec::StatusCodeType::GENERIC => write!(
+                f,
+                "NVMe SCT general error, SC: {:#x?}",
+                self.0.status_code()
+            ),
             spec::StatusCodeType::COMMAND_SPECIFIC => {
-                write!(f, "command-specific error {:#x?}", self.0)
+                write!(
+                    f,
+                    "NVMe SCT command-specific error, SC: {:#x?}",
+                    self.0.status_code()
+                )
             }
             spec::StatusCodeType::MEDIA_ERROR => {
-                write!(f, "media error {:#x?}", self.0)
+                write!(f, "NVMe SCT media error, SC: {:#x?}", self.0.status_code())
             }
-            _ => write!(f, "{:#x?}", self.0),
+            spec::StatusCodeType::PATH_RELATED => {
+                write!(
+                    f,
+                    "NVMe SCT path-related error, SC: {:#x?}",
+                    self.0.status_code()
+                )
+            }
+            spec::StatusCodeType::VENDOR_SPECIFIC => {
+                write!(
+                    f,
+                    "NVMe SCT vendor-specific error, SC: {:#x?}",
+                    self.0.status_code()
+                )
+            }
+            _ => write!(
+                f,
+                "NVMe SCT unknown ({:#x?}), SC: {:#x?} (raw: {:#x?})",
+                self.0.status_code_type(),
+                self.0.status_code(),
+                self.0
+            ),
         }
     }
 }
@@ -419,7 +566,9 @@ impl std::fmt::Display for NvmeError {
 #[derive(Debug, Inspect)]
 pub struct Issuer {
     #[inspect(skip)]
-    send: mesh::Sender<Req>,
+    send_cmd: mesh::Sender<Cmd>,
+    #[inspect(skip)]
+    send_req: mesh::Sender<Req>,
     alloc: PageAllocator,
 }
 
@@ -428,12 +577,20 @@ impl Issuer {
         &self,
         command: spec::Command,
     ) -> Result<spec::Completion, RequestError> {
-        match self.send.call(Req::Command, command).await {
+        match self.send_cmd.call(Cmd::Command, command).await {
             Ok(completion) if completion.status.status() == 0 => Ok(completion),
             Ok(completion) => Err(RequestError::Nvme(NvmeError(spec::Status(
                 completion.status.status(),
             )))),
             Err(err) => Err(RequestError::Gone(err)),
+        }
+    }
+
+    pub async fn issue_get_aen(&self) -> Result<AsynchronousEventRequestDw0, RequestError> {
+        match self.send_req.call_failable(Req::NextAen, ()).await {
+            Ok(aen_completion) => Ok(aen_completion),
+            Err(RpcError::Call(e)) => Err(e),
+            Err(RpcError::Channel(e)) => Err(RequestError::Gone(RpcError::Channel(e))),
         }
     }
 
@@ -524,7 +681,7 @@ impl Issuer {
                     .alloc
                     .alloc_pages(1)
                     .await
-                    .expect("pool cap is >= 1 page");
+                    .expect("pool capacity is >= 1 page");
 
                 let prp_addr = prp.physical_address(0);
                 let page = prp.page_as_slice(0);
@@ -583,17 +740,12 @@ impl Issuer {
             .alloc
             .alloc_bytes(data.len())
             .await
-            .expect("pool cap is sufficient");
+            .expect("pool capacity is sufficient");
 
-        assert_eq!(
-            mem.page_count(),
-            1,
-            "larger requests not currently supported"
-        );
-        let prp = Prp {
-            dptr: [mem.physical_address(0), INVALID_PAGE_ADDR],
-            _pages: None,
-        };
+        let prp = self
+            .make_prp(0, (0..mem.page_count()).map(|i| mem.physical_address(i)))
+            .await;
+
         command.dptr = prp.dptr;
         let completion = self.issue_raw(command).await;
         mem.read(data);
@@ -624,19 +776,172 @@ struct PendingCommand {
     respond: Rpc<(), spec::Completion>,
 }
 
+// "ControlPlane" requests sent to the QueueHandler. These can be processed at
+// any time; regardless of whether submission queue is full or not and will be
+// prioritized over IO completions to keep the save path responsive.
 enum Req {
-    Command(Rpc<spec::Command, spec::Completion>),
-    Inspect(inspect::Deferred),
     Save(Rpc<(), Result<QueueHandlerSavedState, anyhow::Error>>),
+    Inspect(inspect::Deferred),
+    NextAen(Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>),
+}
+
+// "DataPlane" commands sent to the QueueHandler. Actual NVMe commands that
+// require space in the submission queue.
+enum Cmd {
+    Command(Rpc<spec::Command, spec::Completion>),
+    SendAer(),
+}
+
+/// Functionality for an AER handler. The default implementation
+/// represents a NoOp handler with functions on the critical path compiled out
+/// for efficiency and should be used for IO Queues.
+pub trait AerHandler: Send + Sync + 'static {
+    /// Given a completion command, if the command pertains to a pending AEN,
+    /// process it.
+    #[inline]
+    fn handle_completion(&mut self, _completion: &nvme_spec::Completion) {}
+    /// Handle a request from the driver to get the most-recent undelivered AEN
+    /// or wait for the next one.
+    fn handle_aen_request(
+        &mut self,
+        _rpc: Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>,
+    ) {
+    }
+    /// Update the CID that the handler is awaiting an AEN on.
+    fn update_awaiting_cid(&mut self, _cid: u16) {}
+    /// Returns whether an AER needs to sent to the controller or not. Since
+    /// this is the only function on the critical path, attempt to inline it.
+    #[inline]
+    fn poll_send_aer(&self) -> bool {
+        false
+    }
+    fn save(&self) -> Option<AerHandlerSavedState> {
+        None
+    }
+    fn restore(&mut self, _state: &Option<AerHandlerSavedState>) {}
+}
+
+/// Admin queue AER handler. Ensures a single outstanding AER and persists state
+/// across save/restore to process AENs received during servicing.
+pub struct AdminAerHandler {
+    last_aen: Option<AsynchronousEventRequestDw0>,
+    await_aen_cid: Option<u16>,
+    send_aen: Option<Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>>, // Channel to return AENs on.
+    failed_status: Option<spec::Status>, // If the failed state is reached, it will stop looping until save/restore.
+}
+
+impl AdminAerHandler {
+    pub fn new() -> Self {
+        Self {
+            last_aen: None,
+            await_aen_cid: None,
+            send_aen: None,
+            failed_status: None,
+        }
+    }
+}
+
+impl AerHandler for AdminAerHandler {
+    fn handle_completion(&mut self, completion: &nvme_spec::Completion) {
+        if let Some(await_aen_cid) = self.await_aen_cid
+            && completion.cid == await_aen_cid
+            && self.failed_status.is_none()
+        {
+            self.await_aen_cid = None;
+
+            // If error, cleanup and stop processing AENs.
+            if completion.status.status() != 0 {
+                self.last_aen = None;
+                let failed_status = spec::Status(completion.status.status());
+                self.failed_status = Some(failed_status);
+                if let Some(send_aen) = self.send_aen.take() {
+                    send_aen.complete(Err(RequestError::Nvme(NvmeError(failed_status))));
+                }
+                return;
+            }
+            // Complete the AEN or pend it.
+            let aen = AsynchronousEventRequestDw0::from_bits(completion.dw0);
+            if let Some(send_aen) = self.send_aen.take() {
+                send_aen.complete(Ok(aen));
+            } else {
+                self.last_aen = Some(aen);
+            }
+        }
+    }
+
+    fn handle_aen_request(
+        &mut self,
+        rpc: Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>,
+    ) {
+        if let Some(aen) = self.last_aen.take() {
+            rpc.complete(Ok(aen));
+        } else if let Some(failed_status) = self.failed_status {
+            rpc.complete(Err(RequestError::Nvme(NvmeError(failed_status))));
+        } else {
+            self.send_aen = Some(rpc); // Save driver request to be completed later.
+        }
+    }
+
+    fn poll_send_aer(&self) -> bool {
+        self.await_aen_cid.is_none() && self.failed_status.is_none()
+    }
+
+    fn update_awaiting_cid(&mut self, cid: u16) {
+        if let Some(await_aen_cid) = self.await_aen_cid {
+            panic!("already awaiting on AEN with cid {}", await_aen_cid);
+        }
+        self.await_aen_cid = Some(cid);
+    }
+
+    fn save(&self) -> Option<AerHandlerSavedState> {
+        Some(AerHandlerSavedState {
+            last_aen: self.last_aen.map(AsynchronousEventRequestDw0::into_bits), // Save as u32
+            await_aen_cid: self.await_aen_cid,
+        })
+    }
+
+    fn restore(&mut self, state: &Option<AerHandlerSavedState>) {
+        if let Some(state) = state {
+            let AerHandlerSavedState {
+                last_aen,
+                await_aen_cid,
+            } = state;
+            self.last_aen = last_aen.map(AsynchronousEventRequestDw0::from_bits); // Restore from u32
+            self.await_aen_cid = *await_aen_cid;
+        }
+    }
+}
+
+/// No-op AER handler. Should be only used for IO queues.
+pub struct NoOpAerHandler;
+impl AerHandler for NoOpAerHandler {
+    fn handle_aen_request(
+        &mut self,
+        _rpc: Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>,
+    ) {
+        panic!(
+            "no-op aer handler should never receive an aen request. This is likely a bug in the driver."
+        );
+    }
+
+    fn update_awaiting_cid(&mut self, _cid: u16) {
+        panic!(
+            "no-op aer handler should never be passed a cid to await. This is likely a bug in the driver."
+        );
+    }
 }
 
 #[derive(Inspect)]
-struct QueueHandler {
+struct QueueHandler<A: AerHandler> {
     sq: SubmissionQueue,
     cq: CompletionQueue,
     commands: PendingCommands,
     stats: QueueStats,
     drain_after_restore: bool,
+    #[inspect(skip)]
+    aer_handler: A,
+    device_id: String,
+    qid: u16,
 }
 
 #[derive(Inspect, Default)]
@@ -646,27 +951,43 @@ struct QueueStats {
     interrupts: Counter,
 }
 
-impl QueueHandler {
+impl<A: AerHandler> QueueHandler<A> {
     async fn run(
         &mut self,
         registers: &DeviceRegisters<impl DeviceBacking>,
-        mut recv: mesh::Receiver<Req>,
+        mut recv_req: mesh::Receiver<Req>,
+        mut recv_cmd: mesh::Receiver<Cmd>,
         interrupt: &mut DeviceInterrupt,
     ) {
+        if self.drain_after_restore {
+            tracing::info!(pci_id = ?self.device_id, qid = self.qid, "Have {} outstanding IOs from before save, draining them before allowing new IO...", self.commands.len());
+        }
+
         loop {
             enum Event {
                 Request(Req),
+                Command(Cmd),
                 Completion(spec::Completion),
             }
 
             let event = if !self.drain_after_restore {
                 // Normal processing of the requests and completions.
                 poll_fn(|cx| {
+                    // Look for NVME commands
                     if !self.sq.is_full() && !self.commands.is_full() {
-                        if let Poll::Ready(Some(req)) = recv.poll_next_unpin(cx) {
-                            return Event::Request(req).into();
+                        // Prioritize sending AERs to keep the cycle going
+                        if self.aer_handler.poll_send_aer() {
+                            return Event::Command(Cmd::SendAer()).into();
+                        }
+                        if let Poll::Ready(Some(cmd)) = recv_cmd.poll_next_unpin(cx) {
+                            return Event::Command(cmd).into();
                         }
                     }
+                    // Look for control plane requests like Save/Inspect
+                    if let Poll::Ready(Some(req)) = recv_req.poll_next_unpin(cx) {
+                        return Event::Request(req).into();
+                    }
+                    // Look for completions
                     while !self.commands.is_empty() {
                         if let Some(completion) = self.cq.read() {
                             return Event::Completion(completion).into();
@@ -684,6 +1005,11 @@ impl QueueHandler {
             } else {
                 // Only process in-flight completions.
                 poll_fn(|cx| {
+                    // Look for control plane requests like Save/Inspect
+                    if let Poll::Ready(Some(req)) = recv_req.poll_next_unpin(cx) {
+                        return Event::Request(req).into();
+                    }
+
                     while !self.commands.is_empty() {
                         if let Some(completion) = self.cq.read() {
                             return Event::Completion(completion).into();
@@ -701,17 +1027,30 @@ impl QueueHandler {
 
             match event {
                 Event::Request(req) => match req {
-                    Req::Command(rpc) => {
+                    Req::Save(queue_state) => {
+                        tracing::info!(pci_id = ?self.device_id, qid = ?self.qid, "received save request, shutting down ...");
+                        queue_state.complete(self.save().await);
+                        // Do not allow any more processing after save completed.
+                        break;
+                    }
+                    Req::Inspect(deferred) => deferred.inspect(&self),
+                    Req::NextAen(rpc) => {
+                        self.aer_handler.handle_aen_request(rpc);
+                    }
+                },
+                Event::Command(cmd) => match cmd {
+                    Cmd::Command(rpc) => {
                         let (mut command, respond) = rpc.split();
                         self.commands.insert(&mut command, respond);
                         self.sq.write(command).unwrap();
                         self.stats.issued.increment();
                     }
-                    Req::Inspect(deferred) => deferred.inspect(&self),
-                    Req::Save(queue_state) => {
-                        queue_state.complete(self.save().await);
-                        // Do not allow any more processing after save completed.
-                        break;
+                    Cmd::SendAer() => {
+                        let mut command = admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST);
+                        self.commands.insert(&mut command, Rpc::detached(()));
+                        self.aer_handler.update_awaiting_cid(command.cdw0.cid());
+                        self.sq.write(command).unwrap();
+                        self.stats.issued.increment();
                     }
                 },
                 Event::Completion(completion) => {
@@ -719,9 +1058,11 @@ impl QueueHandler {
                     let respond = self.commands.remove(completion.cid);
                     if self.drain_after_restore && self.commands.is_empty() {
                         // Switch to normal processing mode once all in-flight commands completed.
+                        tracing::info!(pci_id = ?self.device_id, qid = ?self.qid, "done with drain-after-restore");
                         self.drain_after_restore = false;
                     }
                     self.sq.update_head(completion.sqhd);
+                    self.aer_handler.handle_completion(&completion);
                     respond.complete(completion);
                     self.stats.completed.increment();
                 }
@@ -736,6 +1077,7 @@ impl QueueHandler {
             sq_state: self.sq.save(),
             cq_state: self.cq.save(),
             pending_cmds: self.commands.save(),
+            aer_handler: self.aer_handler.save(),
         })
     }
 
@@ -744,12 +1086,18 @@ impl QueueHandler {
         sq_mem_block: MemoryBlock,
         cq_mem_block: MemoryBlock,
         saved_state: &QueueHandlerSavedState,
+        mut aer_handler: A,
+        device_id: &str,
+        qid: u16,
     ) -> anyhow::Result<Self> {
         let QueueHandlerSavedState {
             sq_state,
             cq_state,
             pending_cmds,
+            aer_handler: aer_handler_saved_state,
         } = saved_state;
+
+        aer_handler.restore(aer_handler_saved_state);
 
         Ok(Self {
             sq: SubmissionQueue::restore(sq_mem_block, sq_state)?,
@@ -759,6 +1107,9 @@ impl QueueHandler {
             // Only drain pending commands for I/O queues.
             // Admin queue is expected to have pending Async Event requests.
             drain_after_restore: sq_state.sqid != 0 && !pending_cmds.commands.is_empty(),
+            aer_handler,
+            device_id: device_id.into(),
+            qid,
         })
     }
 }

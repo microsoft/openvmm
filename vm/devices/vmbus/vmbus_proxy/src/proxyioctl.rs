@@ -100,6 +100,7 @@ pub struct VMBUS_PROXY_NEXT_ACTION_OUTPUT_union_Offer {
     pub Offer: VMBUS_CHANNEL_OFFER,
     pub DeviceIncomingRingEvent: u64, // BUGBUG: HANDLE
     pub DeviceOutgoingRingEvent: u64, // BUGBUG: HANDLE
+    pub DeviceOrder: u32,
 }
 
 #[repr(C)]

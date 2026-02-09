@@ -17,6 +17,7 @@ use crate::HvsockRelayChannelHalf;
 use crate::SavedStateRequest;
 use crate::channels::SavedState;
 use crate::channels::SavedStateData;
+use crate::channels::saved_state::GpadlState;
 use crate::event::MaybeWrappedEvent;
 use crate::event::WrappedEvent;
 use anyhow::Context;
@@ -28,7 +29,7 @@ use futures::stream::SelectAll;
 use guestmem::GuestMemory;
 use mesh::Cancel;
 use mesh::CancelContext;
-use mesh::rpc::Rpc;
+use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use pal_async::driver::SpawnDriver;
@@ -42,6 +43,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::future::poll_fn;
 use std::io;
+use std::num::NonZeroU32;
 use std::os::windows::prelude::*;
 use std::pin::pin;
 use std::sync::Arc;
@@ -76,27 +78,124 @@ pub struct ProxyServerInfo {
 
 impl ProxyServerInfo {
     /// Creates a new `ProxyServerInfo` instance.
-    pub fn new(
-        control: Arc<VmbusServerControl>,
-        hvsock_relay: Option<HvsockRelayChannelHalf>,
-        saved_state_recv: Option<mesh::Receiver<SavedStateRequest>>,
-    ) -> Self {
+    pub fn new(control: Arc<VmbusServerControl>) -> Self {
         Self {
             control,
-            hvsock_relay,
-            saved_state_recv,
+            hvsock_relay: None,
+            saved_state_recv: None,
         }
+    }
+
+    /// Sets the hvsocket relay for this server.
+    pub fn with_hvsock_relay(mut self, relay: Option<HvsockRelayChannelHalf>) -> Self {
+        self.hvsock_relay = relay;
+        self
+    }
+
+    /// Sets the saved state receiver for this server.
+    pub fn with_saved_state_recv(
+        mut self,
+        recv: Option<mesh::Receiver<SavedStateRequest>>,
+    ) -> Self {
+        self.saved_state_recv = recv;
+        self
+    }
+}
+
+/// Specifies the options for creating a `ProxyIntegration`.
+pub struct ProxyIntegrationBuilder<'a, T: SpawnDriver + Clone> {
+    driver: &'a T,
+    handle: ProxyHandle,
+    server: ProxyServerInfo,
+    vtl2_server: Option<ProxyServerInfo>,
+    mem: Option<&'a GuestMemory>,
+    require_flush_before_start: bool,
+    vp_to_physical_node_map: Vec<u16>,
+}
+
+impl<'a, T: SpawnDriver + Clone> ProxyIntegrationBuilder<'a, T> {
+    /// Sets the VTL2 server info.
+    pub fn vtl2_server(mut self, server: Option<ProxyServerInfo>) -> Self {
+        self.vtl2_server = server;
+        self
+    }
+
+    /// Sets the guest memory the proxy driver should use.
+    pub fn memory(mut self, mem: Option<&'a GuestMemory>) -> Self {
+        self.mem = mem;
+        self
+    }
+
+    /// Requires an initial flush before processing any actions.
+    pub fn require_flush_before_start(mut self, require: bool) -> Self {
+        self.require_flush_before_start = require;
+        self
+    }
+
+    /// Adds a NUMA node map to be passed to the proxy driver. This map is of the format
+    /// VP -> Physical NUMA Node. For example, `map[0]` is the physical NUMA node for VP 0.
+    pub fn vp_to_physical_node_map(mut self, map: Vec<u16>) -> Self {
+        self.vp_to_physical_node_map = map;
+        self
+    }
+
+    /// Builds and starts the `ProxyIntegration`.
+    pub async fn build(self) -> io::Result<ProxyIntegration> {
+        let (cancel_ctx, cancel) = CancelContext::new().with_cancel();
+        let mut proxy = VmbusProxy::new(self.driver, self.handle, cancel_ctx)?;
+        let handle = proxy.handle().try_clone_to_owned()?;
+        if let Some(mem) = self.mem {
+            proxy.set_memory(mem).await?;
+        }
+
+        let (flush_send, flush_recv) = mesh::channel();
+        let task = self.driver.spawn(
+            "vmbus_proxy",
+            proxy_thread(
+                self.driver.clone(),
+                proxy,
+                self.server,
+                self.vtl2_server,
+                flush_recv,
+                self.require_flush_before_start,
+                self.vp_to_physical_node_map,
+            ),
+        );
+
+        Ok(ProxyIntegration {
+            cancel,
+            handle,
+            flush_send,
+            task: Some(task),
+        })
     }
 }
 
 pub struct ProxyIntegration {
     cancel: Cancel,
     handle: OwnedHandle,
-    flush_send: mesh::Sender<Rpc<(), ()>>,
+    flush_send: mesh::Sender<FailableRpc<(), ()>>,
     task: Option<Task<()>>,
 }
 
 impl ProxyIntegration {
+    /// Creates a new `ProxyIntegrationBuilder`.
+    pub fn builder<T: SpawnDriver + Clone>(
+        driver: &T,
+        handle: ProxyHandle,
+        server: ProxyServerInfo,
+    ) -> ProxyIntegrationBuilder<'_, T> {
+        ProxyIntegrationBuilder {
+            driver,
+            handle,
+            server,
+            vtl2_server: None,
+            mem: None,
+            require_flush_before_start: false,
+            vp_to_physical_node_map: vec![],
+        }
+    }
+
     /// Cancels the vmbus proxy, and waits for it to finish.
     pub async fn cancel(&mut self) {
         self.cancel.cancel();
@@ -108,49 +207,25 @@ impl ProxyIntegration {
     /// Wait for all currently ready pending actions to complete. E.g., wait for
     /// all channels that have been offered to the kernel driver to have been
     /// processed.
-    pub async fn flush_actions(&mut self) {
-        self.flush_send.call(|v| v, ()).await.ok();
+    pub async fn flush_actions(&mut self) -> Result<(), RpcError<mesh::error::RemoteError>> {
+        self.flush_send.call_failable(|v| v, ()).await
     }
 
     /// Returns the handle to the vmbus proxy driver.
     pub fn handle(&self) -> BorrowedHandle<'_> {
         self.handle.as_handle()
     }
-
-    /// Starts the vmbus proxy.
-    pub async fn start(
-        driver: &(impl SpawnDriver + Clone),
-        handle: ProxyHandle,
-        server: ProxyServerInfo,
-        vtl2_server: Option<ProxyServerInfo>,
-        mem: Option<&GuestMemory>,
-    ) -> io::Result<Self> {
-        let (cancel_ctx, cancel) = CancelContext::new().with_cancel();
-        let mut proxy = VmbusProxy::new(driver, handle, cancel_ctx)?;
-        let handle = proxy.handle().try_clone_to_owned()?;
-        if let Some(mem) = mem {
-            proxy.set_memory(mem).await?;
-        }
-
-        let (flush_send, flush_recv) = mesh::channel();
-        let task = driver.spawn(
-            "vmbus_proxy",
-            proxy_thread(driver.clone(), proxy, server, vtl2_server, flush_recv),
-        );
-
-        Ok(Self {
-            cancel,
-            handle,
-            flush_send,
-            task: Some(task),
-        })
-    }
 }
 
+struct ChannelOpenState {
+    worker_result: mesh::OneshotReceiver<()>,
+    _wrapped_event: Option<WrappedEvent>,
+}
+
+#[derive(Default)]
 struct Channel {
     server_request_send: Option<mesh::Sender<ChannelServerRequest>>,
-    worker_result: Option<mesh::OneshotReceiver<()>>,
-    wrapped_event: Option<WrappedEvent>,
+    open_state: Option<ChannelOpenState>,
 }
 
 struct SavedStatePair {
@@ -176,6 +251,14 @@ impl SavedStatePair {
     }
 }
 
+struct VpToPhysicalNodeMap(Vec<u16>);
+
+impl VpToPhysicalNodeMap {
+    fn get_numa_node(&self, vp_index: u32) -> u16 {
+        self.0.get(vp_index as usize).copied().unwrap_or(0)
+    }
+}
+
 struct ProxyTask {
     channels: Arc<Mutex<HashMap<u64, Channel>>>,
     gpadls: Arc<Mutex<HashMap<u64, HashSet<GpadlId>>>>,
@@ -185,6 +268,7 @@ struct ProxyTask {
     hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
     vtl2_hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
     saved_states: Arc<AsyncMutex<SavedStatePair>>,
+    vp_to_physical_node_map: VpToPhysicalNodeMap,
 }
 
 impl ProxyTask {
@@ -194,6 +278,7 @@ impl ProxyTask {
         hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
         vtl2_hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
         proxy: Arc<VmbusProxy>,
+        vp_to_physical_node_map: VpToPhysicalNodeMap,
     ) -> Self {
         Self {
             channels: Arc::new(Mutex::new(HashMap::new())),
@@ -207,6 +292,7 @@ impl ProxyTask {
                 saved_state: None,
                 vtl2_saved_state: None,
             })),
+            vp_to_physical_node_map,
         }
     }
 
@@ -261,7 +347,9 @@ impl ProxyTask {
                 &VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS {
                     RingBufferGpadlHandle: open_request.open_data.ring_gpadl_id.0,
                     DownstreamRingBufferPageOffset: open_request.open_data.ring_offset,
-                    NodeNumber: 0, // BUGBUG: NUMA
+                    NodeNumber: self
+                        .vp_to_physical_node_map
+                        .get_numa_node(open_request.open_data.target_vp),
                     Padding: 0,
                 },
                 maybe_wrapped.event(),
@@ -275,8 +363,11 @@ impl ProxyTask {
             .ok_or_else(|| anyhow::anyhow!("channel revoked during open"))?;
 
         let recv = self.create_worker_thread(proxy_id);
-        channel.worker_result = Some(recv);
-        channel.wrapped_event = maybe_wrapped.into_wrapped();
+        channel.open_state = Some(ChannelOpenState {
+            worker_result: recv,
+            _wrapped_event: maybe_wrapped.into_wrapped(),
+        });
+
         Ok(())
     }
 
@@ -285,14 +376,14 @@ impl ProxyTask {
 
         // Wait for the worker task.
         // N.B. The channel may have been revoked.
-        let recv = self
+        let open_state = self
             .channels
             .lock()
             .get_mut(&proxy_id)
-            .and_then(|channel| channel.worker_result.take());
+            .and_then(|channel| channel.open_state.take());
 
-        if let Some(recv) = recv {
-            let _ = recv.await;
+        if let Some(open_state) = open_state {
+            let _ = open_state.worker_result.await;
         }
     }
 
@@ -334,19 +425,7 @@ impl ProxyTask {
         );
     }
 
-    async fn restore_channel_on_offer(
-        &self,
-        proxy_id: u64,
-        offer_key: OfferKey,
-        vtl: u8,
-        server_request_send: Option<mesh::Sender<ChannelServerRequest>>,
-    ) -> Option<(Option<WrappedEvent>, mesh::OneshotReceiver<()>)> {
-        // A channel is considered saved in the "open" state if it is in any state that has an open
-        // request. This is because the server will not notify the channel for the open in any of
-        // those states after restore. In the Closing and ClosingReopen state it will notify the
-        // close, so there too we need to restore as open.
-        // N.B. If there is no saved state, or the channel is not in the saved state, there is
-        //      nothing to be done here.
+    async fn check_channel_saved_open(&self, vtl: u8, offer_key: OfferKey) -> Option<bool> {
         let channel_saved_open = self
             .saved_states
             .lock()
@@ -356,30 +435,42 @@ impl ProxyTask {
             .open_request()
             .is_some();
 
-        let send = server_request_send.as_ref()?;
+        Some(channel_saved_open)
+    }
+
+    async fn restore_channel_on_offer(
+        &self,
+        proxy_id: u64,
+        offer_key: OfferKey,
+        vtl: u8,
+        server_request_send: mesh::Sender<ChannelServerRequest>,
+    ) -> anyhow::Result<Option<ChannelOpenState>> {
+        // A channel is considered saved in the "open" state if it is in any state that has an open
+        // request. This is because the server will not notify the channel for the open in any of
+        // those states after restore. In the Closing and ClosingReopen state it will notify the
+        // close, so there too we need to restore as open.
+        // N.B. If there is no saved state, or the channel is not in the saved state, there is
+        //      nothing to be done here.
+        let Some(channel_saved_open) = self.check_channel_saved_open(vtl, offer_key).await else {
+            return Ok(None);
+        };
+
         tracing::trace!(interface_id = %offer_key.interface_id,
             instance_id = %offer_key.instance_id,
             "restoring channel after offer");
 
-        let restore_result = send
+        let restore_result = server_request_send
             .call_failable(ChannelServerRequest::Restore, channel_saved_open)
             .await
-            .inspect_err(|err| {
-                tracing::warn!(
-                    error = err as &dyn std::error::Error,
-                    %offer_key,
-                    "failed to restore channel"
-                );
-            })
-            .ok()?;
+            .context("failed to restore channel")?;
 
         let Some(open_request) = restore_result.open_request else {
-            assert!(
-                !channel_saved_open,
-                "failed to restore channel {offer_key}: no OpenRequest"
-            );
+            if channel_saved_open {
+                anyhow::bail!("failed to restore channel {offer_key}: no OpenRequest");
+            }
+
             // The channel was not saved open. There is no more work to do.
-            return None;
+            return Ok(None);
         };
 
         let maybe_wrapped =
@@ -394,7 +485,10 @@ impl ProxyTask {
 
         let recv = self.create_worker_thread(proxy_id);
 
-        Some((maybe_wrapped.into_wrapped(), recv))
+        Ok(Some(ChannelOpenState {
+            worker_result: recv,
+            _wrapped_event: maybe_wrapped.into_wrapped(),
+        }))
     }
 
     async fn handle_offer(
@@ -402,21 +496,51 @@ impl ProxyTask {
         proxy_id: u64,
         offer: vmbus_proxy::vmbusioctl::VMBUS_CHANNEL_OFFER,
         incoming_event: Event,
-    ) -> Option<mesh::Receiver<ChannelRequest>> {
-        tracing::trace!(proxy_id, ?offer, "received vmbusproxy offer");
+        device_order: Option<NonZeroU32>,
+    ) -> anyhow::Result<mesh::Receiver<ChannelRequest>> {
+        self.handle_offer_core(proxy_id, offer, incoming_event, device_order)
+            .await
+            .inspect_err(|err| {
+                tracing::error!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    proxy_id,
+                    ?offer,
+                    "failed to offer vmbusproxy channel"
+                );
+
+                // A channel cannot be released unless it was revoked, so we need to keep track of
+                // the proxy ID so the driver can revoke it later.
+                // N.B. There is currently no way to propagate the failure to the device that
+                //      offered the channel.
+                assert!(
+                    self.channels
+                        .lock()
+                        .insert(proxy_id, Channel::default(),)
+                        .is_none(),
+                    "proxy driver used duplicate proxy id {proxy_id}"
+                );
+            })
+    }
+
+    async fn handle_offer_core(
+        &self,
+        proxy_id: u64,
+        offer: vmbus_proxy::vmbusioctl::VMBUS_CHANNEL_OFFER,
+        incoming_event: Event,
+        device_order: Option<NonZeroU32>,
+    ) -> anyhow::Result<mesh::Receiver<ChannelRequest>> {
+        tracing::debug!(proxy_id, ?offer, ?device_order, "received vmbusproxy offer");
         let server = match offer.TargetVtl {
             0 => self.server.as_ref(),
             2 => {
                 if let Some(server) = self.vtl2_server.as_ref() {
                     server.as_ref()
                 } else {
-                    tracing::error!(?offer, "VTL2 offer without VTL2 server");
-                    return None;
+                    anyhow::bail!("VTL2 offer without VTL2 server");
                 }
             }
             _ => {
-                tracing::error!(?offer, "unsupported offer VTL");
-                return None;
+                anyhow::bail!("unsupported offer VTL");
             }
         };
 
@@ -432,16 +556,21 @@ impl ProxyTask {
                 },
             }
         } else if offer.ChannelFlags.enumerate_device_interface() {
-            let params = offer.UserDefined.as_pipe_params();
-            let message_mode = match params.pipe_type {
-                protocol::PipeType::BYTE => false,
-                protocol::PipeType::MESSAGE => true,
-                _ => {
-                    tracing::error!(?offer, "unsupported offer pipe mode");
-                    return None;
+            if offer.ChannelFlags.named_pipe_mode() {
+                let params = offer.UserDefined.as_pipe_params();
+                let message_mode = match params.pipe_type {
+                    protocol::PipeType::BYTE => false,
+                    protocol::PipeType::MESSAGE => true,
+                    _ => {
+                        anyhow::bail!("unsupported offer pipe mode");
+                    }
+                };
+                ChannelType::Pipe { message_mode }
+            } else {
+                ChannelType::Interface {
+                    user_defined: offer.UserDefined,
                 }
-            };
-            ChannelType::Pipe { message_mode }
+            }
         } else {
             ChannelType::Device {
                 pipe_packets: offer.ChannelFlags.named_pipe_mode(),
@@ -450,6 +579,18 @@ impl ProxyTask {
 
         let interface_id: Guid = offer.InterfaceType.into();
         let instance_id: Guid = offer.InterfaceInstance.into();
+
+        // Create an offer order by combining the device order from the proxy driver and the
+        // proxy_id. This has the effect that channels offered by the same device are ordered
+        // together, even if the use_absolute_channel_order option is enabled.
+        //
+        // Offers without a device order are ordered after all offers with a device order.
+        //
+        // N.B. No order is set if the proxy_id does not fit in a u32, which should not typically
+        //      happen.
+        let offer_order = proxy_id.try_into().ok().map(|proxy_id: u32| {
+            ((device_order.unwrap_or(NonZeroU32::MAX).get() as u64) << 32) | proxy_id as u64
+        });
 
         let new_offer = OfferParams {
             interface_name: "proxy".to_owned(),
@@ -463,39 +604,28 @@ impl ProxyTask {
                 .ChannelFlags
                 .request_monitored_notification()
                 .then(|| Duration::from_nanos(offer.InterruptLatencyIn100nsUnits * 100)),
-            offer_order: proxy_id.try_into().ok(),
+            offer_order,
             allow_confidential_external_memory: false,
         };
         let (request_send, request_recv) = mesh::channel();
         let (server_request_send, server_request_recv) = mesh::channel();
 
-        let recv = server.send.call_failable(
-            OfferRequest::Offer,
-            OfferInfo {
-                params: new_offer.into(),
-                event: Interrupt::from_event(incoming_event),
-                request_send,
-                server_request_recv,
-            },
-        );
-
-        let (request_recv, server_request_send) = match recv.await {
-            Ok(()) => (Some(request_recv), Some(server_request_send)),
-            Err(err) => {
-                // Currently there is no way to propagate this failure.
-                // FUTURE: consider sending a message back to the control worker to fail the VM operation.
-                tracing::error!(
-                    error = &err as &dyn std::error::Error,
-                    interface_id = %interface_id,
-                    instance_id = %instance_id,
-                    "failed to offer proxy channel"
-                );
-                (None, None)
-            }
-        };
+        server
+            .send
+            .call_failable(
+                OfferRequest::Offer,
+                OfferInfo {
+                    params: new_offer.into(),
+                    event: Interrupt::from_event(incoming_event),
+                    request_send,
+                    server_request_recv,
+                },
+            )
+            .await
+            .context("failed to offer proxy channel")?;
 
         // Do not call restore if the device is requesting that the channel be reoffered.
-        let restore_result = if !offer.ChannelFlags.force_new_channel() {
+        let restored_open_state = if !offer.ChannelFlags.force_new_channel() {
             self.restore_channel_on_offer(
                 proxy_id,
                 OfferKey {
@@ -506,14 +636,9 @@ impl ProxyTask {
                 offer.TargetVtl,
                 server_request_send.clone(),
             )
-            .await
+            .await?
         } else {
             None
-        };
-
-        let (wrapped_event, worker_result) = match restore_result {
-            Some((wrapped_event, restore_result)) => (wrapped_event, Some(restore_result)),
-            None => (None, None),
         };
 
         assert!(
@@ -522,16 +647,15 @@ impl ProxyTask {
                 .insert(
                     proxy_id,
                     Channel {
-                        server_request_send,
-                        worker_result,
-                        wrapped_event,
+                        server_request_send: Some(server_request_send),
+                        open_state: restored_open_state,
                     },
                 )
                 .is_none(),
             "proxy driver used duplicate proxy id {proxy_id}"
         );
 
-        request_recv
+        Ok(request_recv)
     }
 
     async fn handle_revoke(&self, proxy_id: u64) {
@@ -603,9 +727,29 @@ impl ProxyTask {
     async fn run_proxy_actions(
         &self,
         send: mesh::Sender<TaggedStream<u64, mesh::Receiver<ChannelRequest>>>,
-        flush_recv: mesh::Receiver<Rpc<(), ()>>,
+        mut flush_recv: mesh::Receiver<FailableRpc<(), ()>>,
+        await_flush: bool,
     ) {
-        let mut pending_flush = None::<Rpc<(), ()>>;
+        // If requested, wait for an initial flush before processing any actions. This allows the
+        // caller to ensure that the initial set of offers are handled at a predictable time.
+        let mut pending_flush = None;
+        if await_flush {
+            tracing::trace!("waiting for initial flush");
+            let flush = match flush_recv.recv().await {
+                Ok(flush) => flush,
+                Err(err) => {
+                    tracing::error!(
+                        error = &err as &dyn std::error::Error,
+                        "flush channel closed before initial flush"
+                    );
+                    return;
+                }
+            };
+
+            tracing::debug!("initial flush received");
+            pending_flush = Some(flush);
+        }
+
         let mut flush_recv = Some(flush_recv);
         loop {
             let mut action_fut = pin!(self.proxy.next_action());
@@ -621,7 +765,7 @@ impl ProxyTask {
                         // actions pending, because the action future will check
                         // if the pending IOCTL completed (via its IO status
                         // block) when the future is polled.
-                        pending_flush.complete(());
+                        pending_flush.complete(Ok(()));
                     }
                     let Some(recv) = &mut flush_recv else {
                         break Poll::Pending;
@@ -662,9 +806,18 @@ impl ProxyTask {
                     offer,
                     incoming_event,
                     outgoing_event: _,
+                    device_order,
                 } => {
-                    if let Some(recv) = self.handle_offer(id, offer, incoming_event).await {
-                        send.send(TaggedStream::new(id, recv));
+                    match self
+                        .handle_offer(id, offer, incoming_event, device_order)
+                        .await
+                    {
+                        Ok(recv) => send.send(TaggedStream::new(id, recv)),
+                        Err(err) => {
+                            if let Some(pending_flush) = pending_flush.take() {
+                                pending_flush.fail(err);
+                            }
+                        }
                     }
                 }
                 ProxyAction::Revoke { id } => {
@@ -811,21 +964,25 @@ impl ProxyTask {
             tracing::trace!(?channel, "restoring channel");
             let key = channel.key();
             let channel_gpadls = gpadls.iter().filter_map(|g| {
-                (g.channel_id == channel.channel_id()).then_some(Gpadl {
-                    gpadl_id: g.id,
-                    range_count: g.count.into(),
-                    range_buffer: &g.buf,
-                })
+                (g.channel_id == channel.channel_id() && matches!(g.state, GpadlState::Accepted))
+                    .then_some(Gpadl {
+                        gpadl_id: g.id,
+                        range_count: g.count.into(),
+                        range_buffer: &g.buf,
+                    })
             });
 
-            let open_params = channel.open_request().map(|request| {
-                VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS {
-                    RingBufferGpadlHandle: request.ring_buffer_gpadl_id.0,
-                    DownstreamRingBufferPageOffset: request.downstream_ring_buffer_page_offset,
-                    NodeNumber: 0, // BUGBUG: NUMA
-                    Padding: 0,
-                }
-            });
+            let open_params =
+                channel
+                    .open_request()
+                    .map(|request| VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS {
+                        RingBufferGpadlHandle: request.ring_buffer_gpadl_id.0,
+                        DownstreamRingBufferPageOffset: request.downstream_ring_buffer_page_offset,
+                        NodeNumber: self
+                            .vp_to_physical_node_map
+                            .get_numa_node(request.target_vp),
+                        Padding: 0,
+                    });
 
             let proxy_id = self
                 .proxy
@@ -964,7 +1121,9 @@ async fn proxy_thread(
     proxy: VmbusProxy,
     server: ProxyServerInfo,
     vtl2_server: Option<ProxyServerInfo>,
-    flush_recv: mesh::Receiver<Rpc<(), ()>>,
+    flush_recv: mesh::Receiver<FailableRpc<(), ()>>,
+    await_flush: bool,
+    vp_to_physical_node_map: Vec<u16>,
 ) {
     // Separate the hvsocket relay channels.
     let (hvsock_request_recv, hvsock_response_send) = server
@@ -998,8 +1157,9 @@ async fn proxy_thread(
         hvsock_response_send,
         vtl2_hvsock_response_send,
         Arc::clone(&proxy),
+        VpToPhysicalNodeMap(vp_to_physical_node_map),
     ));
-    let offers = task.run_proxy_actions(send, flush_recv);
+    let offers = task.run_proxy_actions(send, flush_recv, await_flush);
     let requests = task.run_server_requests(
         spawner,
         recv,

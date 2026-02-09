@@ -89,6 +89,7 @@ impl SnpHardwareContext {
                 vmsa.sev_features
                     .set_restrict_injection(injection_type == InjectionType::Restricted);
                 vmsa.sev_features.set_snp_btb_isolation(true);
+                vmsa.sev_features.set_ibpb_on_entry(true);
                 vmsa.sev_features.set_prevent_host_ibs(true);
                 vmsa.sev_features.set_vmsa_reg_prot(true);
                 vmsa.sev_features.set_vtom(false);

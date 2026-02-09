@@ -67,6 +67,35 @@ pub mod user_facing {
 
     /// Helper method to streamline request validation in cases where a value is
     /// expected to be identical across all incoming requests.
+    ///
+    /// # Example: Request Aggregation Pattern
+    ///
+    /// When a node receives multiple requests, it often needs to ensure certain
+    /// values are consistent across all requests. This helper simplifies that pattern:
+    ///
+    /// ```rust,ignore
+    /// fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+    ///     let mut version = None;
+    ///     let mut ensure_installed = Vec::new();
+    ///
+    ///     for req in requests {
+    ///         match req {
+    ///             Request::Version(v) => {
+    ///                 // Ensure all requests agree on the version
+    ///                 same_across_all_reqs("Version", &mut version, v)?;
+    ///             }
+    ///             Request::EnsureInstalled(v) => {
+    ///                 ensure_installed.push(v);
+    ///             }
+    ///         }
+    ///     }
+    ///
+    ///     let version = version.ok_or(anyhow::anyhow!("Missing required request: Version"))?;
+    ///
+    ///     // ... emit steps using aggregated requests
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn same_across_all_reqs<T: PartialEq>(
         req_name: &str,
         var: &mut Option<T>,
@@ -102,6 +131,20 @@ pub mod user_facing {
         }
 
         Ok(())
+    }
+
+    /// Helper method to handle Linux distros that are supported only on one
+    /// host architecture.
+    /// match_arch!(var, arch, result)
+    #[macro_export]
+    macro_rules! match_arch {
+        ($host_arch:expr, $match_arch:pat, $expr:expr) => {
+            if matches!($host_arch, $match_arch) {
+                $expr
+            } else {
+                anyhow::bail!("Linux distro not supported on host arch {}", $host_arch);
+            }
+        };
     }
 }
 
@@ -908,6 +951,10 @@ pub enum FlowPlatformLinuxDistro {
     Fedora,
     /// Ubuntu (including WSL2)
     Ubuntu,
+    /// Arch Linux (including WSL2)
+    Arch,
+    /// Nix environment (detected via IN_NIX_SHELL env var or having a `/nix/store` in PATH)
+    Nix,
     /// An unknown distribution
     Unknown,
 }
@@ -2398,11 +2445,11 @@ mod node_luts {
             for crate::node::private::FlowNodeMeta {
                 module_path,
                 ctor: _,
-                get_typeid,
+                typeid,
             } in crate::node::private::FLOW_NODES
             {
                 let existing = lookup.insert(
-                    NodeHandle(get_typeid()),
+                    NodeHandle(*typeid),
                     module_path
                         .strip_suffix("::_only_one_call_to_flowey_node_per_module")
                         .unwrap(),
@@ -2427,10 +2474,10 @@ mod node_luts {
             for crate::node::private::FlowNodeMeta {
                 module_path: _,
                 ctor,
-                get_typeid,
+                typeid,
             } in crate::node::private::FLOW_NODES
             {
-                let existing = lookup.insert(NodeHandle(get_typeid()), *ctor);
+                let existing = lookup.insert(NodeHandle(*typeid), *ctor);
                 // if this were to fire for an array where the key is a TypeId...
                 // something has gone _terribly_ wrong
                 assert!(existing.is_none())
@@ -2459,8 +2506,8 @@ mod node_luts {
 
         MODPATH_LOOKUP.get_or_init(|| {
             let mut lookup = HashMap::new();
-            for crate::node::private::FlowNodeMeta { module_path, ctor, get_typeid } in crate::node::private::FLOW_NODES {
-                let existing = lookup.insert(module_path.strip_suffix("::_only_one_call_to_flowey_node_per_module").unwrap(), (NodeHandle(get_typeid()), *ctor));
+            for crate::node::private::FlowNodeMeta { module_path, ctor, typeid } in crate::node::private::FLOW_NODES {
+                let existing = lookup.insert(module_path.strip_suffix("::_only_one_call_to_flowey_node_per_module").unwrap(), (NodeHandle(*typeid), *ctor));
                 if existing.is_some() {
                     panic!("conflicting node registrations at {module_path}! please ensure there is a single node per module!")
                 }
@@ -2477,8 +2524,7 @@ pub mod private {
     pub struct FlowNodeMeta {
         pub module_path: &'static str,
         pub ctor: fn() -> Box<dyn super::FlowNodeBase<Request = Box<[u8]>>>,
-        // FUTURE: there is a RFC to make this const
-        pub get_typeid: fn() -> std::any::TypeId,
+        pub typeid: std::any::TypeId,
     }
 
     #[linkme::distributed_slice]
@@ -2490,7 +2536,7 @@ pub mod private {
     static DUMMY_FLOW_NODE: FlowNodeMeta = FlowNodeMeta {
         module_path: "<dummy>::_only_one_call_to_flowey_node_per_module",
         ctor: || unreachable!(),
-        get_typeid: std::any::TypeId::of::<()>,
+        typeid: std::any::TypeId::of::<()>(),
     };
 }
 
@@ -2516,16 +2562,103 @@ macro_rules! new_flow_node_base {
                     $crate::node::private::FlowNodeMeta {
                         module_path: module_path!(),
                         ctor: new_erased,
-                        get_typeid: std::any::TypeId::of::<super::Node>,
+                        typeid: std::any::TypeId::of::<super::Node>(),
                     };
             };
         }
     };
 }
 
-/// TODO: clearly verbalize what a `FlowNode` encompasses
+/// A reusable unit of automation logic in flowey.
+///
+/// FlowNodes process requests, emit steps, and can depend on other nodes. They are
+/// the building blocks for creating complex automation workflows.
+///
+/// # The Node/Request Pattern
+///
+/// Every node has an associated **Request** type that defines what the node can do.
+/// Nodes receive a vector of requests and process them together, allowing for
+/// aggregation and conflict resolution.
+///
+/// # Example: Basic FlowNode Implementation
+///
+/// ```rust,ignore
+/// use flowey_core::node::*;
+///
+/// // Define the node
+/// new_flow_node!(struct Node);
+///
+/// // Define requests using the flowey_request! macro
+/// flowey_request! {
+///     pub enum Request {
+///         InstallRust(String),                    // Install specific version
+///         EnsureInstalled(WriteVar<SideEffect>),  // Ensure it's installed
+///         GetCargoHome(WriteVar<PathBuf>),        // Get CARGO_HOME path
+///     }
+/// }
+///
+/// impl FlowNode for Node {
+///     type Request = Request;
+///
+///     fn imports(ctx: &mut ImportCtx<'_>) {
+///         // Declare node dependencies
+///         ctx.import::<other_node::Node>();
+///     }
+///
+///     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+///         // 1. Aggregate and validate requests
+///         let mut version = None;
+///         let mut ensure_installed = Vec::new();
+///         let mut get_cargo_home = Vec::new();
+///
+///         for req in requests {
+///             match req {
+///                 Request::InstallRust(v) => {
+///                     same_across_all_reqs("version", &mut version, v)?;
+///                 }
+///                 Request::EnsureInstalled(var) => ensure_installed.push(var),
+///                 Request::GetCargoHome(var) => get_cargo_home.push(var),
+///             }
+///         }
+///
+///         let version = version.ok_or(anyhow::anyhow!("Version not specified"))?;
+///
+///         // 2. Emit steps to do the work
+///         ctx.emit_rust_step("install rust", |ctx| {
+///             let ensure_installed = ensure_installed.claim(ctx);
+///             let get_cargo_home = get_cargo_home.claim(ctx);
+///             move |rt| {
+///                 // Install rust with the specified version
+///                 // Write to all the output variables
+///                 for var in ensure_installed {
+///                     rt.write(var, &());
+///                 }
+///                 for var in get_cargo_home {
+///                     rt.write(var, &PathBuf::from("/path/to/cargo"));
+///                 }
+///                 Ok(())
+///             }
+///         });
+///
+///         Ok(())
+///     }
+/// }
+/// ```
+///
+/// # When to Use FlowNode vs SimpleFlowNode
+///
+/// **Use `FlowNode`** when you need to:
+/// - Aggregate multiple requests and process them together
+/// - Resolve conflicts between requests
+/// - Perform complex request validation
+///
+/// **Use [`SimpleFlowNode`]** when:
+/// - Each request can be processed independently
+/// - No aggregation logic is needed
 pub trait FlowNode {
-    /// TODO: clearly verbalize what a Request encompasses
+    /// The request type that defines what operations this node can perform.
+    ///
+    /// Use the [`crate::flowey_request!`] macro to define this type.
     type Request: Serialize + DeserializeOwned;
 
     /// A list of nodes that this node is capable of taking a dependency on.

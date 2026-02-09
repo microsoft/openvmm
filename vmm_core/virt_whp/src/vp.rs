@@ -386,7 +386,7 @@ impl<'a> WhpProcessor<'a> {
             let mut runner = self.current_whp().runner();
             let exit = runner
                 .run()
-                .map_err(|err| VpHaltReason::Hypervisor(WhpRunVpError(err).into()))?;
+                .map_err(|err| dev.fatal_error(WhpRunVpError(err).into()))?;
 
             // Clear lazy EOI before processing the exit.
             if lazy_eoi {
@@ -628,7 +628,7 @@ mod x86 {
                     &mut self.state.exits.other
                 }
                 ExitReason::InvalidVpRegisterValue => {
-                    return Err(VpHaltReason::InvalidVmState(InvalidVpState.into()));
+                    return Err(dev.fatal_error(InvalidVpState.into()));
                 }
                 ExitReason::Halt => {
                     self.handle_halt(exit);
@@ -855,7 +855,7 @@ mod x86 {
                         .vtl0_deferred_policy
                     {
                         LateMapVtl0MemoryPolicy::Halt => {
-                            return Err(VpHaltReason::InvalidVmState(DeferredRamAccess.into()));
+                            return Err(dev.fatal_error(DeferredRamAccess.into()));
                         }
                         LateMapVtl0MemoryPolicy::Log => {}
                         LateMapVtl0MemoryPolicy::InjectException => {
@@ -1477,9 +1477,6 @@ mod x86 {
                         )
                         .unwrap();
 
-                        let mut header = self.new_intercept_header(2, HvInterceptAccessType::WRITE);
-                        header.instruction_length_and_cr8 = 2;
-
                         if self.msr_write(dev, exit, rcx as u32, rax, rdx) {
                             return;
                         }
@@ -1490,9 +1487,6 @@ mod x86 {
                             .current_whp()
                             .get_register(whp::Register64::Rcx)
                             .unwrap();
-
-                        let mut header = self.new_intercept_header(2, HvInterceptAccessType::READ);
-                        header.instruction_length_and_cr8 = 2;
 
                         if self.msr_read(dev, exit, rcx as u32) {
                             return;
@@ -1809,7 +1803,7 @@ mod aarch64 {
                 ExceptionClass::DATA_ABORT_LOWER => {
                     let iss = IssDataAbort::from(syndrome.iss());
                     if !iss.isv() {
-                        return Err(VpHaltReason::EmulationFailure(
+                        return Err(dev.fatal_error(
                             anyhow::anyhow!("can't handle data abort without isv: {iss:?}").into(),
                         ));
                     }
@@ -1847,7 +1841,7 @@ mod aarch64 {
                         .unwrap();
                 }
                 ec => {
-                    return Err(VpHaltReason::EmulationFailure(
+                    return Err(dev.fatal_error(
                         anyhow::anyhow!("unknown memory access exception: {ec:?}").into(),
                     ));
                 }
@@ -1860,7 +1854,13 @@ mod aarch64 {
             match info.reset_type {
                 hvdef::HvArm64ResetType::POWER_OFF => VpHaltReason::PowerOff,
                 hvdef::HvArm64ResetType::REBOOT => VpHaltReason::Reset,
-                ty => unreachable!("unexpected reset type: {ty:?}",),
+                hvdef::HvArm64ResetType::HIBERNATE => VpHaltReason::Hibernate,
+                hvdef::HvArm64ResetType::SYSTEM_RESET => {
+                    // TODO: What values can it have?
+                    tracing::debug!(reset_code = info.reset_code, "system reset");
+                    VpHaltReason::Reset
+                }
+                ty => unreachable!("unknown reset type: {:#x?}, {:#x}", ty, info.reset_code),
             }
         }
 

@@ -46,6 +46,7 @@ use vmbus_async::async_dgram::AsyncRecv;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::ModifyRequest;
+use vmbus_channel::bus::OfferKey;
 use vmbus_channel::bus::OpenData;
 use vmbus_channel::gpadl::GpadlId;
 use vmbus_core::HvsockConnectRequest;
@@ -107,9 +108,13 @@ pub trait PollPostMessage: Send {
     ) -> Poll<()>;
 }
 
+#[derive(Inspect)]
 pub struct VmbusClient {
+    #[inspect(flatten, send = "TaskRequest::Inspect")]
     task_send: mesh::Sender<TaskRequest>,
+    #[inspect(skip)]
     access: VmbusClientAccess,
+    #[inspect(skip)]
     task: Task<ClientTask>,
 }
 
@@ -274,12 +279,6 @@ impl VmbusClient {
             msg_source: task.msg_source,
             msg_client: task.inner.messages.poster,
         }
-    }
-}
-
-impl Inspect for VmbusClient {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.task_send.send(TaskRequest::Inspect(req.defer()));
     }
 }
 
@@ -812,9 +811,13 @@ impl ClientTask {
     }
 
     fn handle_rescind(&mut self, rescind: protocol::RescindChannelOffer) -> TriedRelease {
-        tracing::info!(state = %self.state, channel_id = rescind.channel_id.0, "received rescind");
-
         let mut channel = self.channels.get_mut(rescind.channel_id);
+        tracing::info!(
+            state = %self.state,
+            channel_id = rescind.channel_id.0,
+            key = %OfferKey::from(&channel.offer),
+            "received rescind"
+        );
         let event_flag = match std::mem::replace(&mut channel.state, ChannelState::Revoked) {
             ChannelState::Offered => None,
             ChannelState::Opening {
@@ -900,13 +903,13 @@ impl ClientTask {
     }
 
     fn handle_open_result(&mut self, result: protocol::OpenResult) {
+        let mut channel = self.channels.get_mut(result.channel_id);
         tracing::debug!(
             channel_id = result.channel_id.0,
+            key = %OfferKey::from(&channel.offer),
             result = result.status,
             "received open result"
         );
-
-        let mut channel = self.channels.get_mut(result.channel_id);
 
         let channel_opened = result.status == protocol::STATUS_SUCCESS as u32;
         let old_state = std::mem::replace(&mut channel.state, ChannelState::Offered);
@@ -917,6 +920,7 @@ impl ClientTask {
         } = old_state
         else {
             tracing::warn!(
+                key = %OfferKey::from(&channel.offer),
                 old_state = ?channel.state,
                 channel_opened,
                 "invalid state for open result"
@@ -948,13 +952,14 @@ impl ClientTask {
             panic!("gpadl {:#x} not in teardown list", request.gpadl_id.0);
         };
 
+        let mut channel = self.channels.get_mut(channel_id);
         tracing::debug!(
             gpadl_id = request.gpadl_id.0,
             channel_id = channel_id.0,
+            key = %OfferKey::from(&channel.offer),
             "Received GpadlTorndown"
         );
 
-        let mut channel = self.channels.get_mut(channel_id);
         let gpadl_state = channel
             .gpadls
             .remove(&request.gpadl_id)
@@ -1110,7 +1115,12 @@ impl ClientTask {
             }
         }
 
-        tracing::info!(channel_id = channel_id.0, "opening channel on host");
+        tracing::info!(
+            channel_id = channel_id.0,
+            key = %OfferKey::from(&channel.offer),
+            "opening channel on host"
+        );
+
         let (request, rpc) = rpc.split();
         let open_data = &request.open_data;
 
@@ -1243,6 +1253,7 @@ impl ClientTask {
 
         tracing::trace!(
             channel_id = channel_id.0,
+            key = %OfferKey::from(&channel.offer),
             gpadl_id = request.id.0,
             count = request.count,
             len = request.buf.len(),
@@ -1288,6 +1299,7 @@ impl ClientTask {
             tracing::warn!(
                 gpadl_id = gpadl_id.0,
                 channel_id = channel_id.0,
+                key = %OfferKey::from(&channel.offer),
                 "Gpadl teardown for unknown gpadl or revoked channel"
             );
             return;
@@ -1298,6 +1310,7 @@ impl ClientTask {
                 tracing::warn!(
                     gpadl_id = gpadl_id.0,
                     channel_id = channel_id.0,
+                    key = %OfferKey::from(&channel.offer),
                     "gpadl teardown for offered gpadl"
                 );
             }
@@ -1390,6 +1403,7 @@ impl ClientTask {
         if let ChannelState::Opened { .. } = channel.state {
             tracing::warn!(
                 channel_id = channel_id.0,
+                key = %OfferKey::from(&channel.offer),
                 "Channel dropped without closing first"
             );
             self.inner.close_channel(channel_id, &mut channel);
@@ -1578,13 +1592,19 @@ impl ClientTaskInner {
             if let Some(flag) = redirected_event_flag {
                 self.synic.free_event_flag(flag);
             }
-            tracing::info!(channel_id = channel_id.0, "closing channel on host");
+            tracing::info!(
+                channel_id = channel_id.0,
+                key = %OfferKey::from(&channel.offer),
+                "closing channel on host"
+            );
+
             self.messages.send(&protocol::CloseChannel { channel_id });
             channel.state = ChannelState::Offered;
             channel.connection_id.store(0, Ordering::Release);
         } else {
             tracing::warn!(
-                id = %channel_id.0,
+                channel_id = channel_id.0,
+                key = %OfferKey::from(&channel.offer),
                 channel_state = %channel.state,
                 "invalid channel state for close channel"
             );
@@ -1746,7 +1766,7 @@ struct TriedRelease(());
 
 impl ChannelRef<'_> {
     /// If the channel has been fully released (revoked, released by the client,
-    /// no pending requests), notifes the server and removes this channel from
+    /// no pending requests), notifies the server and removes this channel from
     /// the map.
     fn try_release(self, messages: &mut OutgoingMessages) -> TriedRelease {
         if self.is_client_released
@@ -1754,7 +1774,12 @@ impl ChannelRef<'_> {
             && self.pending_request().is_none()
         {
             let channel_id = *self.0.key();
-            tracelimit::info_ratelimited!(channel_id = channel_id.0, "releasing channel");
+            tracelimit::info_ratelimited!(
+                channel_id = channel_id.0,
+                key = %OfferKey::from(&self.offer),
+                "releasing channel"
+            );
+
             messages.send(&protocol::RelIdReleased { channel_id });
             self.0.remove();
         }

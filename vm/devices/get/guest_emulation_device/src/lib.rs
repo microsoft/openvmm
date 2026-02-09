@@ -16,13 +16,10 @@ pub mod resolver;
 #[cfg(feature = "test_utilities")]
 pub mod test_utilities;
 
-#[cfg(feature = "test_igvm_agent")]
-mod test_igvm_agent;
+pub use test_igvm_agent_lib::IgvmAgentAction;
+pub use test_igvm_agent_lib::IgvmAgentTestPlan;
+pub use test_igvm_agent_lib::IgvmAgentTestSetting;
 
-#[cfg(feature = "test_igvm_agent")]
-use crate::test_igvm_agent::IgvmAttestState;
-#[cfg(feature = "test_igvm_agent")]
-use crate::test_igvm_agent::TestIgvmAgent;
 use async_trait::async_trait;
 use core::mem::size_of;
 use disk_backend::Disk;
@@ -42,6 +39,7 @@ use get_protocol::SecureBootTemplateType;
 use get_protocol::StartVtl0Status;
 use get_protocol::UefiConsoleMode;
 use get_protocol::VmgsIoStatus;
+use get_protocol::dps_json::EfiDiagnosticsLogLevelType;
 use get_protocol::dps_json::GuestStateEncryptionPolicy;
 use get_protocol::dps_json::GuestStateLifetime;
 use get_protocol::dps_json::HclSecureBootTemplateId;
@@ -50,7 +48,6 @@ use get_protocol::dps_json::PcatBootDevice;
 use get_resources::ged::FirmwareEvent;
 use get_resources::ged::GuestEmulationRequest;
 use get_resources::ged::GuestServicingFlags;
-use get_resources::ged::IgvmAttestTestConfig;
 use get_resources::ged::ModifyVtl2SettingsError;
 use get_resources::ged::SaveRestoreError;
 use get_resources::ged::Vtl0StartError;
@@ -69,6 +66,7 @@ use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
 use std::io::IoSlice;
 use task_control::StopTask;
+use test_igvm_agent_lib::TestIgvmAgent;
 use thiserror::Error;
 use video_core::FramebufferControl;
 use vmbus_async::async_dgram::AsyncRecvExt;
@@ -112,9 +110,8 @@ enum Error {
     LargeDpsV2Unimplemented,
     #[error("invalid IGVM_ATTEST request")]
     InvalidIgvmAttestRequest,
-    #[cfg(feature = "test_igvm_agent")]
     #[error("test IGVM agent error")]
-    TestIgvmAgent(#[source] test_igvm_agent::Error),
+    TestIgvmAgent(#[source] test_igvm_agent_lib::Error),
     #[error("failed to write to shared memory")]
     SharedMemoryWriteFailed(#[source] guestmem::GuestMemoryError),
 }
@@ -134,6 +131,8 @@ pub struct GuestConfig {
     pub com1: bool,
     /// Enable COM2 for VTL0 and the VMBUS redirector in VTL2.
     pub com2: bool,
+    /// Only allow guest to host serial traffic
+    pub serial_tx_only: bool,
     /// Enable vmbus redirection.
     pub vmbus_redirection: bool,
     /// Enable the TPM.
@@ -159,6 +158,13 @@ pub struct GuestConfig {
     /// Management VTL feature flags
     #[inspect(debug)]
     pub management_vtl_features: ManagementVtlFeatures,
+    /// EFI diagnostics log level
+    #[inspect(debug)]
+    pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
+    /// Enable PPI-based SINT ACPI device for ARM64 Linux L1VH
+    pub hv_sint_enabled: bool,
+    /// Enable Azure HSM
+    pub azi_hsm_enabled: bool,
 }
 
 #[derive(Debug, Clone, Inspect)]
@@ -224,13 +230,13 @@ pub struct GuestEmulationDevice {
     save_restore_buf: Option<Vec<u8>>,
     last_save_restore_buf_len: usize,
 
-    #[inspect(skip)]
-    igvm_attest_test_config: Option<IgvmAttestTestConfig>,
+    igvm_agent_setting: Option<IgvmAgentTestSetting>,
 
-    #[cfg(feature = "test_igvm_agent")]
     /// Test agent implementation for `handle_igvm_attest`
     #[inspect(skip)]
     igvm_agent: TestIgvmAgent,
+
+    test_gsp_by_id: bool,
 }
 
 #[derive(Inspect)]
@@ -250,7 +256,8 @@ impl GuestEmulationDevice {
         guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         framebuffer_control: Option<Box<dyn FramebufferControl>>,
         vmgs_disk: Option<Disk>,
-        igvm_attest_test_config: Option<IgvmAttestTestConfig>,
+        igvm_agent_setting: Option<IgvmAgentTestSetting>,
+        test_gsp_by_id: bool,
     ) -> Self {
         Self {
             config,
@@ -265,13 +272,9 @@ impl GuestEmulationDevice {
             save_restore_buf: None,
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
-            #[cfg(feature = "test_igvm_agent")]
-            igvm_agent: TestIgvmAgent {
-                state: IgvmAttestState::Init,
-                secret_key: None,
-                des_key: None,
-            },
-            igvm_attest_test_config,
+            igvm_agent_setting,
+            igvm_agent: TestIgvmAgent::new(),
+            test_gsp_by_id,
         }
     }
 
@@ -577,7 +580,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                         ),
                         correlation_id: Guid::ZERO,
                         capabilities_flags: SaveGuestVtl2StateFlags::new()
-                            .with_enable_nvme_keepalive(rpc.input().nvme_keepalive),
+                            .with_enable_nvme_keepalive(rpc.input().nvme_keepalive)
+                            .with_enable_mana_keepalive(rpc.input().mana_keepalive),
                         timeout_hint_secs: 60,
                     };
 
@@ -618,7 +622,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 self.handle_guest_state_protection(message_buf)?
             }
             HostRequests::GUEST_STATE_PROTECTION_BY_ID => {
-                self.handle_guest_state_protection_by_id()?;
+                self.handle_guest_state_protection_by_id(state.test_gsp_by_id)?;
             }
             HostRequests::IGVM_ATTEST => self.handle_igvm_attest(message_buf, state)?,
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2 => {
@@ -846,12 +850,25 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         Ok(())
     }
 
-    fn handle_guest_state_protection_by_id(&mut self) -> Result<(), Error> {
-        let response = get_protocol::GuestStateProtectionByIdResponse {
+    fn handle_guest_state_protection_by_id(&mut self, test_gsp_by_id: bool) -> Result<(), Error> {
+        let mut response = get_protocol::GuestStateProtectionByIdResponse {
             message_header: HeaderGeneric::new(HostRequests::GUEST_STATE_PROTECTION_BY_ID),
             seed: GspCleartextContent::new_zeroed(),
-            extended_status_flags: GspExtendedStatusFlags::new().with_no_registry_file(true),
+            extended_status_flags: GspExtendedStatusFlags::new()
+                .with_no_registry_file(!test_gsp_by_id),
         };
+
+        if test_gsp_by_id {
+            const TEST_GSP_SEED_LEN: usize = 32;
+            const TEST_GSP_SEED: [u8; TEST_GSP_SEED_LEN] = [
+                0x94, 0xBD, 0x3A, 0xA5, 0xF4, 0x51, 0x97, 0x9F, 0x1A, 0x8B, 0x29, 0x41, 0x91, 0x90,
+                0x73, 0x1B, 0x30, 0xB0, 0x76, 0xEA, 0x6E, 0xDC, 0x1F, 0x8F, 0x22, 0xC7, 0x07, 0x57,
+                0x67, 0xCD, 0x87, 0x5B,
+            ];
+            response.seed.length = TEST_GSP_SEED_LEN as u32;
+            response.seed.buffer[..TEST_GSP_SEED_LEN].copy_from_slice(&TEST_GSP_SEED);
+        }
+
         self.channel
             .try_send(response.as_bytes())
             .map_err(Error::Vmbus)?;
@@ -865,7 +882,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
         state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
-        tracing::info!(test_config = ?state.igvm_attest_test_config, "Handle IGVM Attest request");
+        tracing::info!(test_setting = ?state.igvm_agent_setting, "Handle IGVM Attest request");
 
         let request = get_protocol::IgvmAttestRequest::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
@@ -880,21 +897,14 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         }
 
         let (response_payload, length) = {
-            #[cfg(feature = "test_igvm_agent")]
-            {
-                state
-                    .igvm_agent
-                    .handle_request(
-                        &request.report[..request.report_length as usize],
-                        state.igvm_attest_test_config.as_ref(),
-                    )
-                    .map_err(Error::TestIgvmAgent)?
+            if let Some(setting) = &state.igvm_agent_setting {
+                state.igvm_agent.install_plan_from_setting(setting);
             }
-            #[cfg(not(feature = "test_igvm_agent"))]
-            {
-                tracing::warn!("Test IGVM agent feature not enabled, returning empty response");
-                (&[][..], 0)
-            }
+
+            state
+                .igvm_agent
+                .handle_request(&request.report[..request.report_length as usize])
+                .map_err(Error::TestIgvmAgent)?
         };
 
         // Write the response payload to the guest's shared memory
@@ -1312,6 +1322,11 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 },
                 enable_battery: state.config.enable_battery,
                 console_mode: uefi_console_mode.unwrap_or(UefiConsoleMode::DEFAULT).0,
+                bios_guid: if state.test_gsp_by_id {
+                    guid::guid!("2b701019-2816-4a85-9692-3981f1af4423")
+                } else {
+                    Default::default()
+                },
                 ..Default::default()
             },
             v2: get_protocol::dps_json::HclDevicePlatformSettingsV2 {
@@ -1341,6 +1356,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     guest_state_lifetime: state.config.guest_state_lifetime,
                     guest_state_encryption_policy: state.config.guest_state_encryption_policy,
                     management_vtl_features: state.config.management_vtl_features,
+                    efi_diagnostics_log_level: state.config.efi_diagnostics_log_level,
+                    hv_sint_enabled: state.config.hv_sint_enabled,
+                    azi_hsm_enabled: state.config.azi_hsm_enabled,
                 },
                 dynamic: get_protocol::dps_json::HclDevicePlatformSettingsV2Dynamic {
                     is_servicing_scenario: state.save_restore_buf.is_some(),

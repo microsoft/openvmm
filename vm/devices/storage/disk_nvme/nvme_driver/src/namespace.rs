@@ -11,12 +11,13 @@ use crate::driver::save_restore::SavedNamespaceData;
 use crate::queue_pair::Issuer;
 use crate::queue_pair::RequestError;
 use crate::queue_pair::admin_cmd;
+use futures::StreamExt;
 use guestmem::GuestMemory;
 use guestmem::ranges::PagedRange;
 use inspect::Inspect;
-use mesh::CancelContext;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
@@ -41,6 +42,32 @@ pub enum NamespaceError {
     Request(#[source] RequestError),
     #[error("maximum data transfer size too small: 2^{0} pages")]
     MdtsInvalid(u8),
+    #[error("requesting a duplicate namespace: {0}")]
+    Duplicate(u32),
+}
+
+/// A thin Namespace wrapper to revoke cloning permissions on `Arc<Namespace>`.
+/// This type allows the nvme_driver to force system-wide single-ownership
+/// semantics for `Namespace` objects.
+/// Because the end-user can no longer call namespace.clone(), `weak.upgrade()` can
+/// safely be used to determine when a Namespace is no longer in use by the disk.
+#[derive(Debug, Inspect)]
+pub struct NamespaceHandle {
+    namespace: Arc<Namespace>,
+}
+
+impl NamespaceHandle {
+    /// Creates a new handle
+    pub fn new(namespace: Arc<Namespace>) -> Self {
+        Self { namespace }
+    }
+}
+
+impl Deref for NamespaceHandle {
+    type Target = Namespace;
+    fn deref(&self) -> &Self::Target {
+        &self.namespace
+    }
 }
 
 /// An NVMe namespace.
@@ -56,8 +83,6 @@ pub struct Namespace {
     controller_identify: Arc<spec::IdentifyController>,
     #[inspect(skip)]
     issuers: Arc<IoIssuers>,
-    #[inspect(skip)]
-    _cancel_rescan: mesh::Cancel,
 }
 
 #[derive(Debug, Inspect)]
@@ -73,7 +98,7 @@ impl Namespace {
     pub(super) async fn new(
         driver: &VmTaskDriver,
         admin: Arc<Issuer>,
-        rescan_event: Arc<event_listener::Event>,
+        rescan_event: mesh::Receiver<()>,
         controller_identify: Arc<spec::IdentifyController>,
         io_issuers: &Arc<IoIssuers>,
         nsid: u32,
@@ -81,6 +106,13 @@ impl Namespace {
         let identify = identify_namespace(&admin, nsid)
             .await
             .map_err(NamespaceError::Request)?;
+
+        tracing::debug!(
+            "created namespace from identify nsid={}, nsze={}, nsguid={:?}",
+            nsid,
+            identify.nsze,
+            identify.nguid
+        );
 
         Namespace::new_from_identify(
             driver,
@@ -97,7 +129,7 @@ impl Namespace {
     fn new_from_identify(
         driver: &VmTaskDriver,
         admin: Arc<Issuer>,
-        rescan_event: Arc<event_listener::Event>,
+        rescan_event: mesh::Receiver<()>,
         controller_identify: Arc<spec::IdentifyController>,
         io_issuers: &Arc<IoIssuers>,
         nsid: u32,
@@ -150,19 +182,16 @@ impl Namespace {
             resize_event: Default::default(),
         });
 
-        // Spawn a task, but detach is so that it doesn't get dropped while NVMe
-        // request is in flight. Use a cancel context, whose cancel gets dropped
-        // when `self` gets dropped, so that it terminates after finishing any
-        // requests.
-        let (mut ctx, cancel_rescan) = CancelContext::new().with_cancel();
+        // NOTE: Detach `poll_for_rescans` task because its lifetime is not tied
+        // to that of the Namespace object. `poll_for_rescans` terminates when the sender of
+        // rescan_event is dropped. i.e. lifetime of this task is tied to the NvmeDriver
+        // & `handle_asynchronous_events` task within the driver. Because the
+        // driver stores references to Namespaces, this task will never outlive
+        // the Namespace object.
         driver
             .spawn(format!("nvme_poll_rescan_{nsid}"), {
                 let state = state.clone();
-                async move {
-                    state
-                        .poll_for_rescans(&mut ctx, &admin, nsid, &rescan_event)
-                        .await
-                }
+                async move { state.poll_for_rescans(&admin, nsid, rescan_event).await }
             })
             .detach();
 
@@ -175,7 +204,6 @@ impl Namespace {
             reservation_capabilities,
             controller_identify,
             issuers: io_issuers.clone(),
-            _cancel_rescan: cancel_rescan,
         })
     }
 
@@ -201,7 +229,7 @@ impl Namespace {
         1 << self.block_shift
     }
 
-    fn check_active(&self) -> Result<(), RequestError> {
+    pub fn check_active(&self) -> Result<(), RequestError> {
         if self.state.removed.load(Ordering::Relaxed) {
             // The namespace has been removed. Return invalid namespace even if
             // the namespace has returned to avoid accidentally accessing the
@@ -527,8 +555,6 @@ impl Namespace {
     /// Initially we will re-query namespace state after restore
     /// to avoid possible contention if namespace was changed
     /// during servicing.
-    /// TODO: Re-enable namespace save/restore once we confirm
-    /// that we can process namespace change AEN.
     pub fn save(&self) -> anyhow::Result<SavedNamespaceData> {
         Ok(SavedNamespaceData {
             nsid: self.nsid,
@@ -540,7 +566,7 @@ impl Namespace {
     pub(super) fn restore(
         driver: &VmTaskDriver,
         admin: Arc<Issuer>,
-        rescan_event: Arc<event_listener::Event>,
+        rescan_event: mesh::Receiver<()>,
         identify_ctrl: Arc<spec::IdentifyController>,
         io_issuers: &Arc<IoIssuers>,
         saved_state: &SavedNamespaceData,
@@ -562,16 +588,24 @@ impl Namespace {
 impl DynamicState {
     async fn poll_for_rescans(
         &self,
-        ctx: &mut CancelContext,
         admin: &Issuer,
         nsid: u32,
-        rescan_event: &event_listener::Event,
+        mut rescan_event: mesh::Receiver<()>,
     ) {
         loop {
-            let listen = rescan_event.listen();
-            tracing::debug!("rescan");
-            // Query again even the first time through the loop to make sure
-            // we didn't miss the initial rescan notification.
+            tracing::debug!("rescan task started nsid={}", nsid);
+
+            // This relies on a mesh channel so notifications will NOT be missed
+            // even if the task was not started when the first AEN was processed.
+            let event = rescan_event.next().await;
+
+            // Once the sender is dropped, no more repoll signals can be received so
+            // there is no point in continuing.
+            if event.is_none() {
+                tracing::debug!("rescan task exiting nsid={}", nsid);
+                break;
+            }
+
             match identify_namespace(admin, nsid).await {
                 Ok(identify) => {
                     if identify.nsze == 0 {
@@ -601,10 +635,6 @@ impl DynamicState {
                         "failed to query namespace during rescan"
                     );
                 }
-            }
-
-            if ctx.until_cancelled(listen).await.is_err() {
-                break;
             }
         }
     }

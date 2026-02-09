@@ -699,7 +699,7 @@ fn msg2<T: IntoBytes + Immutable>(
 }
 
 fn parse_str(v: &[u16], n: u32) -> anyhow::Result<String> {
-    if n % 2 != 0 {
+    if !n.is_multiple_of(2) {
         anyhow::bail!("invalid string length");
     }
     let v = v.get(..n as usize / 2).context("string length too large")?;

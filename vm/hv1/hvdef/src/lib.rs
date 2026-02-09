@@ -176,6 +176,7 @@ impl HvFeatures {
 }
 
 #[bitfield(u128)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvEnlightenmentInformation {
     pub use_hypercall_for_address_space_switch: bool,
     pub use_hypercall_for_local_flush: bool,
@@ -208,6 +209,16 @@ pub struct HvEnlightenmentInformation {
     #[bits(25)]
     _reserved1: u32,
     _reserved2: u32,
+}
+
+impl HvEnlightenmentInformation {
+    pub fn from_cpuid(cpuid: [u32; 4]) -> Self {
+        zerocopy::transmute!(cpuid)
+    }
+
+    pub fn into_cpuid(self) -> [u32; 4] {
+        zerocopy::transmute!(self)
+    }
 }
 
 #[bitfield(u128)]
@@ -307,6 +318,7 @@ open_enum! {
         HvCallCheckSparseGpaPageVtlAccess = 0x00D4,
         HvCallAcceptGpaPages = 0x00D9,
         HvCallModifySparseGpaPageHostVisibility = 0x00DB,
+        HvCallRestorePartitionTime = 0x0103,
         HvCallMemoryMappedIoRead = 0x0106,
         HvCallMemoryMappedIoWrite = 0x0107,
         HvCallPinGpaPageRanges = 0x0112,
@@ -1044,12 +1056,14 @@ pub mod hypercall {
     pub struct HvInterruptTargetFlags {
         pub multicast: bool,
         pub processor_set: bool,
-        #[bits(30)]
+        pub proxy_redirect: bool,
+        #[bits(29)]
         pub reserved: u32,
     }
 
     pub const HV_DEVICE_INTERRUPT_TARGET_MULTICAST: u32 = 1;
     pub const HV_DEVICE_INTERRUPT_TARGET_PROCESSOR_SET: u32 = 2;
+    pub const HV_DEVICE_INTERRUPT_TARGET_PROXY_REDIRECT: u32 = 4;
 
     pub const HV_GENERIC_SET_SPARSE_4K: u64 = 0;
     pub const HV_GENERIC_SET_ALL: u64 = 1;
@@ -1996,6 +2010,16 @@ pub mod hypercall {
         pub access_width: u32,
         pub reserved_z0: u32,
         pub data: [u8; HV_HYPERCALL_MMIO_MAX_DATA_LENGTH],
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct RestorePartitionTime {
+        pub partition_id: u64,
+        pub tsc_sequence: u32,
+        pub reserved: u32,
+        pub reference_time_in_100_ns: u64,
+        pub tsc: u64,
     }
 }
 
@@ -3022,7 +3046,7 @@ impl MessagePayload for HvX64HaltMessage {}
 pub struct HvArm64ResetInterceptMessage {
     pub header: HvArm64InterceptMessageHeader,
     pub reset_type: HvArm64ResetType,
-    pub padding: u32,
+    pub reset_code: u32,
 }
 
 impl MessagePayload for HvArm64ResetInterceptMessage {}
@@ -3032,6 +3056,8 @@ open_enum! {
     pub enum HvArm64ResetType: u32 {
         POWER_OFF = 0,
         REBOOT = 1,
+        SYSTEM_RESET = 2,
+        HIBERNATE = 3,
     }
 }
 
@@ -3138,8 +3164,11 @@ pub struct HvRegisterVsmCapabilities {
     pub install_intercept_ex: bool,
     /// Only available in VTL2.
     pub intercept_system_reset_available: bool,
-    #[bits(31)]
-    pub reserved: u64,
+    #[bits(1)]
+    pub reserved1: u8,
+    pub proxy_interrupt_redirect_available: bool,
+    #[bits(29)]
+    pub reserved2: u64,
 }
 
 #[bitfield(u64)]

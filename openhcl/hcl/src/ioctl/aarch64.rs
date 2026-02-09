@@ -7,15 +7,21 @@ use super::Hcl;
 use super::HclVp;
 use super::NoRunner;
 use super::ProcessorRunner;
+use super::TranslateGvaToGpaError;
+use super::TranslateResult;
 use crate::GuestVtl;
 use crate::protocol::hcl_cpu_context_aarch64;
+use hvdef::HV_PARTITION_ID_SELF;
+use hvdef::HV_VP_INDEX_SELF;
 use hvdef::HvAarch64RegisterPage;
 use hvdef::HvArm64RegisterName;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
+use hvdef::HypercallCode;
 use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use thiserror::Error;
+use zerocopy::FromZeros;
 
 /// Result when the translate gva hypercall returns a code indicating
 /// the translation was unsuccessful.
@@ -68,6 +74,61 @@ impl<'a> ProcessorRunner<'a, MshvArm64<'a>> {
         // hypervisor while this VP is in VTL2.
         unsafe { &mut *(&raw mut (*self.run.get()).context).cast() }
     }
+
+    /// Translate the following gva to a gpa page.
+    ///
+    /// The caller must ensure `control_flags.input_vtl()` is set to a specific
+    /// VTL.
+    pub fn translate_gva_to_gpa(
+        &self,
+        gva: u64,
+        control_flags: hvdef::hypercall::TranslateGvaControlFlagsArm64,
+    ) -> Result<Result<TranslateResult, TranslateErrorAarch64>, TranslateGvaToGpaError> {
+        use hvdef::hypercall;
+
+        assert!(
+            control_flags.input_vtl().use_target_vtl(),
+            "did not specify a target VTL"
+        );
+
+        let gvn = gva >> hvdef::HV_PAGE_SHIFT;
+        let header = hypercall::TranslateVirtualAddressArm64 {
+            partition_id: HV_PARTITION_ID_SELF,
+            vp_index: HV_VP_INDEX_SELF,
+            reserved: 0,
+            control_flags,
+            gva_page: gvn,
+        };
+
+        let mut output: hypercall::TranslateVirtualAddressExOutputArm64 = FromZeros::new_zeroed();
+
+        // SAFETY: The input header and slice are the correct types for this hypercall.
+        //         The hypercall output is validated right after the hypercall is issued.
+        let status = unsafe {
+            self.hcl
+                .mshv_hvcall
+                .hvcall(
+                    HypercallCode::HvCallTranslateVirtualAddressEx,
+                    &header,
+                    &mut output,
+                )
+                .expect("translate can never fail")
+        };
+
+        status
+            .result()
+            .map_err(|hv_error| TranslateGvaToGpaError::Hypervisor { gva, hv_error })?;
+
+        // Note: WHP doesn't currently support TranslateVirtualAddressEx, so overlay_page, cache_type,
+        // event_info aren't trustworthy values if the results came from WHP.
+        match output.translation_result.result.result_code() {
+            c if c == hypercall::TranslateGvaResultCode::SUCCESS.0 => Ok(Ok(TranslateResult {
+                gpa_page: output.gpa_page,
+                overlay_page: output.translation_result.result.overlay_page(),
+            })),
+            x => Ok(Err(TranslateErrorAarch64 { code: x })),
+        }
+    }
 }
 
 impl<'a> super::BackingPrivate<'a> for MshvArm64<'a> {
@@ -86,7 +147,7 @@ impl<'a> super::BackingPrivate<'a> for MshvArm64<'a> {
         vtl: GuestVtl,
         name: HvRegisterName,
         value: HvRegisterValue,
-    ) -> Result<bool, super::Error> {
+    ) -> bool {
         // Try to set the register in the CPU context, the fastest path. Only
         // VTL-shared registers can be set this way: the CPU context only
         // exposes the last VTL, and if we entered VTL2 on an interrupt,
@@ -135,7 +196,7 @@ impl<'a> super::BackingPrivate<'a> for MshvArm64<'a> {
             _ => false,
         };
         if set {
-            return Ok(true);
+            return true;
         }
 
         if let Some(reg_page) = runner.reg_page_mut() {
@@ -164,12 +225,11 @@ impl<'a> super::BackingPrivate<'a> for MshvArm64<'a> {
                     _ => false,
                 };
                 if set {
-                    return Ok(true);
+                    return true;
                 }
             }
         };
-
-        Ok(false)
+        false
     }
 
     fn must_flush_regs_on(_runner: &ProcessorRunner<'a, Self>, _name: HvRegisterName) -> bool {
@@ -180,7 +240,7 @@ impl<'a> super::BackingPrivate<'a> for MshvArm64<'a> {
         runner: &ProcessorRunner<'a, Self>,
         vtl: GuestVtl,
         name: HvRegisterName,
-    ) -> Result<Option<HvRegisterValue>, super::Error> {
+    ) -> Option<HvRegisterValue> {
         // Try to get the register from the CPU context, the fastest path.
         // NOTE: x18 is omitted here as it is managed by the hypervisor.
         let value = match name.into() {
@@ -219,7 +279,7 @@ impl<'a> super::BackingPrivate<'a> for MshvArm64<'a> {
             _ => None,
         };
         if value.is_some() {
-            return Ok(value);
+            return value;
         }
 
         if let Some(reg_page) = runner.reg_page() {
@@ -234,11 +294,11 @@ impl<'a> super::BackingPrivate<'a> for MshvArm64<'a> {
                     _ => None,
                 };
                 if value.is_some() {
-                    return Ok(value);
+                    return value;
                 }
             }
         };
-        Ok(None)
+        None
     }
 
     fn flush_register_page(runner: &mut ProcessorRunner<'a, Self>) {

@@ -52,7 +52,7 @@ impl DmaRegion {
 
     pub fn is_aligned_to(&self, align: usize) -> bool {
         assert!(align <= PAGE_SIZE64 as usize);
-        (self.start | self.len) % align == 0
+        (self.start | self.len).is_multiple_of(align)
     }
 
     pub fn range(&self) -> PagedRange<'_> {

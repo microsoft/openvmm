@@ -3,46 +3,6 @@
 
 //! x86_64 intrinsics.
 
-#![cfg_attr(minimal_rt, expect(clippy::missing_safety_doc))]
-
-/// Hand rolled implementation of memset.
-#[cfg(minimal_rt)]
-// SAFETY: The minimal_rt_build crate ensures that when this code is compiled
-// there is no libc for this to conflict with.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn memset(mut ptr: *mut u8, val: i32, len: usize) -> *mut u8 {
-    // SAFETY: The caller guarantees that the pointer and length are correct.
-    unsafe {
-        core::arch::asm!(r#"
-            cld
-            rep stosb
-            "#,
-            in("rax") val,
-            in("rcx") len,
-            inout("rdi") ptr);
-    }
-    ptr
-}
-
-/// Hand rolled implementation of memcpy.
-#[cfg(minimal_rt)]
-// SAFETY: The minimal_rt_build crate ensures that when this code is compiled
-// there is no libc for this to conflict with.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn memcpy(mut dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
-    // SAFETY: The caller guarantees that the pointers and length are correct.
-    unsafe {
-        core::arch::asm!(r#"
-            cld
-            rep movsb
-            "#,
-            in("rsi") src,
-            in("rcx") len,
-            inout("rdi") dest);
-    }
-    dest
-}
-
 /// Causes a processor fault.
 pub fn fault() -> ! {
     // SAFETY: ud2 is always safe, and will cause the function to diverge.

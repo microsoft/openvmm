@@ -153,7 +153,7 @@ impl Ucs2LeSlice {
     /// Validate that the provided `&[u8]` is a valid null-terminated UCS-2 LE
     /// string, truncating the slice to the position of the first null u16.
     pub fn from_slice_with_nul(buf: &[u8]) -> Result<&Ucs2LeSlice, Ucs2ParseError> {
-        if buf.len() % 2 != 0 {
+        if !buf.len().is_multiple_of(2) {
             return Err(Ucs2ParseError::NotMultiple2);
         }
 

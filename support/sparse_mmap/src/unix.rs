@@ -95,7 +95,7 @@ impl SparseMapping {
     /// The range will be aligned to the largest system page size that's smaller
     /// or equal to `len`.
     pub fn new(len: usize) -> Result<Self, Error> {
-        super::initialize_try_copy();
+        trycopy::initialize_try_copy();
 
         // Length of 0 return an OS error, so we need to handle it explicitly.
         if len == 0 {
@@ -184,7 +184,7 @@ impl SparseMapping {
     fn validate_offset_len(&self, offset: usize, len: usize) -> io::Result<usize> {
         let end = offset.checked_add(len).ok_or(io::ErrorKind::InvalidInput)?;
         let page_size = page_size();
-        if offset % page_size != 0 || end % page_size != 0 || end > self.len {
+        if !offset.is_multiple_of(page_size) || !end.is_multiple_of(page_size) || end > self.len {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         Ok(end)

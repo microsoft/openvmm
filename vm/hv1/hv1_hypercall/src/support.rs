@@ -293,7 +293,7 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
                 }
 
                 // The buffer must be 8 byte aligned.
-                if len != 0 && gpa % 8 != 0 {
+                if len != 0 && !gpa.is_multiple_of(8) {
                     return Err(HvError::from(HypercallParseError::Unaligned));
                 }
 

@@ -40,7 +40,7 @@ impl AlignedGpadlView {
             return Err(gpadl);
         }
         let range = gpadl.first().unwrap();
-        if range.len() % ring::PAGE_SIZE != 0 || range.offset() != 0 {
+        if !range.len().is_multiple_of(ring::PAGE_SIZE) || range.offset() != 0 {
             return Err(gpadl);
         }
         let count = range.gpns().len() as u32;

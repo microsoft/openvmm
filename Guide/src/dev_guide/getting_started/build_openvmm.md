@@ -52,7 +52,7 @@ GitHub Issue tracker.
 
 **Error:**
 
-```
+```text
 error: failed to run custom build command for `inspect_proto v0.0.0 (/home/daprilik/src/openvmm/support/inspect_proto)`
 
 Caused by:
@@ -76,7 +76,7 @@ Please run `cargo xflowey restore-packages`, and try again.
 
 **Error:**
 
-```
+```text
 error[E0658]: use of unstable library feature 'absolute_path'
   --> flowey/flowey/src/lib.rs:37:17
    |

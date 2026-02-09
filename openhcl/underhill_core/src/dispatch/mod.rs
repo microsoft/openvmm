@@ -11,6 +11,7 @@ use crate::ControlRequest;
 use crate::emuplat::EmuplatServicing;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::nvme_manager::manager::NvmeManager;
+use crate::options::KeepAliveConfig;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -34,6 +35,7 @@ use hyperv_ic_resources::shutdown::ShutdownRpc;
 use hyperv_ic_resources::shutdown::ShutdownType;
 use igvm_defs::MemoryMapEntryType;
 use inspect::Inspect;
+use mana_driver::save_restore::ManaSavedState;
 use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
@@ -114,6 +116,8 @@ pub trait LoadedVmNetworkSettings: Inspect {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
+        keepalive_mode: KeepAliveConfig,
+        mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState>;
 
     /// Callback when network is removed externally.
@@ -127,6 +131,9 @@ pub trait LoadedVmNetworkSettings: Inspect {
         &self,
         mut params: PacketCaptureParams<Socket>,
     ) -> anyhow::Result<PacketCaptureParams<Socket>>;
+
+    /// Save the network state for restoration after servicing.
+    async fn save(&mut self) -> Option<Vec<ManaSavedState>>;
 }
 
 /// A VM that has been loaded and can be run.
@@ -160,7 +167,6 @@ pub(crate) struct LoadedVm {
     pub host_vmbus_relay: Option<VmbusRelayHandle>,
     // channels are revoked when dropped, so make sure to keep them alive
     pub _vmbus_devices: Vec<SpawnedUnit<ChannelUnit<dyn VmbusDevice>>>,
-    pub _vmbus_intercept_devices: Vec<mesh::OneshotSender<()>>,
     pub _ide_accel_devices: Vec<SpawnedUnit<ChannelUnit<storvsp::StorageDevice>>>,
     pub network_settings: Option<Box<dyn LoadedVmNetworkSettings>>,
     pub shutdown_relay: Option<(
@@ -169,7 +175,7 @@ pub(crate) struct LoadedVm {
     )>,
 
     pub vmgs: Option<(
-        vmgs_broker::VmgsThinClient,
+        vmgs_broker::VmgsClient,
         disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
         Task<()>,
     )>,
@@ -187,9 +193,12 @@ pub(crate) struct LoadedVm {
 
     pub _periodic_telemetry_task: Task<()>,
 
-    pub nvme_keep_alive: bool,
+    pub nvme_keep_alive: KeepAliveConfig,
+    pub mana_keep_alive: KeepAliveConfig,
     pub test_configuration: Option<TestScenarioConfig>,
     pub dma_manager: OpenhclDmaManager,
+    pub config_timeout_in_seconds: u64,
+    pub servicing_timeout_dump_collection_in_ms: u64,
 }
 
 pub struct LoadedVmState<T> {
@@ -228,6 +237,7 @@ impl LoadedVm {
                 device_config_send,
                 self.get_client.clone(),
                 self.device_interfaces.take().unwrap(),
+                self.config_timeout_in_seconds,
             );
 
             threadpool.spawn("VTL2 settings services", {
@@ -299,7 +309,10 @@ impl LoadedVm {
                     WorkerRpc::Restart(rpc) => {
                         let state = async {
                             let running = self.stop().await;
-                            match self.save(None, false).await {
+                            match self
+                                .save(None, KeepAliveConfig::Disabled, KeepAliveConfig::Disabled)
+                                .await
+                            {
                                 Ok(servicing_state) => Some((rpc, servicing_state)),
                                 Err(err) => {
                                     if running {
@@ -343,6 +356,7 @@ impl LoadedVm {
                         resp.field("vmbus_client", &self.vmbus_client);
                         resp.field("vmbus_filter", &self.vmbus_filter);
                         resp.field("vpci_relay", &self.vpci_relay);
+                        resp.field("mana_keepalive_mode", &self.mana_keep_alive);
                     }),
                 },
                 Event::Vtl2ConfigNicRpc(message) => {
@@ -364,7 +378,9 @@ impl LoadedVm {
                     UhVmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| {
                             let running = self.stop().await;
-                            let r = self.save(None, false).await;
+                            let r = self
+                                .save(None, KeepAliveConfig::Disabled, KeepAliveConfig::Disabled)
+                                .await;
                             if running {
                                 self.start(None).await;
                             }
@@ -391,11 +407,39 @@ impl LoadedVm {
                     // Explicitly destructure the message for easier tracking of its changes.
                     let GuestSaveRequest {
                         correlation_id,
-                        deadline,
+                        timeout_hint,
                         capabilities_flags,
                     } = message;
+
+                    // If the host provided timeout hint is >= uint16::max
+                    // seconds, we treat that as a signal from the host that no
+                    // timeout duration was set. We instead limit servicing to
+                    // 200s in that case.
+                    let timeout_hint = if timeout_hint >= Duration::from_secs(u16::MAX as u64) {
+                        tracing::info!(
+                            CVM_ALLOWED,
+                            "host provided UINT16_MAX timeout hint, defaulting to 200s"
+                        );
+                        Duration::from_secs(200)
+                    } else {
+                        timeout_hint
+                    };
+
+                    let servicing_deadline = std::time::Instant::now() + timeout_hint;
+                    tracing::info!(
+                        CVM_ALLOWED,
+                        correlation_id = %correlation_id,
+                        timeout_hint_ms = timeout_hint.as_millis() as u64,
+                        servicing_deadline = ?servicing_deadline,
+                        "received servicing request from host"
+                    );
+
                     match self
-                        .handle_servicing_request(correlation_id, deadline, capabilities_flags)
+                        .handle_servicing_request(
+                            correlation_id,
+                            servicing_deadline,
+                            capabilities_flags,
+                        )
                         .await
                     {
                         Ok(true) => {
@@ -563,9 +607,53 @@ impl LoadedVm {
             anyhow::bail!("Servicing is not yet supported for isolated VMs");
         }
 
+        // Start a servicing timeout thread on its own executor in a new thread.
+        // Do this to avoid any tasks that may block the current threadpool
+        // executor, and drop the task when this function returns which will
+        // dismiss the timeout panic.
+        //
+        // This helps catch issues where save may hang, and allows the existing
+        // machinery to send the dump to the host when this process crashes.
+        // Note that we choose to not use a livedump call like the firmware
+        // watchdog handlers, as we expect any hang to be a fatal error for
+        // OpenHCL, whereas the firmware watchdog is a failure inside the guest,
+        // not necessarily inside OpenHCL.
+        let (_servicing_timeout_thread, timeout_driver) =
+            pal_async::DefaultPool::spawn_on_thread("servicing-timeout-executor");
+        let dump_collection_duration =
+            Duration::from_millis(self.servicing_timeout_dump_collection_in_ms);
+        let _servicing_timeout =
+            timeout_driver
+                .clone()
+                .spawn("servicing-timeout-task", async move {
+                    let mut timer = pal_async::timer::PolledTimer::new(&timeout_driver);
+                    // Subtract the configured dump collection duration from the
+                    // host provided timeout hint to allow for time for the dump
+                    // to be sent to the host before termination.
+                    //
+                    // This has a default value of 500ms - see
+                    // `OPENHCL_SERVICING_TIMEOUT_DUMP_COLLECTION_IN_MS`.
+                    let duration = deadline
+                        .checked_duration_since(std::time::Instant::now())
+                        .map(|d| d.saturating_sub(dump_collection_duration))
+                        .unwrap_or(Duration::from_secs(0));
+                    timer.sleep(duration).await;
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        "servicing operation timed out, triggering panic"
+                    );
+                    panic!("servicing operation timed out");
+                });
+
         // NOTE: This is set via the corresponding env arg, as this feature is
         // experimental.
-        let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
+        if !capabilities_flags.enable_nvme_keepalive() {
+            self.nvme_keep_alive = KeepAliveConfig::Disabled
+        };
+
+        if !capabilities_flags.enable_mana_keepalive() {
+            self.mana_keep_alive = KeepAliveConfig::Disabled
+        };
 
         // Do everything before the log flush under a span.
         let r = async {
@@ -580,7 +668,13 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
-            let mut state = self.save(Some(deadline), nvme_keepalive).await?;
+            let mut state = self
+                .save(
+                    Some(deadline),
+                    self.nvme_keep_alive.clone(),
+                    self.mana_keep_alive.clone(),
+                )
+                .await?;
             state.init_state.correlation_id = Some(correlation_id);
 
             // Unload any network devices.
@@ -588,7 +682,9 @@ impl LoadedVm {
                 if let Some(network_settings) = self.network_settings.as_mut() {
                     network_settings
                         .unload_for_servicing()
-                        .instrument(tracing::info_span!("shutdown_mana", CVM_ALLOWED, %correlation_id))
+                        .instrument(
+                            tracing::info_span!("shutdown_mana", CVM_ALLOWED, %correlation_id),
+                        )
                         .await;
                 }
             };
@@ -597,8 +693,13 @@ impl LoadedVm {
             let shutdown_nvme = async {
                 if let Some(nvme_manager) = self.nvme_manager.take() {
                     nvme_manager
-                        .shutdown(nvme_keepalive)
-                        .instrument(tracing::info_span!("shutdown_nvme_vfio", CVM_ALLOWED, %correlation_id, %nvme_keepalive))
+                        .shutdown(self.nvme_keep_alive.is_enabled())
+                        .instrument(tracing::info_span!(
+                            "shutdown_nvme_vfio",
+                            CVM_ALLOWED,
+                            correlation_id = %correlation_id,
+                            nvme_keep_alive_enabled = self.nvme_keep_alive.is_enabled()
+                        ))
                         .await;
                 }
             };
@@ -607,9 +708,24 @@ impl LoadedVm {
             // restart.
             let shutdown_pci = async {
                 pci_shutdown::shutdown_pci_devices()
-                    .instrument(tracing::info_span!("shutdown_pci_devices", CVM_ALLOWED, %correlation_id))
+                    .instrument(
+                        tracing::info_span!("shutdown_pci_devices", CVM_ALLOWED, %correlation_id),
+                    )
                     .await
             };
+
+            // Save the persisted state used by the next openhcl_boot.
+            // In the future, this could be extended to include other devices (e.g. MANA).
+            let nvme_vp_interrupt_state =
+                crate::nvme_manager::save_restore_helpers::nvme_interrupt_state(
+                    state.init_state.nvme_state.as_ref().map(|n| &n.nvme_state),
+                );
+
+            crate::loader::vtl2_config::write_persisted_info(
+                self.runtime_params.parsed_openhcl_boot(),
+                nvme_vp_interrupt_state,
+            )
+            .context("failed to write persisted info")?;
 
             let (r, (), ()) = (shutdown_pci, shutdown_mana, shutdown_nvme).join().await;
             r?;
@@ -742,17 +858,39 @@ impl LoadedVm {
     async fn save(
         &mut self,
         _deadline: Option<std::time::Instant>,
-        vf_keepalive_flag: bool,
+        nvme_keepalive_mode: KeepAliveConfig,
+        mana_keepalive_mode: KeepAliveConfig,
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
 
+        // Only save dma manager state if we are expected to keep VF devices
+        // alive across save. Otherwise, don't persist the state at all, as
+        // there should be no live DMA across save.
+        //
+        // This has to happen before saving the network state, otherwise its allocations
+        // are marked as Free and are unable to be restored.
+        let dma_manager_state =
+            if nvme_keepalive_mode.is_enabled() || mana_keepalive_mode.is_enabled() {
+                use vmcore::save_restore::SaveRestore;
+                Some(self.dma_manager.save().context("dma_manager save failed")?)
+            } else {
+                None
+            };
+
         // Only save NVMe state when there are NVMe controllers and keep alive
         // was enabled.
         let nvme_state = if let Some(n) = &self.nvme_manager {
-            n.save(vf_keepalive_flag)
-                .instrument(tracing::info_span!("nvme_manager_save", CVM_ALLOWED))
+            // DEVNOTE: A subtlety here is that the act of saving the NVMe state also causes the driver
+            // to enter a state where subsequent teardown operations will noop. There is a STRONG
+            // correlation between save/restore and keepalive.
+            n.save(nvme_keepalive_mode.is_enabled())
+                .instrument(tracing::info_span!(
+                    "nvme_manager_save",
+                    nvme_keepalive_mode = %nvme_keepalive_mode.is_enabled(),
+                    CVM_ALLOWED
+                ))
                 .await
                 .map(|s| NvmeSavedState { nvme_state: s })
         } else {
@@ -760,21 +898,20 @@ impl LoadedVm {
         };
 
         let units = self.save_units().await.context("state unit save failed")?;
+
+        let mana_state = if let Some(network_settings) = &mut self.network_settings
+            && mana_keepalive_mode.is_enabled()
+        {
+            network_settings.save().await
+        } else {
+            None
+        };
+
         let vmgs = if let Some((vmgs_thin_client, vmgs_disk_metadata, _)) = self.vmgs.as_ref() {
             Some((
                 vmgs_thin_client.save().await.context("vmgs save failed")?,
                 vmgs_disk_metadata.clone(),
             ))
-        } else {
-            None
-        };
-
-        // Only save dma manager state if we are expected to keep VF devices
-        // alive across save. Otherwise, don't persist the state at all, as
-        // there should be no live DMA across save.
-        let dma_manager_state = if vf_keepalive_flag {
-            use vmcore::save_restore::SaveRestore;
-            Some(self.dma_manager.save().context("dma_manager save failed")?)
         } else {
             None
         };
@@ -798,6 +935,7 @@ impl LoadedVm {
                 nvme_state,
                 dma_manager_state,
                 vmbus_client,
+                mana_state,
             },
             units,
         };
@@ -864,6 +1002,8 @@ impl LoadedVm {
                 &self.vmbus_server,
                 self.dma_manager.client_spawner(),
                 self.isolation.is_isolated(),
+                self.mana_keep_alive.clone(),
+                None, // No existing mana state
             )
             .await?;
 

@@ -297,7 +297,7 @@ impl IoApicDevice {
             redirection |= val & REDIRECTION_WRITE_MASK;
             irq.redirection = redirection.into();
 
-            tracing::debug!(n, entry = ?irq.redirection, "new redirection entry");
+            tracing::trace!(n, entry = ?irq.redirection, "new redirection entry");
 
             let request = irq.redirection.as_msi();
             if request != irq.registered_request {

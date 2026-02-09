@@ -8,9 +8,11 @@
 //! runtime, unlike measured config. Parameters provided by openhcl_boot are
 //! expected to be already validated by the bootloader.
 
+use crate::nvme_manager::save_restore_helpers::VPInterruptState;
 use anyhow::Context;
 use bootloader_fdt_parser::IsolationType;
 use bootloader_fdt_parser::ParsedBootDtInfo;
+use cvm_tracing::CVM_ALLOWED;
 use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use loader_defs::paravisor::PARAVISOR_CONFIG_PPTT_PAGE_INDEX;
@@ -21,8 +23,10 @@ use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_SIZE_PAGES;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_SIZE_PAGES;
 use loader_defs::paravisor::ParavisorMeasuredVtl2Config;
+use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
 use sparse_mmap::SparseMapping;
+use string_page_buf::StringBuffer;
 use vm_topology::memory::MemoryRangeWithNode;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -37,6 +41,9 @@ pub struct RuntimeParameters {
     pptt: Option<Vec<u8>>,
     cvm_cpuid_info: Option<Vec<u8>>,
     snp_secrets: Option<Vec<u8>>,
+    #[inspect(iter_by_index)]
+    bootshim_logs: Vec<String>,
+    bootshim_log_dropped: u16,
 }
 
 impl RuntimeParameters {
@@ -94,7 +101,6 @@ impl MeasuredVtl2Info {
     }
 }
 
-#[derive(Debug)]
 /// Map of the portion of memory that contains the VTL2 parameters to read.
 ///
 /// If configured, on drop this mapping zeroes out the specified config ranges.
@@ -105,49 +111,64 @@ struct Vtl2ParamsMap<'a> {
 }
 
 impl<'a> Vtl2ParamsMap<'a> {
-    fn new(config_ranges: &'a [MemoryRange], zero_on_drop: bool) -> anyhow::Result<Self> {
+    fn new_internal(
+        ranges: &'a [MemoryRange],
+        writeable: bool,
+        zero_on_drop: bool,
+    ) -> anyhow::Result<Self> {
         // No overlaps.
-        // TODO: Move this check to host_fdt_parser?
-        if let Some((l, r)) = config_ranges
+        if let Some((l, r)) = ranges
             .iter()
-            .zip(config_ranges.iter().skip(1))
+            .zip(ranges.iter().skip(1))
             .find(|(l, r)| r.start() < l.end())
         {
-            anyhow::bail!("vtl-boot-data range {r} overlaps {l}");
+            anyhow::bail!("range {r} overlaps {l}");
         }
 
-        tracing::trace!("boot_data_gpa_ranges {:x?}", config_ranges);
+        tracing::trace!("requested mapping ranges {:x?}", ranges);
 
-        let base = config_ranges
-            .first()
-            .context("no vtl-boot-data ranges")?
-            .start();
-        let size = config_ranges.last().unwrap().end() - base;
+        let base = ranges.first().context("no ranges")?.start();
+        let size = ranges.last().unwrap().end() - base;
 
-        let mapping =
-            SparseMapping::new(size as usize).context("failed to create a sparse mapping")?;
+        let mapping = SparseMapping::new(size as usize)
+            .context("failed to create a sparse mapping for vtl2params")?;
 
+        let writeable = writeable || zero_on_drop;
         let dev_mem = fs_err::OpenOptions::new()
             .read(true)
-            .write(zero_on_drop)
+            .write(writeable)
             .open("/dev/mem")?;
-        for range in config_ranges {
+        for range in ranges {
             mapping
                 .map_file(
                     (range.start() - base) as usize,
                     range.len() as usize,
                     dev_mem.file(),
                     range.start(),
-                    zero_on_drop,
+                    writeable,
                 )
                 .context("failed to memory map igvm parameters")?;
         }
 
         Ok(Self {
             mapping,
-            ranges: config_ranges,
+            ranges,
             zero_on_drop,
         })
+    }
+
+    fn new(config_ranges: &'a [MemoryRange], zero_on_drop: bool) -> anyhow::Result<Self> {
+        Self::new_internal(config_ranges, false, zero_on_drop)
+    }
+
+    // TODO: Consider not using /dev/mem and instead using mshv_vtl_low, which
+    // would require not describing the memory to the kernel in the E820 map.
+    fn new_writeable(ranges: &'a [MemoryRange]) -> anyhow::Result<Self> {
+        Self::new_internal(ranges, true, false)
+    }
+
+    fn write_at(&self, offset: usize, buf: &[u8]) -> anyhow::Result<()> {
+        Ok(self.mapping.write_at(offset, buf)?)
     }
 
     fn read_at(&self, offset: usize, buf: &mut [u8]) -> anyhow::Result<()> {
@@ -178,6 +199,91 @@ impl Drop for Vtl2ParamsMap<'_> {
             }
         }
     }
+}
+
+/// Write persisted info into the bootshim described persisted region.
+pub fn write_persisted_info(
+    parsed: &ParsedBootDtInfo,
+    interrupt_state: VPInterruptState,
+) -> anyhow::Result<()> {
+    use loader_defs::shim::PersistedStateHeader;
+    use loader_defs::shim::save_restore::MemoryEntry;
+    use loader_defs::shim::save_restore::MmioEntry;
+    use loader_defs::shim::save_restore::SavedState;
+
+    tracing::trace!(
+        protobuf_region = ?parsed.vtl2_persisted_protobuf_region,
+        "writing persisted protobuf"
+    );
+
+    let ranges = [parsed.vtl2_persisted_protobuf_region];
+    let mapping =
+        Vtl2ParamsMap::new_writeable(&ranges).context("failed to map persisted protobuf region")?;
+
+    let VPInterruptState {
+        vps_with_mapped_interrupts_no_io: cpus_with_mapped_interrupts_no_io,
+        vps_with_outstanding_io: cpus_with_outstanding_io,
+    } = interrupt_state;
+
+    // Create the serialized data to write.
+    let state = SavedState {
+        partition_memory: parsed
+            .partition_memory_map
+            .iter()
+            .filter_map(|r| match r {
+                bootloader_fdt_parser::AddressRange::Memory(memory) => Some(MemoryEntry {
+                    range: memory.range.range,
+                    vnode: memory.range.vnode,
+                    vtl_type: memory.vtl_usage,
+                    igvm_type: memory.igvm_type.into(),
+                }),
+                bootloader_fdt_parser::AddressRange::Mmio(_) => None,
+            })
+            .collect(),
+        partition_mmio: parsed
+            .partition_memory_map
+            .iter()
+            .filter_map(|r| match r {
+                bootloader_fdt_parser::AddressRange::Mmio(mmio) => Some(MmioEntry {
+                    range: mmio.range,
+                    vtl_type: match mmio.vtl {
+                        bootloader_fdt_parser::Vtl::Vtl0 => MemoryVtlType::VTL0_MMIO,
+                        bootloader_fdt_parser::Vtl::Vtl2 => MemoryVtlType::VTL2_MMIO,
+                    },
+                }),
+                bootloader_fdt_parser::AddressRange::Memory(_) => None,
+            })
+            .collect(),
+        cpus_with_mapped_interrupts_no_io,
+        cpus_with_outstanding_io,
+    };
+
+    let protobuf = mesh_protobuf::encode(state);
+    tracing::trace!(len = protobuf.len(), "persisted protobuf len");
+
+    mapping
+        .write_at(0, protobuf.as_bytes())
+        .context("failed to write persisted state protobuf")?;
+
+    tracing::trace!(
+        header_region = ?parsed.vtl2_persisted_header,
+        "writing persisted header"
+    );
+
+    let ranges = [parsed.vtl2_persisted_header];
+    let mapping =
+        Vtl2ParamsMap::new_writeable(&ranges).context("unable to map persisted header")?;
+
+    let header = PersistedStateHeader {
+        magic: PersistedStateHeader::MAGIC,
+        protobuf_base: parsed.vtl2_persisted_protobuf_region.start(),
+        protobuf_region_len: parsed.vtl2_persisted_protobuf_region.len(),
+        protobuf_payload_len: protobuf.len() as u64,
+    };
+
+    mapping.write_at(0, header.as_bytes())?;
+
+    Ok(())
 }
 
 /// Reads the VTL 2 parameters from the config region and VTL2 reserved region.
@@ -260,6 +366,45 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         }
     };
 
+    // Read bootshim logs.
+    let (bootshim_logs, bootshim_log_dropped) = {
+        let range = *parsed_openhcl_boot
+            .partition_memory_map
+            .iter()
+            .find(|range| range.vtl_usage() == MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER)
+            .context("no bootshim log buffer found")?
+            .range();
+        let ranges = &[range];
+        let mapping =
+            Vtl2ParamsMap::new(ranges, false).context("failed to map bootshim log buffer")?;
+
+        let mut raw = vec![0; range.len() as usize];
+        mapping
+            .read_at(0, raw.as_mut_slice())
+            .context("unable to read raw bootshim logs")?;
+
+        let buf = StringBuffer::from_existing(raw.as_mut_slice())
+            .context("bootshim buffer contents invalid")?;
+
+        let bootshim_log_dropped = buf.dropped_messages();
+        if bootshim_log_dropped != 0 {
+            tracing::warn!(
+                CVM_ALLOWED,
+                bootshim_log_dropped,
+                "bootshim logger dropped messages"
+            );
+        }
+
+        (
+            buf.contents().lines().map(|s| s.to_string()).collect(),
+            bootshim_log_dropped,
+        )
+    };
+
+    for line in &bootshim_logs {
+        tracing::info!(CVM_ALLOWED, line, "openhcl_boot log");
+    }
+
     let accepted_regions = if parsed_openhcl_boot.isolation != IsolationType::None {
         parsed_openhcl_boot.accepted_ranges.clone()
     } else {
@@ -288,6 +433,8 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         pptt,
         cvm_cpuid_info,
         snp_secrets,
+        bootshim_logs,
+        bootshim_log_dropped,
     };
 
     let measured_vtl2_info = MeasuredVtl2Info {

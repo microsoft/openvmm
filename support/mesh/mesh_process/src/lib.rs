@@ -242,9 +242,13 @@ async fn node_from_environment() -> anyhow::Result<Option<NodeResult>> {
 /// send.send(String::from("message for new process"));
 /// # })
 /// ```
+#[derive(Inspect)]
 pub struct Mesh {
+    #[inspect(rename = "name")]
     mesh_name: String,
+    #[inspect(flatten, send = "MeshRequest::Inspect")]
     request: mesh::Sender<MeshRequest>,
+    #[inspect(skip)]
     task: Task<()>,
 }
 
@@ -273,6 +277,7 @@ pub struct ProcessConfig {
     stderr: Option<File>,
     skip_worker_arg: bool,
     sandbox_profile: Option<Box<dyn SandboxProfile + Sync>>,
+    env_vars: Vec<(OsString, OsString)>,
 }
 
 impl ProcessConfig {
@@ -286,6 +291,7 @@ impl ProcessConfig {
             stderr: None,
             skip_worker_arg: false,
             sandbox_profile: None,
+            env_vars: Vec::new(),
         }
     }
 
@@ -302,6 +308,7 @@ impl ProcessConfig {
             stderr: None,
             skip_worker_arg: false,
             sandbox_profile: Some(sandbox_profile),
+            env_vars: Vec::new(),
         }
     }
 
@@ -329,6 +336,16 @@ impl ProcessConfig {
         I::Item: Into<OsString>,
     {
         self.process_args.extend(args.into_iter().map(|x| x.into()));
+        self
+    }
+
+    /// Adds environment variables when launching the process.
+    pub fn env<I>(mut self, env_vars: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<(OsString, OsString)>,
+    {
+        self.env_vars.extend(env_vars.into_iter().map(|x| x.into()));
         self
     }
 
@@ -371,12 +388,6 @@ struct NewHostParams {
     config: ProcessConfig,
     recv: mesh::local_node::Port,
     request_send: mesh::Sender<HostRequest>,
-}
-
-impl Inspect for Mesh {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.request.send(MeshRequest::Inspect(req.defer()));
-    }
 }
 
 impl Mesh {
@@ -547,10 +558,10 @@ impl MeshInner {
                                                         host.pid,
                                                     ),
                                                 })
-                                                .merge(inspect::adhoc(|req| {
-                                                    host.send
-                                                        .send(HostRequest::Inspect(req.defer()));
-                                                }));
+                                                .merge(inspect::send(
+                                                    &host.send,
+                                                    HostRequest::Inspect,
+                                                ));
                                         }),
                                     );
                                 }
@@ -654,6 +665,7 @@ impl MeshInner {
                 .stdout(process::Stdio::Null)
                 .handle(&invitation.directory)
                 .env(INVITATION_ENV_NAME, invitation_env)
+                .extend_env(config.env_vars)
                 .job(self.job.as_handle());
 
             if let Some(log_file) = config.stderr.as_ref() {

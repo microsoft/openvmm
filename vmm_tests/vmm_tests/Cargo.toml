@@ -18,17 +18,16 @@ harness = false
 petri_artifact_resolver_openvmm_known_paths.workspace = true
 petri_artifacts_vmm_test.workspace = true
 vmm_test_macros.workspace = true
+vmm_test_igvm_agent.workspace = true
 tmk_tests.workspace = true
 
 petri_artifacts_common.workspace = true
 petri.workspace = true
 
 get_resources.workspace = true
-hvlite_defs.workspace = true
-vtl2_settings_proto.workspace = true
+openvmm_defs.workspace = true
 disk_backend_resources.workspace = true
 hyperv_ic_resources.workspace = true
-hvdef.workspace = true
 net_backend_resources.workspace = true
 nvme_resources.workspace = true
 nvme_spec.workspace = true
@@ -37,28 +36,31 @@ scsidisk_resources.workspace = true
 storvsp_resources.workspace = true
 virtio_resources.workspace = true
 vm_resource.workspace = true
+disk_vhd1.workspace = true
 
 guid.workspace = true
 kmsg.workspace = true
 mesh.workspace = true
 pal.workspace = true
 pal_async.workspace = true
-safe_intrinsics.workspace = true
 unix_socket.workspace = true
-x86defs.workspace = true
+vmgs_resources.workspace = true
 
 anyhow.workspace = true
-cfg-if.workspace = true
 futures.workspace = true
 jiff.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+static_assertions.workspace = true
 
-hvlite_ttrpc_vmservice.workspace = true
+openvmm_ttrpc_vmservice.workspace = true
 
 mesh_rpc.workspace = true
 
 tempfile.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+pipette_client.workspace = true
+serde = { workspace = true, features = ["std"] }
 
 [lints]
 workspace = true

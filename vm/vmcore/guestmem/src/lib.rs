@@ -389,9 +389,9 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     ///
     /// Bitmap checks are performed under the [`rcu()`] RCU domain, with relaxed
     /// accesses. After a thread updates the bitmap to be more restrictive, it
-    /// must call [`minircu::global().synchronize()`] to ensure that all threads
-    /// see the update before taking any action that depends on the bitmap
-    /// update being visible.
+    /// must call [minircu::RcuDomain::synchronize()] on [`minircu::global()`]
+    /// to ensure that all threads see the update before taking any action that
+    /// depends on the bitmap update being visible.
     #[cfg(feature = "bitmap")]
     fn access_bitmap(&self) -> Option<BitmapInfo> {
         None
@@ -1235,7 +1235,7 @@ impl GuestMemory {
         // Skip this on miri even when there is a mapping, since the mapping may
         // never be accessed by the code under test.
         if imp.mapping().is_some() && !cfg!(miri) {
-            sparse_mmap::initialize_try_copy();
+            trycopy::initialize_try_copy();
         }
         Self::new_inner(debug_name.into(), imp, false)
     }
@@ -1277,8 +1277,8 @@ impl GuestMemory {
         region_size: u64,
         mut imps: Vec<Option<impl GuestMemoryAccess>>,
     ) -> Result<Self, MultiRegionError> {
-        // Install signal handlers on unix.
-        sparse_mmap::initialize_try_copy();
+        // Install signal handlers.
+        trycopy::initialize_try_copy();
 
         if !region_size.is_power_of_two() {
             return Err(MultiRegionError::NotPowerOfTwo(region_size));
@@ -1406,7 +1406,7 @@ impl GuestMemory {
         op: GuestMemoryOperation,
         err: GuestMemoryBackingError,
     ) -> GuestMemoryError {
-        let range = gpa_len.map(|(gpa, len)| (gpa..gpa.wrapping_add(len)));
+        let range = gpa_len.map(|(gpa, len)| gpa..gpa.wrapping_add(len));
         GuestMemoryError::new(&self.inner.debug_name, range, op, err)
     }
 
@@ -1532,7 +1532,7 @@ impl GuestMemory {
         gpa: u64,
         len: usize,
         mut param: P,
-        mut f: impl FnMut(&mut P, *mut u8) -> Result<T, sparse_mmap::MemoryError>,
+        mut f: impl FnMut(&mut P, *mut u8) -> Result<T, trycopy::MemoryError>,
         fallback: impl FnOnce(&mut P) -> Result<T, GuestMemoryBackingError>,
     ) -> Result<T, GuestMemoryBackingError> {
         let op = || {
@@ -1595,7 +1595,7 @@ impl GuestMemory {
                 // SAFETY: dest..dest+len is guaranteed to point to a reserved VA
                 // range, and src..src+len is guaranteed by the caller to be a valid
                 // buffer for reads.
-                unsafe { sparse_mmap::try_copy(src, dest, len) }
+                unsafe { trycopy::try_copy(src, dest, len) }
             },
             |()| {
                 // SAFETY: src..src+len is guaranteed by the caller to point to a valid
@@ -1649,7 +1649,7 @@ impl GuestMemory {
             (),
             |(), dest| {
                 // SAFETY: dest..dest+len is guaranteed to point to a reserved VA range.
-                unsafe { sparse_mmap::try_write_bytes(dest, val, len) }
+                unsafe { trycopy::try_write_bytes(dest, val, len) }
             },
             |()| self.inner.imp.fill_fallback(gpa, val, len),
         )
@@ -1677,7 +1677,7 @@ impl GuestMemory {
                 // SAFETY: src..src+len is guaranteed to point to a reserved VA
                 // range, and dest..dest+len is guaranteed by the caller to be a
                 // valid buffer for writes.
-                unsafe { sparse_mmap::try_copy(src, dest, len) }
+                unsafe { trycopy::try_copy(src, dest, len) }
             },
             |()| {
                 // SAFETY: dest..dest+len is guaranteed by the caller to point to a
@@ -1711,6 +1711,35 @@ impl GuestMemory {
         )
     }
 
+    /// Probes whether a write to guest memory at address `gpa` would succeed.
+    fn probe_write_inner(&self, gpa: u64) -> Result<(), GuestMemoryBackingError> {
+        self.run_on_mapping(
+            AccessType::Write,
+            gpa,
+            1,
+            (),
+            |(), dest| {
+                // SAFETY: dest is guaranteed to point to a reserved VA range.
+                // We perform a volatile read followed by write of the same value
+                // to check write accessibility without modifying the actual data.
+                unsafe {
+                    let value = trycopy::try_read_volatile(dest)?;
+                    trycopy::try_write_volatile(dest, &value)
+                }
+            },
+            |()| {
+                // Fallback: use compare_exchange_fallback to probe write access
+                let mut current = 0u8;
+                self.inner.imp.compare_exchange_fallback(
+                    gpa,
+                    std::slice::from_mut(&mut current),
+                    &[0u8],
+                )?;
+                Ok(())
+            },
+        )
+    }
+
     /// Writes an object to guest memory at address `gpa`.
     ///
     /// If the object is 1, 2, 4, or 8 bytes and the address is naturally
@@ -1738,7 +1767,7 @@ impl GuestMemory {
                 |(), dest| {
                     // SAFETY: dest..dest+len is guaranteed to point to
                     // a reserved VA range.
-                    unsafe { sparse_mmap::try_write_volatile(dest.cast(), b) }
+                    unsafe { trycopy::try_write_volatile(dest.cast(), b) }
                 },
                 |()| {
                     // SAFETY: b is a valid buffer for reads.
@@ -1777,7 +1806,7 @@ impl GuestMemory {
                     |(), dest| {
                         // SAFETY: dest..dest+len is guaranteed by the caller to be a valid
                         // buffer for writes.
-                        unsafe { sparse_mmap::try_compare_exchange(dest.cast(), current, new) }
+                        unsafe { trycopy::try_compare_exchange(dest.cast(), current, new) }
                     },
                     |()| {
                         let mut current = current;
@@ -1809,33 +1838,41 @@ impl GuestMemory {
         &self,
         gpa: u64,
     ) -> Result<T, GuestMemoryError> {
-        // Note that this is const, so the match below will compile out.
+        self.with_op(
+            Some((gpa, size_of::<T>() as u64)),
+            GuestMemoryOperation::Read,
+            || self.read_plain_inner(gpa),
+        )
+    }
+
+    fn read_plain_inner<T: FromBytes + Immutable + KnownLayout>(
+        &self,
+        gpa: u64,
+    ) -> Result<T, GuestMemoryBackingError> {
         let len = size_of::<T>();
-        self.with_op(Some((gpa, len as u64)), GuestMemoryOperation::Read, || {
-            self.run_on_mapping(
-                AccessType::Read,
-                gpa,
-                len,
-                (),
-                |(), src| {
-                    // SAFETY: src..src+len is guaranteed to point to a reserved VA
-                    // range.
-                    unsafe { sparse_mmap::try_read_volatile(src.cast::<T>()) }
-                },
-                |()| {
-                    let mut obj = std::mem::MaybeUninit::<T>::zeroed();
-                    // SAFETY: dest..dest+len is guaranteed by the caller to point to a
-                    // valid buffer for writes.
-                    unsafe {
-                        self.inner
-                            .imp
-                            .read_fallback(gpa, obj.as_mut_ptr().cast(), len)?;
-                    }
-                    // SAFETY: `obj` was fully initialized by `read_fallback`.
-                    Ok(unsafe { obj.assume_init() })
-                },
-            )
-        })
+        self.run_on_mapping(
+            AccessType::Read,
+            gpa,
+            len,
+            (),
+            |(), src| {
+                // SAFETY: src..src+len is guaranteed to point to a reserved VA
+                // range.
+                unsafe { trycopy::try_read_volatile(src.cast::<T>()) }
+            },
+            |()| {
+                let mut obj = std::mem::MaybeUninit::<T>::zeroed();
+                // SAFETY: dest..dest+len is guaranteed by the caller to point to a
+                // valid buffer for writes.
+                unsafe {
+                    self.inner
+                        .imp
+                        .read_fallback(gpa, obj.as_mut_ptr().cast(), len)?;
+                }
+                // SAFETY: `obj` was fully initialized by `read_fallback`.
+                Ok(unsafe { obj.assume_init() })
+            },
+        )
     }
 
     fn probe_page_for_lock(
@@ -1851,10 +1888,9 @@ impl GuestMemory {
         if with_kernel_access {
             self.inner.imp.expose_va(gpa, 1)?;
         }
-        let mut b = [0];
         // FUTURE: check the correct bitmap for the access type, which needs to
         // be passed in.
-        self.read_at_inner(gpa, &mut b)?;
+        self.read_plain_inner::<u8>(gpa)?;
         // SAFETY: the read_at call includes a check that ensures that
         // `gpa` is in the VA range.
         let page = unsafe { ptr.as_ptr().add(offset as usize) };
@@ -1885,13 +1921,25 @@ impl GuestMemory {
     pub fn probe_gpns(&self, gpns: &[u64]) -> Result<(), GuestMemoryError> {
         self.with_op(None, GuestMemoryOperation::Probe, || {
             for &gpn in gpns {
-                let mut b = [0];
-                self.read_at_inner(
+                self.read_plain_inner::<u8>(
                     gpn_to_gpa(gpn).map_err(GuestMemoryBackingError::gpn)?,
-                    &mut b,
                 )?;
             }
             Ok(())
+        })
+    }
+
+    /// Check if a given PagedRange is readable or not.
+    pub fn probe_gpn_readable_range(&self, range: &PagedRange<'_>) -> Result<(), GuestMemoryError> {
+        self.op_range(GuestMemoryOperation::Probe, range, move |addr, _r| {
+            self.read_plain_inner(addr)
+        })
+    }
+
+    /// Check if a given PagedRange is writable or not.
+    pub fn probe_gpn_writable_range(&self, range: &PagedRange<'_>) -> Result<(), GuestMemoryError> {
+        self.op_range(GuestMemoryOperation::Probe, range, move |addr, _r| {
+            self.probe_write_inner(addr)
         })
     }
 
@@ -1948,7 +1996,7 @@ impl GuestMemory {
             let mut byte_index = 0;
             let mut len = range.len();
             let mut page = 0;
-            if offset % PAGE_SIZE != 0 {
+            if !offset.is_multiple_of(PAGE_SIZE) {
                 let head_len = std::cmp::min(len, PAGE_SIZE - (offset % PAGE_SIZE));
                 let addr = gpn_to_gpa(gpns[page]).map_err(GuestMemoryBackingError::gpn)?
                     + offset as u64 % PAGE_SIZE64;
@@ -2457,6 +2505,7 @@ mod tests {
     use crate::PAGE_SIZE64;
     use crate::PageFaultAction;
     use crate::PageFaultError;
+    use crate::ranges::PagedRange;
     use sparse_mmap::SparseMapping;
     use std::ptr::NonNull;
     use std::sync::Arc;
@@ -2670,6 +2719,105 @@ mod tests {
         gm.read_plain::<u16>(PAGE_SIZE64 * 3 - 1).unwrap_err();
         gm.read_plain::<u8>(PAGE_SIZE64 * 3 - 1).unwrap();
         gm.write_plain::<u8>(PAGE_SIZE64 * 3 - 1, &0).unwrap_err();
+
+        // Test probe_gpn_writable_range with FaultingMapping
+        // FaultingMapping layout:
+        // - Page 0 (address 0 to PAGE_SIZE): unmapped, fails on access
+        // - Page 1 (address PAGE_SIZE to 2*PAGE_SIZE): writable
+        // - Pages 2-3 (address 2*PAGE_SIZE to 4*PAGE_SIZE): read-only
+        // - Page 4 and beyond: unmapped, fails on access
+
+        // Test 1: Probe unmapped page - should fail
+        let gpns = vec![0];
+        let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
+        assert!(gm.probe_gpn_writable_range(&range).is_err());
+
+        // Test 2: Probe writable page - should succeed
+        let gpns = vec![1];
+        let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
+        gm.probe_gpn_writable_range(&range).unwrap();
+
+        // Test 3: Probe read-only pages - should fail
+        let gpns = vec![2, 3];
+        let range = PagedRange::new(0, PAGE_SIZE * 2, &gpns).unwrap();
+        assert!(gm.probe_gpn_writable_range(&range).is_err());
+
+        // Test 4: Probe mixed access (writable + read-only) - should fail
+        let gpns = vec![1, 2];
+        let range = PagedRange::new(0, PAGE_SIZE * 2, &gpns).unwrap();
+        assert!(gm.probe_gpn_writable_range(&range).is_err());
+
+        // Test 5: Compare readable vs writable on read-only pages
+        let gpns = vec![2];
+        let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
+        gm.probe_gpn_readable_range(&range).unwrap(); // Should succeed
+        assert!(gm.probe_gpn_writable_range(&range).is_err()); // Should fail
+
+        // Test 6: Partial page range
+        let gpns = vec![1];
+        let range = PagedRange::new(100, 500, &gpns).unwrap();
+        gm.probe_gpn_writable_range(&range).unwrap();
+
+        // Test 7: Empty range - should succeed
+        let range = PagedRange::empty();
+        gm.probe_gpn_writable_range(&range).unwrap();
+
+        // Test probe_gpn_readable_range with FaultingMapping
+
+        // Test 8: Probe unmapped page for read - should fail
+        let gpns = vec![5];
+        let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
+        assert!(gm.probe_gpn_readable_range(&range).is_err());
+
+        // Test 9: Probe writable page for read - should succeed
+        let gpns = vec![1];
+        let range = PagedRange::new(0, PAGE_SIZE, &gpns).unwrap();
+        gm.probe_gpn_readable_range(&range).unwrap();
+
+        // Test 10: Probe mixed access (writable + read-only) for read - should succeed
+        let gpns = vec![1, 2];
+        let range = PagedRange::new(0, PAGE_SIZE * 2, &gpns).unwrap();
+        gm.probe_gpn_readable_range(&range).unwrap(); // Both pages are readable
+
+        // Test 11: Probe mixed access (unmapped + writable) for read - should fail
+        let gpns = vec![5, 1];
+        let range = PagedRange::new(0, PAGE_SIZE * 2, &gpns).unwrap();
+        assert!(gm.probe_gpn_readable_range(&range).is_err()); // Page 5 is unmapped
+
+        // Test 12: Probe mixed access (unmapped + read-only) for read - should fail
+        let gpns = vec![5, 2];
+        let range = PagedRange::new(0, PAGE_SIZE * 2, &gpns).unwrap();
+        assert!(gm.probe_gpn_readable_range(&range).is_err()); // Page 5 is unmapped
+
+        // Test 13: Partial page range for read on read-only pages
+        let gpns = vec![2];
+        let range = PagedRange::new(100, 500, &gpns).unwrap();
+        gm.probe_gpn_readable_range(&range).unwrap();
+
+        // Test 14: Partial page range for read on writable pages
+        let gpns = vec![1];
+        let range = PagedRange::new(200, 1000, &gpns).unwrap();
+        gm.probe_gpn_readable_range(&range).unwrap();
+
+        // Test 15: Empty range for read - should succeed
+        let range = PagedRange::empty();
+        gm.probe_gpn_readable_range(&range).unwrap();
+
+        // Test 16: Single byte read on read-only page
+        let gpns = vec![2];
+        let range = PagedRange::new(0, 1, &gpns).unwrap();
+        gm.probe_gpn_readable_range(&range).unwrap();
+
+        // Test 17: Single byte read on unmapped page
+        let gpns = vec![5];
+        let range = PagedRange::new(0, 1, &gpns).unwrap();
+        assert!(gm.probe_gpn_readable_range(&range).is_err());
+
+        // Test 18: Cross-boundary range on writable + read-only
+        let gpns = vec![1, 2, 3];
+        let range = PagedRange::new(PAGE_SIZE / 2, PAGE_SIZE * 2, &gpns).unwrap();
+        gm.probe_gpn_readable_range(&range).unwrap(); // All readable
+        assert!(gm.probe_gpn_writable_range(&range).is_err()); // Pages 2-3 not writable
     }
 
     #[test]

@@ -64,7 +64,7 @@ impl CpuSet {
     /// This is useful for parsing the output of `/sys/devices/system/cpu/topology`.
     pub fn set_mask_hex_string(&mut self, string_mask: &[u8]) -> Result<(), InvalidHexString> {
         let err = || InvalidHexString(String::from_utf8_lossy(string_mask).into_owned());
-        if string_mask.len() % 2 != 0 {
+        if !string_mask.len().is_multiple_of(2) {
             return Err(err());
         }
         let mask = string_mask
@@ -141,7 +141,7 @@ pub fn get_current_thread_affinity(cpu_set: &mut CpuSet) -> io::Result<()> {
 
 /// Returns the number of the processor the current thread was running on during the call to this function.
 pub fn get_cpu_number() -> u32 {
-    // SAFETY: Calling external code.
+    // SAFETY: Function has no preconditions.
     unsafe { libc::sched_getcpu() as u32 }
 }
 

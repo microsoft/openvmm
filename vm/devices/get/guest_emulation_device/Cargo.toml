@@ -8,16 +8,15 @@ rust-version.workspace = true
 
 [features]
 test_utilities = ["dep:disklayer_ram"]
-test_igvm_agent = ["dep:aes-kw", "dep:base64", "dep:sha1", "dep:sha2", "dep:rsa"]
 
 [dependencies]
 get_protocol.workspace = true
 get_resources.workspace = true
+test_igvm_agent_lib.workspace = true
 
 disk_backend.workspace = true
 disklayer_ram = { workspace = true, optional = true }
 guestmem.workspace = true
-openhcl_attestation_protocol.workspace = true
 power_resources.workspace = true
 scsi_buffers.workspace = true
 video_core.workspace = true
@@ -35,16 +34,11 @@ pal_async.workspace = true
 task_control.workspace = true
 tracelimit.workspace = true
 
-aes-kw = { workspace = true, optional = true }
-base64 = { workspace = true, optional = true }
 futures.workspace = true
 parking_lot.workspace = true
-serde_json.workspace = true
-sha1 = { workspace = true, optional = true }
-sha2 = { workspace = true, optional = true }
+serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
 jiff.workspace = true
-rsa = { workspace = true, optional = true }
 tracing.workspace = true
 zerocopy.workspace = true
 guid.workspace = true

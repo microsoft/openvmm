@@ -163,7 +163,7 @@ impl SynicPortAccess for SynicPorts {
         vtl: Vtl,
         vp: u32,
         sint: u8,
-    ) -> Result<Box<(dyn GuestMessagePort)>, vmcore::synic::HypervisorError> {
+    ) -> Result<Box<dyn GuestMessagePort>, vmcore::synic::HypervisorError> {
         Ok(Box::new(DirectGuestMessagePort {
             partition: Arc::clone(&self.partition),
             vtl,
@@ -180,7 +180,7 @@ impl SynicPortAccess for SynicPorts {
         sint: u8,
         flag: u16,
         _monitor_info: Option<MonitorInfo>,
-    ) -> Result<Box<(dyn GuestEventPort)>, vmcore::synic::HypervisorError> {
+    ) -> Result<Box<dyn GuestEventPort>, vmcore::synic::HypervisorError> {
         Ok(self.partition.new_guest_event_port(vtl, vp, sint, flag))
     }
 

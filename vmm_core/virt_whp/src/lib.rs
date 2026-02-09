@@ -542,6 +542,14 @@ impl virt::Partition for WhpPartition {
         Some(self.with_vtl(minimum_vtl).clone())
     }
 
+    #[cfg(guest_arch = "x86_64")]
+    fn as_signal_msi(
+        self: &Arc<Self>,
+        minimum_vtl: Vtl,
+    ) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
+        Some(self.with_vtl(minimum_vtl).clone())
+    }
+
     fn request_msi(&self, vtl: Vtl, request: MsiRequest) {
         if let Err(err) = self.inner.interrupt(vtl, request) {
             tracelimit::warn_ratelimited!(
@@ -707,6 +715,8 @@ pub enum Error {
     AcceptPages(#[source] anyhow::Error),
     #[error("invalid apic base")]
     InvalidApicBase(#[source] virt_support_apic::InvalidApicBase),
+    #[error("host does not support required cpu capabilities")]
+    Capabilities(virt::PartitionCapabilitiesError),
 }
 
 trait WhpResultExt<T> {
@@ -887,6 +897,10 @@ impl WhpPartitionInner {
         vtl0: VtlPartition,
         vtl2: Option<VtlPartition>,
     ) -> Result<Self, Error> {
+        // FUTURE: register cpuid results with the hypervisor, and register
+        // appropriate per-VP results where necessary (or tell the hypervisor
+        // the AMD topology information so that it can provide per-VP results
+        // accurately).
         #[cfg(guest_arch = "x86_64")]
         let cpuid = {
             use vm_topology::processor::x86::ApicMode;
@@ -1004,7 +1018,8 @@ impl WhpPartitionInner {
                         &[output.Eax, output.Ebx, output.Ecx, output.Edx],
                     )
                 },
-            );
+            )
+            .map_err(Error::Capabilities)?;
             caps.can_freeze_time = true;
             caps.xsaves_state_bv_broken = true;
             caps.dr6_tsx_broken = true;
@@ -1330,7 +1345,7 @@ impl VtlPartition {
                         features.bank0 |= F::AccessIntrCtrlRegs;
 
                         // BUG: this feature is required for running VTL2 w/ vmbus
-                        // under hvlite to avoid timer/vmbus sint contention
+                        // under OpenVMM to avoid timer/vmbus sint contention
                         features.bank0 |= F::DirectSyntheticTimers;
                     }
 

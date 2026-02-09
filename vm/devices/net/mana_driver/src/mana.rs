@@ -5,6 +5,7 @@
 
 pub use crate::bnic_driver::RxConfig;
 pub use crate::resources::ResourceArena;
+pub use crate::save_restore::ManaDeviceSavedState;
 
 use crate::bnic_driver::BnicDriver;
 use crate::bnic_driver::WqConfig;
@@ -33,6 +34,7 @@ use std::sync::Arc;
 use tracing::Instrument;
 use user_driver::DeviceBacking;
 use user_driver::DmaClient;
+use user_driver::DmaPool;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
@@ -48,17 +50,16 @@ enum LinkStatus {
 }
 
 /// A MANA device.
+#[derive(Inspect)]
 pub struct ManaDevice<T: DeviceBacking> {
+    #[inspect(skip)]
     inner: Arc<Inner<T>>,
+    #[inspect(skip)]
     inspect_task: Task<()>,
+    #[inspect(skip)]
     hwc_task: Option<Task<()>>,
+    #[inspect(flatten, send = "|x| x")]
     inspect_send: mesh::Sender<inspect::Deferred>,
-}
-
-impl<T: DeviceBacking> Inspect for ManaDevice<T> {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.inspect_send.send(req.defer());
-    }
 }
 
 struct Inner<T: DeviceBacking> {
@@ -68,6 +69,7 @@ struct Inner<T: DeviceBacking> {
     dev_config: ManaQueryDeviceCfgResp,
     doorbell: Arc<dyn Doorbell>,
     vport_link_status: Arc<Mutex<Vec<LinkStatus>>>,
+    vf_reconfig_sender: Arc<Mutex<Option<mesh::Sender<()>>>>,
 }
 
 impl<T: DeviceBacking> ManaDevice<T> {
@@ -77,10 +79,25 @@ impl<T: DeviceBacking> ManaDevice<T> {
         device: T,
         num_vps: u32,
         max_queues_per_vport: u16,
+        mana_state: Option<&ManaDeviceSavedState>,
     ) -> anyhow::Result<Self> {
-        let mut gdma = GdmaDriver::new(driver, device, num_vps)
-            .instrument(tracing::info_span!("new_gdma_driver"))
-            .await?;
+        let mut gdma = if let Some(mana_state) = mana_state {
+            let memory = device.dma_client().attach_pending_buffers()?;
+            let gdma_memory = memory
+                .iter()
+                .find(|m| m.pfns()[0] == mana_state.gdma.mem.base_pfn)
+                .expect("gdma restored memory not found")
+                .clone();
+
+            GdmaDriver::restore(mana_state.gdma.clone(), device, gdma_memory)
+                .instrument(tracing::info_span!("restore_gdma_driver"))
+                .await?
+        } else {
+            GdmaDriver::new(driver, device, num_vps, None)
+                .instrument(tracing::info_span!("new_gdma_driver"))
+                .await?
+        };
+
         gdma.test_eq().await?;
 
         gdma.verify_vf_driver_version().await?;
@@ -93,7 +110,15 @@ impl<T: DeviceBacking> ManaDevice<T> {
             .find(|dev_id| dev_id.ty == GdmaDevType::GDMA_DEVICE_MANA)
             .context("no mana device found")?;
 
-        let dev_data = gdma.register_device(dev_id).await?;
+        let dev_data = if let Some(mana_state) = mana_state {
+            GdmaRegisterDeviceResp {
+                pdid: mana_state.gdma.pdid,
+                gpa_mkey: mana_state.gdma.gpa_mkey,
+                db_id: mana_state.gdma.db_id as u32,
+            }
+        } else {
+            gdma.register_device(dev_id).await?
+        };
 
         let mut bnic = BnicDriver::new(&mut gdma, dev_id);
         let dev_config = bnic.query_dev_config().await?;
@@ -112,6 +137,7 @@ impl<T: DeviceBacking> ManaDevice<T> {
             dev_config,
             doorbell,
             vport_link_status: Arc::new(Mutex::new(vport_link_status)),
+            vf_reconfig_sender: Arc::new(Mutex::new(None)),
         });
 
         let (inspect_send, mut inspect_recv) = mesh::channel::<inspect::Deferred>();
@@ -126,6 +152,7 @@ impl<T: DeviceBacking> ManaDevice<T> {
                         dev_config: _,
                         doorbell: _,
                         vport_link_status: _,
+                        vf_reconfig_sender: _,
                     } = inner.as_ref();
                     let gdma = gdma.lock().await;
                     deferred.respond(|resp| {
@@ -142,6 +169,28 @@ impl<T: DeviceBacking> ManaDevice<T> {
             hwc_task: None,
         };
         Ok(device)
+    }
+
+    /// Saves the device's state for servicing
+    pub async fn save(self) -> (anyhow::Result<ManaDeviceSavedState>, T) {
+        self.inspect_task.cancel().await;
+        if let Some(hwc_task) = self.hwc_task {
+            hwc_task.cancel().await;
+        }
+        let inner = Arc::into_inner(self.inner).unwrap();
+        let mut driver = inner.gdma.into_inner();
+
+        if let Ok(saved_state) = driver.save().await {
+            let mana_saved_state = ManaDeviceSavedState { gdma: saved_state };
+
+            (Ok(mana_saved_state), driver.into_device())
+        } else {
+            tracing::error!("Failed to save MANA device state");
+            (
+                Err(anyhow::anyhow!("Failed to save MANA device state")),
+                driver.into_device(),
+            )
+        }
     }
 
     /// Returns the number of vports the device supports.
@@ -189,6 +238,11 @@ impl<T: DeviceBacking> ManaDevice<T> {
                                 );
                             }
                         }
+                        if gdma.get_vf_reconfiguration_pending() {
+                            if let Some(sender) = inner.vf_reconfig_sender.lock().await.as_ref() {
+                                sender.send(());
+                            }
+                        }
                     }
                 }
             }
@@ -228,6 +282,20 @@ impl<T: DeviceBacking> ManaDevice<T> {
         }
 
         Ok(vport)
+    }
+
+    /// Subscribes to VF reconfiguration events.
+    /// Returned receiver will receive a message on VF reconfiguration events.
+    pub async fn subscribe_vf_reconfig(&self) -> mesh::Receiver<()> {
+        tracing::debug!("subscribing to VF reconfiguration events");
+        let mut vf_reconfig_sender = self.inner.vf_reconfig_sender.lock().await;
+        assert!(
+            vf_reconfig_sender.is_none(),
+            "multiple VF reconfiguration subscribers not supported"
+        );
+        let (sender, receiver) = mesh::channel();
+        *vf_reconfig_sender = Some(sender);
+        receiver
     }
 
     /// Shuts the device down.
@@ -330,7 +398,7 @@ impl<T: DeviceBacking> Vport<T> {
         cpu: u32,
     ) -> anyhow::Result<BnicEq> {
         let mut gdma = self.inner.gdma.lock().await;
-        let dma_client = gdma.device().dma_client();
+        let dma_client = gdma.device().dma_client_for(DmaPool::Ephemeral)?;
         let mem = dma_client
             .allocate_dma_buffer(size as usize)
             .context("Failed to allocate DMA buffer")?;
@@ -372,7 +440,7 @@ impl<T: DeviceBacking> Vport<T> {
         assert!(cq_size >= PAGE_SIZE as u32 && cq_size.is_power_of_two());
         let mut gdma = self.inner.gdma.lock().await;
 
-        let dma_client = gdma.device().dma_client();
+        let dma_client = gdma.device().dma_client_for(DmaPool::Ephemeral)?;
 
         let mem = dma_client
             .allocate_dma_buffer((wq_size + cq_size) as usize)

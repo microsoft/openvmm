@@ -33,7 +33,7 @@ impl<'a, T> VmsaWrapper<'a, T> {
 impl<T: Deref<Target = SevVmsa>> VmsaWrapper<'_, T> {
     /// 64 bit register read
     fn get_u64(&self, offset: usize) -> u64 {
-        assert!(offset % 8 == 0);
+        assert!(offset.is_multiple_of(8));
         let vmsa_raw = &self.vmsa;
         let v = u64::from_ne_bytes(vmsa_raw.as_bytes()[offset..offset + 8].try_into().unwrap());
         if is_protected(self.bitmap, offset) {
@@ -44,7 +44,7 @@ impl<T: Deref<Target = SevVmsa>> VmsaWrapper<'_, T> {
     }
     /// 32 bit register read
     fn get_u32(&self, offset: usize) -> u32 {
-        assert!(offset % 4 == 0);
+        assert!(offset.is_multiple_of(4));
         (self.get_u64(offset & !7) >> ((offset & 4) * 8)) as u32
     }
     /// 128 bit register read
@@ -77,7 +77,7 @@ impl<T: Deref<Target = SevVmsa>> VmsaWrapper<'_, T> {
 impl<T: DerefMut<Target = SevVmsa>> VmsaWrapper<'_, T> {
     /// 64 bit value to set in register
     fn set_u64(&self, v: u64, offset: usize) -> u64 {
-        assert!(offset % 8 == 0);
+        assert!(offset.is_multiple_of(8));
         if is_protected(self.bitmap, offset) {
             v ^ self.vmsa.register_protection_nonce
         } else {
@@ -86,7 +86,7 @@ impl<T: DerefMut<Target = SevVmsa>> VmsaWrapper<'_, T> {
     }
     /// 32 bit value to set in register
     fn set_u32(&self, v: u32, offset: usize) -> u32 {
-        assert!(offset % 4 == 0);
+        assert!(offset.is_multiple_of(4));
         let val = (v as u64) << ((offset & 4) * 8);
         (self.set_u64(val, offset & !7) >> ((offset & 4) * 8)) as u32
     }

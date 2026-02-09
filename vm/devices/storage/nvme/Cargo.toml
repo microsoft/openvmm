@@ -22,6 +22,7 @@ guestmem.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
 
+anyhow.workspace = true
 guid.workspace = true
 inspect.workspace = true
 mesh.workspace = true

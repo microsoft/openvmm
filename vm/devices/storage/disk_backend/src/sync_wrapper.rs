@@ -4,7 +4,7 @@
 //! A wrapper around [`Disk`] that adapts the trait for use with
 //! synchronous [`std::io`] traits (such as `Read`, `Write`, `Seek`, etc...).
 //!
-//! NOTE: this is _not_ code that should see wide use across the HvLite
+//! NOTE: this is _not_ code that should see wide use across the OpenVMM
 //! codebase! It was written to support a very-specific use-case: leveraging
 //! existing, synchronous, Rust/C library code that reformats/repartitions
 //! drives.
@@ -91,7 +91,7 @@ impl BlockingDisk {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         // If the buffer size is a multiple of sector size and the buffer is not dirty
         // use the read_full_sector method
-        if buf.len() % self.inner.sector_size() as usize == 0 && !self.buffer_dirty {
+        if buf.len().is_multiple_of(self.inner.sector_size() as usize) && !self.buffer_dirty {
             return self.read_full_sector(buf);
         }
         // Buffer size is not multiple of sector size
@@ -122,7 +122,7 @@ impl BlockingDisk {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         // If the buffer size is a multiple of sector size and the buffer is not dirty
         // use the write_full_sector method
-        if buf.len() % self.inner.sector_size() as usize == 0 && !self.buffer_dirty {
+        if buf.len().is_multiple_of(self.inner.sector_size() as usize) && !self.buffer_dirty {
             return self.write_full_sector(buf);
         }
         // Buffer size is not multiple of sector size

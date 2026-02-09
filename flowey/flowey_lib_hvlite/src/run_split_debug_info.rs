@@ -32,29 +32,63 @@ impl SimpleFlowNode for Node {
             out_dbg_info,
         } = request;
 
+        let host_arch = ctx.arch();
         let platform = ctx.platform();
-        let arch_str = match arch {
+
+        let (objcopy_pkg, objcopy_bin): (Option<&str>, &str) = match arch {
             CommonArch::X86_64 => match platform {
                 FlowPlatform::Linux(linux_distribution) => match linux_distribution {
-                    FlowPlatformLinuxDistro::Fedora => "x86_64",
-                    FlowPlatformLinuxDistro::Ubuntu => "x86-64",
+                    FlowPlatformLinuxDistro::Fedora => (
+                        Some("binutils-x86_64-linux-gnu"),
+                        "x86_64-linux-gnu-objcopy",
+                    ),
+                    FlowPlatformLinuxDistro::Ubuntu => (
+                        Some("binutils-x86-64-linux-gnu"),
+                        "x86_64-linux-gnu-objcopy",
+                    ),
+                    FlowPlatformLinuxDistro::Arch => {
+                        match_arch!(host_arch, FlowArch::X86_64, (Some("binutils"), "objcopy"))
+                    }
+                    FlowPlatformLinuxDistro::Nix => (None, "x86_64-linux-gnu-objcopy"),
                     FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
                 },
                 _ => anyhow::bail!("Unsupported platform"),
             },
-            CommonArch::Aarch64 => "aarch64",
+            CommonArch::Aarch64 => {
+                let pkg = match platform {
+                    FlowPlatform::Linux(linux_distribution) => match linux_distribution {
+                        FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::Ubuntu => {
+                            Some("binutils-aarch64-linux-gnu")
+                        }
+                        FlowPlatformLinuxDistro::Arch => {
+                            match_arch!(
+                                host_arch,
+                                FlowArch::X86_64,
+                                Some("aarch64-linux-gnu-binutils")
+                            )
+                        }
+                        FlowPlatformLinuxDistro::Nix => None,
+                        FlowPlatformLinuxDistro::Unknown => {
+                            anyhow::bail!("Unknown Linux distribution")
+                        }
+                    },
+                    _ => anyhow::bail!("Unsupported platform"),
+                };
+                (pkg, "aarch64-linux-gnu-objcopy")
+            }
         };
 
-        let installed_objcopy =
+        let installed_objcopy = objcopy_pkg.map(|objcopy_pkg| {
             ctx.reqv(
                 |side_effect| flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: vec![format!("binutils-{arch_str}-linux-gnu")],
+                    package_names: vec![objcopy_pkg.into()],
                     done: side_effect,
                 },
-            );
+            )
+        });
 
         ctx.emit_rust_step("split debug symbols", |ctx| {
-            installed_objcopy.clone().claim(ctx);
+            installed_objcopy.claim(ctx);
             let in_bin = in_bin.claim(ctx);
             let out_bin = out_bin.claim(ctx);
             let out_dbg_info = out_dbg_info.claim(ctx);
@@ -63,11 +97,10 @@ impl SimpleFlowNode for Node {
 
                 let sh = xshell::Shell::new()?;
                 let output = sh.current_dir().join(in_bin.file_name().unwrap());
-                let objcopy = format!("{}-linux-gnu-objcopy", arch.as_arch());
-                xshell::cmd!(sh, "{objcopy} --only-keep-debug {in_bin} {output}.dbg").run()?;
+                xshell::cmd!(sh, "{objcopy_bin} --only-keep-debug {in_bin} {output}.dbg").run()?;
                 xshell::cmd!(
                     sh,
-                    "{objcopy} --strip-all --keep-section=.build_info --add-gnu-debuglink={output}.dbg {in_bin} {output}"
+                    "{objcopy_bin} --strip-all --keep-section=.build_info --add-gnu-debuglink={output}.dbg {in_bin} {output}"
                 )
                 .run()?;
 

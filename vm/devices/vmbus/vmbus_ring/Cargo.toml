@@ -12,7 +12,6 @@ guestmem.workspace = true
 inspect.workspace = true
 safeatomic.workspace = true
 
-smallvec.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
 [dev-dependencies]

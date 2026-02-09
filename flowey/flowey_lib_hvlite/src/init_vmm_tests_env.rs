@@ -5,9 +5,11 @@
 //! require to run.
 
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
-use crate::download_openvmm_deps::OpenvmmDepsArch;
+use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
+use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
 use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
+use crate::resolve_openvmm_deps::OpenvmmDepsArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -48,6 +50,14 @@ flowey_request! {
         pub register_tmk_vmm: Option<ReadVar<crate::build_tmk_vmm::TmkVmmOutput>>,
         /// Register a TMK VMM Linux musl binary
         pub register_tmk_vmm_linux_musl: Option<ReadVar<crate::build_tmk_vmm::TmkVmmOutput>>,
+        /// Register a vmgstool binary
+        pub register_vmgstool: Option<ReadVar<crate::build_vmgstool::VmgstoolOutput>>,
+        /// Register a Windows tpm_guest_tests binary
+        pub register_tpm_guest_tests_windows: Option<ReadVar<TpmGuestTestsOutput>>,
+        /// Register a Linux tpm_guest_tests binary
+        pub register_tpm_guest_tests_linux: Option<ReadVar<TpmGuestTestsOutput>>,
+        /// Register a Windows test_igvm_agent_rpc_server binary
+        pub register_test_igvm_agent_rpc_server: Option<ReadVar<TestIgvmAgentRpcServerOutput>>,
 
         /// Get the path to the folder containing various logs emitted VMM tests.
         pub get_test_log_path: Option<WriteVar<PathBuf>>,
@@ -65,7 +75,7 @@ impl SimpleFlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
     }
@@ -81,6 +91,10 @@ impl SimpleFlowNode for Node {
             register_tmks,
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
+            register_vmgstool,
+            register_tpm_guest_tests_windows,
+            register_tpm_guest_tests_linux,
+            register_test_igvm_agent_rpc_server,
             disk_images_dir,
             register_openhcl_igvm_files,
             get_test_log_path,
@@ -96,10 +110,10 @@ impl SimpleFlowNode for Node {
         };
 
         let test_linux_initrd = ctx.reqv(|v| {
-            crate::download_openvmm_deps::Request::GetLinuxTestInitrd(openvmm_deps_arch, v)
+            crate::resolve_openvmm_deps::Request::GetLinuxTestInitrd(openvmm_deps_arch, v)
         });
         let test_linux_kernel = ctx.reqv(|v| {
-            crate::download_openvmm_deps::Request::GetLinuxTestKernel(openvmm_deps_arch, v)
+            crate::resolve_openvmm_deps::Request::GetLinuxTestKernel(openvmm_deps_arch, v)
         });
 
         let mu_msvm_arch = match vmm_tests_target.architecture {
@@ -123,6 +137,10 @@ impl SimpleFlowNode for Node {
             let tmks = register_tmks.claim(ctx);
             let tmk_vmm = register_tmk_vmm.claim(ctx);
             let tmk_vmm_linux_musl = register_tmk_vmm_linux_musl.claim(ctx);
+            let vmgstool = register_vmgstool.claim(ctx);
+            let test_igvm_agent_rpc_server = register_test_igvm_agent_rpc_server.claim(ctx);
+            let tpm_guest_tests_windows = register_tpm_guest_tests_windows.claim(ctx);
+            let tpm_guest_tests_linux = register_tpm_guest_tests_linux.claim(ctx);
             let disk_image_dir = disk_images_dir.claim(ctx);
             let openhcl_igvm_files = register_openhcl_igvm_files.claim(ctx);
             let test_linux_initrd = test_linux_initrd.claim(ctx);
@@ -282,6 +300,44 @@ impl SimpleFlowNode for Node {
                     // OK, they should be the same. Fix this when the resolver
                     // can handle multiple different outputs with the same name.
                     fs_err::copy(bin, test_content_dir.join("tmk_vmm"))?;
+                }
+
+                if let Some(vmgstool) = vmgstool {
+                    match rt.read(vmgstool) {
+                        crate::build_vmgstool::VmgstoolOutput::WindowsBin { exe, .. } => {
+                            fs_err::copy(exe, test_content_dir.join("vmgstool.exe"))?;
+                        }
+                        crate::build_vmgstool::VmgstoolOutput::LinuxBin { bin, .. } => {
+                            let dst = test_content_dir.join("vmgstool");
+                            fs_err::copy(bin, &dst)?;
+                            dst.make_executable()?;
+                        }
+                    }
+                }
+
+                if let Some(tpm_guest_tests_windows) = tpm_guest_tests_windows {
+                    let TpmGuestTestsOutput::WindowsBin { exe, .. } =
+                        rt.read(tpm_guest_tests_windows)
+                    else {
+                        anyhow::bail!("expected Windows tpm_guest_tests artifact")
+                    };
+                    fs_err::copy(exe, test_content_dir.join("tpm_guest_tests.exe"))?;
+                }
+
+                if let Some(tpm_guest_tests_linux) = tpm_guest_tests_linux {
+                    let TpmGuestTestsOutput::LinuxBin { bin, .. } = rt.read(tpm_guest_tests_linux)
+                    else {
+                        anyhow::bail!("expected Linux tpm_guest_tests artifact")
+                    };
+                    let dst = test_content_dir.join("tpm_guest_tests");
+                    fs_err::copy(bin, &dst)?;
+                    dst.make_executable()?;
+                }
+
+                if let Some(test_igvm_agent_rpc_server) = test_igvm_agent_rpc_server {
+                    let TestIgvmAgentRpcServerOutput { exe, .. } =
+                        rt.read(test_igvm_agent_rpc_server);
+                    fs_err::copy(exe, test_content_dir.join("test_igvm_agent_rpc_server.exe"))?;
                 }
 
                 if let Some(openhcl_igvm_files) = openhcl_igvm_files {

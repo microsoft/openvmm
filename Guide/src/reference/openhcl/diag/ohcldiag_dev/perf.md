@@ -49,6 +49,7 @@ Use perf to convert perf data to plain text and dump it to a file on host
 ```
 
 ## Visualize perf profiling data
+
 Please follow up instructions on the external page [Flame
 Graphs](https://www.brendangregg.com/perf.html#FlameGraphs) to create flame
 graph SVG file. It requires scripts from FlameGraph GitHub repo, so it is better

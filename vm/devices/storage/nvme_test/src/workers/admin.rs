@@ -19,9 +19,8 @@ use crate::error::NvmeError;
 use crate::namespace::Namespace;
 use crate::prp::PrpRange;
 use crate::queue::CompletionQueue;
-use crate::queue::DoorbellRegister;
+use crate::queue::DoorbellMemory;
 use crate::queue::QueueError;
-use crate::queue::ShadowDoorbell;
 use crate::queue::SubmissionQueue;
 use crate::spec;
 use disk_backend::Disk;
@@ -32,16 +31,20 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
+use mesh::rpc::Rpc;
+use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::CommandMatch;
 use nvme_resources::fault::FaultConfiguration;
-use nvme_resources::fault::QueueFaultBehavior;
+use nvme_resources::fault::NamespaceChange;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
 use parking_lot::Mutex;
+use parking_lot::RwLock;
 use std::collections::BTreeMap;
 use std::collections::btree_map;
 use std::future::pending;
+use std::future::poll_fn;
 use std::io::Cursor;
 use std::io::Write;
 use std::sync::Arc;
@@ -72,7 +75,7 @@ pub struct AdminConfig {
     #[inspect(skip)]
     pub interrupts: Vec<Interrupt>,
     #[inspect(skip)]
-    pub doorbells: Vec<Arc<DoorbellRegister>>,
+    pub doorbells: Arc<RwLock<DoorbellMemory>>,
     #[inspect(display)]
     pub subsystem_id: Guid,
     pub max_sqs: u16,
@@ -102,10 +105,8 @@ pub struct AdminState {
     io_cqs: Vec<Option<IoCq>>,
     #[inspect(skip)]
     sq_delete_response: mesh::Receiver<u16>,
-    #[inspect(with = "Option::is_some")]
-    shadow_db_evt_gpa_base: Option<ShadowDoorbell>,
     #[inspect(iter_by_index)]
-    asynchronous_event_requests: Vec<u16>,
+    asynchronous_event_requests: Vec<spec::Command>,
     #[inspect(
         rename = "namespaces",
         with = "|x| inspect::iter_by_key(x.iter().map(|v| (v, ChangedNamespace { changed: true })))"
@@ -118,6 +119,8 @@ pub struct AdminState {
     send_changed_namespace: futures::channel::mpsc::Sender<u32>,
     #[inspect(skip)]
     poll_namespace_change: BTreeMap<u32, Task<()>>,
+    #[inspect(skip)]
+    confirm_namespace_change_fault: Option<Rpc<(), ()>>,
 }
 
 #[derive(Inspect)]
@@ -132,7 +135,6 @@ struct IoSq {
     driver: VmTaskDriver,
     pending_delete_cid: Option<u16>,
     cqid: Option<u16>,
-    shadow_db_evt_idx: Option<ShadowDoorbell>,
 }
 
 #[derive(Inspect)]
@@ -143,7 +145,6 @@ struct IoCq {
     len: u16,
     interrupt: Option<u16>,
     sqid: Option<u16>,
-    shadow_db_evt_idx: Option<ShadowDoorbell>,
 }
 
 impl AdminState {
@@ -169,24 +170,31 @@ impl AdminState {
             .collect();
 
         let mut state = Self {
-            admin_sq: SubmissionQueue::new(handler.config.doorbells[0].clone(), asq, asqs, None),
+            admin_sq: SubmissionQueue::new(
+                handler.config.doorbells.clone(),
+                0,
+                asq,
+                asqs,
+                handler.config.mem.clone(),
+            ),
             admin_cq: CompletionQueue::new(
-                handler.config.doorbells[1].clone(),
+                handler.config.doorbells.clone(),
+                1,
+                handler.config.mem.clone(),
                 Some(handler.config.interrupts[0].clone()),
                 acq,
                 acqs,
-                None,
             ),
             io_sqs: Vec::new(),
             io_cqs: Vec::new(),
             sq_delete_response: Default::default(),
-            shadow_db_evt_gpa_base: None,
             asynchronous_event_requests: Vec::new(),
             changed_namespaces: Vec::new(),
             notified_changed_namespaces: false,
             recv_changed_namespace,
             send_changed_namespace,
             poll_namespace_change,
+            confirm_namespace_change_fault: None,
         };
         state.set_max_queues(handler, handler.config.max_sqs, handler.config.max_cqs);
         state
@@ -207,9 +215,6 @@ impl AdminState {
 
     /// Caller must ensure that no queues are active.
     fn set_max_queues(&mut self, handler: &AdminHandler, num_sqs: u16, num_cqs: u16) {
-        let num_qids = 2 + num_sqs.max(num_cqs) * 2;
-        assert!(handler.config.doorbells.len() >= num_qids as usize);
-
         self.io_sqs.truncate(num_sqs.into());
         self.io_sqs
             .extend((self.io_sqs.len()..num_sqs.into()).map(|i| {
@@ -227,13 +232,13 @@ impl AdminState {
 
                 IoSq {
                     task: TaskControl::new(IoHandler::new(
+                        handler.driver.clone(),
                         handler.config.mem.clone(),
                         i as u16 + 1,
                         self.sq_delete_response.sender(),
                     )),
                     pending_delete_cid: None,
                     cqid: None,
-                    shadow_db_evt_idx: None,
                     driver,
                 }
             }));
@@ -410,13 +415,11 @@ impl AdminHandler {
         let event = loop {
             // Wait for there to be room for a completion for the next
             // command or the completed sq deletion.
-            state.admin_cq.wait_ready(&self.config.mem).await?;
+            poll_fn(|cx| state.admin_cq.poll_ready(cx)).await?;
 
             if !state.changed_namespaces.is_empty() && !state.notified_changed_namespaces {
-                if let Some(cid) = state.asynchronous_event_requests.pop() {
-                    state.admin_cq.write(
-                        &self.config.mem,
-                        spec::Completion {
+                if let Some(command) = state.asynchronous_event_requests.pop() {
+                    let completion = spec::Completion {
                             dw0: spec::AsynchronousEventRequestDw0::new()
                                 .with_event_type(spec::AsynchronousEventType::NOTICE.0)
                                 .with_log_page_identifier(spec::LogPageIdentifier::CHANGED_NAMESPACE_LIST.0)
@@ -425,17 +428,33 @@ impl AdminHandler {
                             dw1: 0,
                             sqhd: state.admin_sq.sqhd(),
                             sqid: 0,
-                            cid,
+                            cid: command.cdw0.cid(),
                             status: spec::CompletionStatus::new(),
-                        },
-                    )?;
+                        };
+
+                    let Some(updated_completion) = self
+                        .apply_completion_queue_fault(&command, &completion)
+                        .await
+                    else {
+                        continue; // Skip notifying if the completion is configured to be dropped
+                    };
+
+                    state.admin_cq.write(updated_completion)?;
 
                     state.notified_changed_namespaces = true;
+
+                    // Note: Since the tests require AEN before invoking restore on the VM, this approach will
+                    // fail if the completion queue is full during save. In that case, the test will hang. Unless
+                    // the test is specifically stress testing the completion queue, this approach should be fine
+                    // since it is unexpected to fill the queue with admin commands.
+                    if let Some(aen_confirmation) = state.confirm_namespace_change_fault.take() {
+                        aen_confirmation.complete(());
+                    }
                     continue;
                 }
             }
 
-            let next_command = state.admin_sq.next(&self.config.mem).map(Event::Command);
+            let next_command = poll_fn(|cx| state.admin_sq.poll_next(cx)).map(Event::Command);
             let sq_delete_complete = async {
                 let Some(sqid) = state.sq_delete_response.next().await else {
                     pending().await
@@ -448,8 +467,39 @@ impl AdminHandler {
                 };
                 Event::NamespaceChange(nsid)
             };
+            let changed_namespace_fault = async {
+                // NOTE: Don't check 'fault_active' as it may get toggled after
+                // this future is created. This channel is only used by the test
+                // so it is fine to always listen on it.
+                let Some(ns_change) = self
+                    .config
+                    .fault_configuration
+                    .namespace_fault
+                    .recv_changed_namespace
+                    .next()
+                    .await
+                else {
+                    pending().await
+                };
 
-            break (next_command, sq_delete_complete, changed_namespace)
+                let nsid = match ns_change {
+                    NamespaceChange::ChangeNotification(rpc) => {
+                        let (nsid, notify) = rpc.split();
+                        state.confirm_namespace_change_fault = Some(notify);
+                        nsid
+                    }
+                };
+
+                // Don't notify the test quite yet because nothing has been written to the completion queue.
+                Event::NamespaceChange(nsid)
+            };
+
+            break (
+                next_command,
+                sq_delete_complete,
+                changed_namespace,
+                changed_namespace_fault,
+            )
                 .race()
                 .await;
         };
@@ -461,18 +511,14 @@ impl AdminHandler {
         state: &mut AdminState,
         event: Result<Event, QueueError>,
     ) -> Result<(), QueueError> {
-        // For the admin queue, update Evt_IDX at the beginning of command
-        // processing, just to keep it simple.
-        state.admin_sq.advance_evt_idx(&self.config.mem)?;
-
         let (command_processed, cid, result) = match event? {
             Event::Command(command) => {
                 let mut command = command?;
                 let opcode = spec::AdminOpcode(command.cdw0.opcode());
 
                 if self.config.fault_configuration.fault_active.get()
-                    && let Some(fault) = Self::get_configured_fault_behavior::<nvme_spec::Command>(
-                        &self
+                    && let Some(fault) = Self::get_configured_fault_behavior_mut::<nvme_spec::Command>(
+                        &mut self
                             .config
                             .fault_configuration
                             .admin_fault
@@ -481,42 +527,53 @@ impl AdminHandler {
                     )
                 {
                     match fault {
-                        QueueFaultBehavior::Update(command_updated) => {
+                        AdminQueueFaultBehavior::Update(command_updated) => {
                             tracing::info!(
                                 "configured fault: admin command updated in sq. original: {:?},\n new: {:?}",
                                 &command,
-                                &command_updated
+                                command_updated
                             );
-                            command = command_updated;
+                            command = *command_updated;
                         }
-                        QueueFaultBehavior::Drop => {
+                        AdminQueueFaultBehavior::Drop => {
                             tracing::info!(
                                 "configured fault: admin command dropped from sq {:?}",
                                 &command
                             );
                             return Ok(());
                         }
-                        QueueFaultBehavior::Delay(duration) => {
-                            self.timer.sleep(duration).await;
+                        AdminQueueFaultBehavior::Delay(duration) => {
+                            tracing::info!(
+                                "configured fault: admin command delay of {:?} for command: {:?}",
+                                &duration,
+                                &command
+                            );
+                            self.timer.sleep(*duration).await;
                         }
-                        QueueFaultBehavior::Panic(message) => {
+                        AdminQueueFaultBehavior::Panic(message) => {
                             panic!(
                                 "configured fault: admin command panic with command: {:?} and message: {}",
                                 &command, &message
                             );
                         }
-                        QueueFaultBehavior::CustomPayload(_) => {
+                        AdminQueueFaultBehavior::CustomPayload(_) => {
                             panic!(
                                 "bad fault configuration: custom payloads are not applicable to admin submission commands. command: {:?}",
                                 &command
                             );
+                        }
+                        AdminQueueFaultBehavior::Verify(send) => {
+                            // Verify that the command was received.
+                            if let Some(send) = send.take() {
+                                send.send(());
+                            }
                         }
                     }
                 }
 
                 let result = match opcode {
                     spec::AdminOpcode::IDENTIFY => self
-                        .handle_identify(&command)
+                        .handle_identify(state, &command)
                         .map(|()| Some(Default::default())),
                     spec::AdminOpcode::GET_FEATURES => {
                         self.handle_get_features(state, &command).await.map(Some)
@@ -543,9 +600,13 @@ impl AdminHandler {
                     spec::AdminOpcode::GET_LOG_PAGE => self
                         .handle_get_log_page(state, &command)
                         .map(|()| Some(Default::default())),
-                    spec::AdminOpcode::DOORBELL_BUFFER_CONFIG => self
-                        .handle_doorbell_buffer_config(state, &command)
-                        .map(|()| Some(Default::default())),
+                    spec::AdminOpcode::DOORBELL_BUFFER_CONFIG
+                        if self.supports_shadow_doorbells(state) =>
+                    {
+                        self.handle_doorbell_buffer_config(state, &command)
+                            .await
+                            .map(|()| Some(Default::default()))
+                    }
                     opcode => {
                         tracelimit::warn_ratelimited!(?opcode, "unsupported opcode");
                         Err(spec::Status::INVALID_COMMAND_OPCODE.into())
@@ -602,46 +663,67 @@ impl AdminHandler {
         };
 
         // Apply a completion queue fault only to synchronously processed admin commands
-        // (Ignore namespace change and sq delete complete events for now).
-        if let Some(command) = command_processed
-            && self.config.fault_configuration.fault_active.get()
-            && let Some(fault) = Self::get_configured_fault_behavior::<nvme_spec::Completion>(
-                &self
+        // (Ignore sq delete complete events for now. Namespace change events
+        // will eventually be handled by the AEN response flow.).
+        if let Some(command) = command_processed {
+            let Some(updated_completion) = self
+                .apply_completion_queue_fault(&command, &completion)
+                .await
+            else {
+                return Ok(());
+            };
+            completion = updated_completion;
+        }
+
+        state.admin_cq.write(completion)?;
+        Ok(())
+    }
+
+    // Returns an updated completion if a fault was configured, or None if the completion is to be dropped.
+    async fn apply_completion_queue_fault(
+        &mut self,
+        command: &spec::Command,
+        completion: &spec::Completion,
+    ) -> Option<spec::Completion> {
+        let mut updated_completion = Some(completion.clone());
+        if self.config.fault_configuration.fault_active.get()
+            && let Some(fault) = Self::get_configured_fault_behavior_mut::<nvme_spec::Completion>(
+                &mut self
                     .config
                     .fault_configuration
                     .admin_fault
                     .admin_completion_queue_faults,
-                &command,
+                command,
             )
         {
             match fault {
-                QueueFaultBehavior::Update(completion_updated) => {
+                AdminQueueFaultBehavior::Update(completion_updated) => {
                     tracing::info!(
                         "configured fault: admin completion updated in cq. command: {:?},original: {:?},\n new: {:?}",
                         &command,
                         &completion,
-                        &completion_updated
+                        completion_updated
                     );
-                    completion = completion_updated;
+                    updated_completion = Some(completion_updated.clone());
                 }
-                QueueFaultBehavior::Drop => {
+                AdminQueueFaultBehavior::Drop => {
                     tracing::info!(
                         "configured fault: admin completion dropped from cq. command: {:?}, completion: {:?}",
                         &command,
                         &completion
                     );
-                    return Ok(());
+                    updated_completion = None;
                 }
-                QueueFaultBehavior::Delay(duration) => {
-                    self.timer.sleep(duration).await;
+                AdminQueueFaultBehavior::Delay(duration) => {
+                    self.timer.sleep(*duration).await;
                 }
-                QueueFaultBehavior::Panic(message) => {
+                AdminQueueFaultBehavior::Panic(message) => {
                     panic!(
                         "configured fault: admin completion panic with command: {:?}, completion: {:?} and message: {}",
                         &command, &completion, &message
                     );
                 }
-                QueueFaultBehavior::CustomPayload(payload) => {
+                AdminQueueFaultBehavior::CustomPayload(payload) => {
                     tracing::info!(
                         "configured fault: admin completion custom payload write. completion: {:?}, payload size: {}",
                         &completion,
@@ -651,19 +733,25 @@ impl AdminHandler {
                     // Panic to avoid silent test failures.
                     PrpRange::parse(&self.config.mem, payload.len(), command.dptr)
                         .expect("configured fault failure: failed to parse PRP for custom payload write.")
-                        .write(&self.config.mem, &payload)
+                        .write(&self.config.mem, payload)
                         .expect("configured fault failure: failed to write custom payload");
+                }
+                AdminQueueFaultBehavior::Verify(send) => {
+                    // Verify that the command was received.
+                    if let Some(send) = send.take() {
+                        send.send(());
+                    }
                 }
             }
         }
-
-        state.admin_cq.write(&self.config.mem, completion)?;
-        // Again, for simplicity, update EVT_IDX here.
-        state.admin_cq.catch_up_evt_idx(true, 0, &self.config.mem)?;
-        Ok(())
+        updated_completion
     }
 
-    fn handle_identify(&mut self, command: &spec::Command) -> Result<(), NvmeError> {
+    fn handle_identify(
+        &mut self,
+        state: &AdminState,
+        command: &spec::Command,
+    ) -> Result<(), NvmeError> {
         let cdw10: spec::Cdw10Identify = command.cdw10.into();
         // All identify results are 4096 bytes.
         let mut buf = [0u64; 512];
@@ -671,7 +759,7 @@ impl AdminHandler {
         match spec::Cns(cdw10.cns()) {
             spec::Cns::CONTROLLER => {
                 let id = spec::IdentifyController::mut_from_prefix(buf).unwrap().0; // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-                *id = self.identify_controller();
+                *id = self.identify_controller(state);
 
                 write!(
                     Cursor::new(&mut id.subnqn[..]),
@@ -717,8 +805,7 @@ impl AdminHandler {
         Ok(())
     }
 
-    fn identify_controller(&self) -> spec::IdentifyController {
-        let oacs = spec::OptionalAdminCommandSupport::from(0).with_doorbell_buffer_config(true);
+    fn identify_controller(&self, state: &AdminState) -> spec::IdentifyController {
         spec::IdentifyController {
             vid: VENDOR_ID,
             ssvid: VENDOR_ID,
@@ -749,7 +836,8 @@ impl AdminHandler {
                 .with_present(true)
                 .with_broadcast_flush_behavior(spec::BroadcastFlushBehavior::NOT_SUPPORTED.0),
             cntrltype: spec::ControllerType::IO_CONTROLLER,
-            oacs,
+            oacs: spec::OptionalAdminCommandSupport::new()
+                .with_doorbell_buffer_config(self.supports_shadow_doorbells(state)),
             ..FromZeros::new_zeroed()
         }
     }
@@ -880,22 +968,11 @@ impl AdminHandler {
             return Err(spec::Status::INVALID_QUEUE_SIZE.into());
         }
 
-        let mut shadow_db_evt_idx: Option<ShadowDoorbell> = None;
-        if let Some(shadow_db_evt_gpa_base) = state.shadow_db_evt_gpa_base {
-            shadow_db_evt_idx = Some(ShadowDoorbell::new(
-                shadow_db_evt_gpa_base,
-                cqid,
-                false,
-                DOORBELL_STRIDE_BITS.into(),
-            ));
-        }
-
         *io_queue = Some(IoCq {
             gpa,
             len: len0 + 1,
             interrupt,
             sqid: None,
-            shadow_db_evt_idx,
         });
         Ok(())
     }
@@ -948,19 +1025,8 @@ impl AdminHandler {
             return Err(spec::Status::INVALID_QUEUE_SIZE.into());
         }
 
-        if let Some(shadow_db_evt_gpa_base) = state.shadow_db_evt_gpa_base {
-            sq.shadow_db_evt_idx = Some(ShadowDoorbell::new(
-                shadow_db_evt_gpa_base,
-                sqid,
-                true,
-                DOORBELL_STRIDE_BITS.into(),
-            ));
-        }
-
         cq.sqid = Some(sqid);
         sq.cqid = Some(cqid);
-        let sq_tail = self.config.doorbells[sqid as usize * 2].clone();
-        let cq_head = self.config.doorbells[cqid as usize * 2 + 1].clone();
         let interrupt = cq
             .interrupt
             .map(|iv| self.config.interrupts[iv as usize].clone());
@@ -969,16 +1035,17 @@ impl AdminHandler {
         let cq_gpa = cq.gpa;
         let cq_len = cq.len;
         let state = IoState::new(
+            &self.config.mem,
+            self.config.doorbells.clone(),
             sq_gpa,
             sq_len,
-            sq_tail,
-            sq.shadow_db_evt_idx,
+            sqid,
             cq_gpa,
             cq_len,
-            cq_head,
-            cq.shadow_db_evt_idx,
+            cqid,
             interrupt,
             namespaces,
+            self.config.fault_configuration.io_fault.clone(),
         );
         sq.task.insert(&sq.driver, "nvme-io", state);
         sq.task.start();
@@ -1049,7 +1116,7 @@ impl AdminHandler {
         if state.asynchronous_event_requests.len() >= MAX_ASYNC_EVENT_REQUESTS as usize {
             return Err(spec::Status::ASYNCHRONOUS_EVENT_REQUEST_LIMIT_EXCEEDED.into());
         }
-        state.asynchronous_event_requests.push(command.cdw0.cid());
+        state.asynchronous_event_requests.push(*command);
         Ok(None)
     }
 
@@ -1122,69 +1189,45 @@ impl AdminHandler {
         Ok(())
     }
 
-    fn handle_doorbell_buffer_config(
+    fn supports_shadow_doorbells(&self, state: &AdminState) -> bool {
+        let num_queues = state.io_sqs.len().max(state.io_cqs.len()) + 1;
+        let len = num_queues * (2 << DOORBELL_STRIDE_BITS);
+        // The spec only allows a single shadow doorbell page.
+        len <= PAGE_SIZE
+    }
+
+    async fn handle_doorbell_buffer_config(
         &self,
         state: &mut AdminState,
         command: &spec::Command,
     ) -> Result<(), NvmeError> {
+        // Validated by caller.
+        assert!(self.supports_shadow_doorbells(state));
+
         let shadow_db_gpa = command.dptr[0];
         let event_idx_gpa = command.dptr[1];
-
-        if (shadow_db_gpa == 0)
-            || (shadow_db_gpa & 0xfff != 0)
-            || (event_idx_gpa == 0)
-            || (event_idx_gpa & 0xfff != 0)
-            || (shadow_db_gpa == event_idx_gpa)
-        {
-            return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
+        if (shadow_db_gpa | event_idx_gpa) & !PAGE_MASK != 0 {
+            return Err(NvmeError::from(spec::Status::INVALID_FIELD_IN_COMMAND));
         }
 
-        // Stash the base values for use in data queue creation.
-        let sdb_base = ShadowDoorbell {
-            shadow_db_gpa,
-            event_idx_gpa,
-        };
-        state.shadow_db_evt_gpa_base = Some(sdb_base);
+        self.config
+            .doorbells
+            .write()
+            .replace_mem(self.config.mem.clone(), shadow_db_gpa, Some(event_idx_gpa))
+            .map_err(|err| NvmeError::new(spec::Status::DATA_TRANSFER_ERROR, err))?;
 
-        // Update the admin queue to use shadow doorbells.
-        state.admin_sq.update_shadow_db(
-            &self.config.mem,
-            ShadowDoorbell::new(sdb_base, 0, true, DOORBELL_STRIDE_BITS.into()),
-        );
-        state.admin_cq.update_shadow_db(
-            &self.config.mem,
-            ShadowDoorbell::new(sdb_base, 0, false, DOORBELL_STRIDE_BITS.into()),
-        );
-
-        // Update any data queues with the new shadow doorbell base.
-        for (qid, sq) in state.io_sqs.iter_mut().enumerate() {
-            if !sq.task.has_state() {
-                continue;
-            }
-            let gm = self.config.mem.clone();
-
-            // Data queue pairs are qid + 1, because the admin queue isn't in this vector.
-            let sq_sdb =
-                ShadowDoorbell::new(sdb_base, qid as u16 + 1, true, DOORBELL_STRIDE_BITS.into());
-            let cq_sdb =
-                ShadowDoorbell::new(sdb_base, qid as u16 + 1, false, DOORBELL_STRIDE_BITS.into());
-
-            sq.task.update_with(move |sq, sq_state| {
-                sq.update_shadow_db(&gm, sq_state.unwrap(), sq_sdb, cq_sdb);
-            });
-        }
         Ok(())
     }
 
-    /// Returns the configured fault behavior for the given command if a fault is configured.
-    fn get_configured_fault_behavior<T: Clone>(
-        fault_configs: &[(CommandMatch, QueueFaultBehavior<T>)],
-        command: &nvme_spec::Command,
-    ) -> Option<QueueFaultBehavior<T>> {
+    /// Returns a mutable reference to the fault behavior for a given command if a fault is configured.
+    fn get_configured_fault_behavior_mut<'a, T: Clone>(
+        fault_configs: &'a mut [(CommandMatch, AdminQueueFaultBehavior<T>)],
+        command: &'a nvme_spec::Command,
+    ) -> Option<&'a mut AdminQueueFaultBehavior<T>> {
         fault_configs
-            .iter()
+            .iter_mut()
             .find(|(pattern, _)| match_command_pattern(pattern, command))
-            .map(|(_, behavior)| behavior.clone())
+            .map(|(_, behavior)| behavior)
     }
 }
 

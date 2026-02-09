@@ -21,9 +21,8 @@ use page_pool_alloc::PagePoolAllocator;
 use page_pool_alloc::TestMapper;
 use parking_lot::Mutex;
 use pci_core::chipset_device_ext::PciChipsetDeviceExt;
-use pci_core::msi::MsiControl;
-use pci_core::msi::MsiInterruptSet;
-use pci_core::msi::MsiInterruptTarget;
+use pci_core::msi::MsiConnection;
+use pci_core::msi::SignalMsi;
 use std::sync::Arc;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
@@ -36,7 +35,7 @@ use user_driver::memory::PAGE_SIZE64;
 /// allowing the user to control device behaviour to a certain extent. Can be used with devices such as the `NvmeController`
 pub struct EmulatedDevice<T, U> {
     device: Arc<Mutex<T>>,
-    controller: MsiController,
+    controller: Arc<MsiController>,
     dma_client: Arc<U>,
     bar0_len: usize,
 }
@@ -59,29 +58,36 @@ impl MsiController {
     }
 }
 
-impl MsiInterruptTarget for MsiController {
-    fn new_interrupt(&self) -> Box<dyn MsiControl> {
-        let events = self.events.clone();
-        Box::new(move |address, _data| {
-            let index = address as usize;
-            if let Some(event) = events.get(index) {
-                tracing::debug!(index, "signaling interrupt");
-                event.signal_uncached();
-            } else {
-                tracing::info!("interrupt ignored");
-            }
-        })
+impl SignalMsi for MsiController {
+    fn signal_msi(&self, rid: u32, address: u64, _data: u32) {
+        let index = address as usize;
+        if rid != 0 {
+            return;
+        }
+        if let Some(event) = self.events.get(index) {
+            tracing::debug!(index, "signaling interrupt");
+            event.signal_uncached();
+        } else {
+            tracing::info!("interrupt ignored");
+        }
+    }
+}
+
+impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> Clone for EmulatedDevice<T, U> {
+    fn clone(&self) -> Self {
+        Self {
+            device: self.device.clone(),
+            controller: self.controller.clone(),
+            dma_client: self.dma_client.clone(),
+            bar0_len: self.bar0_len,
+        }
     }
 }
 
 impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
     /// Creates a new emulated device, wrapping `device` of type T, using the provided MSI Interrupt Set. Dma_client should point to memory
     /// shared with the device.
-    pub fn new(mut device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
-        // Connect an interrupt controller.
-        let controller = MsiController::new(msi_set.len());
-        msi_set.connect(&controller);
-
+    pub fn new(mut device: T, msi_conn: MsiConnection, dma_client: Arc<U>) -> Self {
         let bars = device.probe_bar_masks();
         let bar0_len = !(bars[0] & !0xf) as usize + 1;
 
@@ -96,6 +102,17 @@ impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
                     .into_bits() as u32,
             )
             .unwrap();
+
+        // Determine the number of MSI-X vectors.
+        let msix_table_size = {
+            let mut n = 0;
+            device.pci_cfg_read(0x40, &mut n).unwrap();
+            ((n >> 16) & 0x7ff) + 1
+        } as usize;
+
+        // Connect an interrupt controller.
+        let controller = Arc::new(MsiController::new(msix_table_size));
+        msi_conn.connect(controller.clone());
 
         // Enable MSIX.
         for i in 0u64..64 {
@@ -148,6 +165,11 @@ impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + Send + DmaClie
 
     fn dma_client(&self) -> Arc<dyn DmaClient> {
         self.dma_client.clone()
+    }
+
+    fn dma_client_for(&self, _pool: user_driver::DmaPool) -> anyhow::Result<Arc<dyn DmaClient>> {
+        // In the emulated device, we only have one dma client.
+        Ok(self.dma_client.clone())
     }
 
     fn max_interrupt_count(&self) -> u32 {
@@ -251,5 +273,97 @@ impl DeviceTestMemory {
     /// Returns [`PagePoolAllocator`] with access to the first half of the underlying memory.
     pub fn dma_client(&self) -> Arc<PagePoolAllocator> {
         self.allocator.clone()
+    }
+}
+
+/// Callbacks for the [`DeviceTestDmaClient`]. Tests supply these to customize the behaviour of the dma client.
+pub trait DeviceTestDmaClientCallbacks: Sync + Send {
+    /// Called when the DMA client needs to allocate a new DMA buffer.
+    fn allocate_dma_buffer(
+        &self,
+        allocator: &PagePoolAllocator,
+        total_size: usize,
+    ) -> anyhow::Result<user_driver::memory::MemoryBlock>;
+
+    /// Called when the DMA client needs to attach pending buffers.
+    fn attach_pending_buffers(
+        &self,
+        inner: &PagePoolAllocator,
+    ) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>>;
+}
+
+/// A DMA client that uses a [`PagePoolAllocator`] as the backing. It can be customized through the use of
+/// [`DeviceTestDmaClientCallbacks`] to modify its behaviour for testing purposes.
+///
+/// # Example
+/// ```rust
+/// use std::sync::Arc;
+/// use user_driver::DmaClient;
+/// use user_driver_emulated_mock::DeviceTestDmaClient;
+/// use page_pool_alloc::PagePoolAllocator;
+///
+/// struct MyCallbacks;
+/// impl user_driver_emulated_mock::DeviceTestDmaClientCallbacks for MyCallbacks {
+///     fn allocate_dma_buffer(
+///         &self,
+///         allocator: &page_pool_alloc::PagePoolAllocator,
+///         total_size: usize,
+///     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+///         // Custom test logic here, for example:
+///         anyhow::bail!("allocation failed for testing");
+///     }
+///
+///     fn attach_pending_buffers(
+///         &self,
+///         allocator: &page_pool_alloc::PagePoolAllocator,
+///     ) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
+///         // Custom test logic here, for example:
+///         anyhow::bail!("attachment failed for testing");
+///     }
+/// }
+///
+/// // Use the above in a test ...
+/// fn test_dma_client() {
+///     let pages = 1000;
+///     let device_test_memory = user_driver_emulated_mock::DeviceTestMemory::new(
+///         pages,
+///         true,
+///         "test_dma_client",
+///     );
+///     let page_pool_allocator = device_test_memory.dma_client();
+///     let dma_client = DeviceTestDmaClient::new(page_pool_allocator, MyCallbacks);
+///
+///     // Use dma_client in tests...
+///     assert!(dma_client.allocate_dma_buffer(4096).is_err());
+/// }
+/// ```
+#[derive(Inspect)]
+#[inspect(transparent)]
+pub struct DeviceTestDmaClient<C>
+where
+    C: DeviceTestDmaClientCallbacks,
+{
+    inner: Arc<PagePoolAllocator>,
+    #[inspect(skip)]
+    callbacks: C,
+}
+
+impl<C: DeviceTestDmaClientCallbacks> DeviceTestDmaClient<C> {
+    /// Creates a new [`DeviceTestDmaClient`] with the given inner allocator.
+    pub fn new(inner: Arc<PagePoolAllocator>, callbacks: C) -> Self {
+        Self { inner, callbacks }
+    }
+}
+
+impl<C: DeviceTestDmaClientCallbacks> DmaClient for DeviceTestDmaClient<C> {
+    fn allocate_dma_buffer(
+        &self,
+        total_size: usize,
+    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+        self.callbacks.allocate_dma_buffer(&self.inner, total_size)
+    }
+
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
+        self.callbacks.attach_pending_buffers(&self.inner)
     }
 }

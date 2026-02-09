@@ -22,10 +22,11 @@ pub struct KvmVpStateAccess<'a> {
 }
 
 impl KvmPartitionInner {
+    #[track_caller]
     pub fn vp_state_access(&self, vp_index: VpIndex) -> KvmVpStateAccess<'_> {
         KvmVpStateAccess {
             partition: self,
-            vp_info: self.vp(vp_index).vp_info,
+            vp_info: self.vp(vp_index).unwrap().vp_info,
         }
     }
 }
@@ -475,15 +476,15 @@ impl AccessVpState for KvmVpStateAccess<'_> {
     }
 
     fn cet_ss(&mut self) -> Result<vp::CetSs, Self::Error> {
-        // KVM does not appear to support CET_SS and in particular does not have
+        // TODO: KVM does not appear to support CET_SS and in particular does not have
         // an API to get the SSP register yet.
-        unimplemented!()
+        Ok(Default::default())
     }
 
     fn set_cet_ss(&mut self, _value: &vp::CetSs) -> Result<(), Self::Error> {
-        // KVM does not appear to support CET_SS and in particular does not have
+        // TODO: KVM does not appear to support CET_SS and in particular does not have
         // an API to get the SSP register yet.
-        unimplemented!()
+        Ok(())
     }
 
     fn tsc_aux(&mut self) -> Result<vp::TscAux, Self::Error> {

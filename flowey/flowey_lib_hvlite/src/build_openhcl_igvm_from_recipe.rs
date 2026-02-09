@@ -10,12 +10,13 @@
 //! having to duplicate the non-trivial OpenHCL IGVM build chain.
 
 use crate::build_openhcl_initrd::OpenhclInitrdExtraParams;
+use crate::build_openvmm_hcl::MaxTraceLevel;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_openvmm_hcl::OpenvmmHclFeature;
-use crate::download_openhcl_kernel_package::OpenhclKernelPackageArch;
-use crate::download_openhcl_kernel_package::OpenhclKernelPackageKind;
-use crate::download_openvmm_deps::OpenvmmDepsArch;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
+use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageArch;
+use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
+use crate::resolve_openvmm_deps::OpenvmmDepsArch;
 use crate::run_cargo_build::BuildProfile;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonPlatform;
@@ -35,8 +36,6 @@ pub enum OpenhclKernelPackage {
     Dev,
     /// CVM kernel from the hcl-dev brnach
     CvmDev,
-    /// Path to a custom local package
-    CustomLocal(PathBuf),
 }
 
 /// Vtl0 kernel type
@@ -66,6 +65,7 @@ pub struct OpenhclIgvmRecipeDetails {
     pub with_uefi: bool,
     pub with_interactive: bool,
     pub with_sidecar: bool,
+    pub max_trace_level: MaxTraceLevel,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -119,6 +119,14 @@ impl OpenhclIgvmRecipe {
         // Debug configurations include --interactive by default, for busybox, gdbserver, and perf.
         let with_interactive = !release_cfg;
 
+        // Save memory and cycles in hot paths by limiting the trace level in
+        // release builds.
+        let max_trace_level = if release_cfg {
+            MaxTraceLevel::Debug
+        } else {
+            MaxTraceLevel::Trace
+        };
+
         match self {
             Self::LocalOnlyCustom(details) => details.clone(),
             Self::X64 => OpenhclIgvmRecipeDetails {
@@ -131,6 +139,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: true,
                 with_interactive,
                 with_sidecar: true,
+                max_trace_level,
             },
             Self::X64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -142,6 +151,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: true,
                 with_interactive,
                 with_sidecar: true,
+                max_trace_level,
             },
             Self::X64CvmDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -156,6 +166,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: true,
                 with_interactive,
                 with_sidecar: false,
+                max_trace_level,
             },
             Self::X64TestLinuxDirect => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -170,6 +181,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: false,
                 with_interactive,
                 with_sidecar: true,
+                max_trace_level,
             },
             Self::X64TestLinuxDirectDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -184,6 +196,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: false,
                 with_interactive,
                 with_sidecar: true,
+                max_trace_level,
             },
             Self::X64Cvm => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -198,6 +211,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: true,
                 with_interactive,
                 with_sidecar: false,
+                max_trace_level,
             },
             Self::Aarch64 => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -212,6 +226,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: true,
                 with_interactive: false, // #1234
                 with_sidecar: false,
+                max_trace_level,
             },
             Self::Aarch64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -226,6 +241,7 @@ impl OpenhclIgvmRecipe {
                 with_uefi: true,
                 with_interactive: false, // #1234
                 with_sidecar: false,
+                max_trace_level,
             },
         }
     }
@@ -256,8 +272,8 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_openhcl_initrd::Node>();
         ctx.import::<crate::build_openvmm_hcl::Node>();
         ctx.import::<crate::build_sidecar::Node>();
-        ctx.import::<crate::download_openhcl_kernel_package::Node>();
-        ctx.import::<crate::download_openvmm_deps::Node>();
+        ctx.import::<crate::resolve_openhcl_kernel_package::Node>();
+        ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::run_igvmfilegen::Node>();
@@ -286,6 +302,7 @@ impl SimpleFlowNode for Node {
             with_uefi,
             with_interactive,
             with_sidecar,
+            max_trace_level,
         } = recipe.recipe_details(release_cfg);
 
         let OpenhclIgvmRecipeDetailsLocalOnly {
@@ -314,46 +331,47 @@ impl SimpleFlowNode for Node {
 
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
-        let vtl2_kernel_package_root = {
-            let arch = match arch {
-                CommonArch::X86_64 => OpenhclKernelPackageArch::X86_64,
-                CommonArch::Aarch64 => OpenhclKernelPackageArch::Aarch64,
-            };
-
-            enum DownloadOrLocal {
-                Local(PathBuf),
-                Download(OpenhclKernelPackageKind),
-            }
-
-            let download_kind = match openhcl_kernel_package {
-                OpenhclKernelPackage::Main => {
-                    DownloadOrLocal::Download(OpenhclKernelPackageKind::Main)
-                }
-                OpenhclKernelPackage::Cvm => {
-                    DownloadOrLocal::Download(OpenhclKernelPackageKind::Cvm)
-                }
-                OpenhclKernelPackage::Dev => {
-                    DownloadOrLocal::Download(OpenhclKernelPackageKind::Dev)
-                }
-                OpenhclKernelPackage::CvmDev => {
-                    DownloadOrLocal::Download(OpenhclKernelPackageKind::CvmDev)
-                }
-                OpenhclKernelPackage::CustomLocal(path) => DownloadOrLocal::Local(path),
-            };
-
-            match download_kind {
-                DownloadOrLocal::Local(path) => ReadVar::from_static(path),
-                DownloadOrLocal::Download(kind) => {
-                    ctx.reqv(
-                        |v| crate::download_openhcl_kernel_package::Request::GetPackage {
-                            kind,
-                            arch,
-                            pkg: v,
-                        },
-                    )
-                }
-            }
+        let kernel_arch = match arch {
+            CommonArch::X86_64 => OpenhclKernelPackageArch::X86_64,
+            CommonArch::Aarch64 => OpenhclKernelPackageArch::Aarch64,
         };
+
+        let kernel_kind = match openhcl_kernel_package {
+            OpenhclKernelPackage::Main => OpenhclKernelPackageKind::Main,
+            OpenhclKernelPackage::Cvm => OpenhclKernelPackageKind::Cvm,
+            OpenhclKernelPackage::Dev => OpenhclKernelPackageKind::Dev,
+            OpenhclKernelPackage::CvmDev => OpenhclKernelPackageKind::CvmDev,
+        };
+
+        // Get the kernel package root for initrd building (needs metadata)
+        let vtl2_kernel_package_root =
+            ctx.reqv(
+                |v| crate::resolve_openhcl_kernel_package::Request::GetPackageRoot {
+                    kind: kernel_kind,
+                    arch: kernel_arch,
+                    pkg: v,
+                },
+            );
+
+        // Get the modules path from the resolve node
+        let vtl2_kernel_modules =
+            ctx.reqv(
+                |v| crate::resolve_openhcl_kernel_package::Request::GetModules {
+                    kind: kernel_kind,
+                    arch: kernel_arch,
+                    modules: v,
+                },
+            );
+
+        // Get the kernel metadata path from the resolve node
+        let vtl2_kernel_metadata =
+            ctx.reqv(
+                |v| crate::resolve_openhcl_kernel_package::Request::GetMetadata {
+                    kind: kernel_kind,
+                    arch: kernel_arch,
+                    metadata: v,
+                },
+            );
 
         let uefi_resource = with_uefi.then(|| UefiResource {
             msvm_fd: if let Some(path) = custom_uefi {
@@ -375,7 +393,7 @@ impl SimpleFlowNode for Node {
             } else {
                 match typ {
                     Vtl0KernelType::Example => ctx.reqv(|v| {
-                        crate::download_openvmm_deps::Request::GetLinuxTestKernel(
+                        crate::resolve_openvmm_deps::Request::GetLinuxTestKernel(
                             match arch {
                                 CommonArch::X86_64 => OpenvmmDepsArch::X86_64,
                                 CommonArch::Aarch64 => OpenvmmDepsArch::Aarch64,
@@ -388,7 +406,7 @@ impl SimpleFlowNode for Node {
             };
 
             let initrd = ctx.reqv(|v| {
-                crate::download_openvmm_deps::Request::GetLinuxTestInitrd(
+                crate::resolve_openvmm_deps::Request::GetLinuxTestInitrd(
                     match arch {
                         CommonArch::X86_64 => OpenvmmDepsArch::X86_64,
                         CommonArch::Aarch64 => OpenvmmDepsArch::Aarch64,
@@ -449,6 +467,7 @@ impl SimpleFlowNode for Node {
                     features: openvmm_hcl_features,
                     // manually strip later, depending on provided igvm flags
                     no_split_dbg_info: true,
+                    max_trace_level,
                 },
                 openvmm_hcl_output: v,
             }
@@ -558,22 +577,24 @@ impl SimpleFlowNode for Node {
                 rootfs_config,
                 extra_env: None,
                 kernel_package_root: vtl2_kernel_package_root.clone(),
+                kernel_modules: vtl2_kernel_modules,
+                kernel_metadata: vtl2_kernel_metadata,
                 bin_openhcl: openvmm_hcl_bin,
                 initrd: v,
             })
         };
 
-        let kernel =
-            if let Some(path) = custom_kernel {
-                ReadVar::from_static(path)
-            } else {
-                match arch {
-                    CommonArch::X86_64 => vtl2_kernel_package_root
-                        .map(ctx, |p| p.join("build/native/bin/x64/vmlinux")),
-                    CommonArch::Aarch64 => vtl2_kernel_package_root
-                        .map(ctx, |p| p.join("build/native/bin/arm64/Image")),
-                }
-            };
+        let kernel = if let Some(path) = custom_kernel {
+            ReadVar::from_static(path)
+        } else {
+            ctx.reqv(
+                |v| crate::resolve_openhcl_kernel_package::Request::GetKernel {
+                    kind: kernel_kind,
+                    arch: kernel_arch,
+                    kernel: v,
+                },
+            )
+        };
 
         let resources = ctx.emit_minor_rust_stepv("enumerate igvm resources", |ctx| {
             let initrd = initrd.claim(ctx);

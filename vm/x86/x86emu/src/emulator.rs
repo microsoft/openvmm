@@ -405,7 +405,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     ) -> Result<(), Error<T::Error>> {
         match alignment {
             AlignmentMode::Aligned(a) => {
-                if gva % a != 0 {
+                if !gva.is_multiple_of(a) {
                     Err(Error::InstructionException(
                         Exception::GENERAL_PROTECTION_FAULT,
                         Some(0),
@@ -419,7 +419,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                     && self.cpu.rflags().alignment_check()
                     && self.cpu.cr0() & x86defs::X64_CR0_AM != 0
                 {
-                    if gva % len as u64 != 0 {
+                    if !gva.is_multiple_of(len as u64) {
                         Err(Error::InstructionException(
                             Exception::ALIGNMENT_CHECK,
                             None,

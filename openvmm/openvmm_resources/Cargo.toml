@@ -8,21 +8,24 @@ rust-version.workspace = true
 
 [features]
 # Enable gdbstub support.
-gdb = ["hvlite_core/gdb", "dep:debug_worker"]
+gdb = ["openvmm_core/gdb", "dep:debug_worker"]
+
+# Enable building with TPM device support.
+tpm = ["dep:tpm_device"]
 
 # Enable building with /dev/mshv support.
-virt_mshv = ["hvlite_core/virt_mshv"]
+virt_mshv = ["openvmm_core/virt_mshv"]
 
 # Enable building with KVM support.
-virt_kvm = ["hvlite_core/virt_kvm"]
+virt_kvm = ["openvmm_core/virt_kvm"]
 
 # Enable building with WHP support.
-virt_whp = ["hvlite_core/virt_whp"]
+virt_whp = ["openvmm_core/virt_whp"]
 
 # Enable building with macOS hypervisor framework support.
-virt_hvf = ["hvlite_core/virt_hvf"]
+virt_hvf = ["openvmm_core/virt_hvf"]
 
-unstable_whp = ["hvlite_core/unstable_whp"]
+unstable_whp = ["openvmm_core/unstable_whp"]
 
 [dependencies]
 mesh_worker.workspace = true
@@ -49,10 +52,11 @@ missing_dev.workspace = true
 serial_16550.workspace = true
 serial_debugcon.workspace = true
 serial_pl011.workspace = true
-tpm = { workspace = true, optional = true, features = ["tpm"] }
+tpm_device = { workspace = true, optional = true, features = ["tpm"] }
 
 # Non-volatile stores
 vmcore.workspace = true
+vmgs_broker.workspace = true
 
 # PCI devices
 gdma.workspace = true
@@ -75,7 +79,7 @@ virtio_pmem.workspace = true
 
 # Vmbus devices
 guest_crash_device.workspace = true
-guest_emulation_device = { workspace = true, features = ["test_igvm_agent"] }
+guest_emulation_device.workspace = true
 guest_emulation_log.workspace = true
 hyperv_ic.workspace = true
 netvsp.workspace = true
@@ -86,7 +90,7 @@ vmbus_serial_host.workspace = true
 
 # Workers
 debug_worker = { workspace = true, optional = true }
-hvlite_core.workspace = true
+openvmm_core.workspace = true
 vnc_worker.workspace = true
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]

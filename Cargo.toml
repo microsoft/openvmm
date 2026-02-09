@@ -20,6 +20,7 @@ members = [
   "tmk/tmk_vmm",
   "tmk/simple_tmk",
   # VMM tests
+  "vmm_tests/prep_steps",
   "vmm_tests/vmm_tests",
   # hyper-v tooling
   "hyperv/tools/hypestv",
@@ -43,10 +44,14 @@ members = [
   # tools
   "petri/make_imc_hive",
   "petri/petri-tool",
+  "vm/devices/get/test_igvm_agent_rpc_server",
+  "vm/devices/tpm/tpm_guest_tests",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
   "vm/cvmutil",
+  # opentmk
+  "opentmk",
 ]
 exclude = [
   "xsync",
@@ -54,7 +59,7 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.89"
+rust-version = "1.91"
 edition = "2024"
 
 [workspace.dependencies]
@@ -67,17 +72,18 @@ flowey_lib_common = { path = "flowey/flowey_lib_common" }
 flowey_lib_hvlite = { path = "flowey/flowey_lib_hvlite" }
 schema_ado_yaml = { path = "flowey/schema_ado_yaml" }
 
-hvlite_core = { path = "openvmm/hvlite_core" }
-hvlite_defs = { path = "openvmm/hvlite_defs" }
+openvmm_core = { path = "openvmm/openvmm_core" }
+openvmm_defs = { path = "openvmm/openvmm_defs" }
 openvmm_entry = { path = "openvmm/openvmm_entry" }
-hvlite_helpers = { path = "openvmm/hvlite_helpers" }
-hvlite_pcat_locator = { path = "openvmm/hvlite_pcat_locator" }
+openvmm_helpers = { path = "openvmm/openvmm_helpers" }
+openvmm_pcat_locator = { path = "openvmm/openvmm_pcat_locator" }
 openvmm_resources = { path = "openvmm/openvmm_resources" }
-hvlite_ttrpc_vmservice = { path = "openvmm/hvlite_ttrpc_vmservice" }
+openvmm_ttrpc_vmservice = { path = "openvmm/openvmm_ttrpc_vmservice" }
 membacking = { path = "openvmm/membacking" }
 
 petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact_resolver_openvmm_known_paths" }
 petri_artifacts_vmm_test = { path = "vmm_tests/petri_artifacts_vmm_test" }
+vmm_test_igvm_agent = { path = "vmm_tests/vmm_test_igvm_agent" }
 vmm_test_images = { path = "vmm_tests/vmm_test_images" }
 vmm_test_macros = { path = "vmm_tests/vmm_test_macros" }
 
@@ -100,6 +106,7 @@ console_relay = { path = "support/console_relay" }
 safe_intrinsics = { path = "support/safe_intrinsics" }
 debug_ptr = { path = "support/debug_ptr" }
 user_driver_emulated_mock = { path = "vm/devices/user_driver_emulated_mock" }
+fast_memcpy = { path = "support/fast_memcpy" }
 fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }
@@ -111,6 +118,7 @@ inspect_proto = { path = "support/inspect_proto" }
 inspect_rlimit = { path = "support/inspect_rlimit" }
 inspect_task = { path = "support/inspect_task" }
 kmsg = { path = "support/kmsg" }
+kmsg_writer = { path = "support/kmsg_writer" }
 loan_cell = { path = "support/loan_cell" }
 local_clock = { path = "support/local_clock" }
 mesh = { path = "support/mesh" }
@@ -126,6 +134,7 @@ mesh_rpc = { path = "support/mesh/mesh_rpc" }
 mesh_worker = { path = "support/mesh/mesh_worker" }
 mesh_tracing = { path = "support/mesh_tracing" }
 minircu = { path = "support/minircu" }
+nostd_spin_channel = { path = "support/nostd_spin_channel"}
 open_enum = { path = "support/open_enum" }
 openssl_kdf = { path = "support/openssl_kdf" }
 openssl_crypto_only = { path = "support/openssl_crypto_only" }
@@ -140,6 +149,7 @@ safeatomic = { path = "support/safeatomic" }
 serde_helpers = { path = "support/serde_helpers" }
 sev_guest_device = { path = "support/sev_guest_device" }
 sparse_mmap = { path = "support/sparse_mmap" }
+string_page_buf = { path = "support/string_page_buf" }
 task_control = { path = "support/task_control" }
 tdx_guest_device = { path = "support/tdx_guest_device" }
 term = { path = "support/term" }
@@ -147,6 +157,7 @@ test_with_tracing = { path = "support/test_with_tracing" }
 test_with_tracing_macro = { path = "support/test_with_tracing/test_with_tracing_macro" }
 tracelimit = { path = "support/tracelimit" }
 tracing_helpers = { path = "support/tracing_helpers" }
+trycopy = { path = "support/trycopy" }
 ucs2 = { path = "support/ucs2" }
 uevent = { path = "support/uevent" }
 unix_socket = { path = "support/unix_socket" }
@@ -165,6 +176,7 @@ kmsg_defs = { path = "openhcl/kmsg_defs" }
 lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
+minimal_rt_reloc = { path = "openhcl/minimal_rt_reloc" }
 openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
@@ -216,6 +228,7 @@ get_protocol = { path = "vm/devices/get/get_protocol" }
 get_resources = { path = "vm/devices/get/get_resources" }
 guest_crash_device = { path = "vm/devices/get/guest_crash_device" }
 guest_emulation_device = { path = "vm/devices/get/guest_emulation_device" }
+test_igvm_agent_lib = { path = "vm/devices/get/test_igvm_agent_lib" }
 guest_emulation_log = { path = "vm/devices/get/guest_emulation_log" }
 guest_emulation_transport = { path = "vm/devices/get/guest_emulation_transport" }
 vtl2_settings_proto = { path = "vm/devices/get/vtl2_settings_proto" }
@@ -255,6 +268,7 @@ vmswitch = { path = "vm/devices/net/vmswitch" }
 pci_bus = { path = "vm/devices/pci/pci_bus" }
 pci_core = { path = "vm/devices/pci/pci_core" }
 pci_resources = { path = "vm/devices/pci/pci_resources" }
+pcie = { path = "vm/devices/pci/pcie" }
 vpci = { path = "vm/devices/pci/vpci" }
 vpci_client = { path = "vm/devices/pci/vpci_client" }
 vpci_protocol = { path = "vm/devices/pci/vpci_protocol" }
@@ -304,9 +318,12 @@ serial_core = { path = "vm/devices/serial/serial_core" }
 serial_pl011 = { path = "vm/devices/serial/serial_pl011" }
 serial_pl011_resources = { path = "vm/devices/serial/serial_pl011_resources" }
 serial_socket = { path = "vm/devices/serial/serial_socket" }
-tpm = { path = "vm/devices/tpm" }
+tpm_device = { path = "vm/devices/tpm/tpm_device" }
+tpm_lib = { path = "vm/devices/tpm/tpm_lib" }
+tpm_protocol = { path = "vm/devices/tpm/tpm_protocol" }
 tpm_resources = { path = "vm/devices/tpm_resources" }
 mcr_resources = { path = "vm/devices/mcr_resources" }
+pcie_remote_resources = { path = "vm/devices/pcie_remote_resources" }
 uidevices = { path = "vm/devices/uidevices" }
 uidevices_resources = { path = "vm/devices/uidevices_resources" }
 user_driver = { path = "vm/devices/user_driver" }
@@ -388,6 +405,8 @@ vmm_core_defs = { path = "vmm_core/vmm_core_defs" }
 vmotherboard = { path = "vmm_core/vmotherboard" }
 
 # workers
+chipset_device_worker = { path = "workers/chipset_device_worker" }
+chipset_device_worker_defs = { path = "workers/chipset_device_worker_defs" }
 debug_worker = { path = "workers/debug_worker" }
 debug_worker_defs = { path = "workers/debug_worker_defs" }
 vnc_worker = { path = "workers/vnc_worker" }
@@ -396,7 +415,6 @@ vnc = { path = "workers/vnc_worker/vnc" }
 profiler_worker = { path = "openhcl/profiler_worker" }
 
 # crates.io
-aes-kw = { version = "0.2.1", features = ["alloc"] }
 anyhow = "1.0"
 arbitrary = "1.3"
 arrayvec = { version = "0.7", default-features = false }
@@ -411,7 +429,7 @@ bitvec = { version = "1.1", default-features = false }
 blocking = "1.2"
 caps = "0.5"
 cargo_toml = "0.22"
-cc = "1.0"
+cc = "1.2.34"
 cfg-if = "1"
 clap = "4.2"
 crc32fast = { version = "1.3.2", default-features = false }
@@ -443,6 +461,7 @@ gptman = "2.0"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 h2 = "0.4"
+heapless = { version = "0.8", default-features = false }
 heck = "0.5"
 hex = "0.4"
 http = "1"
@@ -467,14 +486,15 @@ jiff = "0.2.14"
 kvm-bindings = "0.14.0"
 # Use of these specific REPO will go away when changes are taken upstream.
 landlock = "0.4.1"
+lazy_static = "1.4.0"
 libc = "0.2"
 libfuzzer-sys = "0.4"
 libtest-mimic = "0.8"
+linked_list_allocator = "0.10.5"
 linkme = "0.3.9"
 log = "0.4"
 loom = "0.7.2"
 macaddr = "1.0"
-mbrman = "0.6"
 mimalloc = { version = "0.1.39", default-features = false }
 ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
 mshv-bindings = "0.6.0"
@@ -501,23 +521,23 @@ range_map_vec = "0.2.0"
 rayon = "1.5"
 resolv-conf = "0.7"
 rlimit = "0.10.1"
-rsa = "0.9.8"
+rsa = "0.9.10"
 rusqlite = "0.37"
 rustc-hash = "2.1.1"
 rustyline = "17"
 seccompiler = "0.5"
-serde = "1.0.185"
-serde_json = "1.0"
+serde = { version = "1.0.185", default-features = false }
+serde_json = { version = "1.0", default-features = false }
 serde_yaml = "0.9"
-sha1 = "0.10.6"
 sha2 = { version = "0.10.8", default-features = false }
 shell-words = "1.1"
 signal-hook = { version = "0.3", default-features = false }
 slab = "0.4"
 smallbox = "0.8"
 smallvec = "1.8"
-smoltcp = { version = "0.8", default-features = false }
+smoltcp = { version = "0.12.0", default-features = false }
 socket2 = "0.6"
+spin = "0.10.0"
 stackfuture = "0.3"
 static_assertions = "1.1"
 syn = "2"
@@ -527,7 +547,6 @@ thiserror = { version = "2", default-features = false }
 time = "0.3"
 toml_edit = "0.23"
 tracing = "0.1"
-tracing-core = "=0.1.30" # Pin to avoid binary size increase https://github.com/tokio-rs/tracing/issues/3182
 tracing-subscriber = "0.3.20"
 typed-path = "0.11"
 uefi = "0.35.0"
@@ -539,20 +558,18 @@ walkdir = "2.3"
 wchar = "0.11"
 which = "8"
 widestring = "1.0"
-win_etw_tracing = "0.1.3"
+win_etw_provider = "0.1.11"
+win_etw_tracing = "0.1.4"
 winapi = "0.3"
 windows = "0.62"
 windows-service = "0.8"
 windows-sys = "0.61"
 windows-version = "0.1.4"
+x86_64 = { version = "0.15.2", default-features = false }
 xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshell/issues/63
 xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
 zerocopy = { version = "0.8.25", features = ["derive"]}
-
-[workspace.metadata.xtask.unused-deps]
-# Pulled in through "tracing", but we need to pin the version
-ignored = ["tracing-core"]
 
 [profile.release]
 panic = 'abort'
@@ -597,16 +614,24 @@ codegen-units = 1
 opt-level = 'z'
 lto = 'fat'
 
-# Optimize minimal_rt even in the dev profile to ensure no relocations creep
-# into the relocate function.
+# Optimize minimal_rt_reloc even in the dev profile to ensure no relocations
+# creep into the relocate function.
 #
 # FUTURE: rewrite relocator in asm to avoid depending on this.
-[profile.dev.package.minimal_rt]
+[profile.dev.package.minimal_rt_reloc]
 opt-level = 1
+debug-assertions = false
 
-# Optimize loom even in the dev profile, as otherwise tests just take too long.
+# Optimize loom and its main dependency even in the dev profile, as otherwise tests just take too long.
 [profile.dev.package.loom]
 opt-level = 3
+[profile.dev.package.generator]
+opt-level = 3
+
+# memcpy needs to be optimized heavily regardless of the build profile
+[profile.dev.package.fast_memcpy]
+opt-level = 3
+overflow-checks = false
 
 [patch.crates-io]
 # Pending <https://github.com/ferrilab/bitvec/pull/273>
@@ -634,6 +659,7 @@ dbg_macro = "warn"
 debug_assert_with_mut_call = "warn"
 filter_map_next = "warn"
 fn_params_excessive_bools = "warn"
+implicit_clone = "warn"
 imprecise_flops = "warn"
 inefficient_to_string = "warn"
 linkedlist = "warn"
@@ -645,7 +671,6 @@ ptr_cast_constness = "warn"
 ref_as_ptr = "warn"
 ref_option_ref = "warn"
 rest_pat_in_fully_bound_structs = "warn"
-string_to_string = "warn"
 suboptimal_flops = "warn"
 undocumented_unsafe_blocks = "warn"
 unnecessary_box_returns = "warn"

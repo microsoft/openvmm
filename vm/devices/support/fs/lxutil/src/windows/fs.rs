@@ -9,10 +9,12 @@ use ::windows::Wdk::System::SystemServices;
 use ::windows::Win32::Foundation;
 use ::windows::Win32::Storage::FileSystem as W32Fs;
 use ::windows::Win32::System::Ioctl;
+use ::windows::Win32::System::SystemInformation;
 use ::windows::Win32::System::SystemServices as W32Ss;
 use bitfield_struct::bitfield;
 use headervec::HeaderVec;
 use pal::windows::UnicodeString;
+use std::cmp::min;
 use std::marker::PhantomData;
 use std::mem::offset_of;
 use std::os::windows::io::AsRawHandle;
@@ -25,11 +27,32 @@ const LX_UTIL_DEFAULT_PERMISSIONS: u32 = 0o777;
 const LX_UTIL_FS_DIR_WRITE_ACCESS: u32 =
     W32Fs::FILE_ADD_FILE.0 | W32Fs::FILE_ADD_SUBDIRECTORY.0 | W32Fs::FILE_DELETE_CHILD.0;
 
-const LX_UTIL_FS_CALLER_HAS_TRAVERSE_PRIVILEGE: u32 = 0x1;
+pub(crate) const LX_UTIL_FS_CALLER_HAS_TRAVERSE_PRIVILEGE: u32 = 0x1;
 
 const LX_UTIL_FS_ALLOCATION_BLOCK_SIZE: u64 = 512;
 
 const LX_UTIL_FS_NAME_LENGTH: usize = 16;
+
+const LX_FILE_METADATA_UID_EA_NAME: &str = "$LXUID";
+const LX_FILE_METADATA_GID_EA_NAME: &str = "$LXGID";
+const LX_FILE_METADATA_MODE_EA_NAME: &str = "$LXMOD";
+const LX_FILE_METADATA_DEVICE_ID_EA_NAME: &str = "$LXDEV";
+
+const LX_UTIL_FILE_METADATA_EA_NAME_LENGTH: usize = LX_FILE_METADATA_UID_EA_NAME.len();
+
+const LX_UTIL_FS_METADATA_EA_BUFFER_BASE_SIZE: usize = {
+    let base_size = offset_of!(FileSystem::FILE_FULL_EA_INFORMATION, EaName)
+        + LX_UTIL_FILE_METADATA_EA_NAME_LENGTH
+        + 1;
+    ((base_size + size_of::<u32>() - 1) & !(size_of::<u32>() - 1)) + size_of::<u32>()
+};
+
+const LX_UTIL_FS_METADATA_EA_BUFFER_DEVICE_ID_SIZE: usize =
+    LX_UTIL_FS_METADATA_EA_BUFFER_BASE_SIZE + size_of::<u32>();
+
+// Maximum size needed for an EA buffer containing all metadata fields.
+pub const LX_UTIL_FS_METADATA_EA_BUFFER_SIZE: usize =
+    LX_UTIL_FS_METADATA_EA_BUFFER_BASE_SIZE * 3 + LX_UTIL_FS_METADATA_EA_BUFFER_DEVICE_ID_SIZE;
 
 pub const LX_DRVFS_DISABLE_NONE: u32 = 0;
 pub const LX_DRVFS_DISABLE_QUERY_BY_NAME_AND_STAT_INFO: u32 = 2;
@@ -44,6 +67,8 @@ const LX_UTIL_SYMLINK_DATA_VERSION_2: u32 = 2;
 const LX_UTIL_SYMLINK_TARGET_OFFSET: u32 = offset_of!(SymlinkData, target) as u32;
 const LX_UTIL_SYMLINK_REPARSE_BASE_SIZE: u32 =
     REPARSE_DATA_BUFFER_HEADER_SIZE as u32 + LX_UTIL_SYMLINK_TARGET_OFFSET;
+
+pub(crate) const LX_UTIL_PE_HEADER_SIZE: usize = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -250,18 +275,61 @@ pub fn chmod(file_handle: &OwnedHandle, mode: lx::mode_t) -> lx::Result<()> {
     }
 }
 
+/// Result of analyzing a delete file error to determine how to proceed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteErrorAction {
+    /// The error should be returned as-is without attempting any workarounds.
+    ReturnError(lx::Error),
+    /// The error might be due to a read-only attribute; try clearing it and retrying.
+    TryReadOnlyWorkaround,
+}
+
+/// Analyzes an error from a delete file operation to determine the appropriate action.
+pub fn analyze_delete_error(error: lx::Error, file_handle: &OwnedHandle) -> DeleteErrorAction {
+    // Skip the read-only file workaround for these specific errors that are unrelated to file permissions.
+    // For errors like ENOTEMPTY (directory not empty), preserve the original error.
+    if error.value() == lx::ENOTEMPTY
+        || error.value() == lx::ENOENT
+        || error.value() == lx::ENOTDIR
+        || error.value() == lx::EISDIR
+    {
+        DeleteErrorAction::ReturnError(error)
+    } else if error.value() == lx::EIO {
+        // EIO can come from STATUS_CANNOT_DELETE, which for directories means
+        // the directory is not empty. Check if this is a directory and return
+        // ENOTEMPTY in that case.
+        if is_directory(file_handle) {
+            DeleteErrorAction::ReturnError(lx::Error::ENOTEMPTY)
+        } else {
+            DeleteErrorAction::ReturnError(error)
+        }
+    } else {
+        DeleteErrorAction::TryReadOnlyWorkaround
+    }
+}
+
 pub fn delete_file(fs_context: &FsContext, file_handle: &OwnedHandle) -> lx::Result<()> {
     let result = delete_file_core(fs_context, file_handle);
 
     match result {
         Ok(_) => result,
-        Err(e) => {
-            if e.value() == lx::EIO {
-                result
-            } else {
+        Err(e) => match analyze_delete_error(e, file_handle) {
+            DeleteErrorAction::ReturnError(err) => Err(err),
+            DeleteErrorAction::TryReadOnlyWorkaround => {
                 delete_read_only_file(fs_context, file_handle)
             }
-        }
+        },
+    }
+}
+
+/// Check if a file handle refers to a directory.
+fn is_directory(file_handle: &OwnedHandle) -> bool {
+    if let Ok(info) =
+        util::query_information_file::<FileSystem::FILE_BASIC_INFORMATION>(file_handle)
+    {
+        info.FileAttributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0
+    } else {
+        false
     }
 }
 
@@ -282,6 +350,7 @@ pub fn delete_read_only_file(fs_context: &FsContext, file_handle: &OwnedHandle) 
     if info.FileAttributes & W32Fs::FILE_ATTRIBUTE_READONLY.0 == 0 {
         Err(lx::Error::from_lx(lx::EIO))
     } else {
+        util::set_readonly_attribute(file_handle, info.FileAttributes, false)?;
         delete_file_core(fs_context, file_handle)
     }
 }
@@ -503,7 +572,7 @@ pub fn validate_lx_attributes(info: &mut FileSystem::FILE_STAT_LX_INFORMATION) {
         info.LxFlags &= !FileSystem::LX_FILE_METADATA_HAS_UID;
     }
 
-    if (info.LxFlags & FileSystem::LX_FILE_METADATA_HAS_GID != 0) && (info.LxUid == lx::GID_INVALID)
+    if (info.LxFlags & FileSystem::LX_FILE_METADATA_HAS_GID != 0) && (info.LxGid == lx::GID_INVALID)
     {
         info.LxFlags &= !FileSystem::LX_FILE_METADATA_HAS_GID;
     }
@@ -517,7 +586,7 @@ pub fn allocation_size_to_block_count(allocation_size: i64, block_size: u32) -> 
 
     if size >= block_size as u64 {
         result = size / LX_UTIL_FS_ALLOCATION_BLOCK_SIZE;
-        if size % LX_UTIL_FS_ALLOCATION_BLOCK_SIZE != 0 {
+        if !size.is_multiple_of(LX_UTIL_FS_ALLOCATION_BLOCK_SIZE) {
             result += 1;
         }
     }
@@ -539,7 +608,7 @@ pub fn get_lx_attr(
     umask: u32,
     fmask: u32,
     dmask: u32,
-) -> lx::Result<lx::Stat> {
+) -> lx::Result<lx::StatEx> {
     let inode_attr = determine_inode_attributes(fs_context, info, flags, umask, fmask, dmask)?;
     let mode = inode_attr.mode.unwrap_or(0);
     let file_size: u64;
@@ -553,29 +622,56 @@ pub fn get_lx_attr(
         block_count = allocation_size_to_block_count(info.AllocationSize, block_size)
     }
 
-    // lx::Stat has different padding members on ARM and x86. As such, don't construct it manually,
-    // but just fill out the individual fields.
-    let mut stat: lx::Stat = unsafe { std::mem::zeroed() };
-    stat.uid = inode_attr.uid.unwrap_or(default_uid);
-    stat.gid = inode_attr.gid.unwrap_or(default_gid);
-    stat.mode = mode;
-    stat.device_nr_special = inode_attr.device_id.unwrap_or(0) as _;
-    stat.inode_nr = info.FileId as _;
-    stat.link_count = info.NumberOfLinks as _;
-    stat.access_time = util::nt_time_to_timespec(info.LastAccessTime, true);
-    stat.write_time = util::nt_time_to_timespec(info.LastWriteTime, true);
-    stat.change_time = if info.ChangeTime == 0 {
-        // Some file systems do not provide a change time. If this is the case,
-        // use the write time.
-        util::nt_time_to_timespec(info.LastWriteTime, true)
-    } else {
-        util::nt_time_to_timespec(info.ChangeTime, true)
-    };
-    stat.block_size = block_size as _;
-    stat.file_size = file_size;
-    stat.block_count = block_count;
+    let attributes_mask = lx::StatExAttributes::new()
+        .with_compressed(true)
+        .with_encrypted(true)
+        .with_nodump(true);
+    let attributes = lx::StatExAttributes::new()
+        .with_compressed(info.FileAttributes & W32Fs::FILE_ATTRIBUTE_COMPRESSED.0 != 0)
+        .with_encrypted(info.FileAttributes & W32Fs::FILE_ATTRIBUTE_ENCRYPTED.0 != 0)
+        .with_nodump(info.FileAttributes & W32Fs::FILE_ATTRIBUTE_ARCHIVE.0 == 0);
+    let mask = lx::StatExMask::new()
+        .with_file_type(true)
+        .with_mode(true)
+        .with_nlink(true)
+        .with_uid(true)
+        .with_gid(true)
+        .with_atime(true)
+        .with_btime(true)
+        .with_ctime(info.ChangeTime != 0)
+        .with_mtime(true)
+        .with_ino(true)
+        .with_size(true)
+        .with_blocks(true);
 
-    Ok(stat)
+    let rdev_id = inode_attr.device_id.unwrap_or(0);
+    Ok(lx::StatEx {
+        uid: inode_attr.uid.unwrap_or(default_uid),
+        gid: inode_attr.gid.unwrap_or(default_gid),
+        mode: mode as u16,
+        rdev_major: lx::major32(rdev_id),
+        rdev_minor: lx::minor(rdev_id),
+        inode_id: info.FileId as _,
+        link_count: info.NumberOfLinks as _,
+        creation_time: util::nt_time_to_timespec(info.CreationTime, true).into(),
+        access_time: util::nt_time_to_timespec(info.LastAccessTime, true).into(),
+        write_time: util::nt_time_to_timespec(info.LastWriteTime, true).into(),
+        change_time: if info.ChangeTime == 0 {
+            // Some file systems do not provide a change time. If this is the case,
+            // use the write time.
+            util::nt_time_to_timespec(info.LastWriteTime, true)
+        } else {
+            util::nt_time_to_timespec(info.ChangeTime, true)
+        }
+        .into(),
+        block_size: block_size as _,
+        file_size,
+        block_count,
+        attributes_mask,
+        attributes,
+        mask,
+        ..Default::default()
+    })
 }
 
 /// Query the stat information for a handle. If the filesystem does not support FILE_STAT_INFORMATION,
@@ -590,7 +686,10 @@ pub fn query_stat_information(
         debug_assert!(!fs_context.compatibility_flags.supports_query_by_name());
 
         let granted_access = if fs_context.compatibility_flags.supports_permission_mapping() {
-            util::check_security(file_handle, W32Ss::MAXIMUM_ALLOWED)?
+            util::check_security(
+                file_handle,
+                W32Fs::FILE_ACCESS_RIGHTS(W32Ss::MAXIMUM_ALLOWED),
+            )?
         } else {
             0
         };
@@ -801,7 +900,7 @@ pub fn read_link_length(file_handle: &OwnedHandle, state: &VolumeState) -> lx::R
 pub fn read_reparse_link(
     file_handle: &OwnedHandle,
     state: &VolumeState,
-) -> lx::Result<Option<String>> {
+) -> lx::Result<Option<lx::LxString>> {
     let (iosb, reparse_buffer) = query_reparse_data(file_handle)?;
 
     // SAFETY: Accessing union field of type returned from Win32 API
@@ -835,15 +934,14 @@ pub fn read_reparse_link(
                         } else {
                             // SAFETY: The section of memory used to construct the string is guaranteed to
                             // be valid by the Win32 API due to the previous checks
-                            let str = std::str::from_utf8(unsafe {
+                            let target_slice = unsafe {
                                 std::slice::from_raw_parts(
                                     reparse_buffer.head.data.symlink.target.as_ptr(),
                                     path_length as usize,
                                 )
-                            })
-                            .map_err(|_| lx::Error::EIO)?;
+                            };
 
-                            Ok(Some(str.to_string()))
+                            Ok(Some(lx::LxString::from_vec(target_slice.to_vec())))
                         }
                     }
                 }
@@ -917,4 +1015,282 @@ fn determine_fallback_mode(
             flags.set_supports_stat_info(true);
         };
     }
+}
+
+/// Get the block size for atomicity from a file system.
+pub fn get_fs_block_size(file_handle: &OwnedHandle) -> u32 {
+    let mut iosb = Default::default();
+    let mut fs_info = FileSystem::FILE_FS_SECTOR_SIZE_INFORMATION::default();
+    // SAFETY: Calling Win32 API as documented
+    let result = unsafe {
+        util::check_status(FileSystem::NtQueryVolumeInformationFile(
+            Foundation::HANDLE(file_handle.as_raw_handle()),
+            &mut iosb,
+            std::ptr::from_mut(&mut fs_info).cast(),
+            size_of::<FileSystem::FILE_FS_SECTOR_SIZE_INFORMATION>() as _,
+            FileSystem::FileFsSectorSizeInformation,
+        ))
+    };
+
+    match result {
+        Ok(_) => fs_info.FileSystemEffectivePhysicalBytesPerSectorForAtomicity,
+        Err(_) => LX_UTIL_FS_ALLOCATION_BLOCK_SIZE as u32,
+    }
+}
+
+/// Check whether a file is an app execution alias reparse point.
+pub fn is_app_exec_link(attributes: u32, reparse_tag: u32) -> bool {
+    (attributes & W32Fs::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0)
+        && (reparse_tag == W32Ss::IO_REPARSE_TAG_APPEXECLINK)
+}
+
+/// Read the fake PE header generated for app execution aliases into a slice.
+pub fn read_app_exec_link(offset: lx::off_t, buf: &mut [u8]) -> usize {
+    const PE_HEADER: [u8; LX_UTIL_PE_HEADER_SIZE] = [b'M', b'Z'];
+
+    if offset >= LX_UTIL_PE_HEADER_SIZE as _ {
+        return 0;
+    }
+
+    // Copy PE_HEADER until either the end of PE_HEADER or buf
+    let count = min(PE_HEADER.len() - offset as usize, buf.len());
+    buf[..count].copy_from_slice(&PE_HEADER[offset as usize..offset as usize + count]);
+    count
+}
+
+/// Set the file times on a file. Any of the timespecs may have a nanoseconds field of
+/// `UTIME_OMIT`, indicating it should not be updated.
+pub fn set_file_times(
+    file_handle: &OwnedHandle,
+    accessed_time: &lx::Timespec,
+    modified_time: &lx::Timespec,
+    changed_time: &lx::Timespec,
+) -> lx::Result<()> {
+    // SAFETY: Calling Win32 API as documented.
+    let current_time = unsafe { SystemInformation::GetSystemTimePreciseAsFileTime() };
+
+    let current_time: i64 =
+        (current_time.dwHighDateTime as i64) << 32 | (current_time.dwLowDateTime as i64);
+
+    let mut info = FileSystem::FILE_BASIC_INFORMATION::default();
+    info.LastAccessTime =
+        util::timespec_utime_to_nt_time(accessed_time, current_time).unwrap_or_default();
+    info.LastWriteTime =
+        util::timespec_utime_to_nt_time(modified_time, current_time).unwrap_or_default();
+    info.ChangeTime =
+        util::timespec_utime_to_nt_time(changed_time, current_time).unwrap_or_default();
+
+    util::set_information_file(file_handle, &info)
+}
+
+/// Create the reparse buffer for an LX symlink. The size of the buffer is returned in `size`.
+pub fn create_link_reparse_buffer(target: &lx::LxStr) -> lx::Result<Vec<u8>> {
+    let link_target = util::create_ansi_string(target)?;
+    let target_length = link_target.as_slice().len();
+    let reparse_size =
+        REPARSE_DATA_BUFFER_HEADER_SIZE + LX_UTIL_SYMLINK_TARGET_OFFSET as usize + target_length;
+
+    // This should not happen since Linux paths are max 4096 characters.
+    if reparse_size > u16::MAX as usize {
+        return Err(lx::Error::ENAMETOOLONG);
+    }
+
+    let mut buf = vec![0u8; reparse_size];
+    // SAFETY: Casting buffer which is guaranteed to be large enough.
+    let reparse = unsafe { buf.as_mut_ptr().cast::<SymlinkReparse>().as_mut().unwrap() };
+    reparse.header.ReparseTag = FileSystem::IO_REPARSE_TAG_LX_SYMLINK as u32;
+    reparse.header.ReparseDataLength = LX_UTIL_SYMLINK_TARGET_OFFSET as u16 + target_length as u16;
+    reparse.data.symlink.version = LX_UTIL_SYMLINK_DATA_VERSION_2;
+    let offset = REPARSE_DATA_BUFFER_HEADER_SIZE + LX_UTIL_SYMLINK_TARGET_OFFSET as usize;
+    buf[offset..offset + target_length].copy_from_slice(link_target.as_slice());
+    Ok(buf)
+}
+
+/// Retrieve the file system attributes and optionally the name of a filesystem.
+pub fn get_lx_file_system_attributes(
+    file_handle: &OwnedHandle,
+    fs_type: u32,
+) -> lx::Result<lx::StatFs> {
+    let mut iosb = Default::default();
+    let mut size_info: SystemServices::FILE_FS_FULL_SIZE_INFORMATION = Default::default();
+    let mut attribute_info: HeaderVec<FileSystem::FILE_FS_ATTRIBUTE_INFORMATION, u16, 1> =
+        HeaderVec::with_capacity(Default::default(), LX_UTIL_FS_NAME_LENGTH);
+    // SAFETY: Calling Win32 API as documented.
+    unsafe {
+        let _ = util::check_status(FileSystem::NtQueryVolumeInformationFile(
+            Foundation::HANDLE(file_handle.as_raw_handle()),
+            &mut iosb,
+            std::ptr::from_mut(&mut size_info).cast(),
+            size_of::<SystemServices::FILE_FS_FULL_SIZE_INFORMATION>() as u32,
+            FileSystem::FileFsFullSizeInformation,
+        ))?;
+
+        let _ = util::check_status(FileSystem::NtQueryVolumeInformationFile(
+            Foundation::HANDLE(file_handle.as_raw_handle()),
+            &mut iosb,
+            attribute_info.as_mut_ptr().cast(),
+            attribute_info.total_byte_capacity() as _,
+            FileSystem::FileFsAttributeInformation,
+        ))?;
+    }
+
+    let block_size = size_info.BytesPerSector * size_info.SectorsPerAllocationUnit;
+
+    Ok(lx::StatFs {
+        fs_type: fs_type as _,
+        block_size: block_size as _,
+        block_count: size_info.TotalAllocationUnits as _,
+        free_block_count: size_info.ActualAvailableAllocationUnits as _,
+        available_block_count: size_info.CallerAvailableAllocationUnits as _,
+        maximum_file_name_length: attribute_info.head.MaximumComponentNameLength as _,
+        file_record_size: block_size as _,
+        spare: [0; 4],
+        // The following values are faked.
+        file_system_id: [1, 0, 0, 0, 0, 0, 0, 0],
+        file_count: 999,
+        available_file_count: 1000000,
+        // Flags is filled out by VFS, not here.
+        flags: 0,
+    })
+}
+
+/// Truncates the supplied file to the specified size.
+pub fn truncate(file_handle: &OwnedHandle, size: u64) -> lx::Result<()> {
+    let info = SystemServices::FILE_END_OF_FILE_INFORMATION {
+        EndOfFile: size.try_into().map_err(|_| lx::Error::EINVAL)?,
+    };
+
+    util::set_information_file(file_handle, &info)
+}
+
+/// Add an item to the EA buffer.
+fn add_ea(
+    name: &str,
+    value1: u32,
+    value2: Option<u32>,
+    buffer: &mut [u8; LX_UTIL_FS_METADATA_EA_BUFFER_SIZE],
+    offset: &mut usize,
+) -> lx::Result<usize> {
+    assert_eq!(name.len(), LX_UTIL_FILE_METADATA_EA_NAME_LENGTH);
+
+    // The rest of the buffer must be large enough to hold the EA.
+    let required_size = if value2.is_some() {
+        LX_UTIL_FS_METADATA_EA_BUFFER_DEVICE_ID_SIZE
+    } else {
+        LX_UTIL_FS_METADATA_EA_BUFFER_BASE_SIZE
+    };
+
+    if *offset + required_size > buffer.len() {
+        return Err(lx::Error::EINVAL);
+    }
+
+    // SAFETY: Writing to a properly sized buffer.
+    let ea = unsafe {
+        &mut *buffer[*offset..]
+            .as_mut_ptr()
+            .cast::<FileSystem::FILE_FULL_EA_INFORMATION>()
+    };
+    ea.EaNameLength = LX_UTIL_FILE_METADATA_EA_NAME_LENGTH as u8;
+
+    // Copy the name and null terminator into the buffer
+    let name_offset = *offset + offset_of!(FileSystem::FILE_FULL_EA_INFORMATION, EaName);
+    buffer[name_offset..name_offset + name.len()].copy_from_slice(name.as_bytes());
+    buffer[name_offset + name.len()] = 0;
+
+    // Copy value1 after the name and null terminator
+    let value_offset =
+        *offset + offset_of!(FileSystem::FILE_FULL_EA_INFORMATION, EaName) + name.len() + 1;
+    buffer[value_offset..value_offset + size_of::<u32>()].copy_from_slice(&value1.to_ne_bytes());
+
+    if let Some(value2) = value2 {
+        // Copy value2 after value1
+        let value2_offset = value_offset + size_of::<u32>();
+        buffer[value2_offset..value2_offset + size_of::<u32>()]
+            .copy_from_slice(&value2.to_ne_bytes());
+
+        ea.EaValueLength = (size_of::<u32>() * 2) as u16;
+        ea.NextEntryOffset = LX_UTIL_FS_METADATA_EA_BUFFER_DEVICE_ID_SIZE as u32;
+    } else {
+        ea.EaValueLength = size_of::<u32>() as u16;
+        ea.NextEntryOffset = LX_UTIL_FS_METADATA_EA_BUFFER_BASE_SIZE as u32;
+    }
+
+    Ok(*offset + ea.NextEntryOffset as usize)
+}
+
+/// Creates the EA buffer for LX metadata.
+pub fn create_metadata_ea_buffer(
+    uid: lx::uid_t,
+    gid: lx::gid_t,
+    mode: lx::mode_t,
+    device_id: lx::dev_t,
+    buffer: &mut [u8; LX_UTIL_FS_METADATA_EA_BUFFER_SIZE],
+) -> lx::Result<usize> {
+    let mut last_offset = 0;
+    let mut offset = 0;
+
+    if uid != lx::UID_INVALID {
+        offset = add_ea(LX_FILE_METADATA_UID_EA_NAME, uid, None, buffer, &mut offset)?;
+    }
+
+    if gid != lx::GID_INVALID {
+        last_offset = offset;
+        offset = add_ea(LX_FILE_METADATA_GID_EA_NAME, gid, None, buffer, &mut offset)?;
+    }
+
+    if mode != lx::MODE_INVALID {
+        last_offset = offset;
+        offset = add_ea(
+            LX_FILE_METADATA_MODE_EA_NAME,
+            mode,
+            None,
+            buffer,
+            &mut offset,
+        )?;
+    }
+
+    if device_id != 0 {
+        assert!(lx::s_ischr(mode) || lx::s_isblk(mode));
+        last_offset = offset;
+        let major = lx::major32(device_id);
+        let minor = lx::minor(device_id);
+
+        offset = add_ea(
+            LX_FILE_METADATA_DEVICE_ID_EA_NAME,
+            major,
+            Some(minor),
+            buffer,
+            &mut offset,
+        )?;
+    }
+
+    // The last EA added should have a NextEntryOffset of 0.
+    if offset > 0 {
+        // SAFETY: Writing to a properly sized buffer.
+        let ea = unsafe {
+            &mut *buffer[last_offset..]
+                .as_mut_ptr()
+                .cast::<FileSystem::FILE_FULL_EA_INFORMATION>()
+        };
+        ea.NextEntryOffset = 0;
+    }
+
+    Ok(offset)
+}
+
+/// Update the metadata EAs for a file
+pub fn update_lx_attributes(
+    file_handle: &OwnedHandle,
+    uid: lx::uid_t,
+    gid: lx::gid_t,
+    mode: lx::mode_t,
+) -> lx::Result<()> {
+    if uid == lx::UID_INVALID && gid == lx::GID_INVALID && mode == lx::MODE_INVALID {
+        return Err(lx::Error::EINVAL);
+    }
+
+    let mut ea_buffer = [0u8; LX_UTIL_FS_METADATA_EA_BUFFER_SIZE];
+    let ea_size = create_metadata_ea_buffer(uid, gid, mode, 0, &mut ea_buffer)?;
+
+    util::set_extended_attr(file_handle, &ea_buffer[..ea_size])
 }
