@@ -14,7 +14,8 @@ pub mod process;
 pub mod unix;
 pub mod windows;
 
-// Re-export windows_sys and windows_result so that the delayload! macro works when used in other crates
+// Re-export windows_sys and windows_result so that the delayload! macro works
+// when used in other crates
 #[cfg(windows)]
 pub use windows_result;
 #[cfg(windows)]
