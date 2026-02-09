@@ -1006,25 +1006,29 @@ macro_rules! delayload {
             $visibility:vis fn $name:ident($($params:ident : $types:ty),* $(,)?) -> $result:ty;
         )*
     }} => {
-        fn get_module() -> Result<::windows_sys::Win32::Foundation::HMODULE, ::windows_sys::Win32::Foundation::WIN32_ERROR> {
+        fn get_module() -> Result<$crate::windows_sys::Win32::Foundation::HMODULE, $crate::windows_sys::Win32::Foundation::WIN32_ERROR> {
             use ::std::ffi::c_void;
             use ::std::ptr::null_mut;
             use ::std::sync::atomic::{AtomicPtr, Ordering};
-            use ::windows_sys::Win32::{
+            use $crate::windows_sys::Win32::{
                 Foundation::{FreeLibrary, GetLastError},
                 System::LibraryLoader::{LoadLibraryA},
             };
 
             static MODULE: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
-            let mut module = MODULE.load(Ordering::Relaxed);
+            let mut module = MODULE.load(Ordering::Acquire);
             if module.is_null() {
-                module = unsafe { LoadLibraryA(concat!($dll, "\0").as_ptr().cast::<u8>()) };
-                if module.is_null() {
+                let new_module = unsafe { LoadLibraryA(concat!($dll, "\0").as_ptr().cast::<u8>()) };
+                if new_module.is_null() {
                     return Err(unsafe { GetLastError() });
                 }
-                let old_module = MODULE.swap(module, Ordering::Relaxed);
-                if !old_module.is_null() {
-                    unsafe { FreeLibrary(old_module) };
+                match MODULE.compare_exchange(null_mut(), new_module, Ordering::Release, Ordering::Acquire) {
+                    Ok(_) => module = new_module,
+                    Err(old_module) => {
+                        // Another thread won the race, use their module and free ours
+                        unsafe { FreeLibrary(new_module) };
+                        module = old_module;
+                    }
                 }
             }
             Ok(module)
@@ -1034,10 +1038,10 @@ macro_rules! delayload {
             #![expect(non_snake_case)]
             $(
                 $(#[$a])*
-                pub fn $name() -> Result<usize, ::windows_sys::Win32::Foundation::WIN32_ERROR> {
+                pub fn $name() -> Result<usize, $crate::windows_sys::Win32::Foundation::WIN32_ERROR> {
                     use ::std::concat;
                     use ::std::sync::atomic::{AtomicUsize, Ordering};
-                    use ::windows_sys::Win32::{
+                    use $crate::windows_sys::Win32::{
                         Foundation::ERROR_PROC_NOT_FOUND,
                         System::LibraryLoader::GetProcAddress,
                     };
@@ -1101,10 +1105,10 @@ macro_rules! delayload {
         )*
     };
 
-    (@result_from_win32((i32), $val:expr)) => { ::windows_result::HRESULT::from_win32($val) };
+    (@result_from_win32((i32), $val:expr)) => { $crate::windows_result::HRESULT::from_win32($val) };
     (@result_from_win32((u32), $val:expr)) => { $val };
     (@result_from_win32((DWORD), $val:expr)) => { $val };
-    (@result_from_win32((HRESULT), $val:expr)) => { ::windows_result::HRESULT::from_win32($val) };
+    (@result_from_win32((HRESULT), $val:expr)) => { $crate::windows_result::HRESULT::from_win32($val) };
     (@result_from_win32(($t:tt), $val:expr)) => { panic!("could not load: {}", $val) };
 }
 
