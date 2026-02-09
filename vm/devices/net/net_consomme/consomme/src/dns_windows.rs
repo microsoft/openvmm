@@ -4,10 +4,11 @@
 // UNSAFETY: Calling Win32 APIs to get DNS server information.
 #![expect(unsafe_code)]
 
-use smoltcp::wire::Ipv4Address;
+use smoltcp::wire::IpAddress;
 use std::alloc::Layout;
 use std::io;
 use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 use std::ptr::NonNull;
 use std::ptr::null_mut;
 use thiserror::Error;
@@ -21,7 +22,10 @@ use windows_sys::Win32::NetworkManagement::IpHelper::GAA_FLAG_SKIP_UNICAST;
 use windows_sys::Win32::NetworkManagement::IpHelper::GetAdaptersAddresses;
 use windows_sys::Win32::NetworkManagement::IpHelper::IP_ADAPTER_ADDRESSES_LH;
 use windows_sys::Win32::Networking::WinSock::AF_INET;
+use windows_sys::Win32::Networking::WinSock::AF_INET6;
+use windows_sys::Win32::Networking::WinSock::AF_UNSPEC;
 use windows_sys::Win32::Networking::WinSock::SOCKADDR_IN;
+use windows_sys::Win32::Networking::WinSock::SOCKADDR_IN6;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -29,7 +33,7 @@ pub enum Error {
     AdapterAddresses(#[source] io::Error),
 }
 
-pub fn nameservers() -> Result<Vec<Ipv4Address>, Error> {
+pub fn nameservers() -> Result<Vec<IpAddress>, Error> {
     let flags = GAA_FLAG_SKIP_UNICAST
         | GAA_FLAG_SKIP_ANYCAST
         | GAA_FLAG_SKIP_MULTICAST
@@ -45,8 +49,13 @@ pub fn nameservers() -> Result<Vec<Ipv4Address>, Error> {
         let mut addrs = Addresses::new(0);
         loop {
             let mut size = addrs.size();
-            let r =
-                GetAdaptersAddresses(AF_INET.into(), flags, null_mut(), addrs.as_ptr(), &mut size);
+            let r = GetAdaptersAddresses(
+                AF_UNSPEC.into(),
+                flags,
+                null_mut(),
+                addrs.as_ptr(),
+                &mut size,
+            );
             match r {
                 ERROR_SUCCESS => break,
                 ERROR_BUFFER_OVERFLOW => {}
@@ -72,7 +81,12 @@ pub fn nameservers() -> Result<Vec<Ipv4Address>, Error> {
                 let dns_addr = &*dns.Address.lpSockaddr;
                 if dns_addr.sa_family == AF_INET {
                     let dns_addr = &*dns.Address.lpSockaddr.cast::<SOCKADDR_IN>();
-                    dns_servers.push(Ipv4Addr::from(u32::from_be(dns_addr.sin_addr.S_un.S_addr)));
+                    let ipv4_addr = Ipv4Addr::from(u32::from_be(dns_addr.sin_addr.S_un.S_addr));
+                    dns_servers.push(ipv4_addr.into());
+                } else if dns_addr.sa_family == AF_INET6 {
+                    let dns_addr = &*dns.Address.lpSockaddr.cast::<SOCKADDR_IN6>();
+                    let ipv6_addr = Ipv6Addr::from(u128::from_be_bytes(dns_addr.sin6_addr.u.Byte));
+                    dns_servers.push(ipv6_addr.into());
                 }
                 dns_p = dns.Next;
             }

@@ -31,7 +31,7 @@ use net_backend::TxSegmentType;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -107,7 +107,7 @@ pub enum IpProtocol {
 
 struct MessageBindPort {
     protocol: IpProtocol,
-    address: Option<Ipv4Addr>,
+    address: Option<IpAddr>,
     port: u16,
 }
 
@@ -122,7 +122,7 @@ impl ConsommeControl {
     pub async fn bind_port(
         &self,
         protocol: IpProtocol,
-        ip_addr: Option<Ipv4Addr>,
+        ip_addr: Option<IpAddr>,
         port: u16,
     ) -> Result<(), ConsommeMessageError> {
         self.send
@@ -355,11 +355,15 @@ impl net_backend::Queue for ConsommeQueue {
                     consomme::DropReason::UnsupportedEthertype(_)
                     | consomme::DropReason::UnsupportedIpProtocol(_)
                     | consomme::DropReason::UnsupportedDhcp(_)
-                    | consomme::DropReason::UnsupportedArp => self.stats.tx_unknown.increment(),
+                    | consomme::DropReason::UnsupportedArp
+                    | consomme::DropReason::UnsupportedDhcpv6(_)
+                    | consomme::DropReason::UnsupportedNdp(_) => self.stats.tx_unknown.increment(),
                     consomme::DropReason::Packet(_)
                     | consomme::DropReason::Ipv4Checksum
                     | consomme::DropReason::Io(_)
-                    | consomme::DropReason::BadTcpState(_) => self.stats.tx_errors.increment(),
+                    | consomme::DropReason::BadTcpState(_)
+                    | consomme::DropReason::FragmentedPacket
+                    | consomme::DropReason::MalformedPacket => self.stats.tx_errors.increment(),
                     consomme::DropReason::PortNotBound => unreachable!(),
                 }
             }

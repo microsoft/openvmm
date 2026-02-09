@@ -806,6 +806,7 @@ dependencies = [
  "inspect_counters",
  "libc",
  "mesh_channel_core",
+ "open_enum",
  "pal",
  "pal_async",
  "parking_lot",
@@ -817,6 +818,7 @@ dependencies = [
  "tracelimit",
  "tracing",
  "windows-sys 0.61.0",
+ "zerocopy 0.8.27",
 ]
 
 [[package]]

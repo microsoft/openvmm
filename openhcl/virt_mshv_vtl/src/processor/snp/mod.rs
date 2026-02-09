@@ -1570,7 +1570,7 @@ impl UhProcessor<'_, SnpBacked> {
                 // for injection but injection cannot complete due to the intercept. Rewind the pending
                 // virtual interrupt so it is reinjected as a fixed interrupt.
 
-                // TODO SNP: Rewind the interrupt.
+                // TODO SNP ALTERNATE INJECTION: Rewind the interrupt.
                 unimplemented!("SevExitCode::VINTR");
             }
 
