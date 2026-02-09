@@ -1011,14 +1011,14 @@ macro_rules! delayload {
             use ::std::ptr::null_mut;
             use ::std::sync::atomic::{AtomicPtr, Ordering};
             use ::windows_sys::Win32::{
-                Foundation::{FreeLibrary, GetLastError, WIN32_ERROR},
+                Foundation::{FreeLibrary, GetLastError},
                 System::LibraryLoader::{LoadLibraryA},
             };
 
             static MODULE: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
             let mut module = MODULE.load(Ordering::Relaxed);
             if module.is_null() {
-                module = unsafe { LoadLibraryA(concat!($dll, "\0").as_ptr() as *const u8) };
+                module = unsafe { LoadLibraryA(concat!($dll, "\0").as_ptr().cast::<u8>()) };
                 if module.is_null() {
                     return Err(unsafe { GetLastError() });
                 }
@@ -1054,7 +1054,7 @@ macro_rules! delayload {
                         let module = super::get_module()?;
                         fnval = unsafe { GetProcAddress(
                             module,
-                            concat!(stringify!($name), "\0").as_ptr() as *const u8) }
+                            concat!(stringify!($name), "\0").as_ptr().cast::<u8>()) }
                             .map(|f| f as usize)
                             .unwrap_or(0);
                         if fnval == 0 {
@@ -1088,8 +1088,10 @@ macro_rules! delayload {
                 match funcs::$name() {
                     Ok(fnval) => {
                         type FnType = unsafe extern "system" fn($($params: $types,)*) -> $result;
-                        let fnptr: FnType = ::std::mem::transmute(fnval);
-                        fnptr($($params,)*)
+                        // SAFETY: fnval is a valid function pointer obtained from GetProcAddress
+                        let fnptr: FnType = unsafe { ::std::mem::transmute(fnval) };
+                        // SAFETY: The function pointer is valid and the caller must uphold the function's safety contract
+                        unsafe { fnptr($($params,)*) }
                     },
                     Err(win32) => {
                         $crate::delayload!(@result_from_win32(($result), win32))
@@ -1156,5 +1158,78 @@ mod tests {
     fn test_alloc_unicode_string() {
         let s: UnicodeString = "abc".try_into().unwrap();
         assert!(s.as_slice().iter().copied().eq("abc".encode_utf16()));
+    }
+
+    #[test]
+    fn test_delayload() {
+        // Test delayloading kernel32.dll functions that are guaranteed to exist
+        mod kernel32_delayload {
+            delayload! { "kernel32.dll" {
+                pub fn GetCurrentProcessId() -> u32;
+                pub fn GetCurrentThreadId() -> u32;
+            }}
+        }
+
+        // Test is_supported for functions that exist
+        assert!(kernel32_delayload::is_supported::GetCurrentProcessId());
+        assert!(kernel32_delayload::is_supported::GetCurrentThreadId());
+
+        // Test that the functions work correctly
+        unsafe {
+            let pid = kernel32_delayload::GetCurrentProcessId();
+            assert_ne!(pid, 0, "Process ID should not be zero");
+
+            let tid = kernel32_delayload::GetCurrentThreadId();
+            assert_ne!(tid, 0, "Thread ID should not be zero");
+        }
+    }
+
+    #[test]
+    fn test_delayload_missing_function() {
+        // Test delayloading a function that doesn't exist
+        mod kernel32_missing {
+            delayload! { "kernel32.dll" {
+                #[allow(dead_code)]
+                pub fn NonExistentFunction() -> u32;
+            }}
+        }
+
+        // Test that is_supported correctly identifies missing functions
+        assert!(!kernel32_missing::is_supported::NonExistentFunction());
+    }
+
+    #[test]
+    fn test_delayload_missing_dll() {
+        // Test delayloading from a DLL that doesn't exist
+        mod missing_dll {
+            delayload! { "this_dll_does_not_exist_12345.dll" {
+                #[allow(dead_code)]
+                pub fn SomeFunction() -> u32;
+            }}
+        }
+
+        // Test that is_supported returns false when the DLL doesn't exist
+        assert!(!missing_dll::is_supported::SomeFunction());
+    }
+
+    #[test]
+    fn test_delayload_multiple_calls() {
+        // Test that multiple calls to the same delayloaded function work
+        // and that the function pointer is cached correctly
+        mod kernel32_cached {
+            delayload! { "kernel32.dll" {
+                pub fn GetCurrentProcessId() -> u32;
+            }}
+        }
+
+        unsafe {
+            let pid1 = kernel32_cached::GetCurrentProcessId();
+            let pid2 = kernel32_cached::GetCurrentProcessId();
+            let pid3 = kernel32_cached::GetCurrentProcessId();
+
+            // All calls should return the same PID
+            assert_eq!(pid1, pid2);
+            assert_eq!(pid2, pid3);
+        }
     }
 }
