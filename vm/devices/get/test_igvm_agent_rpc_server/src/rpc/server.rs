@@ -7,7 +7,6 @@ use std::os::windows::ffi::OsStrExt;
 use std::ptr;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use winapi::shared::minwindef::BOOL;
 use windows_sys::Win32::Foundation::FALSE;
 use windows_sys::Win32::Foundation::TRUE;
 use windows_sys::Win32::System::Console::CTRL_BREAK_EVENT;
@@ -25,6 +24,7 @@ use windows_sys::Win32::System::Rpc::RpcServerListen;
 use windows_sys::Win32::System::Rpc::RpcServerRegisterIf3;
 use windows_sys::Win32::System::Rpc::RpcServerUnregisterIf;
 use windows_sys::Win32::System::Rpc::RpcServerUseProtseqEpW;
+use windows_sys::core::BOOL;
 
 pub const PROTOCOL_SEQUENCE: &str = "ncalrpc";
 pub const ENDPOINT: &str = "IGVM_AGENT_RPC_SERVER";
