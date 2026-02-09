@@ -375,6 +375,21 @@ impl AdminHandler {
         true
     }
 
+    fn number_of_namespaces(&self) -> u32 {
+        self.namespaces
+            .last_key_value()
+            .map(|(k, _)| *k)
+            .unwrap_or(0)
+    }
+
+    fn is_valid_namespace(&self, nsid: u32) -> bool {
+        0 < nsid && nsid <= self.number_of_namespaces()
+    }
+
+    fn _is_active_namespace(&self, nsid: u32) -> bool {
+        self.namespaces.contains_key(&nsid)
+    }
+
     async fn next_event(&mut self, state: &mut AdminState) -> Result<Event, QueueError> {
         let event = loop {
             // Wait for there to be room for a completion for the next
@@ -561,15 +576,22 @@ impl AdminHandler {
             spec::Cns::NAMESPACE => {
                 if let Some(ns) = self.namespaces.get(&command.nsid) {
                     ns.identify(buf);
+                } else if self.is_valid_namespace(command.nsid) {
+                    tracelimit::warn_ratelimited!(nsid = command.nsid, "inactive namespace id");
                 } else {
-                    tracelimit::warn_ratelimited!(nsid = command.nsid, "unknown namespace id");
+                    tracelimit::warn_ratelimited!(nsid = command.nsid, "invalid namespace id");
+                    return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
                 }
             }
             spec::Cns::DESCRIPTOR_NAMESPACE => {
                 if let Some(ns) = self.namespaces.get(&command.nsid) {
                     ns.namespace_id_descriptor(buf);
+                } else if self.is_valid_namespace(command.nsid) {
+                    tracelimit::warn_ratelimited!(nsid = command.nsid, "inactive namespace id");
+                    return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
                 } else {
-                    tracelimit::warn_ratelimited!(nsid = command.nsid, "unknown namespace id");
+                    tracelimit::warn_ratelimited!(nsid = command.nsid, "invalid namespace id");
+                    return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
                 }
             }
             cns => {
@@ -596,7 +618,7 @@ impl AdminHandler {
                 .with_min(IOCQES)
                 .with_max(IOCQES),
             frmw: spec::FirmwareUpdates::new().with_ffsro(true).with_nofs(1),
-            nn: self.namespaces.keys().copied().max().unwrap_or(0),
+            nn: self.number_of_namespaces(),
             ieee: [0x74, 0xe2, 0x8c], // Microsoft
             fr: (*b"v1.00000").into(),
             mn: (*b"MSFT NVMe Accelerator v1.0              ").into(),
