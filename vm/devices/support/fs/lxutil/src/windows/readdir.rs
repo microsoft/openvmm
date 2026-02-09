@@ -36,7 +36,7 @@ const BUFFER_EXTRA_SIZE: usize = 0x200;
 /// entries.
 ///
 /// The cache provides a sliding window of directory entries with stable
-/// offsets.  This ensures stable enumeration even when files are deleted
+/// offsets. This ensures stable enumeration even when files are deleted
 /// between calls: offsets remain valid within the cache window, so the guest
 /// won't skip or repeat entries due to host-side directory changes.
 ///
@@ -266,7 +266,7 @@ impl DirEntryCursor {
         assert!(offset >= self.window_start);
         ((offset - self.window_start) as usize).min(self.entries.len())
     }
-    
+
     /// Get entries starting from the given offset.
     fn entries_from(&self, offset: u64) -> &[CachedDirEntry] {
         let start = self.find_start_index(offset);
