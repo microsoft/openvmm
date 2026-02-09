@@ -19,6 +19,7 @@ mod dhcp;
 #[cfg_attr(unix, path = "dns_unix.rs")]
 #[cfg_attr(windows, path = "dns_windows.rs")]
 mod dns;
+mod dns_resolver;
 mod icmp;
 mod tcp;
 mod udp;
@@ -51,6 +52,7 @@ pub struct Consomme {
     #[inspect(mut)]
     udp: udp::Udp,
     icmp: icmp::Icmp,
+    dns: Option<dns_resolver::DnsResolver>,
 }
 
 #[derive(Inspect)]
@@ -61,7 +63,7 @@ struct ConsommeState {
 }
 
 /// Dynamic networking properties of a consomme endpoint.
-#[derive(Inspect)]
+#[derive(Inspect, Clone)]
 pub struct ConsommeParams {
     /// Current IPv4 network mask.
     #[inspect(display)]
@@ -301,7 +303,21 @@ struct Ipv4Addresses {
 
 impl Consomme {
     /// Creates a new consomme instance with specified state.
-    pub fn new(params: ConsommeParams) -> Self {
+    pub fn new(mut params: ConsommeParams) -> Self {
+        let dns =
+            match dns_resolver::DnsResolver::new(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS) {
+                Ok(dns) => {
+                    // When the DNS resolver is available, use the default internal nameserver.
+                    params.nameservers = vec![params.gateway_ip];
+                    Some(dns)
+                }
+                Err(_) => {
+                    tracelimit::warn_ratelimited!(
+                        "failed to initialize DNS resolver, falling back to using host DNS settings"
+                    );
+                    None
+                }
+            };
         let timeout = params.udp_timeout;
         Self {
             state: ConsommeState {
@@ -311,6 +327,7 @@ impl Consomme {
             tcp: tcp::Tcp::new(),
             udp: udp::Udp::new(timeout),
             icmp: icmp::Icmp::new(),
+            dns,
         }
     }
 
@@ -445,5 +462,12 @@ impl<T: Client> Access<'_, T> {
             p => return Err(DropReason::UnsupportedIpProtocol(p)),
         };
         Ok(())
+    }
+
+    /// Updates the DNS nameservers based on the current consomme parameters.
+    pub fn update_dns_nameservers(&mut self) {
+        if self.inner.dns.is_some() {
+            self.inner.state.params.nameservers = vec![self.inner.state.params.gateway_ip];
+        }
     }
 }

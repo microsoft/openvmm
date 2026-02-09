@@ -70,6 +70,7 @@ pub(crate) fn new_test_vtl2_nvme_device(
                 disk: layer.into_resource(),
                 read_only: false,
             }],
+            requests: None,
         }
         .into_resource(),
     }
@@ -725,6 +726,7 @@ async fn storvsp_dynamic_add_disk(
                                 read_only: false,
                             })
                             .collect(),
+                        requests: None,
                     }
                     .into_resource(),
                 });

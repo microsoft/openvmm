@@ -35,6 +35,8 @@ use vmgs_format::VmgsFileTable;
 use vmgs_format::VmgsHeader;
 use vmgs_format::VmgsMarkers;
 use vmgs_format::VmgsNonce;
+use vmgs_format::VmgsProvisioningMarker;
+use vmgs_format::VmgsProvisioningReason;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -379,7 +381,7 @@ struct VmgsState {
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
     encrypted_metadata_keys: [VmgsEncryptionKey; 2],
     reprovisioned: bool,
-    provisioned_this_boot: bool,
+    provisioning_reason: Option<VmgsProvisioningReason>,
 }
 
 #[cfg(feature = "inspect")]
@@ -437,11 +439,11 @@ impl Vmgs {
             Ok(vmgs) => Ok(vmgs),
             Err(Error::EmptyFile) if format_on_empty => {
                 tracing::info!(CVM_ALLOWED, "empty vmgs file, formatting");
-                Self::format_new(disk, logger).await
+                Self::format_new_with_reason(disk, VmgsProvisioningReason::Empty, logger).await
             }
             Err(err) if format_on_failure => {
                 tracing::warn!(CVM_ALLOWED, ?err, "vmgs initialization error, reformatting");
-                Self::format_new(disk, logger).await
+                Self::format_new_with_reason(disk, VmgsProvisioningReason::Failure, logger).await
             }
             Err(err) => {
                 let event_log_id = match err {
@@ -471,13 +473,23 @@ impl Vmgs {
         disk: Disk,
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Self, Error> {
+        Self::format_new_with_reason(disk, VmgsProvisioningReason::Request, logger).await
+    }
+
+    /// Format and open a new VMGS file.
+    pub async fn format_new_with_reason(
+        disk: Disk,
+        reason: VmgsProvisioningReason,
+        logger: Option<Arc<dyn VmgsLogger>>,
+    ) -> Result<Self, Error> {
         tracing::info!(
             CVM_ALLOWED,
             op_type = ?LogOpType::VmgsProvision,
+            ?reason,
             "formatting and initializing VMGS datastore"
         );
         let storage = VmgsStorage::new_validated(disk).map_err(Error::Initialization)?;
-        Self::format_new_inner(storage, VMGS_VERSION_3_0, logger).await
+        Self::format_new_inner(storage, VMGS_VERSION_3_0, reason, logger).await
     }
 
     /// Format and open a new VMGS file.
@@ -494,7 +506,13 @@ impl Vmgs {
             }
             _ => {
                 tracing::info!(CVM_ALLOWED, "formatting vmgs file on request");
-                let mut vmgs = Vmgs::format_new_inner(storage, VMGS_VERSION_3_0, logger).await?;
+                let mut vmgs = Vmgs::format_new_inner(
+                    storage,
+                    VMGS_VERSION_3_0,
+                    VmgsProvisioningReason::Request,
+                    logger,
+                )
+                .await?;
 
                 // set the reprovisioned marker to prevent the vmgs from
                 // repeatedly being reset
@@ -566,11 +584,16 @@ impl Vmgs {
         Ok(vmgs)
     }
 
-    fn new(storage: VmgsStorage, version: u32, logger: Option<Arc<dyn VmgsLogger>>) -> Vmgs {
+    fn new(
+        storage: VmgsStorage,
+        version: u32,
+        reason: VmgsProvisioningReason,
+        logger: Option<Arc<dyn VmgsLogger>>,
+    ) -> Vmgs {
         Self {
             storage,
 
-            state: VmgsState::new(version),
+            state: VmgsState::new(version, Some(reason)),
 
             #[cfg(feature = "inspect")]
             stats: Default::default(),
@@ -583,11 +606,12 @@ impl Vmgs {
     async fn format_new_inner(
         storage: VmgsStorage,
         version: u32,
+        reason: VmgsProvisioningReason,
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Vmgs, Error> {
         tracing::info!(CVM_ALLOWED, "Formatting new VMGS file.");
 
-        let mut vmgs = Self::new(storage, version, logger);
+        let mut vmgs = Self::new(storage, version, reason, logger);
 
         // zero out the active header, the other one will be populated below
         vmgs.write_header_internal(&VmgsHeader::new_zeroed(), vmgs.state.active_header_index)
@@ -1264,7 +1288,26 @@ impl Vmgs {
 
     /// Whether the VMGS file was provisioned during the most recent boot
     pub fn was_provisioned_this_boot(&self) -> bool {
-        self.state.provisioned_this_boot
+        self.state.provisioning_reason.is_some()
+    }
+
+    /// Why this VMGS file was provisioned
+    pub fn provisioning_reason(&self) -> Option<VmgsProvisioningReason> {
+        self.state.provisioning_reason
+    }
+
+    /// Write a provisioning marker to this VMGS file
+    pub async fn write_provisioning_marker(
+        &mut self,
+        marker: &VmgsProvisioningMarker,
+    ) -> Result<(), Error> {
+        self.write_file(
+            FileId::PROVISIONING_MARKER,
+            serde_json::to_string(marker)
+                .map_err(|e| Error::Other(e.into()))?
+                .as_bytes(),
+        )
+        .await
     }
 
     async fn set_reprovisioned(&mut self, value: bool) -> Result<(), Error> {
@@ -1300,7 +1343,7 @@ impl Vmgs {
 }
 
 impl VmgsState {
-    fn new(version: u32) -> Self {
+    fn new(version: u32, provisioning_reason: Option<VmgsProvisioningReason>) -> Self {
         Self {
             active_header_index: 1,
             active_header_sequence_number: 0,
@@ -1313,16 +1356,15 @@ impl VmgsState {
             unused_metadata_key: VmgsDatastoreKey::new_zeroed(),
             encrypted_metadata_keys: std::array::from_fn(|_| VmgsEncryptionKey::new_zeroed()),
             reprovisioned: false,
-            provisioned_this_boot: true,
+            provisioning_reason,
         }
     }
 
     fn from_header(header: VmgsHeader, header_index: usize) -> Self {
-        let mut state = Self::new(header.version);
+        let mut state = Self::new(header.version, None);
 
         state.active_header_index = header_index;
         state.active_header_sequence_number = header.sequence;
-        state.provisioned_this_boot = false;
 
         if header.version >= VMGS_VERSION_3_0 {
             state.encryption_algorithm = header.encryption_algorithm;
@@ -1983,7 +2025,7 @@ pub mod save_restore {
                         }
                     }),
                     reprovisioned,
-                    provisioned_this_boot: false,
+                    provisioning_reason: None,
                 },
 
                 logger,
@@ -2015,7 +2057,7 @@ pub mod save_restore {
                         unused_metadata_key: metadata_key,
                         encrypted_metadata_keys,
                         reprovisioned,
-                        provisioned_this_boot: _,
+                        provisioning_reason: _,
                     },
 
                 logger: _,
@@ -2081,21 +2123,18 @@ pub mod save_restore {
 mod tests {
     use super::*;
     use pal_async::async_test;
-    #[cfg(with_encryption)]
     use parking_lot::Mutex;
-    #[cfg(with_encryption)]
     use std::sync::Arc;
     #[cfg(with_encryption)]
     use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
+    use vmgs_format::VmgsProvisioner;
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 
-    #[cfg(with_encryption)]
     struct TestVmgsLogger {
         data: Arc<Mutex<String>>,
     }
 
-    #[cfg(with_encryption)]
     #[async_trait::async_trait]
     impl VmgsLogger for TestVmgsLogger {
         async fn log_event_fatal(&self, _event: VmgsLogEvent) {
@@ -2947,5 +2986,35 @@ mod tests {
             513
         );
         allocate_helper(&mut allocation_list, 1, block_capacity).unwrap_err();
+    }
+
+    #[async_test]
+    async fn test_provisioning_marker() {
+        const EXPECTED_MARKER: &str = r#"{"provisioner":"openhcl","reason":"empty","tpm_version":"1.38","tpm_nvram_size":32768,"akcert_size":4096,"akcert_attrs":"0x42060004","provisioner_version":"unit test"}"#;
+
+        let disk = new_test_file();
+        let data = Arc::new(Mutex::new(String::new()));
+        let mut vmgs = Vmgs::format_new_with_reason(
+            disk.clone(),
+            VmgsProvisioningReason::Empty,
+            Some(Arc::new(TestVmgsLogger { data: data.clone() })),
+        )
+        .await
+        .unwrap();
+
+        let marker = VmgsProvisioningMarker {
+            provisioner: VmgsProvisioner::OpenHcl,
+            reason: vmgs.provisioning_reason().unwrap(),
+            tpm_version: "1.38".to_string(),
+            tpm_nvram_size: 32768,
+            akcert_size: 4096,
+            akcert_attrs: "0x42060004".to_string(),
+            provisioner_version: "unit test".to_string(),
+        };
+
+        vmgs.write_provisioning_marker(&marker).await.unwrap();
+
+        let read_buf = vmgs.read_file(FileId::PROVISIONING_MARKER).await.unwrap();
+        assert_eq!(EXPECTED_MARKER.as_bytes(), read_buf);
     }
 }

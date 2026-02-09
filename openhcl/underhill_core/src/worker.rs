@@ -166,6 +166,9 @@ use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmgs::Vmgs;
 use vmgs_broker::spawn_vmgs_broker;
+use vmgs_format::VmgsProvisioner;
+use vmgs_format::VmgsProvisioningMarker;
+use vmgs_format::VmgsProvisioningReason;
 use vmgs_resources::VmgsFileHandle;
 use vmm_core::input_distributor::InputDistributor;
 use vmm_core::partition_unit::Halt;
@@ -315,6 +318,8 @@ pub struct UnderhillEnvCfg {
     /// The timeout in seconds for VM config operations, both the initial configuration
     /// and then subsequent modifications.
     pub config_timeout_in_seconds: u64,
+    /// The timeout in milliseconds for dump collection during a panic in servicing.
+    pub servicing_timeout_dump_collection_in_ms: u64,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1381,6 +1386,26 @@ fn guest_memory_access_self_test(
     Ok(())
 }
 
+/// Write a diagnostic provisioning marker to a newly-created VMGS file.
+async fn write_provisioning_marker(vmgs: &mut Vmgs) -> anyhow::Result<()> {
+    let marker = VmgsProvisioningMarker {
+        provisioner: VmgsProvisioner::OpenHcl,
+        reason: vmgs
+            .provisioning_reason()
+            .unwrap_or(VmgsProvisioningReason::Unknown),
+        tpm_version: tpm_protocol::TPM_DEFAULT_VERSION.to_string(),
+        tpm_nvram_size: tpm_protocol::TPM_DEFAULT_SIZE,
+        akcert_size: tpm_protocol::TPM_DEFAULT_AKCERT_SIZE,
+        akcert_attrs: format!(
+            "0x{:x}",
+            Into::<u32>::into(tpm_protocol::platform_akcert_attributes())
+        ),
+        provisioner_version: build_info::get().scm_revision().to_string(),
+    };
+
+    Ok(vmgs.write_provisioning_marker(&marker).await?)
+}
+
 /// Run the underhill specific worker entrypoint.
 async fn new_underhill_vm(
     get_spawner: impl Spawn,
@@ -1749,6 +1774,20 @@ async fn new_underhill_vm(
             Some((meta, vmgs))
         }
     };
+
+    if let Some((_, ref mut vmgs)) = vmgs {
+        if vmgs.was_provisioned_this_boot() {
+            let result = write_provisioning_marker(vmgs).await;
+
+            if let Err(err) = result {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "failed to write vmgs provisioning marker"
+                );
+            }
+        }
+    }
 
     // Determine if the VTL0 alias map is in use.
     let vtl0_alias_map_bit =
@@ -3574,6 +3613,7 @@ async fn new_underhill_vm(
         test_configuration: env_cfg.test_configuration,
         dma_manager,
         config_timeout_in_seconds: env_cfg.config_timeout_in_seconds,
+        servicing_timeout_dump_collection_in_ms: env_cfg.servicing_timeout_dump_collection_in_ms,
     };
 
     Ok(loaded_vm)
