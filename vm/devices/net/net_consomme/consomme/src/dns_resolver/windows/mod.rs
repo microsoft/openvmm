@@ -193,11 +193,7 @@ unsafe fn process_dns_results(
     // SAFETY: if query_results is not null, then it is a valid pointer provided by Windows
     let results = unsafe { query_results.as_ref().ok_or(DnsResultError::NullResults)? };
 
-    if results.queryStatus != NO_ERROR as i32 {
-        Err(DnsResultError::QueryFailed(results.queryStatus))
-    } else if results.queryRawResponseSize == 0 || results.queryRawResponse.is_null() {
-        Err(DnsResultError::NoResponseData)
-    } else {
+    if results.queryRawResponseSize > 0 && !results.queryRawResponse.is_null() {
         // SAFETY: queryRawResponse points to a buffer of queryRawResponseSize bytes allocated by Windows
         let response_data = unsafe {
             std::slice::from_raw_parts(
@@ -206,6 +202,10 @@ unsafe fn process_dns_results(
             )
         };
         Ok(response_data.to_vec())
+    } else if results.queryStatus != NO_ERROR as i32 {
+        Err(DnsResultError::QueryFailed(results.queryStatus))
+    } else {
+        Err(DnsResultError::NoResponseData)
     }
 }
 

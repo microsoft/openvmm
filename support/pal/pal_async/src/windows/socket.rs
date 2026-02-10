@@ -230,6 +230,10 @@ impl AfdSocketReady {
         // the reference.
         let op = unsafe { Arc::from_raw(op_ptr) };
         op.io_complete(&mut inner, afd_handle, status, wakers);
+        // Drop the lock before `op`, since dropping `op` may free the
+        // `AfdSocketReadyOp` (and the mutex it contains) if this is the last
+        // reference.
+        drop(inner);
     }
 }
 

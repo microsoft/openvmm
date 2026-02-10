@@ -806,6 +806,7 @@ dependencies = [
  "inspect_counters",
  "libc",
  "mesh_channel_core",
+ "open_enum",
  "pal",
  "pal_async",
  "parking_lot",
@@ -818,6 +819,7 @@ dependencies = [
  "tracing",
  "winapi",
  "windows-sys 0.61.0",
+ "zerocopy 0.8.27",
 ]
 
 [[package]]
@@ -5776,6 +5778,7 @@ dependencies = [
  "kmsg",
  "libtest-mimic",
  "linkme",
+ "memory_range",
  "mesh",
  "mesh_process",
  "mesh_worker",
@@ -9619,6 +9622,7 @@ dependencies = [
  "hyperv_ic_resources",
  "jiff",
  "kmsg",
+ "memory_range",
  "mesh",
  "mesh_rpc",
  "net_backend_resources",

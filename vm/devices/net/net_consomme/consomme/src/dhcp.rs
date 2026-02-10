@@ -6,6 +6,7 @@ use super::Client;
 use super::DropReason;
 use crate::ChecksumState;
 use crate::MIN_MTU;
+use heapless::Vec as HeaplessVec;
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::DHCP_MAX_DNS_SERVER_COUNT;
 use smoltcp::wire::DhcpMessageType;
@@ -47,22 +48,20 @@ impl<T: Client> Access<'_, T> {
             ty => return Err(DropReason::UnsupportedDhcp(ty)),
         }
 
-        let dns_servers = if self.inner.state.params.nameservers.is_empty() {
-            None
-        } else {
-            let mut dns_servers = heapless::Vec::new();
-            for &s in self
-                .inner
+        let mut dns_servers: HeaplessVec<Ipv4Address, DHCP_MAX_DNS_SERVER_COUNT> =
+            HeaplessVec::new();
+        dns_servers.extend(
+            self.inner
                 .state
                 .params
                 .nameservers
                 .iter()
-                .take(DHCP_MAX_DNS_SERVER_COUNT)
-            {
-                let _ = dns_servers.push(s);
-            }
-            Some(dns_servers)
-        };
+                .filter_map(|ip| match ip {
+                    IpAddress::Ipv4(addr) => Some(*addr),
+                    _ => None,
+                })
+                .take(DHCP_MAX_DNS_SERVER_COUNT),
+        );
 
         let resp_dhcp = if let Some(your_ip) = your_ip {
             DhcpRepr {
@@ -81,7 +80,7 @@ impl<T: Client> Access<'_, T> {
                 client_identifier: None,
                 server_identifier: Some(self.inner.state.params.gateway_ip),
                 parameter_request_list: None,
-                dns_servers,
+                dns_servers: Some(dns_servers),
                 max_size: None,
                 lease_duration: Some(86400),
                 renew_duration: None,
