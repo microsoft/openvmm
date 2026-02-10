@@ -170,8 +170,8 @@ impl FlowNode for Node {
                             && matches!(nuget_config_platform, NugetInstallPlatform::Windows)
                         {
                             (
-                                crate::_util::wslpath::linux_to_win(&packages_config_filepath),
-                                crate::_util::wslpath::linux_to_win(&nuget_config_file),
+                                crate::_util::wslpath::linux_to_win(rt, &packages_config_filepath),
+                                crate::_util::wslpath::linux_to_win(rt, &nuget_config_file),
                             )
                         } else {
                             (packages_config_filepath, nuget_config_file)

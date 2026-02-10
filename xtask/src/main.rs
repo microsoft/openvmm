@@ -18,6 +18,7 @@ use std::path::PathBuf;
 
 mod completions;
 pub mod fs_helpers;
+pub mod shell;
 pub mod tasks;
 
 /// Default location to maintain a `xtask-path` file

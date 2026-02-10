@@ -194,7 +194,7 @@ impl Node {
                                 flowey::shell_cmd!(rt, "cmd.exe /c echo %UserProfile%").read()?;
 
                             let windows_dot_nuget_path =
-                                crate::_util::wslpath::win_to_linux(windows_userprofile)
+                                crate::_util::wslpath::win_to_linux(rt, windows_userprofile)
                                     .join(".nuget");
 
                             let linux_dot_nuget_path =
@@ -222,6 +222,7 @@ impl Node {
                             // nuget.exe will only work correctly when launched
                             // from a windows filesystem.
                             let windows_tempdir = crate::_util::wslpath::win_to_linux(
+                                rt,
                                 flowey::shell_cmd!(rt, "cmd.exe /c echo %Temp%").read()?,
                             );
                             let flowey_nuget = windows_tempdir.join("flowey_nuget.exe");

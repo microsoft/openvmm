@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::Xtask;
+use crate::shell::XtaskShell;
 
 /// Clean build artifacts beyond what `cargo clean` removes.
 ///
@@ -57,8 +58,8 @@ impl Xtask for Clean {
                 println!("would run `cargo clean`");
             } else {
                 println!("running `cargo clean`");
-                let sh = xshell::Shell::new()?;
-                xshell::cmd!(sh, "cargo clean").run()?;
+                let sh = XtaskShell::new()?;
+                sh.cmd("cargo").arg("clean").run()?;
             }
             removed_anything = true;
         }

@@ -2162,6 +2162,8 @@ pub mod steps {
                 platform,
                 arch,
                 has_read_secret: false,
+                // This is an extension point so that we can swap out the shell implementation to wrap commands using `nix-shell --pure --run <cmd>` in the future
+                #[expect(clippy::disallowed_methods)]
                 sh: xshell::Shell::new()?,
             })
         }
@@ -3042,7 +3044,10 @@ macro_rules! flowey_request {
 /// ```
 #[macro_export]
 macro_rules! shell_cmd {
-    ($rt:expr, $cmd:literal) => {
-        $crate::reexports::xshell::cmd!($rt.sh, $cmd)
-    };
+    ($rt:expr, $cmd:literal) => {{
+        // This is an extension point so that we can swap out the shell implementation to wrap commands using `nix-shell --pure --run <cmd>` in the future
+        #[expect(clippy::disallowed_macros)]
+        let __cmd = $crate::reexports::xshell::cmd!($rt.sh, $cmd);
+        __cmd
+    }};
 }
