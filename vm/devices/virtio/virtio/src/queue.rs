@@ -30,6 +30,8 @@ pub enum QueueError {
     DoubleIndirect,
     #[error("a descriptor chain is too long or has a cycle")]
     TooLong,
+    #[error("queue size must be non-zero")]
+    InvalidQueueSize,
 }
 
 #[derive(Debug, Copy, Clone, Default)]
@@ -47,6 +49,10 @@ impl QueueCore {
         mem: GuestMemory,
         params: QueueParams,
     ) -> Result<Self, QueueError> {
+        if params.size == 0 {
+            return Err(QueueError::InvalidQueueSize);
+        }
+
         let queue_avail = mem
             .subrange(
                 params.avail_addr,
