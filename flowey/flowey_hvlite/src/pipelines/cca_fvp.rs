@@ -9,44 +9,35 @@ use std::path::PathBuf;
 #[derive(clap::Args)]
 pub struct CcaFvpCli {
     /// Directory for output artifacts/logs (pipeline working dir)
-    #[clap(long)]
+    #[clap(long, default_value = "target/cca-fvp")]
     pub dir: PathBuf,
 
-    /// Platform YAML (e.g. cca-3world.yaml)
-    #[clap(long)]
+    /// Platform YAML (e.g. cca-3world.yaml). If not specified, defaults to cca-3world.yaml
+    #[clap(long, default_value = "cca-3world.yaml")]
     pub platform: PathBuf,
 
     /// Overlay YAMLs (repeatable), e.g. --overlay buildroot.yaml --overlay planes.yaml
+    /// If not specified, defaults to buildroot.yaml and planes.yaml
     #[clap(long)]
     pub overlay: Vec<PathBuf>,
 
     /// Build-time variables (repeatable), e.g. --btvar 'GUEST_ROOTFS=${artifact:BUILDROOT}'
+    /// If not specified, defaults to GUEST_ROOTFS=${artifact:BUILDROOT}
     #[clap(long)]
     pub btvar: Vec<String>,
 
     /// Rootfs path to pass at runtime, e.g.
     /// --rootfs /abs/path/.shrinkwrap/package/cca-3world/rootfs.ext2
+    /// Default to ${SHRINKWRAP_PACKAGE:-$HOME/.shrinkwrap/package}/cca-3world/rootfs.ext2
     #[clap(long)]
-    pub rootfs: PathBuf,
+    pub rootfs: Option<PathBuf>,
 
     /// Additional runtime variables (repeatable), besides ROOTFS, e.g. --rtvar FOO=bar
     #[clap(long)]
     pub rtvar: Vec<String>,
 
-    /// Extra args appended to `shrinkwrap build` (escape hatch)
-    #[clap(long)]
-    pub build_arg: Vec<String>,
-
-    /// Extra args appended to `shrinkwrap run` (escape hatch)
-    #[clap(long)]
-    pub run_arg: Vec<String>,
-
-    /// Timeout in seconds for `shrinkwrap run`
-    #[clap(long, default_value_t = 600)]
-    pub timeout_sec: u64,
-
     /// Automatically install missing deps (requires sudo on Ubuntu)
-    #[clap(long)]
+    #[clap(long, default_value_t = true)]
     pub install_missing_deps: bool,
 
     /// If repo already exists, attempt `git pull --ff-only`
@@ -67,9 +58,6 @@ impl IntoPipeline for CcaFvpCli {
             btvar,
             rootfs,
             rtvar,
-            build_arg,
-            run_arg: _,
-            timeout_sec: _,
             install_missing_deps,
             update_shrinkwrap_repo,
             verbose,
@@ -142,6 +130,27 @@ impl IntoPipeline for CcaFvpCli {
             }
         };
 
+        // Apply defaults for options not provided by the user
+        let overlay = if overlay.is_empty() {
+            vec![PathBuf::from("buildroot.yaml"), PathBuf::from("planes.yaml")]
+        } else {
+            overlay
+        };
+
+        let btvar = if btvar.is_empty() {
+            vec!["GUEST_ROOTFS=${artifact:BUILDROOT}".to_string()]
+        } else {
+            btvar
+        };
+
+        let rootfs = rootfs.unwrap_or_else(|| {
+            // First try SHRINKWRAP_PACKAGE env var, then HOME env var
+            let base_path = std::env::var("SHRINKWRAP_PACKAGE")
+                .or_else(|_| std::env::var("HOME").map(|h| format!("{}/.shrinkwrap/package", h)))
+                .expect("Either SHRINKWRAP_PACKAGE or HOME environment variable must be set");
+            PathBuf::from(format!("{}/cca-3world/rootfs.ext2", base_path))
+        });
+
         // Resolve platform YAML path
         let platform = resolve_config_path(platform, "--platform")?;
 
@@ -209,7 +218,6 @@ impl IntoPipeline for CcaFvpCli {
                 platform_yaml: platform.clone(),
                 overlays: overlay.clone(),
                 btvars: btvar.clone(),
-                extra_args: build_arg.clone(),
                 done: ctx.new_done_handle(),
             })
             .finish();
