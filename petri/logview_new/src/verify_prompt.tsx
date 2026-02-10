@@ -21,6 +21,10 @@ export function VerifyPrompt({
             <div
                 className="w-full max-w-xl rounded-lg bg-gray-200 p-6"
                 onMouseDown={(e) => e.stopPropagation()}
+                role="alertdialog"
+                aria-modal="true"
+                aria-labelledby={title}
+                aria-describedby={message}
             >
                 <div className="text-lg font-semibold text-gray-900">{title}</div>
                 <div className="mt-3 text-sm text-gray-700">{message}</div>
