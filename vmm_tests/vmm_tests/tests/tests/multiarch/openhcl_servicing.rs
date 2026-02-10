@@ -503,8 +503,8 @@ async fn servicing_keepalive_fault_if_identify(
 }
 
 /// Test that disabling keepalive through inspect actually disables it.
-/// We test this by disabling keepalives and waiting for IDENTIFY.
-/// We should only receive IDENTIFY if keepalive is disabled.
+/// We test this by disabling keepalive and waiting for IDENTIFY.
+/// We should only receive IDENTIFY if (and only if) keepalive is disabled.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn servicing_test_keepalive_disable_through_inspect(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -527,6 +527,9 @@ async fn servicing_test_keepalive_disable_through_inspect(
     let mut flags = config.default_servicing_flags();
     // Enable keepalive, then disable it later via inspect
     flags.enable_nvme_keepalive = true;
+    // We need to disabled MANA KA since if either of the KA flasgs in on, DMA manager will save its state
+    // which includes NVMe regions and restore verification will fail ("unrestored allocations found"),
+    // since NVMe KA is off and we don't save anything).
     flags.enable_mana_keepalive = false;
     let (mut vm, agent) = create_keepalive_test_config(
         config,
