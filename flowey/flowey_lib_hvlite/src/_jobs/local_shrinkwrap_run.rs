@@ -142,8 +142,20 @@ impl SimpleFlowNode for Node {
                     {kvmtool_efi_copy}
                     {image_ohcl_copy}
                     {lkvm_copy}
-                    umount mnt
-                    rm -rf mnt
+                    sync
+                    umount mnt || umount -l mnt || true
+                    sync
+                    sleep 1
+                    # Try multiple times to remove the directory
+                    for i in 1 2 3 4 5; do
+                        if [ -d mnt ]; then
+                            rmdir mnt 2>/dev/null && break || sleep 0.5
+                        else
+                            break
+                        fi
+                    done
+                    # If still exists, force remove
+                    [ -d mnt ] && rm -rf mnt || true
                     "#,
                     rootfs_filename = rootfs_filename,
                     simple_tmk_copy = if simple_tmk.exists() {
