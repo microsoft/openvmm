@@ -16,7 +16,6 @@ flowey_request! {
         pub platform_yaml: PathBuf,
         pub overlays: Vec<PathBuf>,
         pub btvars: Vec<String>,      // "KEY=VALUE"
-        pub extra_args: Vec<String>,  // passthrough
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -35,7 +34,6 @@ impl SimpleFlowNode for Node {
             platform_yaml,
             overlays,
             btvars,
-            extra_args,
             done,
         } = request;
 
@@ -51,17 +49,17 @@ impl SimpleFlowNode for Node {
                 let shrinkwrap_exe = shrinkwrap_dir.join("shrinkwrap").join("shrinkwrap");
                 let venv_dir = shrinkwrap_dir.join("venv");
                 let venv_bin = venv_dir.join("bin");
-                
+
                 let mut cmd = std::process::Command::new(&shrinkwrap_exe);
                 cmd.current_dir(&out_dir); // keep build outputs contained
-                
+
                 // Set environment to use venv Python
                 cmd.env("VIRTUAL_ENV", &venv_dir);
-                cmd.env("PATH", format!("{}:{}", 
-                    venv_bin.display(), 
+                cmd.env("PATH", format!("{}:{}",
+                    venv_bin.display(),
                     std::env::var("PATH").unwrap_or_default()
                 ));
-                
+
                 cmd.arg("build");
                 cmd.arg(&platform_yaml);
 
@@ -73,24 +71,20 @@ impl SimpleFlowNode for Node {
                     cmd.arg("--btvar").arg(bt);
                 }
 
-                for a in &extra_args {
-                    cmd.arg(a);
-                }
-
                 // Stream output to both console and log file
                 log::info!("Running shrinkwrap build...");
                 log::info!("Output will be saved to: {}", log_path.display());
-                
+
                 cmd.stdout(Stdio::piped());
                 cmd.stderr(Stdio::piped());
-                
+
                 let mut child = cmd.spawn()?;
-                
+
                 let stdout = child.stdout.take()
                     .ok_or_else(|| anyhow::anyhow!("failed to capture stdout"))?;
                 let stderr = child.stderr.take()
                     .ok_or_else(|| anyhow::anyhow!("failed to capture stderr"))?;
-                
+
                 // Open log file
                 let log_file = Arc::new(Mutex::new(
                     std::fs::OpenOptions::new()
@@ -99,7 +93,7 @@ impl SimpleFlowNode for Node {
                         .write(true)
                         .open(&log_path)?
                 ));
-                
+
                 // Spawn threads to tee output to both console and log file
                 let log_file_clone = log_file.clone();
                 let stdout_thread = thread::spawn(move || {
@@ -113,7 +107,7 @@ impl SimpleFlowNode for Node {
                         }
                     }
                 });
-                
+
                 let log_file_clone = log_file.clone();
                 let stderr_thread = thread::spawn(move || {
                     let reader = BufReader::new(stderr);
@@ -126,11 +120,11 @@ impl SimpleFlowNode for Node {
                         }
                     }
                 });
-                
+
                 // Wait for threads to finish
                 let _ = stdout_thread.join();
                 let _ = stderr_thread.join();
-                
+
                 // Wait for child process
                 let status = child.wait()?;
 
