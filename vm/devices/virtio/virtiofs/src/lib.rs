@@ -44,6 +44,7 @@ const ENTRY_TIMEOUT: Duration = Duration::from_secs(0);
 pub struct VirtioFs {
     inodes: RwLock<InodeMap>,
     files: RwLock<HandleMap<Arc<VirtioFsFile>>>,
+    readonly: bool,
 }
 
 impl Fuse for VirtioFs {
@@ -98,6 +99,10 @@ impl Fuse for VirtioFs {
     }
 
     fn set_attr(&self, request: &Request, arg: &fuse_setattr_in) -> lx::Result<fuse_attr_out> {
+        // Block truncation and other modifications on readonly filesystems
+        if arg.valid & (FATTR_SIZE | FATTR_MODE | FATTR_UID | FATTR_GID) != 0 {
+            self.check_writable()?;
+        }
         let node_id = request.node_id();
 
         // If a file handle is specified, set the attributes on the open file. This is faster on
@@ -133,6 +138,15 @@ impl Fuse for VirtioFs {
 
     fn open(&self, request: &Request, flags: u32) -> lx::Result<fuse_open_out> {
         let inode = self.get_inode(request.node_id())?;
+        // On readonly filesystem, reject write operations.
+        if self.readonly {
+            // O_ACCMODE is the mask for access mode bits (O_RDONLY, O_WRONLY, O_RDWR)
+            const O_ACCMODE: u32 = 0o3;
+            let access_mode = flags & O_ACCMODE;
+            if access_mode == lx::O_WRONLY as u32 || access_mode == lx::O_RDWR as u32 {
+                return Err(lx::Error::EROFS);
+            }
+        }
         let file = inode.open(flags)?;
         let fh = self.insert_file(file);
 
@@ -146,6 +160,7 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         arg: &fuse_create_in,
     ) -> lx::Result<CreateOut> {
+        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
         let (new_inode, attr, file) =
             inode.create(name, arg.flags, arg.mode, request.uid(), request.gid())?;
@@ -168,6 +183,7 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         arg: &fuse_mkdir_in,
     ) -> lx::Result<fuse_entry_out> {
+        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
         let (new_inode, attr) = inode.mkdir(name, arg.mode, request.uid(), request.gid())?;
         let (_, node_id) = self.insert_inode(new_inode);
@@ -185,6 +201,7 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         arg: &fuse_mknod_in,
     ) -> lx::Result<fuse_entry_out> {
+        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
         let (new_inode, attr) =
             inode.mknod(name, arg.mode, request.uid(), request.gid(), arg.rdev)?;
@@ -204,6 +221,7 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         target: &lx::LxStr,
     ) -> lx::Result<fuse_entry_out> {
+        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
         let (new_inode, attr) = inode.symlink(name, target, request.uid(), request.gid())?;
 
@@ -217,6 +235,7 @@ impl Fuse for VirtioFs {
     }
 
     fn link(&self, request: &Request, name: &lx::LxStr, target: u64) -> lx::Result<fuse_entry_out> {
+        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
         let target_inode = self.get_inode(target)?;
         let attr = inode.link(name, &target_inode)?;
@@ -244,6 +263,7 @@ impl Fuse for VirtioFs {
     }
 
     fn write(&self, request: &Request, arg: &fuse_write_in, data: &[u8]) -> lx::Result<usize> {
+        self.check_writable()?;
         let file = self.get_file(arg.fh)?;
         file.write(data, arg.offset, request.uid())
     }
@@ -273,10 +293,12 @@ impl Fuse for VirtioFs {
     }
 
     fn unlink(&self, request: &Request, name: &lx::LxStr) -> lx::Result<()> {
+        self.check_writable()?;
         self.unlink_helper(request, name, 0)
     }
 
     fn rmdir(&self, request: &Request, name: &lx::LxStr) -> lx::Result<()> {
+        self.check_writable()?;
         self.unlink_helper(request, name, lx::AT_REMOVEDIR)
     }
 
@@ -288,6 +310,7 @@ impl Fuse for VirtioFs {
         new_name: &lx::LxStr,
         flags: u32,
     ) -> lx::Result<()> {
+        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
         let new_inode = self.get_inode(new_dir)?;
         inode.rename(name, &new_inode, new_name, flags)
@@ -330,6 +353,7 @@ impl Fuse for VirtioFs {
         value: &[u8],
         flags: u32,
     ) -> lx::Result<()> {
+        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
         inode.set_xattr(name, value, flags)
     }
@@ -350,6 +374,7 @@ impl Fuse for VirtioFs {
     }
 
     fn remove_xattr(&self, request: &Request, name: &lx::LxStr) -> lx::Result<()> {
+        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
         inode.remove_xattr(name)
     }
@@ -362,11 +387,21 @@ impl Fuse for VirtioFs {
 }
 
 impl VirtioFs {
+    /// Check if the filesystem is readonly and return EROFS if so.
+    fn check_writable(&self) -> lx::Result<()> {
+        if self.readonly {
+            Err(lx::Error::EROFS)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Create a new virtio-fs for the specified root path.
     pub fn new(
         root_path: impl AsRef<Path>,
         mount_options: Option<&LxVolumeOptions>,
     ) -> lx::Result<Self> {
+        let readonly = mount_options.map_or(false, |o| o.is_readonly());
         let volume = if let Some(mount_options) = mount_options {
             mount_options.new_volume(root_path)
         } else {
@@ -378,6 +413,7 @@ impl VirtioFs {
         Ok(Self {
             inodes: RwLock::new(inodes),
             files: RwLock::new(HandleMap::new()),
+            readonly,
         })
     }
 
