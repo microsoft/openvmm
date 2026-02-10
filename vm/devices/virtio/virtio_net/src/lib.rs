@@ -838,7 +838,13 @@ impl Worker {
                         WakeReason::PacketFromClient(work) => {
                             tracing::trace!("tx packet");
                             let work = work.map_err(WorkerError::VirtioQueue)?;
-                            self.queue_tx_packet(work)?;
+                            if let Err(err) = self.queue_tx_packet(work) {
+                                tracing::warn!(
+                                    error = &err as &dyn std::error::Error,
+                                    "dropping malformed tx packet"
+                                );
+                                continue;
+                            }
                             self.process_virtio_rx(epqueue_state.queue.as_mut())?;
                             if !self.transmit_pending_segments(epqueue_state)? {
                                 self.active_state.stats.tx_stalled.increment();
