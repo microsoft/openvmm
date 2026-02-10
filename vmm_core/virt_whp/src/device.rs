@@ -28,7 +28,7 @@ use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
 use vmcore::vpci_msi::VpciInterruptParameters;
 use whp::VpciInterruptTarget;
-use winapi::um::winnt;
+use windows_sys::Win32::System::Power;
 
 pub struct Device {
     partition: Arc<WhpPartitionInner>,
@@ -398,10 +398,10 @@ impl AssignedPciDevice {
 
     fn set_power_state(&mut self, power_state: u32) {
         let win_power_state = match power_state & 3 {
-            0 => winnt::PowerDeviceD0,
-            1 => winnt::PowerDeviceD1,
-            2 => winnt::PowerDeviceD2,
-            3 => winnt::PowerDeviceD3,
+            0 => Power::PowerDeviceD0,
+            1 => Power::PowerDeviceD1,
+            2 => Power::PowerDeviceD2,
+            3 => Power::PowerDeviceD3,
             _ => unreachable!(),
         };
         match self.device.device().set_power_state(win_power_state) {

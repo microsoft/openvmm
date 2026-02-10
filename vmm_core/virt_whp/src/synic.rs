@@ -23,8 +23,16 @@ use virt::VpIndex;
 use vmcore::interrupt::Interrupt;
 use vmcore::monitor::MonitorId;
 use vmcore::synic::GuestEventPort;
-use winapi::shared::winerror::ERROR_PROC_NOT_FOUND;
-use winapi::shared::winerror::HRESULT_FROM_WIN32;
+use windows_sys::Win32::Foundation::ERROR_PROC_NOT_FOUND;
+
+/// Converts a Win32 error code to an HRESULT.
+const fn hresult_from_win32(x: u32) -> i32 {
+    if x as i32 <= 0 {
+        x as i32
+    } else {
+        ((x & 0x0000FFFF) | (7 << 16) | 0x80000000) as i32
+    }
+}
 
 struct RegisteredPort {
     partition: Weak<WhpPartitionInner>,
@@ -63,7 +71,7 @@ impl virt::Synic for WhpPartition {
                 );
                 match result {
                     Ok(handle) => Some(Ok((vtl, handle))),
-                    Err(e) if e.code() == HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND) => {
+                    Err(e) if e.code() == hresult_from_win32(ERROR_PROC_NOT_FOUND) => {
                         // notification ports are not supported; TODO-remove once old Iron builds age out
                         None
                     }

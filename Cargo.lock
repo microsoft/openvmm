@@ -8924,7 +8924,7 @@ dependencies = [
  "vm_topology",
  "vmcore",
  "whp",
- "winapi",
+ "windows-sys 0.61.0",
  "x86defs",
  "x86emu",
  "zerocopy 0.8.27",
