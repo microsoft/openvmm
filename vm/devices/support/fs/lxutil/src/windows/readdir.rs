@@ -892,11 +892,13 @@ impl DirEntrySource for WindowsDirEntrySource<'_> {
                         file_type: entry_type,
                     };
 
-                    if !callback(entry_info)? {
+                    let should_continue = callback(entry_info)?;
+                    // Always advance the enumerator past the current entry so it stays
+                    // in sync with next_read_index, even if the caller stops iteration.
+                    self.enumerator.next()?;
+                    if !should_continue {
                         break;
                     }
-
-                    self.enumerator.next()?;
                 }
                 None => {
                     break;
@@ -1286,9 +1288,9 @@ mod tests {
         // Sequential populate - should continue from where we left off
         cursor.populate(last_offset, &mut source, true).unwrap();
 
-        // Should have the remaining entries (5 files after the first 32-2=30 files)
-        // Total entries: 2 (dot) + CACHE_MAX_ENTRIES + 5 = 39
-        // First batch: 32, remaining: 7
+        // Should have the remaining entries (5 files after the first CACHE_MAX_ENTRIES-2=62 files)
+        // Total entries: 2 (dot) + CACHE_MAX_ENTRIES + 5 = 69
+        // First batch: 64, remaining: 7
         assert_eq!(cursor.entries.len(), 7);
         assert!(cursor.complete);
     }
