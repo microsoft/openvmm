@@ -41,9 +41,7 @@ pub enum QueueError {
     TooLong,
     #[error("Invalid queue size {0}. Must be a power of 2.")]
     InvalidQueueSize(u16),
-    #[error(
-        "indirect descriptor table has invalid byte length {0}; expected a non-zero multiple of 16 (descriptor size)"
-    )]
+    #[error("indirect descriptor table has invalid byte length {0}")]
     InvalidIndirectSize(u32),
 }
 
@@ -516,7 +514,9 @@ impl<'a> DescriptorChain<'a> {
                 return Err(QueueError::DoubleIndirect);
             }
             let indirect_len = descriptor.length;
-            if indirect_len == 0 || !(indirect_len as usize).is_multiple_of(size_of::<SplitDescriptor>()) {
+            if indirect_len == 0
+                || !(indirect_len as usize).is_multiple_of(size_of::<SplitDescriptor>())
+            {
                 return Err(QueueError::InvalidIndirectSize(indirect_len));
             }
             let indirect_queue = self.indirect_queue.insert(

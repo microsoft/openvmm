@@ -1920,9 +1920,8 @@ fn indirect_descriptor_zero_length_rejected() {
     }
 
     let mem = GuestMemory::new("test", test_mem);
-    let features = VirtioDeviceFeatures::new().with_bank0(
-        VirtioDeviceFeaturesBank0::new().with_ring_indirect_desc(true),
-    );
+    let features = VirtioDeviceFeatures::new()
+        .with_bank0(VirtioDeviceFeaturesBank0::new().with_ring_indirect_desc(true));
     let params = QueueParams {
         size: queue_size,
         enable: true,
@@ -1933,7 +1932,10 @@ fn indirect_descriptor_zero_length_rejected() {
     let mut queue = crate::queue::QueueCoreGetWork::new(features, mem, params).unwrap();
     let result = queue.try_next_work();
     assert!(
-        matches!(result, Err(crate::queue::QueueError::InvalidIndirectSize(0))),
+        matches!(
+            result,
+            Err(crate::queue::QueueError::InvalidIndirectSize(0))
+        ),
         "expected InvalidIndirectSize(0)"
     );
 }
@@ -1982,9 +1984,8 @@ fn indirect_descriptor_misaligned_length_rejected() {
     }
 
     let mem = GuestMemory::new("test", test_mem);
-    let features = VirtioDeviceFeatures::new().with_bank0(
-        VirtioDeviceFeaturesBank0::new().with_ring_indirect_desc(true),
-    );
+    let features = VirtioDeviceFeatures::new()
+        .with_bank0(VirtioDeviceFeaturesBank0::new().with_ring_indirect_desc(true));
     let params = QueueParams {
         size: queue_size,
         enable: true,
@@ -1995,7 +1996,10 @@ fn indirect_descriptor_misaligned_length_rejected() {
     let mut queue = crate::queue::QueueCoreGetWork::new(features, mem, params).unwrap();
     let result = queue.try_next_work();
     assert!(
-        matches!(result, Err(crate::queue::QueueError::InvalidIndirectSize(17))),
+        matches!(
+            result,
+            Err(crate::queue::QueueError::InvalidIndirectSize(17))
+        ),
         "expected InvalidIndirectSize(17)"
     );
 }
