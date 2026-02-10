@@ -444,9 +444,9 @@ dependencies = [
 
 [[package]]
 name = "bytes"
-version = "1.10.1"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a"
+checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cache_topology"
@@ -797,19 +797,29 @@ dependencies = [
 name = "consomme"
 version = "0.0.0"
 dependencies = [
+ "blocking",
+ "cfg-if",
  "futures",
  "getrandom 0.3.3",
+ "heapless",
  "inspect",
  "inspect_counters",
  "libc",
+ "mesh_channel_core",
+ "open_enum",
+ "pal",
  "pal_async",
  "parking_lot",
  "resolv-conf",
+ "slab",
  "smoltcp",
  "socket2",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
+ "winapi",
  "windows-sys 0.61.0",
+ "zerocopy 0.8.27",
 ]
 
 [[package]]
@@ -1025,6 +1035,47 @@ dependencies = [
  "mesh_worker",
  "vmm_core_defs",
  "vmsocket",
+]
+
+[[package]]
+name = "defmt"
+version = "0.3.100"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0963443817029b2024136fc4dd07a5107eb8f977eaf18fcd1fdeb11306b64ad"
+dependencies = [
+ "defmt 1.0.1",
+]
+
+[[package]]
+name = "defmt"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "548d977b6da32fa1d1fda2876453da1e7df63ad0304c8b3dae4dbe7b96f39b78"
+dependencies = [
+ "bitflags 1.3.2",
+ "defmt-macros",
+]
+
+[[package]]
+name = "defmt-macros"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d4fc12a85bcf441cfe44344c4b72d58493178ce635338a3f3b78943aceb258e"
+dependencies = [
+ "defmt-parser",
+ "proc-macro-error2",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+]
+
+[[package]]
+name = "defmt-parser"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
+dependencies = [
+ "thiserror 2.0.16",
 ]
 
 [[package]]
@@ -2826,6 +2877,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2913,6 +2973,16 @@ dependencies = [
 [[package]]
 name = "headervec"
 version = "0.0.0"
+
+[[package]]
+name = "heapless"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+]
 
 [[package]]
 name = "heck"
@@ -4178,11 +4248,16 @@ dependencies = [
  "cfg-if",
  "hvdef",
  "minimal_rt_build",
+ "minimal_rt_reloc",
  "zerocopy 0.8.27",
 ]
 
 [[package]]
 name = "minimal_rt_build"
+version = "0.0.0"
+
+[[package]]
+name = "minimal_rt_reloc"
 version = "0.0.0"
 
 [[package]]
@@ -4633,6 +4708,7 @@ dependencies = [
 name = "nvme"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chipset_device",
  "device_emulators",
@@ -5187,6 +5263,7 @@ dependencies = [
  "pal",
  "pal_async",
  "parking_lot",
+ "pcie_remote_resources",
  "prost",
  "rustyline",
  "scsidisk_resources",
@@ -5628,6 +5705,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pcie_remote_resources"
+version = "0.0.0"
+dependencies = [
+ "guid",
+ "mesh",
+ "vm_resource",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5693,6 +5779,7 @@ dependencies = [
  "kmsg",
  "libtest-mimic",
  "linkme",
+ "memory_range",
  "mesh",
  "mesh_process",
  "mesh_worker",
@@ -6013,6 +6100,28 @@ checksum = "6c8646e95016a7a6c4adea95bafa8a16baab64b583356217f2c85db4a39d9a86"
 dependencies = [
  "proc-macro2",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "proc-macro-error-attr2"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96de42df36bb9bba5542fe9f1a054b8cc87e172759a1868aa05c1f3acc89dfc5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+]
+
+[[package]]
+name = "proc-macro-error2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11ec05c52be0a07b08061f7dd003e7d7092e0472bc731b4af7bb1ef876109802"
+dependencies = [
+ "proc-macro-error-attr2",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
 ]
 
 [[package]]
@@ -6891,12 +7000,15 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "smoltcp"
-version = "0.8.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee34c1e1bfc7e9206cc0fb8030a90129b4e319ab53856249bb27642cab914fb3"
+checksum = "dad095989c1533c1c266d9b1e8d70a1329dd3723c3edac6d03bbd67e7bf6f4bb"
 dependencies = [
  "bitflags 1.3.2",
  "byteorder",
+ "cfg-if",
+ "defmt 0.3.100",
+ "heapless",
  "managed",
 ]
 
@@ -6957,6 +7069,12 @@ dependencies = [
  "base64ct",
  "der",
 ]
+
+[[package]]
+name = "stable_deref_trait"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stackfuture"
@@ -8082,6 +8200,7 @@ dependencies = [
  "thiserror 2.0.16",
  "time",
  "tpm_device",
+ "tpm_protocol",
  "tpm_resources",
  "tracelimit",
  "tracing",
@@ -8117,6 +8236,7 @@ dependencies = [
  "vmcore",
  "vmgs",
  "vmgs_broker",
+ "vmgs_format",
  "vmgs_resources",
  "vmm_core",
  "vmm_core_defs",
@@ -9309,6 +9429,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "scsi_buffers",
+ "serde_json",
  "thiserror 2.0.16",
  "tracing",
  "vmgs_format",
@@ -9340,6 +9461,7 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "inspect",
  "open_enum",
+ "serde",
  "static_assertions",
  "zerocopy 0.8.27",
 ]
@@ -9501,6 +9623,7 @@ dependencies = [
  "hyperv_ic_resources",
  "jiff",
  "kmsg",
+ "memory_range",
  "mesh",
  "mesh_rpc",
  "net_backend_resources",

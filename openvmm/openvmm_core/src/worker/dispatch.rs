@@ -78,7 +78,7 @@ use pal_async::local::block_with_io;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pci_core::PciInterruptPin;
-use pci_core::msi::MsiInterruptSet;
+use pci_core::msi::MsiConnection;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
@@ -1856,7 +1856,7 @@ impl InitializedVm {
                 dev_cfg.resource,
                 partition.clone().into_doorbell_registration(Vtl::Vtl0),
                 Some(&mapper),
-                partition.clone().into_msi_target(Vtl::Vtl0),
+                partition.clone().into_signal_msi(Vtl::Vtl0),
             )
             .await?;
         }
@@ -1984,14 +1984,14 @@ impl InitializedVm {
             let (vpci_device_name, device_name, instance_id, device_id) =
                 make_ids(device_name, None);
 
-            let mut msi_set = MsiInterruptSet::new();
+            let msi_conn = MsiConnection::new();
             let device = chipset_builder
                 .arc_mutex_device(device_name)
                 .with_external_pci()
                 .try_add(|services| {
                     VirtioPciDevice::new(
                         device,
-                        PciInterruptModel::Msix(&mut msi_set),
+                        PciInterruptModel::Msix(msi_conn.target()),
                         partition.clone().into_doorbell_registration(Vtl::Vtl0),
                         &mut services.register_mmio(),
                         Some(mapper),
@@ -2010,7 +2010,7 @@ impl InitializedVm {
 
                     let msi_controller = hv_device.clone().target();
                     let interrupt_mapper = hv_device.clone().interrupt_mapper();
-                    msi_set.connect(msi_controller.as_ref());
+                    msi_conn.connect(msi_controller);
 
                     let bus = VpciBus::new(
                         driver_source,
@@ -2623,6 +2623,7 @@ impl LoadedVmInner {
                 uefi_console_mode,
                 default_boot_always_attempt,
                 bios_guid,
+                azi_hsm_enabled,
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
@@ -2640,6 +2641,7 @@ impl LoadedVmInner {
                     uefi_console_mode,
                     default_boot_always_attempt,
                     bios_guid,
+                    azi_hsm_enabled,
                 };
                 let regs = super::vm_loaders::uefi::load_uefi(
                     firmware,

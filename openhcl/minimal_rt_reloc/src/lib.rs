@@ -4,18 +4,31 @@
 //! Code to apply relocations in an environment without a runtime.
 //!
 //! Do not reach out to global variables or function pointers (and the Rust
-//! formatting facilities in particular or panic processing) from this code
-//! as they generate relocation records.
+//! formatting facilities in particular or panic processing) from this code as
+//! they generate relocation records.
+//!
+//! This is a separate crate from `minimal_rt` so that we can scope build
+//! overrides, needed to prevent relocations from being generated in this code,
+//! to just this module.
 
-/// Stores error code, line number, and the pointer to the file name in the registers.
-/// Cannot call into the panic facilities before relocation, that won't be debuggable at all.
-macro_rules! panic_no_relocs {
-    ($code:expr) => {{
-        let _code = $code;
-        crate::arch::fault();
-        // Uncomment for local debugging. Can't spin forever in the official build.
-        // crate::arch::dead_loop(_code as u64, line!() as u64, file!().as_ptr() as u64);
-    }};
+#![no_std]
+// UNSAFETY: Manipulating instructions in memory.
+#![expect(unsafe_code)]
+
+/// Stores error code and line number in the registers and triggers a fault.
+///
+/// It's not possible to call panic!() here because that would generate
+/// relocation records, which would defeat the purpose of this code.
+#[track_caller]
+fn abort(code: u64) {
+    let line = core::panic::Location::caller().line();
+    // SAFETY: no safety requirements.
+    unsafe {
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!("ud2", in("rdi") code, in("rsi") line, options(noreturn));
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!("brk #0", in("x0") code, in("x1") line, options(noreturn));
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -84,7 +97,7 @@ fn apply_rel(mapped_addr: u64, vaddr: u64, begin: usize, end: usize) {
     };
     for rel in rel {
         if rel_type(rel) != R_RELATIVE {
-            panic_no_relocs!(R_ERROR_REL)
+            abort(R_ERROR_REL)
         }
 
         let rel_addr = rel.offset.wrapping_add(mapped_addr) as *mut u64;
@@ -109,7 +122,7 @@ fn apply_rela(mapped_addr: u64, vaddr: u64, begin: usize, end: usize) {
     };
     for rel in rela {
         if rela_type(rel) != R_RELATIVE {
-            panic_no_relocs!(R_ERROR_RELA);
+            abort(R_ERROR_RELA);
         }
 
         // SAFETY: updating the address as prescribed by the ELF
@@ -179,7 +192,7 @@ pub unsafe extern "C" fn relocate(mapped_addr: usize, vaddr: usize, dynamic_addr
     if let Some(rela_offset) = rela_offset {
         const RELA_ENTRY_SIZE: usize = size_of::<Elf64Rela>();
         if rela_entry_size != RELA_ENTRY_SIZE {
-            panic_no_relocs!(R_ERROR_RELASZ);
+            abort(R_ERROR_RELASZ);
         }
 
         let begin = mapped_addr + rela_offset;
@@ -190,7 +203,7 @@ pub unsafe extern "C" fn relocate(mapped_addr: usize, vaddr: usize, dynamic_addr
     if let Some(rel_offset) = rel_offset {
         const REL_ENTRY_SIZE: usize = size_of::<Elf64Rel>();
         if rel_entry_size != REL_ENTRY_SIZE {
-            panic_no_relocs!(R_ERROR_RELSZ);
+            abort(R_ERROR_RELSZ);
         }
 
         let begin = mapped_addr + rel_offset;

@@ -81,6 +81,13 @@ where
         String::from_utf8(v).with_context(|| format!("file '{}' is not valid utf-8", path.as_str()))
     }
 
+    /// Reads a file from the guest into a raw byte vector.
+    pub async fn read_file_raw(&self, path: impl AsRef<Utf8Path<T>>) -> anyhow::Result<Vec<u8>> {
+        let path = self.path(path);
+        let v = self.client.read_file(path.as_str()).await?;
+        Ok(v)
+    }
+
     /// Creates a builder to execute a command inside the guest.
     ///
     /// Consider using the [`cmd!`](crate::cmd!) macro.

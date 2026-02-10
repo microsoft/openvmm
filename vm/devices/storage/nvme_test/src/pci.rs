@@ -37,7 +37,7 @@ use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
-use pci_core::msi::RegisterMsi;
+use pci_core::msi::MsiTarget;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
@@ -116,12 +116,12 @@ impl NvmeFaultController {
     pub fn new(
         driver_source: &VmTaskDriverSource,
         guest_memory: GuestMemory,
-        register_msi: &mut dyn RegisterMsi,
+        msi_target: &MsiTarget,
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeFaultControllerCaps,
         mut fault_configuration: FaultConfiguration,
     ) -> Self {
-        let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, register_msi);
+        let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, msi_target);
         let bars = DeviceBars::new()
             .bar0(
                 BAR0_LEN,
@@ -197,7 +197,13 @@ impl NvmeFaultController {
 
         // Check for 64-bit registers.
         let d: Option<u64> = match spec::Register(addr & !7) {
-            spec::Register::CAP => Some(CAP.into()),
+            spec::Register::CAP => {
+                if let Some(mqes) = self.pci_fault_config.max_queue_size {
+                    Some(CAP.with_mqes_z(mqes - 1).into())
+                } else {
+                    Some(CAP.into())
+                }
+            }
             spec::Register::ASQ => Some(self.registers.asq),
             spec::Register::ACQ => Some(self.registers.acq),
             spec::Register::BPMBL => Some(0),
