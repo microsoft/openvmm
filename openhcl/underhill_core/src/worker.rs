@@ -166,6 +166,9 @@ use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmgs::Vmgs;
 use vmgs_broker::spawn_vmgs_broker;
+use vmgs_format::VmgsProvisioner;
+use vmgs_format::VmgsProvisioningMarker;
+use vmgs_format::VmgsProvisioningReason;
 use vmgs_resources::VmgsFileHandle;
 use vmm_core::input_distributor::InputDistributor;
 use vmm_core::partition_unit::Halt;
@@ -194,6 +197,11 @@ pub(crate) const WDAT_PORT: u16 = 0x30;
 pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new("UnderhillWorker");
 
 const MAX_SUBCHANNELS_PER_VNIC: u16 = 32;
+
+// TODO: Move to hsm crate in future.
+// AZIHSM VPCI IDs
+const AZIHSM_VPCI_VENDOR_ID: u16 = 0x1414;
+const AZIHSM_VPCI_DEVICE_ID: u16 = 0xC003;
 
 struct GuestEmulationTransportInfra {
     get_thread: JoinHandle<()>,
@@ -315,6 +323,8 @@ pub struct UnderhillEnvCfg {
     /// The timeout in seconds for VM config operations, both the initial configuration
     /// and then subsequent modifications.
     pub config_timeout_in_seconds: u64,
+    /// The timeout in milliseconds for dump collection during a panic in servicing.
+    pub servicing_timeout_dump_collection_in_ms: u64,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1262,8 +1272,7 @@ fn new_x86_topology(
         vps
     };
 
-    // TODO SNP: Topology information should probably be passed in via device
-    // params. The topology needs to also be validated.
+    // Query the processor topology from the CPUID leaves.
     TopologyBuilder::from_host_topology()
         .context("failed to build topology from host")?
         .x2apic(x2apic)
@@ -1380,6 +1389,26 @@ fn guest_memory_access_self_test(
     tracing::info!(CVM_ALLOWED, "guest memory self test complete");
 
     Ok(())
+}
+
+/// Write a diagnostic provisioning marker to a newly-created VMGS file.
+async fn write_provisioning_marker(vmgs: &mut Vmgs) -> anyhow::Result<()> {
+    let marker = VmgsProvisioningMarker {
+        provisioner: VmgsProvisioner::OpenHcl,
+        reason: vmgs
+            .provisioning_reason()
+            .unwrap_or(VmgsProvisioningReason::Unknown),
+        tpm_version: tpm_protocol::TPM_DEFAULT_VERSION.to_string(),
+        tpm_nvram_size: tpm_protocol::TPM_DEFAULT_SIZE,
+        akcert_size: tpm_protocol::TPM_DEFAULT_AKCERT_SIZE,
+        akcert_attrs: format!(
+            "0x{:x}",
+            Into::<u32>::into(tpm_protocol::platform_akcert_attributes())
+        ),
+        provisioner_version: build_info::get().scm_revision().to_string(),
+    };
+
+    Ok(vmgs.write_provisioning_marker(&marker).await?)
 }
 
 /// Run the underhill specific worker entrypoint.
@@ -1751,6 +1780,20 @@ async fn new_underhill_vm(
         }
     };
 
+    if let Some((_, ref mut vmgs)) = vmgs {
+        if vmgs.was_provisioned_this_boot() {
+            let result = write_provisioning_marker(vmgs).await;
+
+            if let Err(err) = result {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "failed to write vmgs provisioning marker"
+                );
+            }
+        }
+    }
+
     // Determine if the VTL0 alias map is in use.
     let vtl0_alias_map_bit =
         runtime_params
@@ -1904,14 +1947,18 @@ async fn new_underhill_vm(
     // Create the `AttestationVmConfig` from `dps`, which will be used in
     // - stateful mode (the attestation is not suppressed)
     // - stateless mode (isolated VM with attestation suppressed)
+    let console_enabled = dps.general.com1_enabled
+        || dps.general.com2_enabled
+        || dps.general.com1_vmbus_redirector
+        || dps.general.com2_vmbus_redirector;
+    let interactive_console =
+        console_enabled && !dps.general.management_vtl_features.tx_only_serial_port();
     let attestation_vm_config = AttestationVmConfig {
         current_time: None,
         // TODO CVM: Support vmgs provisioning config
         root_cert_thumbprint: String::new(),
-        console_enabled: dps.general.com1_enabled
-            || dps.general.com2_enabled
-            || dps.general.com1_vmbus_redirector
-            || dps.general.com2_vmbus_redirector,
+        console_enabled,
+        interactive_console_enabled: interactive_console,
         secure_boot: dps.general.secure_boot_enabled,
         tpm_enabled: dps.general.tpm_enabled,
         tpm_persisted: !dps.general.suppress_attestation.unwrap_or(false),
@@ -2484,6 +2531,7 @@ async fn new_underhill_vm(
         serial_inputs[0] = Some(Resource::new(
             vmbus_serial_guest::OpenVmbusSerialGuestConfig::open(
                 &vmbus_serial_guest::UART_INTERFACE_INSTANCE_COM1,
+                dps.general.management_vtl_features.tx_only_serial_port(),
             )
             .context("failed to open com1")?,
         ));
@@ -2493,6 +2541,7 @@ async fn new_underhill_vm(
         serial_inputs[1] = Some(Resource::new(
             vmbus_serial_guest::OpenVmbusSerialGuestConfig::open(
                 &vmbus_serial_guest::UART_INTERFACE_INSTANCE_COM2,
+                dps.general.management_vtl_features.tx_only_serial_port(),
             )
             .context("failed to open com2")?,
         ));
@@ -3198,6 +3247,18 @@ async fn new_underhill_vm(
                     sub_system_id: None,
                 });
 
+                // Allow Azi HSM devices.
+                relay.add_allowed_device(AllowedDevice {
+                    vendor_id: Some(AZIHSM_VPCI_VENDOR_ID), // Microsoft vendor ID
+                    device_id: Some(AZIHSM_VPCI_DEVICE_ID), // Azi HSM device ID
+                    revision_id: None,
+                    prog_if: Some(ProgrammingInterface::NONE),
+                    sub_class: Some(Subclass::NONE),
+                    base_class: Some(ClassCode::ENCRYPTION_CONTROLLER),
+                    sub_vendor_id: None,
+                    sub_system_id: None,
+                });
+
                 vpci_relay = Some(relay);
             }
 
@@ -3569,6 +3630,7 @@ async fn new_underhill_vm(
         test_configuration: env_cfg.test_configuration,
         dma_manager,
         config_timeout_in_seconds: env_cfg.config_timeout_in_seconds,
+        servicing_timeout_dump_collection_in_ms: env_cfg.servicing_timeout_dump_collection_in_ms,
     };
 
     Ok(loaded_vm)
@@ -3633,6 +3695,8 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         guest_state_encryption_policy: _,
         guest_state_lifetime: _,
         management_vtl_features: _,
+        hv_sint_enabled: _,
+        azi_hsm_enabled: _,
     } = &dps.general;
 
     if *hibernation_enabled {

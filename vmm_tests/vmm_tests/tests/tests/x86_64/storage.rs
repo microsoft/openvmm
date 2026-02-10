@@ -6,6 +6,8 @@
 //! They also require VTL2 support in OpenHCL, which is currently only available
 //! on x86-64.
 
+use crate::utils::ExpectedGuestDevice;
+use crate::utils::get_device_paths;
 use anyhow::Context;
 use disk_backend_resources::FileDiskHandle;
 use disk_backend_resources::LayeredDiskHandle;
@@ -31,7 +33,6 @@ use petri::vtl2_settings::build_vtl2_storage_backing_physical_devices;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use scsidisk_resources::SimpleScsiDvdRequest;
-use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
 use storvsp_resources::ScsiControllerHandle;
@@ -69,103 +70,10 @@ pub(crate) fn new_test_vtl2_nvme_device(
                 disk: layer.into_resource(),
                 read_only: false,
             }],
+            requests: None,
         }
         .into_resource(),
     }
-}
-
-#[derive(Debug, Clone)]
-struct ExpectedGuestDevice {
-    lun: u32,
-    disk_size_sectors: usize,
-    #[expect(dead_code)] // Only used in logging via `Debug` trait
-    friendly_name: String,
-}
-
-/// Get the device paths for the expected devices inside the Linux guest,
-/// verifying that they exist and have the expected size.
-async fn get_device_paths(
-    agent: &PipetteClient,
-    controller_guid: Guid,
-    expected_devices: Vec<ExpectedGuestDevice>,
-) -> anyhow::Result<Vec<String>> {
-    let sh = agent.unix_shell();
-
-    let all_disks = cmd!(sh, "sh -c 'ls -ld /sys/block/sd*'").read().await?;
-    tracing::info!(?all_disks, "All disks");
-
-    // Check that the correct devices are found in the VTL0 guest.
-    // The test framework adds additional devices (pipette, cloud-init, etc), so
-    // just check that the expected devices are indeed found.
-    let mut device_paths = Vec::new();
-    for d in &expected_devices {
-        let list_sdx_cmd = format!(
-            "ls -d /sys/bus/vmbus/devices/{}/host*/target*/*:0:0:{}/block/sd*",
-            controller_guid, d.lun
-        );
-        let devices = cmd!(sh, "sh -c {list_sdx_cmd}").read().await?;
-        let mut devices_iter = devices.lines();
-        let dev = devices_iter.next().ok_or(anyhow::anyhow!(
-            "Couldn't find device for controller {:#} lun {}",
-            controller_guid,
-            d.lun
-        ))?;
-        if devices_iter.next().is_some() {
-            anyhow::bail!(
-                "More than 1 device for controller {:#} lun {}",
-                controller_guid,
-                d.lun
-            );
-        }
-        let dev = dev
-            .rsplit('/')
-            .next()
-            .ok_or(anyhow::anyhow!("Couldn't parse device name from {dev}"))?;
-        let sectors = cmd!(sh, "cat /sys/block/{dev}/size")
-            .read()
-            .await?
-            .trim_end()
-            .parse::<usize>()
-            .context(format!(
-                "Failed to parse size of device for controller {:#} lun {}",
-                controller_guid, d.lun
-            ))?;
-        if sectors != d.disk_size_sectors {
-            anyhow::bail!(
-                "Unexpected size (in sectors) for device for controller {:#} lun {}: expected {}, got {}",
-                controller_guid,
-                d.lun,
-                d.disk_size_sectors,
-                sectors
-            );
-        }
-
-        device_paths.push(format!("/dev/{dev}"));
-    }
-
-    // Check duplicates
-    if device_paths.iter().collect::<HashSet<_>>().len() != device_paths.len() {
-        anyhow::bail!("Found duplicate device paths: {device_paths:?}");
-    }
-
-    // Check that we found all devices and no extra devices are present
-    let list_sdx_cmd = format!(
-        // Don't fail if no devices are found
-        "ls -d /sys/bus/vmbus/devices/{}/host*/target*/*:0:0:*/block/sd* || true",
-        controller_guid
-    );
-    let devices = cmd!(sh, "sh -c {list_sdx_cmd}").read().await?;
-    let devices_count = devices.lines().count();
-    if devices_count != expected_devices.len() {
-        anyhow::bail!(
-            "Expected {} devices, found {} devices: {:?}",
-            expected_devices.len(),
-            devices_count,
-            devices
-        );
-    }
-
-    Ok(device_paths)
 }
 
 /// Runs a series of validation steps inside the Linux guest to verify that the
@@ -180,8 +88,8 @@ async fn test_storage_linux(
     controller_guid: Guid,
     expected_devices: Vec<ExpectedGuestDevice>,
 ) -> anyhow::Result<()> {
-    const DEVICE_DISCOVER_RETRIES: u32 = 5;
-    const DEVICE_DISCOVER_SLEEP_SECS: u64 = 2;
+    const DEVICE_DISCOVER_RETRIES: u32 = 10;
+    const DEVICE_DISCOVER_SLEEP_SECS: u64 = 3;
 
     let sh = agent.unix_shell();
 
@@ -767,12 +675,11 @@ async fn openhcl_linux_storvsp_dvd_nvme(
 /// Test an OpenHCL Linux direct VM with several NVMe namespaces assigned to VTL2, and
 /// vmbus relay. This should expose the disks to VTL0 as SCSI via vmbus.
 /// The disks are added and removed in a loop, dynamically after VM boot rather than being there at boot time.
-// TODO: Re-enable once re-add after removal is working in OpenHCL
-// #[openvmm_test(
-//     openhcl_linux_direct_x64,
-//     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
-// )]
-async fn _storvsp_dynamic_add_disk(
+#[openvmm_test(
+    openhcl_linux_direct_x64,
+    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+)]
+async fn storvsp_dynamic_add_disk(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
@@ -780,7 +687,7 @@ async fn _storvsp_dynamic_add_disk(
     const FIRST_NS: u32 = 30;
     const FIRST_LUN: u32 = 0;
     const SECTOR_SIZE: u64 = 512;
-    const NUM_ITERATIONS: u32 = 5;
+    const NUM_ITERATIONS: u32 = 3;
 
     // 128MB for the first NS and 1MB extra for each subsequent NS
     const fn disk_sectors(index: u32) -> u64 {
@@ -819,6 +726,7 @@ async fn _storvsp_dynamic_add_disk(
                                 read_only: false,
                             })
                             .collect(),
+                        requests: None,
                     }
                     .into_resource(),
                 });

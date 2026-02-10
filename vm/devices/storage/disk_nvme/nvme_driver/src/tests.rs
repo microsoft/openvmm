@@ -2,15 +2,22 @@
 // Licensed under the MIT License.
 
 use crate::NvmeDriver;
+use crate::RequestError;
+use crate::queue_pair::AdminAerHandler;
+use crate::queue_pair::AerHandler;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use disk_backend::Disk;
 use disk_prwrap::DiskWithReservations;
+use futures::StreamExt;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::CancelContext;
 use mesh::CellUpdater;
+use mesh::rpc::Rpc;
+use mesh::rpc::RpcSend;
 use nvme::NvmeControllerCaps;
 use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::AdminQueueFaultConfig;
@@ -18,6 +25,7 @@ use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::IoQueueFaultBehavior;
 use nvme_resources::fault::IoQueueFaultConfig;
 use nvme_spec::AdminOpcode;
+use nvme_spec::AsynchronousEventRequestDw0;
 use nvme_spec::Cap;
 use nvme_spec::Command;
 use nvme_spec::nvm;
@@ -26,11 +34,12 @@ use nvme_test::command_match::CommandMatchBuilder;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use parking_lot::Mutex;
-use pci_core::msi::MsiInterruptSet;
+use pci_core::msi::MsiConnection;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use test_with_tracing::test;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
@@ -44,6 +53,60 @@ use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
+
+/// When given a failed AER completion this test ensures that the AER handler
+/// responds to the RPC with the appropriate error and stops issuing further AERs.
+#[async_test]
+async fn test_admin_aer_handler_failed_completion(_driver: DefaultDriver) {
+    // ARRANGE
+    enum TestReq {
+        Aen(Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>),
+    }
+
+    let cid = 0;
+    let failure_status = nvme_spec::Status::INVALID_COMMAND_OPCODE.0;
+    let failed_completion = nvme_spec::Completion {
+        dw0: 0,
+        dw1: 0,
+        sqhd: 0,
+        sqid: 0,
+        cid,
+        status: nvme_spec::CompletionStatus::new().with_status(failure_status),
+    };
+
+    // Create both sides of the RPC channel and other admin AER handler setup.
+    let (send, mut recv) = mesh::channel::<TestReq>();
+    let pending_aen = send.call(TestReq::Aen, ());
+    let send_aen = recv.next().await.expect("aen request received");
+    let TestReq::Aen(rpc) = send_aen;
+    let mut handler = AdminAerHandler::new();
+
+    // Handler was just created, so this should never be false.
+    assert!(handler.poll_send_aer());
+    handler.handle_aen_request(rpc);
+    handler.update_awaiting_cid(cid);
+
+    // ACT: Try to handle a failed completion.
+    handler.handle_completion(&failed_completion);
+
+    // ASSERT: The AEN response should be sent and should indicate failure.
+    let response = CancelContext::new()
+        .with_timeout(Duration::from_secs(2))
+        .until_cancelled(pending_aen) // Avoid hanging test
+        .await
+        .expect("got response before timeout")
+        .expect("aen rpc completed");
+    match response {
+        Err(RequestError::Nvme(err)) => {
+            assert_eq!(err.status(), nvme_spec::Status(failure_status));
+        }
+        other => panic!("unexpected aen response: {other:?}"),
+    }
+    assert!(
+        !handler.poll_send_aer(),
+        "handler should stop issuing AERs after a failed completion"
+    );
+}
 
 #[async_test]
 #[should_panic(expected = "assertion `left == right` failed: cid sequence number mismatch:")]
@@ -158,11 +221,11 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
 
     // Controller Driver Setup
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let mut msi_set = MsiInterruptSet::new();
+    let msi_conn = MsiConnection::new();
     let nvme = nvme::NvmeController::new(
         &driver_source,
         guest_mem,
-        &mut msi_set,
+        msi_conn.target(),
         &mut ExternallyManagedMmioIntercepts,
         NvmeControllerCaps {
             msix_count: MSIX_COUNT,
@@ -171,7 +234,7 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
         },
     );
 
-    let mut device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
+    let mut device = NvmeTestEmulatedDevice::new(nvme, msi_conn, dma_client.clone());
 
     // Mock response at offset 0 since that is where Cap will be accessed
     let max_u16: u16 = 65535;
@@ -195,11 +258,11 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
     let dma_client = device_test_memory.dma_client();
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let mut msi_set = MsiInterruptSet::new();
+    let msi_conn = MsiConnection::new();
     let nvme = nvme::NvmeController::new(
         &driver_source,
         guest_mem,
-        &mut msi_set,
+        msi_conn.target(),
         &mut ExternallyManagedMmioIntercepts,
         NvmeControllerCaps {
             msix_count: MSIX_COUNT,
@@ -208,7 +271,7 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
         },
     );
 
-    let mut device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
+    let mut device = NvmeTestEmulatedDevice::new(nvme, msi_conn, dma_client.clone());
 
     // Setup mock response at offset 0
     let cap: Cap = Cap::new().with_mqes_z(0);
@@ -251,11 +314,11 @@ async fn test_nvme_driver(driver: DefaultDriver, config: NvmeTestConfig) {
 
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let mut msi_set = MsiInterruptSet::new();
+    let msi_conn = MsiConnection::new();
     let nvme = nvme::NvmeController::new(
         &driver_source,
         guest_mem.clone(),
-        &mut msi_set,
+        msi_conn.target(),
         &mut ExternallyManagedMmioIntercepts,
         NvmeControllerCaps {
             msix_count: MSIX_COUNT,
@@ -268,7 +331,7 @@ async fn test_nvme_driver(driver: DefaultDriver, config: NvmeTestConfig) {
         .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
         .await
         .unwrap();
-    let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
+    let device = NvmeTestEmulatedDevice::new(nvme, msi_conn, dma_client.clone());
 
     if fail_at_driver_create {
         fail_alloc.store(true, Ordering::SeqCst);
@@ -395,11 +458,11 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
 
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let mut msi_set = MsiInterruptSet::new();
+    let msi_conn = MsiConnection::new();
     let nvme = nvme_test::NvmeFaultController::new(
         &driver_source,
         guest_mem.clone(),
-        &mut msi_set,
+        msi_conn.target(),
         &mut ExternallyManagedMmioIntercepts,
         nvme_test::NvmeFaultControllerCaps {
             msix_count: MSIX_COUNT,
@@ -419,7 +482,7 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
         )
         .await
         .unwrap();
-    let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
+    let device = NvmeTestEmulatedDevice::new(nvme, msi_conn, dma_client.clone());
     let mut driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
         .await
         .unwrap();
@@ -464,9 +527,9 @@ pub struct NvmeTestMapping<T> {
 
 impl<T: PciConfigSpace + MmioIntercept + InspectMut, U: DmaClient> NvmeTestEmulatedDevice<T, U> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-    pub fn new(device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
+    pub fn new(device: T, msi_conn: MsiConnection, dma_client: Arc<U>) -> Self {
         Self {
-            device: EmulatedDevice::new(device, msi_set, dma_client.clone()),
+            device: EmulatedDevice::new(device, msi_conn, dma_client.clone()),
             mocked_response_u32: Arc::new(Mutex::new(None)),
             mocked_response_u64: Arc::new(Mutex::new(None)),
         }

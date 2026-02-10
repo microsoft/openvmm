@@ -16,13 +16,14 @@ use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmgsResource;
 use crate::ProcessorTopology;
-use crate::SIZE_1_GB;
 use crate::SecureBootTemplate;
 use crate::TpmConfig;
 use crate::UefiConfig;
 use crate::VmbusStorageType;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 
+use crate::MmioConfig;
+use crate::SIZE_1_MB;
 use crate::VmbusStorageController;
 use crate::openvmm::memdiff_vmgs;
 use crate::openvmm::petri_disk_to_openvmm;
@@ -277,6 +278,7 @@ impl PetriVmConfigOpenVmm {
             let MemoryConfig {
                 startup_bytes,
                 dynamic_memory_range,
+                mmio_gaps,
             } = memory;
 
             if dynamic_memory_range.is_some() {
@@ -285,16 +287,21 @@ impl PetriVmConfigOpenVmm {
 
             openvmm_defs::config::MemoryConfig {
                 mem_size: startup_bytes,
-                mmio_gaps: if firmware.is_openhcl() {
-                    match arch {
-                        MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
-                        MachineArch::Aarch64 => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
+                mmio_gaps: match mmio_gaps {
+                    MmioConfig::Platform => {
+                        if firmware.is_openhcl() {
+                            match arch {
+                                MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
+                                MachineArch::Aarch64 => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
+                            }
+                        } else {
+                            match arch {
+                                MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86.into(),
+                                MachineArch::Aarch64 => DEFAULT_MMIO_GAPS_AARCH64.into(),
+                            }
+                        }
                     }
-                } else {
-                    match arch {
-                        MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86.into(),
-                        MachineArch::Aarch64 => DEFAULT_MMIO_GAPS_AARCH64.into(),
-                    }
+                    MmioConfig::Custom(ranges) => ranges,
                 },
                 prefetch_memory: false,
                 pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
@@ -652,6 +659,7 @@ impl PetriVmConfigSetupCore<'_> {
                             disable_frontpage,
                             default_boot_always_attempt,
                             enable_vpci_boot,
+                            azi_hsm_enabled,
                         },
                 },
             ) => {
@@ -670,6 +678,7 @@ impl PetriVmConfigSetupCore<'_> {
                     uefi_console_mode: Some(openvmm_defs::config::UefiConsoleMode::Com1),
                     default_boot_always_attempt: *default_boot_always_attempt,
                     bios_guid: Guid::new_random(),
+                    azi_hsm_enabled: *azi_hsm_enabled,
                 }
             }
             (
@@ -744,10 +753,10 @@ impl PetriVmConfigSetupCore<'_> {
                         Vtl2BaseAddressType::File
                     } else {
                         // By default, utilize IGVM relocation and tell OpenVMM
-                        // to place VTL2 at 2GB. This tests both relocation
+                        // to place VTL2 at 512MB. This tests both relocation
                         // support in OpenVMM, and relocation support within
                         // OpenHCL.
-                        Vtl2BaseAddressType::Absolute(2 * SIZE_1_GB)
+                        Vtl2BaseAddressType::Absolute(512 * SIZE_1_MB)
                     }
                 });
 
@@ -809,6 +818,7 @@ impl PetriVmConfigSetupCore<'_> {
                 disable_frontpage,
                 default_boot_always_attempt,
                 enable_vpci_boot,
+                azi_hsm_enabled,
             },
             OpenHclConfig { vmbus_redirect, .. },
         ) = match self.firmware {
@@ -839,6 +849,7 @@ impl PetriVmConfigSetupCore<'_> {
             },
             com1: true,
             com2: true,
+            serial_tx_only: false,
             vmbus_redirection: *vmbus_redirect,
             vtl2_settings: None, // Will be added at startup to allow tests to modify
             vmgs: memdiff_vmgs(self.vmgs)?,
@@ -861,6 +872,8 @@ impl PetriVmConfigSetupCore<'_> {
             igvm_attest_test_config: None,
             test_gsp_by_id,
             efi_diagnostics_log_level: Default::default(), // TODO: make configurable
+            hv_sint_enabled: false,
+            azi_hsm_enabled: *azi_hsm_enabled,
         };
 
         Ok((ged, guest_request_send))
@@ -1115,6 +1128,7 @@ fn vmbus_storage_controllers_to_openvmm(
                         max_io_queues: 64,
                         msix_count: 64,
                         namespaces,
+                        requests: None,
                     }
                     .into_resource(),
                 });

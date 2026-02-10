@@ -969,13 +969,9 @@ impl LxVolume {
 
         match result {
             Ok(_) => result,
-            Err(e) => {
-                // Read-only files can fail to be deleted with EIO if:
-                // - The file system didn't support FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE.
-                // - The file system's permission check for that flag failed.
-                if e.value() == lx::EIO {
-                    result
-                } else {
+            Err(e) => match fs::analyze_delete_error(e, handle) {
+                fs::DeleteErrorAction::ReturnError(err) => Err(err),
+                fs::DeleteErrorAction::TryReadOnlyWorkaround => {
                     // Reopen with the correct permissions to query and clear the read-only attribute,
                     // and try again.
                     let handle = util::reopen_file(
@@ -985,7 +981,7 @@ impl LxVolume {
 
                     fs::delete_read_only_file(&self.state.fs_context, &handle)
                 }
-            }
+            },
         }
     }
 

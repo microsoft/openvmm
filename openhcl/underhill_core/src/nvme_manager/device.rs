@@ -44,7 +44,7 @@ impl NvmeDevice for VfioNvmeDevice {
     async fn namespace(
         &mut self,
         nsid: u32,
-    ) -> Result<Arc<nvme_driver::Namespace>, nvme_driver::NamespaceError> {
+    ) -> Result<nvme_driver::NamespaceHandle, nvme_driver::NamespaceError> {
         self.driver.namespace(nsid).await
     }
 
@@ -324,7 +324,7 @@ enum NvmeDriverRequest {
     Inspect(Deferred),
     LoadDriver(Rpc<Span, anyhow::Result<()>>),
     /// Get an instance of the supplied namespace (an nvme `nsid`).
-    GetNamespace(Rpc<(Span, u32), Result<Arc<nvme_driver::Namespace>, NamespaceError>>),
+    GetNamespace(Rpc<(Span, u32), Result<nvme_driver::NamespaceHandle, NamespaceError>>),
     Save(Rpc<Span, anyhow::Result<NvmeDriverSavedState>>),
     /// Shutdown the NVMe driver, and the manager of that driver.
     /// Takes the span, and a set of options.
@@ -430,7 +430,7 @@ pub struct NvmeDriverManagerClient {
 }
 
 impl NvmeDriverManagerClient {
-    pub async fn get_namespace(&self, nsid: u32) -> anyhow::Result<Arc<nvme_driver::Namespace>> {
+    pub async fn get_namespace(&self, nsid: u32) -> anyhow::Result<nvme_driver::NamespaceHandle> {
         let span = tracing::info_span!(
             "nvme_device_manager_get_namespace",
             pci_id = self.pci_id,

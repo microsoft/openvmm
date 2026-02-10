@@ -33,7 +33,7 @@ use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
 use pci_core::cfg_space_emu::IntxInterrupt;
-use pci_core::msi::RegisterMsi;
+use pci_core::msi::MsiTarget;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
@@ -50,7 +50,7 @@ use vmcore::save_restore::SaveRestore;
 
 /// What kind of PCI interrupts [`VirtioPciDevice`] should use.
 pub enum PciInterruptModel<'a> {
-    Msix(&'a mut dyn RegisterMsi),
+    Msix(&'a MsiTarget),
     IntX(PciInterruptPin, LineInterrupt),
 }
 
@@ -65,11 +65,11 @@ pub struct VirtioPciDevice {
     #[inspect(skip)]
     device: Box<dyn VirtioDevice>,
     #[inspect(skip)]
-    device_feature: [u32; 2],
+    device_feature: VirtioDeviceFeatures,
     #[inspect(hex)]
     device_feature_select: u32,
     #[inspect(skip)]
-    driver_feature: [u32; 2],
+    driver_feature: VirtioDeviceFeatures,
     #[inspect(hex)]
     driver_feature_select: u32,
     msix_config_vector: u16,
@@ -83,7 +83,7 @@ pub struct VirtioPciDevice {
     #[inspect(skip)]
     interrupt_status: Arc<Mutex<u32>>,
     #[inspect(hex)]
-    device_status: u32,
+    device_status: VirtioDeviceStatus,
     config_generation: u32,
     config_space: ConfigSpaceType0Emulator,
 
@@ -100,7 +100,7 @@ pub struct VirtioPciDevice {
 impl VirtioPciDevice {
     pub fn new(
         device: Box<dyn VirtioDevice>,
-        mut interrupt_model: PciInterruptModel<'_>,
+        interrupt_model: PciInterruptModel<'_>,
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
         mmio_registration: &mut dyn RegisterMmioIntercept,
         shared_mem_mapper: Option<&dyn MemoryMapper>,
@@ -161,10 +161,10 @@ impl VirtioPciDevice {
             ),
         );
 
-        let msix: Option<MsixEmulator> = if let PciInterruptModel::Msix(register_msi) =
-            &mut interrupt_model
+        let msix: Option<MsixEmulator> = if let PciInterruptModel::Msix(msi_target) =
+            interrupt_model
         {
-            let (msix, msix_capability) = MsixEmulator::new(2, 64, *register_msi);
+            let (msix, msix_capability) = MsixEmulator::new(2, 64, msi_target);
             // setting msix as the first cap so that we don't have to update unit tests
             // i.e: there's no reason why this can't be a .push() instead of .insert()
             caps.insert(0, Box::new(msix_capability));
@@ -210,16 +210,21 @@ impl VirtioPciDevice {
             }
         };
 
+        let mut device_feature = traits.device_features.clone();
+        device_feature.set_bank(
+            0,
+            device_feature
+                .bank0()
+                .with_ring_event_idx(true)
+                .with_ring_indirect_desc(true)
+                .into_bits(),
+        );
+        device_feature.set_bank(1, device_feature.bank1().with_version_1(true).into_bits());
         Ok(VirtioPciDevice {
             device,
-            device_feature: [
-                (traits.device_features & 0xffffffff) as u32
-                    | VIRTIO_F_RING_EVENT_IDX
-                    | VIRTIO_F_RING_INDIRECT_DESC,
-                (traits.device_features >> 32) as u32 | VIRTIO_F_VERSION_1,
-            ],
+            device_feature,
             device_feature_select: 0,
-            driver_feature: [0; 2],
+            driver_feature: VirtioDeviceFeatures::new(),
             driver_feature_select: 0,
             msix_config_vector: 0,
             queue_select: 0,
@@ -227,7 +232,7 @@ impl VirtioPciDevice {
             queues,
             msix_vectors,
             interrupt_status: Arc::new(Mutex::new(0)),
-            device_status: 0,
+            device_status: VirtioDeviceStatus::new(),
             config_generation: 0,
             interrupt_kind,
             config_space,
@@ -239,7 +244,7 @@ impl VirtioPciDevice {
 
     fn update_config_generation(&mut self) {
         self.config_generation = self.config_generation.wrapping_add(1);
-        if self.device_status & VIRTIO_DRIVER_OK != 0 {
+        if self.device_status.driver_ok() {
             *self.interrupt_status.lock() |= 2;
             match &self.interrupt_kind {
                 InterruptKind::Msix(msix) => {
@@ -261,25 +266,19 @@ impl VirtioPciDevice {
             // Device feature bank
             4 => {
                 let feature_select = self.device_feature_select as usize;
-                if feature_select < self.device_feature.len() {
-                    self.device_feature[feature_select]
-                } else {
-                    0
-                }
+                self.device_feature.bank(feature_select)
             }
             // Driver feature bank index
             8 => self.driver_feature_select,
             // Driver feature bank
             12 => {
                 let feature_select = self.driver_feature_select as usize;
-                if feature_select < self.driver_feature.len() {
-                    self.driver_feature[feature_select]
-                } else {
-                    0
-                }
+                self.driver_feature.bank(feature_select)
             }
             16 => (self.queues.len() as u32) << 16 | self.msix_config_vector as u32,
-            20 => self.queue_select << 24 | self.config_generation << 8 | self.device_status,
+            20 => {
+                self.queue_select << 24 | self.config_generation << 8 | self.device_status.as_u32()
+            }
             24 => {
                 let size = if queue_select < self.queues.len() {
                     self.queues[queue_select].size
@@ -377,8 +376,8 @@ impl VirtioPciDevice {
 
     fn write_u32(&mut self, address: u64, offset: u16, val: u32) {
         assert!(offset & 3 == 0);
-        let queues_locked = self.device_status & VIRTIO_DRIVER_OK != 0;
-        let features_locked = queues_locked || self.device_status & VIRTIO_FEATURES_OK != 0;
+        let queues_locked = self.device_status.driver_ok();
+        let features_locked = queues_locked || self.device_status.features_ok();
         let queue_select = self.queue_select as usize;
         match offset {
             // Device feature bank index
@@ -388,8 +387,11 @@ impl VirtioPciDevice {
             // Driver feature bank
             12 => {
                 let bank = self.driver_feature_select as usize;
-                if !features_locked && bank < self.driver_feature.len() {
-                    self.driver_feature[bank] = val & self.device_feature[bank];
+                if features_locked || bank >= self.device_feature.len() {
+                    // Update is not persisted.
+                } else {
+                    self.driver_feature
+                        .set_bank(bank, val & self.device_feature.bank(bank));
                 }
             }
             16 => self.msix_config_vector = val as u16,
@@ -398,8 +400,8 @@ impl VirtioPciDevice {
                 self.queue_select = val >> 16;
                 let val = val & 0xff;
                 if val == 0 {
-                    let started = (self.device_status & VIRTIO_DRIVER_OK) != 0;
-                    self.device_status = 0;
+                    let started = self.device_status.driver_ok();
+                    self.device_status = VirtioDeviceStatus::new();
                     self.config_generation = 0;
                     if started {
                         self.doorbells.clear();
@@ -408,17 +410,23 @@ impl VirtioPciDevice {
                     *self.interrupt_status.lock() = 0;
                 }
 
-                self.device_status |= val & (VIRTIO_ACKNOWLEDGE | VIRTIO_DRIVER | VIRTIO_FAILED);
+                let new_status = VirtioDeviceStatus::from(val as u8);
+                if new_status.acknowledge() {
+                    self.device_status.set_acknowledge(true);
+                }
+                if new_status.driver() {
+                    self.device_status.set_driver(true);
+                }
+                if new_status.failed() {
+                    self.device_status.set_failed(true);
+                }
 
-                if self.device_status & VIRTIO_FEATURES_OK == 0 && val & VIRTIO_FEATURES_OK != 0 {
-                    self.device_status |= VIRTIO_FEATURES_OK;
+                if !self.device_status.features_ok() && new_status.features_ok() {
+                    self.device_status.set_features_ok(true);
                     self.update_config_generation();
                 }
 
-                if self.device_status & VIRTIO_DRIVER_OK == 0 && val & VIRTIO_DRIVER_OK != 0 {
-                    let features =
-                        ((self.driver_feature[1] as u64) << 32) | self.driver_feature[0] as u64;
-
+                if !self.device_status.driver_ok() && new_status.driver_ok() {
                     let notification_address = (address & !0xfff) + 56;
                     for i in 0..self.events.len() {
                         self.doorbells.add(
@@ -462,13 +470,13 @@ impl VirtioPciDevice {
                         .collect();
 
                     self.device.enable(Resources {
-                        features,
+                        features: self.driver_feature.clone(),
                         queues,
                         shared_memory_region: self.shared_memory_region.clone(),
                         shared_memory_size: self.shared_memory_size,
                     });
 
-                    self.device_status |= VIRTIO_DRIVER_OK;
+                    self.device_status.set_driver_ok(true);
                     self.update_config_generation();
                 }
             }

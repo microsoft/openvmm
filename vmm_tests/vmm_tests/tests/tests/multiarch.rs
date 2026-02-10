@@ -87,6 +87,28 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
     Ok(())
 }
 
+/// Basic boot test for images that require small amounts of ram, like alpine.
+#[vmm_test(
+    openvmm_uefi_x64(vhd(alpine_3_23_x64)),
+    openvmm_openhcl_uefi_x64(vhd(alpine_3_23_x64)),
+    hyperv_openhcl_uefi_x64(vhd(alpine_3_23_x64)),
+    openvmm_uefi_aarch64(vhd(alpine_3_23_aarch64)),
+    openvmm_openhcl_uefi_aarch64(vhd(alpine_3_23_aarch64)),
+    hyperv_openhcl_uefi_aarch64(vhd(alpine_3_23_aarch64))
+)]
+async fn boot_small<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_memory(MemoryConfig {
+            startup_bytes: SIZE_1_GB,
+            ..Default::default()
+        })
+        .run()
+        .await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Basic boot test without agent
 #[vmm_test_no_agent(
     openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
@@ -414,6 +436,60 @@ async fn efi_diagnostics_no_boot(
     }
 
     anyhow::bail!("Did not find expected message in kmsg");
+}
+
+/// Test that AziHsm is present in UEFI by checking for AziHsm log messages.
+/// Boots with TPM and AziHsm enabled, no boot disk required.
+#[openvmm_test_no_agent(openhcl_uefi_x64(none))]
+async fn azi_hsm_present(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let vm = config
+        .with_tpm(true)
+        .with_azi_hsm_enabled(true)
+        .with_uefi_frontpage(true)
+        .run_without_agent()
+        .await?;
+
+    // Look for AziHsm log messages in kmsg
+    const AZI_HSM_PREFIX: &str = "AziHsm:";
+
+    let mut kmsg = vm.kmsg().await?;
+    while let Some(data) = kmsg.next().await {
+        let data = data.context("reading kmsg")?;
+        let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
+        let raw = msg.message.as_raw();
+        if raw.contains(AZI_HSM_PREFIX) {
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!("Did not find expected AziHsm message in kmsg");
+}
+
+/// Test that AziHsm is absent when disabled
+/// Boots with TPM enabled but AziHsm disabled, no boot disk required.
+#[openvmm_test_no_agent(openhcl_uefi_x64(none))]
+async fn azi_hsm_absent(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let vm = config
+        .with_tpm(true)
+        .with_azi_hsm_enabled(false)
+        .with_uefi_frontpage(true)
+        .run_without_agent()
+        .await?;
+
+    // Verify AziHsm log messages do NOT appear in kmsg
+    const AZI_HSM_PREFIX: &str = "AziHsm:";
+
+    let mut kmsg = vm.kmsg().await?;
+    while let Some(data) = kmsg.next().await {
+        let data = data.context("reading kmsg")?;
+        let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
+        let raw = msg.message.as_raw();
+        if raw.contains(AZI_HSM_PREFIX) {
+            anyhow::bail!("Found unexpected AziHsm message in kmsg when AziHsm should be disabled");
+        }
+    }
+
+    Ok(())
 }
 
 /// Boot our guest-test UEFI image, which will run some tests,

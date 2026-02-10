@@ -7,12 +7,17 @@
 #![forbid(unsafe_code)]
 #![no_std]
 
+extern crate alloc;
+
+use alloc::string::String;
 use bitfield_struct::bitfield;
 use core::ops::Index;
 use core::ops::IndexMut;
 #[cfg(feature = "inspect")]
 use inspect::Inspect;
 use open_enum::open_enum;
+use serde::Deserialize;
+use serde::Serialize;
 use static_assertions::const_assert;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -34,6 +39,7 @@ open_enum! {
     #[cfg_attr(feature = "inspect", inspect(debug))]
     pub enum FileId: u32 {
         FILE_TABLE     = 0,
+
         BIOS_NVRAM     = 1,
         TPM_PPI        = 2,
         TPM_NVRAM      = 3,
@@ -49,6 +55,8 @@ open_enum! {
         HIBERNATION_FIRMWARE = 14,
         PLATFORM_SEED = 15,
         PROVENANCE_DOC = 16,
+        TPM_NVRAM_BACKUP = 17,
+        PROVISIONING_MARKER = 18,
 
         EXTENDED_FILE_TABLE = 63,
     }
@@ -79,7 +87,7 @@ pub type VmgsAuthTag = [u8; VMGS_AUTHENTICATION_TAG_SIZE];
 pub type VmgsDatastoreKey = [u8; VMGS_ENCRYPTION_KEY_SIZE];
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VmgsFileEntry {
     // V2 fields
     pub offset: u32,
@@ -90,7 +98,11 @@ pub struct VmgsFileEntry {
     pub nonce: VmgsNonce,
     pub authentication_tag: VmgsAuthTag,
 
-    pub reserved: [u8; 20],
+    // Store a copy of the extended attributes here so we can check if a FileId
+    // is encrypted without unlocking the VMGS.
+    pub attributes: FileAttribute,
+
+    pub reserved: [u8; 16],
 }
 
 const_assert!(size_of::<VmgsFileEntry>() == 64);
@@ -110,7 +122,7 @@ impl IndexMut<FileId> for [VmgsFileEntry] {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VmgsExtendedFileEntry {
     pub attributes: FileAttribute,
     pub encryption_key: VmgsDatastoreKey,
@@ -135,7 +147,7 @@ impl IndexMut<FileId> for [VmgsExtendedFileEntry] {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[cfg_attr(feature = "inspect", derive(Inspect))]
 pub struct VmgsEncryptionKey {
     pub nonce: VmgsNonce,
@@ -147,7 +159,7 @@ pub struct VmgsEncryptionKey {
 const_assert!(size_of::<VmgsEncryptionKey>() == 64);
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VmgsHeader {
     // V1 compatible fields
     pub signature: u64,
@@ -170,7 +182,7 @@ pub struct VmgsHeader {
 const_assert!(size_of::<VmgsHeader>() == 168);
 
 #[repr(C)]
-#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
+#[derive(Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
 pub struct VmgsFileTable {
     pub entries: [VmgsFileEntry; VMGS_FILE_COUNT],
 }
@@ -181,7 +193,7 @@ pub const VMGS_FILE_TABLE_BLOCK_SIZE: u32 =
     size_of::<VmgsFileTable>() as u32 / VMGS_BYTES_PER_BLOCK;
 
 #[repr(C)]
-#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VmgsExtendedFileTable {
     pub entries: [VmgsExtendedFileEntry; VMGS_FILE_COUNT],
 }
@@ -223,4 +235,48 @@ pub struct VmgsMarkers {
     pub reprovisioned: bool,
     #[bits(15)]
     _reserved: u16,
+}
+
+/// Entities that can provision a VMGS file.
+#[cfg_attr(feature = "inspect", derive(Inspect))]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VmgsProvisioner {
+    Unknown,
+    Hcl,
+    OpenHcl,
+    CpsVmgstoolCvm,
+    HaVmgstoolTvm,
+    HclPostProvisioning,
+}
+
+/// Reasons that OpenHCL will provision a VMGS file.
+#[cfg_attr(feature = "inspect", derive(Inspect))]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VmgsProvisioningReason {
+    /// VMGS file was empty.
+    Empty,
+    /// VMGS file was corrupt or OpenHCL failed to read it.
+    Failure,
+    /// Host requested that OpenHCL reprovision the VMGS.
+    Request,
+    /// Unknown reason.
+    Unknown,
+}
+
+/// Diagnostic marker that contains information about the VMGS's provisioning.
+/// This marker is written once when a VMGS file is created, leaving a trace of
+/// where and how it originated (e.g., that it was created by OpenHCL). Adding
+/// new fields is safe, as it is not read by OpenHCL for any behavioral purpose.
+#[cfg_attr(feature = "inspect", derive(Inspect))]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VmgsProvisioningMarker {
+    pub provisioner: VmgsProvisioner,
+    pub reason: VmgsProvisioningReason,
+    pub tpm_version: String,
+    pub tpm_nvram_size: usize,
+    pub akcert_size: usize,
+    pub akcert_attrs: String,
+    pub provisioner_version: String,
 }

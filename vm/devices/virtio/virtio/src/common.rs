@@ -1,10 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::queue::QueueCore;
+use crate::queue::QueueCoreCompleteWork;
+use crate::queue::QueueCoreGetWork;
 use crate::queue::QueueError;
 use crate::queue::QueueParams;
+use crate::queue::QueueWork;
 use crate::queue::VirtioQueuePayload;
+use crate::queue::new_queue;
+use crate::spec::VirtioDeviceFeatures;
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures::Stream;
@@ -40,17 +44,15 @@ pub trait VirtioQueueWorkerContext {
 
 #[derive(Debug)]
 pub struct VirtioQueueUsedHandler {
-    core: QueueCore,
-    last_used_index: u16,
+    core: QueueCoreCompleteWork,
     outstanding_desc_count: Arc<Mutex<(u16, event_listener::Event)>>,
     notify_guest: Interrupt,
 }
 
 impl VirtioQueueUsedHandler {
-    fn new(core: QueueCore, notify_guest: Interrupt) -> Self {
+    fn new(core: QueueCoreCompleteWork, notify_guest: Interrupt) -> Self {
         Self {
             core,
-            last_used_index: 0,
             outstanding_desc_count: Arc::new(Mutex::new((0, event_listener::Event::new()))),
             notify_guest,
         }
@@ -70,12 +72,8 @@ impl VirtioQueueUsedHandler {
         listener
     }
 
-    pub fn complete_descriptor(&mut self, descriptor_index: u16, bytes_written: u32) {
-        match self.core.complete_descriptor(
-            &mut self.last_used_index,
-            descriptor_index,
-            bytes_written,
-        ) {
+    pub fn complete_descriptor(&mut self, work: &QueueWork, bytes_written: u32) {
+        match self.core.complete_descriptor(work, bytes_written) {
             Ok(true) => {
                 self.notify_guest.deliver();
             }
@@ -98,24 +96,24 @@ impl VirtioQueueUsedHandler {
 }
 
 pub struct VirtioQueueCallbackWork {
-    pub payload: Vec<VirtioQueuePayload>,
     used_queue_handler: Arc<Mutex<VirtioQueueUsedHandler>>,
-    descriptor_index: u16,
+    work: QueueWork,
+    pub payload: Vec<VirtioQueuePayload>,
     completed: bool,
 }
 
 impl VirtioQueueCallbackWork {
     pub fn new(
-        payload: Vec<VirtioQueuePayload>,
+        mut work: QueueWork,
         used_queue_handler: &Arc<Mutex<VirtioQueueUsedHandler>>,
-        descriptor_index: u16,
     ) -> Self {
         let used_queue_handler = used_queue_handler.clone();
+        let payload = std::mem::take(&mut work.payload);
         used_queue_handler.lock().add_outstanding_descriptor();
         Self {
+            work,
             payload,
             used_queue_handler,
-            descriptor_index,
             completed: false,
         }
     }
@@ -124,12 +122,12 @@ impl VirtioQueueCallbackWork {
         assert!(!self.completed);
         self.used_queue_handler
             .lock()
-            .complete_descriptor(self.descriptor_index, bytes_written);
+            .complete_descriptor(&self.work, bytes_written);
         self.completed = true;
     }
 
     pub fn descriptor_index(&self) -> u16 {
-        self.descriptor_index
+        self.work.descriptor_index()
     }
 
     // Determine the total size of all readable or all writeable payload buffers.
@@ -226,28 +224,26 @@ impl Drop for VirtioQueueCallbackWork {
 
 #[derive(Debug)]
 pub struct VirtioQueue {
-    core: QueueCore,
-    last_avail_index: u16,
+    core: QueueCoreGetWork,
     used_handler: Arc<Mutex<VirtioQueueUsedHandler>>,
     queue_event: PolledWait<Event>,
 }
 
 impl VirtioQueue {
     pub fn new(
-        features: u64,
+        features: VirtioDeviceFeatures,
         params: QueueParams,
         mem: GuestMemory,
         notify: Interrupt,
         queue_event: PolledWait<Event>,
     ) -> Result<Self, QueueError> {
-        let core = QueueCore::new(features, mem, params)?;
+        let (get_work, complete_work) = new_queue(features, mem, params)?;
         let used_handler = Arc::new(Mutex::new(VirtioQueueUsedHandler::new(
-            core.clone(),
+            complete_work,
             notify,
         )));
         Ok(Self {
-            core,
-            last_avail_index: 0,
+            core: get_work,
             used_handler,
             queue_event,
         })
@@ -262,22 +258,15 @@ impl VirtioQueue {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<VirtioQueueCallbackWork>, QueueError>> {
-        let descriptor_index = loop {
-            if let Some(descriptor_index) = self.core.descriptor_index(self.last_avail_index)? {
-                break descriptor_index;
+        let work = loop {
+            if let Some(work) = self.core.try_next_work()? {
+                break work;
             };
             ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
         };
-        let payload = self
-            .core
-            .reader(descriptor_index)
-            .collect::<Result<Vec<_>, _>>()?;
-
-        self.last_avail_index = self.last_avail_index.wrapping_add(1);
         Poll::Ready(Ok(Some(VirtioQueueCallbackWork::new(
-            payload,
+            work,
             &self.used_handler,
-            descriptor_index,
         ))))
     }
 }
@@ -305,7 +294,7 @@ impl Stream for VirtioQueue {
 enum VirtioQueueStateInner {
     Initializing {
         mem: GuestMemory,
-        features: u64,
+        features: VirtioDeviceFeatures,
         params: QueueParams,
         event: Event,
         notify: Interrupt,
@@ -339,7 +328,7 @@ impl VirtioQueueWorker {
         self,
         name: impl Into<String>,
         mem: GuestMemory,
-        features: u64,
+        features: VirtioDeviceFeatures,
         queue_resources: QueueResources,
         exit_event: event_listener::EventListener,
     ) -> TaskControl<VirtioQueueWorker, VirtioQueueState> {
@@ -424,7 +413,7 @@ impl AsyncRun<VirtioQueueState> for VirtioQueueWorker {
 }
 
 pub struct VirtioRunningState {
-    pub features: u64,
+    pub features: VirtioDeviceFeatures,
     pub enabled_queues: Vec<bool>,
 }
 
@@ -467,10 +456,10 @@ pub struct DeviceTraitsSharedMemory {
     pub size: u64,
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct DeviceTraits {
     pub device_id: u16,
-    pub device_features: u64,
+    pub device_features: VirtioDeviceFeatures,
     pub max_queues: u16,
     pub device_register_length: u32,
     pub shared_memory: DeviceTraitsSharedMemory,
@@ -499,7 +488,7 @@ pub struct QueueResources {
 }
 
 pub struct Resources {
-    pub features: u64,
+    pub features: VirtioDeviceFeatures,
     pub queues: Vec<QueueResources>,
     pub shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
     pub shared_memory_size: u64,
@@ -541,7 +530,7 @@ impl<T: LegacyVirtioDevice> VirtioDevice for LegacyWrapper<T> {
 
     fn enable(&mut self, resources: Resources) {
         let running_state = VirtioRunningState {
-            features: resources.features,
+            features: resources.features.clone(),
             enabled_queues: resources
                 .queues
                 .iter()
@@ -566,7 +555,7 @@ impl<T: LegacyVirtioDevice> VirtioDevice for LegacyWrapper<T> {
                 Some(worker.into_running_task(
                     "virtio-queue".to_string(),
                     self.mem.clone(),
-                    resources.features,
+                    resources.features.clone(),
                     queue_resources,
                     self.exit_event.listen(),
                 ))

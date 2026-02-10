@@ -19,19 +19,22 @@ fn main() {
     println!("cargo:rerun-if-changed=idl/IGVmAgentRpcApi.idl");
     println!("cargo:rerun-if-env-changed=MIDL");
 
-    let target = env::var("TARGET").unwrap_or_default();
-    let target_env = target.replace('-', "_");
-    println!("cargo:rerun-if-env-changed=MIDLRT_{}", target_env);
-
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    if target_os != "windows" {
+    if env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() != "windows" {
         // Stub interface is only needed when targeting Windows.
         return;
     }
 
     let host = env::var("HOST").unwrap_or_default();
     let host_is_windows = host.contains("windows");
-    let midl_info = locate_midl(&target_env);
+
+    // Construct the version of MIDL to use based on host architecture but windows target.
+    let host_arch = host
+        .split_once("-")
+        .expect("HOST target triple should contain hyphen separating architecture and vendor")
+        .0;
+    let midl_env = format!("{}_pc_windows_msvc", host_arch);
+    println!("cargo:rerun-if-env-changed=MIDLRT_{}", midl_env);
+    let midl_info = locate_midl(&midl_env);
 
     if midl_info.is_none() {
         if host_is_windows {
@@ -45,7 +48,7 @@ fn main() {
             panic!(
                 "MIDL compiler is required to build for Windows targets from non-Windows hosts. \
                 Set MIDL or MIDLRT_{} environment variable to point to a cross-compilation MIDL tool.",
-                target_env
+                midl_env
             );
         }
     }
@@ -57,8 +60,11 @@ fn main() {
     let mut cmd = Command::new(&midl);
     cmd.arg("/nologo");
 
+    // xtask-fmt allow-target-arch dependency
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "x86_64".to_owned());
+
     let cross_cfg = if !host_is_windows {
-        match load_cross_config(&target) {
+        match load_cross_config(&arch) {
             Ok(cfg) => Some(cfg),
             Err(err) => {
                 panic!("Failed to load cross-compilation configuration: {err}");
@@ -104,7 +110,7 @@ fn main() {
         _ => {
             // When building on native Windows, set up the MSVC environment for MIDL
             if host_is_windows {
-                if let Err(err) = setup_msvc_env_for_midl(&mut cmd, &target) {
+                if let Err(err) = setup_msvc_env_for_midl(&mut cmd) {
                     panic!("Failed to set up MSVC environment for MIDL: {err}");
                 }
             }
@@ -112,14 +118,12 @@ fn main() {
     }
 
     // Determine the MIDL target environment based on the Cargo target.
-    // xtask-fmt allow-target-arch dependency
-    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "x86_64".to_owned());
-    let midl_env = match arch.as_str() {
+    let midl_env_arg = match arch.as_str() {
         "x86_64" => "x64",
         "aarch64" => "arm64",
         unsupported => panic!("Unsupported architecture for MIDL: {}", unsupported),
     };
-    cmd.args(["/env", midl_env]);
+    cmd.args(["/env", midl_env_arg]);
 
     let out_dir_arg = path_for_midl(&out_dir, host_is_windows);
     cmd.arg("/out");
@@ -228,10 +232,10 @@ fn find_windows_sdk_midl() -> Option<String> {
 }
 
 #[cfg(windows)]
-fn setup_msvc_env_for_midl(cmd: &mut Command, target: &str) -> Result<(), String> {
+fn setup_msvc_env_for_midl(cmd: &mut Command) -> Result<(), String> {
     // Use the cc crate to get the MSVC compiler tool, which will give us
     // access to the properly configured environment including cl.exe path
-    let tool = cc::Build::new().target(target).host(target).get_compiler();
+    let tool = cc::Build::new().get_compiler();
 
     // Get the path to cl.exe
     let cl_path = tool.path();
@@ -256,7 +260,7 @@ fn setup_msvc_env_for_midl(cmd: &mut Command, target: &str) -> Result<(), String
 }
 
 #[cfg(not(windows))]
-fn setup_msvc_env_for_midl(_cmd: &mut Command, _target: &str) -> Result<(), String> {
+fn setup_msvc_env_for_midl(_cmd: &mut Command) -> Result<(), String> {
     Ok(())
 }
 
@@ -281,11 +285,7 @@ fn configure_cross_env(cmd: &mut Command, cfg: &CrossConfig) -> Result<(), Strin
     Ok(())
 }
 
-fn load_cross_config(target: &str) -> Result<CrossConfig, String> {
-    let arch = target
-        .split('-')
-        .next()
-        .ok_or_else(|| "could not determine target arch".to_string())?;
+fn load_cross_config(arch: &str) -> Result<CrossConfig, String> {
     let tool = env::var_os("OPENVMM_WINDOWS_CROSS_TOOL")
         .ok_or_else(|| "OPENVMM_WINDOWS_CROSS_TOOL not set".to_string())?;
 

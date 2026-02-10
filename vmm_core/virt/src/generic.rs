@@ -20,7 +20,7 @@ use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
-use pci_core::msi::MsiInterruptTarget;
+use pci_core::msi::SignalMsi;
 use std::cell::Cell;
 use std::convert::Infallible;
 use std::fmt::Debug;
@@ -291,7 +291,7 @@ pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
     /// create MSI interrupts.
     ///
     /// Not all partitions support this.
-    fn msi_interrupt_target(self: &Arc<Self>, vtl: Vtl) -> Option<Arc<dyn MsiInterruptTarget>> {
+    fn as_signal_msi(self: &Arc<Self>, vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         let _ = vtl;
         None
     }
@@ -584,7 +584,7 @@ pub trait PartitionMemoryMapper {
 
 pub trait Hv1 {
     type Error: std::error::Error + Send + Sync + 'static;
-    type Device: MapVpciInterrupt + MsiInterruptTarget;
+    type Device: MapVpciInterrupt + SignalMsi;
 
     fn reference_time_source(&self) -> Option<ReferenceTimeSource>;
 
@@ -613,8 +613,8 @@ impl MapVpciInterrupt for UnimplementedDevice {
     }
 }
 
-impl MsiInterruptTarget for UnimplementedDevice {
-    fn new_interrupt(&self) -> Box<dyn pci_core::msi::MsiControl> {
+impl SignalMsi for UnimplementedDevice {
+    fn signal_msi(&self, _rid: u32, _address: u64, _data: u32) {
         match *self {}
     }
 }

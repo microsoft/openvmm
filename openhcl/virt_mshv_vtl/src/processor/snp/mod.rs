@@ -713,6 +713,10 @@ fn init_vmsa(
     vmsa.v_intr_cntrl_mut().set_guest_busy(true);
     vmsa.sev_features_mut().set_debug_swap(true);
 
+    // Note: The VMSA pages for VTL0 and VTL1 are converted to a VMSA page
+    // in the RMP by the kernel, in mshv_configure_vmsa_page. The VTL2 VMSA
+    // page is converted via SNP_LAUNCH_UPDATE.
+
     let vmpl = match vtl {
         GuestVtl::Vtl0 => Vmpl::Vmpl2,
         GuestVtl::Vtl1 => Vmpl::Vmpl1,
@@ -1566,7 +1570,7 @@ impl UhProcessor<'_, SnpBacked> {
                 // for injection but injection cannot complete due to the intercept. Rewind the pending
                 // virtual interrupt so it is reinjected as a fixed interrupt.
 
-                // TODO SNP: Rewind the interrupt.
+                // TODO SNP ALTERNATE INJECTION: Rewind the interrupt.
                 unimplemented!("SevExitCode::VINTR");
             }
 
@@ -1663,9 +1667,8 @@ impl UhProcessor<'_, SnpBacked> {
                 }
                 HvMessageType::HvMessageTypeX64Halt
                 | HvMessageType::HvMessageTypeExceptionIntercept => {
-                    // Ignore.
-                    //
-                    // TODO SNP: Figure out why we are getting these.
+                    // Ignore. Note: it is possible to get the ExceptionIntercept
+                    // message for reflect #VC.
                 }
                 message_type => {
                     tracelimit::error_ratelimited!(

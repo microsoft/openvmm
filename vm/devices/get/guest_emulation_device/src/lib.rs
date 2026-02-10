@@ -131,6 +131,8 @@ pub struct GuestConfig {
     pub com1: bool,
     /// Enable COM2 for VTL0 and the VMBUS redirector in VTL2.
     pub com2: bool,
+    /// Only allow guest to host serial traffic
+    pub serial_tx_only: bool,
     /// Enable vmbus redirection.
     pub vmbus_redirection: bool,
     /// Enable the TPM.
@@ -159,6 +161,10 @@ pub struct GuestConfig {
     /// EFI diagnostics log level
     #[inspect(debug)]
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
+    /// Enable PPI-based SINT ACPI device for ARM64 Linux L1VH
+    pub hv_sint_enabled: bool,
+    /// Enable Azure HSM
+    pub azi_hsm_enabled: bool,
 }
 
 #[derive(Debug, Clone, Inspect)]
@@ -1351,6 +1357,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     guest_state_encryption_policy: state.config.guest_state_encryption_policy,
                     management_vtl_features: state.config.management_vtl_features,
                     efi_diagnostics_log_level: state.config.efi_diagnostics_log_level,
+                    hv_sint_enabled: state.config.hv_sint_enabled,
+                    azi_hsm_enabled: state.config.azi_hsm_enabled,
                 },
                 dynamic: get_protocol::dps_json::HclDevicePlatformSettingsV2Dynamic {
                     is_servicing_scenario: state.save_restore_buf.is_some(),
