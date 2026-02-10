@@ -8896,6 +8896,7 @@ dependencies = [
  "parking_lot",
  "task_control",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "virtio",
  "virtio_resources",

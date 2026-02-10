@@ -839,11 +839,16 @@ impl Worker {
                             tracing::trace!("tx packet");
                             let work = work.map_err(WorkerError::VirtioQueue)?;
                             if let Err(err) = self.queue_tx_packet(work) {
-                                tracing::warn!(
-                                    error = &err as &dyn std::error::Error,
-                                    "dropping malformed tx packet"
-                                );
-                                continue;
+                                match err {
+                                    WorkerError::Packet(ref _e) => {
+                                        tracelimit::warn_ratelimited!(
+                                            error = &err as &dyn std::error::Error,
+                                            "dropping malformed tx packet"
+                                        );
+                                        continue;
+                                    }
+                                    other => return Err(other),
+                                }
                             }
                             self.process_virtio_rx(epqueue_state.queue.as_mut())?;
                             if !self.transmit_pending_segments(epqueue_state)? {
