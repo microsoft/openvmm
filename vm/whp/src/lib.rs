@@ -30,10 +30,9 @@ use std::os::windows::prelude::*;
 use std::ptr::NonNull;
 use std::ptr::null;
 use std::ptr::null_mut;
-use winapi::shared::ntdef::LUID;
-use winapi::shared::winerror;
-use winapi::um::winnt::DEVICE_POWER_STATE;
-use winerror::ERROR_BAD_PATHNAME;
+use windows_sys::Win32::Foundation::ERROR_BAD_PATHNAME;
+use windows_sys::Win32::Foundation::LUID;
+use windows_sys::Win32::System::Power::DEVICE_POWER_STATE;
 
 /// Functions to get the WHP platform's capabilities.
 pub mod capabilities {

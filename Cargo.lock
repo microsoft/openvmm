@@ -10096,7 +10096,6 @@ dependencies = [
  "criterion",
  "guid",
  "pal",
- "winapi",
  "windows-sys 0.61.0",
 ]
 

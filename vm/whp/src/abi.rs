@@ -14,7 +14,7 @@ pub use x64::*;
 use std::ffi::c_void;
 use std::fmt::Debug;
 use std::fmt::Display;
-use winapi::shared::ntdef::LUID;
+use windows_sys::Win32::Foundation::LUID;
 
 macro_rules! bitops_base {
     ($t:ty) => {
