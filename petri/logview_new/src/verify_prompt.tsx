@@ -11,7 +11,7 @@ export interface VerifyPromptProps {
 
 export function VerifyPrompt({
     title="Analyze tests from all branches?",
-    message="This is a heavy operation that can take longer than 2 minutes to complete. Are you sure you want to analyze all?",
+    message="This is a heavy operation. It will fetch a significant amount of data and might take longer than 2 minutes to complete. Are you sure you want to analyze all?",
     onOk,
 }: VerifyPromptProps): React.JSX.Element | null {
     return (

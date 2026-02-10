@@ -249,8 +249,13 @@
   transition-delay: 300ms;
 }
 
-.run-details-testname-perf:hover {
-  background: #f3f4f6;
+.run-details-testname-perf:focus,
+.run-details-testname-perf:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: 0ms;
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
 }
 
 .common-failed-count {
