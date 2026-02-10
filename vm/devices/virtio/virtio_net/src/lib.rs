@@ -840,7 +840,7 @@ impl Worker {
                             let work = work.map_err(WorkerError::VirtioQueue)?;
                             if let Err(err) = self.queue_tx_packet(work) {
                                 match err {
-                                    WorkerError::Packet(ref _e) => {
+                                    WorkerError::Packet(_) => {
                                         tracelimit::warn_ratelimited!(
                                             error = &err as &dyn std::error::Error,
                                             "dropping malformed tx packet"
