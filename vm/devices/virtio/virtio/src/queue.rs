@@ -242,6 +242,10 @@ impl SplitQueueGetWork {
         mem: GuestMemory,
         params: QueueParams,
     ) -> Result<Self, QueueError> {
+        if params.size == 0 {
+            return Err(QueueError::InvalidQueueSize(params.size));
+        }
+
         let queue_avail = mem
             .subrange(
                 params.avail_addr,
