@@ -551,7 +551,6 @@ async fn servicing_test_keepalive_disable_through_inspect(
 
     vm.restart_openhcl(igvm_file.clone(), flags).await?;
 
-    fault_start_updater.set(false).await;
     agent.ping().await?;
 
     CancelContext::new()
@@ -560,6 +559,8 @@ async fn servicing_test_keepalive_disable_through_inspect(
         .await
         .expect("IDENTIFY should be observed within 30 seconds of vm restore after servicing with keepalive disabled")
         .expect("IDENTIFY verification should pass and return a valid result.");
+
+    fault_start_updater.set(false).await;
 
     Ok(())
 }

@@ -110,9 +110,7 @@ impl KeepAliveConfig {
     pub fn as_str(&self) -> &'static str {
         match self {
             KeepAliveConfig::EnabledHostAndPrivatePoolPresent => "enabled",
-            KeepAliveConfig::DisabledHostAndPrivatePoolPresent => {
-                "DisabledHostAndPrivatePoolPresent"
-            }
+            KeepAliveConfig::DisabledHostAndPrivatePoolPresent => "nohost,privatepool",
             KeepAliveConfig::Disabled => "disabled",
         }
     }
