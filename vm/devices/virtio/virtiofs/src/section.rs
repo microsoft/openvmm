@@ -118,6 +118,16 @@ struct Inode {
     lookup_count: u64,
 }
 
+impl Inode {
+    fn new(size: u64, state: InodeState) -> Self {
+        Self {
+            size,
+            state,
+            lookup_count: 1,
+        }
+    }
+}
+
 /// The state of an `Inode`.
 enum InodeState {
     /// The section exists and is open.
@@ -249,11 +259,8 @@ impl fuse::Fuse for SectionFs {
         )?;
 
         let size = section.query_size().map_err(|_| lx::Error::EINVAL)?;
-        let inode = Inode {
-            size,
-            state: InodeState::Open(section),
-            lookup_count: 1,
-        };
+        // N.B. Each lookup() creates a new node_id, so lookup_count is always 1.
+        let inode = Inode::new(size, InodeState::Open(section));
         let attr = inode.attr(0, &self.attr);
         let node_id = self.inodes.lock().insert(inode);
         tracing::trace!(node_id, name = name.to_str().unwrap(), "node_id");
@@ -266,12 +273,36 @@ impl fuse::Fuse for SectionFs {
     }
 
     fn forget(&self, node_id: u64, lookup_count: u64) {
-        let mut inodes = self.inodes.lock();
-        if let Some(inode) = inodes.get_mut(node_id) {
-            inode.lookup_count = inode.lookup_count.saturating_sub(lookup_count);
-            if inode.lookup_count == 0 {
-                inodes.remove(node_id);
+        let warn_mismatch = {
+            let mut inodes = self.inodes.lock();
+            if let Some(inode) = inodes.get_mut(node_id) {
+                let current = inode.lookup_count;
+                if lookup_count > current {
+                    inode.lookup_count = 0;
+                } else {
+                    inode.lookup_count -= lookup_count;
+                }
+                let mismatch = lookup_count > current;
+                if inode.lookup_count == 0 {
+                    inodes.remove(node_id);
+                }
+                if mismatch {
+                    Some((node_id, lookup_count, current))
+                } else {
+                    None
+                }
+            } else {
+                None
             }
+        };
+
+        if let Some((node_id, lookup_count, current)) = warn_mismatch {
+            tracing::warn!(
+                node_id,
+                lookup_count,
+                current_lookup_count = current,
+                "received forget with lookup_count greater than tracked count"
+            );
         }
     }
 
@@ -365,11 +396,7 @@ impl fuse::Fuse for SectionFs {
             Err(err) if err.kind() == io::ErrorKind::NotFound => (0, InodeState::Pending(upath)),
             Err(err) => return Err(err.into()),
         };
-        let inode = Inode {
-            size,
-            state,
-            lookup_count: 1,
-        };
+        let inode = Inode::new(size, state);
         let mut attr = inode.attr(0, &self.attr);
         let node_id = self.inodes.lock().insert(inode);
         attr.ino = node_id;
