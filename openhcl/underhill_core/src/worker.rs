@@ -3648,9 +3648,9 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         suppress_attestation: _,
         bios_guid: _,
         vpci_boot_enabled: _,
+        battery_enabled: _,
 
         // Validated below
-        battery_enabled,
         processor_idle_enabled,
         firmware_debugging_enabled,
         hibernation_enabled,
@@ -3707,9 +3707,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
     }
     if *secure_boot_enabled && *firmware_debugging_enabled {
         anyhow::bail!("secure boot and firmware debugging are mutually exclusive");
-    }
-    if *battery_enabled {
-        anyhow::bail!("battery is not supported");
     }
     if *legacy_memory_map {
         anyhow::bail!("legacy memory map is not supported");
