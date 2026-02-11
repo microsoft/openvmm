@@ -6,10 +6,13 @@ use mesh_channel_core::Receiver;
 use mesh_channel_core::Sender;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::IpAddress;
+use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
 use crate::DropReason;
+
+pub mod dns_tcp;
 
 #[cfg(unix)]
 mod unix;
@@ -19,6 +22,13 @@ mod windows;
 
 static DNS_HEADER_SIZE: usize = 12;
 
+/// Transport protocol for a DNS query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsTransport {
+    Udp,
+    Tcp,
+}
+
 #[derive(Debug, Clone)]
 pub struct DnsFlow {
     pub src_addr: IpAddress,
@@ -27,6 +37,7 @@ pub struct DnsFlow {
     pub dst_port: u16,
     pub gateway_mac: EthernetAddress,
     pub client_mac: EthernetAddress,
+    pub transport: DnsTransport,
 }
 
 #[derive(Debug, Clone)]
@@ -49,7 +60,7 @@ pub(crate) trait DnsBackend: Send + Sync {
 #[derive(Inspect)]
 pub struct DnsResolver {
     #[inspect(skip)]
-    backend: Box<dyn DnsBackend>,
+    backend: Arc<dyn DnsBackend>,
     #[inspect(skip)]
     receiver: Receiver<DnsResponse>,
     pending_requests: usize,
@@ -70,7 +81,7 @@ impl DnsResolver {
 
         let receiver = Receiver::new();
         Ok(Self {
-            backend: Box::new(WindowsDnsResolverBackend::new()?),
+            backend: Arc::new(WindowsDnsResolverBackend::new()?),
             receiver,
             pending_requests: 0,
             max_pending_requests,
@@ -87,7 +98,7 @@ impl DnsResolver {
 
         let receiver = Receiver::new();
         Ok(Self {
-            backend: Box::new(UnixDnsResolverBackend::new()?),
+            backend: Arc::new(UnixDnsResolverBackend::new()?),
             receiver,
             pending_requests: 0,
             max_pending_requests,
@@ -121,6 +132,10 @@ impl DnsResolver {
             }
             Poll::Ready(Err(_)) | Poll::Pending => Poll::Pending,
         }
+    }
+
+    pub fn backend(&self) -> &Arc<dyn DnsBackend> {
+        &self.backend
     }
 }
 

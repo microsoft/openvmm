@@ -21,6 +21,7 @@ use std::ptr::null_mut;
 use std::sync::Arc;
 use windows_sys::Win32::Foundation::DNS_REQUEST_PENDING;
 use windows_sys::Win32::Foundation::NO_ERROR;
+use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_TCP;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_UDP;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_NO_MULTICAST;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_CANCEL;
@@ -117,7 +118,10 @@ impl DnsBackend for WindowsDnsResolverBackend {
             queryRawOptions: 0,
             customServersSize: 0,
             customServers: null_mut(),
-            protocol: DNS_PROTOCOL_UDP,
+            protocol: match request.flow.transport {
+                super::DnsTransport::Tcp => DNS_PROTOCOL_TCP,
+                super::DnsTransport::Udp => DNS_PROTOCOL_UDP,
+            },
             Anonymous: DNS_QUERY_RAW_REQUEST_0::default(),
         };
 

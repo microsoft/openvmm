@@ -9,6 +9,7 @@ use super::DropReason;
 use crate::ChecksumState;
 use crate::ConsommeState;
 use crate::IpAddresses;
+use crate::dns_resolver::dns_tcp::DnsTcpHandler;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use inspect::Inspect;
@@ -118,10 +119,22 @@ enum LoopbackPortInfo {
     ProxyForGuestPort { sending_port: u16, guest_port: u16 },
 }
 
+/// The I/O backend for a TCP connection.
+///
+/// A connection is either backed by a real host socket or a virtual DNS
+/// handler that resolves DNS queries without a real socket.
+enum TcpBackend {
+    /// A real host socket. The socket may be `None` while the connection is
+    /// being constructed, or after both ends have closed.
+    Socket(Option<PolledSocket<Socket>>),
+    /// A virtual DNS TCP handler (no real socket).
+    Dns(DnsTcpHandler),
+}
+
 #[derive(Inspect)]
 struct TcpConnection {
     #[inspect(skip)]
-    socket: Option<PolledSocket<Socket>>,
+    backend: TcpBackend,
     loopback_port: LoopbackPortInfo,
     state: TcpState,
 
@@ -302,13 +315,17 @@ impl<T: Client> Access<'_, T> {
 
     pub(crate) fn refresh_tcp_driver(&mut self) {
         self.inner.tcp.connections.retain(|_, conn| {
-            let Some(socket) = conn.socket.take() else {
+            let TcpBackend::Socket(opt_socket) = &mut conn.backend else {
+                // DNS connections have no real socket to refresh.
+                return true;
+            };
+            let Some(socket) = opt_socket.take() else {
                 return true;
             };
             let socket = socket.into_inner();
             match PolledSocket::new(self.client.driver(), socket) {
                 Ok(socket) => {
-                    conn.socket = Some(socket);
+                    *opt_socket = Some(socket);
                     true
                 }
                 Err(err) => {
@@ -348,6 +365,8 @@ impl<T: Client> Access<'_, T> {
         };
         tracing::trace!(?tcp, "tcp packet");
 
+        let is_dns_tcp = is_gateway_dns_tcp(&ft, &self.inner.state.params, self.inner.dns.is_some());
+
         let mut sender = Sender {
             ft: &ft,
             client: self.client,
@@ -368,8 +387,22 @@ impl<T: Client> Access<'_, T> {
                     // This is for an old connection. Send reset.
                     sender.rst(ack, None);
                 } else if tcp.control == TcpControl::Syn {
-                    let conn = TcpConnection::new(&mut sender, &tcp)?;
-                    e.insert(conn);
+                    if is_dns_tcp {
+                        tracing::info!(
+                            src = %ft.src,
+                            dst = %ft.dst,
+                            "intercepting DNS TCP connection to gateway"
+                        );
+                        let conn = TcpConnection::new_dns(
+                            &mut sender,
+                            &tcp,
+                            self.inner.dns.as_ref().unwrap(),
+                        )?;
+                        e.insert(conn);
+                    } else {
+                        let conn = TcpConnection::new(&mut sender, &tcp)?;
+                        e.insert(conn);
+                    }
                 } else {
                     // Ignore the packet.
                 }
@@ -539,7 +572,7 @@ impl Default for TcpConnection {
         let tx_buffer_size = 16384;
 
         Self {
-            socket: None,
+            backend: TcpBackend::Socket(None),
             loopback_port: LoopbackPortInfo::None,
             state: TcpState::Connecting,
             rx_buffer: VecDeque::with_capacity(rx_buffer_size),
@@ -617,7 +650,7 @@ impl TcpConnection {
                 }
             }
         }
-        this.socket = Some(socket);
+        this.backend = TcpBackend::Socket(Some(socket));
         Ok(this)
     }
 
@@ -626,13 +659,43 @@ impl TcpConnection {
         socket: Socket,
     ) -> Result<Self, DropReason> {
         let mut this = Self {
-            socket: Some(
+            backend: TcpBackend::Socket(Some(
                 PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?,
-            ),
+            )),
             state: TcpState::SynSent,
             ..Default::default()
         };
         this.send_syn(sender, None);
+        Ok(this)
+    }
+
+    /// Create a virtual DNS TCP connection (no real host socket).
+    /// The connection completes the TCP handshake with the guest and
+    /// routes DNS queries through the provided resolver backend.
+    fn new_dns(
+        sender: &mut Sender<'_, impl Client>,
+        tcp: &TcpRepr<'_>,
+        dns: &crate::dns_resolver::DnsResolver,
+    ) -> Result<Self, DropReason> {
+        let mut this = Self::default();
+        this.initialize_from_first_client_packet(tcp)?;
+
+        let flow = crate::dns_resolver::DnsFlow {
+            src_addr: sender.ft.src.ip().into(),
+            dst_addr: sender.ft.dst.ip().into(),
+            src_port: sender.ft.src.port(),
+            dst_port: sender.ft.dst.port(),
+            gateway_mac: sender.state.params.gateway_mac,
+            client_mac: sender.state.params.client_mac,
+            transport: crate::dns_resolver::DnsTransport::Tcp,
+        };
+
+        this.backend = TcpBackend::Dns(DnsTcpHandler::new(dns.backend().clone(), flow));
+        // Immediately transition to SynReceived so the handshake SYN-ACK is sent.
+        this.state = TcpState::SynReceived;
+        this.rx_window_cap = this.rx_buffer.capacity();
+        this.send_syn(sender, Some(this.rx_seq));
+
         Ok(this)
     }
 
@@ -671,16 +734,90 @@ impl TcpConnection {
     }
 
     fn poll_conn(&mut self, cx: &mut Context<'_>, sender: &mut Sender<'_, impl Client>) -> bool {
+        // Temporarily take the backend to split the mutable borrow between
+        // the backend and the rest of TcpConnection's fields.
+        let mut backend = std::mem::replace(&mut self.backend, TcpBackend::Socket(None));
+        let result = match &mut backend {
+            TcpBackend::Dns(dns_handler) => self.poll_dns_backend(cx, sender, dns_handler),
+            TcpBackend::Socket(opt_socket) => self.poll_socket_backend(cx, sender, opt_socket),
+        };
+        self.backend = backend;
+        result
+    }
+
+    /// Poll the DNS TCP virtual connection backend.
+    ///
+    /// There is no real socket; data flows through the [`DnsTcpHandler`].
+    fn poll_dns_backend(
+        &mut self,
+        cx: &mut Context<'_>,
+        sender: &mut Sender<'_, impl Client>,
+        dns_handler: &mut DnsTcpHandler,
+    ) -> bool {
+        // rx path: feed guest data into the DNS handler for query extraction.
+        let rx_data: Vec<u8> = self.rx_buffer.drain(..).collect();
+        if !rx_data.is_empty() {
+            dns_handler.ingest(&rx_data);
+        }
+
+        if self.state.rx_fin() {
+            dns_handler.set_guest_fin();
+        }
+
+        // Poll for resolved DNS responses.
+        dns_handler.poll_responses(cx);
+
+        // tx path: copy response data from the handler into tx_buffer.
+        while !self.tx_buffer.is_full() {
+            let (a, b) = self.tx_buffer.unwritten_slices_mut();
+            let n = dns_handler.drain_tx(a);
+            if n == 0 {
+                let n2 = dns_handler.drain_tx(b);
+                if n2 == 0 {
+                    break;
+                }
+                self.tx_buffer.extend_by(n2);
+            } else {
+                self.tx_buffer.extend_by(n);
+            }
+        }
+
+        let want_close = dns_handler.should_close() && !self.state.tx_fin();
+        let has_pending_tx = dns_handler.has_pending_tx();
+
+        if want_close {
+            tracing::info!("DNS TCP connection closing after all responses flushed");
+            self.close();
+        }
+
+        self.send_next(sender);
+        !(self.state == TcpState::TimeWait
+            || self.state == TcpState::LastAck
+            || (self.state.tx_fin()
+                && self.state.rx_fin()
+                && self.tx_buffer.len() == 0
+                && !has_pending_tx))
+    }
+
+    /// Poll the real-socket TCP connection backend.
+    ///
+    /// Reads data from the host socket into the tx buffer (host -> guest) and
+    /// writes guest rx data into the host socket (guest -> host).
+    fn poll_socket_backend(
+        &mut self,
+        cx: &mut Context<'_>,
+        sender: &mut Sender<'_, impl Client>,
+        opt_socket: &mut Option<PolledSocket<Socket>>,
+    ) -> bool {
+        // Wait for the outbound connection to complete.
         if self.state == TcpState::Connecting {
-            match self
-                .socket
+            let socket = opt_socket
                 .as_mut()
-                .unwrap()
-                .poll_ready(cx, PollEvents::OUT)
-            {
+                .expect("Connecting state requires a socket");
+            match socket.poll_ready(cx, PollEvents::OUT) {
                 Poll::Ready(r) => {
                     if r.has_err() {
-                        let err = take_socket_error(self.socket.as_mut().unwrap());
+                        let err = take_socket_error(socket);
                         let reset = match err.kind() {
                             ErrorKind::TimedOut => {
                                 // Avoid resetting so that the guest doesn't
@@ -733,7 +870,7 @@ impl TcpConnection {
         }
 
         // Handle the tx path.
-        if let Some(socket) = &mut self.socket {
+        if let Some(socket) = opt_socket.as_mut() {
             if self.state.tx_fin() {
                 if let Poll::Ready(events) = socket.poll_ready(cx, PollEvents::EMPTY) {
                     if events.has_err() {
@@ -750,7 +887,7 @@ impl TcpConnection {
                     }
 
                     // Both ends are closed. Close the actual socket.
-                    self.socket = None;
+                    *opt_socket = None;
                 }
             } else {
                 while !self.tx_buffer.is_full() {
@@ -785,7 +922,7 @@ impl TcpConnection {
         }
 
         // Handle the rx path.
-        if let Some(socket) = &mut self.socket {
+        if let Some(socket) = opt_socket.as_mut() {
             while !self.rx_buffer.is_empty() {
                 let (a, b) = self.rx_buffer.as_slices();
                 let bufs = [IoSlice::new(a), IoSlice::new(b)];
@@ -1293,4 +1430,19 @@ fn seq_min<const N: usize>(seqs: [TcpSeqNumber; N]) -> TcpSeqNumber {
         }
     }
     min
+}
+
+/// Check if a TCP connection targets the gateway's DNS port.
+fn is_gateway_dns_tcp(
+    ft: &FourTuple,
+    params: &crate::ConsommeParams,
+    dns_available: bool,
+) -> bool {
+    if !dns_available || ft.dst.port() != crate::DNS_PORT {
+        return false;
+    }
+    match ft.dst.ip() {
+        IpAddr::V4(ip) => Ipv4Addr::from(params.gateway_ip) == ip,
+        IpAddr::V6(ip) => Ipv6Addr::from(params.gateway_link_local_ipv6) == ip,
+    }
 }
