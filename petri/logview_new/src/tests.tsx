@@ -13,6 +13,8 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { SearchInput } from './search';
 import { createColumns, defaultSorting, columnWidthMap } from './table_defs/tests';
 import { test_filters } from './branch_quick_filters.tsx';
+import { VerifyPrompt } from './verify_prompt.tsx';
+import { useVerifyGetAll } from './contexts/verify_get_all_context.tsx';
 
 export function Tests(): React.JSX.Element {
     const [searchParams, setSearchParams] = useSearchParams();
@@ -23,6 +25,8 @@ export function Tests(): React.JSX.Element {
     const [fetchedCount, setFetchedCount] = useState<number>(0);
     const [totalToFetch, setTotalToFetch] = useState<number | null>(null);
     const queryClient = useQueryClient();
+
+    const {verified, setVerified} = useVerifyGetAll();
 
     // Track component mount state for dynamic concurrency control
     const concurrencyRef = useRef(CONCURRENCY_FOREGROUND);
@@ -56,6 +60,12 @@ export function Tests(): React.JSX.Element {
         // Create an abort controller for this effect
         const abortController = new AbortController();
 
+        if (branchFilter === "all" && !verified) {
+            setFetchedCount(0);
+            setTotalToFetch(0);
+            return;
+        }
+
         // Fetch test analysis (which returns the test mapping)
         fetchTestAnalysis(
             branchFilter,
@@ -85,7 +95,7 @@ export function Tests(): React.JSX.Element {
             // This only runs when the effect is being cleaned up (i.e., dependencies changed or component unmounted)
             abortController.abort();
         };
-    }, [branchFilter, queryClient]);
+    }, [branchFilter, queryClient, verified]);
 
     // Get the table definition (columns and default sorting)
     const [sorting, setSorting] = useState<SortingState>(defaultSorting);
@@ -105,13 +115,19 @@ export function Tests(): React.JSX.Element {
                     totalToFetch={totalToFetch}
                 />
             </div>
-            <VirtualizedTable
-                data={filteredTableData}
-                columns={columns}
-                sorting={sorting}
-                columnWidthMap={columnWidthMap}
-                onSortingChange={setSorting}
-            />
+            {!verified && branchFilter === "all" ? (
+                <VerifyPrompt
+                    onOk={() => setVerified(true)}
+                />
+            ) : (
+                <VirtualizedTable
+                    data={filteredTableData}
+                    columns={columns}
+                    sorting={sorting}
+                    columnWidthMap={columnWidthMap}
+                    onSortingChange={setSorting}
+                />
+            )}
         </div>
     );
 }
