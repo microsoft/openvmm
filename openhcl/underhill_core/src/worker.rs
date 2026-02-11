@@ -3648,7 +3648,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         suppress_attestation: _,
         bios_guid: _,
         vpci_boot_enabled: _,
-        battery_enabled: _,
 
         // Validated below
         processor_idle_enabled,
@@ -3697,6 +3696,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         management_vtl_features: _,
         hv_sint_enabled: _,
         azi_hsm_enabled: _,
+        battery_enabled: _, // TODO: Add this to attestation later
     } = &dps.general;
 
     if *hibernation_enabled {
