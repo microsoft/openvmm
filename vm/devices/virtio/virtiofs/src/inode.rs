@@ -55,6 +55,11 @@ impl VirtioFsInode {
         *path = new_path;
     }
 
+    /// Increments the lookup count without changing the stored path.
+    pub fn add_ref(&self) {
+        self.lookup_count.fetch_add(1, Ordering::AcqRel);
+    }
+
     /// Decrements the lookup count, and returns the new count.
     pub fn forget(&self, node_id: u64, lookup_count: u64) -> u64 {
         let mut old_count = self.lookup_count.load(Ordering::Acquire);

@@ -221,6 +221,10 @@ impl Fuse for VirtioFs {
         let target_inode = self.get_inode(target)?;
         let attr = inode.link(name, &target_inode)?;
 
+        // Increment the lookup count since returning fuse_entry_out creates a
+        // new kernel reference that will be released via forget().
+        target_inode.add_ref();
+
         // Use the target inode as the reply, with refreshed attributes.
         Ok(fuse_entry_out::new(
             target,
