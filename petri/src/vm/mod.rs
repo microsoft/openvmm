@@ -1294,6 +1294,25 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             .await
     }
 
+    /// Invoke Update (Inspect protocol) on the running OpenHCL instance.
+    ///
+    /// IMPORTANT: As mentioned in the Guide, inspect output is *not* guaranteed
+    /// to be stable. Use this to test that components in OpenHCL are working as
+    /// you would expect. But, if you are adding a test simply to verify that
+    /// the inspect output as some other tool depends on it, then that is
+    /// incorrect.
+    ///
+    /// - `path` and `value` are passed to the [`inspect::Inspect`] machinery.
+    pub async fn inspect_update_openhcl(
+        &self,
+        path: impl Into<String>,
+        value: impl Into<String>,
+    ) -> anyhow::Result<inspect::Value> {
+        self.openhcl_diag()?
+            .inspect_update(path.into(), value.into())
+            .await
+    }
+
     /// Test that we are able to inspect OpenHCL.
     pub async fn test_inspect_openhcl(&mut self) -> anyhow::Result<()> {
         self.inspect_openhcl("", None, None).await.map(|_| ())
