@@ -974,6 +974,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Sets whether AziHsm support is enabled in UEFI.
+    pub fn with_azi_hsm_enabled(mut self, enable: bool) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("AziHsm is only supported for UEFI firmware.")
+            .azi_hsm_enabled = enable;
+        self
+    }
+
     /// Run the VM with Enable VMBus relay enabled
     pub fn with_vmbus_redirect(mut self, enable: bool) -> Self {
         self.config
@@ -1281,6 +1291,25 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     ) -> anyhow::Result<inspect::Node> {
         self.openhcl_diag()?
             .inspect(path.into().as_str(), depth, timeout)
+            .await
+    }
+
+    /// Invoke Update (Inspect protocol) on the running OpenHCL instance.
+    ///
+    /// IMPORTANT: As mentioned in the Guide, inspect output is *not* guaranteed
+    /// to be stable. Use this to test that components in OpenHCL are working as
+    /// you would expect. But, if you are adding a test simply to verify that
+    /// the inspect output as some other tool depends on it, then that is
+    /// incorrect.
+    ///
+    /// - `path` and `value` are passed to the [`inspect::Inspect`] machinery.
+    pub async fn inspect_update_openhcl(
+        &self,
+        path: impl Into<String>,
+        value: impl Into<String>,
+    ) -> anyhow::Result<inspect::Value> {
+        self.openhcl_diag()?
+            .inspect_update(path.into(), value.into())
             .await
     }
 
@@ -1747,6 +1776,8 @@ pub struct UefiConfig {
     pub default_boot_always_attempt: bool,
     /// Enable vPCI boot (for NVMe)
     pub enable_vpci_boot: bool,
+    /// Enable AziHsm support
+    pub azi_hsm_enabled: bool,
 }
 
 impl Default for UefiConfig {
@@ -1757,6 +1788,7 @@ impl Default for UefiConfig {
             disable_frontpage: true,
             default_boot_always_attempt: false,
             enable_vpci_boot: false,
+            azi_hsm_enabled: false,
         }
     }
 }

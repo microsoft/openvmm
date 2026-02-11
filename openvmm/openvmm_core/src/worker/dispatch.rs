@@ -2618,6 +2618,7 @@ impl LoadedVmInner {
                 uefi_console_mode,
                 default_boot_always_attempt,
                 bios_guid,
+                azi_hsm_enabled,
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
@@ -2635,6 +2636,7 @@ impl LoadedVmInner {
                     uefi_console_mode,
                     default_boot_always_attempt,
                     bios_guid,
+                    azi_hsm_enabled,
                 };
                 let regs = super::vm_loaders::uefi::load_uefi(
                     firmware,
