@@ -123,6 +123,7 @@ pub enum LoadMode {
         uefi_console_mode: Option<UefiConsoleMode>,
         default_boot_always_attempt: bool,
         bios_guid: Guid,
+        azi_hsm_enabled: bool,
     },
     Pcat {
         firmware: RomFileLocation,
