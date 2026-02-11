@@ -861,6 +861,7 @@ impl PetriVmConfigSetupCore<'_> {
             igvm_attest_test_config: None,
             test_gsp_by_id,
             efi_diagnostics_log_level: Default::default(), // TODO: make configurable
+            hv_sint_enabled: false,
         };
 
         Ok((ged, guest_request_send))
