@@ -135,9 +135,9 @@ impl FlowNode for Node {
                         crate::build_xtask::XtaskOutput::WindowsBin { exe, pdb: _ } => exe,
                     };
 
-                    let sh = xshell::Shell::new()?;
-                    sh.change_dir(openvmm_repo_path);
-                    let output = xshell::cmd!(sh, "{xtask_bin} fuzz list --crates").output()?;
+                    rt.sh.change_dir(openvmm_repo_path);
+                    let output =
+                        flowey::shell_cmd!(rt, "{xtask_bin} fuzz list --crates").output()?;
                     let output = String::from_utf8(output.stdout)?;
 
                     let fuzz_crates = output.trim().split('\n').map(|s| s.to_owned());

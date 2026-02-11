@@ -220,10 +220,10 @@ impl FlowNode for Node {
                                 .absolute()?
                                 .join("cargo_metadata.json");
 
-                            let sh = xshell::Shell::new()?;
-                            sh.change_dir(&working_dir);
+                            rt.sh.change_dir(&working_dir);
                             let output =
-                                xshell::cmd!(sh, "cargo metadata --format-version 1").output()?;
+                                flowey::shell_cmd!(rt, "cargo metadata --format-version 1")
+                                    .output()?;
                             let cargo_metadata = String::from_utf8(output.stdout)?;
                             fs_err::write(&cargo_metadata_path, cargo_metadata)?;
 

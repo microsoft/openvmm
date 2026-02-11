@@ -6,6 +6,7 @@ use super::Client;
 use super::DropReason;
 use crate::ChecksumState;
 use crate::MIN_MTU;
+use heapless::Vec as HeaplessVec;
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::DHCP_MAX_DNS_SERVER_COUNT;
 use smoltcp::wire::DhcpMessageType;
@@ -47,27 +48,26 @@ impl<T: Client> Access<'_, T> {
             ty => return Err(DropReason::UnsupportedDhcp(ty)),
         }
 
-        let dns_servers = if self.inner.state.params.nameservers.is_empty() {
-            None
-        } else {
-            let mut dns_servers = [None; DHCP_MAX_DNS_SERVER_COUNT];
-            for (&s, d) in self
-                .inner
+        let mut dns_servers: HeaplessVec<Ipv4Address, DHCP_MAX_DNS_SERVER_COUNT> =
+            HeaplessVec::new();
+        dns_servers.extend(
+            self.inner
                 .state
                 .params
                 .nameservers
                 .iter()
-                .zip(&mut dns_servers)
-            {
-                *d = Some(s);
-            }
-            Some(dns_servers)
-        };
+                .filter_map(|ip| match ip {
+                    IpAddress::Ipv4(addr) => Some(*addr),
+                    _ => None,
+                })
+                .take(DHCP_MAX_DNS_SERVER_COUNT),
+        );
 
         let resp_dhcp = if let Some(your_ip) = your_ip {
             DhcpRepr {
                 message_type,
                 transaction_id: dhcp_req.transaction_id,
+                secs: 0,
                 client_hardware_address: dhcp_req.client_hardware_address,
                 client_ip: Ipv4Address::UNSPECIFIED,
                 your_ip,
@@ -80,14 +80,18 @@ impl<T: Client> Access<'_, T> {
                 client_identifier: None,
                 server_identifier: Some(self.inner.state.params.gateway_ip),
                 parameter_request_list: None,
-                dns_servers,
+                dns_servers: Some(dns_servers),
                 max_size: None,
                 lease_duration: Some(86400),
+                renew_duration: None,
+                rebind_duration: None,
+                additional_options: &[],
             }
         } else {
             DhcpRepr {
                 message_type: DhcpMessageType::Nak,
                 transaction_id: dhcp_req.transaction_id,
+                secs: 0,
                 client_hardware_address: dhcp_req.client_hardware_address,
                 client_ip: Ipv4Address::UNSPECIFIED,
                 your_ip: Ipv4Address::BROADCAST,
@@ -103,6 +107,9 @@ impl<T: Client> Access<'_, T> {
                 dns_servers: None,
                 max_size: None,
                 lease_duration: None,
+                renew_duration: None,
+                rebind_duration: None,
+                additional_options: &[],
             }
         };
 
@@ -113,7 +120,7 @@ impl<T: Client> Access<'_, T> {
         let resp_ipv4 = Ipv4Repr {
             src_addr: self.inner.state.params.gateway_ip,
             dst_addr: Ipv4Address::BROADCAST,
-            protocol: IpProtocol::Udp,
+            next_header: IpProtocol::Udp,
             payload_len: resp_udp.header_len() + resp_dhcp.buffer_len(),
             hop_limit: 64,
         };

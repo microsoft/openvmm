@@ -4,6 +4,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { HashRouter } from "react-router-dom";
+import "../tailwind.css";
 import "./styles/main.css";
 import { Routes, Route } from "react-router-dom";
 import { Runs } from "./runs";
@@ -14,6 +15,7 @@ import { RunDetails } from "./run_details";
 import { Tests } from "./tests";
 import { TestDetails } from "./test_details";
 import { LogViewer } from "./log_viewer";
+import { Docs } from "./docs/docs";
 
 const queryClient = new QueryClient();
 
@@ -27,7 +29,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <Content />
       </QueryClientProvider>
     </HashRouter>
-  </React.StrictMode>
+  </React.StrictMode>,
 );
 
 function Content() {
@@ -38,7 +40,11 @@ function Content() {
       <Route path="runs/:runId" element={<RunDetails />} />
       <Route path="tests" element={<Tests />} />
       <Route path="tests/:architecture/:testName" element={<TestDetails />} />
-      <Route path="runs/:runId/:architecture/:testName" element={<LogViewer />} />
+      <Route
+        path="runs/:runId/:architecture/:testName"
+        element={<LogViewer />}
+      />
+      <Route path="docs" element={<Docs />} />
     </Routes>
   );
 }

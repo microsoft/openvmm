@@ -36,7 +36,7 @@ use pal_async::async_test;
 use pal_async::timer::PolledTimer;
 use pal_event::Event;
 use parking_lot::Mutex;
-use pci_core::msi::MsiInterruptSet;
+use pci_core::msi::MsiConnection;
 use pci_core::spec::caps::CapabilityId;
 use pci_core::spec::cfg_space;
 use pci_core::test_helpers::TestPciInterruptController;
@@ -256,6 +256,7 @@ struct VirtioTestGuest {
     driver: DefaultDriver,
     num_queues: u16,
     queue_size: u16,
+    allow_indirect_descriptors: bool,
     use_ring_event_index: bool,
     last_avail_index: Vec<u16>,
     last_used_index: Vec<u16>,
@@ -280,6 +281,7 @@ impl VirtioTestGuest {
             driver: driver.clone(),
             num_queues,
             queue_size,
+            allow_indirect_descriptors: true,
             use_ring_event_index,
             last_avail_index,
             last_used_index,
@@ -325,14 +327,22 @@ impl VirtioTestGuest {
     }
 
     fn queue_features(&self) -> VirtioDeviceFeatures {
-        VirtioDeviceFeatures::new().with_bank(
-            0,
-            if self.use_ring_event_index {
-                VIRTIO_F_RING_EVENT_IDX
-            } else {
-                0
-            },
-        )
+        let flags0 = if self.use_ring_event_index {
+            VIRTIO_F_RING_EVENT_IDX
+        } else {
+            0
+        };
+        let flags0 = if self.allow_indirect_descriptors {
+            flags0 | VIRTIO_F_RING_INDIRECT_DESC
+        } else {
+            flags0
+        };
+
+        let flags1 = VIRTIO_F_VERSION_1;
+
+        VirtioDeviceFeatures::new()
+            .with_bank(0, flags0)
+            .with_bank(1, flags1)
     }
 
     fn queue_params(&self, i: u16) -> QueueParams {
@@ -831,7 +841,7 @@ impl VirtioPciTestDevice {
     ) -> Self {
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
         let mem = GuestMemory::new("test", test_mem.clone());
-        let mut msi_set = MsiInterruptSet::new();
+        let msi_conn = MsiConnection::new();
 
         let dev = VirtioPciDevice::new(
             Box::new(LegacyWrapper::new(
@@ -848,7 +858,7 @@ impl VirtioPciTestDevice {
                 ),
                 &mem,
             )),
-            PciInterruptModel::Msix(&mut msi_set),
+            PciInterruptModel::Msix(msi_conn.target()),
             Some(doorbell_registration),
             &mut ExternallyManagedMmioIntercepts,
             None,
@@ -856,7 +866,7 @@ impl VirtioPciTestDevice {
         .unwrap();
 
         let test_intc = Arc::new(TestPciInterruptController::new());
-        msi_set.connect(test_intc.as_ref());
+        msi_conn.connect(test_intc.signal_msi());
 
         Self {
             pci_device: dev,
@@ -1360,9 +1370,12 @@ async fn verify_queue_simple(driver: DefaultDriver) {
             process_work: Box::new(move |work: anyhow::Result<VirtioQueueCallbackWork>| {
                 let mut work = work.expect("Queue failure");
                 assert_eq!(work.payload.len(), 1);
-                assert_eq!(work.payload[0].address, base_addr);
                 assert_eq!(work.payload[0].length, 0x1000);
-                work.complete(123);
+                match work.payload[0].address {
+                    addr if addr == base_addr => work.complete(123),
+                    addr if addr == base_addr + 0x1000 => work.complete(456),
+                    _ => panic!("Unexpected address {}", work.payload[0].address),
+                }
                 true
             }),
             notify: Interrupt::from_fn(move || {
@@ -1373,11 +1386,21 @@ async fn verify_queue_simple(driver: DefaultDriver) {
     });
 
     guest.add_to_avail_queue(0);
+    guest.add_to_avail_queue(0);
     event.signal();
     must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
     let (desc, len) = guest.get_next_completed(0).unwrap();
     assert_eq!(desc, 0u16);
     assert_eq!(len, 123);
+    let (desc, len) = match guest.get_next_completed(0) {
+        Some(v) => v,
+        None => {
+            must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+            guest.get_next_completed(0).unwrap()
+        }
+    };
+    assert_eq!(desc, 1u16);
+    assert_eq!(len, 456);
     assert_eq!(guest.get_next_completed(0).is_none(), true);
     queues[0].stop().await;
 }
@@ -1386,6 +1409,7 @@ async fn verify_queue_simple(driver: DefaultDriver) {
 async fn verify_queue_indirect(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     let mut guest = VirtioTestGuest::new(&driver, &test_mem, 1, 2, true);
+    let base_addr = guest.get_queue_descriptor_backing_memory_address(0);
     let (tx, mut rx) = mesh::mpsc_channel();
     let event = Event::new();
     let mut queues = guest.create_direct_queues(|i| {
@@ -1394,9 +1418,12 @@ async fn verify_queue_indirect(driver: DefaultDriver) {
             process_work: Box::new(move |work: anyhow::Result<VirtioQueueCallbackWork>| {
                 let mut work = work.expect("Queue failure");
                 assert_eq!(work.payload.len(), 1);
-                assert_eq!(work.payload[0].address, 0xffffffff00000000u64);
                 assert_eq!(work.payload[0].length, 0x1000);
-                work.complete(123);
+                match work.payload[0].address {
+                    0xffffffff00000000u64 => work.complete(123),
+                    addr if addr == base_addr + 0x1000 => work.complete(456),
+                    _ => panic!("Unexpected address {}", work.payload[0].address),
+                }
                 true
             }),
             notify: Interrupt::from_fn(move || {
@@ -1407,11 +1434,21 @@ async fn verify_queue_indirect(driver: DefaultDriver) {
     });
 
     guest.add_indirect_to_avail_queue(0);
+    guest.add_to_avail_queue(0);
     event.signal();
     must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
     let (desc, len) = guest.get_next_completed(0).unwrap();
     assert_eq!(desc, 0u16);
     assert_eq!(len, 123);
+    let (desc, len) = match guest.get_next_completed(0) {
+        Some(v) => v,
+        None => {
+            must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+            guest.get_next_completed(0).unwrap()
+        }
+    };
+    assert_eq!(desc, 1u16);
+    assert_eq!(len, 456);
     assert_eq!(guest.get_next_completed(0).is_none(), true);
     queues[0].stop().await;
 }
@@ -1419,7 +1456,7 @@ async fn verify_queue_indirect(driver: DefaultDriver) {
 #[async_test]
 async fn verify_queue_linked(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
-    let mut guest = VirtioTestGuest::new(&driver, &test_mem, 1, 5, true);
+    let mut guest = VirtioTestGuest::new(&driver, &test_mem, 1, 8, true);
     let (tx, mut rx) = mesh::mpsc_channel();
     let base_address = guest.get_queue_descriptor_backing_memory_address(0);
     let event = Event::new();
@@ -1428,12 +1465,16 @@ async fn verify_queue_linked(driver: DefaultDriver) {
         CreateDirectQueueParams {
             process_work: Box::new(move |work: anyhow::Result<VirtioQueueCallbackWork>| {
                 let mut work = work.expect("Queue failure");
-                assert_eq!(work.payload.len(), 3);
-                for i in 0..work.payload.len() {
-                    assert_eq!(work.payload[i].address, base_address + 0x1000 * i as u64);
-                    assert_eq!(work.payload[i].length, 0x1000);
+                if work.payload.len() == 3 {
+                    for i in 0..work.payload.len() {
+                        assert_eq!(work.payload[i].address, base_address + 0x1000 * i as u64);
+                        assert_eq!(work.payload[i].length, 0x1000);
+                    }
+                    work.complete(123);
+                } else {
+                    assert_eq!(work.payload.len(), 1);
+                    work.complete(456);
                 }
-                work.complete(123 * 3);
                 true
             }),
             notify: Interrupt::from_fn(move || {
@@ -1444,11 +1485,21 @@ async fn verify_queue_linked(driver: DefaultDriver) {
     });
 
     guest.add_linked_to_avail_queue(0, 3);
+    guest.add_to_avail_queue(0);
     event.signal();
     must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
     let (desc, len) = guest.get_next_completed(0).unwrap();
     assert_eq!(desc, 0u16);
-    assert_eq!(len, 123 * 3);
+    assert_eq!(len, 123);
+    let (desc, len) = match guest.get_next_completed(0) {
+        Some(v) => v,
+        None => {
+            must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+            guest.get_next_completed(0).unwrap()
+        }
+    };
+    assert_eq!(desc, 3u16);
+    assert_eq!(len, 456);
     assert_eq!(guest.get_next_completed(0).is_none(), true);
     queues[0].stop().await;
 }
@@ -1456,7 +1507,7 @@ async fn verify_queue_linked(driver: DefaultDriver) {
 #[async_test]
 async fn verify_queue_indirect_linked(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
-    let mut guest = VirtioTestGuest::new(&driver, &test_mem, 1, 5, true);
+    let mut guest = VirtioTestGuest::new(&driver, &test_mem, 1, 8, true);
     let (tx, mut rx) = mesh::mpsc_channel();
     let event = Event::new();
     let mut queues = guest.create_direct_queues(|i| {
@@ -1464,15 +1515,19 @@ async fn verify_queue_indirect_linked(driver: DefaultDriver) {
         CreateDirectQueueParams {
             process_work: Box::new(move |work: anyhow::Result<VirtioQueueCallbackWork>| {
                 let mut work = work.expect("Queue failure");
-                assert_eq!(work.payload.len(), 3);
-                for i in 0..work.payload.len() {
-                    assert_eq!(
-                        work.payload[i].address,
-                        0xffffffff00000000u64 + 0x1000 * i as u64
-                    );
-                    assert_eq!(work.payload[i].length, 0x1000);
+                if work.payload.len() == 3 {
+                    for i in 0..work.payload.len() {
+                        assert_eq!(
+                            work.payload[i].address,
+                            0xffffffff00000000u64 + 0x1000 * i as u64
+                        );
+                        assert_eq!(work.payload[i].length, 0x1000);
+                    }
+                    work.complete(123);
+                } else {
+                    assert_eq!(work.payload.len(), 1);
+                    work.complete(456);
                 }
-                work.complete(123 * 3);
                 true
             }),
             notify: Interrupt::from_fn(move || {
@@ -1483,11 +1538,21 @@ async fn verify_queue_indirect_linked(driver: DefaultDriver) {
     });
 
     guest.add_indirect_linked_to_avail_queue(0, 3);
+    guest.add_to_avail_queue(0);
     event.signal();
     must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
     let (desc, len) = guest.get_next_completed(0).unwrap();
     assert_eq!(desc, 0u16);
-    assert_eq!(len, 123 * 3);
+    assert_eq!(len, 123);
+    let (desc, len) = match guest.get_next_completed(0) {
+        Some(v) => v,
+        None => {
+            must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+            guest.get_next_completed(0).unwrap()
+        }
+    };
+    assert_eq!(desc, 1u16);
+    assert_eq!(len, 456);
     assert_eq!(guest.get_next_completed(0).is_none(), true);
     queues[0].stop().await;
 }

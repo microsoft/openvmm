@@ -487,12 +487,13 @@ mod tests {
 
     #[test]
     fn test_vm_configuration_no_time() {
-        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":""}"#;
+        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":""}"#;
 
         let attestation_vm_config = AttestationVmConfig {
             current_time: None,
             root_cert_thumbprint: String::new(),
             console_enabled: false,
+            interactive_console_enabled: false,
             secure_boot: false,
             tpm_enabled: false,
             tpm_persisted: false,
@@ -508,12 +509,13 @@ mod tests {
 
     #[test]
     fn test_vm_configuration_with_time() {
-        const EXPECTED_JWK: &str = r#"{"current-time":1691103220,"root-cert-thumbprint":"","console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":""}"#;
+        const EXPECTED_JWK: &str = r#"{"current-time":1691103220,"root-cert-thumbprint":"","console-enabled":false,"interactive-console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":""}"#;
 
         let attestation_vm_config = AttestationVmConfig {
             current_time: None,
             root_cert_thumbprint: String::new(),
             console_enabled: false,
+            interactive_console_enabled: false,
             secure_boot: false,
             tpm_enabled: false,
             tpm_persisted: false,

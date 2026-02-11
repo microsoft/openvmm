@@ -7,12 +7,17 @@
 #![forbid(unsafe_code)]
 #![no_std]
 
+extern crate alloc;
+
+use alloc::string::String;
 use bitfield_struct::bitfield;
 use core::ops::Index;
 use core::ops::IndexMut;
 #[cfg(feature = "inspect")]
 use inspect::Inspect;
 use open_enum::open_enum;
+use serde::Deserialize;
+use serde::Serialize;
 use static_assertions::const_assert;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -51,6 +56,7 @@ open_enum! {
         PLATFORM_SEED = 15,
         PROVENANCE_DOC = 16,
         TPM_NVRAM_BACKUP = 17,
+        PROVISIONING_MARKER = 18,
 
         EXTENDED_FILE_TABLE = 63,
     }
@@ -229,4 +235,48 @@ pub struct VmgsMarkers {
     pub reprovisioned: bool,
     #[bits(15)]
     _reserved: u16,
+}
+
+/// Entities that can provision a VMGS file.
+#[cfg_attr(feature = "inspect", derive(Inspect))]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VmgsProvisioner {
+    Unknown,
+    Hcl,
+    OpenHcl,
+    CpsVmgstoolCvm,
+    HaVmgstoolTvm,
+    HclPostProvisioning,
+}
+
+/// Reasons that OpenHCL will provision a VMGS file.
+#[cfg_attr(feature = "inspect", derive(Inspect))]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VmgsProvisioningReason {
+    /// VMGS file was empty.
+    Empty,
+    /// VMGS file was corrupt or OpenHCL failed to read it.
+    Failure,
+    /// Host requested that OpenHCL reprovision the VMGS.
+    Request,
+    /// Unknown reason.
+    Unknown,
+}
+
+/// Diagnostic marker that contains information about the VMGS's provisioning.
+/// This marker is written once when a VMGS file is created, leaving a trace of
+/// where and how it originated (e.g., that it was created by OpenHCL). Adding
+/// new fields is safe, as it is not read by OpenHCL for any behavioral purpose.
+#[cfg_attr(feature = "inspect", derive(Inspect))]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VmgsProvisioningMarker {
+    pub provisioner: VmgsProvisioner,
+    pub reason: VmgsProvisioningReason,
+    pub tpm_version: String,
+    pub tpm_nvram_size: usize,
+    pub akcert_size: usize,
+    pub akcert_attrs: String,
+    pub provisioner_version: String,
 }

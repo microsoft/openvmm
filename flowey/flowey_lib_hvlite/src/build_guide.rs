@@ -59,14 +59,12 @@ impl FlowNode for Node {
                     let mdbook_admonish_bin = rt.read(mdbook_admonish_bin);
                     let mdbook_mermaid_bin = rt.read(mdbook_mermaid_bin);
 
-                    let sh = xshell::Shell::new()?;
-
-                    let out_path: PathBuf = sh.current_dir().absolute()?.join("book");
+                    let out_path: PathBuf = rt.sh.current_dir().absolute()?.join("book");
                     let guide_source: PathBuf = rt.read(guide_source);
 
-                    sh.change_dir(&guide_source);
-                    xshell::cmd!(
-                        sh,
+                    rt.sh.change_dir(&guide_source);
+                    flowey::shell_cmd!(
+                        rt,
                         "{mdbook_bin} build {guide_source} --dest-dir {out_path}"
                     )
                     // intercepted by the `mdbook-openvmm-shim`

@@ -250,6 +250,7 @@ pub fn create_host_channel(
         },
         com1: true,
         com2: true,
+        serial_tx_only: false,
         vmbus_redirection: false,
         enable_tpm: false,
         vtl2_settings: None,
@@ -262,6 +263,7 @@ pub fn create_host_channel(
         management_vtl_features: Default::default(),
         efi_diagnostics_log_level: Default::default(),
         hv_sint_enabled: false,
+        azi_hsm_enabled: false,
     };
 
     let halt_reason = Arc::new(Mutex::new(None));

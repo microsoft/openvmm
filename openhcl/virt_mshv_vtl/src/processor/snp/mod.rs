@@ -1570,7 +1570,7 @@ impl UhProcessor<'_, SnpBacked> {
                 // for injection but injection cannot complete due to the intercept. Rewind the pending
                 // virtual interrupt so it is reinjected as a fixed interrupt.
 
-                // TODO SNP: Rewind the interrupt.
+                // TODO SNP ALTERNATE INJECTION: Rewind the interrupt.
                 unimplemented!("SevExitCode::VINTR");
             }
 
@@ -1667,9 +1667,8 @@ impl UhProcessor<'_, SnpBacked> {
                 }
                 HvMessageType::HvMessageTypeX64Halt
                 | HvMessageType::HvMessageTypeExceptionIntercept => {
-                    // Ignore.
-                    //
-                    // TODO SNP: Figure out why we are getting these.
+                    // Ignore. Note: it is possible to get the ExceptionIntercept
+                    // message for reflect #VC.
                 }
                 message_type => {
                     tracelimit::error_ratelimited!(

@@ -69,11 +69,9 @@ pub fn extract_zip_if_new(
         bsdtar_installed: _,
     } = deps;
 
-    let sh = xshell::Shell::new()?;
-
     let root_dir = match persistent_dir {
         Some(dir) => rt.read(dir),
-        None => sh.current_dir(),
+        None => rt.sh.current_dir(),
     };
 
     let filename = file.file_name().expect("zip file was not a file");
@@ -100,10 +98,10 @@ pub fn extract_zip_if_new(
         fs_err::remove_dir_all(&extract_dir)?;
         fs_err::create_dir(&extract_dir)?;
 
-        sh.change_dir(&extract_dir);
+        rt.sh.change_dir(&extract_dir);
 
         let bsdtar = crate::_util::bsdtar_name(rt);
-        xshell::cmd!(sh, "{bsdtar} -xf {file}").run()?;
+        flowey::shell_cmd!(rt, "{bsdtar} -xf {file}").run()?;
         fs_err::write(pkg_info_file, file_version)?;
     } else {
         log::info!("already extracted!");
@@ -116,7 +114,7 @@ pub fn extract_zip_if_new(
 #[non_exhaustive]
 pub struct ExtractTarBz2Deps<C = VarNotClaimed> {
     persistent_dir: Option<ReadVar<PathBuf, C>>,
-    lbzip2_installed: ReadVar<SideEffect, C>,
+    bzip2_installed: ReadVar<SideEffect, C>,
 }
 
 impl ClaimVar for ExtractTarBz2Deps {
@@ -125,11 +123,11 @@ impl ClaimVar for ExtractTarBz2Deps {
     fn claim(self, ctx: &mut StepCtx<'_>) -> Self::Claimed {
         let Self {
             persistent_dir,
-            lbzip2_installed,
+            bzip2_installed,
         } = self;
         ExtractTarBz2Deps {
             persistent_dir: persistent_dir.claim(ctx),
-            lbzip2_installed: lbzip2_installed.claim(ctx),
+            bzip2_installed: bzip2_installed.claim(ctx),
         }
     }
 }
@@ -138,8 +136,8 @@ impl ClaimVar for ExtractTarBz2Deps {
 pub fn extract_tar_bz2_if_new_deps(ctx: &mut NodeCtx<'_>) -> ExtractTarBz2Deps {
     ExtractTarBz2Deps {
         persistent_dir: ctx.persistent_dir(),
-        lbzip2_installed: ctx.reqv(|v| crate::install_dist_pkg::Request::Install {
-            package_names: vec!["lbzip2".into()],
+        bzip2_installed: ctx.reqv(|v| crate::install_dist_pkg::Request::Install {
+            package_names: vec!["bzip2".into()],
             done: v,
         }),
     }
@@ -160,14 +158,12 @@ pub fn extract_tar_bz2_if_new(
 ) -> anyhow::Result<PathBuf> {
     let ExtractTarBz2Deps {
         persistent_dir,
-        lbzip2_installed: _,
+        bzip2_installed: _,
     } = deps;
-
-    let sh = xshell::Shell::new()?;
 
     let root_dir = match persistent_dir {
         Some(dir) => rt.read(dir),
-        None => sh.current_dir(),
+        None => rt.sh.current_dir(),
     };
 
     let filename = file.file_name().expect("tar.bz2 file was not a file");
@@ -186,7 +182,7 @@ pub fn extract_tar_bz2_if_new(
     }
 
     if !already_extracted {
-        sh.change_dir(&extract_dir);
+        rt.sh.change_dir(&extract_dir);
 
         // clear out any old version that was present
         //
@@ -197,7 +193,7 @@ pub fn extract_tar_bz2_if_new(
         fs_err::create_dir(&extract_dir)?;
 
         // windows builds past Windows 10 build 17063 come with tar installed
-        xshell::cmd!(sh, "tar -xf {file}").run()?;
+        flowey::shell_cmd!(rt, "tar -xf {file}").run()?;
 
         fs_err::write(pkg_info_file, file_version)?;
     } else {

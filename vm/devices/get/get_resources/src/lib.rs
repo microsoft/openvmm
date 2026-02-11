@@ -65,6 +65,8 @@ pub mod ged {
         pub com1: bool,
         /// Enable COM2 for VTL0 and the VMBUS redirector in VTL2.
         pub com2: bool,
+        /// Only allow guest to host serial traffic
+        pub serial_tx_only: bool,
         /// Enable vmbus redirection.
         pub vmbus_redirection: bool,
         /// Enable the TPM.
@@ -95,6 +97,8 @@ pub mod ged {
         pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
         /// Enable PPI-based SINT ACPI device for ARM64 Linux L1VH
         pub hv_sint_enabled: bool,
+        /// Enable Azure HSM
+        pub azi_hsm_enabled: bool,
     }
 
     /// The firmware and chipset configuration for the guest.
