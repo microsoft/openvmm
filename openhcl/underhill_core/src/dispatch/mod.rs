@@ -357,6 +357,24 @@ impl LoadedVm {
                         resp.field("vmbus_filter", &self.vmbus_filter);
                         resp.field("vpci_relay", &self.vpci_relay);
                         resp.field("mana_keepalive_mode", &self.mana_keep_alive);
+                        // This could have been `resp.field_mut("nvme_keepalive_mode", &mut self.nvme_keep_alive);`,
+                        // but we want to log when this value is updated.
+                        resp.field_mut_with(
+                            "nvme_keepalive_mode",
+                            |value| -> anyhow::Result<&'static str> {
+                                if let Some(new_value) = value {
+                                    let old_value = self.nvme_keep_alive.as_str();
+                                    self.nvme_keep_alive = new_value.parse()?;
+                                    tracing::info!(
+                                        CVM_ALLOWED,
+                                        old_value,
+                                        new_value = self.nvme_keep_alive.as_str(),
+                                        "nvme_keepalive_mode updated via inspect"
+                                    );
+                                }
+                                Ok(self.nvme_keep_alive.as_str())
+                            },
+                        );
                     }),
                 },
                 Event::Vtl2ConfigNicRpc(message) => {
