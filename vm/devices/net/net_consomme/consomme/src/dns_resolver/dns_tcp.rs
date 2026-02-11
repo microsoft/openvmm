@@ -82,10 +82,11 @@ impl DnsTcpHandler {
                 // Incomplete message; wait for more data.
                 break;
             }
-            // Include the 2-byte TCP length prefix in the query data
-            // passed to the backend, as platform-specific resolvers
-            // expect the full TCP-framed message.
-            let query = self.rx_buf[0..2 + msg_len].to_vec();
+            // Extract the DNS query payload WITHOUT the 2-byte TCP length prefix.
+            // The TCP framing is only for the wire protocol between guest and host.
+            // Platform resolvers (glibc res_nsend, musl res_send) expect raw DNS
+            // messages and handle TCP framing internally when needed.
+            let query = self.rx_buf[2..2 + msg_len].to_vec();
             self.rx_buf.drain(..2 + msg_len);
 
             let request = DnsRequest {
@@ -99,15 +100,10 @@ impl DnsTcpHandler {
     /// Poll for completed DNS responses and length-prefix them into the
     /// transmit buffer.
     pub fn poll_responses(&mut self, cx: &mut Context<'_>) {
-        loop {
-            match self.receiver.poll_recv(cx) {
-                Poll::Ready(Ok(response)) => {
-                    let len = response.response_data.len() as u16;
-                    self.tx_buf.extend(&len.to_be_bytes());
-                    self.tx_buf.extend(&response.response_data);
-                }
-                Poll::Ready(Err(_)) | Poll::Pending => break,
-            }
+        while let Poll::Ready(Ok(response)) = self.receiver.poll_recv(cx) {
+            let len = response.response_data.len() as u16;
+            self.tx_buf.extend(&len.to_be_bytes());
+            self.tx_buf.extend(&response.response_data);
         }
     }
 
@@ -200,17 +196,12 @@ mod tests {
 
         let mut buf = vec![0u8; 256];
         let n = handler.drain_tx(&mut buf);
-        // The echo backend returns the full TCP-framed query (2-byte prefix + DNS payload).
-        // poll_responses then wraps that in another 2-byte length prefix for transmission.
-        let echoed_len = 2 + query.len(); // length prefix + DNS payload
-        assert_eq!(n, 2 + echoed_len);    // tx framing prefix + echoed data
-        assert_eq!(
-            u16::from_be_bytes([buf[0], buf[1]]) as usize,
-            echoed_len
-        );
-        // The echoed data should be the original TCP-framed message.
-        assert_eq!(&buf[2..2 + 2], &(query.len() as u16).to_be_bytes());
-        assert_eq!(&buf[4..n], &query[..]);
+        // The echo backend returns the raw DNS query (without TCP length prefix).
+        // poll_responses then wraps that in a 2-byte length prefix for transmission.
+        assert_eq!(n, 2 + query.len()); // tx framing prefix + DNS payload
+        assert_eq!(u16::from_be_bytes([buf[0], buf[1]]) as usize, query.len());
+        // The echoed data should be the raw DNS query.
+        assert_eq!(&buf[2..n], &query[..]);
     }
 
     #[test]
@@ -262,9 +253,9 @@ mod tests {
 
         let mut buf = vec![0u8; 512];
         let n = handler.drain_tx(&mut buf);
-        // Each echoed response includes the 2-byte TCP prefix + DNS payload,
-        // then poll_responses adds another 2-byte tx framing prefix.
-        let per_response = 2 + (2 + q1.len()); // tx prefix + (tcp prefix + DNS payload)
+        // Each echoed response is the raw DNS query (without TCP prefix),
+        // then poll_responses adds a 2-byte tx framing prefix.
+        let per_response = 2 + q1.len(); // tx prefix + DNS payload
         assert_eq!(n, 2 * per_response);
     }
 

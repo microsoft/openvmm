@@ -365,7 +365,8 @@ impl<T: Client> Access<'_, T> {
         };
         tracing::trace!(?tcp, "tcp packet");
 
-        let is_dns_tcp = is_gateway_dns_tcp(&ft, &self.inner.state.params, self.inner.dns.is_some());
+        let is_dns_tcp =
+            is_gateway_dns_tcp(&ft, &self.inner.state.params, self.inner.dns.is_some());
 
         let mut sender = Sender {
             ft: &ft,
@@ -795,7 +796,7 @@ impl TcpConnection {
             || self.state == TcpState::LastAck
             || (self.state.tx_fin()
                 && self.state.rx_fin()
-                && self.tx_buffer.len() == 0
+                && self.tx_buffer.is_empty()
                 && !has_pending_tx))
     }
 
@@ -1433,16 +1434,12 @@ fn seq_min<const N: usize>(seqs: [TcpSeqNumber; N]) -> TcpSeqNumber {
 }
 
 /// Check if a TCP connection targets the gateway's DNS port.
-fn is_gateway_dns_tcp(
-    ft: &FourTuple,
-    params: &crate::ConsommeParams,
-    dns_available: bool,
-) -> bool {
+fn is_gateway_dns_tcp(ft: &FourTuple, params: &crate::ConsommeParams, dns_available: bool) -> bool {
     if !dns_available || ft.dst.port() != crate::DNS_PORT {
         return false;
     }
     match ft.dst.ip() {
-        IpAddr::V4(ip) => Ipv4Addr::from(params.gateway_ip) == ip,
-        IpAddr::V6(ip) => Ipv6Addr::from(params.gateway_link_local_ipv6) == ip,
+        IpAddr::V4(ip) => params.gateway_ip == ip,
+        IpAddr::V6(ip) => params.gateway_link_local_ipv6 == ip,
     }
 }
