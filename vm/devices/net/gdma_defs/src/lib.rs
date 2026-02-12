@@ -597,3 +597,12 @@ pub struct GdmaChangeMsixVectorIndexForEq {
     pub reserved1: u32,
     pub reserved2: u32,
 }
+
+/// Test hook constants used by the GDMA emulator and net_mana tests.
+/// These are only available when the `test_hooks` feature is enabled.
+#[cfg(feature = "test_hooks")]
+pub mod test_hooks {
+    /// When a packet with this length is received, the GDMA BNIC emulator
+    /// will return CQE_RX_ERR_DISABLED_QUEUE to simulate an RX error.
+    pub const RX_ERROR_TRIGGER_PACKET_LEN: usize = 1234;
+}
