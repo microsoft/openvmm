@@ -17,7 +17,7 @@ flowey_request! {
         /// Specify version of mu_msvm to use
         Version(String),
         /// Use a local MSVM.fd path for a specific architecture
-        LocalPath(MuMsvmArch, PathBuf),
+        LocalPath(MuMsvmArch, ReadVar<PathBuf>),
         /// Download the mu_msvm package for the given arch
         GetMsvmFd {
             arch: MuMsvmArch,
@@ -38,25 +38,17 @@ impl FlowNode for Node {
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let mut version = None;
-        let mut local_paths: BTreeMap<MuMsvmArch, PathBuf> = BTreeMap::new();
+        let mut local_paths: BTreeMap<MuMsvmArch, ReadVar<PathBuf>> = BTreeMap::new();
         let mut reqs: BTreeMap<MuMsvmArch, Vec<WriteVar<PathBuf>>> = BTreeMap::new();
 
         for req in requests {
             match req {
                 Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
                 Request::LocalPath(arch, path) => {
-                    if let Some(existing) = local_paths.get(&arch) {
-                        if existing != &path {
-                            anyhow::bail!(
-                                "Conflicting LocalPath requests for {:?}: {:?} vs {:?}",
-                                arch,
-                                existing,
-                                path
-                            );
-                        }
-                    } else {
-                        local_paths.insert(arch, path);
+                    if local_paths.contains_key(&arch) {
+                        anyhow::bail!("Duplicate LocalPath requests for {:?}", arch,);
                     }
+                    local_paths.insert(arch, path);
                 }
                 Request::GetMsvmFd { arch, msvm_fd } => reqs.entry(arch).or_default().push(msvm_fd),
             }
@@ -79,12 +71,16 @@ impl FlowNode for Node {
         if !local_paths.is_empty() {
             ctx.emit_rust_step("use local mu_msvm UEFI", |ctx| {
                 let reqs = reqs.claim(ctx);
-                let local_paths = local_paths.clone();
+                let local_paths: BTreeMap<_, _> = local_paths
+                    .into_iter()
+                    .map(|(arch, var)| (arch, var.claim(ctx)))
+                    .collect();
                 move |rt| {
                     for (arch, out_vars) in reqs {
-                        let msvm_fd = local_paths.get(&arch).ok_or_else(|| {
+                        let msvm_fd_var = local_paths.get(&arch).ok_or_else(|| {
                             anyhow::anyhow!("No local path specified for architecture {:?}", arch)
                         })?;
+                        let msvm_fd = rt.read(msvm_fd_var.clone());
                         for var in out_vars {
                             log::info!(
                                 "using local uefi for {} at path {:?}",
@@ -94,7 +90,7 @@ impl FlowNode for Node {
                                 },
                                 msvm_fd
                             );
-                            rt.write(var, msvm_fd);
+                            rt.write(var, &msvm_fd);
                         }
                     }
                     Ok(())

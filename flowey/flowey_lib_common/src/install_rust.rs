@@ -334,7 +334,13 @@ impl FlowNode for Node {
                     let rust_toolchain = match rust_toolchain {
                         Some(toolchain) => Some(toolchain),
                         None => {
-                            if let Ok(rustup) = which::which("rustup") {
+                            if matches!(
+                                rt.platform(),
+                                FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
+                            ) {
+                                // Nix will provide the right cargo version, no need to use rustup
+                                None
+                            } else if let Ok(rustup) = which::which("rustup") {
                                 // Unfortunately, `rustup` still doesn't have any stable way to emit
                                 // machine-readable output. See https://github.com/rust-lang/rustup/issues/450
                                 //

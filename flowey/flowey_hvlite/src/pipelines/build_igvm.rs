@@ -355,7 +355,7 @@ impl IntoPipeline for BuildIgvmCli {
             job = job.dep_on(move |_| {
                 flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalOpenvmmDeps(
                     effective_arch,
-                    openvmm_deps_path,
+                    ReadVar::from_static(openvmm_deps_path),
                 )
             });
         }
@@ -363,7 +363,9 @@ impl IntoPipeline for BuildIgvmCli {
         // Override protoc with a local path if specified
         if let Some(protoc_path) = custom_protoc {
             job = job.dep_on(move |_| {
-                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalProtoc(protoc_path)
+                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalProtoc(ReadVar::from_static(
+                    protoc_path,
+                ))
             });
         }
 
@@ -375,8 +377,8 @@ impl IntoPipeline for BuildIgvmCli {
                 job.dep_on(
                     move |_| flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalKernel {
                         arch: effective_arch,
-                        kernel: kernel_path,
-                        modules: modules_path,
+                        kernel: ReadVar::from_static(kernel_path),
+                        modules: ReadVar::from_static(modules_path),
                     },
                 );
         }
@@ -386,7 +388,7 @@ impl IntoPipeline for BuildIgvmCli {
             job = job.dep_on(move |_| {
                 flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalUefi(
                     effective_arch,
-                    uefi_path,
+                    ReadVar::from_static(uefi_path),
                 )
             });
         }

@@ -26,8 +26,8 @@ flowey_request! {
         /// Set local paths for a specific architecture
         SetLocal {
             arch: OpenhclKernelPackageArch,
-            kernel: PathBuf,
-            modules: PathBuf,
+            kernel: ReadVar<PathBuf>,
+            modules: ReadVar<PathBuf>,
         },
         /// Specify version string to use for each package kind
         SetVersion(OpenhclKernelPackageKind, String),
@@ -70,8 +70,10 @@ impl FlowNode for Node {
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let mut versions: BTreeMap<OpenhclKernelPackageKind, String> = BTreeMap::new();
-        let mut local_paths: BTreeMap<OpenhclKernelPackageArch, (PathBuf, PathBuf)> =
-            BTreeMap::new();
+        let mut local_paths: BTreeMap<
+            OpenhclKernelPackageArch,
+            (ReadVar<PathBuf>, ReadVar<PathBuf>),
+        > = BTreeMap::new();
         let mut kernel_reqs: BTreeMap<
             (OpenhclKernelPackageKind, OpenhclKernelPackageArch),
             Vec<WriteVar<PathBuf>>,
@@ -100,13 +102,10 @@ impl FlowNode for Node {
                     kernel,
                     modules,
                 } => {
-                    if let Some(existing) = local_paths.get(&arch) {
-                        if existing != &(kernel.clone(), modules.clone()) {
-                            anyhow::bail!("Conflicting local paths for {:?}", arch);
-                        }
-                    } else {
-                        local_paths.insert(arch, (kernel, modules));
+                    if local_paths.contains_key(&arch) {
+                        anyhow::bail!("Duplicate local paths for {:?}", arch);
                     }
+                    local_paths.insert(arch, (kernel, modules));
                 }
                 Request::GetKernel { kind, arch, kernel } => {
                     kernel_reqs.entry((kind, arch)).or_default().push(kernel);
@@ -190,12 +189,17 @@ impl FlowNode for Node {
                 let mut modules_reqs = modules_reqs_local.claim(ctx);
                 let mut pkg_reqs = pkg_reqs_local.claim(ctx);
                 let mut metadata_reqs = metadata_reqs_local.claim(ctx);
-                let local_paths = local_paths.clone();
+                let local_paths: BTreeMap<_, _> = local_paths
+                    .into_iter()
+                    .map(|(arch, (k, m))| (arch, (k.claim(ctx), m.claim(ctx))))
+                    .collect();
                 let local_reqs = local_reqs.clone();
 
                 move |rt| {
                     for (_, arch) in local_reqs {
-                        let (kernel_path, modules_path) = local_paths.get(&arch).unwrap();
+                        let (kernel_var, modules_var) = local_paths.get(&arch).unwrap();
+                        let kernel_path = rt.read(kernel_var.clone());
+                        let modules_path = rt.read(modules_var.clone());
 
                         log::info!(
                             "using local kernel at {:?} and modules at {:?}",
@@ -211,7 +215,7 @@ impl FlowNode for Node {
                             OpenhclKernelPackageKind::CvmDev,
                         ] {
                             if let Some(vars) = kernel_reqs.remove(&(kind, arch)) {
-                                rt.write_all(vars, kernel_path);
+                                rt.write_all(vars, &kernel_path);
                             }
                         }
 
@@ -223,7 +227,7 @@ impl FlowNode for Node {
                             OpenhclKernelPackageKind::CvmDev,
                         ] {
                             if let Some(vars) = modules_reqs.remove(&(kind, arch)) {
-                                rt.write_all(vars, modules_path);
+                                rt.write_all(vars, &modules_path);
                             }
                         }
 
