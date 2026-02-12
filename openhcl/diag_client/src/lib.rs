@@ -734,7 +734,7 @@ impl DiagClient {
             .ttrpc
             .call()
             .start(
-                diag_proto::UnderhillDiag::MemoryProfileTrace,
+                diag_proto::OpenhclDiag::MemoryProfileTrace,
                 diag_proto::MemoryProfileTraceRequest { pid },
             )
             .await

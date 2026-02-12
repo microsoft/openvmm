@@ -244,10 +244,6 @@ impl DiagServiceHandler {
             UnderhillDiag::DumpSavedState((), response) => response.send(grpc_result(
                 ctx.until_cancelled(self.handle_dump_saved_state()).await,
             )),
-            UnderhillDiag::MemoryProfileTrace(request, response) => response.send(grpc_result(
-                ctx.until_cancelled(self.handle_memory_profile_trace(&request))
-                    .await,
-            )),
         }
     }
 
@@ -255,12 +251,16 @@ impl DiagServiceHandler {
         &self,
         _driver: &(impl Driver + Spawn + Clone),
         req: OpenhclDiag,
-        _ctx: CancelContext,
+        mut ctx: CancelContext,
     ) {
         match req {
             OpenhclDiag::Ping((), response) => {
                 response.send(Ok(()));
             }
+            OpenhclDiag::MemoryProfileTrace(request, response) => response.send(grpc_result(
+                ctx.until_cancelled(self.handle_memory_profile_trace(&request))
+                    .await,
+            )),
         }
     }
 
@@ -748,7 +748,9 @@ impl DiagServiceHandler {
         #[cfg(not(feature = "mem-profile-tracing"))]
         {
             let _ = request;
-            anyhow::bail!("Profiler tracing feature disabled")
+            anyhow::bail!(
+                "Profiler tracing feature disabled: rebuild with the `mem-profile-tracing` feature enabled"
+            )
         }
     }
 }

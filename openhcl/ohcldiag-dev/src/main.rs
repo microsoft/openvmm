@@ -890,8 +890,10 @@ pub fn main() -> anyhow::Result<()> {
                 let client = new_client(driver.clone(), &vm)?;
                 let pid = if let Some(name) = name {
                     client.get_pid(&name).await?
+                } else if let Some(pid) = pid {
+                    pid
                 } else {
-                    pid.unwrap()
+                    anyhow::bail!("either --pid or --name must be specified");
                 };
                 // Do not write anything on the stdout in case the output
                 // is set to stdout, to avoid breaking the output format
