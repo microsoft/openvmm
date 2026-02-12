@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 /// Return a list of all files that are currently git diffed, including
 /// those which have been staged, but not yet been committed.
+#[expect(clippy::disallowed_methods, clippy::disallowed_macros)]
 pub fn git_diffed(in_git_hook: bool) -> anyhow::Result<Vec<PathBuf>> {
     let sh = xshell::Shell::new()?;
 
@@ -38,6 +39,7 @@ pub fn git_diffed(in_git_hook: bool) -> anyhow::Result<Vec<PathBuf>> {
 
 /// Return files tracked by git (excluding those from .gitignore), including
 /// those which have not yet been staged / committed.
+#[expect(clippy::disallowed_methods, clippy::disallowed_macros)]
 pub fn git_ls_files() -> anyhow::Result<Vec<PathBuf>> {
     let sh = xshell::Shell::new()?;
 

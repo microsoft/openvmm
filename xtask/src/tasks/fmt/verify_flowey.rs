@@ -20,6 +20,7 @@ impl VerifyFlowey {
 }
 
 impl Xtask for VerifyFlowey {
+    #[expect(clippy::disallowed_methods, clippy::disallowed_macros)]
     fn run(self, ctx: crate::XtaskCtx) -> anyhow::Result<()> {
         // need to go through all this rigamarole because `cargo --quiet
         // xflowey regen` doesn't do what you'd hope it'd do

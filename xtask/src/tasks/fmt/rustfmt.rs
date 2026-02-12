@@ -42,6 +42,7 @@ enum Files {
 }
 
 impl Xtask for Rustfmt {
+    #[expect(clippy::disallowed_methods, clippy::disallowed_macros)]
     fn run(self, ctx: crate::XtaskCtx) -> anyhow::Result<()> {
         let files = if self.only_diffed {
             Files::OnlyDiffed

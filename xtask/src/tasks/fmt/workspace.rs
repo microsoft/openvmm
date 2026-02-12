@@ -117,6 +117,7 @@ struct Package {
     manifest_path: PathBuf,
 }
 
+#[expect(clippy::disallowed_methods)]
 fn workspace_manifests() -> anyhow::Result<HashSet<PathBuf>> {
     let json = xshell::Shell::new()?
         .cmd("cargo")

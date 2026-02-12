@@ -44,6 +44,7 @@ impl CargoFuzzCommand {
         }
     }
 
+    #[expect(clippy::disallowed_methods, clippy::disallowed_macros)]
     pub(super) fn invoke(
         self,
         target_name: &str,

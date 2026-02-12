@@ -33,6 +33,7 @@ pub struct Uefi {
 }
 
 impl Xtask for Uefi {
+    #[expect(clippy::disallowed_methods, clippy::disallowed_macros)]
     fn run(self, _ctx: crate::XtaskCtx) -> anyhow::Result<()> {
         let mut files = Vec::new();
 

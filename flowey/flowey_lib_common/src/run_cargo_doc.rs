@@ -44,6 +44,7 @@ impl CargoDocCommands {
         let mut json = String::new();
         for mut cmd in cmds {
             let argv0 = cmd.remove(0);
+            #[expect(clippy::disallowed_macros)]
             let cmd = xshell::cmd!(sh, "{argv0} {cmd...}");
             let cmd = f(cmd);
             json.push_str(&cmd.read()?);

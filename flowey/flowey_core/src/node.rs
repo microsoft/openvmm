@@ -2162,6 +2162,7 @@ pub mod steps {
                 platform,
                 arch,
                 has_read_secret: false,
+                #[expect(clippy::disallowed_methods)]
                 sh: xshell::Shell::new()?,
             })
         }
@@ -3042,7 +3043,9 @@ macro_rules! flowey_request {
 /// ```
 #[macro_export]
 macro_rules! shell_cmd {
-    ($rt:expr, $cmd:literal) => {
-        $crate::reexports::xshell::cmd!($rt.sh, $cmd)
-    };
+    ($rt:expr, $cmd:literal) => {{
+        #[expect(clippy::disallowed_macros)]
+        let __cmd = $crate::reexports::xshell::cmd!($rt.sh, $cmd);
+        __cmd
+    }};
 }

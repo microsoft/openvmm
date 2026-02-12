@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(clippy::disallowed_macros, clippy::disallowed_methods)]
+
 use anyhow::Context;
 use std::collections::BTreeMap;
 use std::path::Path;
