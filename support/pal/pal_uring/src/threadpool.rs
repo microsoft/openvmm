@@ -628,11 +628,6 @@ impl<T, Init: Borrow<IoInitiator>> Drop for Io<T, Init> {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::disallowed_methods,
-        reason = "test code using futures channels"
-    )]
-
     use super::Io;
     use super::IoRing;
     use crate::IoUringPool;
@@ -998,24 +993,24 @@ mod tests {
     #[test]
     fn test_run_until_none() {
         skip_if_no_io_uring_support!();
-        let (send, recv) = futures::channel::oneshot::channel();
-        let (send2, recv2) = futures::channel::oneshot::channel();
+        let (send, recv) = async_channel::bounded(1);
+        let (send2, recv2) = async_channel::bounded(1);
         let pool = IoUringPool::new("test", 16).unwrap();
         let done = Arc::new(AtomicBool::new(false));
         pool.client()
             .initiator()
             .spawn("hmm", {
                 async move {
-                    recv.await.unwrap();
-                    send2.send(()).unwrap();
+                    recv.recv().await.unwrap();
+                    send2.send(()).await.unwrap();
                 }
             })
             .detach();
         pool.client().set_idle_task({
             let done = done.clone();
             |_ctl| async move {
-                send.send(()).unwrap();
-                recv2.await.unwrap();
+                send.send(()).await.unwrap();
+                recv2.recv().await.unwrap();
                 done.store(true, Ordering::SeqCst);
             }
         });
