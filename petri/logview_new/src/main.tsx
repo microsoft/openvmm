@@ -16,6 +16,7 @@ import { Tests } from "./tests";
 import { TestDetails } from "./test_details";
 import { LogViewer } from "./log_viewer";
 import { Docs } from "./docs/docs";
+import { VerifyGetAllProvider } from "./contexts/verify_get_all_context";
 
 const queryClient = new QueryClient();
 
@@ -26,7 +27,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <HashRouter>
       <QueryClientProvider client={queryClient}>
-        <Content />
+        <VerifyGetAllProvider>
+          <Content />
+        </VerifyGetAllProvider>
       </QueryClientProvider>
     </HashRouter>
   </React.StrictMode>,

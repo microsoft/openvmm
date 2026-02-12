@@ -21,7 +21,6 @@ serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 target-lexicon = { workspace = true, features = ["serde_support"] }
 which.workspace = true
-xshell.workspace = true
 
 [lints]
 workspace = true

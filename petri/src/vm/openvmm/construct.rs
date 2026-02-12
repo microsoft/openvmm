@@ -22,6 +22,7 @@ use crate::UefiConfig;
 use crate::VmbusStorageType;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 
+use crate::MmioConfig;
 use crate::SIZE_1_MB;
 use crate::VmbusStorageController;
 use crate::openvmm::memdiff_vmgs;
@@ -277,6 +278,7 @@ impl PetriVmConfigOpenVmm {
             let MemoryConfig {
                 startup_bytes,
                 dynamic_memory_range,
+                mmio_gaps,
             } = memory;
 
             if dynamic_memory_range.is_some() {
@@ -285,16 +287,21 @@ impl PetriVmConfigOpenVmm {
 
             openvmm_defs::config::MemoryConfig {
                 mem_size: startup_bytes,
-                mmio_gaps: if firmware.is_openhcl() {
-                    match arch {
-                        MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
-                        MachineArch::Aarch64 => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
+                mmio_gaps: match mmio_gaps {
+                    MmioConfig::Platform => {
+                        if firmware.is_openhcl() {
+                            match arch {
+                                MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
+                                MachineArch::Aarch64 => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
+                            }
+                        } else {
+                            match arch {
+                                MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86.into(),
+                                MachineArch::Aarch64 => DEFAULT_MMIO_GAPS_AARCH64.into(),
+                            }
+                        }
                     }
-                } else {
-                    match arch {
-                        MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86.into(),
-                        MachineArch::Aarch64 => DEFAULT_MMIO_GAPS_AARCH64.into(),
-                    }
+                    MmioConfig::Custom(ranges) => ranges,
                 },
                 prefetch_memory: false,
                 pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,

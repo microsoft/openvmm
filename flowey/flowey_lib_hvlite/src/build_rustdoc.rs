@@ -93,8 +93,7 @@ impl FlowNode for Node {
                 let cargo_cmd = cargo_cmd.claim(ctx);
                 move |rt| {
                     let cargo_cmd = rt.read(cargo_cmd);
-                    let sh = xshell::Shell::new()?;
-                    let out_path = cargo_cmd.run(&sh)?;
+                    let out_path = cargo_cmd.run(&rt.sh)?;
 
                     rt.write(output, &RustdocOutput { docs: out_path });
                     Ok(())

@@ -1989,6 +1989,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tempfile",
+ "xshell",
 ]
 
 [[package]]
@@ -2043,7 +2044,6 @@ dependencies = [
  "target-lexicon",
  "vmm_test_images",
  "which 8.0.0",
- "xshell",
 ]
 
 [[package]]
@@ -3899,6 +3899,7 @@ dependencies = [
 name = "lxutil"
 version = "0.0.0"
 dependencies = [
+ "arrayvec",
  "bitfield-struct 0.11.0",
  "headervec",
  "libc",
@@ -5778,6 +5779,7 @@ dependencies = [
  "kmsg",
  "libtest-mimic",
  "linkme",
+ "memory_range",
  "mesh",
  "mesh_process",
  "mesh_worker",
@@ -7400,7 +7402,6 @@ dependencies = [
  "test_igvm_agent_lib",
  "tracing",
  "tracing-subscriber",
- "winapi",
  "windows-sys 0.61.0",
 ]
 
@@ -9621,6 +9622,7 @@ dependencies = [
  "hyperv_ic_resources",
  "jiff",
  "kmsg",
+ "memory_range",
  "mesh",
  "mesh_rpc",
  "net_backend_resources",

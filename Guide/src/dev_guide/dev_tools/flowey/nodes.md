@@ -36,7 +36,7 @@ The key advantage of FlowNode is its ability to accept configuration from differ
 
 Consider an "install Rust toolchain" node with an enum Request:
 
-```rust
+```rust,ignore
 enum Request {
     SetVersion { version: String },
     GetToolchain { toolchain_path: WriteVar<PathBuf> },

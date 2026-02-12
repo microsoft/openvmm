@@ -42,10 +42,9 @@ impl SimpleFlowNode for Node {
                     let hvlite_repo = rt.read(hvlite_repo);
                     let gh_token = rt.read(gh_token);
                     let base_recipe = non_production_build_igvm_tool_out_name(&base_recipe);
-                    let sh = xshell::Shell::new()?;
-                    sh.change_dir(hvlite_repo);
-                    let mut cmd = xshell::cmd!(
-                        sh,
+                    rt.sh.change_dir(hvlite_repo);
+                    let mut cmd = flowey::shell_cmd!(
+                        rt,
                         "cargo xflowey build-igvm {base_recipe} --install-missing-deps"
                     )
                     .env("I_HAVE_A_GOOD_REASON_TO_RUN_BUILD_IGVM_IN_CI", "true");

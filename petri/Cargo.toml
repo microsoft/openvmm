@@ -30,6 +30,7 @@ disk_backend_resources.workspace = true
 framebuffer.workspace = true
 get_resources.workspace = true
 ide_resources.workspace = true
+memory_range.workspace = true
 net_backend_resources.workspace = true
 netvsp_resources.workspace = true
 nvme_resources.workspace = true
