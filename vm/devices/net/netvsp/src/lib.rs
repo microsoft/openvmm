@@ -1524,6 +1524,11 @@ impl Nic {
                 saved_state::Primary::Version => vec![true],
                 saved_state::Primary::Init(_) => vec![true],
                 saved_state::Primary::Ready(ready) => {
+                    tracing::info!(
+                         num_channels = ready.channels.len(),
+                         max_queues = self.adapter.max_queues,
+                         "restoring state",
+                    );
                     ready.channels.iter().map(|x| x.is_some()).collect()
                 }
             };

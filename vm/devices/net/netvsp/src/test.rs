@@ -737,12 +737,25 @@ impl TestNicDevice {
             })
             .collect::<Vec<(GpadlId, MultiPagedRangeBuf)>>();
 
+        // Must respond to subchannel Restore RPCs or restore will hang.
+        let pre_restore_child_count = self.mock_vmbus.child_info.lock().await.len();
+        let mut subchannel_recvs = futures::stream::SelectAll::new();
+
         mesh::CancelContext::new()
             .with_timeout(Duration::from_millis(1000))
             .until_cancelled(async {
                 let restore = std::pin::pin!(self.channel.restore(buffer));
                 let mut restore = restore.fuse();
                 loop {
+                    // Drain any new subchannel entries added during restore.
+                    {
+                        let mut entries = self.mock_vmbus.child_info.lock().await;
+                        while entries.len() > pre_restore_child_count {
+                            let entry = entries.remove(pre_restore_child_count);
+                            subchannel_recvs.push(entry.server_request_recv);
+                        }
+                    }
+
                     futures::select! {
                         result = restore => break result,
                         request = self.offer_input.server_request_recv.select_next_some() => {
@@ -774,6 +787,19 @@ impl TestNicDevice {
                                                 use_confidential_ring: false,
                                             }),
                                             gpadls,
+                                        })
+                                    })
+                                }
+                                vmbus_channel::bus::ChannelServerRequest::Revoke(_) => (),
+                            }
+                        }
+                        request = subchannel_recvs.select_next_some() => {
+                            match request {
+                                vmbus_channel::bus::ChannelServerRequest::Restore(rpc) => {
+                                    rpc.handle_sync(|_open| {
+                                        Ok(vmbus_channel::bus::RestoreResult {
+                                            open_request: None,
+                                            gpadls: vec![],
                                         })
                                     })
                                 }
@@ -5586,4 +5612,210 @@ async fn rndis_send_tcp_checksum_packet(driver: DefaultDriver) {
 
     let completion = channel.read_rndis_packet_complete_message().await.unwrap();
     assert_eq!(completion.status, protocol::Status::SUCCESS);
+}
+
+/// Requesting num_sub_channels == max_queues should be rejected
+/// because the subchannels plus the primary channel must fit within max_queues
+/// (i.e. subchannels must be strictly less than max_queues) or we panic.
+#[async_test]
+async fn subchannel_request_equal_to_max_queues_rejected(driver: DefaultDriver) {
+    const MAX_QUEUES: u16 = 2;
+
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().max_queues(MAX_QUEUES).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(
+            MAX_QUEUES as usize - 1,
+            protocol::NdisConfigCapabilities::new(),
+        )
+        .await;
+
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    let message = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE5_TYPE_SUB_CHANNEL,
+        },
+        data: protocol::Message5SubchannelRequest {
+            operation: protocol::SubchannelOperation::ALLOCATE,
+            num_sub_channels: MAX_QUEUES as u32, // subchannels == max_queues == 2
+        },
+        padding: &[],
+    };
+    channel
+        .write(OutgoingPacket {
+            transaction_id: 123,
+            packet_type: OutgoingPacketType::InBandWithCompletion,
+            payload: &message.payload(),
+        })
+        .await;
+
+    // Request should be rejected because num_sub_channels == max_queues.
+    // Would require max_queues + 1 total queues, exceeding the worker count.
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(header.message_type, protocol::MESSAGE5_TYPE_SUB_CHANNEL);
+                let completion_data: protocol::Message5SubchannelComplete =
+                    reader.read_plain().unwrap();
+                assert_eq!(
+                    completion_data.status,
+                    protocol::Status::FAILURE,
+                    "subchannel request with num_sub_channels == max_queues should be rejected"
+                );
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("completion message");
+}
+
+/// Restoring saved state with requested_num_queues exceeding the max_queues of
+/// the new NIC panics during restart_queues.
+/// This should not happen as the save state should be applied on a NIC with 
+/// the same number of queues. Save/Restore is for Live Migration and VM resources
+/// should be identical.
+///
+/// Setup: save from a NIC with max_queues=3 with 2 allocated (but unconnected)
+/// subchannels, producing channels=[Some, None, None] with
+/// requested_num_queues=3. Restore onto a NIC with max_queues=2. During
+/// restart_queues, the coordinator indexes into the workers array (len=2)
+/// with index 2, triggering an out-of-bounds panic.
+#[async_test]
+#[should_panic(expected = "index out of bounds")]
+async fn save_restore_reduced_max_queues_panics(driver: DefaultDriver) {
+    const ORIGINAL_MAX_QUEUES: u16 = 3;
+
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().max_queues(ORIGINAL_MAX_QUEUES).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    let mock_vmbus = nic.mock_vmbus.clone();
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(
+            ORIGINAL_MAX_QUEUES as usize - 1,
+            protocol::NdisConfigCapabilities::new(),
+        )
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    let message = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE5_TYPE_SUB_CHANNEL,
+        },
+        data: protocol::Message5SubchannelRequest {
+            operation: protocol::SubchannelOperation::ALLOCATE,
+            num_sub_channels: 2, // allocate 2 subchannels
+        },
+        padding: &[],
+    };
+    channel
+        .write(OutgoingPacket {
+            transaction_id: 123,
+            packet_type: OutgoingPacketType::InBandWithCompletion,
+            payload: &message.payload(),
+        })
+        .await;
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(header.message_type, protocol::MESSAGE5_TYPE_SUB_CHANNEL);
+                let completion_data: protocol::Message5SubchannelComplete =
+                    reader.read_plain().unwrap();
+                assert_eq!(completion_data.status, protocol::Status::SUCCESS);
+                assert_eq!(completion_data.num_sub_channels, 2);
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("completion message");
+
+    // Save the NIC state. The saved channels are [Some, None, None]
+    // (subchannels were never connected so workers 1,2 have no state).
+    // requested_num_queues = 3.
+    channel.stop().await;
+    let restore_state = channel.save().await.unwrap().unwrap();
+
+    // Restore onto a NIC with fewer max_queues (2 < 3).
+    const REDUCED_MAX_QUEUES: u16 = 2;
+    let endpoint_state2 = TestNicEndpointState::new();
+    let endpoint2 = TestNicEndpoint::new(Some(endpoint_state2.clone()));
+    let nic2 = Nic::builder().max_queues(REDUCED_MAX_QUEUES).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint2),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic2 = TestNicDevice::new_with_nic_and_vmbus(&driver, mock_vmbus, nic2).await;
+
+    // Restore the saved state. The 3-channel saved state results in
+    // requested_num_queues equal to 3 while max_queues is only 2.
+    // Subchannel Restore RPCs are handled by TestNicDevice::restore.
+    let mut channel = channel.restore(&mut nic2, restore_state).await.unwrap();
+
+    // Start the NIC. The coordinator will run restart_queues, which panics
+    // when it tries to index workers[2] in a 2-element array.
+    channel.start();
+
+    // Yield to let the coordinator task run restart_queues and panic.
+    let _ = channel
+        .read_with_timeout(Duration::from_millis(1000), |_| ())
+        .await;
 }
