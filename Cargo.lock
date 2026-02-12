@@ -7411,7 +7411,6 @@ dependencies = [
  "test_igvm_agent_lib",
  "tracing",
  "tracing-subscriber",
- "winapi",
  "windows-sys 0.61.0",
 ]
 

@@ -7,14 +7,14 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr;
 use std::slice;
-use winapi::shared::winerror::E_FAIL;
-use winapi::shared::winerror::E_INVALIDARG;
-use winapi::shared::winerror::E_OUTOFMEMORY;
-use winapi::shared::winerror::E_POINTER;
-use winapi::shared::winerror::HRESULT;
-use winapi::shared::winerror::S_OK;
+use windows_sys::Win32::Foundation::E_FAIL;
+use windows_sys::Win32::Foundation::E_INVALIDARG;
+use windows_sys::Win32::Foundation::E_OUTOFMEMORY;
+use windows_sys::Win32::Foundation::E_POINTER;
+use windows_sys::Win32::Foundation::S_OK;
 use windows_sys::Win32::System::Rpc::RPC_S_SERVER_UNAVAILABLE;
 use windows_sys::Win32::System::Rpc::RpcRaiseException;
+use windows_sys::core::HRESULT;
 
 #[unsafe(no_mangle)]
 /// Allocator shim invoked by the generated MIDL stubs.
