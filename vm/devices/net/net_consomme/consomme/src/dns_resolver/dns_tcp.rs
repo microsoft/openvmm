@@ -101,8 +101,6 @@ impl DnsTcpHandler {
     /// transmit buffer.
     pub fn poll_responses(&mut self, cx: &mut Context<'_>) {
         while let Poll::Ready(Ok(response)) = self.receiver.poll_recv(cx) {
-            let len = response.response_data.len() as u16;
-            self.tx_buf.extend(&len.to_be_bytes());
             self.tx_buf.extend(&response.response_data);
         }
     }
