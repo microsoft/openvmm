@@ -174,6 +174,9 @@ pub enum RestoreError {
     /// custom saved state corruption error
     #[error("saved state is invalid")]
     InvalidSavedState(#[source] anyhow::Error),
+    /// A required resource was not found during restore.
+    #[error("{0} not found")]
+    NotFound(String),
     /// non-state-related restore failure
     #[error(transparent)]
     Other(anyhow::Error),
@@ -194,6 +197,9 @@ pub enum SaveError {
     /// The child saved state is invalid.
     #[error("child saved state is invalid")]
     InvalidChildSavedState(#[source] anyhow::Error),
+    /// A required resource was not found during save.
+    #[error("{0} not found")]
+    NotFound(String),
 }
 
 /// A save operation error.
