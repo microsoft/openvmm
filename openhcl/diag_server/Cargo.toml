@@ -37,6 +37,7 @@ hvdef.workspace = true
 
 [features]
 profiler = ["dep:profiler_worker"]
+mem-profile-tracing = []
 
 [lints]
 workspace = true

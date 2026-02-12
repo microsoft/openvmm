@@ -83,6 +83,8 @@ pub enum UhVmRpc {
     Save(FailableRpc<(), Vec<u8>>),
     ClearHalt(Rpc<(), bool>), // TODO: remove this, and use DebugRequest::Resume
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
+    #[cfg(feature = "mem-profile-tracing")]
+    MemoryProfileTrace(FailableRpc<i32, Vec<u8>>),
 }
 
 #[async_trait]
@@ -199,6 +201,8 @@ pub(crate) struct LoadedVm {
     pub dma_manager: OpenhclDmaManager,
     pub config_timeout_in_seconds: u64,
     pub servicing_timeout_dump_collection_in_ms: u64,
+    #[cfg(feature = "mem-profile-tracing")]
+    pub profiler: dhat::Profiler,
 }
 
 pub struct LoadedVmState<T> {
@@ -417,6 +421,31 @@ impl LoadedVm {
                                 .as_ref()
                                 .context("No network settings have been set up")?;
                             network_settings.packet_capture(params).await
+                        })
+                        .await
+                    }
+                    #[cfg(feature = "mem-profile-tracing")]
+                    UhVmRpc::MemoryProfileTrace(rpc) => {
+                        rpc.handle_failable(async |pid| {
+                            if pid == std::process::id() as i32 {
+                                // Use replace + forget to prevent the old Profiler's
+                                // Drop from firing. `drop_and_get_memory_output` already
+                                // transitioned the global state to Ready; if Drop ran
+                                // it would see the *new* profiler's Running state and
+                                // kill it immediately. `drop_and_get_memory_output` has already
+                                // cleaned up the state and so forgetting the old profiler
+                                // does not leak anything as the dhat::Profiler is a zero-sized
+                                // unit struct.
+                                let summary = self.profiler.drop_and_get_memory_output();
+                                let old = std::mem::replace(
+                                    &mut self.profiler,
+                                    dhat::Profiler::new_heap(),
+                                );
+                                std::mem::forget(old);
+                                Ok(summary.into())
+                            } else {
+                                anyhow::bail!("Process with PID {pid} not found");
+                            }
                         })
                         .await
                     }

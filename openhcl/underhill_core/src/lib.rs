@@ -492,6 +492,8 @@ async fn run_control(
     }
 
     let mut restart_rpc = None;
+    #[cfg(feature = "mem-profile-tracing")]
+    let mut profiler = dhat::Profiler::new_heap();
     loop {
         let event = {
             let mut stream = (
@@ -627,6 +629,38 @@ async fn run_control(
                         };
 
                         workers.vm_rpc.send(UhVmRpc::PacketCapture(rpc));
+                    }
+                    #[cfg(feature = "mem-profile-tracing")]
+                    diag_server::DiagRequest::MemoryProfileTrace(rpc) => {
+                        rpc.handle_failable(async |pid| {
+                            if pid == std::process::id() as i32 {
+                                // Use replace + forget to prevent the old Profiler's
+                                // Drop from firing. `drop_and_get_memory_output` already
+                                // transitioned the global state to Ready; if Drop ran
+                                // it would see the *new* profiler's Running state and
+                                // kill it immediately. `drop_and_get_memory_output` has already
+                                // cleaned up the state and so forgetting the old profiler
+                                // does not leak anything as the dhat::Profiler is a zero-sized
+                                // unit struct.
+                                let summary = profiler.drop_and_get_memory_output();
+                                let old =
+                                    std::mem::replace(&mut profiler, dhat::Profiler::new_heap());
+                                std::mem::forget(old);
+                                anyhow::Ok(summary.into())
+                            } else {
+                                let Some(workers) = &mut workers else {
+                                    anyhow::bail!("workers have not been started yet");
+                                };
+
+                                let result = workers
+                                    .vm_rpc
+                                    .call(UhVmRpc::MemoryProfileTrace, pid)
+                                    .await
+                                    .context("failed to get memory profile from worker process")?;
+                                Ok(result?)
+                            }
+                        })
+                        .await
                     }
                     diag_server::DiagRequest::Resume(rpc) => {
                         let Some(workers) = &mut workers else {
