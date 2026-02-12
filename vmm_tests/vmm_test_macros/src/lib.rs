@@ -788,32 +788,6 @@ fn build_requirements(firmware: &Firmware, name: &str, resolved_vmm: Vmm) -> Opt
         requirement_expr = Some(isolation_requirement);
     }
 
-    // Special case for "servicing" tests
-    if name.contains("servicing") {
-        let servicing_expr = quote!(::petri::requirements::TestRequirement::Not(Box::new(
-            ::petri::requirements::TestRequirement::And(
-                Box::new(::petri::requirements::TestRequirement::Vendor(
-                    ::petri::requirements::Vendor::Amd
-                )),
-                Box::new(
-                    ::petri::requirements::TestRequirement::ExecutionEnvironment(
-                        ::petri::requirements::ExecutionEnvironment::Nested
-                    )
-                )
-            )
-        )));
-
-        requirement_expr = match requirement_expr {
-            Some(existing) => Some(quote!(
-                ::petri::requirements::TestRequirement::And(
-                    Box::new(#existing),
-                    Box::new(#servicing_expr)
-                )
-            )),
-            None => Some(servicing_expr),
-        };
-    }
-
     let is_hyperv = resolved_vmm == Vmm::HyperV;
 
     if is_hyperv && is_vbs {
