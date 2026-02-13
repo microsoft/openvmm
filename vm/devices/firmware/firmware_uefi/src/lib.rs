@@ -311,6 +311,45 @@ impl UefiDevice {
                 )
             }
         });
+
+        resp.field_mut_with("efi_diagnostics_dump", |v| {
+            if let Some(value) = v {
+                let log_level_override = match value {
+                    "default" => Some(LogLevel::make_default()),
+                    "info" => Some(LogLevel::make_info()),
+                    "full" => Some(LogLevel::make_full()),
+                    _ => None,
+                };
+
+                use std::fmt::Write;
+                let mut output = String::new();
+                let result = self.service.diagnostics.process_diagnostics(
+                    true,
+                    &self.gm,
+                    log_level_override,
+                    |log| {
+                        let _ = writeln!(
+                            output,
+                            "[{}] [{}] (ticks: {}) {}",
+                            log.debug_level_str(),
+                            log.phase_str(),
+                            log.ticks(),
+                            log.message_trimmed(),
+                        );
+                    },
+                );
+
+                Result::<_, std::convert::Infallible>::Ok(match result {
+                    Ok(()) if output.is_empty() => "(no diagnostics entries found)".to_string(),
+                    Ok(()) => output,
+                    Err(error) => format!("error processing diagnostics: {error}"),
+                })
+            } else {
+                Result::<_, std::convert::Infallible>::Ok(
+                    "Use: inspect -u <default|info|full> vm/uefi/efi_diagnostics_dump".to_string(),
+                )
+            }
+        });
     }
 }
 

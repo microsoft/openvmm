@@ -3257,7 +3257,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                     }
                     .await;
                     match value {
-                        Ok(node) => println!("{:#}", node),
+                        Ok(node) => match &node.kind {
+                            inspect::ValueKind::String(s) => println!("{s}"),
+                            _ => println!("{:#}", node),
+                        },
                         Err(err) => println!("error: {:#}", err),
                     }
                 } else {
