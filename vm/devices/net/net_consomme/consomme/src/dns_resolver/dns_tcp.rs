@@ -200,7 +200,7 @@ mod tests {
         let backend = Arc::new(EchoBackend);
         let mut handler = DnsTcpHandler::new(backend, test_flow());
 
-        // 20-byte fake DNS query (> 12-byte header minimum)
+        // 22-byte fake DNS query (> 12-byte header minimum)
         let query = vec![
             0x00, 0x14, 0xAB, 0xCD, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x03, 0x77, 0x77, 0x77, 0x03, 0x63, 0x6F, 0x6D,
@@ -214,12 +214,9 @@ mod tests {
 
         let mut buf = vec![0u8; 256];
         let n = handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]);
-        // The echo backend returns the raw DNS query (without TCP length prefix).
-        // poll_responses then wraps that in a 2-byte length prefix for transmission.
-        assert_eq!(n, query.len()); // tx framing prefix + DNS payload
         assert_eq!(
             u16::from_be_bytes([buf[0], buf[1]]) as usize,
-            query.len() - 2
+            query.len()
         );
     }
 
@@ -273,9 +270,8 @@ mod tests {
 
         let mut buf = vec![0u8; 512];
         let n = handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]);
-        // Each echoed response is the raw DNS query (without TCP prefix),
-        // then poll_responses adds a 2-byte tx framing prefix.
-        let per_response = q1.len(); // tx prefix + DNS payload
+        // Each response is a 2-byte TCP length prefix + the DNS payload.
+        let per_response = q1.len() + 2; // 2-byte TCP prefix + DNS payload
         assert_eq!(n, 2 * per_response);
     }
 
