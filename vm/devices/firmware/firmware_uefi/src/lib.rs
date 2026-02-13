@@ -276,7 +276,7 @@ impl UefiDevice {
                 self.service.diagnostics.set_gpa(data)
             }
             UefiCommand::PROCESS_EFI_DIAGNOSTICS => {
-                self.process_diagnostics(false, Some(DEFAULT_LOGS_PER_PERIOD))
+                self.process_diagnostics(false, Some(DEFAULT_LOGS_PER_PERIOD), None)
             }
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
@@ -288,14 +288,65 @@ impl UefiDevice {
             // NOTE: Today, the inspect source code will fail if we invoke like below
             // `inspect -u vm/uefi/process_diagnostics`. This is true, even for other
             // mutable paths in the inspect graph.
-            if v.is_some() {
-                self.process_diagnostics(true, None);
-                Result::<_, std::convert::Infallible>::Ok(
-                    "attempted to process diagnostics through inspect".to_string(),
-                )
+            if let Some(value) = v {
+                // Parse optional log level override from the input value.
+                // Any other value (e.g. "1") processes with the configured log level.
+                let log_level_override = match value {
+                    "default" => Some(LogLevel::make_default()),
+                    "info" => Some(LogLevel::make_info()),
+                    "full" => Some(LogLevel::make_full()),
+                    _ => None,
+                };
+                self.process_diagnostics(true, None, log_level_override);
+                Result::<_, std::convert::Infallible>::Ok(format!(
+                    "attempted to process diagnostics through inspect (log_level_override: {})",
+                    match value {
+                        "default" | "info" | "full" => value,
+                        _ => "none",
+                    }
+                ))
             } else {
                 Result::<_, std::convert::Infallible>::Ok(
-                    "Use: inspect -u 1 vm/uefi/process_diagnostics".to_string(),
+                    "Use: inspect -u <default|info|full> vm/uefi/process_diagnostics".to_string(),
+                )
+            }
+        });
+
+        resp.field_mut_with("efi_diagnostics_dump", |v| {
+            if let Some(value) = v {
+                let log_level_override = match value {
+                    "default" => Some(LogLevel::make_default()),
+                    "info" => Some(LogLevel::make_info()),
+                    "full" => Some(LogLevel::make_full()),
+                    _ => None,
+                };
+
+                use std::fmt::Write;
+                let mut output = String::new();
+                let result = self.service.diagnostics.process_diagnostics(
+                    true,
+                    &self.gm,
+                    log_level_override,
+                    |log| {
+                        let _ = writeln!(
+                            output,
+                            "[{}] [{}] (ticks: {}) {}",
+                            log.debug_level_str(),
+                            log.phase_str(),
+                            log.ticks(),
+                            log.message_trimmed(),
+                        );
+                    },
+                );
+
+                Result::<_, std::convert::Infallible>::Ok(match result {
+                    Ok(()) if output.is_empty() => "(no diagnostics entries found)".to_string(),
+                    Ok(()) => output,
+                    Err(error) => format!("error processing diagnostics: {error}"),
+                })
+            } else {
+                Result::<_, std::convert::Infallible>::Ok(
+                    "Use: inspect -u <default|info|full> vm/uefi/efi_diagnostics_dump".to_string(),
                 )
             }
         });
@@ -343,7 +394,7 @@ impl PollDevice for UefiDevice {
             // NOTE: Do not allow reprocessing diagnostics here.
             // UEFI programs the watchdog's configuration, so we should assume that
             // this path could trigger multiple times.
-            self.process_diagnostics(false, Some(DEFAULT_LOGS_PER_PERIOD));
+            self.process_diagnostics(false, Some(DEFAULT_LOGS_PER_PERIOD), None);
         }
     }
 }

@@ -113,9 +113,7 @@ where
     gm.read_at(buffer_start_gpa.as_u64(), &mut buffer_data)?;
 
     // Process the buffer
-    LogProcessor::process_buffer(&buffer_data, log_level, log_handler)?;
-
-    Ok(())
+    LogProcessor::process_buffer(&buffer_data, log_level, log_handler)
 }
 
 /// Internal processor for log entries with suppression tracking

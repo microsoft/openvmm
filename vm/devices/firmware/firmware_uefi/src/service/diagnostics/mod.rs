@@ -185,11 +185,13 @@ impl DiagnosticsServices {
     /// # Arguments
     /// * `allow_reprocess` - If true, allows processing even if already processed for guest
     /// * `gm` - Guest memory to read diagnostics from
+    /// * `log_level_override` - If provided, overrides the configured log level for this processing run
     /// * `log_handler` - Function to handle each parsed log entry
     pub fn process_diagnostics<F>(
         &mut self,
         allow_reprocess: bool,
         gm: &GuestMemory,
+        log_level_override: Option<LogLevel>,
         log_handler: F,
     ) -> Result<(), ProcessingError>
     where
@@ -204,8 +206,11 @@ impl DiagnosticsServices {
         // Mark as processed first to prevent guest spam (even on failure)
         self.processed = true;
 
+        // Use the override log level if provided, otherwise fall back to configured level
+        let effective_log_level = log_level_override.unwrap_or(self.log_level);
+
         // Delegate to the processor module
-        processor::process_diagnostics_internal(self.gpa, gm, self.log_level, log_handler)
+        processor::process_diagnostics_internal(self.gpa, gm, effective_log_level, log_handler)
     }
 }
 
@@ -218,15 +223,22 @@ impl UefiDevice {
     /// # Arguments
     /// * `allow_reprocess` - If true, allows processing even if already processed for guest
     /// * `limit` - Maximum number of logs to process per period, or `None` for no limit
-    pub(crate) fn process_diagnostics(&mut self, allow_reprocess: bool, limit: Option<u32>) {
-        if let Err(error) =
-            self.service
-                .diagnostics
-                .process_diagnostics(allow_reprocess, &self.gm, |log| match limit {
-                    Some(limit) => emit_log_ratelimited(log, limit),
-                    None => emit_log_unrestricted(log),
-                })
-        {
+    /// * `log_level_override` - If provided, overrides the configured log level filter for this run
+    pub(crate) fn process_diagnostics(
+        &mut self,
+        allow_reprocess: bool,
+        limit: Option<u32>,
+        log_level_override: Option<LogLevel>,
+    ) {
+        if let Err(error) = self.service.diagnostics.process_diagnostics(
+            allow_reprocess,
+            &self.gm,
+            log_level_override,
+            |log| match limit {
+                Some(limit) => emit_log_ratelimited(log, limit),
+                None => emit_log_unrestricted(log),
+            },
+        ) {
             tracelimit::error_ratelimited!(
                 error = &error as &dyn std::error::Error,
                 "failed to process diagnostics buffer"

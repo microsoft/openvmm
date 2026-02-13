@@ -282,6 +282,19 @@ enum Command {
         #[clap(short('s'), long, default_value = "65535", value_parser = clap::value_parser!(u16).range(1..))]
         snaplen: u16,
     },
+    /// Processes EFI diagnostics from guest memory and outputs the logs.
+    ///
+    /// The log level filter controls which UEFI log entries are emitted.
+    /// The buffer already contains all log levels; this filter selects
+    /// which ones to display.
+    EfiDiagnostics {
+        /// The log level filter to apply.
+        ///
+        /// Accepted values: "default" (errors+warnings), "info" (errors+warnings+info),
+        /// "full" (all levels).
+        #[clap(default_value = "default")]
+        log_level: EfiDiagnosticsLogLevel,
+    },
 }
 
 #[derive(Debug, Clone, Args)]
@@ -347,6 +360,26 @@ struct EnvString {
 enum CrashType {
     #[clap(name = "panic")]
     UhPanic,
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum EfiDiagnosticsLogLevel {
+    /// Errors and warnings only
+    Default,
+    /// Errors, warnings, and info
+    Info,
+    /// All log levels
+    Full,
+}
+
+impl EfiDiagnosticsLogLevel {
+    fn as_inspect_value(&self) -> &'static str {
+        match self {
+            EfiDiagnosticsLogLevel::Default => "default",
+            EfiDiagnosticsLogLevel::Info => "info",
+            EfiDiagnosticsLogLevel::Full => "full",
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -498,7 +531,10 @@ pub fn main() -> anyhow::Result<()> {
                     };
 
                     let value = client.update(path, update).await?;
-                    println!("{value}");
+                    match value.kind {
+                        inspect::ValueKind::String(s) => println!("{s}"),
+                        _ => println!("{value}"),
+                    }
                 } else {
                     let timeout = if timeout == 0 {
                         None
@@ -556,7 +592,10 @@ pub fn main() -> anyhow::Result<()> {
                 );
                 let client = new_client(driver.clone(), &vm)?;
                 let value = client.update(path, value).await?;
-                println!("{value}");
+                match value.kind {
+                    inspect::ValueKind::String(s) => println!("{s}"),
+                    _ => println!("{value}"),
+                }
             }
             Command::Start { env, unset, args } => {
                 let client = new_client(driver.clone(), &vm)?;
@@ -873,6 +912,17 @@ pub fn main() -> anyhow::Result<()> {
                 let client = new_client(driver.clone(), &vm)?;
                 let mut file = create_or_stderr(&output)?;
                 file.write_all(&client.dump_saved_state().await?)?;
+            }
+            Command::EfiDiagnostics { log_level } => {
+                let client = new_client(driver.clone(), &vm)?;
+                let value = client
+                    .update("vm/uefi/efi_diagnostics_dump", log_level.as_inspect_value())
+                    .await
+                    .context("failed to process EFI diagnostics")?;
+                match value.kind {
+                    inspect::ValueKind::String(s) => print!("{s}"),
+                    _ => print!("{value}"),
+                }
             }
         }
         Ok(())
