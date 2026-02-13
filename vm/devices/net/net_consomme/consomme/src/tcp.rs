@@ -756,38 +756,29 @@ impl TcpConnection {
         dns_handler: &mut DnsTcpHandler,
     ) -> bool {
         // rx path: feed guest data into the DNS handler for query extraction.
-        let rx_data: Vec<u8> = self.rx_buffer.drain(..).collect();
-        if !rx_data.is_empty() {
-            dns_handler.ingest(&rx_data);
-        }
+        let (a, b) = self.rx_buffer.as_slices();
+        dns_handler.ingest(&[a, b]);
+        self.rx_buffer.clear();
 
-        if self.state.rx_fin() {
+        if self.state.rx_fin() && !dns_handler.guest_fin() {
             dns_handler.set_guest_fin();
         }
 
-        // Poll for resolved DNS responses.
-        dns_handler.poll_responses(cx);
-
-        // tx path: copy response data from the handler into tx_buffer.
+        // tx path: poll DNS responses directly into tx_buffer.
         while !self.tx_buffer.is_full() {
             let (a, b) = self.tx_buffer.unwritten_slices_mut();
-            let n = dns_handler.drain_tx(a);
+            let mut bufs = [IoSliceMut::new(a), IoSliceMut::new(b)];
+            let n = dns_handler.poll_read(cx, &mut bufs);
             if n == 0 {
-                let n2 = dns_handler.drain_tx(b);
-                if n2 == 0 {
-                    break;
-                }
-                self.tx_buffer.extend_by(n2);
-            } else {
-                self.tx_buffer.extend_by(n);
+                break;
             }
+            self.tx_buffer.extend_by(n);
         }
 
         let want_close = dns_handler.should_close() && !self.state.tx_fin();
         let has_pending_tx = dns_handler.has_pending_tx();
 
         if want_close {
-            tracing::info!("DNS TCP connection closing after all responses flushed");
             self.close();
         }
 

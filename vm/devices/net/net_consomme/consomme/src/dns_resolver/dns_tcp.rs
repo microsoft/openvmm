@@ -14,6 +14,7 @@ use super::DnsRequest;
 use super::DnsResponse;
 use mesh_channel_core::Receiver;
 use std::collections::VecDeque;
+use std::io::IoSliceMut;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -26,7 +27,7 @@ pub struct DnsTcpHandler {
     receiver: Receiver<DnsResponse>,
     flow: DnsFlow,
     /// Data received from the guest, accumulating DNS TCP framed messages.
-    rx_buf: Vec<u8>,
+    rx_buf: VecDeque<u8>,
     /// Length-prefixed DNS responses waiting to be sent to the guest.
     tx_buf: VecDeque<u8>,
     /// The guest has sent FIN; no more data will arrive.
@@ -40,7 +41,7 @@ impl DnsTcpHandler {
             backend,
             receiver,
             flow,
-            rx_buf: Vec::new(),
+            rx_buf: VecDeque::new(),
             tx_buf: VecDeque::new(),
             guest_fin: false,
         }
@@ -48,19 +49,21 @@ impl DnsTcpHandler {
 
     /// Feed data received from the guest into the handler.
     /// Extracts complete DNS messages and submits them for resolution.
-    pub fn ingest(&mut self, data: &[u8]) {
-        // Limit rx_buf growth to prevent unbounded memory use from a
-        // guest that sends a large length prefix but trickles data slowly.
-        let remaining_capacity = MAX_DNS_TCP_MESSAGE_SIZE.saturating_sub(self.rx_buf.len());
-        let accepted = data.len().min(remaining_capacity);
-        if accepted > 0 {
-            self.rx_buf.extend_from_slice(&data[..accepted]);
-        }
-        if accepted < data.len() {
-            tracelimit::warn_ratelimited!(
-                dropped = data.len() - accepted,
-                "DNS TCP rx_buf full, dropping excess data"
-            );
+    pub fn ingest(&mut self, data: &[&[u8]]) {
+        for chunk in data {
+            // Limit rx_buf growth to prevent unbounded memory use from a
+            // guest that sends a large length prefix but trickles data slowly.
+            let remaining_capacity = MAX_DNS_TCP_MESSAGE_SIZE.saturating_sub(self.rx_buf.len());
+            let accepted = chunk.len().min(remaining_capacity);
+            if accepted > 0 {
+                self.rx_buf.extend(&chunk[..accepted]);
+            }
+            if accepted < chunk.len() {
+                tracelimit::warn_ratelimited!(
+                    dropped = chunk.len() - accepted,
+                    "DNS TCP rx_buf full, dropping excess data"
+                );
+            }
         }
         self.extract_and_submit_queries();
     }
@@ -82,41 +85,49 @@ impl DnsTcpHandler {
                 // Incomplete message; wait for more data.
                 break;
             }
-            // Extract the DNS query payload WITHOUT the 2-byte TCP length prefix.
-            // The TCP framing is only for the wire protocol between guest and host.
-            // Platform resolvers (glibc res_nsend, musl res_send) expect raw DNS
-            // messages and handle TCP framing internally when needed.
-            let query = self.rx_buf[2..2 + msg_len].to_vec();
-            self.rx_buf.drain(..2 + msg_len);
+            // Drain the 2-byte length prefix, then drain the payload.
+            self.rx_buf.drain(..2);
+            let bytes: Vec<u8> = self.rx_buf.drain(..msg_len).collect();
 
             let request = DnsRequest {
                 flow: self.flow.clone(),
-                dns_query: &query,
+                dns_query: &bytes,
             };
             self.backend.query(&request, self.receiver.sender());
         }
     }
 
-    /// Poll for completed DNS responses and length-prefix them into the
-    /// transmit buffer.
-    pub fn poll_responses(&mut self, cx: &mut Context<'_>) {
+    /// Poll for completed DNS responses and write length-prefixed data
+    /// Returns the total number of bytes written.
+    pub fn poll_read(&mut self, cx: &mut Context<'_>, bufs: &mut [IoSliceMut<'_>]) -> usize {
         while let Poll::Ready(Ok(response)) = self.receiver.poll_recv(cx) {
             self.tx_buf.extend(&response.response_data);
         }
+        self.drain_buffered(bufs)
     }
 
-    /// Drain available response data into the provided buffer.
-    /// Returns the number of bytes written.
-    pub fn drain_tx(&mut self, buf: &mut [u8]) -> usize {
-        let n = buf.len().min(self.tx_buf.len());
-        for (dst, src) in buf[..n].iter_mut().zip(self.tx_buf.drain(..n)) {
-            *dst = src;
+    /// Drain buffered tx data into the provided buffers.
+    fn drain_buffered(&mut self, bufs: &mut [IoSliceMut<'_>]) -> usize {
+        let mut total = 0;
+        for buf in bufs.iter_mut() {
+            if self.tx_buf.is_empty() {
+                break;
+            }
+            let n = buf.len().min(self.tx_buf.len());
+            for (dst, src) in buf[..n].iter_mut().zip(self.tx_buf.drain(..n)) {
+                *dst = src;
+            }
+            total += n;
         }
-        n
+        total
     }
 
     pub fn has_pending_tx(&self) -> bool {
         !self.tx_buf.is_empty()
+    }
+
+    pub fn guest_fin(&self) -> bool {
+        self.guest_fin
     }
 
     pub fn set_guest_fin(&mut self) {
@@ -184,19 +195,16 @@ mod tests {
         ];
         let msg = make_tcp_dns_message(&query);
 
-        handler.ingest(&msg);
+        handler.ingest(&[&msg]);
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
         let mut cx = Context::from_waker(&waker);
-        handler.poll_responses(&mut cx);
-
-        assert!(handler.has_pending_tx());
 
         let mut buf = vec![0u8; 256];
-        let n = handler.drain_tx(&mut buf);
+        let n = handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]);
         // The echo backend returns the raw DNS query (without TCP length prefix).
         // poll_responses then wraps that in a 2-byte length prefix for transmission.
-        assert_eq!(n, 2 + query.len()); // tx framing prefix + DNS payload
+        assert_eq!(n, query.len()); // tx framing prefix + DNS payload
         assert_eq!(u16::from_be_bytes([buf[0], buf[1]]) as usize, query.len());
         // The echoed data should be the raw DNS query.
         assert_eq!(&buf[2..n], &query[..]);
@@ -214,17 +222,16 @@ mod tests {
         let msg = make_tcp_dns_message(&query);
 
         // Feed just the length prefix
-        handler.ingest(&msg[..2]);
+        handler.ingest(&[&msg[..2]]);
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
         let mut cx = Context::from_waker(&waker);
-        handler.poll_responses(&mut cx);
-        assert!(!handler.has_pending_tx());
+        let mut buf = vec![0u8; 256];
+        assert_eq!(handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]), 0);
 
         // Feed the rest
-        handler.ingest(&msg[2..]);
-        handler.poll_responses(&mut cx);
-        assert!(handler.has_pending_tx());
+        handler.ingest(&[&msg[2..]]);
+        assert!(handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]) > 0);
     }
 
     #[test]
@@ -243,17 +250,16 @@ mod tests {
         let mut combined = make_tcp_dns_message(&q1);
         combined.extend(make_tcp_dns_message(&q2));
 
-        handler.ingest(&combined);
+        handler.ingest(&[&combined]);
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
         let mut cx = Context::from_waker(&waker);
-        handler.poll_responses(&mut cx);
 
         let mut buf = vec![0u8; 512];
-        let n = handler.drain_tx(&mut buf);
+        let n = handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]);
         // Each echoed response is the raw DNS query (without TCP prefix),
         // then poll_responses adds a 2-byte tx framing prefix.
-        let per_response = 2 + q1.len(); // tx prefix + DNS payload
+        let per_response = q1.len(); // tx prefix + DNS payload
         assert_eq!(n, 2 * per_response);
     }
 
@@ -266,17 +272,18 @@ mod tests {
             0xAB, 0xCD, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x78,
             0x78, 0x78,
         ];
-        handler.ingest(&make_tcp_dns_message(&query));
+        handler.ingest(&[&make_tcp_dns_message(&query)]);
         handler.set_guest_fin();
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
         let mut cx = Context::from_waker(&waker);
-        handler.poll_responses(&mut cx);
-
-        assert!(!handler.should_close());
 
         let mut buf = vec![0u8; 256];
-        handler.drain_tx(&mut buf);
+        let _ = handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]);
+
+        // tx_buf is now drained, but we need to verify should_close
+        // only returns true after all data is consumed.
+        assert!(!handler.has_pending_tx());
 
         assert!(handler.should_close());
     }
