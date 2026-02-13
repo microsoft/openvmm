@@ -53,7 +53,7 @@ use std::task::Poll;
 use std::time::Duration;
 use std::time::Instant;
 
-pub const DNS_PORT: u16 = 53;
+use crate::DNS_PORT;
 
 pub(crate) struct Udp {
     connections: HashMap<SocketAddr, UdpConnection>,
@@ -442,6 +442,7 @@ impl<T: Client> Access<'_, T> {
                 dst_port: udp.dst_port(),
                 gateway_mac: self.inner.state.params.gateway_mac,
                 client_mac: frame.src_addr,
+                transport: crate::dns_resolver::DnsTransport::Udp,
             },
             dns_query: udp.payload(),
         };

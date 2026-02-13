@@ -38,7 +38,6 @@ impl Ring {
         self.view(0..self.len()).as_slices()
     }
 
-    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
