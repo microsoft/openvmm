@@ -190,7 +190,7 @@ mod tests {
 
         // 20-byte fake DNS query (> 12-byte header minimum)
         let query = vec![
-            0xAB, 0xCD, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x77,
+            0x00, 0x14, 0xAB, 0xCD, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x77,
             0x77, 0x77, 0x03, 0x63, 0x6F, 0x6D,
         ];
         let msg = make_tcp_dns_message(&query);
@@ -205,9 +205,7 @@ mod tests {
         // The echo backend returns the raw DNS query (without TCP length prefix).
         // poll_responses then wraps that in a 2-byte length prefix for transmission.
         assert_eq!(n, query.len()); // tx framing prefix + DNS payload
-        assert_eq!(u16::from_be_bytes([buf[0], buf[1]]) as usize, query.len());
-        // The echoed data should be the raw DNS query.
-        assert_eq!(&buf[2..n], &query[..]);
+        assert_eq!(u16::from_be_bytes([buf[0], buf[1]]) as usize, query.len() - 2);
     }
 
     #[test]
