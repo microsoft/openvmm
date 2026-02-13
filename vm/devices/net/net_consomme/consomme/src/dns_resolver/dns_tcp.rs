@@ -51,8 +51,6 @@ impl DnsTcpHandler {
     /// Extracts complete DNS messages and submits them for resolution.
     pub fn ingest(&mut self, data: &[&[u8]]) {
         for chunk in data {
-            // Limit rx_buf growth to prevent unbounded memory use from a
-            // guest that sends a large length prefix but trickles data slowly.
             let remaining_capacity = MAX_DNS_TCP_MESSAGE_SIZE.saturating_sub(self.rx_buf.len());
             let accepted = chunk.len().min(remaining_capacity);
             if accepted > 0 {
@@ -101,6 +99,11 @@ impl DnsTcpHandler {
     /// Returns the total number of bytes written.
     pub fn poll_read(&mut self, cx: &mut Context<'_>, bufs: &mut [IoSliceMut<'_>]) -> usize {
         while let Poll::Ready(Ok(response)) = self.receiver.poll_recv(cx) {
+            #[cfg(unix)]
+            {
+            let len = response.response_data.len() as u16;
+            self.tx_buf.extend(&len.to_be_bytes());
+            }
             self.tx_buf.extend(&response.response_data);
         }
         self.drain_buffered(bufs)
