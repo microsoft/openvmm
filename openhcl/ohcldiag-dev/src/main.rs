@@ -292,7 +292,7 @@ enum Command {
         ///
         /// Accepted values: "default" (errors+warnings), "info" (errors+warnings+info),
         /// "full" (all levels).
-        #[clap(default_value = "full")]
+        #[clap(default_value = "default")]
         log_level: EfiDiagnosticsLogLevel,
     },
 }
