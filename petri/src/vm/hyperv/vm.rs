@@ -227,6 +227,7 @@ impl HyperVVM {
                     "failed to copy hyper-v crash dump file"
                 );
             }
+            tracing::info!("copied hyper-v crash dump file {filename}");
         }
     }
 
@@ -563,12 +564,21 @@ impl HyperVVM {
 
     async fn remove_inner(&mut self) -> anyhow::Result<()> {
         if !self.destroyed {
-            let res_off = hvc::hvc_ensure_off(&self.vmid).await;
+            let res_off = hvc::hvc_ensure_off(&self.vmid)
+                .await
+                .inspect_err(|e| tracing::error!("failed to stop vm: {e:?}"));
 
+            // Wait for logs to propagate and any crash dumps to be written
+            std::thread::sleep(Duration::from_secs(1));
             // Flush logs before we remove the VM so we can capture any
             // interesting files before they get deleted.
-            let res_flush = self.flush_logs().await;
-            let res_remove = powershell::run_remove_vm(&self.vmid).await;
+            let res_flush = self
+                .flush_logs()
+                .await
+                .inspect_err(|e| tracing::error!("failed to flush logs: {e:?}"));
+            let res_remove = powershell::run_remove_vm(&self.vmid)
+                .await
+                .inspect_err(|e| tracing::error!("failed to remove vm: {e:?}"));
 
             res_off?;
             res_remove?;
