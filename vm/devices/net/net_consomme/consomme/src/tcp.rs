@@ -389,11 +389,6 @@ impl<T: Client> Access<'_, T> {
                     sender.rst(ack, None);
                 } else if tcp.control == TcpControl::Syn {
                     if is_dns_tcp {
-                        tracing::info!(
-                            src = %ft.src,
-                            dst = %ft.dst,
-                            "intercepting DNS TCP connection to gateway"
-                        );
                         let conn = TcpConnection::new_dns(
                             &mut sender,
                             &tcp,

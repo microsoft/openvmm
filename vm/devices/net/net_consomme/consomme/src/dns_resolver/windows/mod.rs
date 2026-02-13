@@ -76,7 +76,8 @@ impl DnsBackend for WindowsDnsResolverBackend {
         let response_sender_clone = response_sender.clone();
 
         // For TCP transport, prepend the 2-byte length prefix as required by the wire format.
-        // The DnsQueryRaw API with DNS_PROTOCOL_TCP expects TCP-framed messages.
+        // The DnsQueryRaw API with DNS_PROTOCOL_TCP expects TCP-framed
+        // messages. Unix resolvers handle this themselves. 
         let query_data = match request.flow.transport {
             super::DnsTransport::Tcp => {
                 let len = request.dns_query.len() as u16;
