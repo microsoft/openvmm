@@ -213,7 +213,7 @@ mod tests {
         let mut cx = Context::from_waker(&waker);
 
         let mut buf = vec![0u8; 256];
-        let n = handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]);
+        handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]);
         assert_eq!(
             u16::from_be_bytes([buf[0], buf[1]]) as usize,
             query.len()
