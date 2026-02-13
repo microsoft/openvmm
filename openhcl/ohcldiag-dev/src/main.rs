@@ -531,7 +531,10 @@ pub fn main() -> anyhow::Result<()> {
                     };
 
                     let value = client.update(path, update).await?;
-                    println!("{value}");
+                    match value.kind {
+                        inspect::ValueKind::String(s) => println!("{s}"),
+                        _ => println!("{value}"),
+                    }
                 } else {
                     let timeout = if timeout == 0 {
                         None
@@ -589,7 +592,10 @@ pub fn main() -> anyhow::Result<()> {
                 );
                 let client = new_client(driver.clone(), &vm)?;
                 let value = client.update(path, value).await?;
-                println!("{value}");
+                match value.kind {
+                    inspect::ValueKind::String(s) => println!("{s}"),
+                    _ => println!("{value}"),
+                }
             }
             Command::Start { env, unset, args } => {
                 let client = new_client(driver.clone(), &vm)?;
