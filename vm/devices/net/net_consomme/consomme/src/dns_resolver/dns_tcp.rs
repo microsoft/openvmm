@@ -83,13 +83,22 @@ impl DnsTcpHandler {
                 // Incomplete message; wait for more data.
                 break;
             }
-            // Drain the 2-byte length prefix, then drain the payload.
-            self.rx_buf.drain(..2);
-            let bytes: Vec<u8> = self.rx_buf.drain(..msg_len).collect();
+            // On Windows, the two byte prefix must be included in the buffer
+            // sent to the backend, as DnsQueryRaw expects the full TCP-framed
+            // message.
+            // On Unix, the backend expects just the raw DNS query without the TCP prefix,
+            // so we strip it before sending.
+            #[cfg(unix)]
+            let query_data = {
+                self.rx_buf.drain(..2);
+                self.rx_buf.drain(..msg_len).collect::<Vec<u8>>()
+            };
+            #[cfg(windows)]
+            let query_data = self.rx_buf.drain(..2 + msg_len).collect::<Vec<u8>>();
 
             let request = DnsRequest {
                 flow: self.flow.clone(),
-                dns_query: &bytes,
+                dns_query: &query_data,
             };
             self.backend.query(&request, self.receiver.sender());
         }
@@ -101,8 +110,8 @@ impl DnsTcpHandler {
         while let Poll::Ready(Ok(response)) = self.receiver.poll_recv(cx) {
             #[cfg(unix)]
             {
-            let len = response.response_data.len() as u16;
-            self.tx_buf.extend(&len.to_be_bytes());
+                let len = response.response_data.len() as u16;
+                self.tx_buf.extend(&len.to_be_bytes());
             }
             self.tx_buf.extend(&response.response_data);
         }
@@ -193,8 +202,8 @@ mod tests {
 
         // 20-byte fake DNS query (> 12-byte header minimum)
         let query = vec![
-            0x00, 0x14, 0xAB, 0xCD, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x77,
-            0x77, 0x77, 0x03, 0x63, 0x6F, 0x6D,
+            0x00, 0x14, 0xAB, 0xCD, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x03, 0x77, 0x77, 0x77, 0x03, 0x63, 0x6F, 0x6D,
         ];
         let msg = make_tcp_dns_message(&query);
 
@@ -208,7 +217,10 @@ mod tests {
         // The echo backend returns the raw DNS query (without TCP length prefix).
         // poll_responses then wraps that in a 2-byte length prefix for transmission.
         assert_eq!(n, query.len()); // tx framing prefix + DNS payload
-        assert_eq!(u16::from_be_bytes([buf[0], buf[1]]) as usize, query.len() - 2);
+        assert_eq!(
+            u16::from_be_bytes([buf[0], buf[1]]) as usize,
+            query.len() - 2
+        );
     }
 
     #[test]
@@ -228,7 +240,10 @@ mod tests {
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
         let mut cx = Context::from_waker(&waker);
         let mut buf = vec![0u8; 256];
-        assert_eq!(handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]), 0);
+        assert_eq!(
+            handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]),
+            0
+        );
 
         // Feed the rest
         handler.ingest(&[&msg[2..]]);

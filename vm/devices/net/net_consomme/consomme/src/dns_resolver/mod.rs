@@ -37,6 +37,8 @@ pub struct DnsFlow {
     pub dst_port: u16,
     pub gateway_mac: EthernetAddress,
     pub client_mac: EthernetAddress,
+    // Used by the glibc and Windows DNS backends, but not the musl backend.
+    #[allow(dead_code)]
     pub transport: DnsTransport,
 }
 
