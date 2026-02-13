@@ -59,6 +59,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, GdmaDeviceHandle> for GdmaDeviceR
             Ok(VportConfig {
                 mac_address: vport.mac_address,
                 endpoint: endpoint.0,
+                queue_pairs: vport.queue_pairs,
             })
         }))
         .await?;
