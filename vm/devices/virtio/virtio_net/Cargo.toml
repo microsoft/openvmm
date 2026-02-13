@@ -29,6 +29,7 @@ futures-concurrency.workspace = true
 open_enum.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
+tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 [lints]
