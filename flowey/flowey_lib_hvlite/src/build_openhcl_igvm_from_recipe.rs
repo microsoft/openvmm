@@ -74,7 +74,6 @@ pub struct OpenhclIgvmRecipeDetailsLocalOnly {
     pub openhcl_initrd_extra_params: Option<OpenhclInitrdExtraParams>,
     pub custom_openvmm_hcl: Option<PathBuf>,
     pub custom_openhcl_boot: Option<PathBuf>,
-    pub custom_uefi: Option<PathBuf>,
     pub custom_kernel: Option<PathBuf>,
     pub custom_sidecar: Option<PathBuf>,
     pub custom_extra_rootfs: Vec<PathBuf>,
@@ -310,7 +309,6 @@ impl SimpleFlowNode for Node {
             openhcl_initrd_extra_params,
             custom_openvmm_hcl,
             custom_openhcl_boot,
-            custom_uefi,
             custom_kernel,
             custom_sidecar,
             custom_extra_rootfs,
@@ -319,7 +317,6 @@ impl SimpleFlowNode for Node {
             openhcl_initrd_extra_params: None,
             custom_openvmm_hcl: None,
             custom_openhcl_boot: None,
-            custom_uefi: None,
             custom_kernel: None,
             custom_sidecar: None,
             custom_extra_rootfs: Vec::new(),
@@ -374,17 +371,13 @@ impl SimpleFlowNode for Node {
             );
 
         let uefi_resource = with_uefi.then(|| UefiResource {
-            msvm_fd: if let Some(path) = custom_uefi {
-                ReadVar::from_static(path)
-            } else {
-                ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
-                    arch: match arch {
-                        CommonArch::X86_64 => MuMsvmArch::X86_64,
-                        CommonArch::Aarch64 => MuMsvmArch::Aarch64,
-                    },
-                    msvm_fd: v,
-                })
-            },
+            msvm_fd: ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+                arch: match arch {
+                    CommonArch::X86_64 => MuMsvmArch::X86_64,
+                    CommonArch::Aarch64 => MuMsvmArch::Aarch64,
+                },
+                msvm_fd: v,
+            }),
         });
 
         let vtl0_kernel_resource = vtl0_kernel_type.map(|typ| {
