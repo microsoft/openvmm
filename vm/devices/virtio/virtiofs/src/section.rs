@@ -114,6 +114,7 @@ pub struct SectionFs {
 struct Inode {
     size: u64,
     state: InodeState,
+    lookup_count: u64,
 }
 
 /// The state of an `Inode`.
@@ -246,9 +247,11 @@ impl fuse::Fuse for SectionFs {
         )?;
 
         let size = section.query_size().map_err(|_| lx::Error::EINVAL)?;
+        // N.B. Each lookup() creates a new node_id, so lookup_count is always 1.
         let inode = Inode {
             size,
             state: InodeState::Open(section),
+            lookup_count: 1,
         };
         let attr = inode.attr(0, &self.attr);
         let node_id = self.inodes.lock().insert(inode);
@@ -261,8 +264,24 @@ impl fuse::Fuse for SectionFs {
         ))
     }
 
-    fn forget(&self, node_id: u64, _lookup_count: u64) {
-        self.inodes.lock().remove(node_id);
+    fn forget(&self, node_id: u64, lookup_count: u64) {
+        let mut inodes = self.inodes.lock();
+        if let Some(inode) = inodes.get_mut(node_id) {
+            if lookup_count > inode.lookup_count {
+                tracing::warn!(
+                    node_id,
+                    lookup_count,
+                    current_lookup_count = inode.lookup_count,
+                    "received forget with lookup_count greater than tracked count"
+                );
+                inode.lookup_count = 0;
+            } else {
+                inode.lookup_count -= lookup_count;
+            }
+            if inode.lookup_count == 0 {
+                inodes.remove(node_id);
+            }
+        }
     }
 
     fn get_attr(
@@ -355,7 +374,11 @@ impl fuse::Fuse for SectionFs {
             Err(err) if err.kind() == io::ErrorKind::NotFound => (0, InodeState::Pending(upath)),
             Err(err) => return Err(err.into()),
         };
-        let inode = Inode { size, state };
+        let inode = Inode {
+            size,
+            state,
+            lookup_count: 1,
+        };
         let mut attr = inode.attr(0, &self.attr);
         let node_id = self.inodes.lock().insert(inode);
         attr.ino = node_id;
