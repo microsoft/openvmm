@@ -411,7 +411,7 @@ impl GuestEmulationTransportClient {
             .notify(msg::Msg::SetDebugInterruptCallback(callback.into()));
     }
 
-    /// Set the the callback to handle PostLiveMigrationNotification.
+    /// Set PostLiveMigration callback.
     pub fn set_post_live_migration_callback(&mut self, callback: Box<dyn Fn() + Send + Sync>) {
         self.control
             .notify(msg::Msg::SetPostLiveMigrationCallback(callback.into()));
