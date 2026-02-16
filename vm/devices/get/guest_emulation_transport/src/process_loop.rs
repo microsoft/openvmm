@@ -220,7 +220,7 @@ pub(crate) mod msg {
         /// Store the callback to trigger the debug interrupt.
         // TODO: Consider a strategy that avoids LocalOnly here.
         SetDebugInterruptCallback(LocalOnly<Box<dyn Fn(u8) + Send + Sync>>),
-        /// Notify that livemigration has finished.
+        /// Notify that live migration has finished.
         SetPostLiveMigrationCallback(LocalOnly<Box<dyn Fn() + Send + Sync>>),
 
         // Late bound receivers for Guest Notifications
@@ -1591,6 +1591,9 @@ impl<T: RingMem> ProcessLoop<T> {
         _notification: get_protocol::PostLiveMigrationNotification,
     ) {
         tracing::info!(CVM_ALLOWED, "notify_post_live_migration");
+        if let Some(callback) = self.post_live_migration.as_ref() {
+            callback()
+        }
     }
 
     fn complete_modify_vtl2_settings(
