@@ -48,6 +48,8 @@ flowey_request! {
         pub nextest_profile: NextestProfile,
         /// Nextest test filter expression.
         pub nextest_filter_expr: Option<String>,
+        /// Nextest partition for sharding tests across multiple CI jobs.
+        pub nextest_partition: Option<flowey_lib_common::gen_cargo_nextest_run_cmd::NextestPartition>,
         /// Artifacts corresponding to required test dependencies
         pub dep_artifact_dirs: VmmTestsDepArtifacts,
         /// Test artifacts to download
@@ -90,6 +92,7 @@ impl SimpleFlowNode for Node {
             target,
             nextest_profile,
             nextest_filter_expr,
+            nextest_partition,
             dep_artifact_dirs,
             test_artifacts,
             fail_job_on_test_fail,
@@ -222,6 +225,7 @@ impl SimpleFlowNode for Node {
             nextest_working_dir: None,
             nextest_config_file: None,
             nextest_bin: None,
+            nextest_partition,
             target: None,
             extra_env,
             pre_run_deps,

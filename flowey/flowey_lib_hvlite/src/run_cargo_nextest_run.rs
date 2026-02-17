@@ -41,6 +41,8 @@ flowey_request! {
         pub nextest_working_dir: Option<ReadVar<PathBuf>>,
         /// Nextest configuration file (defaults to config in repo)
         pub nextest_config_file: Option<ReadVar<PathBuf>>,
+        /// Nextest partition for sharding tests across multiple CI jobs.
+        pub nextest_partition: Option<flowey_lib_common::gen_cargo_nextest_run_cmd::NextestPartition>,
         /// Whether to run ignored test
         pub run_ignored: bool,
         /// Additional env vars set when executing the tests.
@@ -85,6 +87,7 @@ impl FlowNode for Node {
             nextest_filter_expr,
             nextest_working_dir,
             nextest_config_file,
+            nextest_partition,
             run_ignored,
             mut pre_run_deps,
             results,
@@ -126,6 +129,7 @@ impl FlowNode for Node {
                     extra_env: Some(extra_env),
                     with_rlimit_unlimited_core_size: true,
                     nextest_filter_expr,
+                    nextest_partition,
                     run_ignored,
                     pre_run_deps,
                     results,

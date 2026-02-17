@@ -85,6 +85,8 @@ pub struct Run {
     pub nextest_filter_expr: Option<String>,
     /// Whether to run ignored tests
     pub run_ignored: bool,
+    /// Nextest partition for sharding tests across multiple CI jobs.
+    pub nextest_partition: Option<crate::gen_cargo_nextest_run_cmd::NextestPartition>,
     /// Set rlimits to allow unlimited sized coredump file (if supported)
     pub with_rlimit_unlimited_core_size: bool,
     /// Additional env vars set when executing the tests.
@@ -151,6 +153,7 @@ impl FlowNode for Node {
             extra_env,
             with_rlimit_unlimited_core_size,
             nextest_filter_expr,
+            nextest_partition,
             run_ignored,
             pre_run_deps,
             results,
@@ -204,6 +207,7 @@ impl FlowNode for Node {
                 nextest_filter_expr,
                 run_ignored,
                 fail_fast,
+                nextest_partition,
                 extra_env,
                 extra_commands: None,
                 portable: false,

@@ -27,6 +27,8 @@ flowey_request! {
         pub nextest_config_file: Option<ReadVar<PathBuf>>,
         /// Optionally provide the nextest bin to use
         pub nextest_bin: Option<ReadVar<PathBuf>>,
+        /// Nextest partition for sharding tests across multiple CI jobs.
+        pub nextest_partition: Option<flowey_lib_common::gen_cargo_nextest_run_cmd::NextestPartition>,
         /// Target for the tests to run on
         pub target: Option<ReadVar<target_lexicon::Triple>>,
         /// Additional env vars set when executing the tests.
@@ -57,6 +59,7 @@ impl SimpleFlowNode for Node {
             nextest_working_dir,
             nextest_config_file,
             nextest_bin,
+            nextest_partition,
             target,
             extra_env,
             mut pre_run_deps,
@@ -89,6 +92,7 @@ impl SimpleFlowNode for Node {
             nextest_filter_expr,
             nextest_working_dir,
             nextest_config_file,
+            nextest_partition,
             run_ignored: false,
             extra_env: Some(extra_env),
             pre_run_deps,

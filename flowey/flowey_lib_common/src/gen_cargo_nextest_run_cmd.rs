@@ -9,6 +9,16 @@ use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 
+/// Nextest test partitioning configuration for sharding tests across
+/// multiple CI jobs.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct NextestPartition {
+    /// 1-indexed shard number
+    pub shard: usize,
+    /// Total number of shards
+    pub total: usize,
+}
+
 flowey_request! {
     pub struct Request {
         /// What kind of test run this is (inline build vs. from nextest archive).
@@ -28,6 +38,9 @@ flowey_request! {
         pub run_ignored: bool,
         /// Override fail fast setting
         pub fail_fast: Option<bool>,
+        /// Nextest partition for sharding tests across multiple CI jobs.
+        /// When set, passes `--partition count:shard/total` to nextest.
+        pub nextest_partition: Option<NextestPartition>,
         /// Additional env vars set when executing the tests.
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
         /// Additional command to run before the tests
@@ -91,6 +104,7 @@ impl FlowNode for Node {
             nextest_filter_expr,
             run_ignored,
             fail_fast,
+            nextest_partition,
             portable,
             command,
         } in requests
@@ -299,6 +313,11 @@ impl FlowNode for Node {
                     if let Some(nextest_filter_expr) = nextest_filter_expr {
                         args.push("--filter-expr".into());
                         args.push(nextest_filter_expr.into());
+                    }
+
+                    if let Some(partition) = nextest_partition {
+                        args.push("--partition".into());
+                        args.push(format!("count:{}/{}", partition.shard, partition.total).into());
                     }
 
                     if run_ignored {
