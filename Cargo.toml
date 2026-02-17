@@ -542,7 +542,7 @@ syn = "2"
 target-lexicon = "0.13.2"
 tempfile = "3.2"
 thiserror = { version = "2", default-features = false }
-time = "0.3"
+time = "0.3.47"
 toml_edit = "0.23"
 tracing = "0.1"
 tracing-subscriber = "0.3.20"
