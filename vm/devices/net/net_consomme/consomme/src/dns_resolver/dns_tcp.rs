@@ -214,10 +214,7 @@ mod tests {
 
         let mut buf = vec![0u8; 256];
         handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]);
-        assert_eq!(
-            u16::from_be_bytes([buf[0], buf[1]]) as usize,
-            query.len()
-        );
+        assert_eq!(u16::from_be_bytes([buf[0], buf[1]]) as usize, query.len());
     }
 
     #[test]
