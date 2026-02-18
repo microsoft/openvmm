@@ -78,7 +78,6 @@ netvsp.workspace = true
 nvme_driver.workspace = true
 nvme_resources.workspace = true
 openhcl_dma_manager.workspace = true
-openhcl_tdisp.workspace = true
 scsi_core.workspace = true
 scsidisk.workspace = true
 scsidisk_resources.workspace = true

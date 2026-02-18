@@ -4922,15 +4922,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "openhcl_tdisp"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "inspect",
- "tdisp",
-]
-
-[[package]]
 name = "openssl"
 version = "0.10.73"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7206,32 +7197,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tdisp"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "bitfield-struct 0.11.0",
- "inspect",
- "open_enum",
- "parking_lot",
- "prost",
- "static_assertions",
- "tdisp_proto",
- "thiserror 2.0.16",
- "tracing",
- "zerocopy 0.8.27",
-]
-
-[[package]]
-name = "tdisp_proto"
-version = "0.0.0"
-dependencies = [
- "inspect",
- "prost",
- "prost-build",
-]
-
-[[package]]
 name = "tdx_guest_device"
 version = "0.0.0"
 dependencies = [
@@ -8090,7 +8055,6 @@ dependencies = [
  "nvme_spec",
  "openhcl_attestation_protocol",
  "openhcl_dma_manager",
- "openhcl_tdisp",
  "pal",
  "pal_async",
  "pal_uring",
