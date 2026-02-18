@@ -4,8 +4,8 @@
 //! Install Shrinkwrap and its dependencies on Ubuntu.
 
 use flowey::node::prelude::*;
+use flowey::node::prelude::RustRuntimeServices;
 use std::path::Path;
-use xshell::{cmd, Shell};
 
 const ARM_GNU_TOOLCHAIN_URL: &str = "https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz";
 const OHCL_LINUX_KERNEL_REPO: &str = "https://github.com/weiding-msft/OHCL-Linux-Kernel.git";
@@ -45,9 +45,9 @@ flowey_request! {
 
 new_simple_flow_node!(struct Node);
 
-/// clone or update a git repository
+///clone or update a git repository
 fn clone_or_update_repo(
-    sh: &Shell,
+    rt: &RustRuntimeServices<'_>,
     repo_url: &str,
     target_dir: &Path,
     update_repo: bool,
@@ -56,7 +56,7 @@ fn clone_or_update_repo(
 ) -> anyhow::Result<()> {
     if !target_dir.exists() {
         log::info!("Cloning {} to {}", repo_name, target_dir.display());
-        let mut cmd = cmd!(sh, "git clone");
+        let mut cmd = flowey::shell_cmd!(rt, "git clone");
         if let Some(b) = branch {
             cmd = cmd.args(["--branch", b]);
         }
@@ -64,8 +64,8 @@ fn clone_or_update_repo(
         log::info!("{} cloned successfully", repo_name);
     } else if update_repo {
         log::info!("Updating {} repo...", repo_name);
-        sh.change_dir(target_dir);
-        cmd!(sh, "git pull --ff-only").run()?;
+        rt.sh.change_dir(target_dir);
+        flowey::shell_cmd!(rt, "git pull --ff-only").run()?;
         log::info!("{} updated successfully", repo_name);
     } else {
         log::info!("{} already exists at {}", repo_name, target_dir.display());
@@ -73,10 +73,10 @@ fn clone_or_update_repo(
     Ok(())
 }
 
-fn enable_kernel_configs(sh: &Shell, group: &str, configs: &[&str]) -> anyhow::Result<()> {
+fn enable_kernel_configs(rt: &RustRuntimeServices<'_>, group: &str, configs: &[&str]) -> anyhow::Result<()> {
     // Enable each config one at a time to avoid shell argument parsing issues
     for config in configs {
-        cmd!(sh, "./scripts/config --file .config --enable {config}")
+        flowey::shell_cmd!(rt, "./scripts/config --file .config --enable {config}")
             .run()
             .with_context(|| format!("Failed to enable {} kernel config {}", group, config))?;
     }
@@ -86,7 +86,7 @@ fn enable_kernel_configs(sh: &Shell, group: &str, configs: &[&str]) -> anyhow::R
 
 /// Build a Rust binary if it doesn't already exist
 fn build_rust_binary(
-    sh: &Shell,
+    rt: &RustRuntimeServices<'_>,
     binary_path: &Path,
     package: &str,
     build_args: &[&str],
@@ -97,7 +97,7 @@ fn build_rust_binary(
     }
 
     log::info!("Building {}...", package);
-    let mut command = cmd!(sh, "cargo build -p {package}");
+    let mut command = flowey::shell_cmd!(rt, "cargo build -p {package}");
 
     // Add additional build arguments
     for arg in build_args {
@@ -115,9 +115,9 @@ fn build_rust_binary(
     Ok(())
 }
 
-fn make_target(sh: &Shell, arch: &str, cross_compile: &str, target: &str, jobs: &str) -> anyhow::Result<()> {
-    cmd!(
-        sh,
+fn make_target(rt: &RustRuntimeServices<'_>, arch: &str, cross_compile: &str, target: &str, jobs: &str) -> anyhow::Result<()> {
+    flowey::shell_cmd!(
+        rt,
         "make ARCH={arch} CROSS_COMPILE={cross_compile} {target} -j{jobs}"
     )
     .run()
@@ -140,8 +140,7 @@ impl SimpleFlowNode for Node {
 
         ctx.emit_rust_step("install shrinkwrap", |ctx| {
             done.claim(ctx);
-            move |_rt| {
-                let sh = Shell::new()?;
+            move |rt| {
 
                 // 0) Create parent dir
                 if let Some(parent) = shrinkwrap_dir.parent() {
@@ -151,18 +150,18 @@ impl SimpleFlowNode for Node {
                 // 1) System deps (Ubuntu)
                 if do_installs {
                     log::info!("Installing system dependencies...");
-                    cmd!(sh, "sudo apt-get update").run()?;
-                    cmd!(sh, "sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc git netcat-openbsd python3 python3-pip python3-venv telnet docker.io unzip").run()?;
+                    flowey::shell_cmd!(rt, "sudo apt-get update").run()?;
+                    flowey::shell_cmd!(rt, "sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc git netcat-openbsd python3 python3-pip python3-venv telnet docker.io unzip").run()?;
 
                     // Setup Docker group and add current user
                     log::info!("Setting up Docker group...");
                     let username = std::env::var("USER").unwrap_or_else(|_| "vscode".to_string());
 
                     // Create docker group (ignore error if it already exists)
-                    let _ = cmd!(sh, "sudo groupadd docker").run();
+                    let _ = flowey::shell_cmd!(rt, "sudo groupadd docker").run();
 
                     // Add user to docker group
-                    cmd!(sh, "sudo usermod -aG docker {username}").run()?;
+                    flowey::shell_cmd!(rt, "sudo usermod -aG docker {username}").run()?;
 
                     log::warn!("Docker group membership updated. You may need to log out and log back in for docker permissions to take effect.");
                     log::warn!("Alternatively, run: newgrp docker");
@@ -177,7 +176,7 @@ impl SimpleFlowNode for Node {
                 // Download toolchain if not present
                 if !toolchain_archive.exists() {
                     log::info!("Downloading ARM GNU toolchain to {}", toolchain_archive.display());
-                    cmd!(sh, "wget -O").arg(&toolchain_archive).arg(ARM_GNU_TOOLCHAIN_URL).run()?;
+                    flowey::shell_cmd!(rt, "wget -O").arg(&toolchain_archive).arg(ARM_GNU_TOOLCHAIN_URL).run()?;
                     log::info!("ARM GNU toolchain downloaded successfully");
                 } else {
                     log::info!("ARM GNU toolchain already exists at {}", toolchain_archive.display());
@@ -186,8 +185,8 @@ impl SimpleFlowNode for Node {
                 // Extract toolchain if not already extracted
                 if !toolchain_extracted_dir.exists() {
                     log::info!("Extracting ARM GNU toolchain to {}", toolchain_dir.display());
-                    sh.change_dir(toolchain_dir);
-                    cmd!(sh, "tar -xvf").arg(&toolchain_archive).run()?;
+                    rt.sh.change_dir(toolchain_dir);
+                    flowey::shell_cmd!(rt, "tar -xvf").arg(&toolchain_archive).run()?;
                     log::info!("ARM GNU toolchain extracted successfully");
                 } else {
                     log::info!("ARM GNU toolchain already extracted at {}", toolchain_extracted_dir.display());
@@ -200,7 +199,7 @@ impl SimpleFlowNode for Node {
                 // 3) Clone OHCL Linux Kernel (Host Linux Kernel)
                 let host_kernel_dir = toolchain_dir.join("OHCL-Linux-Kernel");
                 clone_or_update_repo(
-                    &sh,
+                    &rt,
                     OHCL_LINUX_KERNEL_REPO,
                     &host_kernel_dir,
                     update_repo,
@@ -212,7 +211,7 @@ impl SimpleFlowNode for Node {
                 let kernel_image = host_kernel_dir.join("arch").join("arm64").join("boot").join("Image");
                 if !kernel_image.exists() {
                     log::info!("Compiling OHCL Linux Kernel...");
-                    sh.change_dir(&host_kernel_dir);
+                    rt.sh.change_dir(&host_kernel_dir);
 
                     // Set environment variables for cross-compilation
                     let arch = "arm64";
@@ -221,24 +220,24 @@ impl SimpleFlowNode for Node {
 
                     // Run make defconfig
                     log::info!("Running make defconfig...");
-                    make_target(&sh, arch, cross_compile, "defconfig", "1")?;
+                    make_target(&rt, arch, cross_compile, "defconfig", "1")?;
 
                     // Enable required kernel configs in groups
                     log::info!("Enabling required kernel configurations...");
-                    enable_kernel_configs(&sh, "CCA", CCA_CONFIGS)?;
-                    enable_kernel_configs(&sh, "9P", NINEP_CONFIGS)?;
-                    enable_kernel_configs(&sh, "Hyper-V", HYPERV_CONFIGS)?;
+                    enable_kernel_configs(&rt, "CCA", CCA_CONFIGS)?;
+                    enable_kernel_configs(&rt, "9P", NINEP_CONFIGS)?;
+                    enable_kernel_configs(&rt, "Hyper-V", HYPERV_CONFIGS)?;
 
                     // Run make olddefconfig
                     log::info!("Running make olddefconfig...");
-                    make_target(&sh, arch, cross_compile, "olddefconfig", "1")?;
+                    make_target(&rt, arch, cross_compile, "olddefconfig", "1")?;
 
                     // Build kernel Image
                     log::info!("Building kernel Image (this may take several minutes)...");
                     let nproc = std::thread::available_parallelism()
                         .map(|n| n.get().to_string())
                         .unwrap_or_else(|_| "1".to_string());
-                    make_target(&sh, arch, cross_compile, "Image", &nproc)?;
+                    make_target(&rt, arch, cross_compile, "Image", &nproc)?;
 
                     // Verify kernel Image was created
                     if !kernel_image.exists() {
@@ -255,7 +254,7 @@ impl SimpleFlowNode for Node {
                 // 4.5) Clone OpenVMM TMK branch with plane0 support and build TMK components
                 let tmk_kernel_dir = toolchain_dir.join("OpenVMM-TMK");
                 clone_or_update_repo(
-                    &sh,
+                    &rt,
                     OPENVMM_TMK_REPO,
                     &tmk_kernel_dir,
                     update_repo,
@@ -266,11 +265,11 @@ impl SimpleFlowNode for Node {
                 // Install Rust targets and build TMK components if do_installs is true
                 if do_installs {
                     log::info!("Installing Rust cross-compilation targets...");
-                    cmd!(sh, "rustup target add aarch64-unknown-linux-gnu").run()?;
-                    cmd!(sh, "rustup target add aarch64-unknown-none").run()?;
+                    flowey::shell_cmd!(rt, "rustup target add aarch64-unknown-linux-gnu").run()?;
+                    flowey::shell_cmd!(rt, "rustup target add aarch64-unknown-none").run()?;
 
                     // Change to the TMK kernel directory (which should be the openvmm repo root)
-                    sh.change_dir(&tmk_kernel_dir);
+                    rt.sh.change_dir(&tmk_kernel_dir);
 
                     log::info!("Building TMK components...");
 
@@ -281,7 +280,7 @@ impl SimpleFlowNode for Node {
                         .join("debug")
                         .join("simple_tmk");
                     build_rust_binary(
-                        &sh,
+                        &rt,
                         &simple_tmk_binary,
                         "simple_tmk",
                         &["--config", "openhcl/minimal_rt/aarch64-config.toml"],
@@ -294,21 +293,21 @@ impl SimpleFlowNode for Node {
                         .join("debug")
                         .join("tmk_vmm");
                     build_rust_binary(
-                        &sh,
+                        &rt,
                         &tmk_vmm_binary,
                         "tmk_vmm",
                         &["--target", "aarch64-unknown-linux-gnu"],
                     )?;
 
                     // Return to parent directory
-                    sh.change_dir(shrinkwrap_dir.parent().unwrap());
+                    rt.sh.change_dir(shrinkwrap_dir.parent().unwrap());
                 } else {
                     log::info!("Skipping TMK builds (do_installs=false). Run with --install-missing-deps to build.");
                 }
 
                 // 5) Clone shrinkwrap repo first (need it for venv location)
                 clone_or_update_repo(
-                    &sh,
+                    &rt,
                     SHRINKWRAP_REPO,
                     &shrinkwrap_dir,
                     update_repo,
@@ -319,7 +318,7 @@ impl SimpleFlowNode for Node {
                 // 5.5) Clone cca_config repo and copy planes.yaml
                 let cca_config_dir = toolchain_dir.join("cca_config");
                 clone_or_update_repo(
-                    &sh,
+                    &rt,
                     CCA_CONFIG_REPO,
                     &cca_config_dir,
                     update_repo,
@@ -348,13 +347,13 @@ impl SimpleFlowNode for Node {
                 if do_installs {
                     if !venv_dir.exists() {
                         log::info!("Creating Python virtual environment at {}", venv_dir.display());
-                        cmd!(sh, "python3 -m venv").arg(&venv_dir).run()?;
+                        flowey::shell_cmd!(rt, "python3 -m venv").arg(&venv_dir).run()?;
                     }
 
                     log::info!("Installing Python dependencies in virtual environment...");
                     let pip_bin = venv_dir.join("bin").join("pip");
-                    cmd!(sh, "{pip_bin} install --upgrade pip").run()?;
-                    cmd!(sh, "{pip_bin} install pyyaml termcolor tuxmake").run()?;
+                    flowey::shell_cmd!(rt, "{pip_bin} install --upgrade pip").run()?;
+                    flowey::shell_cmd!(rt, "{pip_bin} install pyyaml termcolor tuxmake").run()?;
                 }
 
                 // 7) Validate shrinkwrap entrypoint exists
