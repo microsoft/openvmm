@@ -1,0 +1,305 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+syntax = "proto3";
+
+package tdisp;
+
+// ----------------------------------------------------------------------------
+// Enums
+// ----------------------------------------------------------------------------
+
+// Represents the state of the TDISP host device emulator.
+enum TdispTdiState {
+  // The TDISP state is not initialized or indeterminate.
+  TDISP_TDI_STATE_UNINITIALIZED = 0;
+
+  // TDI.Unlocked - The device is in its default "reset" state. Resources can
+  // be configured and no functionality can be used. Attestation cannot take
+  // place until the device has been locked.
+  TDISP_TDI_STATE_UNLOCKED = 1;
+
+  // TDI.Locked - The device resources have been locked and attestation can
+  // take place. The device's resources have been mapped and configured in
+  // hardware, but the device has not been attested. Private DMA and MMIO will
+  // not be functional until the resources have been accepted into the guest
+  // context. Unencrypted "bounced" operations are still allowed.
+  TDISP_TDI_STATE_LOCKED = 2;
+
+  // TDI.Run - The device is no longer functional for unencrypted operations.
+  // Device resources are locked but encrypted operations might not yet be
+  // functional. The device will not be functional for encrypted operations
+  // until it has been fully validated by the guest calling to firmware to
+  // accept resources.
+  TDISP_TDI_STATE_RUN = 3;
+}
+
+// Error code returned by TDISP operations dispatched by the guest.
+// Corresponds to TdispGuestOperationErrorCode in lib.rs.
+enum TdispGuestOperationErrorCode {
+  // Unknown error code.
+  TDISP_GUEST_OPERATION_ERROR_CODE_UNKNOWN = 0;
+
+  // The operation was successful.
+  TDISP_GUEST_OPERATION_ERROR_CODE_SUCCESS = 1;
+
+  // The current TDI state is incorrect for this operation.
+  TDISP_GUEST_OPERATION_ERROR_CODE_INVALID_DEVICE_STATE = 2;
+
+  // The reason for this unbind is invalid.
+  TDISP_GUEST_OPERATION_ERROR_CODE_INVALID_GUEST_UNBIND_REASON = 3;
+
+  // Invalid TDI command ID.
+  TDISP_GUEST_OPERATION_ERROR_CODE_INVALID_GUEST_COMMAND_ID = 4;
+
+  // Operation requested was not implemented.
+  TDISP_GUEST_OPERATION_ERROR_CODE_NOT_IMPLEMENTED = 5;
+
+  // Host failed to process command.
+  TDISP_GUEST_OPERATION_ERROR_CODE_HOST_FAILED_TO_PROCESS_COMMAND = 6;
+
+  // The device was not in the Locked or Run state when the attestation report
+  // was requested.
+  TDISP_GUEST_OPERATION_ERROR_CODE_INVALID_GUEST_ATTESTATION_REPORT_STATE = 7;
+
+  // Invalid attestation report type requested.
+  TDISP_GUEST_OPERATION_ERROR_CODE_INVALID_GUEST_ATTESTATION_REPORT_TYPE = 8;
+}
+
+// For a guest-initiated unbind, the guest can provide a reason.
+enum TdispGuestUnbindReason {
+  // The guest requested to unbind the device for an unspecified reason.
+  TDISP_GUEST_UNBIND_REASON_UNKNOWN = 0;
+
+  // The guest requested to unbind the device because the device is being
+  // detached.
+  TDISP_GUEST_UNBIND_REASON_GRACEFUL = 1;
+}
+
+// Represents a type of report that can be requested from the TDI (VF).
+enum TdispReportType {
+  // Invalid report type. All usages of this report type should be treated as
+  // an error.
+  TDISP_REPORT_TYPE_INVALID = 0;
+
+  // Guest requests the guest device ID of the TDI.
+  TDISP_REPORT_TYPE_GUEST_DEVICE_ID = 1;
+
+  // Guest requests the interface report of the TDI.
+  TDISP_REPORT_TYPE_INTERFACE_REPORT = 2;
+
+  // Guest requests the certificate chain of the physical device.
+  TDISP_REPORT_TYPE_CERTIFICATE_CHAIN = 3;
+
+  // Guest requests the measurements of the physical device.
+  TDISP_REPORT_TYPE_MEASUREMENTS = 4;
+
+  // Guest requests whether the physical device is registered.
+  TDISP_REPORT_TYPE_IS_REGISTERED = 5;
+}
+
+// ----------------------------------------------------------------------------
+// Command / response top-level messages
+// ----------------------------------------------------------------------------
+
+// Represents a TDISP command sent from the guest to the host. The active
+// variant of `command` identifies the command type and carries any payload
+// specific to that command.
+message GuestToHostCommand {
+  // Device ID of the target device.
+  uint64 device_id = 1;
+
+  // The command and its payload. Exactly one variant must be set.
+  oneof command {
+    TdispCommandRequestGetDeviceInterfaceInfo get_device_interface_info = 2;
+    TdispCommandRequestBind bind = 3;
+    TdispCommandRequestGetTdiReport get_tdi_report = 4;
+    TdispCommandRequestStartTdi start_tdi = 5;
+    TdispCommandRequestUnbind unbind = 6;
+  }
+}
+
+// Represents a response from a TDISP command sent to the host by a guest. The
+// active variant of `response` identifies the command that was processed and
+// carries any payload returned by that command.
+message GuestToHostResponse {
+  // The result status of the command.
+  TdispGuestOperationErrorCode result = 1;
+
+  // The state of the TDI before the command was executed.
+  TdispTdiState tdi_state_before = 2;
+
+  // The state of the TDI after the command was executed.
+  TdispTdiState tdi_state_after = 3;
+
+  // The response and its payload. Exactly one variant must be set.
+  oneof response {
+    TdispCommandResponseGetDeviceInterfaceInfo get_device_interface_info = 4;
+    TdispCommandResponseBind bind = 5;
+    TdispCommandResponseGetTdiReport get_tdi_report = 6;
+    TdispCommandResponseStartTdi start_tdi = 7;
+    TdispCommandResponseUnbind unbind = 8;
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Request messages (one per command)
+// ----------------------------------------------------------------------------
+
+// Request the device's TDISP interface information. Carries no payload.
+message TdispCommandRequestGetDeviceInterfaceInfo {}
+
+// Bind the device to the current partition and transition to Locked.
+// Carries no payload.
+message TdispCommandRequestBind {}
+
+// Get the TDI report for attestation from the host for the device.
+message TdispCommandRequestGetTdiReport {
+  // The type of report to request.
+  TdispReportType report_type = 1;
+}
+
+// Transition the device to the Run state after successful attestation.
+// Carries no payload.
+message TdispCommandRequestStartTdi {}
+
+// Unbind the device from the partition, reverting it back to the Unlocked
+// state.
+message TdispCommandRequestUnbind {
+  // The reason for the unbind.
+  TdispGuestUnbindReason unbind_reason = 1;
+}
+
+// ----------------------------------------------------------------------------
+// Response messages (one per command)
+// ----------------------------------------------------------------------------
+
+// Response to TdispCommandRequestGetDeviceInterfaceInfo.
+message TdispCommandResponseGetDeviceInterfaceInfo {
+  // The device interface information.
+  TdispDeviceInterfaceInfo interface_info = 1;
+}
+
+// Response to TdispCommandRequestBind. Carries no payload.
+message TdispCommandResponseBind {}
+
+// Response to TdispCommandRequestGetTdiReport.
+message TdispCommandResponseGetTdiReport {
+  // The type of report that was returned.
+  TdispReportType report_type = 1;
+
+  // The buffer containing the requested report.
+  bytes report_buffer = 2;
+}
+
+// Response to TdispCommandRequestStartTdi. Carries no payload.
+message TdispCommandResponseStartTdi {}
+
+// Response to TdispCommandRequestUnbind. Carries no payload.
+message TdispCommandResponseUnbind {}
+
+// ----------------------------------------------------------------------------
+// Shared info structs
+// ----------------------------------------------------------------------------
+
+// Represents the TDISP device interface information, such as the version and
+// supported features. Corresponds to TdispDeviceInterfaceInfo in command.rs.
+message TdispDeviceInterfaceInfo {
+  // The major version for the interface.
+  uint32 interface_version_major = 1;
+
+  // The minor version for the interface.
+  uint32 interface_version_minor = 2;
+
+  // Bitfield advertising feature set capabilities.
+  uint64 supported_features = 3;
+
+  // Device ID used to communicate with firmware for this particular device.
+  uint64 tdisp_device_id = 4;
+}
+
+// ----------------------------------------------------------------------------
+// Device report structures (from devicereport.rs)
+// ----------------------------------------------------------------------------
+
+// PCI Express Base Specification Revision 6.3 Section 11.3.11
+// DEVICE_INTERFACE_REPORT interface info flags.
+// Corresponds to TdispTdiReportInterfaceInfo (bitfield) in devicereport.rs.
+message TdispTdiReportInterfaceInfo {
+  // When true, device firmware updates are not permitted while in
+  // CONFIG_LOCKED or RUN.
+  bool firmware_update_allowed = 1;
+
+  // TDI generates DMA requests without PASID.
+  bool generate_dma_without_pasid = 2;
+
+  // TDI generates DMA requests with PASID.
+  bool generate_dma_with_pasid = 3;
+
+  // ATS supported and enabled for the TDI.
+  bool ats_support_enabled = 4;
+
+  // PRS supported and enabled for the TDI.
+  bool prs_support_enabled = 5;
+}
+
+// PCI Express Base Specification Revision 6.3 Section 11.3.11
+// DEVICE_INTERFACE_REPORT MMIO range attribute flags.
+// Corresponds to TdispTdiReportMmioFlags (bitfield) in devicereport.rs.
+message TdispTdiReportMmioFlags {
+  // MSI-X Table – if the range maps MSI-X table.
+  bool range_maps_msix_table = 1;
+
+  // MSI-X PBA – if the range maps MSI-X PBA.
+  bool range_maps_msix_pba = 2;
+
+  // IS_NON_TEE_MEM – must be true if the range is non-TEE memory.
+  bool is_non_tee_mem = 3;
+
+  // IS_MEM_ATTR_UPDATABLE – must be true if the attributes of this range are
+  // updatable using SET_MMIO_ATTRIBUTE_REQUEST.
+  bool is_mem_attr_updatable = 4;
+}
+
+// PCI Express Base Specification Revision 6.3 Section 11.3.11
+// DEVICE_INTERFACE_REPORT per-MMIO-range info.
+// Corresponds to TdispTdiReportMmioInterfaceInfo in devicereport.rs.
+// Note: range_id is uint32 here because protobuf has no uint16; callers
+// should treat it as a 16-bit value.
+message TdispTdiReportMmioInterfaceInfo {
+  // First 4K page with offset added.
+  uint64 first_4k_page_offset = 1;
+
+  // Number of 4K pages in this range.
+  uint32 num_4k_pages = 2;
+
+  // Range attributes.
+  TdispTdiReportMmioFlags flags = 3;
+
+  // Range ID – a device-specific identifier for the specified range.
+  // Stored as uint32 because protobuf has no uint16; valid range is 0–65535.
+  uint32 range_id = 4;
+}
+
+// The deserialized form of a TDI interface report.
+// Corresponds to TdiReportStruct in devicereport.rs.
+// Note: msi_x_message_control and lnr_control are uint32 here because
+// protobuf has no uint16; callers should treat them as 16-bit values.
+message TdiReportStruct {
+  // Interface info flags.
+  TdispTdiReportInterfaceInfo interface_info = 1;
+
+  // MSI-X capability message control register state.
+  // Stored as uint32; valid range is 0–65535.
+  uint32 msi_x_message_control = 2;
+
+  // LNR control register from LN Requester Extended Capability.
+  // Stored as uint32; valid range is 0–65535.
+  uint32 lnr_control = 3;
+
+  // TPH Requester Control Register from the TPH Requester Extended Capability.
+  uint32 tph_control = 4;
+
+  // MMIO range info for each range reported by the TDI.
+  repeated TdispTdiReportMmioInterfaceInfo mmio_interface_info = 5;
+}
