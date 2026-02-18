@@ -728,6 +728,21 @@ impl DiagClient {
         Ok(())
     }
 
+    /// Saves the memory profile trace being streamed from Underhill
+    pub async fn memory_profile_trace(&self, pid: i32) -> anyhow::Result<Vec<u8>> {
+        let state = self
+            .ttrpc
+            .call()
+            .start(
+                diag_proto::OpenhclDiag::MemoryProfileTrace,
+                diag_proto::MemoryProfileTraceRequest { pid },
+            )
+            .await
+            .map_err(grpc_status)?;
+
+        Ok(state.data)
+    }
+
     /// Restarts the Underhill worker.
     pub async fn restart(&self) -> anyhow::Result<()> {
         self.ttrpc

@@ -177,6 +177,7 @@ lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
 minimal_rt_reloc = { path = "openhcl/minimal_rt_reloc" }
+mem_profile_tracing = { path = "openhcl/mem_profile_tracing" }
 openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
@@ -436,6 +437,7 @@ criterion = { version = "0.7", default-features = false }
 crossterm = { version = "0.29.0", default-features = false }
 ctrlc = "3.4.0"
 der = "0.7"
+dhat = "0.3.3"
 dirs = "6.0"
 elfcore = "1.1.5"
 embed-resource = "3.0.2"
@@ -543,7 +545,7 @@ syn = "2"
 target-lexicon = "0.13.2"
 tempfile = "3.2"
 thiserror = { version = "2", default-features = false }
-time = "0.3"
+time = "0.3.47"
 toml_edit = "0.23"
 tracing = "0.1"
 tracing-subscriber = "0.3.20"
