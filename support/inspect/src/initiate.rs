@@ -426,6 +426,7 @@ impl<'a> InspectionBuilder<'a> {
             path_start: 0,
             depth: depth_with_root,
             number_format: NumberFormat::default(),
+            parent_sensitivity: SensitivityLevel::Unspecified,
         };
         (params, path_node_count(root.full_path))
     }
