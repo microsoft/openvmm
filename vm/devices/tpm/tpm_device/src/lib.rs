@@ -390,7 +390,7 @@ impl Tpm {
         is_confidential_vm: bool,
         bios_guid: Guid,
     ) -> Result<Self, TpmError> {
-        tracing::info!("initializing TPM");
+        tracing::error!("initializing TPM");
 
         let pending_nvram = Arc::new(Mutex::new(Vec::new()));
 
@@ -503,6 +503,8 @@ impl Tpm {
             large_vtpm_blob: bool,
             fixup_16k_ak_cert: bool,
         }
+
+        tracing::error!("on_first_boot");
 
         let quirks = {
             // Check whether or not we need to pave-over the blank TPM with our
@@ -792,6 +794,7 @@ impl Tpm {
             .await
             .map_err(TpmErrorKind::PersistNvramState)?;
 
+        tracing::error!("on_first_boot done");
         Ok(())
     }
 
@@ -1834,6 +1837,7 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            tracing::error!("tpm save");
             // Block save requests when there is an outstanding ak cert request.
             //
             // DEVNOTE:
@@ -1919,6 +1923,7 @@ mod save_restore {
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            tracing::error!("tpm restore");
             let state::SavedState {
                 control_area,
                 current_io_command,
