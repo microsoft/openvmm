@@ -1919,6 +1919,8 @@ mod save_restore {
                 allow_ak_cert_renewal: Some(self.allow_ak_cert_renewal),
             };
 
+            tracing::error!(size: tpm_state_blob.len(), "save: tpm_state_blob size")
+
             Ok(saved_state)
         }
 
@@ -1934,6 +1936,8 @@ mod save_restore {
                 keys,
                 allow_ak_cert_renewal,
             } = state;
+
+            tracing::error!(size: tpm_state_blob.len(), "restore: tpm_state_blob size");
 
             self.control_area = {
                 let state::SavedControlArea {
