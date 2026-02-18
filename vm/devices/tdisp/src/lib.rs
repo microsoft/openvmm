@@ -32,6 +32,9 @@
 /// Protobuf serialization of guest commands and responses.
 pub mod serialize_proto;
 
+#[cfg(test)]
+mod serialize_tests;
+
 use anyhow::Context;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -129,6 +132,9 @@ impl TdispHostDeviceTargetEmulator {
 }
 
 impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
+    /// Main entry point for handling a guest command sent to the host.
+    /// Dispatches relevant trait interface methods to handle the command.
+    /// Formats and returns a response packet.
     fn tdisp_handle_guest_command(
         &mut self,
         command: GuestToHostCommand,
