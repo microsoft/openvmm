@@ -67,3 +67,43 @@ If the perf script file doesn't have rust functions demangled correctly, please 
 ```bash
 perf_file=/mnt/d/tmp/vtl2/openhcl.fio.perf.script; cat $perf_file | rustfilt | ./stackcollapse-perf.pl > $perf_file.folded; cat $perf_file.folded | ./flamegraph.pl > $perf_file.svg
 ```
+
+## Capture and visualize memory profile trace
+
+OpenHCL supports a `mem-profile-tracing` feature (disabled by default) for collecting
+heap memory profiling traces in a format based on [DHAT](https://valgrind.org/docs/manual/dh-manual.html).
+
+Use the steps below to enable the feature, capture a trace, and view it.
+
+### Build
+
+First, follow the earlier steps in this guide to increase the VTL2 memory page count.
+Including debug info in OpenHCL requires additional VTL2 memory.
+
+Then build OpenHCL with the `mem-profile-tracing` feature. Include debug info so the
+trace contains useful backtraces:
+```bash
+cargo xflowey build-igvm x64 --override-openvmm-hcl-feature mem-profile-tracing --with-debuginfo --release
+```
+
+### Collect traces
+
+`ohcldiag-dev` provides a `memory-profile-trace` command that collects a trace for a
+specific process by name or PID.
+
+Examples:
+
+Collect a trace for the VM process:
+```bash
+ohcldiag-dev.exe <vmname> memory-profile-trace -n vm > vm.json
+```
+
+Collect a trace for the `init` process:
+```bash
+ohcldiag-dev.exe <vmname> memory-profile-trace -n underhill > underhill.json
+```
+
+### View the trace
+
+Open the generated trace in the online [DHAT viewer](https://nnethercote.github.io/dh_view/dh_view.html),
+or follow the local viewing instructions in the dhat docs [here](https://docs.rs/dhat/latest/dhat/#viewing).

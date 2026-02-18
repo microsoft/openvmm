@@ -282,6 +282,18 @@ enum Command {
         #[clap(short('s'), long, default_value = "65535", value_parser = clap::value_parser!(u16).range(1..))]
         snaplen: u16,
     },
+    /// Memory usage profile tracing.
+    MemoryProfileTrace {
+        /// PID of process to collect the trace for
+        #[clap(short, long)]
+        pid: Option<i32>,
+        /// Name of underhill process to dump
+        #[clap(short, long)]
+        name: Option<String>,
+        /// The output file. Defaults to stdout.
+        #[clap(short)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, Args)]
@@ -873,6 +885,21 @@ pub fn main() -> anyhow::Result<()> {
                 let client = new_client(driver.clone(), &vm)?;
                 let mut file = create_or_stderr(&output)?;
                 file.write_all(&client.dump_saved_state().await?)?;
+            }
+            Command::MemoryProfileTrace { pid, name, output } => {
+                let client = new_client(driver.clone(), &vm)?;
+                let pid = if let Some(name) = name {
+                    client.get_pid(&name).await?
+                } else if let Some(pid) = pid {
+                    pid
+                } else {
+                    anyhow::bail!("either --pid or --name must be specified");
+                };
+                // Do not write anything on the stdout in case the output
+                // is set to stdout, to avoid breaking the output format
+                // of the trace.
+                let mut file = create_or_stderr(&output)?;
+                file.write_all(&client.memory_profile_trace(pid).await?)?;
             }
         }
         Ok(())

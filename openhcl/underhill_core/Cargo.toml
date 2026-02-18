@@ -9,6 +9,8 @@ rust-version.workspace = true
 [features]
 # Enable profiler support
 profiler = ["dep:profiler_worker", "diag_server/profiler"]
+# Enable profiler tracing (heap profiling) support
+mem-profile-tracing = ["dep:mem_profile_tracing", "diag_server/mem-profile-tracing"]
 
 # Enable gdbstub support
 gdb = ["debug_worker_defs", "vmm_core/gdb", "virt_mshv_vtl/gdb"]
@@ -28,6 +30,7 @@ vmotherboard = { workspace = true, features = [
 ] }
 build_info.workspace = true
 cvm_tracing.workspace = true
+mem_profile_tracing = { workspace = true, optional = true }
 diag_proto.workspace = true
 diag_server.workspace = true
 debug_worker_defs = { workspace = true, optional = true }
