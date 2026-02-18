@@ -9475,7 +9475,6 @@ dependencies = [
 name = "vmgs"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "cfg-if",
  "crc32fast",

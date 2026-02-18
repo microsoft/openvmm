@@ -32,8 +32,6 @@ vmgs_format.workspace = true
 inspect = { workspace = true, optional = true }
 inspect_counters = { workspace = true, optional = true }
 mesh_protobuf = { workspace = true, optional = true }
-
-anyhow.workspace = true
 async-trait.workspace = true
 cfg-if.workspace = true
 crc32fast.workspace = true
