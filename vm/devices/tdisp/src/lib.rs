@@ -29,33 +29,20 @@
 //! It is the responsibility of the host to provide a `TdispHostDeviceInterface`
 //! implementation that performs the necessary platform actions.
 
-/// Commands and responses for the TDISP guest-to-host interface.
-pub mod command;
-
-/// Retrieval and parsing of device reports.
-pub mod devicereport;
-
-/// Serialization of guest commands and responses.
-pub mod serialize;
-
 /// Protobuf serialization of guest commands and responses.
 pub mod serialize_proto;
 
-pub use command::GuestToHostCommand;
-pub use command::GuestToHostResponse;
-pub use command::TdispCommandId;
-pub use command::TdispCommandResponsePayload;
-pub use command::TdispDeviceInterfaceInfo;
-
 use anyhow::Context;
-use open_enum::open_enum;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use tdisp_proto::{
+    GuestToHostCommand, GuestToHostResponse, TdispCommandResponseBind,
+    TdispCommandResponseGetDeviceInterfaceInfo, TdispCommandResponseGetTdiReport,
+    TdispCommandResponseStartTdi, TdispCommandResponseUnbind, TdispDeviceInterfaceInfo,
+    TdispGuestOperationErrorCode, TdispGuestUnbindReason, TdispReportType, TdispTdiState,
+    guest_to_host_command::Command, guest_to_host_response::Response,
+};
 use thiserror::Error;
-
-use crate::command::TdispCommandRequestPayload;
-use crate::command::TdispCommandResponseGetTdiReport;
-use crate::devicereport::TdispReportType;
 
 /// Major version of the TDISP guest-to-host interface.
 pub const TDISP_INTERFACE_VERSION_MAJOR: u32 = 1;
@@ -65,31 +52,6 @@ pub const TDISP_INTERFACE_VERSION_MINOR: u32 = 0;
 
 /// Callback for receiving TDISP commands from the guest.
 pub type TdispCommandCallback = dyn Fn(&GuestToHostCommand) -> anyhow::Result<()> + Send + Sync;
-
-open_enum! {
-    /// Represents the state of the TDISP host device emulator.
-    pub enum TdispTdiState: u64 {
-        /// The TDISP state is not initialized or indeterminate.
-        UNINITIALIZED = 0,
-
-        /// `TDI.Unlocked`` - The device is in its default "reset" state. Resources can be configured
-        /// and no functionality can be used. Attestation cannot take place until the device has
-        /// been locked.
-        UNLOCKED = 1,
-
-        /// `TDI.Locked`` - The device resources have been locked and attestation can take place. The
-        /// device's resources have been mapped and configured in hardware, but the device has not
-        /// been attested. Private DMA and MMIO will not be functional until the resources have
-        /// been accepted into the guest context. Unencrypted "bounced" operations are still allowed.
-        LOCKED = 2,
-
-        /// `TDI.Run`` - The device is no longer functional for unencrypted operations. Device resources
-        /// are locked but encrypted operations might not be functional. The device
-        /// will not be functional for encrypted operations until it has been fully validated by the guest
-        /// calling to firmware to accept resources.
-        RUN = 3,
-    }
-}
 
 /// Trait used by the emulator to call back into the host.
 pub trait TdispHostDeviceInterface: Send + Sync {
@@ -177,65 +139,68 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
         ));
 
         let mut error = TdispGuestOperationError::Success;
-        let mut payload = TdispCommandResponsePayload::None;
+        let mut response: Option<Response> = None;
         let state_before = self.machine.state();
-        match command.command_id {
-            TdispCommandId::GET_DEVICE_INTERFACE_INFO => {
+        match &command.command {
+            Some(Command::GetDeviceInterfaceInfo(_)) => {
                 let interface_info = self.get_device_interface_info();
-                payload = TdispCommandResponsePayload::GetDeviceInterfaceInfo(interface_info);
+                response = Some(Response::GetDeviceInterfaceInfo(
+                    TdispCommandResponseGetDeviceInterfaceInfo {
+                        interface_info: Some(interface_info),
+                    },
+                ));
             }
-            TdispCommandId::BIND => {
+            Some(Command::Bind(_)) => {
                 let bind_res = self.machine.request_lock_device_resources();
                 if let Err(err) = bind_res {
                     error = err;
                 } else {
-                    payload = TdispCommandResponsePayload::None;
+                    response = Some(Response::Bind(TdispCommandResponseBind {}));
                 }
             }
-            TdispCommandId::START_TDI => {
+            Some(Command::StartTdi(_)) => {
                 let start_tdi_res = self.machine.request_start_tdi();
                 if let Err(err) = start_tdi_res {
                     error = err;
                 } else {
-                    payload = TdispCommandResponsePayload::None;
+                    response = Some(Response::StartTdi(TdispCommandResponseStartTdi {}));
                 }
             }
-            TdispCommandId::UNBIND => {
-                let unbind_reason: TdispGuestUnbindReason = match command.payload {
-                    TdispCommandRequestPayload::Unbind(payload) => {
-                        TdispGuestUnbindReason(payload.unbind_reason)
-                    }
-                    _ => TdispGuestUnbindReason::UNKNOWN,
-                };
-                let unbind_res = self.machine.request_unbind(unbind_reason);
-                if let Err(err) = unbind_res {
-                    error = err;
-                }
-            }
-            TdispCommandId::GET_TDI_REPORT => {
-                let report_type = match &command.payload {
-                    TdispCommandRequestPayload::GetTdiReport(payload) => {
-                        TdispReportType(payload.report_type)
-                    }
-                    _ => TdispReportType::INVALID,
-                };
+            Some(Command::Unbind(cmd)) => {
+                let unbind_reason = TdispGuestUnbindReason::from_i32(cmd.unbind_reason);
 
-                let report_buffer = self.machine.request_attestation_report(report_type);
-                if let Err(err) = report_buffer {
-                    error = err;
-                } else {
-                    payload = TdispCommandResponsePayload::GetTdiReport(
-                        TdispCommandResponseGetTdiReport {
-                            report_type: report_type.0,
+                match unbind_reason {
+                    Some(reason) => {
+                        let unbind_res = self.machine.request_unbind(reason);
+                        if let Err(err) = unbind_res {
+                            error = err;
+                        }
+                        response = Some(Response::Unbind(TdispCommandResponseUnbind {}));
+                    }
+                    None => {
+                        error = TdispGuestOperationError::InvalidGuestUnbindReason;
+                    }
+                }
+            }
+            Some(Command::GetTdiReport(cmd)) => {
+                let report_type = TdispReportType::from_i32(cmd.report_type);
+                match report_type {
+                    Some(report_type) => {
+                        let report_buffer = self.machine.request_attestation_report(report_type);
+                        if let Err(err) = report_buffer {
+                            error = err;
+                        }
+                        response = Some(Response::GetTdiReport(TdispCommandResponseGetTdiReport {
+                            report_type: cmd.report_type,
                             report_buffer: report_buffer
                                 .context("expecting report buffer from request_attestation_report")
                                 .unwrap(),
-                        },
-                    );
+                        }));
+                    }
+                    None => {
+                        error = TdispGuestOperationError::InvalidGuestAttestationReportType;
+                    }
                 }
-            }
-            TdispCommandId::UNKNOWN => {
-                error = TdispGuestOperationError::InvalidGuestCommandId;
             }
             _ => {
                 error = TdispGuestOperationError::InvalidGuestCommandId;
@@ -252,12 +217,12 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
             }
         }
 
+        let error_code: TdispGuestOperationErrorCode = error.into();
         let resp = GuestToHostResponse {
-            command_id: command.command_id,
-            result: error,
-            tdi_state_before: state_before,
-            tdi_state_after: state_after,
-            payload,
+            result: error_code.into(),
+            tdi_state_before: state_before.into(),
+            tdi_state_after: state_after.into(),
+            response,
         };
 
         self.debug_print(format!("tdisp_handle_guest_command: response = {resp:?}"));
@@ -313,17 +278,6 @@ pub enum TdispUnbindReason {
     InvalidGuestUnbindReason(anyhow::Error),
 }
 
-open_enum! {
-    /// For a guest initiated unbind, the guest can provide a reason for the unbind.
-    pub enum TdispGuestUnbindReason: u64 {
-        /// The guest requested to unbind the device for an unspecified reason.
-        UNKNOWN = 0,
-
-        /// The guest requested to unbind the device because the device is being detached.
-        GRACEFUL = 1,
-    }
-}
-
 /// The state machine for the TDISP assignment flow for a device on the host. Both the guest and host
 /// synchronize this state machine with each other as they move through the assignment flow.
 pub struct TdispHostStateMachine {
@@ -343,7 +297,7 @@ impl TdispHostStateMachine {
     /// Create a new TDISP state machine with the `Unlocked` state.
     pub fn new(host_interface: Arc<Mutex<dyn TdispHostDeviceInterface>>) -> Self {
         Self {
-            current_state: TdispTdiState::UNLOCKED,
+            current_state: TdispTdiState::Unlocked,
             state_history: Vec::new(),
             debug_device_id: "".to_owned(),
             unbind_reason_history: Vec::new(),
@@ -377,13 +331,13 @@ impl TdispHostStateMachine {
     fn is_valid_state_transition(&self, new_state: &TdispTdiState) -> bool {
         match (self.current_state, *new_state) {
             // Valid forward progress states from Unlocked -> Run
-            (TdispTdiState::UNLOCKED, TdispTdiState::LOCKED) => true,
-            (TdispTdiState::LOCKED, TdispTdiState::RUN) => true,
+            (TdispTdiState::Unlocked, TdispTdiState::Locked) => true,
+            (TdispTdiState::Locked, TdispTdiState::Run) => true,
 
             // Device can always return to the Unlocked state with `Unbind`
-            (TdispTdiState::RUN, TdispTdiState::UNLOCKED) => true,
-            (TdispTdiState::LOCKED, TdispTdiState::UNLOCKED) => true,
-            (TdispTdiState::UNLOCKED, TdispTdiState::UNLOCKED) => true,
+            (TdispTdiState::Run, TdispTdiState::Unlocked) => true,
+            (TdispTdiState::Locked, TdispTdiState::Unlocked) => true,
+            (TdispTdiState::Unlocked, TdispTdiState::Unlocked) => true,
 
             // Every other state transition is invalid
             _ => false,
@@ -430,7 +384,7 @@ impl TdispHostStateMachine {
 
         // All states can be reset to the Unlocked state. This can only happen if the
         // state is corrupt beyond the state machine.
-        if let Err(reason) = self.transition_state_to(TdispTdiState::UNLOCKED) {
+        if let Err(reason) = self.transition_state_to(TdispTdiState::Unlocked) {
             return Err(anyhow::anyhow!(
                 "Impossible state machine violation during TDISP Unbind: {:?}",
                 reason
@@ -485,65 +439,32 @@ pub enum TdispGuestOperationError {
     InvalidGuestAttestationReportType,
 }
 
-open_enum! {
-    /// Error returned by TDISP operations dispatched by the guest.
-    pub enum TdispGuestOperationErrorCode: u64 {
-        /// Unknown error code.
-        UNKNOWN = 0,
-
-        /// The operation was successful.
-        SUCCESS = 1,
-
-        /// The current TDI state is incorrect for this operation.
-        INVALID_DEVICE_STATE = 2,
-
-        /// The reason for this unbind is invalid.
-        INVALID_GUEST_UNBIND_REASON = 3,
-
-        /// Invalid TDI command ID.
-        INVALID_GUEST_COMMAND_ID = 4,
-
-        /// Operation requested was not implemented.
-        NOT_IMPLEMENTED = 5,
-
-        /// Host failed to process command.
-        HOST_FAILED_TO_PROCESS_COMMAND = 6,
-
-        /// The device was not in the Locked or Run state when the attestation report was requested.
-        INVALID_GUEST_ATTESTATION_REPORT_STATE = 7,
-
-        /// Invalid attestation report type requested.
-        INVALID_GUEST_ATTESTATION_REPORT_TYPE = 8,
-    }
-}
-
 impl From<TdispGuestOperationErrorCode> for TdispGuestOperationError {
     fn from(err_code: TdispGuestOperationErrorCode) -> Self {
         match err_code {
-            TdispGuestOperationErrorCode::UNKNOWN => TdispGuestOperationError::Unknown,
-            TdispGuestOperationErrorCode::SUCCESS => TdispGuestOperationError::Success,
-            TdispGuestOperationErrorCode::INVALID_DEVICE_STATE => {
+            TdispGuestOperationErrorCode::Unknown => TdispGuestOperationError::Unknown,
+            TdispGuestOperationErrorCode::Success => TdispGuestOperationError::Success,
+            TdispGuestOperationErrorCode::InvalidDeviceState => {
                 TdispGuestOperationError::InvalidDeviceState
             }
-            TdispGuestOperationErrorCode::INVALID_GUEST_UNBIND_REASON => {
+            TdispGuestOperationErrorCode::InvalidGuestUnbindReason => {
                 TdispGuestOperationError::InvalidGuestUnbindReason
             }
-            TdispGuestOperationErrorCode::INVALID_GUEST_COMMAND_ID => {
+            TdispGuestOperationErrorCode::InvalidGuestCommandId => {
                 TdispGuestOperationError::InvalidGuestCommandId
             }
-            TdispGuestOperationErrorCode::NOT_IMPLEMENTED => {
+            TdispGuestOperationErrorCode::NotImplemented => {
                 TdispGuestOperationError::NotImplemented
             }
-            TdispGuestOperationErrorCode::HOST_FAILED_TO_PROCESS_COMMAND => {
+            TdispGuestOperationErrorCode::HostFailedToProcessCommand => {
                 TdispGuestOperationError::HostFailedToProcessCommand
             }
-            TdispGuestOperationErrorCode::INVALID_GUEST_ATTESTATION_REPORT_STATE => {
+            TdispGuestOperationErrorCode::InvalidGuestAttestationReportState => {
                 TdispGuestOperationError::InvalidGuestAttestationReportState
             }
-            TdispGuestOperationErrorCode::INVALID_GUEST_ATTESTATION_REPORT_TYPE => {
+            TdispGuestOperationErrorCode::InvalidGuestAttestationReportType => {
                 TdispGuestOperationError::InvalidGuestAttestationReportType
             }
-            _ => TdispGuestOperationError::Unknown,
         }
     }
 }
@@ -551,28 +472,28 @@ impl From<TdispGuestOperationErrorCode> for TdispGuestOperationError {
 impl From<TdispGuestOperationError> for TdispGuestOperationErrorCode {
     fn from(err: TdispGuestOperationError) -> Self {
         match err {
-            TdispGuestOperationError::Unknown => TdispGuestOperationErrorCode::UNKNOWN,
-            TdispGuestOperationError::Success => TdispGuestOperationErrorCode::SUCCESS,
+            TdispGuestOperationError::Unknown => TdispGuestOperationErrorCode::Unknown,
+            TdispGuestOperationError::Success => TdispGuestOperationErrorCode::Success,
             TdispGuestOperationError::InvalidDeviceState => {
-                TdispGuestOperationErrorCode::INVALID_DEVICE_STATE
+                TdispGuestOperationErrorCode::InvalidDeviceState
             }
             TdispGuestOperationError::InvalidGuestUnbindReason => {
-                TdispGuestOperationErrorCode::INVALID_GUEST_UNBIND_REASON
+                TdispGuestOperationErrorCode::InvalidGuestUnbindReason
             }
             TdispGuestOperationError::InvalidGuestCommandId => {
-                TdispGuestOperationErrorCode::INVALID_GUEST_COMMAND_ID
+                TdispGuestOperationErrorCode::InvalidGuestCommandId
             }
             TdispGuestOperationError::NotImplemented => {
-                TdispGuestOperationErrorCode::NOT_IMPLEMENTED
+                TdispGuestOperationErrorCode::NotImplemented
             }
             TdispGuestOperationError::HostFailedToProcessCommand => {
-                TdispGuestOperationErrorCode::HOST_FAILED_TO_PROCESS_COMMAND
+                TdispGuestOperationErrorCode::HostFailedToProcessCommand
             }
             TdispGuestOperationError::InvalidGuestAttestationReportState => {
-                TdispGuestOperationErrorCode::INVALID_GUEST_ATTESTATION_REPORT_STATE
+                TdispGuestOperationErrorCode::InvalidGuestAttestationReportState
             }
             TdispGuestOperationError::InvalidGuestAttestationReportType => {
-                TdispGuestOperationErrorCode::INVALID_GUEST_ATTESTATION_REPORT_TYPE
+                TdispGuestOperationErrorCode::InvalidGuestAttestationReportType
             }
         }
     }
@@ -631,7 +552,7 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
     fn request_lock_device_resources(&mut self) -> Result<(), TdispGuestOperationError> {
         // If the guest attempts to transition the device to the Locked state while the device
         // is not in the Unlocked state, the device is reset to the Unlocked state.
-        if self.current_state != TdispTdiState::UNLOCKED {
+        if self.current_state != TdispTdiState::Unlocked {
             self.error_print(
                 "Unlocked to Locked state called while device was not in Unlocked state.",
             );
@@ -658,12 +579,12 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         }
 
         self.debug_print("Device transition from Unlocked to Locked state");
-        self.transition_state_to(TdispTdiState::LOCKED).unwrap();
+        self.transition_state_to(TdispTdiState::Locked).unwrap();
         Ok(())
     }
 
     fn request_start_tdi(&mut self) -> Result<(), TdispGuestOperationError> {
-        if self.current_state != TdispTdiState::LOCKED {
+        if self.current_state != TdispTdiState::Locked {
             self.error_print("StartTDI called while device was not in Locked state.");
             self.unbind_all(TdispUnbindReason::InvalidGuestTransitionToRun)
                 .map_err(|_| TdispGuestOperationError::HostFailedToProcessCommand)?;
@@ -686,7 +607,7 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         }
 
         self.debug_print("Device transition from Locked to Run state");
-        self.transition_state_to(TdispTdiState::RUN).unwrap();
+        self.transition_state_to(TdispTdiState::Run).unwrap();
 
         Ok(())
     }
@@ -695,7 +616,7 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         &mut self,
         report_type: TdispReportType,
     ) -> Result<Vec<u8>, TdispGuestOperationError> {
-        if self.current_state != TdispTdiState::LOCKED && self.current_state != TdispTdiState::RUN {
+        if self.current_state != TdispTdiState::Locked && self.current_state != TdispTdiState::Run {
             self.error_print(
                 "Request to retrieve attestation report called while device was not in Locked or Run state.",
             );
@@ -705,7 +626,7 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
             return Err(TdispGuestOperationError::InvalidGuestAttestationReportState);
         }
 
-        if report_type == TdispReportType::INVALID {
+        if report_type == TdispReportType::Invalid {
             self.error_print("Invalid report type TdispReportId::INVALID requested");
             return Err(TdispGuestOperationError::InvalidGuestAttestationReportType);
         }
@@ -733,14 +654,18 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         // if the guest says it is unbinding due to a host-related error), the reason is discarded and InvalidGuestUnbindReason
         // is recorded in the unbind history.
         let reason = match reason {
-            TdispGuestUnbindReason::GRACEFUL => TdispUnbindReason::GuestInitiated(reason),
+            TdispGuestUnbindReason::Graceful => TdispUnbindReason::GuestInitiated(reason),
             _ => {
                 self.error_print(
-                    format!("Invalid guest unbind reason {} requested", reason.0).as_str(),
+                    format!(
+                        "Invalid guest unbind reason {} requested",
+                        reason.as_str_name()
+                    )
+                    .as_str(),
                 );
                 TdispUnbindReason::InvalidGuestUnbindReason(anyhow::anyhow!(
                     "Invalid guest unbind reason {} requested",
-                    reason.0
+                    reason.as_str_name()
                 ))
             }
         };
