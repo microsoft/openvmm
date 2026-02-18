@@ -38,6 +38,9 @@ pub mod devicereport;
 /// Serialization of guest commands and responses.
 pub mod serialize;
 
+/// Protobuf serialization of guest commands and responses.
+pub mod serialize_proto;
+
 pub use command::GuestToHostCommand;
 pub use command::GuestToHostResponse;
 pub use command::TdispCommandId;
