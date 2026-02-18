@@ -224,6 +224,7 @@ impl FlowNode for Node {
                     nextest_filter_expr: None,
                     nextest_working_dir: None,
                     nextest_config_file: None,
+                    nextest_partition: None,
                     run_ignored: false,
                     extra_env: None,
                     pre_run_deps,

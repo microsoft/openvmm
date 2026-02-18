@@ -1017,6 +1017,9 @@ impl IntoPipeline for CheckinGatesCli {
             nextest_filter_expr: String,
             test_artifacts: Vec<KnownTestArtifacts>,
             needs_prep_run: bool,
+            /// Number of shards to split test execution across.
+            /// None means no sharding (single job).
+            shard_count: Option<usize>,
         }
 
         let standard_filter = {
@@ -1106,6 +1109,7 @@ impl IntoPipeline for CheckinGatesCli {
             nextest_filter_expr,
             test_artifacts,
             needs_prep_run,
+            shard_count,
         } in [
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1117,6 +1121,7 @@ impl IntoPipeline for CheckinGatesCli {
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 needs_prep_run: false,
+                shard_count: Some(2),
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1128,6 +1133,7 @@ impl IntoPipeline for CheckinGatesCli {
                 nextest_filter_expr: cvm_filter("tdx"),
                 test_artifacts: cvm_x64_test_artifacts.clone(),
                 needs_prep_run: true,
+                shard_count: None,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1139,6 +1145,7 @@ impl IntoPipeline for CheckinGatesCli {
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
                 needs_prep_run: false,
+                shard_count: Some(2),
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1150,6 +1157,7 @@ impl IntoPipeline for CheckinGatesCli {
                 nextest_filter_expr: cvm_filter("snp"),
                 test_artifacts: cvm_x64_test_artifacts,
                 needs_prep_run: true,
+                shard_count: None,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -1162,6 +1170,7 @@ impl IntoPipeline for CheckinGatesCli {
                 nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
                 test_artifacts: standard_x64_test_artifacts,
                 needs_prep_run: false,
+                shard_count: None,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -1178,6 +1187,7 @@ impl IntoPipeline for CheckinGatesCli {
                     KnownTestArtifacts::VmgsWithBootEntry,
                 ],
                 needs_prep_run: false,
+                shard_count: None,
             },
         ] {
             // Skip ARM64/CVM jobs entirely for ADO backend (no native ARM64/CVM pools in ADO)
@@ -1189,65 +1199,92 @@ impl IntoPipeline for CheckinGatesCli {
                     continue;
                 }
             }
-            let test_label = format!("{label}-vmm-tests");
 
-            let pub_vmm_tests_results = if matches!(backend_hint, PipelineBackendHint::Local) {
-                Some(pipeline.new_artifact(&test_label).0)
-            } else {
-                None
+            let shard_range: Vec<Option<(usize, usize)>> = match shard_count {
+                Some(total) => (1..=total).map(|shard| Some((shard, total))).collect(),
+                None => vec![None],
             };
 
-            let use_vmm_tests_archive = match target {
-                CommonTriple::X86_64_WINDOWS_MSVC => &use_vmm_tests_archive_windows_x86,
-                CommonTriple::X86_64_LINUX_GNU => &use_vmm_tests_archive_linux_x86,
-                CommonTriple::AARCH64_WINDOWS_MSVC => &use_vmm_tests_archive_windows_aarch64,
-                _ => unreachable!(),
-            };
+            for shard in shard_range {
+                let shard_suffix = match shard {
+                    Some((s, t)) => format!(" ({s}/{t})"),
+                    None => String::new(),
+                };
+                let job_label = format!("run vmm-tests [{label}]{shard_suffix}");
+                let test_label = match shard {
+                    Some((s, t)) => format!("{label}-{s}of{t}-vmm-tests"),
+                    None => format!("{label}-vmm-tests"),
+                };
 
-            let mut vmm_tests_run_job = pipeline
-                .new_job(platform, arch, format!("run vmm-tests [{label}]"))
-                .gh_set_pool(gh_pool);
-
-            // Only add ADO pool for x86_64 jobs (ARM not supported in ADO org)
-            if matches!(arch, FlowArch::X86_64) {
-                vmm_tests_run_job = vmm_tests_run_job.ado_set_pool(match platform {
-                    FlowPlatform::Windows => {
-                        crate::pipelines_shared::ado_pools::default_x86_pool(FlowPlatform::Windows)
-                    }
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu) => {
-                        crate::pipelines_shared::ado_pools::default_x86_pool(FlowPlatform::Linux(
-                            FlowPlatformLinuxDistro::Ubuntu,
-                        ))
-                    }
-                    _ => anyhow::bail!("unsupported platform"),
+                let nextest_partition = shard.map(|(shard, total)| {
+                    flowey_lib_common::gen_cargo_nextest_run_cmd::NextestPartition { shard, total }
                 });
-            }
 
-            vmm_tests_run_job = vmm_tests_run_job.dep_on(|ctx| {
-                flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::Params {
-                    junit_test_label: test_label,
-                    nextest_vmm_tests_archive: ctx.use_typed_artifact(use_vmm_tests_archive),
-                    target: target.as_triple(),
-                    nextest_profile: flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
-                    nextest_filter_expr: Some(nextest_filter_expr),
-                    dep_artifact_dirs: resolve_vmm_tests_artifacts(ctx),
-                    test_artifacts,
-                    fail_job_on_test_fail: true,
-                    artifact_dir: pub_vmm_tests_results.map(|x| ctx.publish_artifact(x)),
-                    needs_prep_run,
-                    done: ctx.new_done_handle(),
+                let pub_vmm_tests_results = if matches!(backend_hint, PipelineBackendHint::Local) {
+                    Some(pipeline.new_artifact(&test_label).0)
+                } else {
+                    None
+                };
+
+                let use_vmm_tests_archive = match target {
+                    CommonTriple::X86_64_WINDOWS_MSVC => &use_vmm_tests_archive_windows_x86,
+                    CommonTriple::X86_64_LINUX_GNU => &use_vmm_tests_archive_linux_x86,
+                    CommonTriple::AARCH64_WINDOWS_MSVC => &use_vmm_tests_archive_windows_aarch64,
+                    _ => unreachable!(),
+                };
+
+                let nextest_filter_expr = nextest_filter_expr.clone();
+                let test_artifacts = test_artifacts.clone();
+
+                let mut vmm_tests_run_job = pipeline
+                    .new_job(platform, arch, job_label)
+                    .gh_set_pool(gh_pool.clone());
+
+                // Only add ADO pool for x86_64 jobs (ARM not supported in ADO org)
+                if matches!(arch, FlowArch::X86_64) {
+                    vmm_tests_run_job = vmm_tests_run_job.ado_set_pool(match platform {
+                        FlowPlatform::Windows => {
+                            crate::pipelines_shared::ado_pools::default_x86_pool(
+                                FlowPlatform::Windows,
+                            )
+                        }
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu) => {
+                            crate::pipelines_shared::ado_pools::default_x86_pool(
+                                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                            )
+                        }
+                        _ => anyhow::bail!("unsupported platform"),
+                    });
                 }
-            });
 
-            if let Some(vmm_tests_disk_cache_dir) = vmm_tests_disk_cache_dir.clone() {
-                vmm_tests_run_job = vmm_tests_run_job.dep_on(|_| {
-                    flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts::Request::CustomCacheDir(
-                        vmm_tests_disk_cache_dir,
-                    )
-                })
+                vmm_tests_run_job = vmm_tests_run_job.dep_on(|ctx| {
+                    flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::Params {
+                        junit_test_label: test_label,
+                        nextest_vmm_tests_archive: ctx.use_typed_artifact(use_vmm_tests_archive),
+                        target: target.as_triple(),
+                        nextest_profile:
+                            flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
+                        nextest_filter_expr: Some(nextest_filter_expr),
+                        nextest_partition,
+                        dep_artifact_dirs: resolve_vmm_tests_artifacts(ctx),
+                        test_artifacts,
+                        fail_job_on_test_fail: true,
+                        artifact_dir: pub_vmm_tests_results.map(|x| ctx.publish_artifact(x)),
+                        needs_prep_run,
+                        done: ctx.new_done_handle(),
+                    }
+                });
+
+                if let Some(vmm_tests_disk_cache_dir) = vmm_tests_disk_cache_dir.clone() {
+                    vmm_tests_run_job = vmm_tests_run_job.dep_on(|_| {
+                        flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts::Request::CustomCacheDir(
+                            vmm_tests_disk_cache_dir,
+                        )
+                    })
+                }
+
+                all_jobs.push(vmm_tests_run_job.finish());
             }
-
-            all_jobs.push(vmm_tests_run_job.finish());
         }
 
         // test the flowey local backend by running cargo xflowey build-igvm on x64

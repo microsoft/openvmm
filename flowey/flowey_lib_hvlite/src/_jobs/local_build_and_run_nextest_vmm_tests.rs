@@ -989,6 +989,7 @@ impl SimpleFlowNode for Node {
             nextest_filter_expr: Some(nextest_filter_expr.clone()),
             run_ignored: false,
             fail_fast: None,
+            nextest_partition: None,
             extra_env: Some(extra_env.clone()),
             extra_commands: register_prep_steps
                 .clone()
@@ -1052,6 +1053,7 @@ impl SimpleFlowNode for Node {
                 nextest_working_dir: Some(ReadVar::from_static(test_content_dir.clone())),
                 nextest_config_file: Some(ReadVar::from_static(nextest_config_file)),
                 nextest_bin: Some(ReadVar::from_static(nextest_bin)),
+                nextest_partition: None,
                 target: Some(ReadVar::from_static(target_triple.clone())),
                 extra_env,
                 pre_run_deps: side_effects,
