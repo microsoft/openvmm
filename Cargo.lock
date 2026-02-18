@@ -7214,10 +7214,21 @@ dependencies = [
  "inspect",
  "open_enum",
  "parking_lot",
+ "prost",
  "static_assertions",
+ "tdisp_proto",
  "thiserror 2.0.16",
  "tracing",
- "zerocopy 0.8.25",
+ "zerocopy 0.8.27",
+]
+
+[[package]]
+name = "tdisp_proto"
+version = "0.0.0"
+dependencies = [
+ "inspect",
+ "prost",
+ "prost-build",
 ]
 
 [[package]]

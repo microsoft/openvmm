@@ -16,6 +16,10 @@ static_assertions.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+tdisp_proto.workspace = true
+
+[dev-dependencies]
+prost.workspace = true
 
 [lints]
 workspace = true
