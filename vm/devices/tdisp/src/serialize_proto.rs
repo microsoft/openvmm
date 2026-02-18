@@ -15,12 +15,16 @@ use tdisp_proto::TdispTdiState;
 use tdisp_proto::guest_to_host_command::Command;
 use tdisp_proto::guest_to_host_response::Response;
 
+/// All fields in proto3 are optional regardless of definition. This runtime requires that a protobuf field is not `None`.
 macro_rules! require_field {
     ($val:expr) => {
         $val.as_ref()
             .ok_or_else(|| anyhow::anyhow!("proto validation: {} must be set", stringify!($val)))
     };
 }
+
+/// All enums in proto3 are optional regardless of definition. This runtime requires that a protobuf enum is valid and
+/// within the range of the enum.
 macro_rules! require_enum {
     ($field:expr, $enum_ty:ty) => {
         <$enum_ty>::from_i32($field).ok_or_else(|| {
@@ -30,16 +34,13 @@ macro_rules! require_enum {
                 stringify!($enum_ty),
                 $field
             )
-        })?
+        })
     };
 }
 
 /// Serialize a [`GuestToHostCommand`] to a protobuf-encoded byte vector.
-pub fn serialize_command(command: &GuestToHostCommand) -> anyhow::Result<Vec<u8>> {
-    // First, validate the command to ensure that it matches the expected format.
-    validate_command(command).with_context(|| "failed to validate command in serialize_command")?;
-
-    Ok(command.encode_to_vec())
+pub fn serialize_command(command: &GuestToHostCommand) -> Vec<u8> {
+    command.encode_to_vec()
 }
 
 /// Deserialize a [`GuestToHostCommand`] from a protobuf-encoded byte slice.
@@ -54,12 +55,8 @@ pub fn deserialize_command(bytes: &[u8]) -> anyhow::Result<GuestToHostCommand> {
 }
 
 /// Serialize a [`GuestToHostResponse`] to a protobuf-encoded byte vector.
-pub fn serialize_response(response: &GuestToHostResponse) -> anyhow::Result<Vec<u8>> {
-    // First, validate the response to ensure that it matches the expected format.
-    validate_response(response)
-        .with_context(|| "failed to validate response in serialize_response")?;
-
-    Ok(response.encode_to_vec())
+pub fn serialize_response(response: &GuestToHostResponse) -> Vec<u8> {
+    response.encode_to_vec()
 }
 
 /// Deserialize a [`GuestToHostResponse`] from a protobuf-encoded byte slice.
@@ -81,9 +78,9 @@ pub fn validate_command(command: &GuestToHostCommand) -> anyhow::Result<()> {
     require_field!(command.command)?;
 
     if let Some(Command::GetTdiReport(req)) = &command.command {
-        require_enum!(req.report_type, TdispReportType);
+        require_enum!(req.report_type, TdispReportType)?;
     } else if let Some(Command::Unbind(req)) = &command.command {
-        require_enum!(req.unbind_reason, TdispGuestUnbindReason);
+        require_enum!(req.unbind_reason, TdispGuestUnbindReason)?;
     }
 
     Ok(())
@@ -93,12 +90,12 @@ pub fn validate_command(command: &GuestToHostCommand) -> anyhow::Result<()> {
 /// expected required protocol format.
 pub fn validate_response(response: &GuestToHostResponse) -> anyhow::Result<()> {
     require_field!(response.response)?;
-    require_enum!(response.result, TdispGuestOperationErrorCode);
-    require_enum!(response.tdi_state_before, TdispTdiState);
-    require_enum!(response.tdi_state_after, TdispTdiState);
+    require_enum!(response.result, TdispGuestOperationErrorCode)?;
+    require_enum!(response.tdi_state_before, TdispTdiState)?;
+    require_enum!(response.tdi_state_after, TdispTdiState)?;
 
     if let Some(Response::GetTdiReport(req)) = &response.response {
-        require_enum!(req.report_type, TdispReportType);
+        require_enum!(req.report_type, TdispReportType)?;
         if req.report_buffer.is_empty() {
             return Err(anyhow::anyhow!(
                 "proto validation: report_buffer must not be empty"
