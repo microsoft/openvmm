@@ -14,6 +14,7 @@ use crate::test::TestOperation;
 use anyhow::Result;
 use clap::Args;
 use clap::Parser;
+use clap::Subcommand;
 use disk_backend::Disk;
 use disk_vhd1::Vhd1Disk;
 use fs_err::File;
@@ -147,6 +148,17 @@ and subject to change. Automated consumers of VmgsTool should generally parse
 only the exit code. In some cases, the STDOUT of specific subcommands may be
 made stable (ex: query-size). STDERR is for human-readable debug messages and
 is never stable."#)]
+struct CliArgs {
+    /// Print trace level traces from all crates, rather than just info level
+    /// traces from the vmgstool crate.
+    #[clap(short = 'v', long)]
+    verbose: bool,
+
+    #[clap(subcommand)]
+    opt: Options,
+}
+
+#[derive(Subcommand)]
 enum Options {
     /// Create and initialize `filepath` as a VMGS file of size `filesize`.
     ///
@@ -357,7 +369,8 @@ fn parse_legacy_args() -> Vec<String> {
         };
 
         if let Some(new_cmd) = new_cmd {
-            tracing::warn!("Using legacy arguments. Please migrate to the new syntax.");
+            // The tracing subscriber has not been initialized yet.
+            eprintln!("Warning: Using legacy arguments. Please migrate to the new syntax.");
             args[1] = new_cmd.to_string();
 
             let mut index = 2;
@@ -392,7 +405,7 @@ pub fn init_tracing(verbose: bool) {
     use tracing_subscriber::util::SubscriberInitExt;
 
     let targets = if verbose {
-        Targets::new().with_default(LevelFilter::DEBUG)
+        Targets::new().with_default(LevelFilter::TRACE)
     } else {
         Targets::new()
             .with_default(LevelFilter::OFF)
@@ -400,41 +413,51 @@ pub fn init_tracing(verbose: bool) {
     };
 
     tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
+        .with_ansi(false)
         .log_internal_errors(true)
-        .with_max_level(LevelFilter::DEBUG)
-        .with_timer(tracing_subscriber::fmt::time::uptime())
+        .with_writer(std::io::stderr)
+        .with_max_level(LevelFilter::TRACE)
         .finish()
         .with(targets)
         .init();
 }
 
 fn main() {
-    let verbose = false;
-    init_tracing(verbose);
-
     DefaultPool::run_with(async |_| match do_main().await {
         Ok(_) => tracing::info!("The operation completed successfully."),
         Err(e) => {
             let exit_code = match e {
                 Error::NotEncrypted => ExitCode::NotEncrypted,
-                Error::Vmgs(VmgsError::EmptyFile) => ExitCode::Empty,
-                Error::ZeroSize => ExitCode::Empty,
-                Error::Vmgs(VmgsError::FileInfoNotAllocated) => ExitCode::NotFound,
-                Error::Vmgs(VmgsError::V1Format) => ExitCode::V1Format,
                 Error::GspByIdEncryption => ExitCode::GspById,
                 Error::GspUnknown => ExitCode::GspUnknown,
+                Error::Vmgs(VmgsError::EmptyFile) | Error::ZeroSize => ExitCode::Empty,
+                Error::Vmgs(VmgsError::FileInfoNotAllocated(_)) => ExitCode::NotFound,
+                Error::Vmgs(VmgsError::V1Format) => ExitCode::V1Format,
                 _ => ExitCode::Error,
             };
 
-            if verbose || matches!(exit_code, ExitCode::Error) {
-                tracing::error!("{}", e);
-                let mut error_source = std::error::Error::source(&e);
-                while let Some(e2) = error_source {
-                    tracing::error!("{}", e2);
-                    error_source = e2.source();
+            match e {
+                // all relevant info is already logged in `vmgs_file_query_encryption`
+                Error::NotEncrypted | Error::GspByIdEncryption | Error::GspUnknown => {}
+                // these are not necessarily errors, so just log the inner value as info
+                Error::Vmgs(inner)
+                    if matches!(
+                        inner,
+                        VmgsError::EmptyFile | VmgsError::FileInfoNotAllocated(_)
+                    ) =>
+                {
+                    tracing::info!("{}", inner)
                 }
-            }
+                // anything else is unexpected and should be logged as error
+                e => {
+                    tracing::error!("{}", e);
+                    let mut error_source = std::error::Error::source(&e);
+                    while let Some(e2) = error_source {
+                        tracing::error!("{}", e2);
+                        error_source = e2.source();
+                    }
+                }
+            };
 
             tracing::info!(
                 "The operation completed with exit code: {} ({:?})",
@@ -448,9 +471,10 @@ fn main() {
 }
 
 async fn do_main() -> Result<(), Error> {
-    let opt = Options::parse_from(parse_legacy_args());
+    let args = CliArgs::parse_from(parse_legacy_args());
+    init_tracing(args.verbose);
 
-    match opt {
+    match args.opt {
         Options::Create {
             file_path,
             file_size,
@@ -774,7 +798,7 @@ async fn vmgs_write(
     encrypt: bool,
     allow_overwrite: bool,
 ) -> Result<(), Error> {
-    tracing::info!("Writing File ID {} ({:?})", file_id.0, file_id);
+    tracing::info!("Writing {}", file_id);
 
     if let Ok(info) = vmgs.get_file_info(file_id) {
         if !allow_overwrite && info.valid_bytes > 0 {
@@ -855,7 +879,7 @@ async fn vmgs_file_read(
 }
 
 async fn vmgs_read(vmgs: &mut Vmgs, file_id: FileId, decrypt: bool) -> Result<Vec<u8>, Error> {
-    tracing::info!("Reading File ID {} ({:?})", file_id.0, file_id);
+    tracing::info!("Reading {}", file_id);
     Ok(if decrypt {
         vmgs.read_file(file_id).await?
     } else {
@@ -881,13 +905,7 @@ async fn vmgs_move(
     dst: FileId,
     allow_overwrite: bool,
 ) -> Result<(), Error> {
-    tracing::info!(
-        "Moving File ID {} ({:?}) to File ID {} ({:?})",
-        src.0,
-        src,
-        dst.0,
-        dst
-    );
+    tracing::info!("Moving {} to {}", src, dst);
 
     vmgs.move_file(src, dst, allow_overwrite).await?;
 
@@ -906,13 +924,9 @@ async fn vmgs_file_delete(file_path: impl AsRef<Path>, file_id: FileId) -> Resul
 }
 
 async fn vmgs_delete(vmgs: &mut Vmgs, file_id: FileId) -> Result<(), Error> {
-    tracing::info!("Deleting File ID {} ({:?})", file_id.0, file_id);
+    tracing::info!("Deleting {}", file_id);
 
-    vmgs.delete_file(file_id).await.inspect_err(|e| {
-        if matches!(e, VmgsError::FileInfoNotAllocated) {
-            tracing::error!("File ID {} ({:?}) is not allocated", file_id.0, file_id);
-        }
-    })?;
+    vmgs.delete_file(file_id).await?;
 
     Ok(())
 }
@@ -1199,14 +1213,10 @@ async fn vmgs_open(
 
     if let Some(encryption_key) = encryption_key {
         #[cfg(with_encryption)]
-        if vmgs.is_encrypted() {
-            vmgs.unlock_with_encryption_key(encryption_key).await?;
-        } else {
-            return Err(Error::NotEncrypted);
-        }
+        vmgs.unlock_with_encryption_key(encryption_key).await?;
         #[cfg(not(with_encryption))]
         unreachable!("Encryption requires the encryption feature");
-    } else if vmgs.is_encrypted() {
+    } else if vmgs.encrypted() {
         match open_mode {
             OpenMode::ReadWriteRequire => return Err(Error::EncryptedNoKey),
             OpenMode::ReadOnlyWarn => tracing::warn!(
@@ -1250,21 +1260,9 @@ async fn vmgs_file_query_file_size(
 }
 
 fn vmgs_query_file_size(vmgs: &Vmgs, file_id: FileId) -> Result<u64, Error> {
-    let file_size = vmgs
-        .get_file_info(file_id)
-        .inspect_err(|e| {
-            if matches!(e, VmgsError::FileInfoNotAllocated) {
-                tracing::info!("File ID {} ({:?}) is not allocated", file_id.0, file_id);
-            }
-        })?
-        .valid_bytes;
+    let file_size = vmgs.get_file_info(file_id)?.valid_bytes;
 
-    tracing::info!(
-        "File ID {} ({:?}) has a size of {}",
-        file_id.0,
-        file_id,
-        file_size
-    );
+    tracing::info!("{} has a size of {}", file_id, file_size);
 
     // STABLE OUTPUT
     println!("{file_size}");
@@ -1275,38 +1273,17 @@ fn vmgs_query_file_size(vmgs: &Vmgs, file_id: FileId) -> Result<u64, Error> {
 async fn vmgs_file_query_encryption(file_path: impl AsRef<Path>) -> Result<(), Error> {
     let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnlyIgnore).await?;
 
-    // let encryption_alg = vmgs.get_encryption_algorithm();
-    // let gsp_type = vmgs_get_gsp_type(&vmgs);
+    let encryption_alg = vmgs.get_encryption_algorithm();
+    tracing::info!("Encryption algorithm: {:?}", encryption_alg);
+    let gsp_type = vmgs_get_gsp_type(&vmgs);
+    tracing::info!("Guest state protection type: {:?}", gsp_type);
 
-    match (vmgs.get_encryption_algorithm(), vmgs_get_gsp_type(&vmgs)) {
-        (EncryptionAlgorithm::NONE, scheme) => {
-            tracing::info!("The VMGS file is not encrypted (encryption scheme: {scheme:?})");
-            Err(Error::NotEncrypted)
-        }
-        (EncryptionAlgorithm::AES_GCM, GspType::GspKey) => {
-            tracing::info!(
-                "The VMGS file is encrypted with AES GCM encryption algorithm using GspKey"
-            );
-            Ok(())
-        }
-        (EncryptionAlgorithm::AES_GCM, GspType::GspById) => {
-            tracing::info!(
-                "The VMGS file is encrypted with AES GCM encryption algorithm using GspById"
-            );
-            Err(Error::GspByIdEncryption)
-        }
-        (EncryptionAlgorithm::AES_GCM, GspType::None) => {
-            tracing::warn!(
-                "The VMGS file is encrypted with AES GCM encryption algorithm using an unknown encryption scheme"
-            );
-            Err(Error::GspUnknown)
-        }
-        (alg, scheme) => {
-            tracing::error!(
-                "The VMGS file is using an unknown encryption algorithm: {alg:?} (encryption scheme: {scheme:?})"
-            );
-            Err(Error::EncryptionUnknown)
-        }
+    match (encryption_alg, gsp_type) {
+        (EncryptionAlgorithm::NONE, _) => Err(Error::NotEncrypted),
+        (EncryptionAlgorithm::AES_GCM, GspType::GspKey) => Ok(()),
+        (EncryptionAlgorithm::AES_GCM, GspType::GspById) => Err(Error::GspByIdEncryption),
+        (EncryptionAlgorithm::AES_GCM, GspType::None) => Err(Error::GspUnknown),
+        _ => Err(Error::EncryptionUnknown),
     }
 }
 

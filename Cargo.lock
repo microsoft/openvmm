@@ -9496,6 +9496,7 @@ dependencies = [
  "tracing",
  "vmgs_format",
  "windows 0.62.0",
+ "windows-result 0.4.0",
  "zerocopy 0.8.27",
 ]
 

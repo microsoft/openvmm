@@ -14,7 +14,7 @@ save_restore = ["dep:mesh_protobuf"]
 mesh = ["dep:mesh_protobuf"]
 
 # Use native windows crypto APIs
-encryption_win = ["dep:windows"]
+encryption_win = ["dep:windows", "dep:windows-result"]
 # Use OpenSSL crypto APIs
 encryption_ossl = ["dep:openssl"]
 
@@ -51,6 +51,9 @@ features = [
   "Win32_Foundation",
   "Win32_Security_Cryptography",
 ]
+[target.'cfg(windows)'.dependencies.windows-result]
+workspace = true
+optional = true
 
 [dev-dependencies]
 pal_async.workspace = true

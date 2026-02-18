@@ -11,6 +11,7 @@ extern crate alloc;
 
 use alloc::string::String;
 use bitfield_struct::bitfield;
+use core::fmt::Display;
 use core::ops::Index;
 use core::ops::IndexMut;
 #[cfg(feature = "inspect")]
@@ -59,6 +60,12 @@ open_enum! {
         PROVISIONING_MARKER = 18,
 
         EXTENDED_FILE_TABLE = 63,
+    }
+}
+
+impl Display for FileId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!("File ID {} ({:?})", self.0, self))
     }
 }
 
