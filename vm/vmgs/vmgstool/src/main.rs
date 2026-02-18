@@ -101,8 +101,8 @@ pub(crate) enum Error {
 /// main matches Error enum to ExitCode
 ///
 /// - query-encryption must return NotEncrypted if file is not encrypted,
-/// GspById if the file contains a VMID, and GspUnknown if neither
-/// a VMID nor a key protector are present. Success indicates GspKey.
+///   GspById if the file contains a VMID, and GspUnknown if neither
+///   a VMID nor a key protector are present. Success indicates GspKey.
 /// - dump-headers must return Empty when the file is blank.
 /// - query-size must return NotFound when the file id is uninitialized.
 /// - Error is returned for all other errors.

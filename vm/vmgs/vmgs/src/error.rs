@@ -90,7 +90,7 @@ pub enum Error {
     #[error("OpenSSL error {1}: {0}")]
     OpenSSL(#[source] openssl::error::ErrorStack, &'static str),
     /// BCrypt error
-    #[cfg(feature = "encryption_win")]
+    #[cfg(all(windows, feature = "encryption_win"))]
     #[error("BCrypt error {1}: {0}")]
     BCrypt(#[source] windows_result::Error, &'static str),
     /// Serde JSON error
