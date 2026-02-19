@@ -203,7 +203,7 @@ message TdispCommandResponseUnbind {}
 // ----------------------------------------------------------------------------
 
 // Represents the TDISP device interface information, such as the version and
-// supported features. Corresponds to TdispDeviceInterfaceInfo in command.rs.
+// supported features.
 message TdispDeviceInterfaceInfo {
   // The major version for the interface.
   uint32 interface_version_major = 1;
@@ -219,12 +219,11 @@ message TdispDeviceInterfaceInfo {
 }
 
 // ----------------------------------------------------------------------------
-// Device report structures (from devicereport.rs)
+// Device report structures
 // ----------------------------------------------------------------------------
 
 // PCI Express Base Specification Revision 6.3 Section 11.3.11
 // DEVICE_INTERFACE_REPORT interface info flags.
-// Corresponds to TdispTdiReportInterfaceInfo (bitfield) in devicereport.rs.
 message TdispTdiReportInterfaceInfo {
   // When true, device firmware updates are not permitted while in
   // CONFIG_LOCKED or RUN.
@@ -245,7 +244,6 @@ message TdispTdiReportInterfaceInfo {
 
 // PCI Express Base Specification Revision 6.3 Section 11.3.11
 // DEVICE_INTERFACE_REPORT MMIO range attribute flags.
-// Corresponds to TdispTdiReportMmioFlags (bitfield) in devicereport.rs.
 message TdispTdiReportMmioFlags {
   // MSI-X Table – if the range maps MSI-X table.
   bool range_maps_msix_table = 1;
@@ -263,7 +261,6 @@ message TdispTdiReportMmioFlags {
 
 // PCI Express Base Specification Revision 6.3 Section 11.3.11
 // DEVICE_INTERFACE_REPORT per-MMIO-range info.
-// Corresponds to TdispTdiReportMmioInterfaceInfo in devicereport.rs.
 // Note: range_id is uint32 here because protobuf has no uint16; callers
 // should treat it as a 16-bit value.
 message TdispTdiReportMmioInterfaceInfo {
@@ -282,7 +279,6 @@ message TdispTdiReportMmioInterfaceInfo {
 }
 
 // The deserialized form of a TDI interface report.
-// Corresponds to TdiReportStruct in devicereport.rs.
 // Note: msi_x_message_control and lnr_control are uint32 here because
 // protobuf has no uint16; callers should treat them as 16-bit values.
 message TdiReportStruct {
