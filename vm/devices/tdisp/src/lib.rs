@@ -180,15 +180,20 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
                 match report_type {
                     Some(report_type) => {
                         let report_buffer = self.machine.request_attestation_report(report_type);
-                        if let Err(err) = report_buffer {
-                            error = err;
+
+                        match report_buffer {
+                            Ok(report_buffer) => {
+                                response = Some(Response::GetTdiReport(
+                                    TdispCommandResponseGetTdiReport {
+                                        report_type: cmd.report_type,
+                                        report_buffer,
+                                    },
+                                ));
+                            }
+                            Err(err) => {
+                                error = err;
+                            }
                         }
-                        response = Some(Response::GetTdiReport(TdispCommandResponseGetTdiReport {
-                            report_type: cmd.report_type,
-                            report_buffer: report_buffer
-                                .context("expecting report buffer from request_attestation_report")
-                                .unwrap(),
-                        }));
                     }
                     None => {
                         error = TdispGuestOperationError::InvalidGuestAttestationReportType;
