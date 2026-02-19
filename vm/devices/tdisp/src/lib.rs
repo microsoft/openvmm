@@ -46,6 +46,7 @@ use tdisp_proto::{
     guest_to_host_command::Command, guest_to_host_response::Response,
 };
 use thiserror::Error;
+use tracing::instrument;
 
 /// Major version of the TDISP guest-to-host interface.
 pub const TDISP_INTERFACE_VERSION_MAJOR: u32 = 1;
@@ -107,16 +108,6 @@ impl TdispHostDeviceTargetEmulator {
         self.debug_device_id = debug_device_id.to_owned();
     }
 
-    /// Print a debug message to the log.
-    fn debug_print(&self, msg: String) {
-        self.machine.debug_print(&msg);
-    }
-
-    /// Print an error message to the log.
-    fn error_print(&self, msg: String) {
-        self.machine.error_print(&msg);
-    }
-
     /// Reset the emulator.
     pub fn reset(&self) {}
 
@@ -135,15 +126,11 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
     /// Main entry point for handling a guest command sent to the host.
     /// Dispatches relevant trait interface methods to handle the command.
     /// Formats and returns a response packet.
+    #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
     fn tdisp_handle_guest_command(
         &mut self,
         command: GuestToHostCommand,
     ) -> anyhow::Result<GuestToHostResponse> {
-        self.debug_print(format!(
-            "tdisp_handle_guest_command: command = {:?}",
-            command
-        ));
-
         let mut error = TdispGuestOperationError::Success;
         let mut response: Option<Response> = None;
         let state_before = self.machine.state();
@@ -216,10 +203,10 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
 
         match error {
             TdispGuestOperationError::Success => {
-                self.debug_print("tdisp_handle_guest_command: Success".to_owned());
+                tracing::info!("tdisp_handle_guest_command: Success");
             }
             _ => {
-                self.error_print(format!("tdisp_handle_guest_command: Error: {error:?}"));
+                tracing::error!("tdisp_handle_guest_command: Error: {error:?}");
             }
         }
 
@@ -231,7 +218,7 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
             response,
         };
 
-        self.debug_print(format!("tdisp_handle_guest_command: response = {resp:?}"));
+        tracing::info!("tdisp_handle_guest_command: response = {resp:?}");
 
         Ok(resp)
     }
@@ -316,16 +303,6 @@ impl TdispHostStateMachine {
         self.debug_device_id = debug_device_id;
     }
 
-    /// Print a debug message to the log.
-    fn debug_print(&self, msg: &str) {
-        tracing::debug!(msg = format!("[TdispEmu] [{}] {}", self.debug_device_id, msg));
-    }
-
-    /// Print an error message to the log.
-    fn error_print(&self, msg: &str) {
-        tracing::error!(msg = format!("[TdispEmu] [{}] {}", self.debug_device_id, msg));
-    }
-
     /// Get the current state of the TDI.
     fn state(&self) -> TdispTdiState {
         self.current_state
@@ -352,18 +329,21 @@ impl TdispHostStateMachine {
 
     /// Transitions the state machine to the new state if it is valid. If the new state is invalid,
     /// the state of the device is reset to the `Unlocked` state.
+    #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
     fn transition_state_to(&mut self, new_state: TdispTdiState) -> anyhow::Result<()> {
-        self.debug_print(&format!(
+        tracing::info!(
             "Request to transition from {:?} -> {:?}",
-            self.current_state, new_state
-        ));
+            self.current_state,
+            new_state
+        );
 
         // Ensure the state transition is valid
         if !self.is_valid_state_transition(&new_state) {
-            self.debug_print(&format!(
+            tracing::info!(
                 "Invalid state transition {:?} -> {:?}",
-                self.current_state, new_state
-            ));
+                self.current_state,
+                new_state
+            );
             return Err(anyhow::anyhow!(
                 "Invalid state transition {:?} -> {:?}",
                 self.current_state,
@@ -379,14 +359,15 @@ impl TdispHostStateMachine {
 
         // Transition to the new state
         self.current_state = new_state;
-        self.debug_print(&format!("Transitioned to {:?}", self.current_state));
+        tracing::info!("Transitioned to {:?}", self.current_state);
 
         Ok(())
     }
 
     /// Transition the device to the `Unlocked` state regardless of the current state.
+    #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
     fn unbind_all(&mut self, reason: TdispUnbindReason) -> anyhow::Result<()> {
-        self.debug_print(&format!("Unbind called with reason {:?}", reason));
+        tracing::info!("Unbind called with reason {:?}", reason);
 
         // All states can be reset to the Unlocked state. This can only happen if the
         // state is corrupt beyond the state machine.
@@ -405,7 +386,7 @@ impl TdispHostStateMachine {
             .context("host failed to unbind TDI");
 
         if let Err(e) = res {
-            self.error_print(format!("Failed to unbind TDI: {:?}", e).as_str());
+            tracing::error!("Failed to unbind TDI: {:?}", e);
             return Err(e);
         }
 
@@ -555,12 +536,13 @@ pub trait TdispGuestRequestInterface {
 }
 
 impl TdispGuestRequestInterface for TdispHostStateMachine {
+    #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
     fn request_lock_device_resources(&mut self) -> Result<(), TdispGuestOperationError> {
         // If the guest attempts to transition the device to the Locked state while the device
         // is not in the Unlocked state, the device is reset to the Unlocked state.
         if self.current_state != TdispTdiState::Unlocked {
-            self.error_print(
-                "Unlocked to Locked state called while device was not in Unlocked state.",
+            tracing::error!(
+                "Unlocked to Locked state called while device was not in Unlocked state."
             );
 
             self.unbind_all(TdispUnbindReason::InvalidGuestTransitionToLocked)
@@ -568,9 +550,7 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
             return Err(TdispGuestOperationError::InvalidDeviceState);
         }
 
-        self.debug_print(
-            "Device bind requested, trying to transition from Unlocked to Locked state",
-        );
+        tracing::info!("Device bind requested, trying to transition from Unlocked to Locked state");
 
         // Call back into the host to bind the device.
         let res = self
@@ -580,25 +560,26 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
             .context("failed to call to bind TDI");
 
         if let Err(e) = res {
-            self.error_print(format!("Failed to bind TDI: {e:?}").as_str());
+            tracing::error!("Failed to bind TDI: {e:?}");
             return Err(TdispGuestOperationError::HostFailedToProcessCommand);
         }
 
-        self.debug_print("Device transition from Unlocked to Locked state");
+        tracing::info!("Device transition from Unlocked to Locked state");
         self.transition_state_to(TdispTdiState::Locked).unwrap();
         Ok(())
     }
 
+    #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
     fn request_start_tdi(&mut self) -> Result<(), TdispGuestOperationError> {
         if self.current_state != TdispTdiState::Locked {
-            self.error_print("StartTDI called while device was not in Locked state.");
+            tracing::error!("StartTDI called while device was not in Locked state.");
             self.unbind_all(TdispUnbindReason::InvalidGuestTransitionToRun)
                 .map_err(|_| TdispGuestOperationError::HostFailedToProcessCommand)?;
 
             return Err(TdispGuestOperationError::InvalidDeviceState);
         }
 
-        self.debug_print("Device start requested, trying to transition from Locked to Run state");
+        tracing::info!("Device start requested, trying to transition from Locked to Run state");
 
         // Call back into the host to bind the device.
         let res = self
@@ -608,23 +589,24 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
             .context("failed to call to start TDI");
 
         if let Err(e) = res {
-            self.error_print(format!("Failed to start TDI: {e:?}").as_str());
+            tracing::error!("Failed to start TDI: {e:?}");
             return Err(TdispGuestOperationError::HostFailedToProcessCommand);
         }
 
-        self.debug_print("Device transition from Locked to Run state");
+        tracing::info!("Device transition from Locked to Run state");
         self.transition_state_to(TdispTdiState::Run).unwrap();
 
         Ok(())
     }
 
+    #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
     fn request_attestation_report(
         &mut self,
         report_type: TdispReportType,
     ) -> Result<Vec<u8>, TdispGuestOperationError> {
         if self.current_state != TdispTdiState::Locked && self.current_state != TdispTdiState::Run {
-            self.error_print(
-                "Request to retrieve attestation report called while device was not in Locked or Run state.",
+            tracing::error!(
+                "Request to retrieve attestation report called while device was not in Locked or Run state."
             );
             self.unbind_all(TdispUnbindReason::InvalidGuestGetAttestationReportState)
                 .map_err(|_| TdispGuestOperationError::HostFailedToProcessCommand)?;
@@ -633,7 +615,7 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         }
 
         if report_type == TdispReportType::Invalid {
-            self.error_print("Invalid report type TdispReportId::INVALID requested");
+            tracing::error!("Invalid report type TdispReportId::INVALID requested");
             return Err(TdispGuestOperationError::InvalidGuestAttestationReportType);
         }
 
@@ -644,14 +626,15 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
             .context("failed to call to get device report from host");
 
         if let Err(e) = report_buffer {
-            self.error_print(format!("Failed to get device report from host: {e:?}").as_str());
+            tracing::error!("Failed to get device report from host: {e:?}");
             return Err(TdispGuestOperationError::HostFailedToProcessCommand);
         }
 
-        self.debug_print("Retrieve attestation report called successfully");
+        tracing::info!("Retrieve attestation report called successfully");
         Ok(report_buffer.unwrap())
     }
 
+    #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
     fn request_unbind(
         &mut self,
         reason: TdispGuestUnbindReason,
@@ -662,12 +645,9 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         let reason = match reason {
             TdispGuestUnbindReason::Graceful => TdispUnbindReason::GuestInitiated(reason),
             _ => {
-                self.error_print(
-                    format!(
-                        "Invalid guest unbind reason {} requested",
-                        reason.as_str_name()
-                    )
-                    .as_str(),
+                tracing::error!(
+                    "Invalid guest unbind reason {} requested",
+                    reason.as_str_name()
                 );
                 TdispUnbindReason::InvalidGuestUnbindReason(anyhow::anyhow!(
                     "Invalid guest unbind reason {} requested",
@@ -676,10 +656,11 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
             }
         };
 
-        self.debug_print(&format!(
+        tracing::info!(
             "Guest request to unbind succeeds while device is in {:?} (reason: {:?})",
-            self.current_state, reason
-        ));
+            self.current_state,
+            reason
+        );
 
         self.unbind_all(reason)
             .map_err(|_| TdispGuestOperationError::HostFailedToProcessCommand)?;
