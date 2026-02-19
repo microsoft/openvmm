@@ -276,7 +276,13 @@ impl UefiDevice {
                 self.service.diagnostics.set_gpa(data)
             }
             UefiCommand::PROCESS_EFI_DIAGNOSTICS => {
-                self.process_diagnostics(false, Some(DEFAULT_LOGS_PER_PERIOD), None)
+                let _ = self.process_diagnostics(
+                    false,
+                    service::diagnostics::DiagnosticsEmitter::Tracing {
+                        limit: Some(DEFAULT_LOGS_PER_PERIOD),
+                    },
+                    None,
+                );
             }
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
@@ -284,70 +290,55 @@ impl UefiDevice {
 
     /// Extra inspection fields for the UEFI device.
     fn inspect_extra(&mut self, resp: &mut inspect::Response<'_>) {
-        resp.field_mut_with("process_diagnostics", |v| {
-            // NOTE: Today, the inspect source code will fail if we invoke like below
-            // `inspect -u vm/uefi/process_diagnostics`. This is true, even for other
-            // mutable paths in the inspect graph.
-            if let Some(value) = v {
-                // Parse optional log level override from the input value.
-                // Any other value (e.g. "1") processes with the configured log level.
-                let log_level_override = match value {
-                    "default" => Some(LogLevel::make_default()),
-                    "info" => Some(LogLevel::make_info()),
-                    "full" => Some(LogLevel::make_full()),
-                    _ => None,
-                };
-                self.process_diagnostics(true, None, log_level_override);
-                Result::<_, std::convert::Infallible>::Ok(format!(
-                    "attempted to process diagnostics through inspect (log_level_override: {})",
-                    match value {
-                        "default" | "info" | "full" => value,
-                        _ => "none",
-                    }
-                ))
-            } else {
-                Result::<_, std::convert::Infallible>::Ok(
-                    "Use: inspect -u <default|info|full> vm/uefi/process_diagnostics".to_string(),
-                )
-            }
-        });
-
-        resp.field_mut_with("efi_diagnostics_dump", |v| {
-            if let Some(value) = v {
-                let log_level_override = match value {
-                    "default" => Some(LogLevel::make_default()),
-                    "info" => Some(LogLevel::make_info()),
-                    "full" => Some(LogLevel::make_full()),
-                    _ => None,
-                };
-
-                use std::fmt::Write;
-                let mut output = String::new();
-                let result = self.service.diagnostics.process_diagnostics(
-                    true,
-                    &self.gm,
-                    log_level_override,
-                    |log| {
-                        let _ = writeln!(
-                            output,
-                            "[{}] [{}] (ticks: {}) {}",
-                            log.debug_level_str(),
-                            log.phase_str(),
-                            log.ticks(),
-                            log.message_trimmed(),
-                        );
-                    },
+        resp.field_mut_with("dump_efi_diagnostics", |v| {
+            let Some(value) = v else {
+                return Result::<_, std::convert::Infallible>::Ok(
+                    "Use: inspect -u <default|info|full>,<stdout|tracing> vm/uefi/dump_efi_diagnostics".to_string(),
                 );
+            };
 
-                Result::<_, std::convert::Infallible>::Ok(match result {
-                    Ok(()) if output.is_empty() => "(no diagnostics entries found)".to_string(),
-                    Ok(()) => output,
-                    Err(error) => format!("error processing diagnostics: {error}"),
-                })
-            } else {
-                Result::<_, std::convert::Infallible>::Ok(
-                    "Use: inspect -u <default|info|full> vm/uefi/efi_diagnostics_dump".to_string(),
-                )
+            let (level_str, dest_str) = value.split_once(',').unwrap_or((value, "stdout"));
+
+            let log_level_override = match level_str {
+                "default" => Some(LogLevel::make_default()),
+                "info" => Some(LogLevel::make_info()),
+                "full" => Some(LogLevel::make_full()),
+                _ => return Result::<_, std::convert::Infallible>::Ok(
+                    "Invalid log level. Use: inspect -u <default|info|full>,<stdout|tracing> vm/uefi/dump_efi_diagnostics".to_string(),
+                ),
+            };
+
+            match dest_str {
+                "stdout" => {
+                    let result = self.process_diagnostics(
+                        true,
+                        service::diagnostics::DiagnosticsEmitter::String,
+                        log_level_override,
+                    );
+
+                    Result::<_, std::convert::Infallible>::Ok(match result {
+                        Ok(Some(output)) if output.is_empty() => {
+                            "(no diagnostics entries found)".to_string()
+                        }
+                        Ok(Some(output)) => output,
+                        Err(error) => format!("error processing diagnostics: {error}"),
+                        Ok(None) => unreachable!("String emitter should return output"),
+                    })
+                }
+                "tracing" => {
+                    let _ = self.process_diagnostics(
+                        true,
+                        service::diagnostics::DiagnosticsEmitter::Tracing { limit: None },
+                        log_level_override,
+                    );
+                    Result::<_, std::convert::Infallible>::Ok(format!(
+                        "attempted to process diagnostics through inspect (log_level_override: {})",
+                        level_str
+                    ))
+                }
+                _ => Result::<_, std::convert::Infallible>::Ok(
+                    "Invalid destination. Use: inspect -u <default|info|full>,<stdout|tracing> vm/uefi/dump_efi_diagnostics".to_string(),
+                ),
             }
         });
     }
@@ -394,7 +385,13 @@ impl PollDevice for UefiDevice {
             // NOTE: Do not allow reprocessing diagnostics here.
             // UEFI programs the watchdog's configuration, so we should assume that
             // this path could trigger multiple times.
-            self.process_diagnostics(false, Some(DEFAULT_LOGS_PER_PERIOD), None);
+            let _ = self.process_diagnostics(
+                false,
+                service::diagnostics::DiagnosticsEmitter::Tracing {
+                    limit: Some(DEFAULT_LOGS_PER_PERIOD),
+                },
+                None,
+            );
         }
     }
 }

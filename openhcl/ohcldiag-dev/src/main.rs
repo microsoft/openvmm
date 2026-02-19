@@ -306,6 +306,9 @@ enum Command {
         /// "full" (all levels).
         #[clap(default_value = "default")]
         log_level: EfiDiagnosticsLogLevel,
+        /// The output destination.
+        #[clap(default_value = "stdout")]
+        output: EfiDiagnosticsOutput,
     },
 }
 
@@ -390,6 +393,23 @@ impl EfiDiagnosticsLogLevel {
             EfiDiagnosticsLogLevel::Default => "default",
             EfiDiagnosticsLogLevel::Info => "info",
             EfiDiagnosticsLogLevel::Full => "full",
+        }
+    }
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum EfiDiagnosticsOutput {
+    /// Emit to stdout
+    Stdout,
+    /// Emit to tracing
+    Tracing,
+}
+
+impl EfiDiagnosticsOutput {
+    fn as_inspect_value(&self) -> &'static str {
+        match self {
+            EfiDiagnosticsOutput::Stdout => "stdout",
+            EfiDiagnosticsOutput::Tracing => "tracing",
         }
     }
 }
@@ -940,10 +960,15 @@ pub fn main() -> anyhow::Result<()> {
                 let mut file = create_or_stderr(&output)?;
                 file.write_all(&client.memory_profile_trace(pid).await?)?;
             }
-            Command::EfiDiagnostics { log_level } => {
+            Command::EfiDiagnostics { log_level, output } => {
                 let client = new_client(driver.clone(), &vm)?;
+                let arg = format!(
+                    "{},{}",
+                    log_level.as_inspect_value(),
+                    output.as_inspect_value()
+                );
                 let value = client
-                    .update("vm/uefi/efi_diagnostics_dump", log_level.as_inspect_value())
+                    .update("vm/uefi/dump_efi_diagnostics", &arg)
                     .await
                     .context("failed to process EFI diagnostics")?;
                 match value.kind {
