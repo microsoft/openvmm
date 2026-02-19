@@ -3631,6 +3631,8 @@ async fn new_underhill_vm(
         dma_manager,
         config_timeout_in_seconds: env_cfg.config_timeout_in_seconds,
         servicing_timeout_dump_collection_in_ms: env_cfg.servicing_timeout_dump_collection_in_ms,
+        #[cfg(feature = "mem-profile-tracing")]
+        profiler: mem_profile_tracing::HeapProfiler::new(),
     };
 
     Ok(loaded_vm)
@@ -3650,7 +3652,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         vpci_boot_enabled: _,
 
         // Validated below
-        battery_enabled,
         processor_idle_enabled,
         firmware_debugging_enabled,
         hibernation_enabled,
@@ -3697,6 +3698,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         management_vtl_features: _,
         hv_sint_enabled: _,
         azi_hsm_enabled: _,
+        battery_enabled: _, // TODO: Add this to attestation later
     } = &dps.general;
 
     if *hibernation_enabled {
@@ -3707,9 +3709,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
     }
     if *secure_boot_enabled && *firmware_debugging_enabled {
         anyhow::bail!("secure boot and firmware debugging are mutually exclusive");
-    }
-    if *battery_enabled {
-        anyhow::bail!("battery is not supported");
     }
     if *legacy_memory_map {
         anyhow::bail!("legacy memory map is not supported");

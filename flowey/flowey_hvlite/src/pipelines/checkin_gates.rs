@@ -1069,8 +1069,13 @@ impl IntoPipeline for CheckinGatesCli {
 
         let cvm_filter = |arch| {
             let mut filter = format!(
-                "test({arch}) + (test(vbs) & test(hyperv)) + test(very_heavy) + test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs) + test(hyperv_openhcl_pcat)"
+                "test({arch}) + (test(vbs) & test(hyperv)) + test(very_heavy) + test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)"
             );
+            // OpenHCL PCAT tests are flakey on AMD SNP runners, so only run on TDX for now
+            if arch == "tdx" {
+                filter.push_str(" + test(hyperv_openhcl_pcat)");
+            }
+
             // See comment for standard filter. Run hyper-v servicing tests on CVM runners.
             match backend_hint {
                 PipelineBackendHint::Ado => {

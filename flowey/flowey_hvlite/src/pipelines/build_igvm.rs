@@ -332,6 +332,14 @@ impl IntoPipeline for BuildIgvmCli {
             OpenhclRecipeCli::Aarch64 | OpenhclRecipeCli::Aarch64Devkern => CommonArch::Aarch64,
         };
 
+        // Use the effective arch, accounting for any --override-arch
+        let effective_arch = override_arch
+            .map(|a| match a {
+                BuildIgvmArch::X86_64 => CommonArch::X86_64,
+                BuildIgvmArch::Aarch64 => CommonArch::Aarch64,
+            })
+            .unwrap_or(recipe_arch);
+
         let mut job = pipeline.new_job(
             FlowPlatform::host(backend_hint),
             FlowArch::host(backend_hint),
@@ -346,7 +354,7 @@ impl IntoPipeline for BuildIgvmCli {
         if let Some(openvmm_deps_path) = custom_openvmm_deps {
             job = job.dep_on(move |_| {
                 flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalOpenvmmDeps(
-                    recipe_arch,
+                    effective_arch,
                     openvmm_deps_path,
                 )
             });
@@ -366,11 +374,21 @@ impl IntoPipeline for BuildIgvmCli {
             job =
                 job.dep_on(
                     move |_| flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalKernel {
-                        arch: recipe_arch,
+                        arch: effective_arch,
                         kernel: kernel_path,
                         modules: modules_path,
                     },
                 );
+        }
+
+        // Override UEFI with a local path if specified
+        if let Some(uefi_path) = custom_uefi {
+            job = job.dep_on(move |_| {
+                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalUefi(
+                    effective_arch,
+                    uefi_path,
+                )
+            });
         }
 
         job.dep_on(
@@ -431,7 +449,6 @@ impl IntoPipeline for BuildIgvmCli {
                 override_max_trace_level: max_trace_level.map(Into::into),
                 custom_openvmm_hcl,
                 custom_openhcl_boot,
-                custom_uefi,
                 custom_kernel,
                 custom_vtl0_kernel,
                 custom_layer,
