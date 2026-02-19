@@ -58,8 +58,15 @@ impl TdispHostDeviceInterface for TrackingHostInterface {
 
     /// Returns a mock report buffer that is configurable.
     fn tdisp_get_device_report(&mut self, report_type: TdispReportType) -> anyhow::Result<Vec<u8>> {
-        *self.last_call.lock() = Some(LastCall::GetDeviceReport(report_type));
-        Ok(self.report_buffer.lock().clone())
+        if report_type == TdispReportType::InterfaceReport {
+            *self.last_call.lock() = Some(LastCall::GetDeviceReport(report_type));
+            Ok(self.report_buffer.lock().clone())
+        } else {
+            *self.last_call.lock() = Some(LastCall::GetDeviceReport(report_type));
+            Err(anyhow::anyhow!(
+                "mock test checks only that InterfaceReport is requested"
+            ))
+        }
     }
 }
 
@@ -220,6 +227,9 @@ fn test_get_tdi_report_in_locked_state() {
     let mut mock = new_emulator();
     dispatch_roundtrip(&mut mock.emulator, bind_cmd(1)); // Unlocked -> Locked
 
+    let mock_interface_report: Vec<u8> = vec![0xCA, 0xFE, 0xBA, 0xBE, 0x01, 0x02, 0x03];
+    *mock.report_buffer.lock() = mock_interface_report.clone();
+
     let resp = dispatch_roundtrip(
         &mut mock.emulator,
         get_tdi_report_cmd(1, TdispReportType::InterfaceReport),
@@ -233,6 +243,7 @@ fn test_get_tdi_report_in_locked_state() {
     };
     assert_eq!(r.report_type, TdispReportType::InterfaceReport as i32);
     assert!(!r.report_buffer.is_empty());
+    assert_eq!(r.report_buffer, mock_interface_report);
     assert_eq!(
         *mock.last_call.lock(),
         Some(LastCall::GetDeviceReport(TdispReportType::InterfaceReport))
@@ -243,20 +254,30 @@ fn test_get_tdi_report_in_locked_state() {
 #[test]
 fn test_get_tdi_report_in_run_state() {
     let mut mock = new_emulator();
-    dispatch_roundtrip(&mut mock.emulator, bind_cmd(1));
+    dispatch_roundtrip(&mut mock.emulator, bind_cmd(1)); // Unlocked -> Locked
     dispatch_roundtrip(&mut mock.emulator, start_tdi_cmd(1)); // Locked -> Run
+
+    let mock_interface_report: Vec<u8> = vec![0xCA, 0xFE, 0xBA, 0xBE, 0x01, 0x02, 0x03];
+    *mock.report_buffer.lock() = mock_interface_report.clone();
 
     let resp = dispatch_roundtrip(
         &mut mock.emulator,
-        get_tdi_report_cmd(1, TdispReportType::GuestDeviceId),
+        get_tdi_report_cmd(1, TdispReportType::InterfaceReport),
     );
     assert_eq!(resp.result, TdispGuestOperationErrorCode::Success as i32);
     assert_eq!(resp.tdi_state_before, TdispTdiState::Run as i32);
     assert_eq!(resp.tdi_state_after, TdispTdiState::Run as i32);
+
+    let Some(Response::GetTdiReport(r)) = resp.response else {
+        panic!("expected GetTdiReport response");
+    };
+    assert_eq!(r.report_type, TdispReportType::InterfaceReport as i32);
+    assert!(!r.report_buffer.is_empty());
+    assert_eq!(r.report_buffer, mock_interface_report);
     assert_eq!(
         *mock.last_call.lock(),
-        Some(LastCall::GetDeviceReport(TdispReportType::GuestDeviceId))
-    );
+        Some(LastCall::GetDeviceReport(TdispReportType::InterfaceReport))
+    )
 }
 
 /// Sending a Bind command while already Locked returns an error and the
@@ -315,36 +336,6 @@ fn test_unbind_from_unlocked_is_allowed() {
     assert_eq!(resp.tdi_state_after, TdispTdiState::Unlocked as i32);
     assert!(matches!(resp.response, Some(Response::Unbind(_))));
     assert_eq!(*mock.last_call.lock(), Some(LastCall::UnbindDevice));
-}
-
-/// Ensures that a mock report buffer is returned successfully through the
-/// TdiReport interface when the report is requested by a guest command.
-#[test]
-fn test_get_tdi_report_returns_configured_buffer() {
-    let mut mock = new_emulator();
-    let mock_interface_report: Vec<u8> = vec![0xCA, 0xFE, 0xBA, 0xBE, 0x01, 0x02, 0x03];
-    *mock.report_buffer.lock() = mock_interface_report.clone();
-
-    // Advance to Locked so the report request is valid.
-    dispatch_roundtrip(&mut mock.emulator, bind_cmd(1));
-
-    let resp = dispatch_roundtrip(
-        &mut mock.emulator,
-        get_tdi_report_cmd(1, TdispReportType::InterfaceReport),
-    );
-    assert_eq!(resp.result, TdispGuestOperationErrorCode::Success as i32);
-    assert_eq!(resp.tdi_state_before, TdispTdiState::Locked as i32);
-    assert_eq!(resp.tdi_state_after, TdispTdiState::Locked as i32);
-
-    let Some(Response::GetTdiReport(r)) = resp.response else {
-        panic!("expected GetTdiReport response");
-    };
-    assert_eq!(r.report_type, TdispReportType::InterfaceReport as i32);
-    assert_eq!(r.report_buffer, mock_interface_report);
-    assert_eq!(
-        *mock.last_call.lock(),
-        Some(LastCall::GetDeviceReport(TdispReportType::InterfaceReport))
-    );
 }
 
 /// After a full Unlocked -> Locked -> Run -> Unlocked cycle the device can
