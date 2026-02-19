@@ -9,6 +9,7 @@ use prost::Message as _;
 use tdisp_proto::GuestToHostCommand;
 use tdisp_proto::GuestToHostResponse;
 use tdisp_proto::TdispGuestOperationErrorCode;
+use tdisp_proto::TdispGuestProtocolType;
 use tdisp_proto::TdispGuestUnbindReason;
 use tdisp_proto::TdispReportType;
 use tdisp_proto::TdispTdiState;
@@ -77,7 +78,9 @@ pub fn deserialize_response(bytes: &[u8]) -> anyhow::Result<GuestToHostResponse>
 pub fn validate_command(command: &GuestToHostCommand) -> anyhow::Result<()> {
     require_field!(command.command)?;
 
-    if let Some(Command::GetTdiReport(req)) = &command.command {
+    if let Some(Command::GetDeviceInterfaceInfo(req)) = &command.command {
+        require_enum!(req.guest_protocol_type, TdispGuestProtocolType)?;
+    } else if let Some(Command::GetTdiReport(req)) = &command.command {
         require_enum!(req.report_type, TdispReportType)?;
     } else if let Some(Command::Unbind(req)) = &command.command {
         require_enum!(req.unbind_reason, TdispGuestUnbindReason)?;

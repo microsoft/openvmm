@@ -7,8 +7,8 @@
 //! implements structures and interfaces for the host and guest to prepare and
 //! assign trusted devices. Examples of technologies that implement TDISP
 //! include:
-//! - Intel® "TDX Connect"
-//! - AMD SEV-TIO
+//! - Intel® TDX Connect
+//! - AMD® SEV-TIO
 //!
 //! This crate is primarily used to implement the host side of the guest-to-host
 //! interface for TDISP as well as the serialization of guest-to-host commands for both
@@ -42,23 +42,23 @@ use tdisp_proto::{
     GuestToHostCommand, GuestToHostResponse, TdispCommandResponseBind,
     TdispCommandResponseGetDeviceInterfaceInfo, TdispCommandResponseGetTdiReport,
     TdispCommandResponseStartTdi, TdispCommandResponseUnbind, TdispDeviceInterfaceInfo,
-    TdispGuestOperationErrorCode, TdispGuestUnbindReason, TdispReportType, TdispTdiState,
-    guest_to_host_command::Command, guest_to_host_response::Response,
+    TdispGuestOperationErrorCode, TdispGuestProtocolType, TdispGuestUnbindReason, TdispReportType,
+    TdispTdiState, guest_to_host_command::Command, guest_to_host_response::Response,
 };
 use thiserror::Error;
 use tracing::instrument;
-
-/// Major version of the TDISP guest-to-host interface.
-pub const TDISP_INTERFACE_VERSION_MAJOR: u32 = 1;
-
-/// Minor version of the TDISP guest-to-host interface.
-pub const TDISP_INTERFACE_VERSION_MINOR: u32 = 0;
 
 /// Callback for receiving TDISP commands from the guest.
 pub type TdispCommandCallback = dyn Fn(&GuestToHostCommand) -> anyhow::Result<()> + Send + Sync;
 
 /// Trait used by the emulator to call back into the host.
 pub trait TdispHostDeviceInterface: Send + Sync {
+    /// Request versioning and protocol negotiation from the host.
+    fn tdisp_negotiate_protocol(
+        &mut self,
+        _requested_guest_protocol: TdispGuestProtocolType,
+    ) -> anyhow::Result<TdispDeviceInterfaceInfo>;
+
     /// Bind a tdi device to the current partition. Transitions device to the Locked
     /// state from Unlocked.
     fn tdisp_bind_device(&mut self) -> anyhow::Result<()>;
@@ -110,16 +110,6 @@ impl TdispHostDeviceTargetEmulator {
 
     /// Reset the emulator.
     pub fn reset(&self) {}
-
-    /// Get the device interface info for this device.
-    fn get_device_interface_info(&self) -> TdispDeviceInterfaceInfo {
-        TdispDeviceInterfaceInfo {
-            interface_version_major: TDISP_INTERFACE_VERSION_MAJOR,
-            interface_version_minor: TDISP_INTERFACE_VERSION_MINOR,
-            supported_features: 0,
-            tdisp_device_id: 0,
-        }
-    }
 }
 
 impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
@@ -135,13 +125,29 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
         let mut response: Option<Response> = None;
         let state_before = self.machine.state();
         match &command.command {
-            Some(Command::GetDeviceInterfaceInfo(_)) => {
-                let interface_info = self.get_device_interface_info();
-                response = Some(Response::GetDeviceInterfaceInfo(
-                    TdispCommandResponseGetDeviceInterfaceInfo {
-                        interface_info: Some(interface_info),
-                    },
-                ));
+            Some(Command::GetDeviceInterfaceInfo(req)) => {
+                let protocol_type = TdispGuestProtocolType::from_i32(req.guest_protocol_type);
+
+                match protocol_type {
+                    Some(protocol_type) => {
+                        let interface_info = self.machine.tdisp_negotiate_protocol(protocol_type);
+                        match interface_info {
+                            Ok(interface_info) => {
+                                response = Some(Response::GetDeviceInterfaceInfo(
+                                    TdispCommandResponseGetDeviceInterfaceInfo {
+                                        interface_info: Some(interface_info),
+                                    },
+                                ));
+                            }
+                            Err(err) => {
+                                error = err;
+                            }
+                        }
+                    }
+                    None => {
+                        error = TdispGuestOperationError::InvalidGuestProtocolRequest;
+                    }
+                }
             }
             Some(Command::Bind(_)) => {
                 let bind_res = self.machine.request_lock_device_resources();
@@ -289,6 +295,8 @@ pub struct TdispHostStateMachine {
     unbind_reason_history: Vec<TdispUnbindReason>,
     /// Calls back into the host to perform TDISP actions.
     host_interface: Arc<Mutex<dyn TdispHostDeviceInterface>>,
+    /// The guest protocol type that was negotiated with the host interface.
+    guest_protocol_type: TdispGuestProtocolType,
 }
 
 impl TdispHostStateMachine {
@@ -300,6 +308,7 @@ impl TdispHostStateMachine {
             debug_device_id: "".to_owned(),
             unbind_reason_history: Vec::new(),
             host_interface,
+            guest_protocol_type: TdispGuestProtocolType::Invalid,
         }
     }
 
@@ -313,10 +322,32 @@ impl TdispHostStateMachine {
         self.current_state
     }
 
+    fn ensure_negotiated_protocol(&self) -> anyhow::Result<()> {
+        if self.guest_protocol_type == TdispGuestProtocolType::Invalid {
+            tracing::error!(
+                "Guest tried to perform a state transition without negotiating a protocol with the host!"
+            );
+            return Err(anyhow::anyhow!(
+                "Guest tried to perform a state transition without negotiating a protocol with the host!"
+            ));
+        }
+        Ok(())
+    }
+
     /// Check if the state machine can transition to the new state. This protects the underlying state machinery
     /// while higher level transition machinery tries to avoid these conditions. If the new state is impossible,
     /// `false` is returned.
+    #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
     fn is_valid_state_transition(&self, new_state: &TdispTdiState) -> bool {
+        // All state machine transitions are specifically denied until the host as negotiated a protocol.
+        match self.ensure_negotiated_protocol() {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!("Failed to transition state: {e:?}");
+                return false;
+            }
+        }
+
         match (self.current_state, *new_state) {
             // Valid forward progress states from Unlocked -> Run
             (TdispTdiState::Unlocked, TdispTdiState::Locked) => true,
@@ -413,6 +444,8 @@ pub enum TdispGuestOperationError {
     Unknown,
     #[error("the operation was successful")]
     Success,
+    #[error("the requested guest protocol type was not valid for this host")]
+    InvalidGuestProtocolRequest,
     #[error("the current TDI state is incorrect for this operation")]
     InvalidDeviceState,
     #[error("the reason for this unbind is invalid")]
@@ -436,6 +469,9 @@ impl From<TdispGuestOperationErrorCode> for TdispGuestOperationError {
         match err_code {
             TdispGuestOperationErrorCode::Unknown => TdispGuestOperationError::Unknown,
             TdispGuestOperationErrorCode::Success => TdispGuestOperationError::Success,
+            TdispGuestOperationErrorCode::InvalidGuestProtocolRequest => {
+                TdispGuestOperationError::InvalidGuestProtocolRequest
+            }
             TdispGuestOperationErrorCode::InvalidDeviceState => {
                 TdispGuestOperationError::InvalidDeviceState
             }
@@ -466,6 +502,9 @@ impl From<TdispGuestOperationError> for TdispGuestOperationErrorCode {
         match err {
             TdispGuestOperationError::Unknown => TdispGuestOperationErrorCode::Unknown,
             TdispGuestOperationError::Success => TdispGuestOperationErrorCode::Success,
+            TdispGuestOperationError::InvalidGuestProtocolRequest => {
+                TdispGuestOperationErrorCode::InvalidGuestProtocolRequest
+            }
             TdispGuestOperationError::InvalidDeviceState => {
                 TdispGuestOperationErrorCode::InvalidDeviceState
             }
@@ -495,6 +534,20 @@ impl From<TdispGuestOperationError> for TdispGuestOperationErrorCode {
 /// backing TDISP state handler in the host. This could be an emulated TDISP device or an
 /// assigned TDISP device that is actually connected to the guest.
 pub trait TdispGuestRequestInterface {
+    /// Before a guest can communicate with the host, the guest must negotiate a
+    /// protocol with the host. This is done by calling this function with the
+    /// guest's desired protocol type. The host responds with the protocol that
+    /// it will use to communicate with the guest and includes information about
+    /// the TDISP capabilities of the device.
+    ///
+    /// If the host reports that this device not TDISP capable,
+    /// [`TdispDeviceInterfaceInfo::guest_protocol_type`] will be
+    /// [`TdispGuestProtocolType::Invalid`].
+    fn tdisp_negotiate_protocol(
+        &mut self,
+        requested_guest_protocol: TdispGuestProtocolType,
+    ) -> Result<TdispDeviceInterfaceInfo, TdispGuestOperationError>;
+
     /// Transition the device from the Unlocked to Locked state. This takes place after the
     /// device has been assigned to the guest partition and the resources for the device have
     /// been configured by the guest by not yet validated.
@@ -541,8 +594,72 @@ pub trait TdispGuestRequestInterface {
 }
 
 impl TdispGuestRequestInterface for TdispHostStateMachine {
+    /// Request versioning and protocol negotiation from the host.
+    #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
+    fn tdisp_negotiate_protocol(
+        &mut self,
+        requested_guest_protocol: TdispGuestProtocolType,
+    ) -> Result<TdispDeviceInterfaceInfo, TdispGuestOperationError> {
+        if self.guest_protocol_type != TdispGuestProtocolType::Invalid {
+            tracing::error!(
+                "Guest tried to negotiate a protocol with the host while a protocol was already negotiated!"
+            );
+            return Err(TdispGuestOperationError::InvalidGuestProtocolRequest);
+        }
+
+        if requested_guest_protocol == TdispGuestProtocolType::Invalid {
+            tracing::error!("Guest tried to negotiate Invalid as a protocol");
+            return Err(TdispGuestOperationError::InvalidGuestProtocolRequest);
+        }
+
+        // Call back into the host to negotiate protocol information.
+        let res = self
+            .host_interface
+            .lock()
+            .tdisp_negotiate_protocol(requested_guest_protocol)
+            .context("failed to call to negotiate protocol");
+
+        match res {
+            Ok(interface_info) => {
+                tracing::info!(
+                    "Guest protocol negotiated successfully to: {:?}",
+                    interface_info
+                );
+
+                match TdispGuestProtocolType::from_i32(interface_info.guest_protocol_type) {
+                    Some(guest_protocol_type) => {
+                        if guest_protocol_type == TdispGuestProtocolType::Invalid {
+                            tracing::error!(
+                                "Guest protocol negotiated with invalid value: {guest_protocol_type:?}"
+                            );
+                            Err(TdispGuestOperationError::InvalidGuestProtocolRequest)
+                        } else {
+                            self.guest_protocol_type = guest_protocol_type;
+                            tracing::info!("Guest protocol negotiated: {interface_info:?}");
+                            Ok(interface_info)
+                        }
+                    }
+                    None => {
+                        tracing::error!(
+                            "Guest protocol negotiated with none value: {interface_info:?}"
+                        );
+                        Err(TdispGuestOperationError::InvalidGuestProtocolRequest)
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to negotiate protocol with host interface: {e:?}");
+                Err(TdispGuestOperationError::HostFailedToProcessCommand)
+            }
+        }
+    }
+
     #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
     fn request_lock_device_resources(&mut self) -> Result<(), TdispGuestOperationError> {
+        // Ensure the guest protocol is negotiated.
+        self.ensure_negotiated_protocol()
+            .map_err(|_| TdispGuestOperationError::InvalidDeviceState)?;
+
         // If the guest attempts to transition the device to the Locked state while the device
         // is not in the Unlocked state, the device is reset to the Unlocked state.
         if self.current_state != TdispTdiState::Unlocked {
@@ -582,6 +699,10 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
 
     #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
     fn request_start_tdi(&mut self) -> Result<(), TdispGuestOperationError> {
+        // Ensure the guest protocol is negotiated.
+        self.ensure_negotiated_protocol()
+            .map_err(|_| TdispGuestOperationError::InvalidDeviceState)?;
+
         if self.current_state != TdispTdiState::Locked {
             tracing::error!("StartTDI called while device was not in Locked state.");
             self.unbind_all(TdispUnbindReason::InvalidGuestTransitionToRun)
@@ -621,6 +742,10 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         &mut self,
         report_type: TdispReportType,
     ) -> Result<Vec<u8>, TdispGuestOperationError> {
+        // Ensure the guest protocol is negotiated.
+        self.ensure_negotiated_protocol()
+            .map_err(|_| TdispGuestOperationError::InvalidDeviceState)?;
+
         if self.current_state != TdispTdiState::Locked && self.current_state != TdispTdiState::Run {
             tracing::error!(
                 "Request to retrieve attestation report called while device was not in Locked or Run state."
@@ -659,6 +784,10 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         &mut self,
         reason: TdispGuestUnbindReason,
     ) -> Result<(), TdispGuestOperationError> {
+        // Ensure the guest protocol is negotiated.
+        self.ensure_negotiated_protocol()
+            .map_err(|_| TdispGuestOperationError::InvalidDeviceState)?;
+
         // The guest can provide a reason for the unbind. If the unbind reason isn't valid for a guest (such as
         // if the guest says it is unbinding due to a host-related error), the reason is discarded and InvalidGuestUnbindReason
         // is recorded in the unbind history.
